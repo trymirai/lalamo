@@ -1,9 +1,9 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal, Self
+from typing import ClassVar, Literal, Self
 
-from cattrs import structure
+import cattrs
 
 
 @dataclass
@@ -20,8 +20,8 @@ class LlamaConfig:
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
-    bos_token_id: int
-    eos_token_id: int
+    bos_token_id: int | list[int]
+    eos_token_id: int | list[int]
     head_dim: int
     hidden_act: Literal["silu"]
     hidden_size: int
@@ -43,9 +43,12 @@ class LlamaConfig:
     use_cache: bool
     vocab_size: int
 
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+    _converter.register_structure_hook(int | list[int], lambda v, _: v)
+
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
         json_path = Path(json_path)
         with open(json_path) as f:
             config = json.load(f)
-        return structure(config, cls)
+        return cls._converter.structure(config, cls)

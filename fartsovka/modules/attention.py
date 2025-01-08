@@ -28,8 +28,8 @@ class AttentionBase(eqx.Module):
         self,
         x: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
-        kv_cache: KVCacheLayerSlice,
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"],
+        kv_cache: KVCacheLayerSlice | None = None,
+        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
     ) -> Float[Array, "suffix_tokens channels"]:
         raise NotImplementedError
 
@@ -69,8 +69,8 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         self,
         x: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
-        kv_cache: KVCacheLayerSlice,
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"],
+        kv_cache: KVCacheLayerSlice | None = None,
+        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
     ) -> Float[Array, "suffix_tokens channels"]:
         qkv = vmap(self.qkv_projection, in_axes=0)(x)
         slice_indices = [
@@ -85,19 +85,30 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
             heads=self.num_heads,
             head_channels=self.head_dim,
         )
-        keys, values = rearrange(
-            [keys, values],
+        keys = rearrange(
+            keys,
+            "tokens (groups head_channels) -> tokens groups head_channels",
+            groups=self.num_groups,
+            head_channels=self.head_dim,
+        )
+        values = rearrange(
+            values,
             "tokens (groups head_channels) -> tokens groups head_channels",
             groups=self.num_groups,
             head_channels=self.head_dim,
         )
 
-        apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1)
+        apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
         queries = apply_positional_embeddings(queries)
         keys = apply_positional_embeddings(keys)
 
-        all_keys = jnp.concatenate([kv_cache.keys, keys], axis=0)
-        all_values = jnp.concatenate([kv_cache.values, values], axis=0)  # noqa: PD011
+        if kv_cache is not None:
+            all_keys = jnp.concatenate([kv_cache.keys, keys], axis=0)
+            all_values = jnp.concatenate([kv_cache.values, values], axis=0)  # noqa: PD011
+        else:
+            all_keys = keys
+            all_values = values
+
         attention_output = nn.dot_product_attention(queries, all_keys, all_values, mask=mask)
         attention_output = rearrange(
             attention_output,

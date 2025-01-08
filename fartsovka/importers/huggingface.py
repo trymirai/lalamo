@@ -21,22 +21,42 @@ MODEL_TO_REPO: dict[HuggingFaceModel, str] = {
     HuggingFaceModel.LLaMA1b: "meta-llama/Llama-3.2-1B-Instruct",
 }
 
+WEIGHTS_FILE_NAME = "model.safetensors"
+CONFIG_FILE_NAME = "config.json"
 
-def download_model(model: HuggingFaceModel, output_dir: Path | str) -> None:
-    huggingface_hub.snapshot_download(
+
+@dataclass
+class DownloadedModel:
+    config_path: Path
+    weights_path: Path
+
+
+def download_weights(model: HuggingFaceModel, output_dir: Path | str | None = None) -> Path:
+    result = huggingface_hub.hf_hub_download(
         repo_id=MODEL_TO_REPO[model],
         local_dir=output_dir,
+        filename=WEIGHTS_FILE_NAME,
     )
+    return Path(result)
 
 
-def load_config(model_dir: Path | str) -> LlamaConfig:
-    model_dir = Path(model_dir)
-    config_path = model_dir / "config.json"
-    return LlamaConfig.from_json(config_path)
+def download_config_file(model: HuggingFaceModel, output_dir: Path | str | None = None) -> Path:
+    result = huggingface_hub.hf_hub_download(
+        repo_id=MODEL_TO_REPO[model],
+        local_dir=output_dir,
+        filename=CONFIG_FILE_NAME,
+    )
+    return Path(result)
+
+
+def download_model(model: HuggingFaceModel, output_dir: Path | str | None = None) -> DownloadedModel:
+    config_path = download_config_file(model, output_dir)
+    weights_path = download_weights(model, output_dir)
+    return DownloadedModel(config_path=config_path, weights_path=weights_path)
 
 
 def init_model(
-    model_dir: Path | str,
+    model: HuggingFaceModel | Path | str,
     *,
     key: PRNGKeyArray | None = None,
     precision: jnp.dtype = DEFAULT_PRECISION,
@@ -44,7 +64,11 @@ def init_model(
 ) -> BaselineLlama:
     if key is None:
         key = jax.random.PRNGKey(0)
-    config = load_config(model_dir)
+    if isinstance(model, HuggingFaceModel):
+        config_file_path = download_config_file(model)
+    else:
+        config_file_path = Path(model) / CONFIG_FILE_NAME
+    config = LlamaConfig.from_json(config_file_path)
     return get_baseline_llama(
         num_layers=config.num_hidden_layers,
         vocab_dim=config.vocab_size,

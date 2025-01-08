@@ -84,7 +84,7 @@ class RoPE(eqx.Module):
         original_context_length: int = 8192,
         precision: jnp.dtype = DEFAULT_PRECISION,
     ) -> tuple[Float[Array, "{num_timesteps} {head_dim}"], Float[Array, "{num_timesteps} {head_dim}"]]:
-        channel_indices = jnp.arange(0, head_dim // 2, 2, dtype=jnp.int64)
+        channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
         timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
         frequencies = 1.0 / (theta ** (channel_indices.astype(jnp.float32) / head_dim))
         if use_scaling:

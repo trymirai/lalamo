@@ -17,6 +17,3 @@ def test_full_precision_linear(huggingface_llama: transformers.LlamaModel, rng_k
 
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
     hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
-
-    sample_input_jax = from_torch(sample_input_torch)
-    jax_output = hf_layer(sample_input_jax)

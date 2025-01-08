@@ -62,13 +62,14 @@ class Decoder[
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = head_dim
+        self.max_sequence_length = max_sequence_length
         self.eps = eps
 
         embedding_key, layers_key = jax.random.split(key)
         layer_keys = jax.random.split(layers_key, num_layers)
 
         self.embedding = embedding_factory(vocab_dim, model_dim, key=embedding_key)
-        self.rope = rope_factory(model_dim, max_sequence_length)
+        self.rope = rope_factory(head_dim, max_sequence_length)
         self.layers = [
             layer_factory(model_dim, hidden_dim, num_heads, num_groups, head_dim, eps, key=layer_key)
             for layer_key in layer_keys
@@ -79,12 +80,13 @@ class Decoder[
         self,
         token_ids: Int[Array, " suffix_tokens"],
         token_positions: Int[Array, " suffix_tokens"],
-        kv_cache: list[KVCacheLayerSlice],
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"],
+        kv_cache: list[KVCacheLayerSlice] | None = None,
+        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
     ) -> Float[Array, "suffix_tokens token_ids"]:
+        maybe_kv_cache = kv_cache or ([None] * len(self.layers))
         x = self.embedding.embed(token_ids)
         positional_embeddings = self.rope(token_positions)
-        for layer, kv_cache_slice in zip(self.layers, kv_cache, strict=True):
+        for layer, kv_cache_slice in zip(self.layers, maybe_kv_cache, strict=True):
             x = layer(x, positional_embeddings, kv_cache_slice, mask)
         x = self.out_norm(x)
         return vmap(self.embedding.readout, in_axes=0)(x)
