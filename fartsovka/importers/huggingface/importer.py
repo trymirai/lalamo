@@ -15,11 +15,11 @@ from .loader import load_llama
 
 
 class HuggingFaceModel(Enum):
-    LLaMA1b = auto()
+    LLAMA32_1B_INSTRUCT = auto()
 
 
 MODEL_TO_REPO: dict[HuggingFaceModel, str] = {
-    HuggingFaceModel.LLaMA1b: "meta-llama/Llama-3.2-1B-Instruct",
+    HuggingFaceModel.LLAMA32_1B_INSTRUCT: "meta-llama/Llama-3.2-1B-Instruct",
 }
 
 WEIGHTS_FILE_NAME = "model.safetensors"
