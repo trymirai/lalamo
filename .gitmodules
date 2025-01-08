@@ -1,0 +1,3 @@
+[submodule "executorch"]
+	path = executorch
+	url = https://github.com/norpadon/executorch.git

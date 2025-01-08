@@ -1,0 +1,5 @@
+Python coding rules:
+- Assume Python 3.12
+- Always generate type annotations for functions
+- Prefer comprehensions to map and filter expressions
+- All path-like arguments should have type `Path | str`
