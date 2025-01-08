@@ -8,7 +8,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 from .attention import AttentionBase, AttentionFactoryBase
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLPBase, MLPFactoryBase
-from .normalisation import NormalisationBase, NormalisationFactory
+from .normalisation import NormalisationBase, NormalisationFactoryBase
 from .rope import PositionalEmbeddings
 
 __all__ = ["DecoderLayer", "DecoderLayerFactory"]
@@ -33,9 +33,9 @@ class DecoderLayer[
 
     def __init__(
         self,
-        attention_norm_factory: NormalisationFactory[AttentionNormType],
+        attention_norm_factory: NormalisationFactoryBase[AttentionNormType],
         attention_factory: AttentionFactoryBase[AttentionType],
-        mlp_norm_factory: NormalisationFactory[MLPNormType],
+        mlp_norm_factory: NormalisationFactoryBase[MLPNormType],
         mlp_factory: MLPFactoryBase[MLPType],
         model_dim: int,
         hidden_dim: int,
@@ -86,9 +86,9 @@ class DecoderLayerFactory[
     AttentionNormType: NormalisationBase,
     AttentionType: AttentionBase,
 ]:
-    pre_attention_norm_factory: NormalisationFactory[AttentionNormType]
+    pre_attention_norm_factory: NormalisationFactoryBase[AttentionNormType]
     attention_factory: AttentionFactoryBase[AttentionType]
-    pre_mlp_norm_factory: NormalisationFactory[MLPNormType]
+    pre_mlp_norm_factory: NormalisationFactoryBase[MLPNormType]
     mlp_factory: MLPFactoryBase[MLPType]
 
     def __call__(

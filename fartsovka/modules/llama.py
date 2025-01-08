@@ -4,18 +4,38 @@ from jaxtyping import PRNGKeyArray
 from .attention import Attention, AttentionFactory
 from .common import DEFAULT_PRECISION
 from .decoder import Decoder, DecoderFactory
-from .decoder_layer import DecoderLayerFactory
+from .decoder_layer import DecoderLayer, DecoderLayerFactory
 from .embedding import EmbeddingFactory
 from .linear import Linear, LinearFactory
 from .mlp import MLP, MLPFactory
 from .normalisation import RMSNorm, RMSNormFactory
 from .rope import RoPEFactory
 
+__all__ = [
+    "BaselineMLP",
+    "BaselineAttention",
+    "BaselineDecoderLayer",
+    "BaselineLlama",
+    "get_baseline_llama",
+    "get_baseline_llama_factory",
+]
+
+type BaselineMLP = MLP[Linear]
+
+type BaselineAttention = Attention[Linear, Linear]
+
+type BaselineDecoderLayer = DecoderLayer[
+    RMSNorm,
+    BaselineMLP,
+    RMSNorm,
+    BaselineAttention,
+]
+
 type BaselineLlama = Decoder[
     RMSNorm,
-    MLP[Linear],
+    BaselineMLP,
     RMSNorm,
-    Attention[Linear, Linear],
+    BaselineAttention,
 ]
 
 
@@ -24,9 +44,9 @@ def get_baseline_llama_factory(
     accumulation_precision: jnp.dtype = jnp.float32,
 ) -> DecoderFactory[
     RMSNorm,
-    MLP[Linear],
+    BaselineMLP,
     RMSNorm,
-    Attention[Linear, Linear],
+    BaselineAttention,
 ]:
     return DecoderFactory(
         embedding_factory=EmbeddingFactory(precision=precision),

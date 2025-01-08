@@ -1,4 +1,3 @@
-from dataclasses import dataclass
 from enum import Enum, auto
 from pathlib import Path
 
@@ -6,11 +5,13 @@ import huggingface_hub
 import jax
 import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray
+from safetensors.flax import load_file
 
 from fartsovka.modules.common import DEFAULT_PRECISION
 from fartsovka.modules.llama import BaselineLlama, get_baseline_llama
 
-from .huggingface_config import LlamaConfig
+from .config import LlamaConfig
+from .loader import load_llama
 
 
 class HuggingFaceModel(Enum):
@@ -23,12 +24,6 @@ MODEL_TO_REPO: dict[HuggingFaceModel, str] = {
 
 WEIGHTS_FILE_NAME = "model.safetensors"
 CONFIG_FILE_NAME = "config.json"
-
-
-@dataclass
-class DownloadedModel:
-    config_path: Path
-    weights_path: Path
 
 
 def download_weights(model: HuggingFaceModel, output_dir: Path | str | None = None) -> Path:
@@ -49,14 +44,8 @@ def download_config_file(model: HuggingFaceModel, output_dir: Path | str | None 
     return Path(result)
 
 
-def download_model(model: HuggingFaceModel, output_dir: Path | str | None = None) -> DownloadedModel:
-    config_path = download_config_file(model, output_dir)
-    weights_path = download_weights(model, output_dir)
-    return DownloadedModel(config_path=config_path, weights_path=weights_path)
-
-
 def init_model(
-    model: HuggingFaceModel | Path | str,
+    config_path_or_model: str | Path | HuggingFaceModel,
     *,
     key: PRNGKeyArray | None = None,
     precision: jnp.dtype = DEFAULT_PRECISION,
@@ -64,11 +53,11 @@ def init_model(
 ) -> BaselineLlama:
     if key is None:
         key = jax.random.PRNGKey(0)
-    if isinstance(model, HuggingFaceModel):
-        config_file_path = download_config_file(model)
+    if isinstance(config_path_or_model, HuggingFaceModel):
+        config_path = download_config_file(config_path_or_model)
     else:
-        config_file_path = Path(model) / CONFIG_FILE_NAME
-    config = LlamaConfig.from_json(config_file_path)
+        config_path = Path(config_path_or_model)
+    config = LlamaConfig.from_json(config_path)
     return get_baseline_llama(
         num_layers=config.num_hidden_layers,
         vocab_dim=config.vocab_size,
@@ -83,3 +72,22 @@ def init_model(
         precision=precision,
         accumulation_precision=accumulation_precision,
     )
+
+
+def import_model(
+    model: HuggingFaceModel | Path | str,
+    *,
+    key: PRNGKeyArray | None = None,
+    precision: jnp.dtype = DEFAULT_PRECISION,
+    accumulation_precision: jnp.dtype = jnp.float32,
+) -> BaselineLlama:
+    if isinstance(model, HuggingFaceModel):
+        config_path = download_config_file(model)
+        weights_path = download_weights(model)
+    else:
+        config_path = Path(model) / CONFIG_FILE_NAME
+        weights_path = Path(model) / WEIGHTS_FILE_NAME
+
+    result = init_model(config_path, key=key, precision=precision, accumulation_precision=accumulation_precision)
+    weights_dict = load_file(weights_path)
+    return load_llama(result, weights_dict)

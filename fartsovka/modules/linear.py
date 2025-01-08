@@ -9,7 +9,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from .common import DEFAULT_PRECISION
 
-__all__ = ["LinearBase", "LinearFactoryBase"]
+__all__ = ["LinearBase", "LinearFactoryBase", "Linear", "LinearFactory"]
 
 
 class LinearBase(eqx.Module):

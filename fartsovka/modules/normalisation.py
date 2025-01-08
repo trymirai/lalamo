@@ -7,7 +7,7 @@ from jaxtyping import Array, Float
 
 from .common import DEFAULT_PRECISION
 
-__all__ = ["NormalisationBase", "NormalisationFactory"]
+__all__ = ["NormalisationBase", "NormalisationFactoryBase", "RMSNorm", "RMSNormFactory"]
 
 
 class NormalisationBase(eqx.Module):
@@ -19,7 +19,7 @@ class NormalisationBase(eqx.Module):
 
 
 @dataclass
-class NormalisationFactory[NormalisationType: NormalisationBase]:
+class NormalisationFactoryBase[NormalisationType: NormalisationBase]:
     def __call__(self, model_dim: int, eps: float) -> NormalisationType:
         raise NotImplementedError
 
@@ -53,7 +53,7 @@ class RMSNorm(NormalisationBase):
 
 
 @dataclass
-class RMSNormFactory(NormalisationFactory[RMSNorm]):
+class RMSNormFactory(NormalisationFactoryBase[RMSNorm]):
     precision: jnp.dtype = dataclass_field(default=DEFAULT_PRECISION)
     accumulation_precision: jnp.dtype = dataclass_field(default=jnp.float32)
 

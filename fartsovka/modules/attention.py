@@ -11,7 +11,7 @@ from .kv_cache import KVCacheLayerSlice
 from .linear import LinearBase, LinearFactoryBase
 from .rope import PositionalEmbeddings
 
-__all__ = ["Attention", "AttentionFactory"]
+__all__ = ["Attention", "AttentionFactory", "AttentionBase", "AttentionFactoryBase"]
 
 
 class AttentionBase(eqx.Module):
