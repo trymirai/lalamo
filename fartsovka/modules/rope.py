@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
 import equinox as eqx
-from einops import einsum
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
