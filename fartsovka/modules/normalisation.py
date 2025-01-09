@@ -3,9 +3,9 @@ from dataclasses import field as dataclass_field
 
 import equinox as eqx
 from jax import numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, Scalar
 
-from .common import DEFAULT_PRECISION
+from .common import DEFAULT_PRECISION, DType
 
 __all__ = ["NormalisationBase", "NormalisationFactoryBase", "RMSNorm", "RMSNormFactory"]
 
@@ -27,20 +27,26 @@ class NormalisationFactoryBase[NormalisationType: NormalisationBase]:
 def _compute_adjusted_variance(
     x: Float[Array, " channels"],
     eps: float,
-    accumulation_precision: jnp.dtype,
-) -> Float[Array, " channels"]:
+    accumulation_precision: DType,
+) -> Float[Scalar, ""]:
     upcasted_x = x.astype(accumulation_precision)
-    result = jnp.mean(upcasted_x**2, axis=-1, keepdims=True) + eps
+    result = jnp.mean(upcasted_x**2) + eps
     return result.astype(x.dtype)
 
 
 class RMSNorm(NormalisationBase):
     scale: Float[Array, " channels"]
 
-    precision: jnp.dtype = eqx.field(static=True, default=DEFAULT_PRECISION)
-    accumulation_precision: jnp.dtype = eqx.field(static=True, default=jnp.float32)
+    precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
+    accumulation_precision: DType = eqx.field(static=True, default=jnp.float32)
 
-    def __init__(self, model_dim: int, eps: float, precision: jnp.dtype, accumulation_precision: jnp.dtype) -> None:
+    def __init__(
+        self,
+        model_dim: int,
+        eps: float,
+        precision: DType,
+        accumulation_precision: DType,
+    ) -> None:
         self.model_dim = model_dim
         self.eps = eps
         self.precision = precision
@@ -54,8 +60,8 @@ class RMSNorm(NormalisationBase):
 
 @dataclass
 class RMSNormFactory(NormalisationFactoryBase[RMSNorm]):
-    precision: jnp.dtype = dataclass_field(default=DEFAULT_PRECISION)
-    accumulation_precision: jnp.dtype = dataclass_field(default=jnp.float32)
+    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    accumulation_precision: DType = dataclass_field(default=jnp.float32)
 
     def __call__(self, model_dim: int, eps: float) -> RMSNorm:
         return RMSNorm(model_dim, eps, self.precision, self.accumulation_precision)

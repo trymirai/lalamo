@@ -7,11 +7,14 @@ import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray
 from safetensors.flax import load_file
 
-from fartsovka.modules.common import DEFAULT_PRECISION
+from fartsovka.modules.common import DEFAULT_PRECISION, DType
 from fartsovka.modules.llama import BaselineLlama, get_baseline_llama
+from fartsovka.modules.rope import RoPEParams
 
 from .config import LlamaConfig
 from .loader import load_llama
+
+__all__ = ["HuggingFaceModel", "import_model"]
 
 
 class HuggingFaceModel(Enum):
@@ -48,8 +51,8 @@ def init_model(
     config_path_or_model: str | Path | HuggingFaceModel,
     *,
     key: PRNGKeyArray | None = None,
-    precision: jnp.dtype = DEFAULT_PRECISION,
-    accumulation_precision: jnp.dtype = jnp.float32,
+    precision: DType = DEFAULT_PRECISION,
+    accumulation_precision: DType = jnp.float32,
 ) -> BaselineLlama:
     if key is None:
         key = jax.random.PRNGKey(0)
@@ -66,6 +69,14 @@ def init_model(
         num_heads=config.num_attention_heads,
         num_groups=config.num_key_value_heads,
         head_dim=config.head_dim,
+        rope_params=RoPEParams(
+            theta=config.rope_theta,
+            use_scaling=True,
+            scaling_factor=config.rope_scaling.factor,
+            original_context_length=config.rope_scaling.original_max_position_embeddings,
+            low_frequency_factor=config.rope_scaling.low_freq_factor,
+            high_frequency_factor=config.rope_scaling.high_freq_factor,
+        ),
         eps=config.rms_norm_eps,
         max_sequence_length=config.max_position_embeddings,
         key=key,
@@ -78,8 +89,8 @@ def import_model(
     model: HuggingFaceModel | Path | str,
     *,
     key: PRNGKeyArray | None = None,
-    precision: jnp.dtype = DEFAULT_PRECISION,
-    accumulation_precision: jnp.dtype = jnp.float32,
+    precision: DType = DEFAULT_PRECISION,
+    accumulation_precision: DType = jnp.float32,
 ) -> BaselineLlama:
     if isinstance(model, HuggingFaceModel):
         config_path = download_config_file(model)

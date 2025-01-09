@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -12,6 +13,11 @@ from .normalisation import NormalisationBase, NormalisationFactoryBase
 from .rope import PositionalEmbeddings
 
 __all__ = ["DecoderLayer", "DecoderLayerFactory"]
+
+
+class DecoderLayerOutput(NamedTuple):
+    output: Float[Array, "suffix_tokens channels"]
+    kv_cache: KVCacheLayerSlice | None
 
 
 class DecoderLayer[
@@ -33,6 +39,7 @@ class DecoderLayer[
 
     def __init__(
         self,
+        *,
         attention_norm_factory: NormalisationFactoryBase[AttentionNormType],
         attention_factory: AttentionFactoryBase[AttentionType],
         mlp_norm_factory: NormalisationFactoryBase[MLPNormType],
@@ -43,7 +50,6 @@ class DecoderLayer[
         num_groups: int,
         head_dim: int,
         eps: float,
-        *,
         key: PRNGKeyArray,
     ) -> None:
         self.model_dim = model_dim
@@ -65,18 +71,20 @@ class DecoderLayer[
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
-    ) -> Float[Array, "suffix_tokens channels"]:
+        return_updated_kv_cache: bool = False,
+    ) -> DecoderLayerOutput:
         residual = x
         x = vmap(self.attention_norm, in_axes=0)(x)
-        x = self.attention(x, positional_embeddings, kv_cache, mask)
-        x = x + residual
+        attention_output = self.attention(x, positional_embeddings, kv_cache, mask, return_updated_kv_cache)
+        x = x + attention_output.attention_output
+        updated_kv_cache = attention_output.kv_cache
 
         residual = x
         x = vmap(self.mlp_norm, in_axes=0)(x)
         x = vmap(self.mlp, in_axes=0)(x)
         x = x + residual
 
-        return x
+        return DecoderLayerOutput(output=x, kv_cache=updated_kv_cache)
 
 
 @dataclass
@@ -86,32 +94,32 @@ class DecoderLayerFactory[
     AttentionNormType: NormalisationBase,
     AttentionType: AttentionBase,
 ]:
-    pre_attention_norm_factory: NormalisationFactoryBase[AttentionNormType]
+    attention_norm_factory: NormalisationFactoryBase[AttentionNormType]
     attention_factory: AttentionFactoryBase[AttentionType]
-    pre_mlp_norm_factory: NormalisationFactoryBase[MLPNormType]
+    mlp_norm_factory: NormalisationFactoryBase[MLPNormType]
     mlp_factory: MLPFactoryBase[MLPType]
 
     def __call__(
         self,
+        *,
         model_dim: int,
         hidden_dim: int,
         num_heads: int,
         num_groups: int,
         head_dim: int,
         eps: float,
-        *,
         key: PRNGKeyArray,
     ) -> DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
         return DecoderLayer(
-            self.pre_attention_norm_factory,
-            self.attention_factory,
-            self.pre_mlp_norm_factory,
-            self.mlp_factory,
-            model_dim,
-            hidden_dim,
-            num_heads,
-            num_groups,
-            head_dim,
+            attention_norm_factory=self.attention_norm_factory,
+            attention_factory=self.attention_factory,
+            mlp_norm_factory=self.mlp_norm_factory,
+            mlp_factory=self.mlp_factory,
+            model_dim=model_dim,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
             eps=eps,
             key=key,
         )

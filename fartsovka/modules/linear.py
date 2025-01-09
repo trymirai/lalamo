@@ -4,10 +4,9 @@ from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax
-from jax import numpy as jnp
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from .common import DEFAULT_PRECISION
+from .common import DEFAULT_PRECISION, DType
 
 __all__ = ["LinearBase", "LinearFactoryBase", "Linear", "LinearFactory"]
 
@@ -29,13 +28,13 @@ class LinearFactoryBase[LinearType: LinearBase]:
 class Linear(LinearBase):
     weights: Float[Array, "out_channels in_channels"]
 
-    precision: jnp.dtype = eqx.field(static=True, default=DEFAULT_PRECISION)
+    precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
 
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
-        precision: jnp.dtype = DEFAULT_PRECISION,
+        precision: DType = DEFAULT_PRECISION,
         *,
         key: PRNGKeyArray,
     ) -> None:
@@ -57,7 +56,7 @@ class Linear(LinearBase):
 
 @dataclass
 class LinearFactory(LinearFactoryBase[Linear]):
-    precision: jnp.dtype = dataclass_field(default=DEFAULT_PRECISION)
+    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
 
     def __call__(self, input_dim: int, output_dim: int, *, key: PRNGKeyArray) -> Linear:
         return Linear(input_dim, output_dim, precision=self.precision, key=key)

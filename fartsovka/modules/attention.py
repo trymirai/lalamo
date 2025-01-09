@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -12,6 +13,11 @@ from .linear import LinearBase, LinearFactoryBase
 from .rope import PositionalEmbeddings
 
 __all__ = ["Attention", "AttentionFactory", "AttentionBase", "AttentionFactoryBase"]
+
+
+class AttentionOutput(NamedTuple):
+    attention_output: Float[Array, "suffix_tokens channels"]
+    kv_cache: KVCacheLayerSlice | None = None
 
 
 class AttentionBase(eqx.Module):
@@ -30,7 +36,8 @@ class AttentionBase(eqx.Module):
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
-    ) -> Float[Array, "suffix_tokens channels"]:
+        return_updated_kv_cache: bool = False,
+    ) -> AttentionOutput:
         raise NotImplementedError
 
 
@@ -70,8 +77,9 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         x: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
-    ) -> Float[Array, "suffix_tokens channels"]:
+        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
+        return_updated_kv_cache: bool = False,
+    ) -> AttentionOutput:
         qkv = vmap(self.qkv_projection, in_axes=0)(x)
         slice_indices = [
             self.num_heads * self.head_dim,
@@ -116,7 +124,16 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
             heads=self.num_heads,
             head_channels=self.head_dim,
         )
-        return vmap(self.out_projection, in_axes=0)(attention_output)
+        result = vmap(self.out_projection, in_axes=0)(attention_output)
+
+        if return_updated_kv_cache:
+            updated_kv_cache = KVCacheLayerSlice(keys=all_keys, values=all_values)
+        else:
+            updated_kv_cache = None
+        return AttentionOutput(
+            attention_output=result,
+            kv_cache=updated_kv_cache,
+        )
 
 
 @dataclass

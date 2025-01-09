@@ -12,6 +12,8 @@ from fartsovka.modules.llama import (
 )
 from fartsovka.modules.normalisation import RMSNorm
 
+__all__ = ["load_llama"]
+
 
 def load_linear(module: Linear, weights_dict: dict[str, Array], name_prefix: str) -> Linear:
     weights: Float[Array, "out_channels in_channels"] = weights_dict[f"{name_prefix}.weight"]

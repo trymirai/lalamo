@@ -4,10 +4,9 @@ from dataclasses import field as dataclass_field
 import equinox as eqx
 import jax
 from jax import nn
-from jax import numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from .common import DEFAULT_PRECISION
+from .common import DEFAULT_PRECISION, DType
 
 __all__ = ["Embedding", "EmbeddingFactory"]
 
@@ -18,9 +17,9 @@ class Embedding(eqx.Module):
 
     weights: Float[Array, "token_ids channels"]
 
-    precision: jnp.dtype = eqx.field(static=True, default=DEFAULT_PRECISION)
+    precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
 
-    def __init__(self, vocab_dim: int, model_dim: int, precision: jnp.dtype, *, key: PRNGKeyArray) -> None:
+    def __init__(self, vocab_dim: int, model_dim: int, precision: DType, *, key: PRNGKeyArray) -> None:
         self.vocab_dim = vocab_dim
         self.model_dim = model_dim
         self.precision = precision
@@ -35,7 +34,7 @@ class Embedding(eqx.Module):
 
 @dataclass
 class EmbeddingFactory:
-    precision: jnp.dtype = dataclass_field(default=DEFAULT_PRECISION)
+    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
 
     def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> Embedding:
         return Embedding(vocab_dim, model_dim, precision=self.precision, key=key)

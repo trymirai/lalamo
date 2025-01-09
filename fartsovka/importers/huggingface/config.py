@@ -1,9 +1,11 @@
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Literal, Self
+from typing import ClassVar, Literal
 
 import cattrs
+
+__all__ = ["RopeScalingConfig", "LlamaConfig"]
 
 
 @dataclass
@@ -47,7 +49,7 @@ class LlamaConfig:
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
+    def from_json(cls, json_path: Path | str) -> "LlamaConfig":
         json_path = Path(json_path)
         with open(json_path) as f:
             config = json.load(f)

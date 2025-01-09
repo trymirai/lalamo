@@ -2,14 +2,14 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
 from .attention import Attention, AttentionFactory
-from .common import DEFAULT_PRECISION
+from .common import DEFAULT_PRECISION, DType
 from .decoder import Decoder, DecoderFactory
 from .decoder_layer import DecoderLayer, DecoderLayerFactory
 from .embedding import EmbeddingFactory
 from .linear import Linear, LinearFactory
 from .mlp import MLP, MLPFactory
 from .normalisation import RMSNorm, RMSNormFactory
-from .rope import RoPEFactory
+from .rope import RoPEFactory, RoPEParams
 
 __all__ = [
     "BaselineMLP",
@@ -40,8 +40,8 @@ type BaselineLlama = Decoder[
 
 
 def get_baseline_llama_factory(
-    precision: jnp.dtype = DEFAULT_PRECISION,
-    accumulation_precision: jnp.dtype = jnp.float32,
+    precision: DType = DEFAULT_PRECISION,
+    accumulation_precision: DType = jnp.float32,
 ) -> DecoderFactory[
     RMSNorm,
     BaselineMLP,
@@ -52,7 +52,7 @@ def get_baseline_llama_factory(
         embedding_factory=EmbeddingFactory(precision=precision),
         rope_factory=RoPEFactory(precision=precision),
         layer_factory=DecoderLayerFactory(
-            pre_attention_norm_factory=RMSNormFactory(
+            attention_norm_factory=RMSNormFactory(
                 precision=precision,
                 accumulation_precision=accumulation_precision,
             ),
@@ -60,7 +60,7 @@ def get_baseline_llama_factory(
                 qkv_projection_factory=LinearFactory(precision=precision),
                 out_projection_factory=LinearFactory(precision=precision),
             ),
-            pre_mlp_norm_factory=RMSNormFactory(
+            mlp_norm_factory=RMSNormFactory(
                 precision=precision,
                 accumulation_precision=accumulation_precision,
             ),
@@ -76,6 +76,7 @@ def get_baseline_llama_factory(
 
 
 def get_baseline_llama(
+    *,
     num_layers: int,
     vocab_dim: int,
     model_dim: int,
@@ -83,26 +84,27 @@ def get_baseline_llama(
     num_heads: int,
     num_groups: int,
     head_dim: int,
-    eps: float,
     max_sequence_length: int,
-    *,
+    rope_params: RoPEParams,
+    eps: float,
     key: PRNGKeyArray,
-    precision: jnp.dtype = DEFAULT_PRECISION,
-    accumulation_precision: jnp.dtype = jnp.float32,
+    precision: DType = DEFAULT_PRECISION,
+    accumulation_precision: DType = jnp.float32,
 ) -> BaselineLlama:
     factory = get_baseline_llama_factory(
         precision=precision,
         accumulation_precision=accumulation_precision,
     )
     return factory(
-        num_layers,
-        vocab_dim,
-        model_dim,
-        hidden_dim,
-        num_heads,
-        num_groups,
-        head_dim,
-        eps,
-        max_sequence_length,
+        num_layers=num_layers,
+        vocab_dim=vocab_dim,
+        model_dim=model_dim,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        num_groups=num_groups,
+        head_dim=head_dim,
+        max_sequence_length=max_sequence_length,
+        rope_params=rope_params,
+        eps=eps,
         key=key,
     )
