@@ -29,7 +29,7 @@ class Embedding(eqx.Module):
         return self.weights[x]
 
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
-        return nn.log_softmax(self.weights @ x)
+        return self.weights @ x
 
 
 @dataclass

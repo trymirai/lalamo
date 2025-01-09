@@ -70,19 +70,18 @@ class DecoderLayer[
         x: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
+        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> DecoderLayerOutput:
         residual = x
         x = vmap(self.attention_norm, in_axes=0)(x)
         attention_output = self.attention(x, positional_embeddings, kv_cache, mask, return_updated_kv_cache)
-        x = x + attention_output.attention_output
+        x = residual + attention_output.attention_output
         updated_kv_cache = attention_output.kv_cache
 
         residual = x
         x = vmap(self.mlp_norm, in_axes=0)(x)
-        x = vmap(self.mlp, in_axes=0)(x)
-        x = x + residual
+        x = residual + vmap(self.mlp, in_axes=0)(x)
 
         return DecoderLayerOutput(output=x, kv_cache=updated_kv_cache)
 

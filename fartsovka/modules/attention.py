@@ -35,7 +35,7 @@ class AttentionBase(eqx.Module):
         x: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
+        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> AttentionOutput:
         raise NotImplementedError

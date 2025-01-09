@@ -98,7 +98,7 @@ class Decoder[
         token_ids: Int[Array, " suffix_tokens"],
         token_positions: Int[Array, " suffix_tokens"],
         kv_cache: list[KVCacheLayerSlice] | None = None,
-        mask: Bool[Array, "suffix_tokens prefix_tokens+suffix_tokens"] | None = None,
+        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> DecoderOutput:
         maybe_kv_cache = kv_cache or ([None] * len(self.layers))
@@ -115,7 +115,7 @@ class Decoder[
             )
             x = decoder_layer_output.output
             updated_kv_cache.append(decoder_layer_output.kv_cache)
-        x = self.out_norm(x)
+        x = vmap(self.out_norm, in_axes=0)(x)
         result = vmap(self.embedding.readout, in_axes=0)(x)
         return DecoderOutput(output=result, kv_cache=updated_kv_cache or None)
 
