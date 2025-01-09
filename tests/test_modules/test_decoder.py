@@ -3,7 +3,6 @@ import torch
 import transformers
 from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
-from transformers.models.llama.modeling_llama import LlamaModel
 
 from fartsovka.modules.llama import BaselineLlama
 

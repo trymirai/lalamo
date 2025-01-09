@@ -3,7 +3,6 @@ from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax
-from jax import nn
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from .common import DEFAULT_PRECISION, DType
