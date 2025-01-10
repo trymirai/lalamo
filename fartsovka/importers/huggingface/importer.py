@@ -7,8 +7,8 @@ import jax.numpy as jnp
 from jaxtyping import PRNGKeyArray
 from safetensors.flax import load_file
 
-from fartsovka.modules.common import DEFAULT_PRECISION, DType
-from fartsovka.modules.llama import BaselineLlama, get_baseline_llama
+from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.models.baseline_llama import BaselineLlama, get_baseline_llama
 from fartsovka.modules.rope import RoPEParams
 
 from .config import LlamaConfig

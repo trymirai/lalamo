@@ -9,7 +9,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 from .attention import AttentionBase, AttentionFactoryBase
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLPBase, MLPFactoryBase
-from .normalisation import NormalisationBase, NormalisationFactoryBase
+from .normalization import NormalizationBase, NormalizationFactoryBase
 from .rope import PositionalEmbeddings
 
 __all__ = ["DecoderLayer", "DecoderLayerFactory"]
@@ -21,9 +21,9 @@ class DecoderLayerOutput(NamedTuple):
 
 
 class DecoderLayer[
-    MLPNormType: NormalisationBase,
+    MLPNormType: NormalizationBase,
     MLPType: MLPBase,
-    AttentionNormType: NormalisationBase,
+    AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
 ](eqx.Module):
     model_dim: int = eqx.field(static=True)
@@ -40,9 +40,9 @@ class DecoderLayer[
     def __init__(
         self,
         *,
-        attention_norm_factory: NormalisationFactoryBase[AttentionNormType],
+        attention_norm_factory: NormalizationFactoryBase[AttentionNormType],
         attention_factory: AttentionFactoryBase[AttentionType],
-        mlp_norm_factory: NormalisationFactoryBase[MLPNormType],
+        mlp_norm_factory: NormalizationFactoryBase[MLPNormType],
         mlp_factory: MLPFactoryBase[MLPType],
         model_dim: int,
         hidden_dim: int,
@@ -88,14 +88,14 @@ class DecoderLayer[
 
 @dataclass
 class DecoderLayerFactory[
-    MLPNormType: NormalisationBase,
+    MLPNormType: NormalizationBase,
     MLPType: MLPBase,
-    AttentionNormType: NormalisationBase,
+    AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
 ]:
-    attention_norm_factory: NormalisationFactoryBase[AttentionNormType]
+    attention_norm_factory: NormalizationFactoryBase[AttentionNormType]
     attention_factory: AttentionFactoryBase[AttentionType]
-    mlp_norm_factory: NormalisationFactoryBase[MLPNormType]
+    mlp_norm_factory: NormalizationFactoryBase[MLPNormType]
     mlp_factory: MLPFactoryBase[MLPType]
 
     def __call__(

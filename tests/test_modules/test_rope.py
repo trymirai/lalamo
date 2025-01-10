@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import transformers
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
-from fartsovka.modules.llama import BaselineLlama
+from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.modules.rope import RoPE, RoPEParams
 
 from .common import assert_close, checkify_forward, from_torch, to_torch

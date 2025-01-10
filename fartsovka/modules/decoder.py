@@ -8,13 +8,13 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from .attention import AttentionBase
 from .decoder_layer import DecoderLayer, DecoderLayerFactory
-from .embedding import Embedding, EmbeddingFactory
+from .embedding import EmbeddingBase, EmbeddingFactoryBase
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLPBase
-from .normalisation import NormalisationBase, RMSNorm, RMSNormFactory
+from .normalization import NormalizationBase, RMSNorm, RMSNormFactory
 from .rope import RoPE, RoPEFactory, RoPEParams
 
-__all__ = ["DecoderLayer", "DecoderLayerFactory"]
+__all__ = ["Decoder", "DecoderFactory"]
 
 
 class DecoderOutput(NamedTuple):
@@ -23,9 +23,10 @@ class DecoderOutput(NamedTuple):
 
 
 class Decoder[
-    MLPNormType: NormalisationBase,
+    EmbeddingType: EmbeddingBase,
+    MLPNormType: NormalizationBase,
     MLPType: MLPBase,
-    AttentionNormType: NormalisationBase,
+    AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
 ](eqx.Module):
     num_layers: int = eqx.field(static=True)
@@ -39,7 +40,7 @@ class Decoder[
     rope_params: RoPEParams = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
-    embedding: Embedding
+    embedding: EmbeddingType
     rope: RoPE
     layers: list[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]
     out_norm: RMSNorm
@@ -48,7 +49,7 @@ class Decoder[
         self,
         *,
         num_layers: int,
-        embedding_factory: EmbeddingFactory,
+        embedding_factory: EmbeddingFactoryBase[EmbeddingType],
         rope_factory: RoPEFactory,
         layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType],
         out_norm_factory: RMSNormFactory,
@@ -122,12 +123,13 @@ class Decoder[
 
 @dataclass
 class DecoderFactory[
-    MLPNormType: NormalisationBase,
+    EmbeddingType: EmbeddingBase,
+    MLPNormType: NormalizationBase,
     MLPType: MLPBase,
-    AttentionNormType: NormalisationBase,
+    AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
 ]:
-    embedding_factory: EmbeddingFactory
+    embedding_factory: EmbeddingFactoryBase[EmbeddingType]
     rope_factory: RoPEFactory
     layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType]
     out_norm_factory: RMSNormFactory
@@ -146,7 +148,7 @@ class DecoderFactory[
         rope_params: RoPEParams,
         eps: float,
         key: PRNGKeyArray,
-    ) -> Decoder[MLPNormType, MLPType, AttentionNormType, AttentionType]:
+    ) -> Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType]:
         return Decoder(
             num_layers=num_layers,
             embedding_factory=self.embedding_factory,

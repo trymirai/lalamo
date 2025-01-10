@@ -5,7 +5,7 @@ import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
-from .common import DEFAULT_PRECISION, DType
+from fartsovka.common import DEFAULT_PRECISION, DType
 
 __all__ = ["PositionalEmbeddings", "RoPE", "RoPEParams", "RoPEFactory"]
 

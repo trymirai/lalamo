@@ -4,7 +4,7 @@ import transformers
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.importers.huggingface.importer import HuggingFaceModel, import_model
-from fartsovka.modules.llama import BaselineLlama
+from fartsovka.models.baseline_llama import BaselineLlama
 
 RANDOM_SEED = 42
 

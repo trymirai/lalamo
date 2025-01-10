@@ -1,15 +1,15 @@
 from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
-from .attention import Attention, AttentionFactory
-from .common import DEFAULT_PRECISION, DType
-from .decoder import Decoder, DecoderFactory
-from .decoder_layer import DecoderLayer, DecoderLayerFactory
-from .embedding import EmbeddingFactory
-from .linear import Linear, LinearFactory
-from .mlp import MLP, MLPFactory
-from .normalisation import RMSNorm, RMSNormFactory
-from .rope import RoPEFactory, RoPEParams
+from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.modules.attention import Attention, AttentionFactory
+from fartsovka.modules.decoder import Decoder, DecoderFactory
+from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerFactory
+from fartsovka.modules.embedding import Embedding, EmbeddingFactory
+from fartsovka.modules.linear import Linear, LinearFactory
+from fartsovka.modules.mlp import MLP, MLPFactory
+from fartsovka.modules.normalization import RMSNorm, RMSNormFactory
+from fartsovka.modules.rope import RoPEFactory, RoPEParams
 
 __all__ = [
     "BaselineMLP",
@@ -32,6 +32,7 @@ type BaselineDecoderLayer = DecoderLayer[
 ]
 
 type BaselineLlama = Decoder[
+    Embedding,
     RMSNorm,
     BaselineMLP,
     RMSNorm,
@@ -43,6 +44,7 @@ def get_baseline_llama_factory(
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
 ) -> DecoderFactory[
+    Embedding,
     RMSNorm,
     BaselineMLP,
     RMSNorm,

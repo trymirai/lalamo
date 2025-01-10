@@ -4,7 +4,7 @@ import transformers
 from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.modules.llama import BaselineLlama
+from fartsovka.models.baseline_llama import BaselineLlama
 
 from .common import assert_close, checkify_forward, from_torch, to_torch
 

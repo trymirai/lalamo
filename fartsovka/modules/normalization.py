@@ -5,12 +5,12 @@ import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Scalar
 
-from .common import DEFAULT_PRECISION, DType
+from fartsovka.common import DEFAULT_PRECISION, DType
 
-__all__ = ["NormalisationBase", "NormalisationFactoryBase", "RMSNorm", "RMSNormFactory"]
+__all__ = ["NormalizationBase", "NormalizationFactoryBase", "RMSNorm", "RMSNormFactory"]
 
 
-class NormalisationBase(eqx.Module):
+class NormalizationBase(eqx.Module):
     model_dim: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
@@ -19,8 +19,8 @@ class NormalisationBase(eqx.Module):
 
 
 @dataclass
-class NormalisationFactoryBase[NormalisationType: NormalisationBase]:
-    def __call__(self, model_dim: int, eps: float) -> NormalisationType:
+class NormalizationFactoryBase[NormalizationType: NormalizationBase]:
+    def __call__(self, model_dim: int, eps: float) -> NormalizationType:
         raise NotImplementedError
 
 
@@ -34,7 +34,7 @@ def _compute_adjusted_variance(
     return result.astype(x.dtype)
 
 
-class RMSNorm(NormalisationBase):
+class RMSNorm(NormalizationBase):
     scale: Float[Array, " channels"]
 
     precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
@@ -59,7 +59,7 @@ class RMSNorm(NormalisationBase):
 
 
 @dataclass
-class RMSNormFactory(NormalisationFactoryBase[RMSNorm]):
+class RMSNormFactory(NormalizationFactoryBase[RMSNorm]):
     precision: DType = dataclass_field(default=DEFAULT_PRECISION)
     accumulation_precision: DType = dataclass_field(default=jnp.float32)
 

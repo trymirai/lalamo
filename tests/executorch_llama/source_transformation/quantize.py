@@ -94,7 +94,7 @@ class Int8DynActInt8WeightLinear(nn.Module):
         self.precision = precision
 
         if dtype is not None:
-            raise ValueError("Please specify 'precision' instead of 'dtype'")  # noqa: EM101
+            raise ValueError("Please specify 'precision' instead of 'dtype'")
 
         # currently storing unpacked int8 weights
         self.register_buffer(

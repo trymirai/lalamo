@@ -550,7 +550,7 @@ class Transformer(nn.Module):
         h: torch.FloatTensor | None = None,  # embeddings
     ) -> torch.Tensor:
         if (tokens is None) ^ (h is not None):
-            raise ValueError("You cannot specify both tokens and h at the same time, and must specify either one")  # noqa: EM101
+            raise ValueError("You cannot specify both tokens and h at the same time, and must specify either one")
         if tokens is not None and h is None:
             h = self.tok_embeddings(tokens)
         seqlen = h.shape[1]  # type: ignore
