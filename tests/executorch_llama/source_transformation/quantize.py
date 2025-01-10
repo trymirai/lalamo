@@ -128,6 +128,28 @@ class Int8DynActInt8WeightLinear(nn.Module):
         )
 
 
+def embedding_byte(
+    weight: torch.Tensor,
+    weight_scales: torch.Tensor,
+    weight_zero_points: torch.Tensor | None,
+    weight_quant_min: int,
+    weight_quant_max: int,
+    indices: torch.Tensor,
+) -> torch.Tensor:
+    group_size = weight.size(1) // (weight_scales.size(1) if weight_scales.dim() == 2 else 1)
+    weight = torch.ops.quantized_decomposed.dequantize_per_channel_group.default(  # type: ignore
+        weight,
+        weight_scales,
+        weight_zero_points,
+        weight_quant_min,
+        weight_quant_max,
+        weight.dtype,
+        group_size,
+        weight_scales.dtype,
+    )
+    return torch.ops.aten.embedding.default(weight, indices)  # type: ignore
+
+
 class QuantizedGroupEmbedding(nn.Module):
     def __init__(
         self,
@@ -182,15 +204,14 @@ class QuantizedGroupEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         if not self.packed:  # 8bit
-            return torch.ops.quantized_decomposed.embedding_byte.dtype(  # type: ignore
+            return embedding_byte(  # type: ignore
                 self.weight,
                 self.scales,
                 None,
                 0,
                 0,
                 indices,
-                dtype=self.dtype,
-            )
+            ).to(self.dtype)
         # packed
         if self.bitwidth == 2:
             return torch.ops.quantized_decomposed.embedding_2bit.dtype(  # type: ignore

@@ -59,12 +59,12 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         qkv_key, out_key = jax.random.split(key)
         self.qkv_projection = qkv_projection_factory(
             model_dim,
-            (num_heads + 2 * num_groups) * head_dim,
+            (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
             key=qkv_key,
         )
         self.out_projection = out_projection_factory(
             num_heads * head_dim,
-            model_dim,
+            (model_dim,),
             key=out_key,
         )
         self.model_dim = model_dim
@@ -80,13 +80,7 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> AttentionOutput:
-        qkv = vmap(self.qkv_projection, in_axes=0)(x)
-        slice_indices = [
-            self.num_heads * self.head_dim,
-            self.num_heads * self.head_dim + self.num_groups * self.head_dim,
-        ]
-
-        queries, keys, values = jnp.split(qkv, slice_indices, axis=-1)
+        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(x)
         queries = rearrange(
             queries,
             "tokens (heads head_channels) -> tokens heads head_channels",
@@ -124,7 +118,7 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
             heads=self.num_heads,
             head_channels=self.head_dim,
         )
-        result = vmap(self.out_projection, in_axes=0)(attention_output)
+        (result,) = vmap(self.out_projection, in_axes=0)(attention_output)
 
         if return_updated_kv_cache:
             updated_kv_cache = KVCacheLayerSlice(keys=all_keys, values=all_values)

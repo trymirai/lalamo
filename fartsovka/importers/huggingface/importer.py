@@ -88,7 +88,6 @@ def init_model(
 def import_model(
     model: HuggingFaceModel | Path | str,
     *,
-    key: PRNGKeyArray | None = None,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
 ) -> BaselineLlama:
@@ -99,6 +98,6 @@ def import_model(
         config_path = Path(model) / CONFIG_FILE_NAME
         weights_path = Path(model) / WEIGHTS_FILE_NAME
 
-    result = init_model(config_path, key=key, precision=precision, accumulation_precision=accumulation_precision)
+    result = init_model(config_path, precision=precision, accumulation_precision=accumulation_precision)
     weights_dict = load_file(weights_path)
     return load_llama(result, weights_dict)

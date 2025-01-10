@@ -1,4 +1,5 @@
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 
@@ -25,69 +26,85 @@ __all__ = [
 
 class LinearBase(eqx.Module):
     input_dim: int = eqx.field(static=True)
-    output_dim: int = eqx.field(static=True)
+    output_dims: tuple[int, ...] = eqx.field(static=True)
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
+    @property
+    def num_outputs(self) -> int:
+        return len(self.output_dims)
+
+    @classmethod
+    def _split_points(cls, output_dims: Sequence[int]) -> tuple[int, ...]:
+        result = []
+        last_split_point = 0
+        for dim in output_dims[:-1]:
+            last_split_point += dim
+            result.append(last_split_point)
+        return tuple(result)
+
+    def __call__(
+        self,
+        x: Float[Array, " in_channels"],
+    ) -> tuple[Float[Array, " out_channels"], ...]:
         raise NotImplementedError
 
 
 @dataclass
 class LinearFactoryBase[LinearType: LinearBase]:
-    def __call__(self, input_dim: int, output_dim: int, *, key: PRNGKeyArray) -> LinearType:
+    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> LinearType:
         raise NotImplementedError
 
 
 class Linear(LinearBase):
-    weights: Float[Array, "out_channels in_channels"]
+    weights: Float[Array, "total_out_channels in_channels"]
 
     precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
 
     def __init__(
         self,
         input_dim: int,
-        output_dim: int,
+        output_dims: tuple[int, ...],
         precision: DType = DEFAULT_PRECISION,
         *,
         key: PRNGKeyArray,
     ) -> None:
         self.input_dim = input_dim
-        self.output_dim = output_dim
+        self.output_dims = output_dims
         self.precision = precision
         max_abs_value = 1 / math.sqrt(input_dim)
         self.weights = jax.random.uniform(
             key,
-            (output_dim, input_dim),
+            (sum(output_dims), input_dim),
             minval=-max_abs_value,
             maxval=max_abs_value,
             dtype=self.precision,
         )
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
-        return self.weights @ x
+    def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        return tuple(jnp.split(self.weights @ x, self._split_points(self.output_dims)))
 
 
 @dataclass
 class LinearFactory(LinearFactoryBase[Linear]):
     precision: DType = dataclass_field(default=DEFAULT_PRECISION)
 
-    def __call__(self, input_dim: int, output_dim: int, *, key: PRNGKeyArray) -> Linear:
-        return Linear(input_dim, output_dim, precision=self.precision, key=key)
+    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> Linear:
+        return Linear(input_dim, output_dims, precision=self.precision, key=key)
 
 
 class GroupQuantizedLinear(LinearBase):
-    num_groups: int = eqx.field(static=True)
+    group_size: int = eqx.field(static=True)
     mode: QuantizationMode = eqx.field(static=True)
 
     @property
-    def int_weights(self) -> Int[Array, "out_channels groups in_channels"]:
+    def int_weights(self) -> Int[Array, "out_channels (groups in_channels)"]:
         return quantize(self.weights, self.mode).astype(self.mode.dtype)
 
     @property
-    def group_size(self) -> int:
-        return self.output_dim // self.num_groups
+    def num_groups(self) -> int:
+        return self.input_dim // self.group_size
 
-    weights: Float[Array, "out_channels in_channels"]
-    scales: Float[Array, "out_channels groups"]
+    weights: Float[Array, "total_out_channels in_channels"]
+    scales: Float[Array, "total_out_channels groups"]
 
     activation_precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
 
@@ -95,57 +112,60 @@ class GroupQuantizedLinear(LinearBase):
         self,
         *,
         input_dim: int,
-        output_dim: int,
-        num_groups: int,
+        output_dims: tuple[int, ...],
+        group_size: int,
         mode: QuantizationMode,
         activation_precision: DType,
         key: PRNGKeyArray,
     ) -> None:
+        if input_dim % group_size != 0:
+            raise ValueError(f"input_dim {input_dim} must be divisible by group_size {group_size}")
         self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.num_groups = num_groups
+        self.output_dims = output_dims
+        self.group_size = group_size
         self.mode = mode
         self.activation_precision = activation_precision
         min_val, max_val = mode.range
         self.weights = jax.random.uniform(
             key,
-            (output_dim, input_dim),
+            (sum(output_dims), input_dim),
             minval=min_val,
             maxval=max_val,
             dtype=activation_precision,
         )
-        self.scales = jnp.ones((output_dim, num_groups), dtype=activation_precision)
+        self.scales = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
 
-    def prepare_weights(self) -> Float[Array, "out_channels in_channels"]:
+    def prepare_weights(self) -> Float[Array, "total_out_channels in_channels"]:
         quantized_weights = quantize(self.weights, self.mode)
         grouped_weights = rearrange(
             quantized_weights,
-            "out_channels (groups group_channels) -> out_channels groups group_channels",
-            group_size=self.group_size,
+            "total_out_channels (groups group_channels) -> total_out_channels groups group_channels",
+            groups=self.num_groups,
         )
-        scales = rearrange(self.scales, "out_channels groups -> out_channels groups 1")
+        scales = rearrange(self.scales, "total_out_channels groups -> total_out_channels groups 1")
         scaled_grouped_weights = grouped_weights * scales
         result = rearrange(
             scaled_grouped_weights,
-            "out_channels groups group_channels -> out_channels (groups group_channels)",
+            "total_out_channels groups group_channels -> total_out_channels (groups group_channels)",
         )
         return result
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
-        return self.prepare_weights() @ x
+    def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        weights = self.prepare_weights()
+        return tuple(jnp.split(weights @ x, self._split_points(self.output_dims)))
 
 
 @dataclass
 class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
-    num_groups: int = dataclass_field(default=4)
+    group_size: int = dataclass_field(default=4)
     mode: QuantizationMode = dataclass_field(default=QuantizationMode.INT4)
     activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
 
-    def __call__(self, input_dim: int, output_dim: int, *, key: PRNGKeyArray) -> GroupQuantizedLinear:
+    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> GroupQuantizedLinear:
         return GroupQuantizedLinear(
             input_dim=input_dim,
-            output_dim=output_dim,
-            num_groups=self.num_groups,
+            output_dims=output_dims,
+            group_size=self.group_size,
             mode=self.mode,
             activation_precision=self.activation_precision,
             key=key,
@@ -153,14 +173,14 @@ class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
 
 
 class QLoRALinear(LinearBase):
-    num_groups: int = eqx.field(static=True)
+    group_size: int = eqx.field(static=True)
     mode: QuantizationMode = eqx.field(static=True)
     lora_rank: int = eqx.field(static=True)
     lora_scale: float = eqx.field(static=True)
 
     quantized_linear: GroupQuantizedLinear
-    lora_down_weights: Float[Array, "lora_channels in_channels"]
-    lora_up_weights: Float[Array, "out_channels lora_channels"]
+    lora_down_weights: Float[Array, "total_lora_channels in_channels"]
+    lora_up_weights: tuple[Float[Array, "out_channels lora_channels"], ...]
 
     activation_precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
 
@@ -168,19 +188,19 @@ class QLoRALinear(LinearBase):
         self,
         *,
         input_dim: int,
-        output_dim: int,
-        num_groups: int,
+        output_dims: tuple[int, ...],
+        group_size: int,
         mode: QuantizationMode,
         lora_rank: int,
         lora_scale: float,
         activation_precision: DType,
         key: PRNGKeyArray,
     ) -> None:
-        linear_key, up_key, down_key = jax.random.split(key, 3)
+        linear_key, down_key, up_key_root = jax.random.split(key, 3)
 
         self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.num_groups = num_groups
+        self.output_dims = output_dims
+        self.group_size = group_size
         self.mode = mode
         self.lora_rank = lora_rank
         self.lora_scale = lora_scale
@@ -188,51 +208,63 @@ class QLoRALinear(LinearBase):
 
         self.quantized_linear = GroupQuantizedLinear(
             input_dim=input_dim,
-            output_dim=output_dim,
-            num_groups=num_groups,
+            output_dims=output_dims,
+            group_size=group_size,
             mode=mode,
             activation_precision=activation_precision,
             key=linear_key,
         )
 
+        hidden_lora_rank = len(output_dims) * lora_rank
         max_down_abs_value = 1 / math.sqrt(input_dim)
         self.lora_down_weights = jax.random.uniform(
             down_key,
-            (output_dim, input_dim),
+            (hidden_lora_rank, input_dim),
             minval=-max_down_abs_value,
             maxval=max_down_abs_value,
             dtype=activation_precision,
         )
 
-        max_up_abs_value = 1 / math.sqrt(lora_rank)
-        self.lora_up_weights = jax.random.uniform(
-            up_key,
-            (output_dim, lora_rank),
-            minval=-max_up_abs_value,
-            maxval=max_up_abs_value,
-            dtype=activation_precision,
+        up_keys = jax.random.split(up_key_root, len(output_dims))
+        max_up_abs_value = 1 / math.sqrt(hidden_lora_rank)
+        self.lora_up_weights = tuple(
+            jax.random.uniform(
+                up_key,
+                (output_dim, lora_rank),
+                minval=-max_up_abs_value,
+                maxval=max_up_abs_value,
+                dtype=activation_precision,
+            )
+            for up_key, output_dim in zip(up_keys, output_dims, strict=True)
         )
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
-        quantized_linear_output = self.quantized_linear(x)
-        lora_hidden = self.lora_down_weights @ x
-        lora_output = self.lora_up_weights @ lora_hidden
-        return quantized_linear_output + self.lora_scale * lora_output
+    def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        quantized_outputs = self.quantized_linear(x)
+        joint_lora_hidden = self.lora_down_weights @ x
+        lora_hiddens = jnp.split(joint_lora_hidden, self._split_points([self.lora_rank] * len(self.output_dims)))
+        lora_outputs = tuple(
+            lora_up_weight @ lora_hidden
+            for lora_up_weight, lora_hidden in zip(self.lora_up_weights, lora_hiddens, strict=True)
+        )
+        return tuple(
+            quantized_output + self.lora_scale * lora_output
+            for quantized_output, lora_output in zip(quantized_outputs, lora_outputs, strict=True)
+        )
 
 
 @dataclass
 class QLoRALinearFactory(LinearFactoryBase[QLoRALinear]):
-    num_groups: int
+    group_size: int
     mode: QuantizationMode
     lora_rank: int
     lora_scale: float = 2.0
     activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
 
-    def __call__(self, input_dim: int, output_dim: int, *, key: PRNGKeyArray) -> QLoRALinear:
+    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> QLoRALinear:
         return QLoRALinear(
             input_dim=input_dim,
-            output_dim=output_dim,
-            num_groups=self.num_groups,
+            output_dims=output_dims,
+            group_size=self.group_size,
             mode=self.mode,
             lora_rank=self.lora_rank,
             lora_scale=self.lora_scale,

@@ -26,11 +26,6 @@ def test_unscaled_rope() -> None:
         ),
     )
     hf_layer = LlamaRotaryEmbedding(
-        dim=head_size,
-        max_position_embeddings=max_position_embeddings,
-        base=int(rope_theta),
-        scaling_factor=1.0,
-        rope_type="default",
         config=llama_config,
     )
     fs_layer = RoPE(
@@ -83,11 +78,6 @@ def test_scaled_rope() -> None:
         ),
     )
     hf_layer = LlamaRotaryEmbedding(
-        dim=head_size,
-        max_position_embeddings=max_position_embeddings,
-        base=int(rope_theta),
-        scaling_factor=scaling_factor,
-        rope_type="llama3",
         config=llama_config,
     )
     fs_layer = RoPE(

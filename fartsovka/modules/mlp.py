@@ -42,20 +42,20 @@ class MLP[LinearType: LinearBase](MLPBase):
         up_projection_key, down_projection_key = jax.random.split(key)
         self.up_projection = linear_factory(
             model_dim,
-            2 * hidden_dim,
+            (hidden_dim, hidden_dim),
             key=up_projection_key,
         )
         self.down_projection = linear_factory(
             hidden_dim,
-            model_dim,
+            (model_dim,),
             key=down_projection_key,
         )
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        fused_hidden_gate = self.up_projection(x)
-        up_proj = fused_hidden_gate[: self.hidden_dim]
-        gate = silu(fused_hidden_gate[self.hidden_dim :])
-        return self.down_projection(up_proj * gate)
+        up_proj, gate = self.up_projection(x)
+        gate = silu(gate)
+        (result,) = self.down_projection(up_proj * gate)
+        return result
 
 
 @dataclass

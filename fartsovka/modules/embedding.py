@@ -62,7 +62,7 @@ class QuantizedEmbedding(EmbeddingBase):
     def int_weights(self) -> Int[Array, "token_ids channels"]:
         return quantize(self.weights, self.mode).astype(self.mode.dtype)
 
-    scale: Float[Array, " token_ids"]
+    scales: Float[Array, " token_ids"]
 
     mode: QuantizationMode = eqx.field(static=True)
     activation_precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
@@ -92,7 +92,7 @@ class QuantizedEmbedding(EmbeddingBase):
 
     def prepare_weights(self) -> Float[Array, "out_channels in_channels"]:
         quantized_weights = quantize(self.weights, self.mode)
-        quantized_weights = quantized_weights * self.scales
+        quantized_weights = quantized_weights * self.scales.reshape(-1, 1)
         return quantized_weights
 
     def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens model_dim"]:

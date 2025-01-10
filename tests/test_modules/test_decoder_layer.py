@@ -6,6 +6,8 @@ from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
 from fartsovka.models.baseline_llama import BaselineLlama
+from fartsovka.models.qlora_llama import QLoRALlama
+from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import assert_close, checkify_forward, from_torch, to_torch
 
@@ -44,3 +46,33 @@ def test_decoder_layer(
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
     err.throw()
     assert_close(hf_output, fs_output.output)
+
+
+def test_qlora_decoder_layer(
+    executorch_llama: ETTransformer,
+    fartsovka_qlora_llama: QLoRALlama,
+    rng_key: PRNGKeyArray,
+) -> None:
+    fs_layer = fartsovka_qlora_llama.layers[0]
+    fs_layer_forward = checkify_forward(fs_layer)
+    et_layer = executorch_llama.layers[0]
+
+    input_dim = fs_layer.model_dim
+    sequence_length = 64
+
+    sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
+    sample_input_torch = to_torch(sample_input).unsqueeze(0)
+
+    # Get positional embeddings
+    position_ids = jnp.arange(sequence_length)
+    freqs_cos, freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
+    positional_embeddings = fartsovka_qlora_llama.rope(position_ids)
+
+    # Create causal mask
+    jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+    # Run forward passes
+    et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))
+    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+    err.throw()
+    assert_close(fs_output.output, et_output)

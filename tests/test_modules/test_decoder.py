@@ -5,6 +5,8 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.models.baseline_llama import BaselineLlama
+from fartsovka.models.qlora_llama import QLoRALlama
+from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import assert_close, checkify_forward, from_torch, to_torch
 
@@ -44,3 +46,33 @@ def test_decoder(
     err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
     err.throw()
     assert_close(hf_output, fs_output.output, atol=1e-3)
+
+
+def test_qlora_decoder(
+    executorch_llama: ETTransformer,
+    fartsovka_qlora_llama: QLoRALlama,
+    rng_key: PRNGKeyArray,
+) -> None:
+    fs_decoder = fartsovka_qlora_llama
+    fs_decoder_forward = checkify_forward(fs_decoder)
+    et_decoder = executorch_llama
+
+    sequence_length = 512
+    vocab_size = fs_decoder.vocab_dim
+
+    # Generate random token IDs
+    token_key, _ = jax.random.split(rng_key)
+    token_ids = jax.random.randint(token_key, (sequence_length,), 0, vocab_size)
+    token_ids_torch = to_torch(token_ids).unsqueeze(0)
+
+    # Create position IDs
+    position_ids = jnp.arange(sequence_length)
+
+    # Create causal mask
+    jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+    # Run forward passes
+    et_output = from_torch(et_decoder(tokens=token_ids_torch).squeeze(0))
+    err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
+    err.throw()
+    assert_close(fs_output.output, et_output, atol=1e-3)

@@ -9,10 +9,14 @@ ATOL = 1e-5
 
 
 def assert_close(a: jnp.ndarray, b: jnp.ndarray, atol: float = ATOL) -> None:
-    absvalues = jnp.abs(a - b)
-    absmax, absmax_idx = jnp.max(absvalues), jnp.argmax(absvalues)
-    absmax_idx = tuple(i.item() for i in jnp.unravel_index(absmax_idx, absvalues.shape))
-    assert jnp.allclose(a, b, atol=atol), f"Absmax: {absmax} at index {absmax_idx}, shape: {a.shape}"
+    absdiff = jnp.abs(a - b)
+    absmax, absmax_idx = jnp.max(absdiff), jnp.argmax(absdiff)
+    rms_diff = jnp.sqrt(jnp.mean(jnp.square(absdiff)))
+    rms_b = jnp.sqrt(jnp.mean(jnp.square(b)))
+    rel_rms = rms_diff / rms_b
+    absmax_idx = tuple(i.item() for i in jnp.unravel_index(absmax_idx, absdiff.shape))
+    message = f"Absmax: {absmax:.5f} at index {absmax_idx}. RMS: {rms_diff:.5f}, or {rel_rms:.0%}. Shape: {a.shape}"
+    assert jnp.allclose(a, b, atol=atol), message
 
 
 @torch.no_grad()
