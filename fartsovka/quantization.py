@@ -39,19 +39,31 @@ def quantize_weights(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Ar
 def dynamically_quantize_activations(
     x: Float[Array, " channels"],
     mode: QuantizationMode,
-    eps: float = 1e07,
 ) -> Float[Array, " channels"]:
-    # Find the maximum absolute value along the channels dimension
-    max_value, min_value = jnp.max(x), jnp.min(x)
-    zero_point = (max_value + min_value) / 2
-    scale = (max_value - min_value + eps) / 2
-
-    # Scale to [-1, 1] range
-    x_normalized = (x - zero_point) / scale
-
-    # Scale to target range and back to simulate quantization
+    # Reference implementation: https://github.com/pytorch/pytorch/blob/2ccbacfa24cae724ec1ea3bc7de189e5bf948d46/torch/ao/quantization/fx/_decomposed.py#L790
     range_min, range_max = mode.range
-    x_quantized = jnp.clip(x_normalized * range_max, range_min, range_max) / range_max
+    min_val = jnp.min(x)
+    max_val = jnp.max(x)
+    min_val_neg = jnp.minimum(min_val, 0)
+    max_val_pos = jnp.maximum(max_val, 0)
 
-    # Scale back to original range
-    return x_quantized * scale + zero_point
+    # scale
+    scale = (max_val_pos - min_val_neg) / (range_max - range_min)
+    scale = jnp.maximum(scale, jnp.finfo(x.dtype).eps)
+
+    # zero point
+    descaled_min = min_val_neg / scale
+    descaled_max = max_val_pos / scale
+    zero_point_from_min_error = range_min + descaled_min
+    zero_point_from_max_error = range_max + descaled_max
+    zero_point = jnp.where(
+        zero_point_from_min_error + zero_point_from_max_error > 0,
+        range_min - descaled_min,
+        range_max - descaled_max,
+    )
+    zero_point = jnp.round(jnp.clip(zero_point, range_min, range_max))
+
+    x_normalized = x / scale + zero_point
+    x_quantized = jnp.clip(jnp.round(x_normalized), range_min, range_max)
+
+    return (x_quantized - zero_point) * scale
