@@ -31,11 +31,10 @@ class EmbeddingFactoryBase[EmbeddingType: EmbeddingBase]:
 class Embedding(EmbeddingBase):
     weights: Float[Array, "token_ids channels"]
 
-    precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
+    precision: DType = eqx.field(static=True)
 
     def __init__(self, vocab_dim: int, model_dim: int, precision: DType, *, key: PRNGKeyArray) -> None:
-        self.vocab_dim = vocab_dim
-        self.model_dim = model_dim
+        super().__init__(vocab_dim=vocab_dim, model_dim=model_dim)
         self.precision = precision
         self.weights = jax.random.normal(key, (vocab_dim, model_dim), dtype=precision)
 
@@ -66,7 +65,7 @@ class QuantizedEmbedding(EmbeddingBase):
 
     embedding_quantization_mode: QuantizationMode = eqx.field(static=True)
     activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
-    activation_precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
+    activation_precision: DType = eqx.field(static=True)
 
     def __init__(
         self,
@@ -78,11 +77,12 @@ class QuantizedEmbedding(EmbeddingBase):
         activation_precision: DType,
         key: PRNGKeyArray,
     ) -> None:
-        self.vocab_dim = vocab_dim
-        self.model_dim = model_dim
+        super().__init__(vocab_dim=vocab_dim, model_dim=model_dim)
+
         self.embedding_quantization_mode = embedding_quantization_mode
         self.activation_quantization_mode = activation_quantization_mode
         self.activation_precision = activation_precision
+
         min_val, max_val = embedding_quantization_mode.range
         self.weights = jax.random.uniform(
             key,

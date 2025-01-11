@@ -57,6 +57,7 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         key: PRNGKeyArray,
     ) -> None:
         qkv_key, out_key = jax.random.split(key)
+        super().__init__(model_dim, num_heads, num_groups, head_dim)
         self.qkv_projection = qkv_projection_factory(
             model_dim,
             (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
@@ -67,10 +68,6 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
             (model_dim,),
             key=out_key,
         )
-        self.model_dim = model_dim
-        self.num_heads = num_heads
-        self.num_groups = num_groups
-        self.head_dim = head_dim
 
     def __call__(
         self,

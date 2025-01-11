@@ -5,6 +5,7 @@ from jaxtyping import PRNGKeyArray
 
 from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.modules.linear import QLoRALinear
 from tests.executorch_llama.source_transformation.lora import Int8DynActInt4WeightLinearLoRA
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
@@ -43,7 +44,7 @@ def test_group_quantized_linear(
     et_layer = executorch_llama.layers[layer_index].feed_forward.w2
     input_dim = et_layer.in_features
 
-    fs_only_quantized = checkify_forward(fs_layer.quantized_linear)
+    fs_only_quantized = checkify_forward(super(QLoRALinear, fs_layer).__call__)
     et_only_quantized = super(Int8DynActInt4WeightLinearLoRA, et_layer).forward  # type: ignore
 
     sample_input = jax.random.normal(rng_key, (input_dim,))

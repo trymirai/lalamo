@@ -56,18 +56,18 @@ class LinearFactoryBase[LinearType: LinearBase]:
 class Linear(LinearBase):
     weights: Float[Array, "total_out_channels in_channels"]
 
-    precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
+    precision: DType = eqx.field(static=True)
 
     def __init__(
         self,
         input_dim: int,
         output_dims: tuple[int, ...],
-        precision: DType = DEFAULT_PRECISION,
+        precision: DType,
         *,
         key: PRNGKeyArray,
     ) -> None:
-        self.input_dim = input_dim
-        self.output_dims = output_dims
+        super().__init__(input_dim=input_dim, output_dims=output_dims)
+
         self.precision = precision
         max_abs_value = 1 / math.sqrt(input_dim)
         self.weights = jax.random.uniform(
@@ -107,7 +107,7 @@ class GroupQuantizedLinear(LinearBase):
     weights: Float[Array, "total_out_channels in_channels"]
     scales: Float[Array, "total_out_channels groups"]
 
-    activation_precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
+    activation_precision: DType = eqx.field(static=True)
 
     def __init__(
         self,
@@ -122,12 +122,12 @@ class GroupQuantizedLinear(LinearBase):
     ) -> None:
         if input_dim % group_size != 0:
             raise ValueError(f"input_dim {input_dim} must be divisible by group_size {group_size}")
-        self.input_dim = input_dim
-        self.output_dims = output_dims
+        super().__init__(input_dim=input_dim, output_dims=output_dims)
         self.group_size = group_size
         self.weight_quantization_mode = weight_quantization_mode
         self.activation_quantization_mode = activation_quantization_mode
         self.activation_precision = activation_precision
+
         min_val, max_val = weight_quantization_mode.range
         self.weights = jax.random.uniform(
             key,
@@ -179,18 +179,12 @@ class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
         )
 
 
-class QLoRALinear(LinearBase):
-    group_size: int = eqx.field(static=True)
-    weight_quantization_mode: QuantizationMode = eqx.field(static=True)
-    activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
+class QLoRALinear(GroupQuantizedLinear):
     lora_rank: int = eqx.field(static=True)
     lora_scale: float = eqx.field(static=True)
 
-    quantized_linear: GroupQuantizedLinear
     lora_down_weights: Float[Array, "total_lora_channels in_channels"]
     lora_up_weights: tuple[Float[Array, "out_channels lora_channels"], ...]
-
-    activation_precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
 
     def __init__(
         self,
@@ -207,16 +201,7 @@ class QLoRALinear(LinearBase):
     ) -> None:
         linear_key, down_key, up_key_root = jax.random.split(key, 3)
 
-        self.input_dim = input_dim
-        self.output_dims = output_dims
-        self.group_size = group_size
-        self.weight_quantization_mode = weight_quantization_mode
-        self.activation_quantization_mode = activation_quantization_mode
-        self.lora_rank = lora_rank
-        self.lora_scale = lora_scale
-        self.activation_precision = activation_precision
-
-        self.quantized_linear = GroupQuantizedLinear(
+        super().__init__(
             input_dim=input_dim,
             output_dims=output_dims,
             group_size=group_size,
@@ -225,6 +210,9 @@ class QLoRALinear(LinearBase):
             activation_precision=activation_precision,
             key=linear_key,
         )
+
+        self.lora_rank = lora_rank
+        self.lora_scale = lora_scale
 
         hidden_lora_rank = len(output_dims) * lora_rank
         max_down_abs_value = 1 / math.sqrt(input_dim)
@@ -250,7 +238,7 @@ class QLoRALinear(LinearBase):
         )
 
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        quantized_outputs = self.quantized_linear(x)
+        quantized_outputs = super().__call__(x)
         joint_lora_hidden = self.lora_down_weights @ x
         lora_hiddens = jnp.split(joint_lora_hidden, self._split_points([self.lora_rank] * len(self.output_dims)))
         lora_outputs = tuple(

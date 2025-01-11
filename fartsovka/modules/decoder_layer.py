@@ -52,6 +52,8 @@ class DecoderLayer[
         eps: float,
         key: PRNGKeyArray,
     ) -> None:
+        super().__init__()
+
         self.model_dim = model_dim
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads

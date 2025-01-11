@@ -64,6 +64,8 @@ class Decoder[
         eps: float,
         key: PRNGKeyArray,
     ) -> None:
+        super().__init__()
+
         self.num_layers = num_layers
         self.vocab_dim = vocab_dim
         self.model_dim = model_dim

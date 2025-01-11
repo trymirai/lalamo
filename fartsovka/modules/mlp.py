@@ -36,8 +36,7 @@ class MLP[LinearType: LinearBase](MLPBase):
         *,
         key: PRNGKeyArray,
     ) -> None:
-        self.model_dim = model_dim
-        self.hidden_dim = hidden_dim
+        super().__init__(model_dim=model_dim, hidden_dim=hidden_dim)
 
         up_projection_key, down_projection_key = jax.random.split(key)
         self.up_projection = linear_factory(

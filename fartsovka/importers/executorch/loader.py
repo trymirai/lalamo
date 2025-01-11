@@ -38,8 +38,8 @@ class QLoRALinearParams:
 
 def params_selector(module: QLoRALinear) -> tuple:
     return (
-        module.quantized_linear.weights,
-        module.quantized_linear.scales,
+        module.weights,
+        module.scales,
         module.lora_down_weights,
         *module.lora_up_weights,
     )

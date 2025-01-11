@@ -36,8 +36,8 @@ def _compute_adjusted_variance(
 class RMSNorm(NormalizationBase):
     scale: Float[Array, " channels"]
 
-    precision: DType = eqx.field(static=True, default=DEFAULT_PRECISION)
-    accumulation_precision: DType = eqx.field(static=True, default=jnp.float32)
+    precision: DType = eqx.field(static=True)
+    accumulation_precision: DType = eqx.field(static=True)
 
     def __init__(
         self,
@@ -46,8 +46,8 @@ class RMSNorm(NormalizationBase):
         precision: DType,
         accumulation_precision: DType,
     ) -> None:
-        self.model_dim = model_dim
-        self.eps = eps
+        super().__init__(model_dim=model_dim, eps=eps)
+
         self.precision = precision
         self.accumulation_precision = accumulation_precision
         self.scale = jnp.ones(model_dim, dtype=accumulation_precision)

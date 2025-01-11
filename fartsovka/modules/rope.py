@@ -92,8 +92,10 @@ class RoPE(eqx.Module):
         head_dim: int,
         max_sequence_length: int,
         params: RoPEParams,
-        precision: DType = DEFAULT_PRECISION,
+        precision: DType,
     ) -> None:
+        super().__init__()
+
         self.head_dim = head_dim
         self.max_sequence_length = max_sequence_length
         self.params = params
