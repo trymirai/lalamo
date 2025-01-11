@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 
 import equinox as eqx
 from jax import numpy as jnp
@@ -111,7 +110,7 @@ class RoPE(eqx.Module):
 
 @dataclass
 class RoPEFactory:
-    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    precision: DType = DEFAULT_PRECISION
 
     def __call__(self, head_dim: int, max_sequence_length: int, params: RoPEParams) -> RoPE:
         return RoPE(head_dim, max_sequence_length, params, precision=self.precision)

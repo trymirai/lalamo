@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 
 import equinox as eqx
 from jax import numpy as jnp
@@ -60,8 +59,8 @@ class RMSNorm(NormalizationBase):
 
 @dataclass
 class RMSNormFactory(NormalizationFactoryBase[RMSNorm]):
-    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
-    accumulation_precision: DType = dataclass_field(default=jnp.float32)
+    precision: DType = DEFAULT_PRECISION
+    accumulation_precision: DType = jnp.float32
 
     def __call__(self, model_dim: int, eps: float) -> RMSNorm:
         return RMSNorm(model_dim, eps, self.precision, self.accumulation_precision)

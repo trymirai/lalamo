@@ -1,7 +1,6 @@
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax
@@ -85,7 +84,7 @@ class Linear(LinearBase):
 
 @dataclass
 class LinearFactory(LinearFactoryBase[Linear]):
-    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    precision: DType = DEFAULT_PRECISION
 
     def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> Linear:
         return Linear(input_dim, output_dims, precision=self.precision, key=key)
@@ -163,10 +162,10 @@ class GroupQuantizedLinear(LinearBase):
 
 @dataclass
 class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
-    group_size: int = dataclass_field(default=4)
-    weight_quantization_mode: QuantizationMode = dataclass_field(default=QuantizationMode.INT4)
-    activation_quantization_mode: QuantizationMode | None = dataclass_field(default=None)
-    activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    group_size: int
+    weight_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None = None
+    activation_precision: DType = DEFAULT_PRECISION
 
     def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> GroupQuantizedLinear:
         return GroupQuantizedLinear(
@@ -271,7 +270,7 @@ class QLoRALinearFactory(LinearFactoryBase[QLoRALinear]):
     activation_quantization_mode: QuantizationMode | None
     lora_rank: int
     lora_scale: float = 2.0
-    activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    activation_precision: DType = DEFAULT_PRECISION
 
     def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> QLoRALinear:
         return QLoRALinear(

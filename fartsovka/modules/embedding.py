@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from dataclasses import field as dataclass_field
 
 import equinox as eqx
 import jax
@@ -49,7 +48,7 @@ class Embedding(EmbeddingBase):
 
 @dataclass
 class EmbeddingFactory(EmbeddingFactoryBase[Embedding]):
-    precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    precision: DType = DEFAULT_PRECISION
 
     def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> Embedding:
         return Embedding(vocab_dim, model_dim, precision=self.precision, key=key)
@@ -112,7 +111,7 @@ class QuantizedEmbedding(EmbeddingBase):
 class QuantizedEmbeddingFactory(EmbeddingFactoryBase[QuantizedEmbedding]):
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
+    activation_precision: DType = DEFAULT_PRECISION
 
     def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> QuantizedEmbedding:
         return QuantizedEmbedding(
