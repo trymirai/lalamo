@@ -58,7 +58,7 @@ class Int8DynActInt4WeightLinearLoRA(Int8DynActInt4WeightLinear):
         groupsize: int = 256,
         precision: torch.dtype = torch.float32,
         scales_precision: torch.dtype = torch.float32,
-        lora_adaptor_precision: torch.dtype = torch.bfloat16,
+        lora_adaptor_precision: torch.dtype = torch.float32,
         lora_scale: float = 2.0,
     ) -> None:
         super().__init__(
@@ -98,10 +98,10 @@ def _replace_linear_8da4w_for_lora(
             and adaptor_a_key in checkpoint
             and adaptor_b_key in checkpoint
         ):
-            assert checkpoint[adaptor_a_key].dtype == torch.bfloat16
+            assert checkpoint[adaptor_a_key].dtype == torch.float32
             assert checkpoint[adaptor_a_key].shape[0] == lora_rank
             assert checkpoint[adaptor_a_key].shape[1] == child.in_features
-            assert checkpoint[adaptor_b_key].dtype == torch.bfloat16
+            assert checkpoint[adaptor_b_key].dtype == torch.float32
             assert checkpoint[adaptor_b_key].shape[0] == child.out_features
             assert checkpoint[adaptor_b_key].shape[1] == lora_rank
             return True

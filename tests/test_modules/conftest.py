@@ -90,11 +90,13 @@ def executorch_llama() -> ETTransformer:
     with open(config_path) as f:
         params_json = json.load(f)
     params = cattrs.structure(params_json, ETModelArgs)
-    weights = torch.load(weights_path, map_location="cpu", weights_only=False)
     model = ETTransformer(params)
+
+    weights = torch.load(weights_path, map_location="cpu", weights_only=False)
+    weights = _upcast_weights_to_float32(weights)
+
     _apply_et_transforms(model, weights, params)
 
-    weights = _upcast_weights_to_float32(weights)
     model.load_state_dict(weights, strict=False, assign=True)
     model.eval()
 
