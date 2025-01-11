@@ -10,7 +10,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.quantization import QuantizationMode, quantize
+from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
 __all__ = [
     "LinearBase",
@@ -93,11 +93,13 @@ class LinearFactory(LinearFactoryBase[Linear]):
 
 class GroupQuantizedLinear(LinearBase):
     group_size: int = eqx.field(static=True)
-    mode: QuantizationMode = eqx.field(static=True)
+    weight_quantization_mode: QuantizationMode = eqx.field(static=True)
+    activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
 
     @property
     def int_weights(self) -> Int[Array, "out_channels (groups in_channels)"]:
-        return quantize(self.weights, self.mode).astype(self.mode.dtype)
+        result = quantize_weights(self.weights, self.weight_quantization_mode)
+        return result.astype(self.weight_quantization_mode.dtype)
 
     @property
     def num_groups(self) -> int:
@@ -114,7 +116,8 @@ class GroupQuantizedLinear(LinearBase):
         input_dim: int,
         output_dims: tuple[int, ...],
         group_size: int,
-        mode: QuantizationMode,
+        weight_quantization_mode: QuantizationMode,
+        activation_quantization_mode: QuantizationMode | None,
         activation_precision: DType,
         key: PRNGKeyArray,
     ) -> None:
@@ -123,9 +126,10 @@ class GroupQuantizedLinear(LinearBase):
         self.input_dim = input_dim
         self.output_dims = output_dims
         self.group_size = group_size
-        self.mode = mode
+        self.weight_quantization_mode = weight_quantization_mode
+        self.activation_quantization_mode = activation_quantization_mode
         self.activation_precision = activation_precision
-        min_val, max_val = mode.range
+        min_val, max_val = weight_quantization_mode.range
         self.weights = jax.random.uniform(
             key,
             (sum(output_dims), input_dim),
@@ -136,7 +140,7 @@ class GroupQuantizedLinear(LinearBase):
         self.scales = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
 
     def prepare_weights(self) -> Float[Array, "total_out_channels in_channels"]:
-        quantized_weights = quantize(self.weights, self.mode)
+        quantized_weights = quantize_weights(self.weights, self.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
             "total_out_channels (groups group_channels) -> total_out_channels groups group_channels",
@@ -151,6 +155,8 @@ class GroupQuantizedLinear(LinearBase):
         return result
 
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        if self.activation_quantization_mode is not None:
+            x = dynamically_quantize_activations(x, self.activation_quantization_mode)
         weights = self.prepare_weights()
         return tuple(jnp.split(weights @ x, self._split_points(self.output_dims)))
 
@@ -158,7 +164,8 @@ class GroupQuantizedLinear(LinearBase):
 @dataclass
 class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
     group_size: int = dataclass_field(default=4)
-    mode: QuantizationMode = dataclass_field(default=QuantizationMode.INT4)
+    weight_quantization_mode: QuantizationMode = dataclass_field(default=QuantizationMode.INT4)
+    activation_quantization_mode: QuantizationMode | None = dataclass_field(default=None)
     activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
 
     def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> GroupQuantizedLinear:
@@ -166,7 +173,8 @@ class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
             input_dim=input_dim,
             output_dims=output_dims,
             group_size=self.group_size,
-            mode=self.mode,
+            weight_quantization_mode=self.weight_quantization_mode,
+            activation_quantization_mode=self.activation_quantization_mode,
             activation_precision=self.activation_precision,
             key=key,
         )
@@ -174,7 +182,8 @@ class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
 
 class QLoRALinear(LinearBase):
     group_size: int = eqx.field(static=True)
-    mode: QuantizationMode = eqx.field(static=True)
+    weight_quantization_mode: QuantizationMode = eqx.field(static=True)
+    activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
     lora_rank: int = eqx.field(static=True)
     lora_scale: float = eqx.field(static=True)
 
@@ -190,7 +199,8 @@ class QLoRALinear(LinearBase):
         input_dim: int,
         output_dims: tuple[int, ...],
         group_size: int,
-        mode: QuantizationMode,
+        weight_quantization_mode: QuantizationMode,
+        activation_quantization_mode: QuantizationMode | None,
         lora_rank: int,
         lora_scale: float,
         activation_precision: DType,
@@ -201,7 +211,8 @@ class QLoRALinear(LinearBase):
         self.input_dim = input_dim
         self.output_dims = output_dims
         self.group_size = group_size
-        self.mode = mode
+        self.weight_quantization_mode = weight_quantization_mode
+        self.activation_quantization_mode = activation_quantization_mode
         self.lora_rank = lora_rank
         self.lora_scale = lora_scale
         self.activation_precision = activation_precision
@@ -210,7 +221,8 @@ class QLoRALinear(LinearBase):
             input_dim=input_dim,
             output_dims=output_dims,
             group_size=group_size,
-            mode=mode,
+            weight_quantization_mode=weight_quantization_mode,
+            activation_quantization_mode=activation_quantization_mode,
             activation_precision=activation_precision,
             key=linear_key,
         )
@@ -255,7 +267,8 @@ class QLoRALinear(LinearBase):
 @dataclass
 class QLoRALinearFactory(LinearFactoryBase[QLoRALinear]):
     group_size: int
-    mode: QuantizationMode
+    weight_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
     lora_rank: int
     lora_scale: float = 2.0
     activation_precision: DType = dataclass_field(default=DEFAULT_PRECISION)
@@ -265,7 +278,8 @@ class QLoRALinearFactory(LinearFactoryBase[QLoRALinear]):
             input_dim=input_dim,
             output_dims=output_dims,
             group_size=self.group_size,
-            mode=self.mode,
+            weight_quantization_mode=self.weight_quantization_mode,
+            activation_quantization_mode=self.activation_quantization_mode,
             lora_rank=self.lora_rank,
             lora_scale=self.lora_scale,
             activation_precision=self.activation_precision,

@@ -77,6 +77,7 @@ MAX_SEQUENCE_LENGTH = 8192 * 32
 EPS = 1e-5
 
 EMBEDDING_QUANTIZATION_MODE = QuantizationMode.INT8
+ACTIVATION_QUANTIZATION_MODE = QuantizationMode.INT8
 WEIGHT_QUANTIZATION_MODE = QuantizationMode.INT4
 
 
@@ -122,6 +123,7 @@ def init_model(
         key=key,
         weight_quantization_mode=WEIGHT_QUANTIZATION_MODE,
         embedding_quantization_mode=EMBEDDING_QUANTIZATION_MODE,
+        activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
         quantization_group_size=config.quantization_args.group_size,
         lora_rank=config.lora_args.rank,
         lora_scale=config.lora_args.scale,

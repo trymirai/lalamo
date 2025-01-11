@@ -45,6 +45,7 @@ def get_qlora_llama_factory(
     *,
     weight_quantization_mode: QuantizationMode,
     embedding_quantization_mode: QuantizationMode,
+    activation_quantization_mode: QuantizationMode | None,
     quantization_group_size: int,
     lora_rank: int,
     lora_scale: float = 2.0,
@@ -59,8 +60,9 @@ def get_qlora_llama_factory(
 ]:
     return DecoderFactory(
         embedding_factory=QuantizedEmbeddingFactory(
-            mode=embedding_quantization_mode,
+            embedding_quantization_mode=embedding_quantization_mode,
             activation_precision=activation_precision,
+            activation_quantization_mode=activation_quantization_mode,
         ),
         rope_factory=RoPEFactory(precision=activation_precision),
         layer_factory=DecoderLayerFactory(
@@ -71,13 +73,15 @@ def get_qlora_llama_factory(
             attention_factory=AttentionFactory(
                 qkv_projection_factory=QLoRALinearFactory(
                     group_size=quantization_group_size,
-                    mode=weight_quantization_mode,
+                    weight_quantization_mode=weight_quantization_mode,
+                    activation_quantization_mode=activation_quantization_mode,
                     lora_rank=lora_rank,
                     lora_scale=lora_scale,
                 ),
                 out_projection_factory=QLoRALinearFactory(
                     group_size=quantization_group_size,
-                    mode=weight_quantization_mode,
+                    weight_quantization_mode=weight_quantization_mode,
+                    activation_quantization_mode=activation_quantization_mode,
                     lora_rank=lora_rank,
                     lora_scale=lora_scale,
                 ),
@@ -89,7 +93,8 @@ def get_qlora_llama_factory(
             mlp_factory=MLPFactory(
                 linear_factory=QLoRALinearFactory(
                     group_size=quantization_group_size,
-                    mode=weight_quantization_mode,
+                    weight_quantization_mode=weight_quantization_mode,
+                    activation_quantization_mode=activation_quantization_mode,
                     lora_rank=lora_rank,
                     lora_scale=lora_scale,
                 ),
@@ -117,6 +122,7 @@ def get_qlora_llama(
     key: PRNGKeyArray,
     weight_quantization_mode: QuantizationMode,
     embedding_quantization_mode: QuantizationMode,
+    activation_quantization_mode: QuantizationMode | None,
     quantization_group_size: int,
     lora_rank: int,
     lora_scale: float = 2.0,
@@ -126,6 +132,7 @@ def get_qlora_llama(
     factory = get_qlora_llama_factory(
         weight_quantization_mode=weight_quantization_mode,
         embedding_quantization_mode=embedding_quantization_mode,
+        activation_quantization_mode=activation_quantization_mode,
         quantization_group_size=quantization_group_size,
         lora_rank=lora_rank,
         lora_scale=lora_scale,
