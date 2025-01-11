@@ -1,4 +1,5 @@
 import jax
+import pytest
 import torch
 import transformers
 from jax import numpy as jnp
@@ -10,21 +11,23 @@ from fartsovka.models.qlora_llama import QLoRALlama
 from fartsovka.modules.kv_cache import KVCacheLayerSlice
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import LAYERS_TO_TEST, QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_attention_no_mask_no_cache(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[0].self_attn
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn
     assert isinstance(hf_layer, LlamaAttention)
-    fs_layer = fartsovka_llama.layers[0].attention
+    fs_layer = fartsovka_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim
-    sequence_length = 64
+    sequence_length = 512
 
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
@@ -46,18 +49,20 @@ def test_attention_no_mask_no_cache(
     assert_close(hf_output, fs_output.attention_output)
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_attention_with_mask(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[0].self_attn
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn
     assert isinstance(hf_layer, LlamaAttention)
-    fs_layer = fartsovka_llama.layers[0].attention
+    fs_layer = fartsovka_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim
-    sequence_length = 64
+    sequence_length = 512
 
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
@@ -82,14 +87,16 @@ def test_attention_with_mask(
     assert_close(hf_output, fs_output.attention_output)
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_attention_with_mask_and_kv_cache(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[0].self_attn
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn
     assert isinstance(hf_layer, LlamaAttention)
-    fs_layer = fartsovka_llama.layers[0].attention
+    fs_layer = fartsovka_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim
@@ -111,9 +118,8 @@ def test_attention_with_mask_and_kv_cache(
 
     torch_keys = to_torch(kv_cache.keys).permute(1, 0, 2).unsqueeze(0)
     torch_values = to_torch(kv_cache.values).permute(1, 0, 2).unsqueeze(0)
-    torch_cache = DynamicCache(1)
-    torch_cache.update(torch_keys, torch_values, 0, dict())
-    assert torch_cache.key_cache[0].shape == (1, num_groups, prefix_length, head_dim)
+    torch_cache = DynamicCache(len(huggingface_llama.model.layers))
+    torch_cache.update(torch_keys, torch_values, layer_index, dict())
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
@@ -147,17 +153,19 @@ def test_attention_with_mask_and_kv_cache(
     assert_close(hf_output, fs_output.attention_output)
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_attention(
     executorch_llama: ETTransformer,
     fartsovka_qlora_llama: QLoRALlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    fs_layer = fartsovka_qlora_llama.layers[0].attention
+    fs_layer = fartsovka_qlora_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
-    et_layer = executorch_llama.layers[0].attention
+    et_layer = executorch_llama.layers[layer_index].attention
 
     input_dim = fs_layer.model_dim
-    sequence_length = 64
+    sequence_length = 512
 
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)

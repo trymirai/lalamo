@@ -1,4 +1,5 @@
 import jax
+import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
@@ -6,16 +7,18 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import LAYERS_TO_TEST, QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_mlp(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[0].mlp
-    fs_layer = fartsovka_llama.layers[0].mlp
+    hf_layer = huggingface_llama.model.layers[layer_index].mlp
+    fs_layer = fartsovka_llama.layers[layer_index].mlp
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim
@@ -28,14 +31,16 @@ def test_mlp(
     assert_close(hf_output, fs_output)
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_mlp(
     executorch_llama: ETTransformer,
     fartsovka_qlora_llama: QLoRALlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    fs_layer = fartsovka_qlora_llama.layers[0].mlp
+    fs_layer = fartsovka_qlora_llama.layers[layer_index].mlp
     fs_layer_forward = checkify_forward(fs_layer)
-    et_layer = executorch_llama.layers[0].feed_forward
+    et_layer = executorch_llama.layers[layer_index].feed_forward
     input_dim = fs_layer.model_dim
 
     sample_input = jax.random.normal(rng_key, (input_dim,))

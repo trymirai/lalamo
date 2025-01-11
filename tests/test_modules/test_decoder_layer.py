@@ -1,4 +1,5 @@
 import jax
+import pytest
 import torch
 import transformers
 from jax import numpy as jnp
@@ -9,17 +10,19 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import LAYERS_TO_TEST, QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_decoder_layer(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[0]
+    hf_layer = huggingface_llama.model.layers[layer_index]
     assert isinstance(hf_layer, LlamaDecoderLayer)
-    fs_layer = fartsovka_llama.layers[0]
+    fs_layer = fartsovka_llama.layers[layer_index]
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim
@@ -48,14 +51,16 @@ def test_decoder_layer(
     assert_close(hf_output, fs_output.output)
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_decoder_layer(
     executorch_llama: ETTransformer,
     fartsovka_qlora_llama: QLoRALlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    fs_layer = fartsovka_qlora_llama.layers[0]
+    fs_layer = fartsovka_qlora_llama.layers[layer_index]
     fs_layer_forward = checkify_forward(fs_layer)
-    et_layer = executorch_llama.layers[0]
+    et_layer = executorch_llama.layers[layer_index]
 
     input_dim = fs_layer.model_dim
     sequence_length = 64

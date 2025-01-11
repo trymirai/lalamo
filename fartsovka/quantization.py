@@ -26,8 +26,8 @@ class QuantizationMode(Enum):
 
 
 MODE_TO_RANGE = {
-    QuantizationMode.INT4: (-15, 15),
-    QuantizationMode.INT8: (-127, 127),
+    QuantizationMode.INT4: (-8, 7),
+    QuantizationMode.INT8: (-128, 127),
 }
 
 

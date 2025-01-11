@@ -1,19 +1,22 @@
 import jax
+import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.models.baseline_llama import BaselineLlama
 
-from .common import assert_close, checkify_forward, from_torch, to_torch
+from .common import LAYERS_TO_TEST, assert_close, checkify_forward, from_torch, to_torch
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_rms_norm(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
     rng_key: PRNGKeyArray,
+    layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[0].input_layernorm
-    fs_layer = fartsovka_llama.layers[0].attention_norm
+    hf_layer = huggingface_llama.model.layers[layer_index].input_layernorm
+    fs_layer = fartsovka_llama.layers[layer_index].attention_norm
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim

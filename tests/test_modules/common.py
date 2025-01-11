@@ -9,6 +9,9 @@ ATOL = 1e-5
 QUANTIZED_ATOL = 0.1
 
 
+LAYERS_TO_TEST = list(range(16))
+
+
 def assert_close(a: jnp.ndarray, b: jnp.ndarray, atol: float = ATOL) -> None:
     absdiff = jnp.abs(a - b)
     num_violations = jnp.sum(absdiff > atol)
