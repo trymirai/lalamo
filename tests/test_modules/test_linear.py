@@ -7,7 +7,7 @@ from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.source_transformation.lora import Int8DynActInt4WeightLinearLoRA
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import assert_close, checkify_forward, from_torch, to_torch
+from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
 
 def test_linear(
@@ -47,7 +47,7 @@ def test_group_quantized_linear(
     et_output_only_quantized = from_torch(et_only_quantized(sample_input_torch).squeeze(0))
     err, (fs_output_only_quantized,) = fs_only_quantized(sample_input)
     err.throw()
-    assert_close(fs_output_only_quantized, et_output_only_quantized)
+    assert_close(fs_output_only_quantized, et_output_only_quantized, atol=QUANTIZED_ATOL)
 
 
 def test_qlora_linear(
@@ -66,4 +66,4 @@ def test_qlora_linear(
     et_output = from_torch(et_layer(sample_input_torch).squeeze(0))
     err, (fs_output,) = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(fs_output, et_output)
+    assert_close(fs_output, et_output, atol=QUANTIZED_ATOL)

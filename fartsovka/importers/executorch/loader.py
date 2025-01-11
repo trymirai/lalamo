@@ -1,7 +1,8 @@
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array, Float, Int
 
 from fartsovka.importers.common import WeightsPath, load_parameters
@@ -84,15 +85,72 @@ def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: WeightsP
     return load_parameters(lambda m: (m.scale,), module, (weights_dict[path / "weight"],))
 
 
+def permute_qk_out_matrix(matrix: Array, input_dim: int, num_heads: int, head_dim: int) -> Array:
+    # Reference: https://github.com/huggingface/transformers/blob/15bd3e61f8d3680ca472c9314ad07584d20f7b81/src/transformers/models/llama/convert_llama_weights_to_hf.py#L222
+    return rearrange(
+        matrix,
+        "(heads rotors reim) input_channels -> (heads reim rotors) input_channels",
+        heads=num_heads,
+        rotors=head_dim // 2,
+        reim=2,
+        input_channels=input_dim,
+    )
+
+
+def permute_qk_params(
+    params: QLoRALinearParams,
+    model_dim: int,
+    num_heads: int,
+    head_dim: int,
+    quantization_group_size: int,
+    lora_rank: int,
+) -> QLoRALinearParams:
+    # Read https://github.com/huggingface/transformers/issues/25199 to understand WTF is going on here
+    return replace(
+        params,
+        weights=permute_qk_out_matrix(params.weights, model_dim, num_heads, head_dim),
+        scales=permute_qk_out_matrix(params.scales, model_dim // quantization_group_size, num_heads, head_dim),
+        lora_up_weights=tuple(
+            permute_qk_out_matrix(w, lora_rank, num_heads, head_dim) for w in params.lora_up_weights
+        ),
+    )
+
+
 def load_attention(
     module: QLoRAAttention,
     weights_dict: dict[str, Array],
     path: WeightsPath,
 ) -> QLoRAAttention:
+    model_dim = module.model_dim
+    num_heads = module.num_heads
+    num_groups = module.num_groups
+    head_dim = module.head_dim
+    lora_rank = module.qkv_projection.lora_rank
+
     q_params = get_qlora_linear_params(weights_dict, path / "wq")
+    q_params = permute_qk_params(
+        q_params,
+        model_dim,
+        num_heads,
+        head_dim,
+        module.qkv_projection.group_size,
+        lora_rank,
+    )
+
     k_params = get_qlora_linear_params(weights_dict, path / "wk")
+    k_params = permute_qk_params(
+        k_params,
+        model_dim,
+        num_groups,
+        head_dim,
+        module.qkv_projection.group_size,
+        lora_rank,
+    )
+
     v_params = get_qlora_linear_params(weights_dict, path / "wv")
+
     out_params = get_qlora_linear_params(weights_dict, path / "wo")
+
     qkv_params = merge_linear_params([q_params, k_params, v_params])
     return load_parameters(
         lambda m: (*params_selector(m.qkv_projection), *params_selector(m.out_projection)),

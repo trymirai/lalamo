@@ -9,7 +9,7 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import assert_close, checkify_forward, from_torch, to_torch
+from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
 
 def test_decoder_layer(
@@ -75,4 +75,4 @@ def test_qlora_decoder_layer(
     et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
     err.throw()
-    assert_close(fs_output.output, et_output)
+    assert_close(fs_output.output, et_output, atol=QUANTIZED_ATOL)

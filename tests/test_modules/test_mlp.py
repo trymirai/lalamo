@@ -6,7 +6,7 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import assert_close, checkify_forward, from_torch, to_torch
+from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
 
 def test_mlp(
@@ -44,4 +44,4 @@ def test_qlora_mlp(
     et_output = from_torch(et_layer(sample_input_torch).squeeze(0))
     err, fs_output = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(fs_output, et_output)
+    assert_close(fs_output, et_output, atol=QUANTIZED_ATOL)
