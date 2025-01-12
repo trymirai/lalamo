@@ -25,9 +25,10 @@ def assert_close(
 
     allowed_diff = atol + rtol * jnp.abs(reference)
     err = jnp.maximum(absdiff - allowed_diff, 0)
+    err_rel = err / (jnp.abs(reference) + 1e-10)
     max_err = jnp.max(err)
-    max_err_rel = max_err / (jnp.abs(reference) + 1e-10)
     max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(err), err.shape))
+    max_err_rel = err_rel[max_err_idx]
     max_err_reference_value = reference[max_err_idx]
 
     num_violations = jnp.sum(err > 0)
