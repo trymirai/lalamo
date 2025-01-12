@@ -6,7 +6,7 @@ from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
 from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.modules.rope import RoPE, RoPEParams
+from fartsovka.modules.rope import PositionalEmbeddings, RoPE, RoPEParams
 from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import assert_close, checkify_forward, from_torch, to_torch
@@ -136,8 +136,8 @@ def test_executorch_apply_rotary_emb(
     head_dim = fartsovka_llama.head_dim
     sequence_length = 10
     indices = jnp.arange(sequence_length)
-    positional_embeddings = fartsovka_llama.rope(indices)
 
+    positional_embeddings = fartsovka_llama.rope(indices)
     cosines, sines = (
         positional_embeddings.cosines[:, : head_dim // 2],
         positional_embeddings.sines[:, : head_dim // 2],
@@ -147,7 +147,13 @@ def test_executorch_apply_rotary_emb(
     sines_torch = to_torch(sines)
 
     sample_input = jax.random.normal(rng_key, (sequence_length, head_dim))
-    sample_input_torch = to_torch(sample_input).unsqueeze(1).unsqueeze(0)
+
+    sample_input_reordered = rearrange(
+        sample_input,
+        "tokens (reim rotors) -> tokens (rotors reim)",
+        rotors=head_dim // 2,
+    )
+    sample_input_torch = to_torch(sample_input_reordered).unsqueeze(1).unsqueeze(0)
 
     fs_output = positional_embeddings.apply(sample_input)
     et_output, _ = apply_rotary_emb(sample_input_torch, sample_input_torch, cosines_torch, sines_torch)
@@ -156,7 +162,9 @@ def test_executorch_apply_rotary_emb(
     rearranged_et_output = rearrange(
         et_output,
         "tokens (rotors reim) -> tokens (reim rotors)",
+        tokens=sequence_length,
         rotors=head_dim // 2,
         reim=2,
     )
+
     assert_close(fs_output, rearranged_et_output, atol=ROPE_ATOL)

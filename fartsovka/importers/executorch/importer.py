@@ -77,8 +77,6 @@ MAX_SEQUENCE_LENGTH = 8192 * 32
 
 ROPE_SCALING_FACTOR = 32.0
 
-EPS = 1e-5
-
 EMBEDDING_QUANTIZATION_MODE = QuantizationMode.INT8
 ACTIVATION_QUANTIZATION_MODE = QuantizationMode.INT8
 WEIGHT_QUANTIZATION_MODE = QuantizationMode.INT4
@@ -121,7 +119,7 @@ def init_model(
             low_frequency_factor=LOW_FREQ_FACTOR,
             high_frequency_factor=HIGH_FREQ_FACTOR,
         ),
-        eps=EPS,
+        eps=config.norm_eps,
         max_sequence_length=MAX_SEQUENCE_LENGTH,
         key=key,
         weight_quantization_mode=WEIGHT_QUANTIZATION_MODE,

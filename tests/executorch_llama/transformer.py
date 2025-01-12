@@ -20,7 +20,7 @@ from .rope import (
 
 
 class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int, eps: float = 1e-6) -> None:
+    def __init__(self, dim: int, eps: float = 1e-5) -> None:
         """
         Initialize the RMSNorm normalization layer.
 
@@ -240,6 +240,10 @@ class Attention(nn.Module):
         return output
 
 
+def silu(x: torch.Tensor) -> torch.Tensor:
+    return x * torch.sigmoid(x)
+
+
 class FeedForward(nn.Module):
     def __init__(self, args: ModelArgs) -> None:
         super().__init__()
@@ -250,7 +254,7 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(args.dim, hidden_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.w2(F.silu(self.w1(x)) * self.w3(x))
+        return self.w2(silu(self.w1(x)) * self.w3(x))
 
 
 class TransformerBlock(nn.Module):

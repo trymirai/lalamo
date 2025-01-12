@@ -19,8 +19,8 @@ def assert_close(a: jnp.ndarray, b: jnp.ndarray, atol: float = ATOL, operation_n
     rms_diff = jnp.sqrt(jnp.mean(jnp.square(absdiff)))
     rms_a = jnp.sqrt(jnp.mean(jnp.square(a)))
     rms_b = jnp.sqrt(jnp.mean(jnp.square(b)))
-    rel_rms_b = rms_diff / rms_b
-    rel_rms_a = rms_diff / rms_a
+    rel_rms_b = rms_diff / (rms_b + 1e-10)
+    rel_rms_a = rms_diff / (rms_a + 1e-10)
     errmax_idx = tuple(i.item() for i in jnp.unravel_index(errmax_idx, absdiff.shape))
     if operation_name is not None:
         operation_description = f" during {operation_name}"
