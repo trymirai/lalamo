@@ -7,7 +7,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from .activations import silu
 from .linear import LinearBase, LinearFactoryBase
 
-__all__ = ["MLPBase", "MLPFactoryBase", "MLP", "MLPFactory"]
+__all__ = ["MLP", "MLPBase", "MLPFactory", "MLPFactoryBase"]
 
 
 class MLPBase(eqx.Module):

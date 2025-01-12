@@ -12,7 +12,7 @@ from .kv_cache import KVCacheLayerSlice
 from .linear import LinearBase, LinearFactoryBase
 from .rope import PositionalEmbeddings
 
-__all__ = ["Attention", "AttentionFactory", "AttentionBase", "AttentionFactoryBase"]
+__all__ = ["Attention", "AttentionBase", "AttentionFactory", "AttentionFactoryBase"]
 
 
 class AttentionOutput(NamedTuple):

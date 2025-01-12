@@ -12,12 +12,12 @@ from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
 __all__ = [
-    "LinearBase",
-    "LinearFactoryBase",
-    "Linear",
-    "LinearFactory",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearFactory",
+    "Linear",
+    "LinearBase",
+    "LinearFactory",
+    "LinearFactoryBase",
     "QLoRALinear",
     "QLoRALinearFactory",
 ]

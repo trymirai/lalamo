@@ -6,7 +6,7 @@ from jaxtyping import Array, Float, Int
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
-__all__ = ["PositionalEmbeddings", "RoPE", "RoPEParams", "RoPEFactory"]
+__all__ = ["PositionalEmbeddings", "RoPE", "RoPEFactory", "RoPEParams"]
 
 
 class PositionalEmbeddings(eqx.Module):

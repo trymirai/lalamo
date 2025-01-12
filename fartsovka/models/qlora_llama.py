@@ -13,10 +13,10 @@ from fartsovka.modules.rope import RoPEFactory, RoPEParams
 from fartsovka.quantization import QuantizationMode
 
 __all__ = [
-    "QLoRAMLP",
     "QLoRAAttention",
     "QLoRADecoderLayer",
     "QLoRALlama",
+    "QLoRAMLP",
     "get_qlora_llama",
     "get_qlora_llama_factory",
 ]
