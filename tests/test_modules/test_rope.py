@@ -6,7 +6,7 @@ from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
 from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.modules.rope import PositionalEmbeddings, RoPE, RoPEParams
+from fartsovka.modules.rope import RoPE, RoPEParams
 from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import assert_close, checkify_forward, from_torch, to_torch
