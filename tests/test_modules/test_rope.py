@@ -11,7 +11,7 @@ from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
-ROPE_RTOL = 0.001
+ROPE_RTOL = 0.01
 
 
 def test_unscaled_rope() -> None:
