@@ -165,15 +165,20 @@ def test_qlora_attention(
     et_layer = executorch_llama.layers[layer_index].attention
 
     input_dim = fs_layer.model_dim
-    sequence_length = 512
+    sequence_length = 10
 
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
-    freqs_cos, freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
     positional_embeddings = fartsovka_qlora_llama.rope(position_ids)
+
+    et_freqs_cos, et_freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
+    freqs_cos = to_torch(positional_embeddings.cosines[:, : fs_layer.head_dim // 2])
+    assert et_freqs_cos.shape == freqs_cos.shape
+    freqs_sin = to_torch(positional_embeddings.sines[:, : fs_layer.head_dim // 2])
+    assert et_freqs_sin.shape == freqs_sin.shape
 
     # Create causal mask
     jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))

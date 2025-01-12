@@ -74,6 +74,9 @@ LOW_FREQ_FACTOR = 1.0
 HIGH_FREQ_FACTOR = 4.0
 OLD_CONTEXT_LENGTH = 8192
 MAX_SEQUENCE_LENGTH = 8192 * 32
+
+ROPE_SCALING_FACTOR = 32.0
+
 EPS = 1e-5
 
 EMBEDDING_QUANTIZATION_MODE = QuantizationMode.INT8
@@ -113,7 +116,7 @@ def init_model(
         rope_params=RoPEParams(
             theta=config.rope_theta,
             use_scaling=True,
-            scaling_factor=config.rope_theta,
+            scaling_factor=ROPE_SCALING_FACTOR,
             original_context_length=OLD_CONTEXT_LENGTH,
             low_frequency_factor=LOW_FREQ_FACTOR,
             high_frequency_factor=HIGH_FREQ_FACTOR,

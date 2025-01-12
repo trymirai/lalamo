@@ -1,8 +1,10 @@
-import jax
+from copy import deepcopy
+
+import equinox as eqx
+import pytest
 import torch
 import transformers
 from jax import numpy as jnp
-from jaxtyping import PRNGKeyArray
 
 from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
@@ -10,21 +12,55 @@ from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
 
+TOKENS = [
+    128000,
+    128000,
+    128006,
+    9125,
+    128007,
+    271,
+    2675,
+    527,
+    264,
+    11190,
+    15592,
+    18328,
+    369,
+    5944,
+    10631,
+    323,
+    19075,
+    128009,
+    128006,
+    882,
+    128007,
+    271,
+    3923,
+    649,
+    499,
+    1520,
+    757,
+    449,
+    30,
+    128009,
+    128006,
+    78191,
+    128007,
+]
+
+
+NUM_LAYERS_IN_TRUNCATED_MODELS = [0, 1, 3, 7]
+
 
 def test_decoder(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
-    rng_key: PRNGKeyArray,
 ) -> None:
     fs_decoder = fartsovka_llama
     fs_decoder_forward = checkify_forward(fs_decoder)
 
-    sequence_length = 512
-    vocab_size = fs_decoder.vocab_dim
-
-    # Generate random token IDs
-    token_key, _ = jax.random.split(rng_key)
-    token_ids = jax.random.randint(token_key, (sequence_length,), 0, vocab_size)
+    sequence_length = len(TOKENS)
+    token_ids = jnp.array(TOKENS)
     token_ids_torch = to_torch(token_ids).unsqueeze(0)
 
     # Create position IDs
@@ -48,21 +84,46 @@ def test_decoder(
     assert_close(hf_output, fs_output.output, atol=1e-3)
 
 
+@pytest.mark.parametrize("num_layers_in_truncated_model", NUM_LAYERS_IN_TRUNCATED_MODELS)
+def test_qlora_decoder_truncated(
+    executorch_llama: ETTransformer,
+    fartsovka_qlora_llama: QLoRALlama,
+    num_layers_in_truncated_model: int,
+) -> None:
+    fs_decoder_big = fartsovka_qlora_llama
+    fs_decoder = eqx.tree_at(lambda d: d.layers, fs_decoder_big, fs_decoder_big.layers[:num_layers_in_truncated_model])
+    fs_decoder_forward = checkify_forward(fs_decoder)
+
+    et_decoder = deepcopy(executorch_llama)
+    et_decoder.layers = et_decoder.layers[:num_layers_in_truncated_model]
+
+    sequence_length = len(TOKENS)
+    token_ids = jnp.array(TOKENS)
+    token_ids_torch = to_torch(token_ids).unsqueeze(0)
+
+    # Create position IDs
+    position_ids = jnp.arange(sequence_length)
+
+    # Create causal mask
+    jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+    # Run forward passes
+    et_output = from_torch(et_decoder(tokens=token_ids_torch).squeeze(0))
+    err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
+    err.throw()
+    assert_close(fs_output.output, et_output, atol=QUANTIZED_ATOL)
+
+
 def test_qlora_decoder(
     executorch_llama: ETTransformer,
     fartsovka_qlora_llama: QLoRALlama,
-    rng_key: PRNGKeyArray,
 ) -> None:
     fs_decoder = fartsovka_qlora_llama
     fs_decoder_forward = checkify_forward(fs_decoder)
     et_decoder = executorch_llama
 
-    sequence_length = 512
-    vocab_size = fs_decoder.vocab_dim
-
-    # Generate random token IDs
-    token_key, _ = jax.random.split(rng_key)
-    token_ids = jax.random.randint(token_key, (sequence_length,), 0, vocab_size)
+    sequence_length = len(TOKENS)
+    token_ids = jnp.array(TOKENS)
     token_ids_torch = to_torch(token_ids).unsqueeze(0)
 
     # Create position IDs

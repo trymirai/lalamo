@@ -8,7 +8,6 @@
 # Please refer to README.md in the same folder for more information.
 
 from dataclasses import dataclass
-from functools import partial
 
 import torch
 from torch import nn
@@ -16,8 +15,6 @@ from torch.nn import functional as F
 
 from .rope import (
     RotaryEmbedding,
-    hf_apply_rotary_emb,
-    hf_precompute_freqs_cis,
     precompute_freqs_cis,
 )
 
@@ -146,29 +143,18 @@ class Rope(torch.nn.Module):
     def __init__(self, params: ModelArgs) -> None:
         super().__init__()
         self.params = params
-        if self.params.use_hf_rope:
-            self.precompute_freqs_cis = hf_precompute_freqs_cis
-        else:
-            self.precompute_freqs_cis = partial(
-                precompute_freqs_cis,
-                use_scaled=self.params.use_scaled_rope,
-                scale_factor=self.params.rope_scale_factor,
-            )
-        freqs_cos, freqs_sin = self.precompute_freqs_cis(
+
+        freqs_cos, freqs_sin = precompute_freqs_cis(
             self.params.head_dim,  # type: ignore
-            (
-                self.params.max_seq_len  # Normal llama2.
-                if self.params.ffn_dim_multiplier is None
-                else self.params.max_seq_len * 2  # Sharded checkpoint.
-            ),
+            self.params.max_seq_len * 2,
             self.params.rope_freq_base,
+            use_scaled=self.params.use_scaled_rope,
+            scale_factor=self.params.rope_scale_factor,
         )
         self.register_buffer("freqs_cos", freqs_cos, persistent=False)
         self.register_buffer("freqs_sin", freqs_sin, persistent=False)
-        if self.params.use_hf_rope:
-            self.apply_rotary_emb = hf_apply_rotary_emb
-        else:
-            self.apply_rotary_emb = RotaryEmbedding()
+
+        self.apply_rotary_emb = RotaryEmbedding()
 
     def forward(
         self,
@@ -191,147 +177,11 @@ class Rope(torch.nn.Module):
             Tuple[torch.Tensor, torch.Tensor]:
                 The precomputed frequencies for the given input position and sequence length.
         """
-        if self.params.use_kv_cache:
-            assert input_pos is not None, "input_pos must be provided when use_kv_cache is True"
 
-            if self.params.enable_dynamic_shape:
-                # when KV cache is used, seqlen is most likely 1. We want to slice from the start_pos.
-                input_pos_item = input_pos[-1].item()
-                torch._check_is_size(input_pos_item)  # noqa: SLF001
-                torch._check(input_pos_item < self.params.max_seq_len)  # noqa: SLF001
-                # pyre-ignore: Incompatible parameter type [6]: torch.narrow does expect int or Tensor
-                freqs_cos = self.freqs_cos.narrow(0, input_pos_item, seq_len)
-                # pyre-ignore: Incompatible parameter type [6]
-                freqs_sin = self.freqs_sin.narrow(0, input_pos_item, seq_len)
-            else:
-                # When not using dynamic shape, use of the .item results in
-                # symints, due to querying the data from tensor.
-                # this path avoids that for mps backend, although probably mps backend
-                # can support dynamic shape?
-                freqs_cos = self.freqs_cos[input_pos]
-                freqs_sin = self.freqs_sin[input_pos]
-
-        else:
-            assert input_pos is None, "input_pos is unused when use_kv_cache is False"
-            freqs_cos = self.freqs_cos[:seq_len]
-            freqs_sin = self.freqs_sin[:seq_len]
+        assert input_pos is None, "input_pos is unused when use_kv_cache is False"
+        freqs_cos = self.freqs_cos[:seq_len]
+        freqs_sin = self.freqs_sin[:seq_len]
         return freqs_cos, freqs_sin
-
-
-class KVCache(nn.Module):
-    def __init__(
-        self,
-        max_batch_size: int,
-        max_seq_length: int,
-        n_heads: int,
-        head_dim: int,
-        transpose_cache: bool,
-        enable_dynamic_shape: bool,
-        dtype: torch.dtype = torch.float32,
-    ) -> None:
-        super().__init__()
-        self.max_seq_length = max_seq_length
-        self.is_transposed = transpose_cache
-        if transpose_cache:
-            cache_shape = (max_batch_size, n_heads, max_seq_length, head_dim)
-        else:
-            cache_shape = (max_batch_size, max_seq_length, n_heads, head_dim)
-
-        self.max_batch_size = max_batch_size
-        self.n_heads = n_heads
-        self.head_dim = head_dim
-        self.transpose_cache = transpose_cache
-        self.enable_dynamic_shape = enable_dynamic_shape
-        self.register_buffer("k_cache", torch.zeros(cache_shape, dtype=dtype, device="cpu"))
-        self.register_buffer("v_cache", torch.zeros(cache_shape, dtype=dtype, device="cpu"))
-
-    def update(
-        self,
-        input_pos: torch.Tensor,
-        k_val: torch.Tensor,
-        v_val: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        # input_pos: [S], k_val: [B, H, S, D] or [B, S, H, D] depending on transpose_cache
-        if self.enable_dynamic_shape:
-            start_pos = input_pos[0].item()
-            torch._check_is_size(start_pos)  # noqa: SLF001
-            torch._check(start_pos < self.max_seq_length)  # noqa: SLF001
-            dim_to_slice = 2 if self.transpose_cache else 1
-            seq_length = k_val.size(dim_to_slice)
-            # Replace the entry in the cache for this token
-            # The following lines are equivalent to:
-            # cache_k[:bsz, start_pos : start_pos + seqlen] = xk  # noqa: ERA001
-            # cache_v[:bsz, start_pos : start_pos + seqlen] = xv  # noqa: ERA001
-            # when dim_to_slice is 1
-            # We use .narrow() here to make the compiler happy
-            # pyre-ignore: Incompatible parameter type [6]
-            narrowed_k = self.k_cache.narrow(dim_to_slice, start_pos, seq_length)
-            # pyre-ignore: Incompatible parameter type [6]
-            narrowed_v = self.v_cache.narrow(dim_to_slice, start_pos, seq_length)
-
-            narrowed_k.copy_(k_val)
-            narrowed_v.copy_(v_val)
-            return self.k_cache, self.v_cache
-        k_out = self.k_cache
-        v_out = self.v_cache
-        if self.transpose_cache:
-            k_out[:, :, input_pos] = k_val
-            v_out[:, :, input_pos] = v_val
-        else:
-            k_out[:, input_pos] = k_val
-            v_out[:, input_pos] = v_val
-
-        return k_out, v_out
-
-
-class SDPA(nn.Module):
-    def __init__(
-        self,
-        kv_cache: KVCache,
-        dim: int,
-        head_dim: int,
-        n_rep: int,
-        max_seq_len: int,
-        enable_dynamic_shape: bool,
-    ) -> None:
-        super().__init__()
-        self.kv_cache = kv_cache
-        self.dim = dim
-        self.head_dim = head_dim
-        self.n_rep = n_rep
-        self.max_seq_len = max_seq_len
-        self.enable_dynamic_shape = enable_dynamic_shape
-
-    def forward(
-        self,
-        input_pos: torch.Tensor,
-        q: torch.Tensor,  # Already have rotary embeddings. (bs, seqlen, n_local_heads, head_dim)
-        k: torch.Tensor,  # Already have rotary embeddings. (bs, seqlen, n_local_kv_heads, head_dim)
-        v: torch.Tensor,  # (bs, seqlen, n_local_kv_heads, head_dim)
-        bsz: int,
-        seqlen: int,
-        mask: torch.Tensor,
-    ) -> torch.Tensor:
-        q = q.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
-        k = k.transpose(1, 2)
-        v = v.transpose(1, 2)
-
-        k, v = self.kv_cache.update(input_pos, k, v)
-        if self.enable_dynamic_shape:
-            start_pos = input_pos[-1].item()
-            torch._check_is_size(start_pos)  # noqa: SLF001
-            torch._check(start_pos < self.max_seq_len)  # noqa: SLF001
-            seq_length = q.size(2)
-            # pyre-ignore: Incompatible parameter type [6]
-            attn_mask = mask.narrow(0, start_pos, seq_length)  # type: ignore
-        else:
-            attn_mask = mask[None, None, input_pos]
-
-        k = k.repeat_interleave(self.n_rep, dim=1)
-        v = v.repeat_interleave(self.n_rep, dim=1)
-        y = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=0.0)
-
-        return y.transpose(1, 2).contiguous().view(bsz, seqlen, self.dim)
 
 
 class Attention(nn.Module):
@@ -358,41 +208,12 @@ class Attention(nn.Module):
 
         self.rope = rope
 
-        causal_mask = torch.tril(
-            torch.ones(
-                self.max_seq_len,
-                self.max_seq_len,
-                dtype=torch.bool,
-                device="cpu",
-            ),
-        )
-        self.register_buffer("mask", causal_mask, persistent=False)
-
-        if self.use_kv_cache:
-            self.kv_cache = KVCache(
-                args.max_batch_size,
-                args.max_seq_len,
-                self.n_kv_heads,
-                self.head_dim,  # type: ignore
-                # if we are using the custom op don't transpose the cache. Expect untransposed q k v
-                not args.use_sdpa_with_kv_cache_op,
-                args.enable_dynamic_shape,
-            )
-            self.SDPA = SDPA(
-                kv_cache=self.kv_cache,
-                dim=self.n_local_heads * self.head_dim,  # type: ignore
-                head_dim=self.head_dim,  # type: ignore
-                n_rep=self.n_rep,
-                max_seq_len=self.max_seq_len,
-                enable_dynamic_shape=args.enable_dynamic_shape,
-            )
-
     def forward(
         self,
         x: torch.Tensor,
         freqs_cos: torch.Tensor,
         freqs_sin: torch.Tensor,
-        input_pos: torch.Tensor | None = None,
+        input_pos: torch.Tensor | None = None,  # noqa: ARG002
     ) -> torch.Tensor:
         bsz, seqlen, _ = x.shape
 
@@ -406,24 +227,11 @@ class Attention(nn.Module):
         # RoPE relative positional embeddings
         q, k = self.rope.forward(q, k, freqs_cos, freqs_sin)
 
-        if self.use_kv_cache:
-            assert input_pos is not None
-            output = self.SDPA(input_pos, q, k, v, bsz, seqlen, self.mask)
-            return self.wo(output)
-
         q = q.transpose(1, 2)  # (bs, n_local_heads, seqlen, head_dim)
         k = k.transpose(1, 2)
         v = v.transpose(1, 2)
 
-        # grouped multiquery attention: expand out keys and values
-        k = k.repeat_interleave(self.n_rep, dim=1)
-        v = v.repeat_interleave(self.n_rep, dim=1)
-
-        assert hasattr(self, "mask")
-
-        mask = self.mask[:seqlen, :seqlen]
-
-        output = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0)
+        output = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=True)
 
         output = output.transpose(1, 2).contiguous().view(bsz, seqlen, -1)
 
@@ -445,52 +253,6 @@ class FeedForward(nn.Module):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
 
-class ConditionalFeedForward(nn.Module):
-    def __init__(self, args: ModelArgs) -> None:
-        super().__init__()
-        self.dim = args.dim
-        hidden_dim = args.hidden_dim
-        if hidden_dim is None:
-            # If hidden_dim is not explicitly set in the ModelArgs,
-            # then calculate implicitly based on dim and also multiple of `args.multiple_of`
-            multiple_of = args.multiple_of
-            hidden_dim = 4 * self.dim
-            hidden_dim = int(2 * hidden_dim / 3)
-            hidden_dim = multiple_of * ((hidden_dim + multiple_of - 1) // multiple_of)
-
-        self.w1 = nn.Parameter(torch.randn(args.num_experts, hidden_dim, self.dim))
-        self.w2 = nn.Parameter(torch.randn(args.num_experts, hidden_dim, self.dim))
-        self.w3 = nn.Parameter(torch.randn(args.num_experts, hidden_dim, self.dim))
-        self.num_experts = args.num_experts
-
-    def forward(self, x: torch.Tensor, expert_indices: torch.Tensor) -> torch.Tensor:
-        w1_weights = self.w1[expert_indices].transpose(-1, -2)  # [T, A, D, D]
-        w3_weights = self.w3[expert_indices].transpose(-1, -2)  # [T, A, D, D]
-        w2_weights = self.w2[expert_indices]  # [T, A, D, D]
-        x1 = F.silu(torch.einsum("ti,taio -> tao", x, w1_weights))
-        x3 = torch.einsum("ti, taio -> tao", x, w3_weights)
-        expert_outs = torch.einsum("tao, taoi -> tai", (x1 * x3), w2_weights)
-        return expert_outs
-
-
-class MOEFeedForward(nn.Module):
-    def __init__(self, config: ModelArgs) -> None:
-        super().__init__()
-        self.gate = nn.Linear(config.dim, config.num_experts, bias=False)
-        self.cond_ffn = ConditionalFeedForward(config)
-        self.dim = config.dim
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x.view(-1, self.dim)
-        # T = num_tokens, E = num_experts, D = hidden dim, A = activated experts
-        # x: [T, D]  # noqa: ERA001
-        scores = self.gate(x)  # [T, E]
-        expert_weights, expert_indices = torch.topk(scores, 2, dim=-1)  # [T, A], [T, A]
-        expert_weights = expert_weights.softmax(dim=-1)  # [T, A]
-        expert_outs = self.cond_ffn(x, expert_indices)
-        return torch.einsum("tai,ta -> ti", expert_outs, expert_weights)
-
-
 class TransformerBlock(nn.Module):
     def __init__(self, layer_id: int, args: ModelArgs, rope: Rope) -> None:
         super().__init__()
@@ -499,10 +261,7 @@ class TransformerBlock(nn.Module):
         self.dim = args.dim
         self.head_dim = args.head_dim
         self.attention = Attention(args, layer_id, rope)
-        if args.moe:
-            self.block_sparse_moe = MOEFeedForward(args)
-        else:
-            self.feed_forward = FeedForward(args)
+        self.feed_forward = FeedForward(args)
         self.attention_norm = RMSNorm(args.dim, eps=args.norm_eps)
         self.ffn_norm = RMSNorm(args.dim, eps=args.norm_eps)
 
@@ -513,14 +272,8 @@ class TransformerBlock(nn.Module):
         freqs_sin: torch.Tensor,
         input_pos: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        h = self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, input_pos)
-
-        h = x + h
-        if hasattr(self, "block_sparse_moe"):
-            out = h + self.block_sparse_moe(self.ffn_norm(h))
-        else:
-            out = h + self.feed_forward(self.ffn_norm(h))
-        return out
+        h = x + self.attention.forward(self.attention_norm(x), freqs_cos, freqs_sin, input_pos)
+        return h + self.feed_forward(self.ffn_norm(h))
 
 
 class Transformer(nn.Module):
@@ -545,16 +298,14 @@ class Transformer(nn.Module):
 
     def forward(
         self,
-        tokens: torch.LongTensor | None = None,  # tokens
+        tokens: torch.LongTensor | None = None,
         input_pos: torch.LongTensor | None = None,  # Scalar tensor indicating size of window of the caches
         h: torch.FloatTensor | None = None,  # embeddings
     ) -> torch.Tensor:
-        if (tokens is None) ^ (h is not None):
-            raise ValueError("You cannot specify both tokens and h at the same time, and must specify either one")
-        if tokens is not None and h is None:
-            h = self.tok_embeddings(tokens)
-        seqlen = h.shape[1]  # type: ignore
+        seqlen = tokens.shape[1]  # type: ignore
         freqs_cos, freqs_sin = self.rope.get_freqs(input_pos, seqlen)
+
+        h = self.tok_embeddings(tokens)
 
         for layer in self.layers:
             h = layer(
@@ -564,34 +315,8 @@ class Transformer(nn.Module):
                 input_pos,
             )
 
-        if not self.generate_full_logits:
-            # Only the last logit is used for the new generated token
-            h = h[:, -1, :]  # type: ignore
-
         h = self.norm(h)
 
         logits = self.output(h)
-
-        if self.output_prune_map is not None:
-            # expand to original size so that downstream applications can use the logits as-is.
-            if self.generate_full_logits:
-                # (1, seq_len, pruned_size) -> (1, seq_len, original_size)
-                expanded_logits = torch.full(
-                    [logits.shape[0], logits.shape[1], self.vocab_size],
-                    float("-inf"),
-                    device=logits.device,
-                    dtype=logits.dtype,
-                )
-                expanded_logits[:, :, list(self.output_prune_map.values())] = logits
-            else:
-                # (1, pruned_size) -> (1, original_size)
-                expanded_logits = torch.full(
-                    [logits.shape[0], self.vocab_size],
-                    float("-inf"),
-                    device=logits.device,
-                    dtype=logits.dtype,
-                )
-                expanded_logits[:, list(self.output_prune_map.values())] = logits
-            logits = expanded_logits
 
         return logits

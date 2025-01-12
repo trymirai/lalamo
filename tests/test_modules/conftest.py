@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 import cattrs
 import jax
@@ -83,13 +84,19 @@ def _upcast_weights_to_float32(weights: dict[str, torch.Tensor]) -> dict[str, to
     return result
 
 
+def _load_et_config(path: str | Path) -> ETModelArgs:
+    with open(path) as f:
+        params_json = json.load(f)
+    params = cattrs.structure(params_json, ETModelArgs)
+    params.rope_scale_factor = 32
+    return params
+
+
 @pytest.fixture(scope="package")
 def executorch_llama() -> ETTransformer:
     config_path = download_et_config(ExecutorchModel.LLAMA32_1B_INSTRUCT_QLORA)
     weights_path = download_et_weights(ExecutorchModel.LLAMA32_1B_INSTRUCT_QLORA)
-    with open(config_path) as f:
-        params_json = json.load(f)
-    params = cattrs.structure(params_json, ETModelArgs)
+    params = _load_et_config(config_path)
     model = ETTransformer(params)
 
     weights = torch.load(weights_path, map_location="cpu", weights_only=False)
