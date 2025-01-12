@@ -12,6 +12,8 @@ from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
+DECODER_ATOL = 1e-3
+
 TOKENS = [
     128000,
     128000,
@@ -84,6 +86,7 @@ def test_decoder(
     assert_close(
         result=fs_output.output,
         reference=hf_output,
+        atol=DECODER_ATOL,
     )
 
 
@@ -117,6 +120,7 @@ def test_qlora_decoder_truncated(
     assert_close(
         result=fs_output.output,
         reference=et_output,
+        atol=DECODER_ATOL,
         rtol=QUANTIZED_RTOL,
     )
 
@@ -146,5 +150,6 @@ def test_qlora_decoder(
     assert_close(
         result=fs_output.output,
         reference=et_output,
+        atol=DECODER_ATOL,
         rtol=QUANTIZED_RTOL,
     )

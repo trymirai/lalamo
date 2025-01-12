@@ -23,8 +23,10 @@ def assert_close(
 ) -> None:
     absdiff = jnp.abs(result - reference)
 
-    err = jnp.maximum(absdiff - atol + rtol * reference, 0)
+    allowed_diff = atol + rtol * jnp.abs(reference)
+    err = jnp.maximum(absdiff - allowed_diff, 0)
     max_err = jnp.max(err)
+    max_err_rel = max_err / (jnp.abs(reference) + 1e-10)
     max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(err), err.shape))
     max_err_reference_value = reference[max_err_idx]
 
@@ -42,9 +44,9 @@ def assert_close(
 
     message = (
         f"{num_violations} violations > {atol:.1e} + {rtol:.2%}{operation_description}."
-        f" Max error: {max_err:.5g} at index {max_err_idx} (reference value: {max_err_reference_value:.5g})."
-        f" Error RMS: {rms_diff:.5g}."
-        f" RMS of result: {rms_result:.5g}, RMS of reference: {rms_reference:.5g}."
+        f" Max error: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx} (reference value: {max_err_reference_value:.3g})."
+        f" Error RMS: {rms_diff:.3g}."
+        f" RMS of result: {rms_result:.3g}, RMS of reference: {rms_reference:.3g}."
         f" Relative error RMS: {rel_rms_reference:.2%} of RMS of reference."
         f" Shape: {result.shape}"
     )
