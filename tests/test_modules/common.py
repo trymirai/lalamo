@@ -44,7 +44,8 @@ def assert_close(
 
     message = (
         f"{num_violations} violations > {atol:.1e} + {rtol:.2%}{operation_description}."
-        f" Max error: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx} (reference value: {max_err_reference_value:.3g})."
+        f" Max error: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx}"
+        f" (reference value: {max_err_reference_value:.3g})."
         f" Error RMS: {rms_diff:.3g}."
         f" RMS of result: {rms_result:.3g}, RMS of reference: {rms_reference:.3g}."
         f" Relative error RMS: {rel_rms_reference:.2%} of RMS of reference."
