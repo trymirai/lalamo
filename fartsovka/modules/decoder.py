@@ -43,7 +43,7 @@ class Decoder[
     embedding: EmbeddingType
     rope: RoPE
     layers: list[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]
-    out_norm: RMSNorm
+    output_norm: RMSNorm
 
     def __init__(
         self,
@@ -52,7 +52,7 @@ class Decoder[
         embedding_factory: EmbeddingFactoryBase[EmbeddingType],
         rope_factory: RoPEFactory,
         layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType],
-        out_norm_factory: RMSNormFactory,
+        output_norm_factory: RMSNormFactory,
         vocab_dim: int,
         model_dim: int,
         hidden_dim: int,
@@ -94,7 +94,7 @@ class Decoder[
             )
             for layer_key in layer_keys
         ]
-        self.out_norm = out_norm_factory(model_dim, eps)
+        self.output_norm = output_norm_factory(model_dim, eps)
 
     def __call__(
         self,
@@ -118,7 +118,7 @@ class Decoder[
             )
             x = decoder_layer_output.output
             updated_kv_cache.append(decoder_layer_output.kv_cache)
-        x = vmap(self.out_norm, in_axes=0)(x)
+        x = vmap(self.output_norm, in_axes=0)(x)
         result = vmap(self.embedding.readout, in_axes=0)(x)
         return DecoderOutput(output=result, kv_cache=updated_kv_cache or None)
 
@@ -134,7 +134,7 @@ class DecoderFactory[
     embedding_factory: EmbeddingFactoryBase[EmbeddingType]
     rope_factory: RoPEFactory
     layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType]
-    out_norm_factory: RMSNormFactory
+    output_norm_factory: RMSNormFactory
 
     def __call__(
         self,
@@ -156,7 +156,7 @@ class DecoderFactory[
             embedding_factory=self.embedding_factory,
             rope_factory=self.rope_factory,
             layer_factory=self.layer_factory,
-            out_norm_factory=self.out_norm_factory,
+            output_norm_factory=self.output_norm_factory,
             vocab_dim=vocab_dim,
             model_dim=model_dim,
             hidden_dim=hidden_dim,

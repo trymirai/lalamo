@@ -84,9 +84,9 @@ def load_llama(
     decoder_layers = [
         load_decoder_layer(layer, weights_dict, root_path / "layers" / i) for i, layer in enumerate(module.layers)
     ]
-    out_norm = load_rmsnorm(module.out_norm, weights_dict, root_path / "norm")
+    output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm")
     return load_parameters(
-        lambda m: (m.embedding, m.layers, m.out_norm),
+        lambda m: (m.embedding, m.layers, m.output_norm),
         module,
-        (embedding, decoder_layers, out_norm),
+        (embedding, decoder_layers, output_norm),
     )

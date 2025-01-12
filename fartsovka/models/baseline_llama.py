@@ -70,7 +70,7 @@ def get_baseline_llama_factory(
                 linear_factory=LinearFactory(precision=precision),
             ),
         ),
-        out_norm_factory=RMSNormFactory(
+        output_norm_factory=RMSNormFactory(
             precision=precision,
             accumulation_precision=accumulation_precision,
         ),

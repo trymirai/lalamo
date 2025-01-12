@@ -100,7 +100,7 @@ def get_qlora_llama_factory(
                 ),
             ),
         ),
-        out_norm_factory=RMSNormFactory(
+        output_norm_factory=RMSNormFactory(
             precision=activation_precision,
             accumulation_precision=accumulation_precision,
         ),
