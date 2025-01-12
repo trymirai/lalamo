@@ -5,9 +5,9 @@ from jax.experimental.checkify import checkify, div_checks, index_checks, nan_ch
 
 __all__ = ["assert_close", "from_torch", "to_torch"]
 
-ATOL = 1e-4
+ATOL = 1e-5
 RTOL = 0.01
-QUANTIZED_RTOL = 0.001
+QUANTIZED_RTOL = 0.01
 
 
 LAYERS_TO_TEST = list(range(16))

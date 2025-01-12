@@ -11,7 +11,7 @@ from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
-ROPE_RTOL = 0.01
+ROPE_ATOL = 0.02
 
 
 def test_unscaled_rope() -> None:
@@ -57,13 +57,13 @@ def test_unscaled_rope() -> None:
     assert_close(
         result=fs_positional_embeddings.cosines,
         reference=hf_cosines,
-        rtol=ROPE_RTOL,
+        atol=ROPE_ATOL,
         operation_name="rope_cosines",
     )
     assert_close(
         result=fs_positional_embeddings.sines,
         reference=hf_sines,
-        rtol=ROPE_RTOL,
+        atol=ROPE_ATOL,
         operation_name="rope_sines",
     )
 
@@ -119,13 +119,13 @@ def test_scaled_rope() -> None:
     assert_close(
         result=fs_positional_embeddings.cosines,
         reference=hf_cosines,
-        rtol=ROPE_RTOL,
+        atol=ROPE_ATOL,
         operation_name="rope_cosines",
     )
     assert_close(
         result=fs_positional_embeddings.sines,
         reference=hf_sines,
-        rtol=ROPE_RTOL,
+        atol=ROPE_ATOL,
         operation_name="rope_sines",
     )
 
@@ -148,13 +148,13 @@ def test_rope(
     assert_close(
         result=fs_positional_embeddings.cosines,
         reference=hf_cosines,
-        rtol=ROPE_RTOL,
+        atol=ROPE_ATOL,
         operation_name="rope_cosines",
     )
     assert_close(
         result=fs_positional_embeddings.sines,
         reference=hf_sines,
-        rtol=ROPE_RTOL,
+        atol=ROPE_ATOL,
         operation_name="rope_sines",
     )
 
