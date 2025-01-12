@@ -18,7 +18,7 @@ from tests.executorch_llama.transformer import TransformerBlock as ETDecoderLaye
 
 from .common import (
     LAYERS_TO_TEST,
-    QUANTIZED_ATOL,
+    QUANTIZED_RTOL,
     assert_close,
     checkify_forward,
     from_torch,
@@ -131,7 +131,10 @@ def test_linear(
     hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
     err, (fs_output,) = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(hf_output, fs_output)
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+    )
 
 
 @pytest.mark.parametrize(
@@ -171,7 +174,12 @@ def test_group_quantized_linear(
         permuted_fs_output = permutation(fs_output, head_dim)
         et_only_quantized = super(Int8DynActInt4WeightLinearLoRA, et_layer).forward  # type: ignore
         et_output_only_quantized = from_torch(et_only_quantized(sample_input_torch).squeeze(0))
-        assert_close(permuted_fs_output, et_output_only_quantized, atol=QUANTIZED_ATOL, operation_name=name)
+        assert_close(
+            result=permuted_fs_output,
+            reference=et_output_only_quantized,
+            rtol=QUANTIZED_RTOL,
+            operation_name=name,
+        )
 
 
 @pytest.mark.parametrize(
@@ -204,4 +212,9 @@ def test_qlora_linear(
     for fs_output, et_layer, permutation, name in zip(fs_outputs, et_layers, permutations, names, strict=True):
         permuted_fs_output = permutation(fs_output, head_dim)
         et_output = from_torch(et_layer(sample_input_torch).squeeze(0))
-        assert_close(permuted_fs_output, et_output, atol=QUANTIZED_ATOL, operation_name=name)
+        assert_close(
+            result=permuted_fs_output,
+            reference=et_output,
+            rtol=QUANTIZED_RTOL,
+            operation_name=name,
+        )

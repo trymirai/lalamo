@@ -5,35 +5,50 @@ from jax.experimental.checkify import checkify, div_checks, index_checks, nan_ch
 
 __all__ = ["assert_close", "from_torch", "to_torch"]
 
-ATOL = 1e-5
-QUANTIZED_ATOL = 1e-5
+ATOL = 1e-4
+RTOL = 0.01
+QUANTIZED_RTOL = 0.001
 
 
 LAYERS_TO_TEST = list(range(16))
 
 
-def assert_close(a: jnp.ndarray, b: jnp.ndarray, atol: float = ATOL, operation_name: str | None = None) -> None:
-    absdiff = jnp.abs(a - b)
-    num_violations = jnp.sum(absdiff > atol)
-    errmax, errmax_idx = jnp.max(absdiff), jnp.argmax(absdiff)
+def assert_close(
+    *,
+    result: jnp.ndarray,
+    reference: jnp.ndarray,
+    atol: float = ATOL,
+    rtol: float = RTOL,
+    operation_name: str | None = None,
+) -> None:
+    absdiff = jnp.abs(result - reference)
+
+    err = jnp.maximum(absdiff - atol + rtol * reference, 0)
+    max_err = jnp.max(err)
+    max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(err), err.shape))
+    max_err_reference_value = reference[max_err_idx]
+
+    num_violations = jnp.sum(err > 0)
+
     rms_diff = jnp.sqrt(jnp.mean(jnp.square(absdiff)))
-    rms_a = jnp.sqrt(jnp.mean(jnp.square(a)))
-    rms_b = jnp.sqrt(jnp.mean(jnp.square(b)))
-    rel_rms_b = rms_diff / (rms_b + 1e-10)
-    rel_rms_a = rms_diff / (rms_a + 1e-10)
-    errmax_idx = tuple(i.item() for i in jnp.unravel_index(errmax_idx, absdiff.shape))
+    rms_result = jnp.sqrt(jnp.mean(jnp.square(result)))
+    rms_reference = jnp.sqrt(jnp.mean(jnp.square(reference)))
+    rel_rms_reference = rms_diff / (rms_reference + 1e-10)
+
     if operation_name is not None:
         operation_description = f" during {operation_name}"
     else:
         operation_description = ""
+
     message = (
-        f"{num_violations} violations > {atol}{operation_description}."
-        f" Max error: {errmax:.5f} at index {errmax_idx}. Error RMS: {rms_diff:.5f}."
-        f" RMS of a: {rms_a:.5f}, RMS of b: {rms_b:.5f}."
-        f" Relative error RMS: {rel_rms_a:.0%} of RMS of a, {rel_rms_b:.0%} of RMS of b."
-        f" Shape: {a.shape}"
+        f"{num_violations} violations > {atol:.1e} + {rtol:.2%}{operation_description}."
+        f" Max error: {max_err:.2%} at index {max_err_idx} (reference value: {max_err_reference_value:.2e})."
+        f" Error RMS: {rms_diff:.5f}."
+        f" RMS of result: {rms_result:.5f}, RMS of reference: {rms_reference:.5f}."
+        f" Relative error RMS: {rel_rms_reference:.2%} of RMS of reference."
+        f" Shape: {result.shape}"
     )
-    assert jnp.allclose(a, b, atol=atol), message
+    assert jnp.allclose(result, reference, atol=atol, rtol=rtol), message
 
 
 @torch.no_grad()

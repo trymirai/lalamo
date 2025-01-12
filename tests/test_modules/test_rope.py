@@ -9,9 +9,9 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.modules.rope import RoPE, RoPEParams
 from tests.executorch_llama.rope import apply_rotary_emb
 
-from .common import assert_close, checkify_forward, from_torch, to_torch
+from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
-ROPE_ATOL = 4e-3
+ROPE_RTOL = 0.001
 
 
 def test_unscaled_rope() -> None:
@@ -54,8 +54,18 @@ def test_unscaled_rope() -> None:
     hf_sines = from_torch(hf_sines.squeeze(0))
     err, fs_positional_embeddings = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(hf_cosines, fs_positional_embeddings.cosines, atol=ROPE_ATOL)
-    assert_close(hf_sines, fs_positional_embeddings.sines, atol=ROPE_ATOL)
+    assert_close(
+        result=fs_positional_embeddings.cosines,
+        reference=hf_cosines,
+        rtol=ROPE_RTOL,
+        operation_name="rope_cosines",
+    )
+    assert_close(
+        result=fs_positional_embeddings.sines,
+        reference=hf_sines,
+        rtol=ROPE_RTOL,
+        operation_name="rope_sines",
+    )
 
 
 def test_scaled_rope() -> None:
@@ -106,8 +116,18 @@ def test_scaled_rope() -> None:
     hf_sines = from_torch(hf_sines.squeeze(0))
     err, fs_positional_embeddings = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(hf_cosines, fs_positional_embeddings.cosines, atol=ROPE_ATOL)
-    assert_close(hf_sines, fs_positional_embeddings.sines, atol=ROPE_ATOL)
+    assert_close(
+        result=fs_positional_embeddings.cosines,
+        reference=hf_cosines,
+        rtol=ROPE_RTOL,
+        operation_name="rope_cosines",
+    )
+    assert_close(
+        result=fs_positional_embeddings.sines,
+        reference=hf_sines,
+        rtol=ROPE_RTOL,
+        operation_name="rope_sines",
+    )
 
 
 def test_rope(
@@ -125,8 +145,18 @@ def test_rope(
     hf_sines = from_torch(hf_sines.squeeze(0))
     err, fs_positional_embeddings = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(hf_cosines, fs_positional_embeddings.cosines, atol=ROPE_ATOL)
-    assert_close(hf_sines, fs_positional_embeddings.sines, atol=ROPE_ATOL)
+    assert_close(
+        result=fs_positional_embeddings.cosines,
+        reference=hf_cosines,
+        rtol=ROPE_RTOL,
+        operation_name="rope_cosines",
+    )
+    assert_close(
+        result=fs_positional_embeddings.sines,
+        reference=hf_sines,
+        rtol=ROPE_RTOL,
+        operation_name="rope_sines",
+    )
 
 
 def test_executorch_apply_rotary_emb(
@@ -167,4 +197,9 @@ def test_executorch_apply_rotary_emb(
         reim=2,
     )
 
-    assert_close(fs_output, rearranged_et_output, atol=ROPE_ATOL)
+    assert_close(
+        result=fs_output,
+        reference=rearranged_et_output,
+        rtol=QUANTIZED_RTOL,
+        operation_name="executorch_apply_rotary_emb",
+    )

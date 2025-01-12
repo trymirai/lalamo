@@ -10,7 +10,7 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
 TOKENS = [
     128000,
@@ -81,7 +81,10 @@ def test_decoder(
     hf_output = from_torch(torch_pre_softmax.squeeze(0))
     err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
     err.throw()
-    assert_close(hf_output, fs_output.output, atol=1e-3)
+    assert_close(
+        result=fs_output.output,
+        reference=hf_output,
+    )
 
 
 @pytest.mark.parametrize("num_layers_in_truncated_model", NUM_LAYERS_IN_TRUNCATED_MODELS)
@@ -111,7 +114,11 @@ def test_qlora_decoder_truncated(
     et_output = from_torch(et_decoder(tokens=token_ids_torch).squeeze(0))
     err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
     err.throw()
-    assert_close(fs_output.output, et_output, atol=QUANTIZED_ATOL)
+    assert_close(
+        result=fs_output.output,
+        reference=et_output,
+        rtol=QUANTIZED_RTOL,
+    )
 
 
 def test_qlora_decoder(
@@ -136,4 +143,8 @@ def test_qlora_decoder(
     et_output = from_torch(et_decoder(tokens=token_ids_torch).squeeze(0))
     err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
     err.throw()
-    assert_close(fs_output.output, et_output, atol=QUANTIZED_ATOL)
+    assert_close(
+        result=fs_output.output,
+        reference=et_output,
+        rtol=QUANTIZED_RTOL,
+    )

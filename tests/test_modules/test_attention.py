@@ -11,7 +11,7 @@ from fartsovka.models.qlora_llama import QLoRALlama
 from fartsovka.modules.kv_cache import KVCacheLayerSlice
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import LAYERS_TO_TEST, QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
@@ -46,7 +46,10 @@ def test_attention_no_mask_no_cache(
     )
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings)
     err.throw()
-    assert_close(hf_output, fs_output.attention_output)
+    assert_close(
+        result=fs_output.attention_output,
+        reference=hf_output,
+    )
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
@@ -84,7 +87,10 @@ def test_attention_with_mask(
     )
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
     err.throw()
-    assert_close(hf_output, fs_output.attention_output)
+    assert_close(
+        result=fs_output.attention_output,
+        reference=hf_output,
+    )
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
@@ -150,7 +156,10 @@ def test_attention_with_mask_and_kv_cache(
         kv_cache=kv_cache,
     )
     err.throw()
-    assert_close(hf_output, fs_output.attention_output)
+    assert_close(
+        result=fs_output.attention_output,
+        reference=hf_output,
+    )
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
@@ -187,4 +196,8 @@ def test_qlora_attention(
     et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
     err.throw()
-    assert_close(fs_output.attention_output, et_output, atol=QUANTIZED_ATOL)
+    assert_close(
+        result=fs_output.attention_output,
+        reference=et_output,
+        rtol=QUANTIZED_RTOL,
+    )

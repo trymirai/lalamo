@@ -7,7 +7,7 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import LAYERS_TO_TEST, QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
@@ -28,7 +28,11 @@ def test_rms_norm(
     hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
     err, fs_output = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(hf_output, fs_output)
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+        operation_name="rms_norm",
+    )
 
 
 def test_out_norm_executorch(
@@ -47,4 +51,9 @@ def test_out_norm_executorch(
     hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
     err, fs_output = fs_layer_forward(sample_input)
     err.throw()
-    assert_close(hf_output, fs_output, atol=QUANTIZED_ATOL)
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+        rtol=QUANTIZED_RTOL,
+        operation_name="out_norm",
+    )

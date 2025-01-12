@@ -6,7 +6,7 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import QUANTIZED_ATOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
 
 def test_embedding(
@@ -31,7 +31,11 @@ def test_embedding(
     hf_output = from_torch(hf_layer(token_ids_torch).squeeze(0))
     err, fs_output = fs_embed(token_ids)
     err.throw()
-    assert_close(hf_output, fs_output)
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+        operation_name="embedding",
+    )
 
     # Test readout (weight transpose)
     sample_input = jax.random.normal(rng_key, (model_dim,))
@@ -39,7 +43,11 @@ def test_embedding(
     hf_output = from_torch(huggingface_llama.lm_head(sample_input_torch.unsqueeze(0)).squeeze(0))
     err, fs_output = fs_readout(sample_input)
     err.throw()
-    assert_close(hf_output, fs_output)
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+        operation_name="readout",
+    )
 
 
 def test_quantized_embedding(
@@ -64,7 +72,12 @@ def test_quantized_embedding(
     et_output = from_torch(et_layer(token_ids_torch).squeeze(0))
     err, fs_output = fs_embed(token_ids)
     err.throw()
-    assert_close(fs_output, et_output, atol=QUANTIZED_ATOL)
+    assert_close(
+        result=fs_output,
+        reference=et_output,
+        rtol=QUANTIZED_RTOL,
+        operation_name="embedding",
+    )
 
     # Test readout (weight transpose)
     sample_input = jax.random.normal(rng_key, (model_dim,))
@@ -72,4 +85,9 @@ def test_quantized_embedding(
     et_output = from_torch(executorch_llama.output(sample_input_torch.unsqueeze(0)).squeeze(0))
     err, fs_output = fs_readout(sample_input)
     err.throw()
-    assert_close(fs_output, et_output, atol=QUANTIZED_ATOL)
+    assert_close(
+        result=fs_output,
+        reference=et_output,
+        rtol=QUANTIZED_RTOL,
+        operation_name="readout",
+    )
