@@ -6,10 +6,12 @@ from jaxtyping import Array, Float, Scalar
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
+from .common import FartsovkaModule, ParameterDict
+
 __all__ = ["NormalizationBase", "NormalizationFactoryBase", "RMSNorm", "RMSNormFactory"]
 
 
-class NormalizationBase(eqx.Module):
+class NormalizationBase(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
@@ -50,11 +52,14 @@ class RMSNorm(NormalizationBase):
 
         self.precision = precision
         self.accumulation_precision = accumulation_precision
-        self.scale = jnp.ones(model_dim, dtype=accumulation_precision)
+        self.scale = jnp.ones(model_dim, dtype=precision)
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
         adjusted_variance = _compute_adjusted_variance(x, self.eps, self.precision)
         return x * self.scale * (1 / jnp.sqrt(adjusted_variance))
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(scale=self.scale)
 
 
 @dataclass

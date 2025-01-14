@@ -8,6 +8,7 @@ from jax import nn, vmap
 from jax import numpy as jnp
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
+from .common import FartsovkaModule, ParameterDict
 from .kv_cache import KVCacheLayerSlice
 from .linear import LinearBase, LinearFactoryBase
 from .rope import PositionalEmbeddings
@@ -20,7 +21,7 @@ class AttentionOutput(NamedTuple):
     kv_cache: KVCacheLayerSlice | None = None
 
 
-class AttentionBase(eqx.Module):
+class AttentionBase(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
@@ -124,6 +125,12 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         return AttentionOutput(
             attention_output=result,
             kv_cache=updated_kv_cache,
+        )
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(
+            qkv_proj=self.qkv_projection.export_weights(),
+            out_proj=self.out_projection.export_weights(),
         )
 
 

@@ -13,6 +13,17 @@ def get_name(leaf: PyTree, tree: PyTree) -> str:
     raise ValueError(f"Leaf {leaf} not found in tree {tree}")
 
 
+def _check_compatible(old_value: PyTree, new_value: PyTree, module: eqx.Module) -> None:
+    if isinstance(old_value, Array) and isinstance(new_value, Array):
+        name = get_name(old_value, module)
+        if old_value.shape != new_value.shape:
+            raise ValueError(f"Expected parameter {name} to have shape {old_value.shape}, got {new_value.shape}")
+        if old_value.dtype != new_value.dtype:
+            raise ValueError(f"Expected parameter {name} to have dtype {old_value.dtype}, got {new_value.dtype}")
+    elif type(old_value) is not type(new_value):
+        raise TypeError(f"Expected parameter of type {type(old_value)}, got {type(new_value)}")
+
+
 def load_parameters[M: eqx.Module](
     selector: Callable[[M], Iterable[PyTree]],
     module: M,
@@ -22,23 +33,9 @@ def load_parameters[M: eqx.Module](
     new_values = list(new_values)
     casted_new_values = []
     for old_value, new_value in zip(old_values, new_values, strict=True):
+        _check_compatible(old_value, new_value, module)
         if isinstance(old_value, Array) and isinstance(new_value, Array):
-            if old_value.shape != new_value.shape:
-                name = get_name(old_value, module)
-                raise ValueError(f"Expected parameter {name} to have shape {old_value.shape}, got {new_value.shape}")
             casted_new_values.append(new_value.astype(old_value.dtype))
-        elif type(old_value) is type(new_value):
-            casted_new_values.append(new_value)
         else:
-            name = get_name(old_value, module)
-            raise TypeError(f"Expected parameter {name} to have type {type(old_value)}, got {type(new_value)}")
+            casted_new_values.append(new_value)
     return eqx.tree_at(selector, module, casted_new_values)
-
-
-class WeightsPath(str):
-    __slots__ = ()
-
-    def __truediv__(self, other: str | int) -> "WeightsPath":
-        if not self:
-            return WeightsPath(str(other))
-        return WeightsPath(self + "." + str(other))

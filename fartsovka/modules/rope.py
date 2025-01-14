@@ -6,6 +6,8 @@ from jaxtyping import Array, Float, Int
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
+from .common import FartsovkaModule, ParameterDict
+
 __all__ = ["PositionalEmbeddings", "RoPE", "RoPEFactory", "RoPEParams"]
 
 
@@ -36,7 +38,7 @@ class RoPEParams:
     high_frequency_factor: float = 4
 
 
-class RoPE(eqx.Module):
+class RoPE(FartsovkaModule):
     head_dim: int = eqx.field(static=True)
     max_sequence_length: int = eqx.field(static=True)
     params: RoPEParams = eqx.field(static=True)
@@ -108,6 +110,9 @@ class RoPE(eqx.Module):
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(cosines=self.cosines, sines=self.sines)
 
 
 @dataclass

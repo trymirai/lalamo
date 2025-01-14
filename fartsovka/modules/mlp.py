@@ -5,12 +5,13 @@ import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from .activations import silu
+from .common import FartsovkaModule, ParameterDict
 from .linear import LinearBase, LinearFactoryBase
 
 __all__ = ["MLP", "MLPBase", "MLPFactory", "MLPFactoryBase"]
 
 
-class MLPBase(eqx.Module):
+class MLPBase(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     hidden_dim: int = eqx.field(static=True)
 
@@ -55,6 +56,12 @@ class MLP[LinearType: LinearBase](MLPBase):
         gate = silu(gate)
         (result,) = self.down_projection(up_proj * gate)
         return result
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(
+            up_projection=self.up_projection.export_weights(),
+            down_projection=self.down_projection.export_weights(),
+        )
 
 
 @dataclass

@@ -11,6 +11,8 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
+from .common import FartsovkaModule, ParameterDict
+
 __all__ = [
     "GroupQuantizedLinear",
     "GroupQuantizedLinearFactory",
@@ -23,7 +25,7 @@ __all__ = [
 ]
 
 
-class LinearBase(eqx.Module):
+class LinearBase(FartsovkaModule):
     input_dim: int = eqx.field(static=True)
     output_dims: tuple[int, ...] = eqx.field(static=True)
 
@@ -80,6 +82,13 @@ class Linear(LinearBase):
 
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
         return tuple(jnp.split(self.weights @ x, self._split_points(self.output_dims)))
+
+    def export_weights(self) -> ParameterDict:
+        exported_weights = rearrange(
+            self.weights,
+            "total_out_channels in_channels -> in_channels total_out_channels",
+        )
+        return ParameterDict(weights=exported_weights)
 
 
 @dataclass
@@ -138,7 +147,7 @@ class GroupQuantizedLinear(LinearBase):
         )
         self.scales = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
 
-    def prepare_weights(self) -> Float[Array, "total_out_channels in_channels"]:
+    def _prepare_weights(self) -> Float[Array, "total_out_channels in_channels"]:
         quantized_weights = quantize_weights(self.weights, self.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
@@ -156,8 +165,22 @@ class GroupQuantizedLinear(LinearBase):
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
         if self.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.activation_quantization_mode)
-        weights = self.prepare_weights()
+        weights = self._prepare_weights()
         return tuple(jnp.split(weights @ x, self._split_points(self.output_dims)))
+
+    def export_weights(self) -> ParameterDict:
+        exported_weights = rearrange(
+            quantize_weights(self.weights, self.weight_quantization_mode),
+            "total_out_channels in_channels -> in_channels total_out_channels",
+        )
+        exported_weights = exported_weights.astype(self.weight_quantization_mode.dtype)
+
+        exported_scales = rearrange(self.scales, "total_out_channels groups -> groups total_out_channels")
+
+        return ParameterDict(
+            weights=exported_weights,
+            weights_scales=exported_scales,
+        )
 
 
 @dataclass
@@ -248,6 +271,22 @@ class QLoRALinear(GroupQuantizedLinear):
         return tuple(
             quantized_output + self.lora_scale * lora_output
             for quantized_output, lora_output in zip(quantized_outputs, lora_outputs, strict=True)
+        )
+
+    def export_weights(self) -> ParameterDict:
+        quantized_linear_weights = super().export_weights()
+        exported_lora_down_weights = rearrange(
+            self.lora_down_weights,
+            "total_lora_channels in_channels -> in_channels total_lora_channels",
+        )
+        exported_lora_up_weights = tuple(
+            rearrange(lora_up_weight, "out_channels lora_channels -> lora_channels out_channels")
+            for lora_up_weight in self.lora_up_weights
+        )
+        return ParameterDict(
+            **quantized_linear_weights,
+            down_weights=exported_lora_down_weights,
+            up_weights=exported_lora_up_weights,
         )
 
 

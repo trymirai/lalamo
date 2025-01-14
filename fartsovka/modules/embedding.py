@@ -8,10 +8,12 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
+from .common import FartsovkaModule, ParameterDict
+
 __all__ = ["Embedding", "EmbeddingFactory", "QuantizedEmbedding", "QuantizedEmbeddingFactory"]
 
 
-class EmbeddingBase(eqx.Module):
+class EmbeddingBase(FartsovkaModule):
     vocab_dim: int = eqx.field(static=True)
     model_dim: int = eqx.field(static=True)
 
@@ -43,6 +45,9 @@ class Embedding(EmbeddingBase):
 
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
         return self.weights @ x
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(token_embeddings=self.weights)
 
 
 @dataclass
@@ -105,6 +110,13 @@ class QuantizedEmbedding(EmbeddingBase):
         if self.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.activation_quantization_mode)
         return self.prepare_weights() @ x
+
+    def export_weights(self) -> ParameterDict:
+        exported_weights = quantize_weights(self.weights, self.embedding_quantization_mode)
+        return ParameterDict(
+            token_embeddings=exported_weights,
+            scales=self.scales,
+        )
 
 
 @dataclass

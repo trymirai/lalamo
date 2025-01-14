@@ -100,4 +100,5 @@ def import_model(
 
     result = init_model(config_path, precision=precision, accumulation_precision=accumulation_precision)
     weights_dict = load_file(weights_path)
+    weights_dict = {k: v.astype(precision) for k, v in weights_dict.items()}
     return load_llama(result, weights_dict)

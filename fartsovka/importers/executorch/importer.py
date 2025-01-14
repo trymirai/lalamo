@@ -18,6 +18,9 @@ from .loader import load_llama
 __all__ = ["ExecutorchModel", "import_model"]
 
 
+FLOAT_DTYPES = [jnp.bfloat16, jnp.float16, jnp.float32, jnp.float64]
+
+
 class ExecutorchModel(Enum):
     LLAMA32_1B_INSTRUCT_QLORA = auto()
 
@@ -39,6 +42,15 @@ def download_weights(model: ExecutorchModel, output_dir: Path | str | None = Non
     return Path(result)
 
 
+@torch.no_grad()
+def torch_to_jax_bfloat16(tensor: torch.Tensor) -> Array:
+    # Credit: https://github.com/jax-ml/ml_dtypes/issues/81#issuecomment-2399636232
+    if tensor.dtype != torch.bfloat16:
+        raise ValueError("Trying to convert non-bfloat16 tensor to bfloat16")
+    intermediate_tensor = tensor.view(torch.uint16)
+    return jnp.array(intermediate_tensor).view("bfloat16")
+
+
 def download_config_file(model: ExecutorchModel, output_dir: Path | str | None = None) -> Path:
     result = huggingface_hub.hf_hub_download(
         repo_id=MODEL_TO_REPO[model],
@@ -48,19 +60,19 @@ def download_config_file(model: ExecutorchModel, output_dir: Path | str | None =
     return Path(result)
 
 
-@torch.no_grad()
-def convert_torch_array(array: torch.Tensor) -> Array:
-    array = array.cpu()
-    # JAX does not support bfloat16 on CPU, so we need to convert it to float32
+def convert_torch_array(array: torch.Tensor, float_dtype: DType) -> Array:
+    array = array.detach().cpu()
     if array.dtype == torch.bfloat16:
-        array = array.to(torch.float32)
-    return jnp.array(array.numpy())
+        jax_array = torch_to_jax_bfloat16(array)
+    else:
+        jax_array = jnp.array(array.numpy())
+    return jax_array.astype(float_dtype)
 
 
-def load_torch_checkpoint(path: str | Path) -> dict[str, Array]:
+def load_torch_checkpoint(path: str | Path, float_dtype: DType) -> dict[str, Array]:
     path = Path(path)
     torch_weights = torch.load(path, map_location="cpu", weights_only=True)
-    return {k: convert_torch_array(v) for k, v in torch_weights.items()}
+    return {k: convert_torch_array(v, float_dtype) for k, v in torch_weights.items()}
 
 
 def find_hidden_size(model_size: int, ffn_dim_multiplier: float, divisor: int) -> int:
@@ -151,5 +163,8 @@ def import_model(
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
     )
-    weights_dict = load_torch_checkpoint(weights_path)
+    weights_dict = load_torch_checkpoint(
+        weights_path,
+        float_dtype=activation_precision,
+    )
     return load_llama(result, weights_dict)

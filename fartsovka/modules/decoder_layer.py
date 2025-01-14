@@ -7,6 +7,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .attention import AttentionBase, AttentionFactoryBase
+from .common import FartsovkaModule, ParameterDict
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLPBase, MLPFactoryBase
 from .normalization import NormalizationBase, NormalizationFactoryBase
@@ -25,7 +26,7 @@ class DecoderLayer[
     MLPType: MLPBase,
     AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
-](eqx.Module):
+](FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     hidden_dim: int = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
@@ -86,6 +87,14 @@ class DecoderLayer[
         x = residual + vmap(self.mlp, in_axes=0)(x)
 
         return DecoderLayerOutput(output=x, kv_cache=updated_kv_cache)
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(
+            attention_norm=self.attention_norm.export_weights(),
+            attention=self.attention.export_weights(),
+            mlp_norm=self.mlp_norm.export_weights(),
+            mlp=self.mlp.export_weights(),
+        )
 
 
 @dataclass

@@ -5,7 +5,8 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, Float, Int
 
-from fartsovka.importers.common import WeightsPath, load_parameters
+from fartsovka.common import ParameterPath
+from fartsovka.importers.common import load_parameters
 from fartsovka.models.qlora_llama import (
     QLoRAAttention,
     QLoRADecoderLayer,
@@ -45,7 +46,7 @@ def params_selector(module: QLoRALinear) -> tuple:
     )
 
 
-def get_qlora_linear_params(weights_dict: dict[str, Array], path: WeightsPath) -> QLoRALinearParams:
+def get_qlora_linear_params(weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALinearParams:
     weights = weights_dict[path / "weight"]
     scales = weights_dict[path / "scales"]
     lora_down_weights = weights_dict[path / "adaptor" / "A" / "weight"]
@@ -62,12 +63,12 @@ def merge_linear_params(params_list: Iterable[QLoRALinearParams]) -> QLoRALinear
     return QLoRALinearParams(weights, scales, lora_down_weights, lora_up_weights)
 
 
-def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: WeightsPath) -> QLoRALinear:
+def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALinear:
     params = get_qlora_linear_params(weights_dict, path)
     return load_parameters(params_selector, module, params)
 
 
-def load_mlp(module: QLoRAMLP, weights_dict: dict[str, Array], path: WeightsPath) -> QLoRAMLP:
+def load_mlp(module: QLoRAMLP, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRAMLP:
     up_proj_params = get_qlora_linear_params(weights_dict, path / "w3")
     gate_proj_params = get_qlora_linear_params(weights_dict, path / "w1")
     down_proj_params = get_qlora_linear_params(weights_dict, path / "w2")
@@ -81,7 +82,7 @@ def load_mlp(module: QLoRAMLP, weights_dict: dict[str, Array], path: WeightsPath
     )
 
 
-def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: WeightsPath) -> RMSNorm:
+def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: ParameterPath) -> RMSNorm:
     return load_parameters(lambda m: (m.scale,), module, (weights_dict[path / "weight"],))
 
 
@@ -118,7 +119,7 @@ def permute_qk_params(
 def load_attention(
     module: QLoRAAttention,
     weights_dict: dict[str, Array],
-    path: WeightsPath,
+    path: ParameterPath,
 ) -> QLoRAAttention:
     model_dim = module.model_dim
     num_heads = module.num_heads
@@ -161,7 +162,7 @@ def load_attention(
 def load_decoder_layer(
     module: QLoRADecoderLayer,
     weights_dict: dict[str, Array],
-    path: WeightsPath,
+    path: ParameterPath,
 ) -> QLoRADecoderLayer:
     attention_norm = load_rmsnorm(module.attention_norm, weights_dict, path / "attention_norm")
     attention = load_attention(module.attention, weights_dict, path / "attention")
@@ -177,7 +178,7 @@ def load_decoder_layer(
 def load_embedding(
     module: QuantizedEmbedding,
     weights_dict: dict[str, Array],
-    path: WeightsPath,
+    path: ParameterPath,
 ) -> QuantizedEmbedding:
     weights = weights_dict[path / "weight"]
     scales = weights_dict[path / "scales"].squeeze(1)
@@ -185,7 +186,7 @@ def load_embedding(
 
 
 def load_llama(module: QLoRALlama, weights_dict: dict[str, Array]) -> QLoRALlama:
-    root_path = WeightsPath()
+    root_path = ParameterPath()
     embedding = load_embedding(module.embedding, weights_dict, root_path / "tok_embeddings")
     decoder_layers = [
         load_decoder_layer(layer, weights_dict, root_path / f"layers.{i}") for i, layer in enumerate(module.layers)

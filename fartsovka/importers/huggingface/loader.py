@@ -1,7 +1,8 @@
 import jax.numpy as jnp
 from jaxtyping import Array
 
-from fartsovka.importers.common import WeightsPath, load_parameters
+from fartsovka.common import ParameterPath
+from fartsovka.importers.common import load_parameters
 from fartsovka.models.baseline_llama import (
     BaselineAttention,
     BaselineDecoderLayer,
@@ -15,11 +16,11 @@ from fartsovka.modules.normalization import RMSNorm
 __all__ = ["load_llama"]
 
 
-def load_linear(module: Linear, weights_dict: dict[str, Array], path: WeightsPath) -> Linear:
+def load_linear(module: Linear, weights_dict: dict[str, Array], path: ParameterPath) -> Linear:
     return load_parameters(lambda m: (m.weights,), module, (weights_dict[path / "weight"],))
 
 
-def load_mlp(module: BaselineMLP, weights_dict: dict[str, Array], path: WeightsPath) -> BaselineMLP:
+def load_mlp(module: BaselineMLP, weights_dict: dict[str, Array], path: ParameterPath) -> BaselineMLP:
     up_proj_weights = weights_dict[path / "up_proj" / "weight"]
     gate_proj_weights = weights_dict[path / "gate_proj" / "weight"]
     fused_up_gate_weights = jnp.concatenate([up_proj_weights, gate_proj_weights], axis=0)
@@ -33,14 +34,14 @@ def load_mlp(module: BaselineMLP, weights_dict: dict[str, Array], path: WeightsP
     )
 
 
-def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: WeightsPath) -> RMSNorm:
+def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: ParameterPath) -> RMSNorm:
     return load_parameters(lambda m: (m.scale,), module, (weights_dict[path / "weight"],))
 
 
 def load_attention(
     module: BaselineAttention,
     weights_dict: dict[str, Array],
-    path: WeightsPath,
+    path: ParameterPath,
 ) -> BaselineAttention:
     out_proj = load_linear(module.out_projection, weights_dict, path / "o_proj")
     q_proj_weights = weights_dict[path / "q_proj" / "weight"]
@@ -57,7 +58,7 @@ def load_attention(
 def load_decoder_layer(
     module: BaselineDecoderLayer,
     weights_dict: dict[str, Array],
-    path: WeightsPath,
+    path: ParameterPath,
 ) -> BaselineDecoderLayer:
     attention_norm = load_rmsnorm(module.attention_norm, weights_dict, path / "input_layernorm")
     attention = load_attention(module.attention, weights_dict, path / "self_attn")
@@ -70,7 +71,7 @@ def load_decoder_layer(
     )
 
 
-def load_embedding(module: Embedding, weights_dict: dict[str, Array], path: WeightsPath) -> Embedding:
+def load_embedding(module: Embedding, weights_dict: dict[str, Array], path: ParameterPath) -> Embedding:
     weights = weights_dict[path / "weight"]
     return load_parameters(lambda m: (m.weights,), module, (weights,))
 
@@ -79,7 +80,7 @@ def load_llama(
     module: BaselineLlama,
     weights_dict: dict[str, Array],
 ) -> BaselineLlama:
-    root_path: WeightsPath = WeightsPath("model")
+    root_path: ParameterPath = ParameterPath("model")
     embedding = load_embedding(module.embedding, weights_dict, root_path / "embed_tokens")
     decoder_layers = [
         load_decoder_layer(layer, weights_dict, root_path / "layers" / i) for i, layer in enumerate(module.layers)

@@ -14,6 +14,7 @@ dependencies = [
     "optax>=0.2.4",
     "safetensors>=0.4.5",
     "torch>=2.5.0",
+    "typer>=0.15.1",
 ]
 
 [tool.uv]
@@ -28,7 +29,8 @@ dev-dependencies = [
 ]
 
 [tool.pytest.ini_options]
-addopts = "--jaxtyping-packages=fartsovka,beartype.beartype"
+# Disable jaxtyping for now because of its internal bug.
+# addopts = "--jaxtyping-packages=fartsovka,beartype.beartype"
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
