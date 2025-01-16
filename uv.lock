@@ -295,12 +295,12 @@ requires-dist = [
     { name = "cattrs", specifier = ">=24.1.2" },
     { name = "einops", specifier = ">=0.8.0" },
     { name = "equinox", specifier = ">=0.11.11" },
-    { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.27.0" },
+    { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.27.1" },
     { name = "jax", specifier = ">=0.4.38" },
     { name = "jaxtyping", specifier = ">=0.2.36" },
     { name = "optax", specifier = ">=0.2.4" },
-    { name = "safetensors", specifier = ">=0.4.5" },
-    { name = "torch", specifier = ">=2.5.0" },
+    { name = "safetensors", specifier = ">=0.5.2" },
+    { name = "torch", specifier = ">=2.5.1" },
     { name = "typer", specifier = ">=0.15.1" },
 ]
 
@@ -312,7 +312,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-env", specifier = ">=1.1.5" },
     { name = "torchao", specifier = ">=0.7.0" },
-    { name = "transformers", specifier = ">=4.47.1" },
+    { name = "transformers", specifier = ">=4.48.0" },
 ]
 
 [[package]]
