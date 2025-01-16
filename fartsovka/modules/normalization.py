@@ -55,7 +55,7 @@ class RMSNorm(NormalizationBase):
         self.scale = jnp.ones(model_dim, dtype=precision)
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        adjusted_variance = _compute_adjusted_variance(x, self.eps, self.precision)
+        adjusted_variance = _compute_adjusted_variance(x, self.eps, self.accumulation_precision)
         return x * self.scale * (1 / jnp.sqrt(adjusted_variance))
 
     def export_weights(self) -> ParameterDict:
