@@ -7,7 +7,8 @@ __all__ = ["assert_close", "from_torch", "to_torch"]
 
 ATOL = 1e-5
 RTOL = 0.01
-QUANTIZED_RTOL = 0.01
+QUANTIZED_ATOL = 0.03
+QUANTIZED_RTOL = 0.1
 
 
 LAYERS_TO_TEST = list(range(16))

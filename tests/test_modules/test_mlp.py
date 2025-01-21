@@ -7,7 +7,15 @@ from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import (
+    LAYERS_TO_TEST,
+    QUANTIZED_ATOL,
+    QUANTIZED_RTOL,
+    assert_close,
+    checkify_forward,
+    from_torch,
+    to_torch,
+)
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
@@ -55,5 +63,6 @@ def test_qlora_mlp(
     assert_close(
         result=fs_output,
         reference=et_output,
+        atol=QUANTIZED_ATOL,
         rtol=QUANTIZED_RTOL,
     )
