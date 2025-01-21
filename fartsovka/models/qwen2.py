@@ -9,61 +9,59 @@ from fartsovka.modules.embedding import Embedding, EmbeddingFactory
 from fartsovka.modules.linear import Linear, LinearFactory
 from fartsovka.modules.mlp import MLP, MLPFactory
 from fartsovka.modules.normalization import RMSNorm, RMSNormFactory
-from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEFactory
+from fartsovka.modules.rope import RoPEBase, RoPEFactory
 
 __all__ = [
-    "BaselineMLP",
-    "BaselineAttention",
-    "BaselineDecoderLayer",
-    "BaselineLlama",
-    "get_baseline_llama",
-    "get_baseline_llama_factory",
+    "Qwen2MLP",
+    "Qwen2Attention",
+    "Qwen2DecoderLayer",
+    "Qwen2",
+    "get_qwen2",
+    "get_qwen2_factory",
 ]
 
-type BaselineMLP = MLP[Linear]
+type Qwen2MLP = MLP[Linear]
 
-type BaselineAttention = Attention[Linear, Linear]
+type Qwen2Attention = Attention[Linear, Linear]
 
-type BaselineDecoderLayer = DecoderLayer[
+type Qwen2DecoderLayer = DecoderLayer[
     RMSNorm,
-    BaselineMLP,
+    Qwen2MLP,
     RMSNorm,
-    BaselineAttention,
+    Qwen2Attention,
 ]
 
-type BaselineLlama = Decoder[
+type Qwen2 = Decoder[
     Embedding,
     RMSNorm,
-    BaselineMLP,
+    Qwen2MLP,
     RMSNorm,
-    BaselineAttention,
-    LlamaRoPE,
+    Qwen2Attention,
+    RoPEBase,
 ]
 
 
-def get_baseline_llama_factory(
+def get_qwen2_factory(
     precision: DType,
     accumulation_precision: DType,
-    original_context_length: int,
     rope_scaling_factor: float,
-    rope_low_frequency_factor: float,
-    rope_high_frequency_factor: float,
+    rope_beta_fast: float,
+    rope_beta_slow: float,
 ) -> DecoderFactory[
     Embedding,
     RMSNorm,
-    BaselineMLP,
+    Qwen2MLP,
     RMSNorm,
-    BaselineAttention,
-    LlamaRoPE,
+    Qwen2Attention,
+    RoPEBase,
 ]:
     return DecoderFactory(
         embedding_factory=EmbeddingFactory(precision=precision),
-        rope_factory=LlamaRoPEFactory(
+        rope_factory=RoPEFactory(
             precision=precision,
-            original_context_length=original_context_length,
-            scaling_factor=rope_scaling_factor,
-            low_frequency_factor=rope_low_frequency_factor,
-            high_frequency_factor=rope_high_frequency_factor,
+            # scaling_factor=rope_scaling_factor,
+            # beta_fast=rope_beta_fast,
+            # beta_slow=rope_beta_slow,
         ),
         layer_factory=DecoderLayerFactory(
             attention_norm_factory=RMSNormFactory(
@@ -89,7 +87,7 @@ def get_baseline_llama_factory(
     )
 
 
-def get_baseline_llama(
+def get_qwen2(
     *,
     num_layers: int,
     vocab_dim: int,
@@ -98,24 +96,22 @@ def get_baseline_llama(
     num_heads: int,
     num_groups: int,
     head_dim: int,
-    max_sequence_length: int,
     rope_theta: float,
     rope_scaling_factor: float,
-    rope_original_context_length: int,
-    rope_low_frequency_factor: float,
-    rope_high_frequency_factor: float,
+    rope_beta_fast: float,
+    rope_beta_slow: float,
+    max_sequence_length: int,
     eps: float,
     key: PRNGKeyArray,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> BaselineLlama:
-    factory = get_baseline_llama_factory(
+) -> Qwen2:
+    factory = get_qwen2_factory(
         precision=precision,
         accumulation_precision=accumulation_precision,
-        original_context_length=rope_original_context_length,
         rope_scaling_factor=rope_scaling_factor,
-        rope_low_frequency_factor=rope_low_frequency_factor,
-        rope_high_frequency_factor=rope_high_frequency_factor,
+        rope_beta_fast=rope_beta_fast,
+        rope_beta_slow=rope_beta_slow,
     )
     return factory(
         num_layers=num_layers,
@@ -127,7 +123,7 @@ def get_baseline_llama(
         head_dim=head_dim,
         max_sequence_length=max_sequence_length,
         rope_theta=rope_theta,
-        use_attention_qkv_bias=False,
+        use_attention_qkv_bias=True,
         use_attention_out_bias=False,
         use_mlp_bias=False,
         eps=eps,

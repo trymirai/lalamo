@@ -16,6 +16,7 @@ from fartsovka.importers.huggingface.importer import HuggingFaceModel
 from fartsovka.importers.huggingface.importer import import_model as import_hf
 from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.models.qwen2 import Qwen2
 from tests.executorch_llama.source_transformation.lora import (
     transform_linear_for_lora_after_quantization,
 )
@@ -44,9 +45,22 @@ def huggingface_llama() -> transformers.LlamaModel:
 
 
 @pytest.fixture(scope="package")
+def huggingface_qwen25() -> transformers.Qwen2Model:
+    model = transformers.AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-1.5B-Instruct")
+    model.eval()
+    return model
+
+
+@pytest.fixture(scope="package")
 def fartsovka_llama() -> BaselineLlama:
     model = import_hf(HuggingFaceModel.LLAMA32_1B_INSTRUCT)
-    return model
+    return model  # type: ignore
+
+
+@pytest.fixture(scope="package")
+def fartsovka_qwen25() -> Qwen2:
+    model = import_hf(HuggingFaceModel.QWEN25_1POINT5B_INSTRUCT)
+    return model  # type: ignore
 
 
 @pytest.fixture(scope="package")

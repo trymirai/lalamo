@@ -14,6 +14,7 @@ __all__ = ["MLP", "MLPBase", "MLPFactory", "MLPFactoryBase"]
 class MLPBase(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     hidden_dim: int = eqx.field(static=True)
+    use_bias: bool = eqx.field(static=True)
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
         raise NotImplementedError
@@ -21,7 +22,14 @@ class MLPBase(FartsovkaModule):
 
 @dataclass
 class MLPFactoryBase[MLPType: MLPBase]:
-    def __call__(self, input_dim: int, output_dim: int, *, key: PRNGKeyArray) -> MLPType:
+    def __call__(
+        self,
+        *,
+        model_dim: int,
+        hidden_dim: int,
+        use_bias: bool,
+        key: PRNGKeyArray,
+    ) -> MLPType:
         raise NotImplementedError
 
 
@@ -31,23 +39,26 @@ class MLP[LinearType: LinearBase](MLPBase):
 
     def __init__(
         self,
+        linear_factory: LinearFactoryBase[LinearType],
         model_dim: int,
         hidden_dim: int,
-        linear_factory: LinearFactoryBase[LinearType],
+        use_bias: bool,
         *,
         key: PRNGKeyArray,
     ) -> None:
-        super().__init__(model_dim=model_dim, hidden_dim=hidden_dim)
+        super().__init__(model_dim=model_dim, hidden_dim=hidden_dim, use_bias=use_bias)
 
         up_projection_key, down_projection_key = jax.random.split(key)
         self.up_projection = linear_factory(
             model_dim,
             (hidden_dim, hidden_dim),
+            use_bias=use_bias,
             key=up_projection_key,
         )
         self.down_projection = linear_factory(
             hidden_dim,
             (model_dim,),
+            use_bias=use_bias,
             key=down_projection_key,
         )
 
@@ -68,10 +79,18 @@ class MLP[LinearType: LinearBase](MLPBase):
 class MLPFactory[LinearType: LinearBase](MLPFactoryBase[MLP[LinearType]]):
     linear_factory: LinearFactoryBase[LinearType]
 
-    def __call__(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> MLP[LinearType]:
+    def __call__(
+        self,
+        *,
+        model_dim: int,
+        hidden_dim: int,
+        use_bias: bool,
+        key: PRNGKeyArray,
+    ) -> MLP[LinearType]:
         return MLP(
-            model_dim,
-            hidden_dim,
             linear_factory=self.linear_factory,
+            model_dim=model_dim,
+            hidden_dim=hidden_dim,
+            use_bias=use_bias,
             key=key,
         )

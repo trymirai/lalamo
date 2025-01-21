@@ -28,6 +28,7 @@ __all__ = [
 class LinearBase(FartsovkaModule):
     input_dim: int = eqx.field(static=True)
     output_dims: tuple[int, ...] = eqx.field(static=True)
+    use_bias: bool = eqx.field(static=True)
 
     @property
     def num_outputs(self) -> int:
@@ -51,12 +52,20 @@ class LinearBase(FartsovkaModule):
 
 @dataclass
 class LinearFactoryBase[LinearType: LinearBase]:
-    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> LinearType:
+    def __call__(
+        self,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        use_bias: bool,
+        *,
+        key: PRNGKeyArray,
+    ) -> LinearType:
         raise NotImplementedError
 
 
 class Linear(LinearBase):
     weights: Float[Array, "total_out_channels in_channels"]
+    bias: Float[Array, " total_out_channels"] | None
 
     precision: DType = eqx.field(static=True)
 
@@ -64,11 +73,12 @@ class Linear(LinearBase):
         self,
         input_dim: int,
         output_dims: tuple[int, ...],
+        use_bias: bool,
         precision: DType,
         *,
         key: PRNGKeyArray,
     ) -> None:
-        super().__init__(input_dim=input_dim, output_dims=output_dims)
+        super().__init__(input_dim=input_dim, output_dims=output_dims, use_bias=use_bias)
 
         self.precision = precision
         max_abs_value = 1 / math.sqrt(input_dim)
@@ -79,24 +89,34 @@ class Linear(LinearBase):
             maxval=max_abs_value,
             dtype=self.precision,
         )
+        if use_bias:
+            self.bias = jnp.zeros((sum(output_dims),), dtype=self.precision)
+        else:
+            self.bias = None
 
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        return tuple(jnp.split(self.weights @ x, self._split_points(self.output_dims)))
+        result = self.weights @ x
+        if self.bias is not None:
+            result = result + self.bias
+        return tuple(jnp.split(result, self._split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterDict:
         exported_weights = rearrange(
             self.weights,
             "total_out_channels in_channels -> in_channels total_out_channels",
         )
-        return ParameterDict(weights=exported_weights)
+        result = ParameterDict(weights=exported_weights)
+        if self.bias is not None:
+            result["bias"] = self.bias
+        return result
 
 
 @dataclass
 class LinearFactory(LinearFactoryBase[Linear]):
     precision: DType = DEFAULT_PRECISION
 
-    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> Linear:
-        return Linear(input_dim, output_dims, precision=self.precision, key=key)
+    def __call__(self, input_dim: int, output_dims: tuple[int, ...], use_bias: bool, *, key: PRNGKeyArray) -> Linear:
+        return Linear(input_dim, output_dims, use_bias=use_bias, precision=self.precision, key=key)
 
 
 class GroupQuantizedLinear(LinearBase):
@@ -114,6 +134,8 @@ class GroupQuantizedLinear(LinearBase):
         return self.input_dim // self.group_size
 
     weights: Float[Array, "total_out_channels in_channels"]
+    bias: Float[Array, " total_out_channels"] | None
+
     scales: Float[Array, "total_out_channels groups"]
 
     activation_precision: DType = eqx.field(static=True)
@@ -123,6 +145,7 @@ class GroupQuantizedLinear(LinearBase):
         *,
         input_dim: int,
         output_dims: tuple[int, ...],
+        use_bias: bool,
         group_size: int,
         weight_quantization_mode: QuantizationMode,
         activation_quantization_mode: QuantizationMode | None,
@@ -131,7 +154,7 @@ class GroupQuantizedLinear(LinearBase):
     ) -> None:
         if input_dim % group_size != 0:
             raise ValueError(f"input_dim {input_dim} must be divisible by group_size {group_size}")
-        super().__init__(input_dim=input_dim, output_dims=output_dims)
+        super().__init__(input_dim=input_dim, output_dims=output_dims, use_bias=use_bias)
         self.group_size = group_size
         self.weight_quantization_mode = weight_quantization_mode
         self.activation_quantization_mode = activation_quantization_mode
@@ -146,6 +169,11 @@ class GroupQuantizedLinear(LinearBase):
             dtype=activation_precision,
         )
         self.scales = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
+
+        if use_bias:
+            self.bias = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
+        else:
+            self.bias = None
 
     def _prepare_weights(self) -> Float[Array, "total_out_channels in_channels"]:
         quantized_weights = quantize_weights(self.weights, self.weight_quantization_mode)
@@ -177,10 +205,13 @@ class GroupQuantizedLinear(LinearBase):
 
         exported_scales = rearrange(self.scales, "total_out_channels groups -> groups total_out_channels")
 
-        return ParameterDict(
+        result = ParameterDict(
             weights=exported_weights,
             weights_scales=exported_scales,
         )
+        if self.bias is not None:
+            result["bias"] = self.bias
+        return result
 
 
 @dataclass
@@ -190,10 +221,18 @@ class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
     activation_quantization_mode: QuantizationMode | None = None
     activation_precision: DType = DEFAULT_PRECISION
 
-    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> GroupQuantizedLinear:
+    def __call__(
+        self,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        use_bias: bool,
+        *,
+        key: PRNGKeyArray,
+    ) -> GroupQuantizedLinear:
         return GroupQuantizedLinear(
             input_dim=input_dim,
             output_dims=output_dims,
+            use_bias=use_bias,
             group_size=self.group_size,
             weight_quantization_mode=self.weight_quantization_mode,
             activation_quantization_mode=self.activation_quantization_mode,
@@ -214,6 +253,7 @@ class QLoRALinear(GroupQuantizedLinear):
         *,
         input_dim: int,
         output_dims: tuple[int, ...],
+        use_bias: bool,
         group_size: int,
         weight_quantization_mode: QuantizationMode,
         activation_quantization_mode: QuantizationMode | None,
@@ -227,6 +267,7 @@ class QLoRALinear(GroupQuantizedLinear):
         super().__init__(
             input_dim=input_dim,
             output_dims=output_dims,
+            use_bias=use_bias,
             group_size=group_size,
             weight_quantization_mode=weight_quantization_mode,
             activation_quantization_mode=activation_quantization_mode,
@@ -299,10 +340,18 @@ class QLoRALinearFactory(LinearFactoryBase[QLoRALinear]):
     lora_scale: float = 2.0
     activation_precision: DType = DEFAULT_PRECISION
 
-    def __call__(self, input_dim: int, output_dims: tuple[int, ...], *, key: PRNGKeyArray) -> QLoRALinear:
+    def __call__(
+        self,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        use_bias: bool,
+        *,
+        key: PRNGKeyArray,
+    ) -> QLoRALinear:
         return QLoRALinear(
             input_dim=input_dim,
             output_dims=output_dims,
+            use_bias=use_bias,
             group_size=self.group_size,
             weight_quantization_mode=self.weight_quantization_mode,
             activation_quantization_mode=self.activation_quantization_mode,

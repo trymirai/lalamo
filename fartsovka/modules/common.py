@@ -15,6 +15,20 @@ class ParameterDict(dict[str, Array]):
     def __init__(self, **kwargs: Array | NestedParameters | Iterable[Array | NestedParameters]) -> None:
         super().__init__(self._flatten(kwargs))
 
+    def __setitem__(
+        self,
+        key: str,
+        value: Array | NestedParameters | Iterable[Array | NestedParameters],
+    ) -> None:
+        key = ParameterPath(key)
+
+        if isinstance(value, Array):
+            super().__setitem__(key, value)
+            return
+
+        for subkey, subvalue in self._flatten(value).items():
+            super().__setitem__(key / subkey, subvalue)
+
     @classmethod
     def _flatten(cls, nested_parameters: NestedParameters) -> dict[str, Array]:
         result: dict[str, Array] = {}

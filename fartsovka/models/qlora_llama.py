@@ -9,7 +9,7 @@ from fartsovka.modules.embedding import QuantizedEmbedding, QuantizedEmbeddingFa
 from fartsovka.modules.linear import QLoRALinear, QLoRALinearFactory
 from fartsovka.modules.mlp import MLP, MLPFactory
 from fartsovka.modules.normalization import RMSNorm, RMSNormFactory
-from fartsovka.modules.rope import RoPEFactory, RoPEParams
+from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEFactory
 from fartsovka.quantization import QuantizationMode
 
 __all__ = [
@@ -38,6 +38,7 @@ type QLoRALlama = Decoder[
     QLoRAMLP,
     RMSNorm,
     QLoRAAttention,
+    LlamaRoPE,
 ]
 
 
@@ -51,12 +52,17 @@ def get_qlora_llama_factory(
     lora_scale: float = 2.0,
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
+    rope_scaling_factor: float,
+    rope_original_context_length: int,
+    rope_low_frequency_factor: float,
+    rope_high_frequency_factor: float,
 ) -> DecoderFactory[
     QuantizedEmbedding,
     RMSNorm,
     QLoRAMLP,
     RMSNorm,
     QLoRAAttention,
+    LlamaRoPE,
 ]:
     return DecoderFactory(
         embedding_factory=QuantizedEmbeddingFactory(
@@ -64,7 +70,13 @@ def get_qlora_llama_factory(
             activation_precision=activation_precision,
             activation_quantization_mode=activation_quantization_mode,
         ),
-        rope_factory=RoPEFactory(precision=activation_precision),
+        rope_factory=LlamaRoPEFactory(
+            precision=activation_precision,
+            scaling_factor=rope_scaling_factor,
+            original_context_length=rope_original_context_length,
+            low_frequency_factor=rope_low_frequency_factor,
+            high_frequency_factor=rope_high_frequency_factor,
+        ),
         layer_factory=DecoderLayerFactory(
             attention_norm_factory=RMSNormFactory(
                 precision=activation_precision,
@@ -120,7 +132,11 @@ def get_qlora_llama(
     num_groups: int,
     head_dim: int,
     max_sequence_length: int,
-    rope_params: RoPEParams,
+    rope_theta: float,
+    rope_scaling_factor: float,
+    rope_original_context_length: int,
+    rope_low_frequency_factor: float,
+    rope_high_frequency_factor: float,
     eps: float,
     key: PRNGKeyArray,
     weight_quantization_mode: QuantizationMode,
@@ -141,6 +157,10 @@ def get_qlora_llama(
         lora_scale=lora_scale,
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
+        rope_scaling_factor=rope_scaling_factor,
+        rope_original_context_length=rope_original_context_length,
+        rope_low_frequency_factor=rope_low_frequency_factor,
+        rope_high_frequency_factor=rope_high_frequency_factor,
     )
     return factory(
         num_layers=num_layers,
@@ -150,8 +170,11 @@ def get_qlora_llama(
         num_heads=num_heads,
         num_groups=num_groups,
         head_dim=head_dim,
+        use_attention_qkv_bias=False,
+        use_attention_out_bias=False,
+        use_mlp_bias=False,
         max_sequence_length=max_sequence_length,
-        rope_params=rope_params,
+        rope_theta=rope_theta,
         eps=eps,
         key=key,
     )

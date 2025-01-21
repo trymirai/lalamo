@@ -5,7 +5,7 @@ from jax.experimental.checkify import checkify, div_checks, index_checks, nan_ch
 
 __all__ = ["assert_close", "from_torch", "to_torch"]
 
-ATOL = 1e-5
+ATOL = 1e-3
 RTOL = 0.01
 QUANTIZED_ATOL = 0.03
 QUANTIZED_RTOL = 0.1

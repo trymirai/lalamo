@@ -6,7 +6,7 @@ from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
 from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.modules.rope import RoPE, RoPEParams
+from fartsovka.modules.rope import LlamaRoPE, RoPEBase
 from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -32,17 +32,10 @@ def test_unscaled_rope() -> None:
     hf_layer = LlamaRotaryEmbedding(
         config=llama_config,
     )
-    fs_layer = RoPE(
+    fs_layer = RoPEBase(
         head_dim=head_size,
         max_sequence_length=max_position_embeddings,
-        params=RoPEParams(
-            theta=rope_theta,
-            use_scaling=False,
-            scaling_factor=1.0,
-            original_context_length=max_position_embeddings,
-            low_frequency_factor=1.0,
-            high_frequency_factor=1.0,
-        ),
+        theta=rope_theta,
         precision=jnp.float32,
     )
     fs_layer_forward = checkify_forward(fs_layer)
@@ -94,17 +87,14 @@ def test_scaled_rope() -> None:
     hf_layer = LlamaRotaryEmbedding(
         config=llama_config,
     )
-    fs_layer = RoPE(
+    fs_layer = LlamaRoPE(
         head_dim=head_size,
         max_sequence_length=max_position_embeddings,
-        params=RoPEParams(
-            theta=rope_theta,
-            use_scaling=True,
-            scaling_factor=scaling_factor,
-            original_context_length=original_context_length,
-            low_frequency_factor=low_frequency_factor,
-            high_frequency_factor=high_frequency_factor,
-        ),
+        theta=rope_theta,
+        scaling_factor=scaling_factor,
+        original_context_length=original_context_length,
+        low_frequency_factor=low_frequency_factor,
+        high_frequency_factor=high_frequency_factor,
         precision=jnp.float32,
     )
     fs_layer_forward = checkify_forward(fs_layer)

@@ -32,6 +32,9 @@ class DecoderLayer[
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+    use_attention_qkv_bias: bool = eqx.field(static=True)
+    use_attention_out_bias: bool = eqx.field(static=True)
+    use_mlp_bias: bool = eqx.field(static=True)
 
     attention_norm: AttentionNormType
     attention: AttentionType
@@ -50,6 +53,9 @@ class DecoderLayer[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        use_mlp_bias: bool,
         eps: float,
         key: PRNGKeyArray,
     ) -> None:
@@ -60,13 +66,29 @@ class DecoderLayer[
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = head_dim
+        self.use_attention_qkv_bias = use_attention_qkv_bias
+        self.use_attention_out_bias = use_attention_out_bias
+        self.use_mlp_bias = use_mlp_bias
 
         attention_key, mlp_key = jax.random.split(key)
 
         self.attention_norm = attention_norm_factory(model_dim, eps)
-        self.attention = attention_factory(model_dim, num_heads, num_groups, head_dim, key=attention_key)
+        self.attention = attention_factory(
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            use_qkv_bias=use_attention_qkv_bias,
+            use_out_bias=use_attention_out_bias,
+            key=attention_key,
+        )
         self.mlp_norm = mlp_norm_factory(model_dim, eps)
-        self.mlp = mlp_factory(model_dim, hidden_dim, key=mlp_key)
+        self.mlp = mlp_factory(
+            model_dim=model_dim,
+            hidden_dim=hidden_dim,
+            use_bias=use_mlp_bias,
+            key=mlp_key,
+        )
 
     def __call__(
         self,
@@ -117,6 +139,9 @@ class DecoderLayerFactory[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        use_mlp_bias: bool,
         eps: float,
         key: PRNGKeyArray,
     ) -> DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
@@ -130,6 +155,9 @@ class DecoderLayerFactory[
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            use_attention_qkv_bias=use_attention_qkv_bias,
+            use_attention_out_bias=use_attention_out_bias,
+            use_mlp_bias=use_mlp_bias,
             eps=eps,
             key=key,
         )

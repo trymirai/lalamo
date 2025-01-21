@@ -27,6 +27,9 @@ class AttentionBase(FartsovkaModule):
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
 
+    use_qkv_bias: bool = eqx.field(static=True)
+    use_out_bias: bool = eqx.field(static=True)
+
     @property
     def group_dim(self) -> int:
         return self.num_heads // self.num_groups
@@ -54,20 +57,24 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        use_qkv_bias: bool,
+        use_out_bias: bool,
         *,
         key: PRNGKeyArray,
     ) -> None:
         qkv_key, out_key = jax.random.split(key)
-        super().__init__(model_dim, num_heads, num_groups, head_dim)
+        super().__init__(model_dim, num_heads, num_groups, head_dim, use_qkv_bias, use_out_bias)
         self.qkv_projection = qkv_projection_factory(
             model_dim,
             (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
             key=qkv_key,
+            use_bias=use_qkv_bias,
         )
         self.out_projection = out_projection_factory(
             num_heads * head_dim,
             (model_dim,),
             key=out_key,
+            use_bias=use_out_bias,
         )
 
     def __call__(
@@ -138,11 +145,13 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
 class AttentionFactoryBase[AttentionType: AttentionBase]:
     def __call__(
         self,
+        *,
         model_dim: int,
         num_heads: int,
         num_groups: int,
         head_dim: int,
-        *,
+        use_qkv_bias: bool,
+        use_out_bias: bool,
         key: PRNGKeyArray,
     ) -> AttentionType:
         raise NotImplementedError
@@ -157,11 +166,13 @@ class AttentionFactory[QKVProjType: LinearBase, OutProjType: LinearBase](
 
     def __call__(
         self,
+        *,
         model_dim: int,
         num_heads: int,
         num_groups: int,
         head_dim: int,
-        *,
+        use_qkv_bias: bool,
+        use_out_bias: bool,
         key: PRNGKeyArray,
     ) -> Attention[QKVProjType, OutProjType]:
         return Attention(
@@ -171,5 +182,7 @@ class AttentionFactory[QKVProjType: LinearBase, OutProjType: LinearBase](
             num_heads,
             num_groups,
             head_dim,
+            use_qkv_bias=use_qkv_bias,
+            use_out_bias=use_out_bias,
             key=key,
         )

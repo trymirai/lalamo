@@ -8,6 +8,7 @@ from jax import numpy as jnp
 
 from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.models.qwen2 import Qwen2
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -56,7 +57,7 @@ TOKENS = [
 NUM_LAYERS_IN_TRUNCATED_MODELS = [0, 1, 3, 7]
 
 
-def test_decoder(
+def test_llama(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: BaselineLlama,
 ) -> None:
@@ -77,6 +78,42 @@ def test_decoder(
     jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
 
     torch_pre_softmax = huggingface_llama(
+        token_ids_torch,
+        attention_mask=torch_mask,
+        position_ids=position_ids_torch,
+    )[0]
+    # Run forward passes
+    hf_output = from_torch(torch_pre_softmax.squeeze(0))
+    err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
+    err.throw()
+    assert_close(
+        result=fs_output.output,
+        reference=hf_output,
+        atol=DECODER_ATOL,
+    )
+
+
+def test_qwen2(
+    huggingface_qwen25: transformers.Qwen2Model,
+    fartsovka_qwen25: Qwen2,
+) -> None:
+    fs_decoder = fartsovka_qwen25
+    fs_decoder_forward = checkify_forward(fs_decoder)
+
+    sequence_length = len(TOKENS)
+    token_ids = jnp.array(TOKENS)
+    token_ids_torch = to_torch(token_ids).unsqueeze(0)
+
+    # Create position IDs
+    position_ids = jnp.arange(sequence_length)
+    position_ids_torch = to_torch(position_ids).unsqueeze(0)
+
+    # Create causal mask
+    torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
+    torch_mask = torch_mask.unsqueeze(0).unsqueeze(0)
+    jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+    torch_pre_softmax = huggingface_qwen25(
         token_ids_torch,
         attention_mask=torch_mask,
         position_ids=position_ids_torch,

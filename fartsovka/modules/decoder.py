@@ -13,7 +13,7 @@ from .embedding import EmbeddingBase, EmbeddingFactoryBase
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLPBase
 from .normalization import NormalizationBase, RMSNorm, RMSNormFactory
-from .rope import RoPE, RoPEFactory, RoPEParams
+from .rope import RoPEBase, RoPEFactoryBase
 
 __all__ = ["Decoder", "DecoderFactory"]
 
@@ -29,6 +29,7 @@ class Decoder[
     MLPType: MLPBase,
     AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
+    RoPEType: RoPEBase,
 ](FartsovkaModule):
     num_layers: int = eqx.field(static=True)
     vocab_dim: int = eqx.field(static=True)
@@ -37,12 +38,15 @@ class Decoder[
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+    use_attention_qkv_bias: bool = eqx.field(static=True)
+    use_attention_out_bias: bool = eqx.field(static=True)
+    use_mlp_bias: bool = eqx.field(static=True)
+    rope_theta: float = eqx.field(static=True)
     max_sequence_length: int = eqx.field(static=True)
-    rope_params: RoPEParams = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
     embedding: EmbeddingType
-    rope: RoPE
+    rope: RoPEBase
     layers: list[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]
     output_norm: RMSNorm
 
@@ -51,7 +55,7 @@ class Decoder[
         *,
         num_layers: int,
         embedding_factory: EmbeddingFactoryBase[EmbeddingType],
-        rope_factory: RoPEFactory,
+        rope_factory: RoPEFactoryBase[RoPEType],
         layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType],
         output_norm_factory: RMSNormFactory,
         vocab_dim: int,
@@ -60,8 +64,11 @@ class Decoder[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        use_mlp_bias: bool,
+        rope_theta: float,
         max_sequence_length: int,
-        rope_params: RoPEParams,
         eps: float,
         key: PRNGKeyArray,
     ) -> None:
@@ -74,15 +81,18 @@ class Decoder[
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = head_dim
+        self.use_attention_qkv_bias = use_attention_qkv_bias
+        self.use_attention_out_bias = use_attention_out_bias
+        self.use_mlp_bias = use_mlp_bias
+        self.rope_theta = rope_theta
         self.max_sequence_length = max_sequence_length
-        self.rope_params = rope_params
         self.eps = eps
 
         embedding_key, layers_key = jax.random.split(key)
         layer_keys = jax.random.split(layers_key, num_layers)
 
         self.embedding = embedding_factory(vocab_dim, model_dim, key=embedding_key)
-        self.rope = rope_factory(head_dim, max_sequence_length, params=rope_params)
+        self.rope = rope_factory(head_dim, max_sequence_length, theta=rope_theta)
         self.layers = [
             layer_factory(
                 model_dim=model_dim,
@@ -90,6 +100,9 @@ class Decoder[
                 num_heads=num_heads,
                 num_groups=num_groups,
                 head_dim=head_dim,
+                use_attention_qkv_bias=use_attention_qkv_bias,
+                use_attention_out_bias=use_attention_out_bias,
+                use_mlp_bias=use_mlp_bias,
                 eps=eps,
                 key=layer_key,
             )
@@ -139,9 +152,10 @@ class DecoderFactory[
     MLPType: MLPBase,
     AttentionNormType: NormalizationBase,
     AttentionType: AttentionBase,
+    RoPEType: RoPEBase,
 ]:
     embedding_factory: EmbeddingFactoryBase[EmbeddingType]
-    rope_factory: RoPEFactory
+    rope_factory: RoPEFactoryBase[RoPEType]
     layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType]
     output_norm_factory: RMSNormFactory
 
@@ -155,11 +169,14 @@ class DecoderFactory[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        use_mlp_bias: bool,
+        rope_theta: float,
         max_sequence_length: int,
-        rope_params: RoPEParams,
         eps: float,
         key: PRNGKeyArray,
-    ) -> Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType]:
+    ) -> Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType, RoPEType]:
         return Decoder(
             num_layers=num_layers,
             embedding_factory=self.embedding_factory,
@@ -172,8 +189,11 @@ class DecoderFactory[
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            use_attention_qkv_bias=use_attention_qkv_bias,
+            use_attention_out_bias=use_attention_out_bias,
+            use_mlp_bias=use_mlp_bias,
+            rope_theta=rope_theta,
             max_sequence_length=max_sequence_length,
-            rope_params=rope_params,
             eps=eps,
             key=key,
         )

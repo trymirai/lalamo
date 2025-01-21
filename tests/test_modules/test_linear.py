@@ -10,6 +10,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from fartsovka.models.baseline_llama import BaselineLlama
 from fartsovka.models.qlora_llama import QLoRADecoderLayer, QLoRALlama
+from fartsovka.models.qwen2 import Qwen2
 from fartsovka.modules.linear import QLoRALinear
 from tests.executorch_llama.source_transformation.lora import Int8DynActInt4WeightLinearLoRA
 from tests.executorch_llama.source_transformation.lora import Int8DynActInt4WeightLinearLoRA as ETQLoRALinear
@@ -122,6 +123,28 @@ def test_linear(
 ) -> None:
     hf_layer = huggingface_llama.model.layers[layer_index].mlp.down_proj
     fs_layer = fartsovka_llama.layers[layer_index].mlp.down_projection
+    fs_layer_forward = checkify_forward(fs_layer)
+
+    input_dim = hf_layer.in_features
+
+    sample_input = jax.random.normal(rng_key, (input_dim,))
+    sample_input_torch = to_torch(sample_input).unsqueeze(0)
+    hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
+    err, (fs_output,) = fs_layer_forward(sample_input)
+    err.throw()
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+    )
+
+
+def test_linear_with_bias(
+    huggingface_qwen25: transformers.Qwen2Model,
+    fartsovka_qwen25: Qwen2,
+    rng_key: PRNGKeyArray,
+) -> None:
+    hf_layer = huggingface_qwen25.model.layers[0].mlp.down_proj
+    fs_layer = fartsovka_qwen25.layers[0].mlp.down_projection
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = hf_layer.in_features

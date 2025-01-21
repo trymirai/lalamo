@@ -9,7 +9,6 @@ from jaxtyping import Array, PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.models.qlora_llama import QLoRALlama, get_qlora_llama
-from fartsovka.modules.rope import RoPEParams
 from fartsovka.quantization import QuantizationMode
 
 from .config import LlamaConfig
@@ -95,7 +94,7 @@ WEIGHT_QUANTIZATION_MODE = QuantizationMode.INT4
 
 
 def init_model(
-    config_path_or_model: str | Path | ExecutorchModel,
+    model: ExecutorchModel,
     *,
     key: PRNGKeyArray | None = None,
     activation_precision: DType = DEFAULT_PRECISION,
@@ -103,10 +102,7 @@ def init_model(
 ) -> QLoRALlama:
     if key is None:
         key = jax.random.PRNGKey(0)
-    if isinstance(config_path_or_model, ExecutorchModel):
-        config_path = download_config_file(config_path_or_model)
-    else:
-        config_path = Path(config_path_or_model)
+    config_path = download_config_file(model)
     config = LlamaConfig.from_json(config_path)
 
     if config.lora_args is None:
@@ -123,14 +119,11 @@ def init_model(
         num_heads=config.n_heads,
         num_groups=config.n_kv_heads,
         head_dim=config.dim // config.n_heads,
-        rope_params=RoPEParams(
-            theta=config.rope_theta,
-            use_scaling=True,
-            scaling_factor=ROPE_SCALING_FACTOR,
-            original_context_length=OLD_CONTEXT_LENGTH,
-            low_frequency_factor=LOW_FREQ_FACTOR,
-            high_frequency_factor=HIGH_FREQ_FACTOR,
-        ),
+        rope_theta=config.rope_theta,
+        rope_scaling_factor=ROPE_SCALING_FACTOR,
+        rope_original_context_length=OLD_CONTEXT_LENGTH,
+        rope_low_frequency_factor=LOW_FREQ_FACTOR,
+        rope_high_frequency_factor=HIGH_FREQ_FACTOR,
         eps=config.norm_eps,
         max_sequence_length=MAX_SEQUENCE_LENGTH,
         key=key,
@@ -146,23 +139,18 @@ def init_model(
 
 
 def import_model(
-    model: ExecutorchModel | Path | str,
+    model: ExecutorchModel,
     *,
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
 ) -> QLoRALlama:
-    if isinstance(model, ExecutorchModel):
-        config_path = download_config_file(model)
-        weights_path = download_weights(model)
-    else:
-        config_path = Path(model) / CONFIG_FILE_NAME
-        weights_path = Path(model) / WEIGHTS_FILE_NAME
-
     result = init_model(
-        config_path,
+        model,
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
     )
+
+    weights_path = download_weights(model)
     weights_dict = load_torch_checkpoint(
         weights_path,
         float_dtype=activation_precision,
