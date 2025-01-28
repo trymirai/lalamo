@@ -44,9 +44,9 @@ type Qwen2Decoder = Decoder[
 def get_qwen2_factory(
     precision: DType,
     accumulation_precision: DType,
-    rope_scaling_factor: float,
-    rope_beta_fast: float,
-    rope_beta_slow: float,
+    rope_scaling_factor: float,  # noqa: ARG001
+    rope_beta_fast: float,  # noqa: ARG001
+    rope_beta_slow: float,  # noqa: ARG001
 ) -> DecoderConfig[
     Embedding,
     RMSNorm,
@@ -59,9 +59,9 @@ def get_qwen2_factory(
         embedding_config=EmbeddingConfig(precision=precision),
         rope_config=RoPEConfig(
             precision=precision,
-            # scaling_factor=rope_scaling_factor,
-            # beta_fast=rope_beta_fast,
-            # beta_slow=rope_beta_slow,
+            # scaling_factor=rope_scaling_factor,  # noqa: ERA001
+            # beta_fast=rope_beta_fast,  # noqa: ERA001
+            # beta_slow=rope_beta_slow,  # noqa: ERA001
         ),
         layer_config=DecoderLayerConfig(
             attention_norm_config=RMSNormConfig(
