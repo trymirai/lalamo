@@ -5,13 +5,13 @@ import huggingface_hub
 import jax
 import jax.numpy as jnp
 import torch
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.models.qlora_llama import QLoRALlamaConfig, QLoRALlamaDecoder
 from fartsovka.quantization import QuantizationMode
 
-from .config import LlamaConfig
+from .config import LlamaConfig as ETLlamaConfig
 from .loader import load_llama
 
 __all__ = ["ExecutorchModel", "import_model"]
@@ -93,17 +93,14 @@ ACTIVATION_QUANTIZATION_MODE = QuantizationMode.INT8
 WEIGHT_QUANTIZATION_MODE = QuantizationMode.INT4
 
 
-def init_model(
+def get_model_config(
     model: ExecutorchModel,
     *,
-    key: PRNGKeyArray | None = None,
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> QLoRALlamaDecoder:
-    if key is None:
-        key = jax.random.PRNGKey(0)
+) -> QLoRALlamaConfig:
     config_path = download_config_file(model)
-    config = LlamaConfig.from_json(config_path)
+    config = ETLlamaConfig.from_json(config_path)
 
     if config.lora_args is None:
         raise ValueError("We only support QLoRA models for now.")
@@ -111,7 +108,7 @@ def init_model(
     if config.quantization_args is None:
         raise ValueError("Quantization arguments are required for QLoRA models.")
 
-    qlora_config = QLoRALlamaConfig(
+    return QLoRALlamaConfig(
         num_layers=config.n_layers,
         vocab_dim=config.vocab_size,
         model_dim=config.dim,
@@ -135,7 +132,6 @@ def init_model(
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
     )
-    return qlora_config(key)
 
 
 def import_model(
@@ -144,11 +140,12 @@ def import_model(
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
 ) -> QLoRALlamaDecoder:
-    result = init_model(
+    config = get_model_config(
         model,
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
     )
+    result = config(jax.random.PRNGKey(0))
 
     weights_path = download_weights(model)
     weights_dict = load_torch_checkpoint(

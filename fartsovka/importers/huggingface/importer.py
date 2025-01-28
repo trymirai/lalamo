@@ -4,7 +4,6 @@ from pathlib import Path
 import huggingface_hub
 import jax
 import jax.numpy as jnp
-from jaxtyping import PRNGKeyArray
 from safetensors.flax import load_file
 
 from fartsovka.common import DEFAULT_PRECISION, DType
@@ -57,19 +56,16 @@ QWEN_BETA_SLOW = 1.0
 QWEN_ROPE_SCALING_FACTOR = 4.0
 
 
-def init_model(
+def get_model_config(
     model: HuggingFaceModel,
     *,
-    key: PRNGKeyArray | None = None,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> LlamaDecoder | Qwen2Decoder:
-    if key is None:
-        key = jax.random.PRNGKey(0)
+) -> LlamaConfig | Qwen2Config:
     config_path = download_config_file(model)
     if model == HuggingFaceModel.LLAMA32_1B_INSTRUCT:
         hf_config = HFLlamaConfig.from_json(config_path)
-        llama_config = LlamaConfig(
+        return LlamaConfig(
             num_layers=hf_config.num_hidden_layers,
             vocab_dim=hf_config.vocab_size,
             model_dim=hf_config.hidden_size,
@@ -87,11 +83,10 @@ def init_model(
             rope_low_frequency_factor=hf_config.rope_scaling.low_freq_factor,
             rope_high_frequency_factor=hf_config.rope_scaling.high_freq_factor,
         )
-        return llama_config(key)
 
     if model in [HuggingFaceModel.QWEN25_1POINT5B_INSTRUCT, HuggingFaceModel.R1_DISTILL_QWEN_1POINT5]:
         hf_config = HFQwen2Config.from_json(config_path)
-        qwen_config = Qwen2Config(
+        return Qwen2Config(
             num_layers=hf_config.num_hidden_layers,
             vocab_dim=hf_config.vocab_size,
             model_dim=hf_config.hidden_size,
@@ -108,7 +103,6 @@ def init_model(
             rope_beta_fast=QWEN_BETA_FAST,
             rope_beta_slow=QWEN_BETA_SLOW,
         )
-        return qwen_config(key)
 
     raise ValueError(f"Unsupported model: {model}")
 
@@ -119,7 +113,8 @@ def import_model(
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
 ) -> LlamaDecoder | Qwen2Decoder:
-    result = init_model(model, precision=precision, accumulation_precision=accumulation_precision)
+    config = get_model_config(model, precision=precision, accumulation_precision=accumulation_precision)
+    result = config(jax.random.PRNGKey(0))
 
     weights_path = download_weights(model)
     weights_dict = load_file(weights_path)
