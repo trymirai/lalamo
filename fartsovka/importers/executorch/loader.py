@@ -8,10 +8,10 @@ from jaxtyping import Array, Float, Int
 from fartsovka.common import ParameterPath
 from fartsovka.importers.common import load_parameters
 from fartsovka.models.qlora_llama import (
-    QLoRAAttention,
-    QLoRADecoderLayer,
-    QLoRALlama,
-    QLoRAMLP,
+    QLoRALlamaAttention,
+    QLoRALlamaDecoder,
+    QLoRALlamaDecoderLayer,
+    QLoRALlamaMLP,
 )
 from fartsovka.modules.embedding import QuantizedEmbedding
 from fartsovka.modules.linear import QLoRALinear
@@ -68,7 +68,7 @@ def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: Param
     return load_parameters(params_selector, module, params)
 
 
-def load_mlp(module: QLoRAMLP, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRAMLP:
+def load_mlp(module: QLoRALlamaMLP, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALlamaMLP:
     up_proj_params = get_qlora_linear_params(weights_dict, path / "w3")
     gate_proj_params = get_qlora_linear_params(weights_dict, path / "w1")
     down_proj_params = get_qlora_linear_params(weights_dict, path / "w2")
@@ -117,10 +117,10 @@ def permute_qk_params(
 
 
 def load_attention(
-    module: QLoRAAttention,
+    module: QLoRALlamaAttention,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> QLoRAAttention:
+) -> QLoRALlamaAttention:
     model_dim = module.model_dim
     num_heads = module.num_heads
     num_groups = module.num_groups
@@ -160,10 +160,10 @@ def load_attention(
 
 
 def load_decoder_layer(
-    module: QLoRADecoderLayer,
+    module: QLoRALlamaDecoderLayer,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> QLoRADecoderLayer:
+) -> QLoRALlamaDecoderLayer:
     attention_norm = load_rmsnorm(module.attention_norm, weights_dict, path / "attention_norm")
     attention = load_attention(module.attention, weights_dict, path / "attention")
     mlp_norm = load_rmsnorm(module.mlp_norm, weights_dict, path / "ffn_norm")
@@ -185,7 +185,7 @@ def load_embedding(
     return load_parameters(lambda m: (m.weights, m.scales), module, (weights, scales))
 
 
-def load_llama(module: QLoRALlama, weights_dict: dict[str, Array]) -> QLoRALlama:
+def load_llama(module: QLoRALlamaDecoder, weights_dict: dict[str, Array]) -> QLoRALlamaDecoder:
     root_path = ParameterPath()
     embedding = load_embedding(module.embedding, weights_dict, root_path / "tok_embeddings")
     decoder_layers = [

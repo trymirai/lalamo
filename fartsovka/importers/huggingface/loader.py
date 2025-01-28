@@ -4,14 +4,14 @@ from jaxtyping import Array
 from fartsovka.common import ParameterPath
 from fartsovka.importers.common import load_parameters
 from fartsovka.models.baseline_llama import (
-    BaselineAttention,
-    BaselineDecoderLayer,
-    BaselineLlama,
-    BaselineMLP,
+    LlamaAttention,
+    LlamaDecoder,
+    LlamaDecoderLayer,
+    LlamaMLP,
 )
 from fartsovka.models.qwen2 import (
-    Qwen2,
     Qwen2Attention,
+    Qwen2Decoder,
     Qwen2DecoderLayer,
     Qwen2MLP,
 )
@@ -36,7 +36,7 @@ def load_linear(module: Linear, weights_dict: dict[str, Array], path: ParameterP
     )
 
 
-def load_mlp[T: BaselineMLP | Qwen2MLP](module: T, weights_dict: dict[str, Array], path: ParameterPath) -> T:
+def load_mlp[T: LlamaMLP | Qwen2MLP](module: T, weights_dict: dict[str, Array], path: ParameterPath) -> T:
     up_proj_weights = weights_dict[path / "up_proj" / "weight"]
     gate_proj_weights = weights_dict[path / "gate_proj" / "weight"]
     fused_up_gate_weights = jnp.concatenate([up_proj_weights, gate_proj_weights], axis=0)
@@ -54,7 +54,7 @@ def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: Paramete
     return load_parameters(lambda m: (m.scale,), module, (weights_dict[path / "weight"],))
 
 
-def load_attention[T: BaselineAttention | Qwen2Attention](
+def load_attention[T: LlamaAttention | Qwen2Attention](
     module: T,
     weights_dict: dict[str, Array],
     path: ParameterPath,
@@ -83,7 +83,7 @@ def load_attention[T: BaselineAttention | Qwen2Attention](
     )
 
 
-def load_decoder_layer[T: BaselineDecoderLayer | Qwen2DecoderLayer](
+def load_decoder_layer[T: LlamaDecoderLayer | Qwen2DecoderLayer](
     module: T,
     weights_dict: dict[str, Array],
     path: ParameterPath,
@@ -104,7 +104,7 @@ def load_embedding(module: Embedding, weights_dict: dict[str, Array], path: Para
     return load_parameters(lambda m: (m.weights,), module, (weights,))
 
 
-def load_huggingface[T: BaselineLlama | Qwen2](
+def load_huggingface[T: LlamaDecoder | Qwen2Decoder](
     module: T,
     weights_dict: dict[str, Array],
 ) -> T:

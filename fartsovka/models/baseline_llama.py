@@ -2,87 +2,87 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.modules.attention import Attention, AttentionFactory
-from fartsovka.modules.decoder import Decoder, DecoderFactory
-from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerFactory
-from fartsovka.modules.embedding import Embedding, EmbeddingFactory
-from fartsovka.modules.linear import Linear, LinearFactory
-from fartsovka.modules.mlp import MLP, MLPFactory
-from fartsovka.modules.normalization import RMSNorm, RMSNormFactory
-from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEFactory
+from fartsovka.modules.attention import Attention, AttentionConfig
+from fartsovka.modules.decoder import Decoder, DecoderConfig
+from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
+from fartsovka.modules.embedding import Embedding, EmbeddingConfig
+from fartsovka.modules.linear import Linear, LinearConfig
+from fartsovka.modules.mlp import MLP, MLPConfig
+from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
+from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEConfig
 
 __all__ = [
-    "BaselineMLP",
-    "BaselineAttention",
-    "BaselineDecoderLayer",
-    "BaselineLlama",
+    "get_baseline_llama_config",
     "get_baseline_llama",
-    "get_baseline_llama_factory",
+    "LlamaAttention",
+    "LlamaDecoder",
+    "LlamaDecoderLayer",
+    "LlamaMLP",
 ]
 
-type BaselineMLP = MLP[Linear]
+type LlamaMLP = MLP[Linear]
 
-type BaselineAttention = Attention[Linear, Linear]
+type LlamaAttention = Attention[Linear, Linear]
 
-type BaselineDecoderLayer = DecoderLayer[
+type LlamaDecoderLayer = DecoderLayer[
     RMSNorm,
-    BaselineMLP,
+    LlamaMLP,
     RMSNorm,
-    BaselineAttention,
+    LlamaAttention,
 ]
 
-type BaselineLlama = Decoder[
+type LlamaDecoder = Decoder[
     Embedding,
     RMSNorm,
-    BaselineMLP,
+    LlamaMLP,
     RMSNorm,
-    BaselineAttention,
+    LlamaAttention,
     LlamaRoPE,
 ]
 
 
-def get_baseline_llama_factory(
+def get_baseline_llama_config(
     precision: DType,
     accumulation_precision: DType,
     original_context_length: int,
     rope_scaling_factor: float,
     rope_low_frequency_factor: float,
     rope_high_frequency_factor: float,
-) -> DecoderFactory[
+) -> DecoderConfig[
     Embedding,
     RMSNorm,
-    BaselineMLP,
+    LlamaMLP,
     RMSNorm,
-    BaselineAttention,
+    LlamaAttention,
     LlamaRoPE,
 ]:
-    return DecoderFactory(
-        embedding_factory=EmbeddingFactory(precision=precision),
-        rope_factory=LlamaRoPEFactory(
+    return DecoderConfig(
+        embedding_config=EmbeddingConfig(precision=precision),
+        rope_config=LlamaRoPEConfig(
             precision=precision,
             original_context_length=original_context_length,
             scaling_factor=rope_scaling_factor,
             low_frequency_factor=rope_low_frequency_factor,
             high_frequency_factor=rope_high_frequency_factor,
         ),
-        layer_factory=DecoderLayerFactory(
-            attention_norm_factory=RMSNormFactory(
+        layer_config=DecoderLayerConfig(
+            attention_norm_config=RMSNormConfig(
                 precision=precision,
                 accumulation_precision=accumulation_precision,
             ),
-            attention_factory=AttentionFactory(
-                qkv_projection_factory=LinearFactory(precision=precision),
-                out_projection_factory=LinearFactory(precision=precision),
+            attention_config=AttentionConfig(
+                qkv_projection_config=LinearConfig(precision=precision),
+                out_projection_config=LinearConfig(precision=precision),
             ),
-            mlp_norm_factory=RMSNormFactory(
+            mlp_norm_config=RMSNormConfig(
                 precision=precision,
                 accumulation_precision=accumulation_precision,
             ),
-            mlp_factory=MLPFactory(
-                linear_factory=LinearFactory(precision=precision),
+            mlp_config=MLPConfig(
+                linear_config=LinearConfig(precision=precision),
             ),
         ),
-        output_norm_factory=RMSNormFactory(
+        output_norm_config=RMSNormConfig(
             precision=precision,
             accumulation_precision=accumulation_precision,
         ),
@@ -108,8 +108,8 @@ def get_baseline_llama(
     key: PRNGKeyArray,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> BaselineLlama:
-    factory = get_baseline_llama_factory(
+) -> LlamaDecoder:
+    factory = get_baseline_llama_config(
         precision=precision,
         accumulation_precision=accumulation_precision,
         original_context_length=rope_original_context_length,

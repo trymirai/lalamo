@@ -2,22 +2,22 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.modules.attention import Attention, AttentionFactory
-from fartsovka.modules.decoder import Decoder, DecoderFactory
-from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerFactory
-from fartsovka.modules.embedding import Embedding, EmbeddingFactory
-from fartsovka.modules.linear import Linear, LinearFactory
-from fartsovka.modules.mlp import MLP, MLPFactory
-from fartsovka.modules.normalization import RMSNorm, RMSNormFactory
-from fartsovka.modules.rope import RoPEBase, RoPEFactory
+from fartsovka.modules.attention import Attention, AttentionConfig
+from fartsovka.modules.decoder import Decoder, DecoderConfig
+from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
+from fartsovka.modules.embedding import Embedding, EmbeddingConfig
+from fartsovka.modules.linear import Linear, LinearConfig
+from fartsovka.modules.mlp import MLP, MLPConfig
+from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
+from fartsovka.modules.rope import AbstractRoPE, RoPEConfig
 
 __all__ = [
-    "Qwen2MLP",
+    "get_qwen2_factory",
+    "get_qwen2",
+    "Qwen2Decoder",
     "Qwen2Attention",
     "Qwen2DecoderLayer",
-    "Qwen2",
-    "get_qwen2",
-    "get_qwen2_factory",
+    "Qwen2MLP",
 ]
 
 type Qwen2MLP = MLP[Linear]
@@ -31,13 +31,13 @@ type Qwen2DecoderLayer = DecoderLayer[
     Qwen2Attention,
 ]
 
-type Qwen2 = Decoder[
+type Qwen2Decoder = Decoder[
     Embedding,
     RMSNorm,
     Qwen2MLP,
     RMSNorm,
     Qwen2Attention,
-    RoPEBase,
+    AbstractRoPE,
 ]
 
 
@@ -47,40 +47,40 @@ def get_qwen2_factory(
     rope_scaling_factor: float,
     rope_beta_fast: float,
     rope_beta_slow: float,
-) -> DecoderFactory[
+) -> DecoderConfig[
     Embedding,
     RMSNorm,
     Qwen2MLP,
     RMSNorm,
     Qwen2Attention,
-    RoPEBase,
+    AbstractRoPE,
 ]:
-    return DecoderFactory(
-        embedding_factory=EmbeddingFactory(precision=precision),
-        rope_factory=RoPEFactory(
+    return DecoderConfig(
+        embedding_config=EmbeddingConfig(precision=precision),
+        rope_config=RoPEConfig(
             precision=precision,
             # scaling_factor=rope_scaling_factor,
             # beta_fast=rope_beta_fast,
             # beta_slow=rope_beta_slow,
         ),
-        layer_factory=DecoderLayerFactory(
-            attention_norm_factory=RMSNormFactory(
+        layer_config=DecoderLayerConfig(
+            attention_norm_config=RMSNormConfig(
                 precision=precision,
                 accumulation_precision=accumulation_precision,
             ),
-            attention_factory=AttentionFactory(
-                qkv_projection_factory=LinearFactory(precision=precision),
-                out_projection_factory=LinearFactory(precision=precision),
+            attention_config=AttentionConfig(
+                qkv_projection_config=LinearConfig(precision=precision),
+                out_projection_config=LinearConfig(precision=precision),
             ),
-            mlp_norm_factory=RMSNormFactory(
+            mlp_norm_config=RMSNormConfig(
                 precision=precision,
                 accumulation_precision=accumulation_precision,
             ),
-            mlp_factory=MLPFactory(
-                linear_factory=LinearFactory(precision=precision),
+            mlp_config=MLPConfig(
+                linear_config=LinearConfig(precision=precision),
             ),
         ),
-        output_norm_factory=RMSNormFactory(
+        output_norm_config=RMSNormConfig(
             precision=precision,
             accumulation_precision=accumulation_precision,
         ),
@@ -105,7 +105,7 @@ def get_qwen2(
     key: PRNGKeyArray,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> Qwen2:
+) -> Qwen2Decoder:
     factory = get_qwen2_factory(
         precision=precision,
         accumulation_precision=accumulation_precision,

@@ -3,8 +3,8 @@ import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import (
@@ -21,7 +21,7 @@ from .common import (
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_mlp(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -45,7 +45,7 @@ def test_mlp(
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_mlp(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:

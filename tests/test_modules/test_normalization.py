@@ -3,8 +3,8 @@ import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -13,7 +13,7 @@ from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forwa
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_rms_norm(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -37,7 +37,7 @@ def test_rms_norm(
 
 def test_out_norm_executorch(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     hf_layer = executorch_llama.norm

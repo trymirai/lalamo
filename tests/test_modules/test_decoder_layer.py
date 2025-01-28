@@ -6,8 +6,8 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import (
@@ -24,7 +24,7 @@ from .common import (
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_decoder_layer(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -65,7 +65,7 @@ def test_decoder_layer(
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_decoder_layer(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:

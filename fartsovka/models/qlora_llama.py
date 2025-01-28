@@ -2,42 +2,42 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.modules.attention import Attention, AttentionFactory
-from fartsovka.modules.decoder import Decoder, DecoderFactory
-from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerFactory
-from fartsovka.modules.embedding import QuantizedEmbedding, QuantizedEmbeddingFactory
-from fartsovka.modules.linear import QLoRALinear, QLoRALinearFactory
-from fartsovka.modules.mlp import MLP, MLPFactory
-from fartsovka.modules.normalization import RMSNorm, RMSNormFactory
-from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEFactory
+from fartsovka.modules.attention import Attention, AttentionConfig
+from fartsovka.modules.decoder import Decoder, DecoderConfig
+from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
+from fartsovka.modules.embedding import QuantizedEmbedding, QuantizedEmbeddingConfig
+from fartsovka.modules.linear import QLoRALinear, QLoRALinearConfig
+from fartsovka.modules.mlp import MLP, MLPConfig
+from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
+from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEConfig
 from fartsovka.quantization import QuantizationMode
 
 __all__ = [
-    "QLoRAAttention",
-    "QLoRADecoderLayer",
-    "QLoRALlama",
-    "QLoRAMLP",
-    "get_qlora_llama",
     "get_qlora_llama_factory",
+    "get_qlora_llama",
+    "QLoRALlamaAttention",
+    "QLoRALlamaDecoder",
+    "QLoRALlamaDecoderLayer",
+    "QLoRALlamaMLP",
 ]
 
-type QLoRAMLP = MLP[QLoRALinear]
+type QLoRALlamaMLP = MLP[QLoRALinear]
 
-type QLoRAAttention = Attention[QLoRALinear, QLoRALinear]
+type QLoRALlamaAttention = Attention[QLoRALinear, QLoRALinear]
 
-type QLoRADecoderLayer = DecoderLayer[
+type QLoRALlamaDecoderLayer = DecoderLayer[
     RMSNorm,
-    QLoRAMLP,
+    QLoRALlamaMLP,
     RMSNorm,
-    QLoRAAttention,
+    QLoRALlamaAttention,
 ]
 
-type QLoRALlama = Decoder[
+type QLoRALlamaDecoder = Decoder[
     QuantizedEmbedding,
     RMSNorm,
-    QLoRAMLP,
+    QLoRALlamaMLP,
     RMSNorm,
-    QLoRAAttention,
+    QLoRALlamaAttention,
     LlamaRoPE,
 ]
 
@@ -56,34 +56,34 @@ def get_qlora_llama_factory(
     rope_original_context_length: int,
     rope_low_frequency_factor: float,
     rope_high_frequency_factor: float,
-) -> DecoderFactory[
+) -> DecoderConfig[
     QuantizedEmbedding,
     RMSNorm,
-    QLoRAMLP,
+    QLoRALlamaMLP,
     RMSNorm,
-    QLoRAAttention,
+    QLoRALlamaAttention,
     LlamaRoPE,
 ]:
-    return DecoderFactory(
-        embedding_factory=QuantizedEmbeddingFactory(
+    return DecoderConfig(
+        embedding_config=QuantizedEmbeddingConfig(
             embedding_quantization_mode=embedding_quantization_mode,
             activation_precision=activation_precision,
             activation_quantization_mode=activation_quantization_mode,
         ),
-        rope_factory=LlamaRoPEFactory(
+        rope_config=LlamaRoPEConfig(
             precision=activation_precision,
             scaling_factor=rope_scaling_factor,
             original_context_length=rope_original_context_length,
             low_frequency_factor=rope_low_frequency_factor,
             high_frequency_factor=rope_high_frequency_factor,
         ),
-        layer_factory=DecoderLayerFactory(
-            attention_norm_factory=RMSNormFactory(
+        layer_config=DecoderLayerConfig(
+            attention_norm_config=RMSNormConfig(
                 precision=activation_precision,
                 accumulation_precision=accumulation_precision,
             ),
-            attention_factory=AttentionFactory(
-                qkv_projection_factory=QLoRALinearFactory(
+            attention_config=AttentionConfig(
+                qkv_projection_config=QLoRALinearConfig(
                     group_size=quantization_group_size,
                     weight_quantization_mode=weight_quantization_mode,
                     activation_quantization_mode=activation_quantization_mode,
@@ -91,7 +91,7 @@ def get_qlora_llama_factory(
                     lora_rank=lora_rank,
                     lora_scale=lora_scale,
                 ),
-                out_projection_factory=QLoRALinearFactory(
+                out_projection_config=QLoRALinearConfig(
                     group_size=quantization_group_size,
                     weight_quantization_mode=weight_quantization_mode,
                     activation_quantization_mode=activation_quantization_mode,
@@ -100,12 +100,12 @@ def get_qlora_llama_factory(
                     lora_scale=lora_scale,
                 ),
             ),
-            mlp_norm_factory=RMSNormFactory(
+            mlp_norm_config=RMSNormConfig(
                 precision=activation_precision,
                 accumulation_precision=accumulation_precision,
             ),
-            mlp_factory=MLPFactory(
-                linear_factory=QLoRALinearFactory(
+            mlp_config=MLPConfig(
+                linear_config=QLoRALinearConfig(
                     group_size=quantization_group_size,
                     weight_quantization_mode=weight_quantization_mode,
                     activation_quantization_mode=activation_quantization_mode,
@@ -115,7 +115,7 @@ def get_qlora_llama_factory(
                 ),
             ),
         ),
-        output_norm_factory=RMSNormFactory(
+        output_norm_config=RMSNormConfig(
             precision=activation_precision,
             accumulation_precision=accumulation_precision,
         ),
@@ -147,7 +147,7 @@ def get_qlora_llama(
     lora_scale: float = 2.0,
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> QLoRALlama:
+) -> QLoRALlamaDecoder:
     factory = get_qlora_llama_factory(
         weight_quantization_mode=weight_quantization_mode,
         embedding_quantization_mode=embedding_quantization_mode,

@@ -8,7 +8,7 @@ import torch
 from jaxtyping import Array, PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.models.qlora_llama import QLoRALlama, get_qlora_llama
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder, get_qlora_llama
 from fartsovka.quantization import QuantizationMode
 
 from .config import LlamaConfig
@@ -99,7 +99,7 @@ def init_model(
     key: PRNGKeyArray | None = None,
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> QLoRALlama:
+) -> QLoRALlamaDecoder:
     if key is None:
         key = jax.random.PRNGKey(0)
     config_path = download_config_file(model)
@@ -143,7 +143,7 @@ def import_model(
     *,
     activation_precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> QLoRALlama:
+) -> QLoRALlamaDecoder:
     result = init_model(
         model,
         activation_precision=activation_precision,

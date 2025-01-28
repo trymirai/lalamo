@@ -6,14 +6,17 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from .attention import AttentionBase, AttentionFactoryBase
-from .common import FartsovkaModule, ParameterDict
+from .attention import AbstractAttention, AbstractAttentionConfig
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
 from .kv_cache import KVCacheLayerSlice
-from .mlp import MLPBase, MLPFactoryBase
-from .normalization import NormalizationBase, NormalizationFactoryBase
+from .mlp import AbstractMLP, AbstractMLPConfig
+from .normalization import AbstractNormalization, AbstractNormalizationConfig
 from .rope import PositionalEmbeddings
 
-__all__ = ["DecoderLayer", "DecoderLayerFactory"]
+__all__ = [
+    "DecoderLayer",
+    "DecoderLayerConfig",
+]
 
 
 class DecoderLayerOutput(NamedTuple):
@@ -22,10 +25,10 @@ class DecoderLayerOutput(NamedTuple):
 
 
 class DecoderLayer[
-    MLPNormType: NormalizationBase,
-    MLPType: MLPBase,
-    AttentionNormType: NormalizationBase,
-    AttentionType: AttentionBase,
+    MLPNormType: AbstractNormalization,
+    MLPType: AbstractMLP,
+    AttentionNormType: AbstractNormalization,
+    AttentionType: AbstractAttention,
 ](FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     hidden_dim: int = eqx.field(static=True)
@@ -44,10 +47,10 @@ class DecoderLayer[
     def __init__(
         self,
         *,
-        attention_norm_factory: NormalizationFactoryBase[AttentionNormType],
-        attention_factory: AttentionFactoryBase[AttentionType],
-        mlp_norm_factory: NormalizationFactoryBase[MLPNormType],
-        mlp_factory: MLPFactoryBase[MLPType],
+        attention_norm_config: AbstractNormalizationConfig[AttentionNormType],
+        attention_config: AbstractAttentionConfig[AttentionType],
+        mlp_norm_config: AbstractNormalizationConfig[MLPNormType],
+        mlp_config: AbstractMLPConfig[MLPType],
         model_dim: int,
         hidden_dim: int,
         num_heads: int,
@@ -72,8 +75,8 @@ class DecoderLayer[
 
         attention_key, mlp_key = jax.random.split(key)
 
-        self.attention_norm = attention_norm_factory(model_dim, eps)
-        self.attention = attention_factory(
+        self.attention_norm = attention_norm_config(model_dim, eps)
+        self.attention = attention_config(
             model_dim=model_dim,
             num_heads=num_heads,
             num_groups=num_groups,
@@ -82,8 +85,8 @@ class DecoderLayer[
             use_out_bias=use_attention_out_bias,
             key=attention_key,
         )
-        self.mlp_norm = mlp_norm_factory(model_dim, eps)
-        self.mlp = mlp_factory(
+        self.mlp_norm = mlp_norm_config(model_dim, eps)
+        self.mlp = mlp_config(
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             use_bias=use_mlp_bias,
@@ -120,16 +123,16 @@ class DecoderLayer[
 
 
 @dataclass
-class DecoderLayerFactory[
-    MLPNormType: NormalizationBase,
-    MLPType: MLPBase,
-    AttentionNormType: NormalizationBase,
-    AttentionType: AttentionBase,
-]:
-    attention_norm_factory: NormalizationFactoryBase[AttentionNormType]
-    attention_factory: AttentionFactoryBase[AttentionType]
-    mlp_norm_factory: NormalizationFactoryBase[MLPNormType]
-    mlp_factory: MLPFactoryBase[MLPType]
+class DecoderLayerConfig[
+    MLPNormType: AbstractNormalization,
+    MLPType: AbstractMLP,
+    AttentionNormType: AbstractNormalization,
+    AttentionType: AbstractAttention,
+](ModuleConfig[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]):
+    attention_norm_config: AbstractNormalizationConfig[AttentionNormType]
+    attention_config: AbstractAttentionConfig[AttentionType]
+    mlp_norm_config: AbstractNormalizationConfig[MLPNormType]
+    mlp_config: AbstractMLPConfig[MLPType]
 
     def __call__(
         self,
@@ -146,10 +149,10 @@ class DecoderLayerFactory[
         key: PRNGKeyArray,
     ) -> DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
         return DecoderLayer(
-            attention_norm_factory=self.attention_norm_factory,
-            attention_factory=self.attention_factory,
-            mlp_norm_factory=self.mlp_norm_factory,
-            mlp_factory=self.mlp_factory,
+            attention_norm_config=self.attention_norm_config,
+            attention_config=self.attention_config,
+            mlp_norm_config=self.mlp_norm_config,
+            mlp_config=self.mlp_config,
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             num_heads=num_heads,

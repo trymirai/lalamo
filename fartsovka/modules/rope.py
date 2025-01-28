@@ -24,17 +24,17 @@ from jaxtyping import Array, Float, Int
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
 
 __all__ = [
     "PositionalEmbeddings",
-    "RoPEBase",
-    "RoPEFactoryBase",
-    "RoPEFactory",
+    "AbstractRoPE",
+    "AbstractRoPEConfig",
+    "RoPEConfig",
     "LlamaRoPE",
-    "LlamaRoPEFactory",
+    "LlamaRoPEConfig",
     "YARNRoPE",
-    "YARNRoPEFactory",
+    "YARNRoPEConfig",
 ]
 
 
@@ -55,7 +55,7 @@ class PositionalEmbeddings(eqx.Module):
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
 
-class RoPEBase(FartsovkaModule):
+class AbstractRoPE(FartsovkaModule):
     head_dim: int = eqx.field(static=True)
     max_sequence_length: int = eqx.field(static=True)
     theta: float = eqx.field(static=True)
@@ -118,16 +118,17 @@ class RoPEBase(FartsovkaModule):
 
 
 @dataclass
-class RoPEFactoryBase[T: RoPEBase]:
+class AbstractRoPEConfig[RoPEType: AbstractRoPE](ModuleConfig[RoPEType]):
     precision: DType = DEFAULT_PRECISION
 
-    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> T:
+    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> RoPEType:
         raise NotImplementedError
 
 
-class RoPEFactory(RoPEFactoryBase[RoPEBase]):
-    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> RoPEBase:
-        return RoPEBase(
+@dataclass
+class RoPEConfig(AbstractRoPEConfig[AbstractRoPE]):
+    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> AbstractRoPE:
+        return AbstractRoPE(
             head_dim=head_dim,
             max_sequence_length=max_sequence_length,
             theta=theta,
@@ -135,7 +136,7 @@ class RoPEFactory(RoPEFactoryBase[RoPEBase]):
         )
 
 
-class LlamaRoPE(RoPEBase):
+class LlamaRoPE(AbstractRoPE):
     scaling_factor: float = eqx.field(static=True)
     original_context_length: int = eqx.field(static=True)
     low_frequency_factor: float = eqx.field(static=True)
@@ -200,7 +201,7 @@ class LlamaRoPE(RoPEBase):
         return ParameterDict(cosines=self.cosines, sines=self.sines)
 
 
-class LlamaRoPEFactory(RoPEFactoryBase[LlamaRoPE]):
+class LlamaRoPEConfig(AbstractRoPEConfig[LlamaRoPE]):
     scaling_factor: float
     original_context_length: int
     low_frequency_factor: float
@@ -235,7 +236,7 @@ class LlamaRoPEFactory(RoPEFactoryBase[LlamaRoPE]):
         )
 
 
-class YARNRoPE(RoPEBase):
+class YARNRoPE(AbstractRoPE):
     scaling_factor: float = eqx.field(static=True)
     beta_fast: float = eqx.field(static=True)
     beta_slow: float = eqx.field(static=True)
@@ -313,7 +314,7 @@ class YARNRoPE(RoPEBase):
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 
-class YARNRoPEFactory(RoPEFactoryBase[YARNRoPE]):
+class YARNRoPEConfig(AbstractRoPEConfig[YARNRoPE]):
     scaling_factor: float
     beta_fast: float
     beta_slow: float

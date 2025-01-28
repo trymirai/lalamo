@@ -1,4 +1,5 @@
 from collections.abc import Iterable, Mapping
+from dataclasses import dataclass
 
 import equinox as eqx
 from jaxtyping import Array
@@ -8,7 +9,11 @@ from fartsovka.common import ParameterPath
 type NestedParameters = Mapping[str, Array | NestedParameters] | Iterable[Array | NestedParameters]
 
 
-__all__ = ["ParameterDict", "FartsovkaModule"]
+__all__ = [
+    "FartsovkaModule",
+    "ModuleConfig",
+    "ParameterDict",
+]
 
 
 class ParameterDict(dict[str, Array]):
@@ -46,3 +51,8 @@ class ParameterDict(dict[str, Array]):
 class FartsovkaModule(eqx.Module):
     def export_weights(self) -> ParameterDict:
         raise NotImplementedError
+
+
+@dataclass
+class ModuleConfig[ModuleType: FartsovkaModule]:
+    pass

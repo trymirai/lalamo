@@ -11,21 +11,21 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
 
 __all__ = [
+    "AbstractLinear",
+    "AbstractLinearConfig",
     "GroupQuantizedLinear",
-    "GroupQuantizedLinearFactory",
+    "GroupQuantizedLinearConfig",
     "Linear",
-    "LinearBase",
-    "LinearFactory",
-    "LinearFactoryBase",
+    "LinearConfig",
     "QLoRALinear",
-    "QLoRALinearFactory",
+    "QLoRALinearConfig",
 ]
 
 
-class LinearBase(FartsovkaModule):
+class AbstractLinear(FartsovkaModule):
     input_dim: int = eqx.field(static=True)
     output_dims: tuple[int, ...] = eqx.field(static=True)
     use_bias: bool = eqx.field(static=True)
@@ -51,7 +51,7 @@ class LinearBase(FartsovkaModule):
 
 
 @dataclass
-class LinearFactoryBase[LinearType: LinearBase]:
+class AbstractLinearConfig[LinearType: AbstractLinear](ModuleConfig[LinearType]):
     def __call__(
         self,
         input_dim: int,
@@ -63,7 +63,7 @@ class LinearFactoryBase[LinearType: LinearBase]:
         raise NotImplementedError
 
 
-class Linear(LinearBase):
+class Linear(AbstractLinear):
     weights: Float[Array, "total_out_channels in_channels"]
     bias: Float[Array, " total_out_channels"] | None
 
@@ -112,14 +112,14 @@ class Linear(LinearBase):
 
 
 @dataclass
-class LinearFactory(LinearFactoryBase[Linear]):
+class LinearConfig(AbstractLinearConfig[Linear]):
     precision: DType = DEFAULT_PRECISION
 
     def __call__(self, input_dim: int, output_dims: tuple[int, ...], use_bias: bool, *, key: PRNGKeyArray) -> Linear:
         return Linear(input_dim, output_dims, use_bias=use_bias, precision=self.precision, key=key)
 
 
-class GroupQuantizedLinear(LinearBase):
+class GroupQuantizedLinear(AbstractLinear):
     group_size: int = eqx.field(static=True)
     weight_quantization_mode: QuantizationMode = eqx.field(static=True)
     activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
@@ -215,7 +215,7 @@ class GroupQuantizedLinear(LinearBase):
 
 
 @dataclass
-class GroupQuantizedLinearFactory(LinearFactoryBase[GroupQuantizedLinear]):
+class GroupQuantizedLinearConfig(AbstractLinearConfig[GroupQuantizedLinear]):
     group_size: int
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None = None
@@ -332,7 +332,7 @@ class QLoRALinear(GroupQuantizedLinear):
 
 
 @dataclass
-class QLoRALinearFactory(LinearFactoryBase[QLoRALinear]):
+class QLoRALinearConfig(AbstractLinearConfig[QLoRALinear]):
     group_size: int
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None

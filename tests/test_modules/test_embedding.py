@@ -2,8 +2,8 @@ import jax
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.models.qlora_llama import QLoRALlama
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -11,7 +11,7 @@ from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, 
 
 def test_embedding(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     hf_layer = huggingface_llama.model.embed_tokens
@@ -52,7 +52,7 @@ def test_embedding(
 
 def test_quantized_embedding(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     fs_layer = fartsovka_qlora_llama.embedding

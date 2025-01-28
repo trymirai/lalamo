@@ -5,13 +5,13 @@ import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from .activations import silu
-from .common import FartsovkaModule, ParameterDict
-from .linear import LinearBase, LinearFactoryBase
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .linear import AbstractLinear, AbstractLinearConfig
 
-__all__ = ["MLP", "MLPBase", "MLPFactory", "MLPFactoryBase"]
+__all__ = ["MLP", "AbstractMLP", "MLPConfig", "AbstractMLPConfig"]
 
 
-class MLPBase(FartsovkaModule):
+class AbstractMLP(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     hidden_dim: int = eqx.field(static=True)
     use_bias: bool = eqx.field(static=True)
@@ -21,7 +21,7 @@ class MLPBase(FartsovkaModule):
 
 
 @dataclass
-class MLPFactoryBase[MLPType: MLPBase]:
+class AbstractMLPConfig[MLPType: AbstractMLP](ModuleConfig[MLPType]):
     def __call__(
         self,
         *,
@@ -33,13 +33,13 @@ class MLPFactoryBase[MLPType: MLPBase]:
         raise NotImplementedError
 
 
-class MLP[LinearType: LinearBase](MLPBase):
+class MLP[LinearType: AbstractLinear](AbstractMLP):
     up_projection: LinearType
     down_projection: LinearType
 
     def __init__(
         self,
-        linear_factory: LinearFactoryBase[LinearType],
+        linear_config: AbstractLinearConfig[LinearType],
         model_dim: int,
         hidden_dim: int,
         use_bias: bool,
@@ -49,13 +49,13 @@ class MLP[LinearType: LinearBase](MLPBase):
         super().__init__(model_dim=model_dim, hidden_dim=hidden_dim, use_bias=use_bias)
 
         up_projection_key, down_projection_key = jax.random.split(key)
-        self.up_projection = linear_factory(
+        self.up_projection = linear_config(
             model_dim,
             (hidden_dim, hidden_dim),
             use_bias=use_bias,
             key=up_projection_key,
         )
-        self.down_projection = linear_factory(
+        self.down_projection = linear_config(
             hidden_dim,
             (model_dim,),
             use_bias=use_bias,
@@ -76,8 +76,8 @@ class MLP[LinearType: LinearBase](MLPBase):
 
 
 @dataclass
-class MLPFactory[LinearType: LinearBase](MLPFactoryBase[MLP[LinearType]]):
-    linear_factory: LinearFactoryBase[LinearType]
+class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
+    linear_config: AbstractLinearConfig[LinearType]
 
     def __call__(
         self,
@@ -88,7 +88,7 @@ class MLPFactory[LinearType: LinearBase](MLPFactoryBase[MLP[LinearType]]):
         key: PRNGKeyArray,
     ) -> MLP[LinearType]:
         return MLP(
-            linear_factory=self.linear_factory,
+            linear_config=self.linear_config,
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             use_bias=use_bias,

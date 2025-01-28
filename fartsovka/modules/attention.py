@@ -10,10 +10,15 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .common import FartsovkaModule, ParameterDict
 from .kv_cache import KVCacheLayerSlice
-from .linear import LinearBase, LinearFactoryBase
+from .linear import AbstractLinear, AbstractLinearConfig
 from .rope import PositionalEmbeddings
 
-__all__ = ["Attention", "AttentionBase", "AttentionFactory", "AttentionFactoryBase"]
+__all__ = [
+    "AbstractAttention",
+    "AbstractAttentionConfig",
+    "Attention",
+    "AttentionConfig",
+]
 
 
 class AttentionOutput(NamedTuple):
@@ -21,7 +26,7 @@ class AttentionOutput(NamedTuple):
     kv_cache: KVCacheLayerSlice | None = None
 
 
-class AttentionBase(FartsovkaModule):
+class AbstractAttention(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
@@ -45,14 +50,14 @@ class AttentionBase(FartsovkaModule):
         raise NotImplementedError
 
 
-class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase):
+class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](AbstractAttention):
     qkv_projection: QKVProjType
     out_projection: OutProjType
 
     def __init__(
         self,
-        qkv_projection_factory: LinearFactoryBase[QKVProjType],
-        out_projection_factory: LinearFactoryBase[OutProjType],
+        qkv_projection_config: AbstractLinearConfig[QKVProjType],
+        out_projection_config: AbstractLinearConfig[OutProjType],
         model_dim: int,
         num_heads: int,
         num_groups: int,
@@ -64,13 +69,13 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
     ) -> None:
         qkv_key, out_key = jax.random.split(key)
         super().__init__(model_dim, num_heads, num_groups, head_dim, use_qkv_bias, use_out_bias)
-        self.qkv_projection = qkv_projection_factory(
+        self.qkv_projection = qkv_projection_config(
             model_dim,
             (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
             key=qkv_key,
             use_bias=use_qkv_bias,
         )
-        self.out_projection = out_projection_factory(
+        self.out_projection = out_projection_config(
             num_heads * head_dim,
             (model_dim,),
             key=out_key,
@@ -142,7 +147,7 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
 
 
 @dataclass
-class AttentionFactoryBase[AttentionType: AttentionBase]:
+class AbstractAttentionConfig[AttentionType: AbstractAttention]:
     def __call__(
         self,
         *,
@@ -158,11 +163,11 @@ class AttentionFactoryBase[AttentionType: AttentionBase]:
 
 
 @dataclass
-class AttentionFactory[QKVProjType: LinearBase, OutProjType: LinearBase](
-    AttentionFactoryBase[Attention[QKVProjType, OutProjType]],
+class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
+    AbstractAttentionConfig[Attention[QKVProjType, OutProjType]],
 ):
-    qkv_projection_factory: LinearFactoryBase[QKVProjType]
-    out_projection_factory: LinearFactoryBase[OutProjType]
+    qkv_projection_config: AbstractLinearConfig[QKVProjType]
+    out_projection_config: AbstractLinearConfig[OutProjType]
 
     def __call__(
         self,
@@ -176,8 +181,8 @@ class AttentionFactory[QKVProjType: LinearBase, OutProjType: LinearBase](
         key: PRNGKeyArray,
     ) -> Attention[QKVProjType, OutProjType]:
         return Attention(
-            self.qkv_projection_factory,
-            self.out_projection_factory,
+            self.qkv_projection_config,
+            self.out_projection_config,
             model_dim,
             num_heads,
             num_groups,

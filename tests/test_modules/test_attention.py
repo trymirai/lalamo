@@ -6,9 +6,9 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import DynamicCache, LlamaAttention
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.models.qlora_llama import QLoRALlama
-from fartsovka.models.qwen2 import Qwen2
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder
+from fartsovka.models.qwen2 import Qwen2Decoder
 from fartsovka.modules.kv_cache import KVCacheLayerSlice
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
@@ -26,7 +26,7 @@ from .common import (
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_attention_no_mask_no_cache(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -63,7 +63,7 @@ def test_attention_no_mask_no_cache(
 
 def test_qwen2_attention(
     huggingface_qwen25: transformers.Qwen2Model,
-    fartsovka_qwen25: Qwen2,
+    fartsovka_qwen25: Qwen2Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     hf_layer = huggingface_qwen25.model.layers[0].self_attn
@@ -99,7 +99,7 @@ def test_qwen2_attention(
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_attention_with_mask(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -140,7 +140,7 @@ def test_attention_with_mask(
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_attention_with_mask_and_kv_cache(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -209,7 +209,7 @@ def test_attention_with_mask_and_kv_cache(
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_attention(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:

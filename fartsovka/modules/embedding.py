@@ -8,12 +8,18 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
 
-__all__ = ["Embedding", "EmbeddingFactory", "QuantizedEmbedding", "QuantizedEmbeddingFactory"]
+__all__ = [
+    "AbstractEmbedding",
+    "Embedding",
+    "EmbeddingConfig",
+    "QuantizedEmbedding",
+    "QuantizedEmbeddingConfig",
+]
 
 
-class EmbeddingBase(FartsovkaModule):
+class AbstractEmbedding(FartsovkaModule):
     vocab_dim: int = eqx.field(static=True)
     model_dim: int = eqx.field(static=True)
 
@@ -25,12 +31,12 @@ class EmbeddingBase(FartsovkaModule):
 
 
 @dataclass
-class EmbeddingFactoryBase[EmbeddingType: EmbeddingBase]:
+class AbstractEmbeddingConfig[EmbeddingType: AbstractEmbedding](ModuleConfig[EmbeddingType]):
     def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> EmbeddingType:
         raise NotImplementedError
 
 
-class Embedding(EmbeddingBase):
+class Embedding(AbstractEmbedding):
     weights: Float[Array, "token_ids channels"]
 
     precision: DType = eqx.field(static=True)
@@ -51,14 +57,14 @@ class Embedding(EmbeddingBase):
 
 
 @dataclass
-class EmbeddingFactory(EmbeddingFactoryBase[Embedding]):
+class EmbeddingConfig(AbstractEmbeddingConfig[Embedding]):
     precision: DType = DEFAULT_PRECISION
 
     def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> Embedding:
         return Embedding(vocab_dim, model_dim, precision=self.precision, key=key)
 
 
-class QuantizedEmbedding(EmbeddingBase):
+class QuantizedEmbedding(AbstractEmbedding):
     weights: Float[Array, "token_ids channels"]
 
     @property
@@ -120,7 +126,7 @@ class QuantizedEmbedding(EmbeddingBase):
 
 
 @dataclass
-class QuantizedEmbeddingFactory(EmbeddingFactoryBase[QuantizedEmbedding]):
+class QuantizedEmbeddingConfig(AbstractEmbeddingConfig[QuantizedEmbedding]):
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
     activation_precision: DType = DEFAULT_PRECISION

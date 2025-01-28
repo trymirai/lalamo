@@ -6,12 +6,12 @@ from jaxtyping import Array, Float, Scalar
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
 
-__all__ = ["NormalizationBase", "NormalizationFactoryBase", "RMSNorm", "RMSNormFactory"]
+__all__ = ["AbstractNormalization", "AbstractNormalizationConfig", "RMSNorm", "RMSNormConfig"]
 
 
-class NormalizationBase(FartsovkaModule):
+class AbstractNormalization(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
 
@@ -20,7 +20,7 @@ class NormalizationBase(FartsovkaModule):
 
 
 @dataclass
-class NormalizationFactoryBase[NormalizationType: NormalizationBase]:
+class AbstractNormalizationConfig[NormalizationType: AbstractNormalization](ModuleConfig[NormalizationType]):
     def __call__(self, model_dim: int, eps: float) -> NormalizationType:
         raise NotImplementedError
 
@@ -35,7 +35,7 @@ def _compute_adjusted_variance(
     return result.astype(x.dtype)
 
 
-class RMSNorm(NormalizationBase):
+class RMSNorm(AbstractNormalization):
     scale: Float[Array, " channels"]
 
     precision: DType = eqx.field(static=True)
@@ -63,7 +63,7 @@ class RMSNorm(NormalizationBase):
 
 
 @dataclass
-class RMSNormFactory(NormalizationFactoryBase[RMSNorm]):
+class RMSNormConfig(AbstractNormalizationConfig[RMSNorm]):
     precision: DType = DEFAULT_PRECISION
     accumulation_precision: DType = jnp.float32
 

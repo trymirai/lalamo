@@ -5,8 +5,8 @@ from einops import rearrange
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.modules.rope import LlamaRoPE, RoPEBase
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.modules.rope import AbstractRoPE, LlamaRoPE
 from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -32,7 +32,7 @@ def test_unscaled_rope() -> None:
     hf_layer = LlamaRotaryEmbedding(
         config=llama_config,
     )
-    fs_layer = RoPEBase(
+    fs_layer = AbstractRoPE(
         head_dim=head_size,
         max_sequence_length=max_position_embeddings,
         theta=rope_theta,
@@ -122,7 +122,7 @@ def test_scaled_rope() -> None:
 
 def test_rope(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
 ) -> None:
     hf_layer = huggingface_llama.model.rotary_emb
     fs_layer = fartsovka_llama.rope
@@ -150,7 +150,7 @@ def test_rope(
 
 
 def test_executorch_apply_rotary_emb(
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     head_dim = fartsovka_llama.head_dim

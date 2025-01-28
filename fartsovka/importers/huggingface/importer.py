@@ -8,8 +8,8 @@ from jaxtyping import PRNGKeyArray
 from safetensors.flax import load_file
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.models.baseline_llama import BaselineLlama, get_baseline_llama
-from fartsovka.models.qwen2 import Qwen2, get_qwen2
+from fartsovka.models.baseline_llama import LlamaDecoder, get_baseline_llama
+from fartsovka.models.qwen2 import Qwen2Decoder, get_qwen2
 
 from .config import LlamaConfig, Qwen2Config
 from .loader import load_huggingface
@@ -62,7 +62,7 @@ def init_model(
     key: PRNGKeyArray | None = None,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> BaselineLlama | Qwen2:
+) -> LlamaDecoder | Qwen2Decoder:
     if key is None:
         key = jax.random.PRNGKey(0)
     config_path = download_config_file(model)
@@ -115,7 +115,7 @@ def import_model(
     *,
     precision: DType = DEFAULT_PRECISION,
     accumulation_precision: DType = jnp.float32,
-) -> BaselineLlama | Qwen2:
+) -> LlamaDecoder | Qwen2Decoder:
     result = init_model(model, precision=precision, accumulation_precision=accumulation_precision)
 
     weights_path = download_weights(model)

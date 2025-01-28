@@ -6,16 +6,16 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from .attention import AttentionBase
-from .common import FartsovkaModule, ParameterDict
-from .decoder_layer import DecoderLayer, DecoderLayerFactory
-from .embedding import EmbeddingBase, EmbeddingFactoryBase
+from .attention import AbstractAttention
+from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .decoder_layer import DecoderLayer, DecoderLayerConfig
+from .embedding import AbstractEmbedding, AbstractEmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
-from .mlp import MLPBase
-from .normalization import NormalizationBase, RMSNorm, RMSNormFactory
-from .rope import RoPEBase, RoPEFactoryBase
+from .mlp import AbstractMLP
+from .normalization import AbstractNormalization, RMSNorm, RMSNormConfig
+from .rope import AbstractRoPE, AbstractRoPEConfig
 
-__all__ = ["Decoder", "DecoderFactory"]
+__all__ = ["Decoder", "DecoderConfig"]
 
 
 class DecoderOutput(NamedTuple):
@@ -24,12 +24,12 @@ class DecoderOutput(NamedTuple):
 
 
 class Decoder[
-    EmbeddingType: EmbeddingBase,
-    MLPNormType: NormalizationBase,
-    MLPType: MLPBase,
-    AttentionNormType: NormalizationBase,
-    AttentionType: AttentionBase,
-    RoPEType: RoPEBase,
+    EmbeddingType: AbstractEmbedding,
+    MLPNormType: AbstractNormalization,
+    MLPType: AbstractMLP,
+    AttentionNormType: AbstractNormalization,
+    AttentionType: AbstractAttention,
+    RoPEType: AbstractRoPE,
 ](FartsovkaModule):
     num_layers: int = eqx.field(static=True)
     vocab_dim: int = eqx.field(static=True)
@@ -46,7 +46,7 @@ class Decoder[
     eps: float = eqx.field(static=True)
 
     embedding: EmbeddingType
-    rope: RoPEBase
+    rope: AbstractRoPE
     layers: list[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]
     output_norm: RMSNorm
 
@@ -54,10 +54,10 @@ class Decoder[
         self,
         *,
         num_layers: int,
-        embedding_factory: EmbeddingFactoryBase[EmbeddingType],
-        rope_factory: RoPEFactoryBase[RoPEType],
-        layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType],
-        output_norm_factory: RMSNormFactory,
+        embedding_config: AbstractEmbeddingConfig[EmbeddingType],
+        rope_config: AbstractRoPEConfig[RoPEType],
+        layer_config: DecoderLayerConfig[MLPNormType, MLPType, AttentionNormType, AttentionType],
+        output_norm_config: RMSNormConfig,
         vocab_dim: int,
         model_dim: int,
         hidden_dim: int,
@@ -91,10 +91,10 @@ class Decoder[
         embedding_key, layers_key = jax.random.split(key)
         layer_keys = jax.random.split(layers_key, num_layers)
 
-        self.embedding = embedding_factory(vocab_dim, model_dim, key=embedding_key)
-        self.rope = rope_factory(head_dim, max_sequence_length, theta=rope_theta)
+        self.embedding = embedding_config(vocab_dim, model_dim, key=embedding_key)
+        self.rope = rope_config(head_dim, max_sequence_length, theta=rope_theta)
         self.layers = [
-            layer_factory(
+            layer_config(
                 model_dim=model_dim,
                 hidden_dim=hidden_dim,
                 num_heads=num_heads,
@@ -108,7 +108,7 @@ class Decoder[
             )
             for layer_key in layer_keys
         ]
-        self.output_norm = output_norm_factory(model_dim, eps)
+        self.output_norm = output_norm_config(model_dim, eps)
 
     def __call__(
         self,
@@ -146,18 +146,18 @@ class Decoder[
 
 
 @dataclass
-class DecoderFactory[
-    EmbeddingType: EmbeddingBase,
-    MLPNormType: NormalizationBase,
-    MLPType: MLPBase,
-    AttentionNormType: NormalizationBase,
-    AttentionType: AttentionBase,
-    RoPEType: RoPEBase,
-]:
-    embedding_factory: EmbeddingFactoryBase[EmbeddingType]
-    rope_factory: RoPEFactoryBase[RoPEType]
-    layer_factory: DecoderLayerFactory[MLPNormType, MLPType, AttentionNormType, AttentionType]
-    output_norm_factory: RMSNormFactory
+class DecoderConfig[
+    EmbeddingType: AbstractEmbedding,
+    MLPNormType: AbstractNormalization,
+    MLPType: AbstractMLP,
+    AttentionNormType: AbstractNormalization,
+    AttentionType: AbstractAttention,
+    RoPEType: AbstractRoPE,
+](ModuleConfig[Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType, RoPEType]]):
+    embedding_config: AbstractEmbeddingConfig[EmbeddingType]
+    rope_config: AbstractRoPEConfig[RoPEType]
+    layer_config: DecoderLayerConfig[MLPNormType, MLPType, AttentionNormType, AttentionType]
+    output_norm_config: RMSNormConfig
 
     def __call__(
         self,
@@ -179,10 +179,10 @@ class DecoderFactory[
     ) -> Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType, RoPEType]:
         return Decoder(
             num_layers=num_layers,
-            embedding_factory=self.embedding_factory,
-            rope_factory=self.rope_factory,
-            layer_factory=self.layer_factory,
-            output_norm_factory=self.output_norm_factory,
+            embedding_config=self.embedding_config,
+            rope_config=self.rope_config,
+            layer_config=self.layer_config,
+            output_norm_config=self.output_norm_config,
             vocab_dim=vocab_dim,
             model_dim=model_dim,
             hidden_dim=hidden_dim,

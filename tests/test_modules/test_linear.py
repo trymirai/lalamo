@@ -8,9 +8,9 @@ import transformers
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from fartsovka.models.baseline_llama import BaselineLlama
-from fartsovka.models.qlora_llama import QLoRADecoderLayer, QLoRALlama
-from fartsovka.models.qwen2 import Qwen2
+from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.qlora_llama import QLoRALlamaDecoder, QLoRALlamaDecoderLayer
+from fartsovka.models.qwen2 import Qwen2Decoder
 from fartsovka.modules.linear import QLoRALinear
 from tests.executorch_llama.source_transformation.lora import Int8DynActInt4WeightLinearLoRA
 from tests.executorch_llama.source_transformation.lora import Int8DynActInt4WeightLinearLoRA as ETQLoRALinear
@@ -49,7 +49,7 @@ class LinearDebugInfo(NamedTuple):
 
 
 def attention_qkvs(
-    fs_decoder_layer: QLoRADecoderLayer,
+    fs_decoder_layer: QLoRALlamaDecoderLayer,
     et_decoder_layer: ETDecoderLayer,
 ) -> LinearDebugInfo:
     fs_qkv = fs_decoder_layer.attention.qkv_projection
@@ -68,7 +68,7 @@ def attention_qkvs(
 
 
 def attention_out_proj(
-    fs_decoder_layer: QLoRADecoderLayer,
+    fs_decoder_layer: QLoRALlamaDecoderLayer,
     et_decoder_layer: ETDecoderLayer,
 ) -> LinearDebugInfo:
     fs_out_proj = fs_decoder_layer.attention.out_projection
@@ -80,7 +80,7 @@ def attention_out_proj(
 
 
 def mlp_up_projs(
-    fs_decoder_layer: QLoRADecoderLayer,
+    fs_decoder_layer: QLoRALlamaDecoderLayer,
     et_decoder_layer: ETDecoderLayer,
 ) -> LinearDebugInfo:
     fs_mlp_up_proj = fs_decoder_layer.mlp.up_projection
@@ -94,7 +94,7 @@ def mlp_up_projs(
 
 
 def mlp_down_proj(
-    fs_decoder_layer: QLoRADecoderLayer,
+    fs_decoder_layer: QLoRALlamaDecoderLayer,
     et_decoder_layer: ETDecoderLayer,
 ) -> LinearDebugInfo:
     fs_mlp_down_proj = fs_decoder_layer.mlp.down_projection
@@ -104,7 +104,7 @@ def mlp_down_proj(
     return LinearDebugInfo(fs_mlp_down_proj, et_mlp_down_projs, permutations, names)  # type: ignore
 
 
-type LinearExtractor = Callable[[QLoRADecoderLayer, ETDecoderLayer], LinearDebugInfo]
+type LinearExtractor = Callable[[QLoRALlamaDecoderLayer, ETDecoderLayer], LinearDebugInfo]
 
 LINEAR_EXTRACTORS = [
     attention_qkvs,
@@ -117,7 +117,7 @@ LINEAR_EXTRACTORS = [
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_linear(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: BaselineLlama,
+    fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
@@ -140,7 +140,7 @@ def test_linear(
 
 def test_linear_with_bias(
     huggingface_qwen25: transformers.Qwen2Model,
-    fartsovka_qwen25: Qwen2,
+    fartsovka_qwen25: Qwen2Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     hf_layer = huggingface_qwen25.model.layers[0].mlp.down_proj
@@ -166,7 +166,7 @@ def test_linear_with_bias(
 )
 def test_group_quantized_linear(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
     linear_extractor: LinearExtractor,
@@ -211,7 +211,7 @@ def test_group_quantized_linear(
 )
 def test_qlora_linear(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlama,
+    fartsovka_qlora_llama: QLoRALlamaDecoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
     linear_extractor: LinearExtractor,
