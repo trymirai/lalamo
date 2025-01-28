@@ -8,7 +8,7 @@ __all__ = ["DEFAULT_PRECISION", "DType", "ParameterPath"]
 type DType = jnp.dtype | Any  # This is a hack to make the typechecker happy with internals of JAX.
 
 
-DEFAULT_PRECISION: DType = jnp.float32
+DEFAULT_PRECISION: DType = jnp.bfloat16
 
 
 class ParameterPath(str):

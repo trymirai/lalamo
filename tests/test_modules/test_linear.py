@@ -138,6 +138,30 @@ def test_linear(
     )
 
 
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
+def test_k_proj(
+    huggingface_llama: transformers.LlamaModel,
+    fartsovka_llama: LlamaDecoder,
+    rng_key: PRNGKeyArray,
+    layer_index: int,
+) -> None:
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn.k_proj
+    fs_layer = fartsovka_llama.layers[layer_index].attention.qkv_projection
+    fs_layer_forward = checkify_forward(fs_layer)
+
+    input_dim = hf_layer.in_features
+
+    sample_input = jax.random.normal(rng_key, (input_dim,))
+    sample_input_torch = to_torch(sample_input).unsqueeze(0)
+    hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
+    err, (_, fs_output, _) = fs_layer_forward(sample_input)
+    err.throw()
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+    )
+
+
 def test_linear_with_bias(
     huggingface_qwen25: transformers.Qwen2Model,
     fartsovka_qwen25: Qwen2Decoder,

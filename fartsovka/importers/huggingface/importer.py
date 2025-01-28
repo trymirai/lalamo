@@ -80,6 +80,7 @@ def init_model(
             max_sequence_length=hf_config.max_position_embeddings,
             rope_theta=hf_config.rope_theta,
             eps=hf_config.rms_norm_eps,
+            original_context_length=hf_config.rope_scaling.original_max_position_embeddings,
             precision=precision,
             accumulation_precision=accumulation_precision,
             rope_scaling_factor=hf_config.rope_scaling.factor,

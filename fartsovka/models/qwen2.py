@@ -68,6 +68,7 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
 
     def __init__(
         self,
+        *,
         num_layers: int,
         vocab_dim: int,
         model_dim: int,
@@ -123,6 +124,7 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
 
 
 def _get_qwen2_decoder_config(
+    *,
     precision: DType,
     accumulation_precision: DType,
     rope_scaling_factor: float,  # noqa: ARG001

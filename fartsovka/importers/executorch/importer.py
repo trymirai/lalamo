@@ -121,6 +121,7 @@ def init_model(
         head_dim=config.dim // config.n_heads,
         rope_theta=config.rope_theta,
         rope_scaling_factor=ROPE_SCALING_FACTOR,
+        original_context_length=OLD_CONTEXT_LENGTH,
         rope_low_frequency_factor=LOW_FREQ_FACTOR,
         rope_high_frequency_factor=HIGH_FREQ_FACTOR,
         eps=config.norm_eps,

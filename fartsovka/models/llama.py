@@ -69,6 +69,7 @@ class LlamaConfig(AbstractModelConfig[LlamaDecoder]):
 
     def __init__(
         self,
+        *,
         num_layers: int,
         vocab_dim: int,
         model_dim: int,
@@ -82,6 +83,7 @@ class LlamaConfig(AbstractModelConfig[LlamaDecoder]):
         precision: DType,
         accumulation_precision: DType,
         rope_scaling_factor: float,
+        original_context_length: int,
         rope_low_frequency_factor: float,
         rope_high_frequency_factor: float,
     ) -> None:
@@ -99,8 +101,8 @@ class LlamaConfig(AbstractModelConfig[LlamaDecoder]):
         self.decoder_config = _get_llama_decoder_config(
             precision=precision,
             accumulation_precision=accumulation_precision,
-            original_context_length=max_sequence_length,
             rope_scaling_factor=rope_scaling_factor,
+            original_context_length=original_context_length,
             rope_low_frequency_factor=rope_low_frequency_factor,
             rope_high_frequency_factor=rope_high_frequency_factor,
         )
@@ -125,10 +127,11 @@ class LlamaConfig(AbstractModelConfig[LlamaDecoder]):
 
 
 def _get_llama_decoder_config(
+    *,
     precision: DType,
     accumulation_precision: DType,
-    original_context_length: int,
     rope_scaling_factor: float,
+    original_context_length: int,
     rope_low_frequency_factor: float,
     rope_high_frequency_factor: float,
 ) -> LlamaDecoderConfig:
@@ -136,8 +139,8 @@ def _get_llama_decoder_config(
         embedding_config=EmbeddingConfig(precision=precision),
         rope_config=LlamaRoPEConfig(
             precision=precision,
-            original_context_length=original_context_length,
             scaling_factor=rope_scaling_factor,
+            original_context_length=original_context_length,
             low_frequency_factor=rope_low_frequency_factor,
             high_frequency_factor=rope_high_frequency_factor,
         ),

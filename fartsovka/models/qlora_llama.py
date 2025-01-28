@@ -65,21 +65,11 @@ class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
     max_sequence_length: int
     rope_theta: float
     eps: float
-    weight_quantization_mode: QuantizationMode
-    embedding_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
-    quantization_group_size: int
-    lora_rank: int
-    lora_scale: float
-    activation_precision: DType
-    accumulation_precision: DType
-    rope_scaling_factor: float
-    rope_low_frequency_factor: float
-    rope_high_frequency_factor: float
     decoder_config: QLoRALlamaDecoderConfig
 
     def __init__(
         self,
+        *,
         num_layers: int,
         vocab_dim: int,
         model_dim: int,
@@ -99,6 +89,7 @@ class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
         activation_precision: DType,
         accumulation_precision: DType,
         rope_scaling_factor: float,
+        original_context_length: int,
         rope_low_frequency_factor: float,
         rope_high_frequency_factor: float,
     ) -> None:
@@ -113,17 +104,6 @@ class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
         self.eps = eps
-        self.weight_quantization_mode = weight_quantization_mode
-        self.embedding_quantization_mode = embedding_quantization_mode
-        self.activation_quantization_mode = activation_quantization_mode
-        self.quantization_group_size = quantization_group_size
-        self.lora_rank = lora_rank
-        self.lora_scale = lora_scale
-        self.activation_precision = activation_precision
-        self.accumulation_precision = accumulation_precision
-        self.rope_scaling_factor = rope_scaling_factor
-        self.rope_low_frequency_factor = rope_low_frequency_factor
-        self.rope_high_frequency_factor = rope_high_frequency_factor
         self.decoder_config = _get_qlora_llama_decoder_config(
             weight_quantization_mode=weight_quantization_mode,
             embedding_quantization_mode=embedding_quantization_mode,
@@ -134,7 +114,7 @@ class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
             activation_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             rope_scaling_factor=rope_scaling_factor,
-            rope_original_context_length=max_sequence_length,
+            original_context_length=original_context_length,
             rope_low_frequency_factor=rope_low_frequency_factor,
             rope_high_frequency_factor=rope_high_frequency_factor,
         )
@@ -169,7 +149,7 @@ def _get_qlora_llama_decoder_config(
     activation_precision: DType,
     accumulation_precision: DType,
     rope_scaling_factor: float,
-    rope_original_context_length: int,
+    original_context_length: int,
     rope_low_frequency_factor: float,
     rope_high_frequency_factor: float,
 ) -> QLoRALlamaDecoderConfig:
@@ -182,7 +162,7 @@ def _get_qlora_llama_decoder_config(
         rope_config=LlamaRoPEConfig(
             precision=activation_precision,
             scaling_factor=rope_scaling_factor,
-            original_context_length=rope_original_context_length,
+            original_context_length=original_context_length,
             low_frequency_factor=rope_low_frequency_factor,
             high_frequency_factor=rope_high_frequency_factor,
         ),
