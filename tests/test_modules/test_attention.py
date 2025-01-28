@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import DynamicCache, LlamaAttention
 
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Decoder
 from fartsovka.modules.kv_cache import KVCacheLayerSlice

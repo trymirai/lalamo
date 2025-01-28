@@ -8,7 +8,7 @@ import transformers
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder, QLoRALlamaDecoderLayer
 from fartsovka.models.qwen2 import Qwen2Decoder
 from fartsovka.modules.linear import QLoRALinear

@@ -8,10 +8,11 @@ from jaxtyping import PRNGKeyArray
 from safetensors.flax import load_file
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.models.baseline_llama import LlamaDecoder, get_baseline_llama
-from fartsovka.models.qwen2 import Qwen2Decoder, get_qwen2
+from fartsovka.models.llama import LlamaConfig, LlamaDecoder
+from fartsovka.models.qwen2 import Qwen2Config, Qwen2Decoder
 
-from .config import LlamaConfig, Qwen2Config
+from .config import LlamaConfig as HFLlamaConfig
+from .config import Qwen2Config as HFQwen2Config
 from .loader import load_huggingface
 
 __all__ = ["HuggingFaceModel", "import_model"]
@@ -67,46 +68,47 @@ def init_model(
         key = jax.random.PRNGKey(0)
     config_path = download_config_file(model)
     if model == HuggingFaceModel.LLAMA32_1B_INSTRUCT:
-        config = LlamaConfig.from_json(config_path)
-        return get_baseline_llama(
-            num_layers=config.num_hidden_layers,
-            vocab_dim=config.vocab_size,
-            model_dim=config.hidden_size,
-            hidden_dim=config.intermediate_size,
-            num_heads=config.num_attention_heads,
-            num_groups=config.num_key_value_heads,
-            head_dim=config.head_dim,
-            rope_theta=config.rope_theta,
-            rope_scaling_factor=config.rope_scaling.factor,
-            rope_original_context_length=config.rope_scaling.original_max_position_embeddings,
-            rope_low_frequency_factor=config.rope_scaling.low_freq_factor,
-            rope_high_frequency_factor=config.rope_scaling.high_freq_factor,
-            eps=config.rms_norm_eps,
-            max_sequence_length=config.max_position_embeddings,
-            key=key,
+        hf_config = HFLlamaConfig.from_json(config_path)
+        llama_config = LlamaConfig(
+            num_layers=hf_config.num_hidden_layers,
+            vocab_dim=hf_config.vocab_size,
+            model_dim=hf_config.hidden_size,
+            hidden_dim=hf_config.intermediate_size,
+            num_heads=hf_config.num_attention_heads,
+            num_groups=hf_config.num_key_value_heads,
+            head_dim=hf_config.head_dim,
+            max_sequence_length=hf_config.max_position_embeddings,
+            rope_theta=hf_config.rope_theta,
+            eps=hf_config.rms_norm_eps,
             precision=precision,
             accumulation_precision=accumulation_precision,
+            rope_scaling_factor=hf_config.rope_scaling.factor,
+            rope_low_frequency_factor=hf_config.rope_scaling.low_freq_factor,
+            rope_high_frequency_factor=hf_config.rope_scaling.high_freq_factor,
         )
+        return llama_config(key)
+
     if model in [HuggingFaceModel.QWEN25_1POINT5B_INSTRUCT, HuggingFaceModel.R1_DISTILL_QWEN_1POINT5]:
-        config = Qwen2Config.from_json(config_path)
-        return get_qwen2(
-            num_layers=config.num_hidden_layers,
-            vocab_dim=config.vocab_size,
-            model_dim=config.hidden_size,
-            hidden_dim=config.intermediate_size,
-            num_heads=config.num_attention_heads,
-            num_groups=config.num_key_value_heads,
-            head_dim=config.hidden_size // config.num_attention_heads,
-            rope_theta=config.rope_theta,
+        hf_config = HFQwen2Config.from_json(config_path)
+        qwen_config = Qwen2Config(
+            num_layers=hf_config.num_hidden_layers,
+            vocab_dim=hf_config.vocab_size,
+            model_dim=hf_config.hidden_size,
+            hidden_dim=hf_config.intermediate_size,
+            num_heads=hf_config.num_attention_heads,
+            num_groups=hf_config.num_key_value_heads,
+            head_dim=hf_config.hidden_size // hf_config.num_attention_heads,
+            max_sequence_length=hf_config.max_position_embeddings,
+            rope_theta=hf_config.rope_theta,
+            eps=hf_config.rms_norm_eps,
+            precision=precision,
+            accumulation_precision=accumulation_precision,
             rope_scaling_factor=QWEN_ROPE_SCALING_FACTOR,
             rope_beta_fast=QWEN_BETA_FAST,
             rope_beta_slow=QWEN_BETA_SLOW,
-            eps=config.rms_norm_eps,
-            max_sequence_length=config.max_position_embeddings,
-            key=key,
-            precision=precision,
-            accumulation_precision=accumulation_precision,
         )
+        return qwen_config(key)
+
     raise ValueError(f"Unsupported model: {model}")
 
 

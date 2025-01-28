@@ -8,7 +8,7 @@ import torch
 from jaxtyping import Array, PRNGKeyArray
 
 from fartsovka.common import DEFAULT_PRECISION, DType
-from fartsovka.models.qlora_llama import QLoRALlamaDecoder, get_qlora_llama
+from fartsovka.models.qlora_llama import QLoRALlamaConfig, QLoRALlamaDecoder
 from fartsovka.quantization import QuantizationMode
 
 from .config import LlamaConfig
@@ -111,7 +111,7 @@ def init_model(
     if config.quantization_args is None:
         raise ValueError("Quantization arguments are required for QLoRA models.")
 
-    return get_qlora_llama(
+    qlora_config = QLoRALlamaConfig(
         num_layers=config.n_layers,
         vocab_dim=config.vocab_size,
         model_dim=config.dim,
@@ -121,12 +121,10 @@ def init_model(
         head_dim=config.dim // config.n_heads,
         rope_theta=config.rope_theta,
         rope_scaling_factor=ROPE_SCALING_FACTOR,
-        rope_original_context_length=OLD_CONTEXT_LENGTH,
         rope_low_frequency_factor=LOW_FREQ_FACTOR,
         rope_high_frequency_factor=HIGH_FREQ_FACTOR,
         eps=config.norm_eps,
         max_sequence_length=MAX_SEQUENCE_LENGTH,
-        key=key,
         weight_quantization_mode=WEIGHT_QUANTIZATION_MODE,
         embedding_quantization_mode=EMBEDDING_QUANTIZATION_MODE,
         activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
@@ -136,6 +134,7 @@ def init_model(
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
     )
+    return qlora_config(key)
 
 
 def import_model(

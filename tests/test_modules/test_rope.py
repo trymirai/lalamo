@@ -5,7 +5,7 @@ from einops import rearrange
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.modules.rope import AbstractRoPE, LlamaRoPE
 from tests.executorch_llama.rope import apply_rotary_emb
 

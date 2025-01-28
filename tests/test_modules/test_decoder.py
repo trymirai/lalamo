@@ -6,7 +6,7 @@ import torch
 import transformers
 from jax import numpy as jnp
 
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Decoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer

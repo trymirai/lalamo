@@ -6,7 +6,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 

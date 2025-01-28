@@ -1,7 +1,8 @@
-from jax import numpy as jnp
+from dataclasses import dataclass
+
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.common import DType
 from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
@@ -12,9 +13,10 @@ from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
 from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEConfig
 from fartsovka.quantization import QuantizationMode
 
+from .common import AbstractModelConfig
+
 __all__ = [
-    "get_qlora_llama_factory",
-    "get_qlora_llama",
+    "QLoRALlamaConfig",
     "QLoRALlamaAttention",
     "QLoRALlamaDecoder",
     "QLoRALlamaDecoderLayer",
@@ -41,29 +43,136 @@ type QLoRALlamaDecoder = Decoder[
     LlamaRoPE,
 ]
 
-
-def get_qlora_llama_factory(
-    *,
-    weight_quantization_mode: QuantizationMode,
-    embedding_quantization_mode: QuantizationMode,
-    activation_quantization_mode: QuantizationMode | None,
-    quantization_group_size: int,
-    lora_rank: int,
-    lora_scale: float = 2.0,
-    activation_precision: DType = DEFAULT_PRECISION,
-    accumulation_precision: DType = jnp.float32,
-    rope_scaling_factor: float,
-    rope_original_context_length: int,
-    rope_low_frequency_factor: float,
-    rope_high_frequency_factor: float,
-) -> DecoderConfig[
+type QLoRALlamaDecoderConfig = DecoderConfig[
     QuantizedEmbedding,
     RMSNorm,
     QLoRALlamaMLP,
     RMSNorm,
     QLoRALlamaAttention,
     LlamaRoPE,
-]:
+]
+
+
+@dataclass
+class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
+    num_layers: int
+    vocab_dim: int
+    model_dim: int
+    hidden_dim: int
+    num_heads: int
+    num_groups: int
+    head_dim: int
+    max_sequence_length: int
+    rope_theta: float
+    eps: float
+    weight_quantization_mode: QuantizationMode
+    embedding_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
+    quantization_group_size: int
+    lora_rank: int
+    lora_scale: float
+    activation_precision: DType
+    accumulation_precision: DType
+    rope_scaling_factor: float
+    rope_low_frequency_factor: float
+    rope_high_frequency_factor: float
+    decoder_config: QLoRALlamaDecoderConfig
+
+    def __init__(
+        self,
+        num_layers: int,
+        vocab_dim: int,
+        model_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        max_sequence_length: int,
+        rope_theta: float,
+        eps: float,
+        weight_quantization_mode: QuantizationMode,
+        embedding_quantization_mode: QuantizationMode,
+        activation_quantization_mode: QuantizationMode | None,
+        quantization_group_size: int,
+        lora_rank: int,
+        lora_scale: float,
+        activation_precision: DType,
+        accumulation_precision: DType,
+        rope_scaling_factor: float,
+        rope_low_frequency_factor: float,
+        rope_high_frequency_factor: float,
+    ) -> None:
+        super().__init__()
+        self.num_layers = num_layers
+        self.vocab_dim = vocab_dim
+        self.model_dim = model_dim
+        self.hidden_dim = hidden_dim
+        self.num_heads = num_heads
+        self.num_groups = num_groups
+        self.head_dim = head_dim
+        self.max_sequence_length = max_sequence_length
+        self.rope_theta = rope_theta
+        self.eps = eps
+        self.weight_quantization_mode = weight_quantization_mode
+        self.embedding_quantization_mode = embedding_quantization_mode
+        self.activation_quantization_mode = activation_quantization_mode
+        self.quantization_group_size = quantization_group_size
+        self.lora_rank = lora_rank
+        self.lora_scale = lora_scale
+        self.activation_precision = activation_precision
+        self.accumulation_precision = accumulation_precision
+        self.rope_scaling_factor = rope_scaling_factor
+        self.rope_low_frequency_factor = rope_low_frequency_factor
+        self.rope_high_frequency_factor = rope_high_frequency_factor
+        self.decoder_config = _get_qlora_llama_decoder_config(
+            weight_quantization_mode=weight_quantization_mode,
+            embedding_quantization_mode=embedding_quantization_mode,
+            activation_quantization_mode=activation_quantization_mode,
+            quantization_group_size=quantization_group_size,
+            lora_rank=lora_rank,
+            lora_scale=lora_scale,
+            activation_precision=activation_precision,
+            accumulation_precision=accumulation_precision,
+            rope_scaling_factor=rope_scaling_factor,
+            rope_original_context_length=max_sequence_length,
+            rope_low_frequency_factor=rope_low_frequency_factor,
+            rope_high_frequency_factor=rope_high_frequency_factor,
+        )
+
+    def __call__(self, key: PRNGKeyArray) -> QLoRALlamaDecoder:
+        return self.decoder_config(
+            num_layers=self.num_layers,
+            vocab_dim=self.vocab_dim,
+            model_dim=self.model_dim,
+            hidden_dim=self.hidden_dim,
+            num_heads=self.num_heads,
+            num_groups=self.num_groups,
+            head_dim=self.head_dim,
+            use_attention_qkv_bias=False,
+            use_attention_out_bias=False,
+            use_mlp_bias=False,
+            max_sequence_length=self.max_sequence_length,
+            rope_theta=self.rope_theta,
+            eps=self.eps,
+            key=key,
+        )
+
+
+def _get_qlora_llama_decoder_config(
+    *,
+    weight_quantization_mode: QuantizationMode,
+    embedding_quantization_mode: QuantizationMode,
+    activation_quantization_mode: QuantizationMode | None,
+    quantization_group_size: int,
+    lora_rank: int,
+    lora_scale: float,
+    activation_precision: DType,
+    accumulation_precision: DType,
+    rope_scaling_factor: float,
+    rope_original_context_length: int,
+    rope_low_frequency_factor: float,
+    rope_high_frequency_factor: float,
+) -> QLoRALlamaDecoderConfig:
     return DecoderConfig(
         embedding_config=QuantizedEmbeddingConfig(
             embedding_quantization_mode=embedding_quantization_mode,
@@ -119,62 +228,4 @@ def get_qlora_llama_factory(
             precision=activation_precision,
             accumulation_precision=accumulation_precision,
         ),
-    )
-
-
-def get_qlora_llama(
-    *,
-    num_layers: int,
-    vocab_dim: int,
-    model_dim: int,
-    hidden_dim: int,
-    num_heads: int,
-    num_groups: int,
-    head_dim: int,
-    max_sequence_length: int,
-    rope_theta: float,
-    rope_scaling_factor: float,
-    rope_original_context_length: int,
-    rope_low_frequency_factor: float,
-    rope_high_frequency_factor: float,
-    eps: float,
-    key: PRNGKeyArray,
-    weight_quantization_mode: QuantizationMode,
-    embedding_quantization_mode: QuantizationMode,
-    activation_quantization_mode: QuantizationMode | None,
-    quantization_group_size: int,
-    lora_rank: int,
-    lora_scale: float = 2.0,
-    activation_precision: DType = DEFAULT_PRECISION,
-    accumulation_precision: DType = jnp.float32,
-) -> QLoRALlamaDecoder:
-    factory = get_qlora_llama_factory(
-        weight_quantization_mode=weight_quantization_mode,
-        embedding_quantization_mode=embedding_quantization_mode,
-        activation_quantization_mode=activation_quantization_mode,
-        quantization_group_size=quantization_group_size,
-        lora_rank=lora_rank,
-        lora_scale=lora_scale,
-        activation_precision=activation_precision,
-        accumulation_precision=accumulation_precision,
-        rope_scaling_factor=rope_scaling_factor,
-        rope_original_context_length=rope_original_context_length,
-        rope_low_frequency_factor=rope_low_frequency_factor,
-        rope_high_frequency_factor=rope_high_frequency_factor,
-    )
-    return factory(
-        num_layers=num_layers,
-        vocab_dim=vocab_dim,
-        model_dim=model_dim,
-        hidden_dim=hidden_dim,
-        num_heads=num_heads,
-        num_groups=num_groups,
-        head_dim=head_dim,
-        use_attention_qkv_bias=False,
-        use_attention_out_bias=False,
-        use_mlp_bias=False,
-        max_sequence_length=max_sequence_length,
-        rope_theta=rope_theta,
-        eps=eps,
-        key=key,
     )

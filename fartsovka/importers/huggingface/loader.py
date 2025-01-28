@@ -3,7 +3,7 @@ from jaxtyping import Array
 
 from fartsovka.common import ParameterPath
 from fartsovka.importers.common import load_parameters
-from fartsovka.models.baseline_llama import (
+from fartsovka.models.llama import (
     LlamaAttention,
     LlamaDecoder,
     LlamaDecoderLayer,

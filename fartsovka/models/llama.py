@@ -10,50 +10,51 @@ from fartsovka.modules.embedding import Embedding, EmbeddingConfig
 from fartsovka.modules.linear import Linear, LinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
-from fartsovka.modules.rope import AbstractRoPE, RoPEConfig
+from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEConfig
 
 from .common import AbstractModelConfig
 
 __all__ = [
-    "Qwen2Config",
-    "Qwen2Decoder",
-    "Qwen2Attention",
-    "Qwen2DecoderLayer",
-    "Qwen2MLP",
+    "LlamaAttention",
+    "LlamaConfig",
+    "LlamaDecoder",
+    "LlamaDecoderLayer",
+    "LlamaMLP",
 ]
 
-type Qwen2MLP = MLP[Linear]
+type LlamaMLP = MLP[Linear]
 
-type Qwen2Attention = Attention[Linear, Linear]
+type LlamaAttention = Attention[Linear, Linear]
 
-type Qwen2DecoderLayer = DecoderLayer[
+type LlamaDecoderLayer = DecoderLayer[
     RMSNorm,
-    Qwen2MLP,
+    LlamaMLP,
     RMSNorm,
-    Qwen2Attention,
+    LlamaAttention,
 ]
 
-type Qwen2Decoder = Decoder[
+type LlamaDecoder = Decoder[
     Embedding,
     RMSNorm,
-    Qwen2MLP,
+    LlamaMLP,
     RMSNorm,
-    Qwen2Attention,
-    AbstractRoPE,
+    LlamaAttention,
+    LlamaRoPE,
 ]
 
-type Qwen2DecoderConfig = DecoderConfig[
+
+type LlamaDecoderConfig = DecoderConfig[
     Embedding,
     RMSNorm,
-    Qwen2MLP,
+    LlamaMLP,
     RMSNorm,
-    Qwen2Attention,
-    AbstractRoPE,
+    LlamaAttention,
+    LlamaRoPE,
 ]
 
 
 @dataclass
-class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
+class LlamaConfig(AbstractModelConfig[LlamaDecoder]):
     num_layers: int
     vocab_dim: int
     model_dim: int
@@ -64,7 +65,7 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
     max_sequence_length: int
     rope_theta: float
     eps: float
-    decoder_config: Qwen2DecoderConfig
+    decoder_config: LlamaDecoderConfig
 
     def __init__(
         self,
@@ -81,8 +82,8 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
         precision: DType,
         accumulation_precision: DType,
         rope_scaling_factor: float,
-        rope_beta_fast: float,
-        rope_beta_slow: float,
+        rope_low_frequency_factor: float,
+        rope_high_frequency_factor: float,
     ) -> None:
         super().__init__()
         self.num_layers = num_layers
@@ -95,15 +96,16 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
         self.eps = eps
-        self.decoder_config = _get_qwen2_decoder_config(
+        self.decoder_config = _get_llama_decoder_config(
             precision=precision,
             accumulation_precision=accumulation_precision,
+            original_context_length=max_sequence_length,
             rope_scaling_factor=rope_scaling_factor,
-            rope_beta_fast=rope_beta_fast,
-            rope_beta_slow=rope_beta_slow,
+            rope_low_frequency_factor=rope_low_frequency_factor,
+            rope_high_frequency_factor=rope_high_frequency_factor,
         )
 
-    def __call__(self, key: PRNGKeyArray) -> Qwen2Decoder:
+    def __call__(self, key: PRNGKeyArray) -> LlamaDecoder:
         return self.decoder_config(
             num_layers=self.num_layers,
             vocab_dim=self.vocab_dim,
@@ -112,30 +114,32 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
             num_heads=self.num_heads,
             num_groups=self.num_groups,
             head_dim=self.head_dim,
-            use_attention_qkv_bias=True,
-            use_attention_out_bias=False,
-            use_mlp_bias=False,
             max_sequence_length=self.max_sequence_length,
             rope_theta=self.rope_theta,
+            use_attention_qkv_bias=False,
+            use_attention_out_bias=False,
+            use_mlp_bias=False,
             eps=self.eps,
             key=key,
         )
 
 
-def _get_qwen2_decoder_config(
+def _get_llama_decoder_config(
     precision: DType,
     accumulation_precision: DType,
-    rope_scaling_factor: float,  # noqa: ARG001
-    rope_beta_fast: float,  # noqa: ARG001
-    rope_beta_slow: float,  # noqa: ARG001
-) -> Qwen2DecoderConfig:
+    original_context_length: int,
+    rope_scaling_factor: float,
+    rope_low_frequency_factor: float,
+    rope_high_frequency_factor: float,
+) -> LlamaDecoderConfig:
     return DecoderConfig(
         embedding_config=EmbeddingConfig(precision=precision),
-        rope_config=RoPEConfig(
+        rope_config=LlamaRoPEConfig(
             precision=precision,
-            # scaling_factor=rope_scaling_factor,  # noqa: ERA001
-            # beta_fast=rope_beta_fast,  # noqa: ERA001
-            # beta_slow=rope_beta_slow,  # noqa: ERA001
+            original_context_length=original_context_length,
+            scaling_factor=rope_scaling_factor,
+            low_frequency_factor=rope_low_frequency_factor,
+            high_frequency_factor=rope_high_frequency_factor,
         ),
         layer_config=DecoderLayerConfig(
             attention_norm_config=RMSNormConfig(

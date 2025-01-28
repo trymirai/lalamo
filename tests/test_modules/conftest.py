@@ -14,7 +14,7 @@ from fartsovka.importers.executorch.importer import download_weights as download
 from fartsovka.importers.executorch.importer import import_model as import_et
 from fartsovka.importers.huggingface.importer import HuggingFaceModel
 from fartsovka.importers.huggingface.importer import import_model as import_hf
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Decoder
 from tests.executorch_llama.source_transformation.lora import (

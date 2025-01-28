@@ -3,7 +3,7 @@ import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.models.baseline_llama import LlamaDecoder
+from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
