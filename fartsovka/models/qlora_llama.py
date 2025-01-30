@@ -7,7 +7,7 @@ from fartsovka.modules.activations import Activation
 from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
-from fartsovka.modules.embedding import QuantizedEmbedding, QuantizedEmbeddingConfig
+from fartsovka.modules.embedding import QuantizedTiedEmbedding, QuantizedTiedEmbeddingConfig
 from fartsovka.modules.linear import QLoRALinear, QLoRALinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
@@ -36,7 +36,7 @@ type QLoRALlamaDecoderLayer = DecoderLayer[
 ]
 
 type QLoRALlamaDecoder = Decoder[
-    QuantizedEmbedding,
+    QuantizedTiedEmbedding,
     RMSNorm,
     QLoRALlamaMLP,
     RMSNorm,
@@ -45,7 +45,7 @@ type QLoRALlamaDecoder = Decoder[
 ]
 
 type QLoRALlamaDecoderConfig = DecoderConfig[
-    QuantizedEmbedding,
+    QuantizedTiedEmbedding,
     RMSNorm,
     QLoRALlamaMLP,
     RMSNorm,
@@ -157,7 +157,7 @@ def _get_qlora_llama_decoder_config(
     rope_high_frequency_factor: float,
 ) -> QLoRALlamaDecoderConfig:
     return DecoderConfig(
-        embedding_config=QuantizedEmbeddingConfig(
+        embedding_config=QuantizedTiedEmbeddingConfig(
             embedding_quantization_mode=embedding_quantization_mode,
             activation_precision=activation_precision,
             activation_quantization_mode=activation_quantization_mode,

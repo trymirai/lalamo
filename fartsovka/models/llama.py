@@ -7,7 +7,7 @@ from fartsovka.modules.activations import Activation
 from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
-from fartsovka.modules.embedding import Embedding, EmbeddingConfig
+from fartsovka.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from fartsovka.modules.linear import Linear, LinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
@@ -35,7 +35,7 @@ type LlamaDecoderLayer = DecoderLayer[
 ]
 
 type LlamaDecoder = Decoder[
-    Embedding,
+    TiedEmbedding,
     RMSNorm,
     LlamaMLP,
     RMSNorm,
@@ -45,7 +45,7 @@ type LlamaDecoder = Decoder[
 
 
 type LlamaDecoderConfig = DecoderConfig[
-    Embedding,
+    TiedEmbedding,
     RMSNorm,
     LlamaMLP,
     RMSNorm,
@@ -139,7 +139,7 @@ def _get_llama_decoder_config(
     rope_high_frequency_factor: float,
 ) -> LlamaDecoderConfig:
     return DecoderConfig(
-        embedding_config=EmbeddingConfig(precision=precision),
+        embedding_config=TiedEmbeddingConfig(precision=precision),
         rope_config=LlamaRoPEConfig(
             precision=precision,
             scaling_factor=rope_scaling_factor,

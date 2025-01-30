@@ -15,7 +15,7 @@ from fartsovka.models.qwen2 import (
     Qwen2DecoderLayer,
     Qwen2MLP,
 )
-from fartsovka.modules.embedding import Embedding
+from fartsovka.modules.embedding import TiedEmbedding
 from fartsovka.modules.linear import Linear
 from fartsovka.modules.normalization import RMSNorm
 
@@ -99,7 +99,7 @@ def load_decoder_layer[T: LlamaDecoderLayer | Qwen2DecoderLayer](
     )
 
 
-def load_embedding(module: Embedding, weights_dict: dict[str, Array], path: ParameterPath) -> Embedding:
+def load_embedding(module: TiedEmbedding, weights_dict: dict[str, Array], path: ParameterPath) -> TiedEmbedding:
     weights = weights_dict[path / "weight"]
     return load_parameters(lambda m: (m.weights,), module, (weights,))
 

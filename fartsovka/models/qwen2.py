@@ -7,7 +7,7 @@ from fartsovka.modules.activations import Activation
 from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
-from fartsovka.modules.embedding import Embedding, EmbeddingConfig
+from fartsovka.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from fartsovka.modules.linear import Linear, LinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
@@ -35,7 +35,7 @@ type Qwen2DecoderLayer = DecoderLayer[
 ]
 
 type Qwen2Decoder = Decoder[
-    Embedding,
+    TiedEmbedding,
     RMSNorm,
     Qwen2MLP,
     RMSNorm,
@@ -44,7 +44,7 @@ type Qwen2Decoder = Decoder[
 ]
 
 type Qwen2DecoderConfig = DecoderConfig[
-    Embedding,
+    TiedEmbedding,
     RMSNorm,
     Qwen2MLP,
     RMSNorm,
@@ -138,7 +138,7 @@ def _get_qwen2_decoder_config(
     rope_beta_slow: float,  # noqa: ARG001
 ) -> Qwen2DecoderConfig:
     return DecoderConfig(
-        embedding_config=EmbeddingConfig(precision=precision),
+        embedding_config=TiedEmbeddingConfig(precision=precision),
         rope_config=RoPEConfig(
             precision=precision,
             # scaling_factor=rope_scaling_factor,  # noqa: ERA001

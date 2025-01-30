@@ -12,10 +12,12 @@ from .common import FartsovkaModule, ModuleConfig, ParameterDict
 
 __all__ = [
     "AbstractEmbedding",
-    "Embedding",
-    "EmbeddingConfig",
-    "QuantizedEmbedding",
-    "QuantizedEmbeddingConfig",
+    "TiedEmbedding",
+    "TiedEmbeddingConfig",
+    "QuantizedTiedEmbedding",
+    "QuantizedTiedEmbeddingConfig",
+    "UntiedEmbedding",
+    "UntiedEmbeddingConfig",
 ]
 
 
@@ -36,7 +38,7 @@ class AbstractEmbeddingConfig[EmbeddingType: AbstractEmbedding](ModuleConfig[Emb
         raise NotImplementedError
 
 
-class Embedding(AbstractEmbedding):
+class TiedEmbedding(AbstractEmbedding):
     weights: Float[Array, "token_ids channels"]
 
     precision: DType = eqx.field(static=True)
@@ -57,14 +59,46 @@ class Embedding(AbstractEmbedding):
 
 
 @dataclass
-class EmbeddingConfig(AbstractEmbeddingConfig[Embedding]):
+class TiedEmbeddingConfig(AbstractEmbeddingConfig[TiedEmbedding]):
     precision: DType = DEFAULT_PRECISION
 
-    def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> Embedding:
-        return Embedding(vocab_dim, model_dim, precision=self.precision, key=key)
+    def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> TiedEmbedding:
+        return TiedEmbedding(vocab_dim, model_dim, precision=self.precision, key=key)
 
 
-class QuantizedEmbedding(AbstractEmbedding):
+class UntiedEmbedding(AbstractEmbedding):
+    input_weights: Float[Array, "token_ids channels"]
+    output_weights: Float[Array, "channels token_ids"]
+
+    def __init__(self, vocab_dim: int, model_dim: int, precision: DType, *, key: PRNGKeyArray) -> None:
+        super().__init__(vocab_dim=vocab_dim, model_dim=model_dim)
+        self.precision = precision
+
+        input_key, output_key = jax.random.split(key)
+        self.input_weights = jax.random.normal(input_key, (vocab_dim, model_dim), dtype=precision)
+        self.output_weights = jax.random.normal(output_key, (model_dim, vocab_dim), dtype=precision)
+
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens model_dim"]:
+        return self.input_weights[x]
+
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
+        return self.output_weights @ x
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(
+            input_weights=self.input_weights,
+            output_weights=self.output_weights,
+        )
+
+
+class UntiedEmbeddingConfig(AbstractEmbeddingConfig[UntiedEmbedding]):
+    precision: DType = DEFAULT_PRECISION
+
+    def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> UntiedEmbedding:
+        return UntiedEmbedding(vocab_dim, model_dim, precision=self.precision, key=key)
+
+
+class QuantizedTiedEmbedding(AbstractEmbedding):
     weights: Float[Array, "token_ids channels"]
 
     @property
@@ -126,13 +160,13 @@ class QuantizedEmbedding(AbstractEmbedding):
 
 
 @dataclass
-class QuantizedEmbeddingConfig(AbstractEmbeddingConfig[QuantizedEmbedding]):
+class QuantizedTiedEmbeddingConfig(AbstractEmbeddingConfig[QuantizedTiedEmbedding]):
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
     activation_precision: DType = DEFAULT_PRECISION
 
-    def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> QuantizedEmbedding:
-        return QuantizedEmbedding(
+    def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> QuantizedTiedEmbedding:
+        return QuantizedTiedEmbedding(
             vocab_dim=vocab_dim,
             model_dim=model_dim,
             embedding_quantization_mode=self.embedding_quantization_mode,

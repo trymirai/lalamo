@@ -13,7 +13,7 @@ from fartsovka.models.qlora_llama import (
     QLoRALlamaDecoderLayer,
     QLoRALlamaMLP,
 )
-from fartsovka.modules.embedding import QuantizedEmbedding
+from fartsovka.modules.embedding import QuantizedTiedEmbedding
 from fartsovka.modules.linear import QLoRALinear
 from fartsovka.modules.normalization import RMSNorm
 
@@ -176,10 +176,10 @@ def load_decoder_layer(
 
 
 def load_embedding(
-    module: QuantizedEmbedding,
+    module: QuantizedTiedEmbedding,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> QuantizedEmbedding:
+) -> QuantizedTiedEmbedding:
     weights = weights_dict[path / "weight"]
     scales = weights_dict[path / "scales"].squeeze(1)
     return load_parameters(lambda m: (m.weights, m.scales), module, (weights, scales))
