@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 
 import equinox as eqx
+import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Scalar
 
@@ -56,7 +57,7 @@ class RMSNorm(AbstractNormalization):
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
         adjusted_variance = _compute_adjusted_variance(x, self.eps, self.accumulation_precision)
-        return x * self.scale * (1 / jnp.sqrt(adjusted_variance))
+        return x * jax.lax.rsqrt(adjusted_variance) * self.scale
 
     def export_weights(self) -> ParameterDict:
         return ParameterDict(scale=self.scale)

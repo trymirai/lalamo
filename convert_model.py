@@ -15,7 +15,7 @@ def main(output_dir: Path) -> None:
         ExecutorchModel.LLAMA32_1B_INSTRUCT_QLORA,
         activation_precision=ACTIVATION_EXPORT_TYPE,
     )
-    weights = model.export_weights()
+    weights = dict(model.export_weights())
     save_file(weights, output_dir / "fs_model.safetensors")
 
 
