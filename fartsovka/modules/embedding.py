@@ -8,7 +8,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .common import FartsovkaModule, ParameterDict, register_config_union
 
 __all__ = [
     "AbstractEmbedding",
@@ -18,6 +18,7 @@ __all__ = [
     "QuantizedTiedEmbeddingConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
+    "EmbeddingConfigType",
 ]
 
 
@@ -33,7 +34,7 @@ class AbstractEmbedding(FartsovkaModule):
 
 
 @dataclass
-class AbstractEmbeddingConfig[EmbeddingType: AbstractEmbedding](ModuleConfig[EmbeddingType]):
+class AbstractEmbeddingConfig[EmbeddingType: AbstractEmbedding]:
     def __call__(self, vocab_dim: int, model_dim: int, *, key: PRNGKeyArray) -> EmbeddingType:
         raise NotImplementedError
 
@@ -174,3 +175,8 @@ class QuantizedTiedEmbeddingConfig(AbstractEmbeddingConfig[QuantizedTiedEmbeddin
             activation_precision=self.activation_precision,
             key=key,
         )
+
+
+EmbeddingConfigType = TiedEmbeddingConfig | QuantizedTiedEmbeddingConfig | UntiedEmbeddingConfig
+
+register_config_union(EmbeddingConfigType)

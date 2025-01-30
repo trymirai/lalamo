@@ -1,7 +1,9 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from types import UnionType
 
 import equinox as eqx
+from cattrs import Converter
 from jaxtyping import Array
 
 from fartsovka.common import ParameterPath
@@ -11,8 +13,10 @@ type NestedParameters = Mapping[str, Array | NestedParameters] | Iterable[Array 
 
 __all__ = [
     "FartsovkaModule",
-    "ModuleConfig",
     "ParameterDict",
+    "DummyUnionMember",
+    "config_converter",
+    "register_config_union",
 ]
 
 
@@ -53,6 +57,19 @@ class FartsovkaModule(eqx.Module):
         raise NotImplementedError
 
 
+config_converter = Converter()
+
+
+def register_config_union(union_type: UnionType) -> None:
+    config_converter.register_unstructure_hook(
+        union_type,
+        lambda o: {
+            "type": o.__class__.__name__,
+            **config_converter.unstructure(o),
+        },
+    )
+
+
 @dataclass
-class ModuleConfig[ModuleType: FartsovkaModule]:
+class DummyUnionMember:
     pass

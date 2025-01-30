@@ -7,9 +7,15 @@ from jaxtyping import Array, Float, Scalar
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
 
-__all__ = ["AbstractNormalization", "AbstractNormalizationConfig", "RMSNorm", "RMSNormConfig"]
+__all__ = [
+    "AbstractNormalization",
+    "AbstractNormalizationConfig",
+    "RMSNorm",
+    "RMSNormConfig",
+    "NormalizationConfigType",
+]
 
 
 class AbstractNormalization(FartsovkaModule):
@@ -21,7 +27,7 @@ class AbstractNormalization(FartsovkaModule):
 
 
 @dataclass
-class AbstractNormalizationConfig[NormalizationType: AbstractNormalization](ModuleConfig[NormalizationType]):
+class AbstractNormalizationConfig[NormalizationType: AbstractNormalization]:
     def __call__(self, model_dim: int, eps: float) -> NormalizationType:
         raise NotImplementedError
 
@@ -70,3 +76,8 @@ class RMSNormConfig(AbstractNormalizationConfig[RMSNorm]):
 
     def __call__(self, model_dim: int, eps: float) -> RMSNorm:
         return RMSNorm(model_dim, eps, self.precision, self.accumulation_precision)
+
+
+NormalizationConfigType = RMSNormConfig | DummyUnionMember
+
+register_config_union(NormalizationConfigType)

@@ -8,15 +8,20 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from .activations import Activation
 from .attention import AbstractAttention
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
-from .decoder_layer import DecoderLayer, DecoderLayerConfig
-from .embedding import AbstractEmbedding, AbstractEmbeddingConfig
+from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
+from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerConfigType
+from .embedding import AbstractEmbedding, AbstractEmbeddingConfig, EmbeddingConfigType
 from .kv_cache import KVCacheLayerSlice
 from .mlp import AbstractMLP
 from .normalization import AbstractNormalization, RMSNorm, RMSNormConfig
-from .rope import AbstractRoPE, AbstractRoPEConfig
+from .rope import AbstractRoPE, AbstractRoPEConfig, RoPEConfigType
 
-__all__ = ["Decoder", "DecoderConfig"]
+__all__ = [
+    "Decoder",
+    "DecoderConfig",
+    "DecoderConfigType",
+    "DecoderOutput",
+]
 
 
 class DecoderOutput(NamedTuple):
@@ -168,10 +173,10 @@ class DecoderConfig[
     AttentionNormType: AbstractNormalization,
     AttentionType: AbstractAttention,
     RoPEType: AbstractRoPE,
-](ModuleConfig[Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType, RoPEType]]):
-    embedding_config: AbstractEmbeddingConfig[EmbeddingType]
-    rope_config: AbstractRoPEConfig[RoPEType]
-    layer_config: DecoderLayerConfig[MLPNormType, MLPType, AttentionNormType, AttentionType]
+]:
+    embedding_config: EmbeddingConfigType
+    rope_config: RoPEConfigType
+    layer_config: DecoderLayerConfigType
     output_norm_config: RMSNormConfig
 
     def __call__(
@@ -196,9 +201,9 @@ class DecoderConfig[
     ) -> Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType, RoPEType]:
         return Decoder(
             num_layers=num_layers,
-            embedding_config=self.embedding_config,
+            embedding_config=self.embedding_config,  # type: ignore
             rope_config=self.rope_config,
-            layer_config=self.layer_config,
+            layer_config=self.layer_config,  # type: ignore
             output_norm_config=self.output_norm_config,
             vocab_dim=vocab_dim,
             model_dim=model_dim,
@@ -216,3 +221,8 @@ class DecoderConfig[
             eps=eps,
             key=key,
         )
+
+
+DecoderConfigType = DecoderConfig | DummyUnionMember
+
+register_config_union(DecoderConfigType)

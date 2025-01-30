@@ -7,16 +7,18 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .activations import Activation
-from .attention import AbstractAttention, AbstractAttentionConfig
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .attention import AbstractAttention, AbstractAttentionConfig, AttentionConfigType
+from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
 from .kv_cache import KVCacheLayerSlice
-from .mlp import AbstractMLP, AbstractMLPConfig
-from .normalization import AbstractNormalization, AbstractNormalizationConfig
+from .mlp import AbstractMLP, AbstractMLPConfig, MLPConfigType
+from .normalization import AbstractNormalization, AbstractNormalizationConfig, NormalizationConfigType
 from .rope import PositionalEmbeddings
 
 __all__ = [
     "DecoderLayer",
     "DecoderLayerConfig",
+    "DecoderLayerConfigType",
+    "DecoderLayerOutput",
 ]
 
 
@@ -141,11 +143,11 @@ class DecoderLayerConfig[
     MLPType: AbstractMLP,
     AttentionNormType: AbstractNormalization,
     AttentionType: AbstractAttention,
-](ModuleConfig[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]):
-    attention_norm_config: AbstractNormalizationConfig[AttentionNormType]
-    attention_config: AbstractAttentionConfig[AttentionType]
-    mlp_norm_config: AbstractNormalizationConfig[MLPNormType]
-    mlp_config: AbstractMLPConfig[MLPType]
+]:
+    attention_norm_config: NormalizationConfigType
+    attention_config: AttentionConfigType
+    mlp_norm_config: NormalizationConfigType
+    mlp_config: MLPConfigType
 
     def __call__(
         self,
@@ -164,10 +166,10 @@ class DecoderLayerConfig[
         key: PRNGKeyArray,
     ) -> DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
         return DecoderLayer(
-            attention_norm_config=self.attention_norm_config,
-            attention_config=self.attention_config,
-            mlp_norm_config=self.mlp_norm_config,
-            mlp_config=self.mlp_config,
+            attention_norm_config=self.attention_norm_config,  # type: ignore
+            attention_config=self.attention_config,  # type: ignore
+            mlp_norm_config=self.mlp_norm_config,  # type: ignore
+            mlp_config=self.mlp_config,  # type: ignore
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             num_heads=num_heads,
@@ -181,3 +183,8 @@ class DecoderLayerConfig[
             eps=eps,
             key=key,
         )
+
+
+DecoderLayerConfigType = DecoderLayerConfig | DummyUnionMember
+
+register_config_union(DecoderLayerConfigType)

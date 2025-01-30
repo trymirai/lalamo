@@ -24,7 +24,7 @@ from jaxtyping import Array, Float, Int
 
 from fartsovka.common import DEFAULT_PRECISION, DType
 
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .common import FartsovkaModule, ParameterDict, register_config_union
 
 __all__ = [
     "PositionalEmbeddings",
@@ -35,6 +35,7 @@ __all__ = [
     "LlamaRoPEConfig",
     "YARNRoPE",
     "YARNRoPEConfig",
+    "RoPEConfigType",
 ]
 
 
@@ -118,7 +119,7 @@ class AbstractRoPE(FartsovkaModule):
 
 
 @dataclass
-class AbstractRoPEConfig[RoPEType: AbstractRoPE](ModuleConfig[RoPEType]):
+class AbstractRoPEConfig[RoPEType: AbstractRoPE]:
     precision: DType = DEFAULT_PRECISION
 
     def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> RoPEType:
@@ -336,3 +337,8 @@ class YARNRoPEConfig(AbstractRoPEConfig[YARNRoPE]):
             beta_fast=self.beta_fast,
             beta_slow=self.beta_slow,
         )
+
+
+RoPEConfigType = RoPEConfig | LlamaRoPEConfig | YARNRoPEConfig
+
+register_config_union(RoPEConfigType)

@@ -5,7 +5,7 @@ from jaxtyping import PRNGKeyArray
 from fartsovka.common import DType
 from fartsovka.modules.activations import Activation
 from fartsovka.modules.attention import Attention, AttentionConfig
-from fartsovka.modules.decoder import Decoder, DecoderConfig
+from fartsovka.modules.decoder import Decoder, DecoderConfig, DecoderConfigType
 from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
 from fartsovka.modules.embedding import QuantizedTiedEmbedding, QuantizedTiedEmbeddingConfig
 from fartsovka.modules.linear import QLoRALinear, QLoRALinearConfig
@@ -66,7 +66,7 @@ class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
     max_sequence_length: int
     rope_theta: float
     eps: float
-    decoder_config: QLoRALlamaDecoderConfig
+    decoder_config: DecoderConfigType
 
     def __init__(
         self,
@@ -121,7 +121,7 @@ class QLoRALlamaConfig(AbstractModelConfig[QLoRALlamaDecoder]):
         )
 
     def __call__(self, key: PRNGKeyArray) -> QLoRALlamaDecoder:
-        return self.decoder_config(
+        return self.decoder_config(  # type: ignore
             num_layers=self.num_layers,
             vocab_dim=self.vocab_dim,
             model_dim=self.model_dim,

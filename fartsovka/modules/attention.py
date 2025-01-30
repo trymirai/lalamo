@@ -8,9 +8,9 @@ from jax import nn, vmap
 from jax import numpy as jnp
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from .common import FartsovkaModule, ParameterDict
+from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
 from .kv_cache import KVCacheLayerSlice
-from .linear import AbstractLinear, AbstractLinearConfig
+from .linear import AbstractLinear, AbstractLinearConfig, LinearConfigType
 from .rope import PositionalEmbeddings
 
 __all__ = [
@@ -18,6 +18,7 @@ __all__ = [
     "AbstractAttentionConfig",
     "Attention",
     "AttentionConfig",
+    "AttentionConfigType",
 ]
 
 
@@ -177,8 +178,8 @@ class AbstractAttentionConfig[AttentionType: AbstractAttention]:
 class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
     AbstractAttentionConfig[Attention[QKVProjType, OutProjType]],
 ):
-    qkv_projection_config: AbstractLinearConfig[QKVProjType]
-    out_projection_config: AbstractLinearConfig[OutProjType]
+    qkv_projection_config: LinearConfigType
+    out_projection_config: LinearConfigType
 
     def __call__(
         self,
@@ -193,8 +194,8 @@ class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
         key: PRNGKeyArray,
     ) -> Attention[QKVProjType, OutProjType]:
         return Attention(
-            qkv_projection_config=self.qkv_projection_config,
-            out_projection_config=self.out_projection_config,
+            qkv_projection_config=self.qkv_projection_config,  # type: ignore
+            out_projection_config=self.out_projection_config,  # type: ignore
             model_dim=model_dim,
             num_heads=num_heads,
             num_groups=num_groups,
@@ -204,3 +205,9 @@ class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
             use_out_bias=use_out_bias,
             key=key,
         )
+
+
+AttentionConfigType = AttentionConfig | DummyUnionMember
+
+
+register_config_union(AttentionConfigType)

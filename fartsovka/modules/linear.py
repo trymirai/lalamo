@@ -11,7 +11,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DEFAULT_PRECISION, DType
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
+from .common import FartsovkaModule, ParameterDict, register_config_union
 
 __all__ = [
     "AbstractLinear",
@@ -22,6 +22,7 @@ __all__ = [
     "LinearConfig",
     "QLoRALinear",
     "QLoRALinearConfig",
+    "LinearConfigType",
 ]
 
 
@@ -51,7 +52,7 @@ class AbstractLinear(FartsovkaModule):
 
 
 @dataclass
-class AbstractLinearConfig[LinearType: AbstractLinear](ModuleConfig[LinearType]):
+class AbstractLinearConfig[LinearType: AbstractLinear]:
     def __call__(
         self,
         input_dim: int,
@@ -360,3 +361,9 @@ class QLoRALinearConfig(AbstractLinearConfig[QLoRALinear]):
             activation_precision=self.activation_precision,
             key=key,
         )
+
+
+LinearConfigType = LinearConfig | GroupQuantizedLinearConfig | QLoRALinearConfig
+
+
+register_config_union(LinearConfigType)

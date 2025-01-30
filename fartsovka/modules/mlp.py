@@ -5,10 +5,10 @@ import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from .activations import Activation
-from .common import FartsovkaModule, ModuleConfig, ParameterDict
-from .linear import AbstractLinear, AbstractLinearConfig
+from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
+from .linear import AbstractLinear, AbstractLinearConfig, LinearConfigType
 
-__all__ = ["MLP", "AbstractMLP", "MLPConfig", "AbstractMLPConfig"]
+__all__ = ["MLP", "AbstractMLP", "MLPConfig", "AbstractMLPConfig", "MLPConfigType"]
 
 
 class AbstractMLP(FartsovkaModule):
@@ -22,7 +22,7 @@ class AbstractMLP(FartsovkaModule):
 
 
 @dataclass
-class AbstractMLPConfig[MLPType: AbstractMLP](ModuleConfig[MLPType]):
+class AbstractMLPConfig[MLPType: AbstractMLP]:
     def __call__(
         self,
         *,
@@ -80,7 +80,7 @@ class MLP[LinearType: AbstractLinear](AbstractMLP):
 
 @dataclass
 class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
-    linear_config: AbstractLinearConfig[LinearType]
+    linear_config: LinearConfigType
 
     def __call__(
         self,
@@ -92,10 +92,16 @@ class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
         key: PRNGKeyArray,
     ) -> MLP[LinearType]:
         return MLP(
-            linear_config=self.linear_config,
+            linear_config=self.linear_config,  # type: ignore
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             use_bias=use_bias,
             activation=activation,
             key=key,
         )
+
+
+MLPConfigType = MLPConfig | DummyUnionMember
+
+
+register_config_union(MLPConfigType)
