@@ -6,6 +6,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
+from .activations import Activation
 from .attention import AbstractAttention, AbstractAttentionConfig
 from .common import FartsovkaModule, ModuleConfig, ParameterDict
 from .kv_cache import KVCacheLayerSlice
@@ -35,9 +36,13 @@ class DecoderLayer[
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+
+    activation: Activation = eqx.field(static=True)
+    use_mlp_bias: bool = eqx.field(static=True)
+
     use_attention_qkv_bias: bool = eqx.field(static=True)
     use_attention_out_bias: bool = eqx.field(static=True)
-    use_mlp_bias: bool = eqx.field(static=True)
+    sliding_window_size: int | None = eqx.field(static=True)
 
     attention_norm: AttentionNormType
     attention: AttentionType
@@ -56,9 +61,11 @@ class DecoderLayer[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
-        use_mlp_bias: bool,
+        sliding_window_size: int | None,
         eps: float,
         key: PRNGKeyArray,
     ) -> None:
@@ -69,9 +76,13 @@ class DecoderLayer[
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = head_dim
+
+        self.activation = activation
+        self.use_mlp_bias = use_mlp_bias
+
         self.use_attention_qkv_bias = use_attention_qkv_bias
         self.use_attention_out_bias = use_attention_out_bias
-        self.use_mlp_bias = use_mlp_bias
+        self.sliding_window_size = sliding_window_size
 
         attention_key, mlp_key = jax.random.split(key)
 
@@ -81,6 +92,7 @@ class DecoderLayer[
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            sliding_window_size=sliding_window_size,
             use_qkv_bias=use_attention_qkv_bias,
             use_out_bias=use_attention_out_bias,
             key=attention_key,
@@ -90,6 +102,7 @@ class DecoderLayer[
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             use_bias=use_mlp_bias,
+            activation=activation,
             key=mlp_key,
         )
 
@@ -142,9 +155,11 @@ class DecoderLayerConfig[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
-        use_mlp_bias: bool,
+        sliding_window_size: int | None,
         eps: float,
         key: PRNGKeyArray,
     ) -> DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
@@ -158,9 +173,11 @@ class DecoderLayerConfig[
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            activation=activation,
+            use_mlp_bias=use_mlp_bias,
             use_attention_qkv_bias=use_attention_qkv_bias,
             use_attention_out_bias=use_attention_out_bias,
-            use_mlp_bias=use_mlp_bias,
+            sliding_window_size=sliding_window_size,
             eps=eps,
             key=key,
         )

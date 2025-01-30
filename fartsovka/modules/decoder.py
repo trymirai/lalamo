@@ -6,6 +6,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
+from .activations import Activation
 from .attention import AbstractAttention
 from .common import FartsovkaModule, ModuleConfig, ParameterDict
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
@@ -38,9 +39,14 @@ class Decoder[
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+
+    activation: Activation = eqx.field(static=True)
+    use_mlp_bias: bool = eqx.field(static=True)
+
     use_attention_qkv_bias: bool = eqx.field(static=True)
     use_attention_out_bias: bool = eqx.field(static=True)
-    use_mlp_bias: bool = eqx.field(static=True)
+    sliding_window_sizes: list[int | None] = eqx.field(static=True)
+
     rope_theta: float = eqx.field(static=True)
     max_sequence_length: int = eqx.field(static=True)
     eps: float = eqx.field(static=True)
@@ -64,9 +70,11 @@ class Decoder[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
-        use_mlp_bias: bool,
+        sliding_window_sizes: list[int | None] | None,
         rope_theta: float,
         max_sequence_length: int,
         eps: float,
@@ -81,9 +89,14 @@ class Decoder[
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = head_dim
+
+        self.activation = activation
+        self.use_mlp_bias = use_mlp_bias
+
         self.use_attention_qkv_bias = use_attention_qkv_bias
         self.use_attention_out_bias = use_attention_out_bias
-        self.use_mlp_bias = use_mlp_bias
+        self.sliding_window_sizes = sliding_window_sizes or [None] * num_layers
+
         self.rope_theta = rope_theta
         self.max_sequence_length = max_sequence_length
         self.eps = eps
@@ -100,13 +113,15 @@ class Decoder[
                 num_heads=num_heads,
                 num_groups=num_groups,
                 head_dim=head_dim,
+                activation=activation,
                 use_attention_qkv_bias=use_attention_qkv_bias,
                 use_attention_out_bias=use_attention_out_bias,
                 use_mlp_bias=use_mlp_bias,
+                sliding_window_size=sliding_window_size,
                 eps=eps,
                 key=layer_key,
             )
-            for layer_key in layer_keys
+            for layer_key, sliding_window_size in zip(layer_keys, self.sliding_window_sizes, strict=True)
         ]
         self.output_norm = output_norm_config(model_dim, eps)
 
@@ -169,9 +184,11 @@ class DecoderConfig[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
-        use_mlp_bias: bool,
+        sliding_window_sizes: list[int | None] | None,
         rope_theta: float,
         max_sequence_length: int,
         eps: float,
@@ -189,9 +206,11 @@ class DecoderConfig[
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            activation=activation,
+            use_mlp_bias=use_mlp_bias,
             use_attention_qkv_bias=use_attention_qkv_bias,
             use_attention_out_bias=use_attention_out_bias,
-            use_mlp_bias=use_mlp_bias,
+            sliding_window_sizes=sliding_window_sizes,
             rope_theta=rope_theta,
             max_sequence_length=max_sequence_length,
             eps=eps,

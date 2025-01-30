@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from jaxtyping import PRNGKeyArray
 
 from fartsovka.common import DType
+from fartsovka.modules.activations import Activation
 from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import DecoderLayer, DecoderLayerConfig
@@ -61,6 +62,7 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
     num_heads: int
     num_groups: int
     head_dim: int
+    sliding_window_sizes: list[int | None]
     max_sequence_length: int
     rope_theta: float
     eps: float
@@ -76,6 +78,7 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        sliding_window_sizes: list[int | None],
         max_sequence_length: int,
         rope_theta: float,
         eps: float,
@@ -93,6 +96,7 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
         self.num_heads = num_heads
         self.num_groups = num_groups
         self.head_dim = head_dim
+        self.sliding_window_sizes = sliding_window_sizes
         self.max_sequence_length = max_sequence_length
         self.rope_theta = rope_theta
         self.eps = eps
@@ -113,9 +117,11 @@ class Qwen2Config(AbstractModelConfig[Qwen2Decoder]):
             num_heads=self.num_heads,
             num_groups=self.num_groups,
             head_dim=self.head_dim,
+            activation=Activation.SILU,
+            use_mlp_bias=False,
             use_attention_qkv_bias=True,
             use_attention_out_bias=False,
-            use_mlp_bias=False,
+            sliding_window_sizes=self.sliding_window_sizes,
             max_sequence_length=self.max_sequence_length,
             rope_theta=self.rope_theta,
             eps=self.eps,

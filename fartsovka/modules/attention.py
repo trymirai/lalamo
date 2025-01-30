@@ -31,9 +31,7 @@ class AbstractAttention(FartsovkaModule):
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
-
-    use_qkv_bias: bool = eqx.field(static=True)
-    use_out_bias: bool = eqx.field(static=True)
+    sliding_window_size: int | None = eqx.field(static=True)
 
     @property
     def group_dim(self) -> int:
@@ -51,24 +49,30 @@ class AbstractAttention(FartsovkaModule):
 
 
 class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](AbstractAttention):
+    use_qkv_bias: bool = eqx.field(static=True)
+    use_out_bias: bool = eqx.field(static=True)
+
     qkv_projection: QKVProjType
     out_projection: OutProjType
 
     def __init__(
         self,
+        *,
         qkv_projection_config: AbstractLinearConfig[QKVProjType],
         out_projection_config: AbstractLinearConfig[OutProjType],
         model_dim: int,
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        sliding_window_size: int | None,
         use_qkv_bias: bool,
         use_out_bias: bool,
-        *,
         key: PRNGKeyArray,
     ) -> None:
         qkv_key, out_key = jax.random.split(key)
-        super().__init__(model_dim, num_heads, num_groups, head_dim, use_qkv_bias, use_out_bias)
+        super().__init__(model_dim, num_heads, num_groups, head_dim, sliding_window_size)
+        self.use_qkv_bias = use_qkv_bias
+        self.use_out_bias = use_out_bias
         self.qkv_projection = qkv_projection_config(
             model_dim,
             (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
@@ -121,7 +125,13 @@ class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](Abstra
             all_keys = keys
             all_values = values
 
-        attention_output = nn.dot_product_attention(queries, all_keys, all_values, mask=mask)
+        attention_output = nn.dot_product_attention(
+            queries,
+            all_keys,
+            all_values,
+            mask=mask,
+            local_window_size=self.sliding_window_size,
+        )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",
@@ -155,6 +165,7 @@ class AbstractAttentionConfig[AttentionType: AbstractAttention]:
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        sliding_window_size: int | None,
         use_qkv_bias: bool,
         use_out_bias: bool,
         key: PRNGKeyArray,
@@ -176,17 +187,19 @@ class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        sliding_window_size: int | None,
         use_qkv_bias: bool,
         use_out_bias: bool,
         key: PRNGKeyArray,
     ) -> Attention[QKVProjType, OutProjType]:
         return Attention(
-            self.qkv_projection_config,
-            self.out_projection_config,
-            model_dim,
-            num_heads,
-            num_groups,
-            head_dim,
+            qkv_projection_config=self.qkv_projection_config,
+            out_projection_config=self.out_projection_config,
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            sliding_window_size=sliding_window_size,
             use_qkv_bias=use_qkv_bias,
             use_out_bias=use_out_bias,
             key=key,

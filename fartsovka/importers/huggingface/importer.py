@@ -56,6 +56,16 @@ QWEN_BETA_SLOW = 1.0
 QWEN_ROPE_SCALING_FACTOR = 4.0
 
 
+def _get_sliding_window_sizes(hf_config: HFQwen2Config) -> list[int | None]:
+    sliding_window_sizes = []
+    for i in range(hf_config.num_hidden_layers):
+        if i < hf_config.max_window_layers:
+            sliding_window_sizes.append(hf_config.sliding_window)
+        else:
+            sliding_window_sizes.append(None)
+    return sliding_window_sizes
+
+
 def get_model_config(
     model: HuggingFaceModel,
     *,
@@ -86,6 +96,7 @@ def get_model_config(
 
     if model in [HuggingFaceModel.QWEN25_1POINT5B_INSTRUCT, HuggingFaceModel.R1_DISTILL_QWEN_1POINT5]:
         hf_config = HFQwen2Config.from_json(config_path)
+        sliding_window_sizes = _get_sliding_window_sizes(hf_config)
         return Qwen2Config(
             num_layers=hf_config.num_hidden_layers,
             vocab_dim=hf_config.vocab_size,
@@ -94,6 +105,7 @@ def get_model_config(
             num_heads=hf_config.num_attention_heads,
             num_groups=hf_config.num_key_value_heads,
             head_dim=hf_config.hidden_size // hf_config.num_attention_heads,
+            sliding_window_sizes=sliding_window_sizes,
             max_sequence_length=hf_config.max_position_embeddings,
             rope_theta=hf_config.rope_theta,
             eps=hf_config.rms_norm_eps,

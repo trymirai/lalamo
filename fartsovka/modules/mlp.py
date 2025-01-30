@@ -4,7 +4,7 @@ import equinox as eqx
 import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from .activations import silu
+from .activations import Activation
 from .common import FartsovkaModule, ModuleConfig, ParameterDict
 from .linear import AbstractLinear, AbstractLinearConfig
 
@@ -15,6 +15,7 @@ class AbstractMLP(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     hidden_dim: int = eqx.field(static=True)
     use_bias: bool = eqx.field(static=True)
+    activation: Activation = eqx.field(static=True)
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
         raise NotImplementedError
@@ -28,6 +29,7 @@ class AbstractMLPConfig[MLPType: AbstractMLP](ModuleConfig[MLPType]):
         model_dim: int,
         hidden_dim: int,
         use_bias: bool,
+        activation: Activation,
         key: PRNGKeyArray,
     ) -> MLPType:
         raise NotImplementedError
@@ -43,10 +45,11 @@ class MLP[LinearType: AbstractLinear](AbstractMLP):
         model_dim: int,
         hidden_dim: int,
         use_bias: bool,
+        activation: Activation,
         *,
         key: PRNGKeyArray,
     ) -> None:
-        super().__init__(model_dim=model_dim, hidden_dim=hidden_dim, use_bias=use_bias)
+        super().__init__(model_dim=model_dim, hidden_dim=hidden_dim, use_bias=use_bias, activation=activation)
 
         up_projection_key, down_projection_key = jax.random.split(key)
         self.up_projection = linear_config(
@@ -64,7 +67,7 @@ class MLP[LinearType: AbstractLinear](AbstractMLP):
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
         up_proj, gate = self.up_projection(x)
-        gate = silu(gate)
+        gate = self.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
         return result
 
@@ -85,6 +88,7 @@ class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
         model_dim: int,
         hidden_dim: int,
         use_bias: bool,
+        activation: Activation,
         key: PRNGKeyArray,
     ) -> MLP[LinearType]:
         return MLP(
@@ -92,5 +96,6 @@ class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
             model_dim=model_dim,
             hidden_dim=hidden_dim,
             use_bias=use_bias,
+            activation=activation,
             key=key,
         )
