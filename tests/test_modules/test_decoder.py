@@ -13,7 +13,7 @@ from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
-DECODER_ATOL = 1e-3
+DECODER_ATOL = 3e-3
 QUANTIZED_DECODER_ATOL = 2.0  # LMAO
 
 

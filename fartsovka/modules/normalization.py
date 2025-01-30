@@ -32,7 +32,7 @@ def _compute_adjusted_variance(
     accumulation_precision: DType,
 ) -> Float[Scalar, ""]:
     upcasted_x = x.astype(accumulation_precision)
-    result = jnp.mean(upcasted_x**2) + eps
+    result = jnp.mean(jnp.square(upcasted_x)) + eps
     return result.astype(x.dtype)
 
 
