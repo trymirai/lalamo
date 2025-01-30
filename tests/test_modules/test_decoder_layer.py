@@ -6,6 +6,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer
 
+from fartsovka.models.gemma2 import Gemma2Decoder
 from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
@@ -33,7 +34,7 @@ def test_decoder_layer(
     fs_layer = fartsovka_llama.layers[layer_index]
     fs_layer_forward = checkify_forward(fs_layer)
 
-    input_dim = fs_layer.model_dim
+    input_dim = fs_layer.mlp.up_projection.input_dim
     sequence_length = 64
 
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
@@ -62,6 +63,52 @@ def test_decoder_layer(
     )
 
 
+# GEMMA_ATOL = 0.05  # TODO(norpadon): Figure out why decoder layer error is so large
+# GEMMA_RTOL = 0.05
+
+
+# @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
+# def test_gemma2_decoder_layer(
+#     huggingface_gemma2: transformers.GemmaModel,
+#     fartsovka_gemma2: Gemma2Decoder,
+#     rng_key: PRNGKeyArray,
+#     layer_index: int,
+# ) -> None:
+#     hf_layer = huggingface_gemma2.model.layers[layer_index]
+#     fs_layer = fartsovka_gemma2.layers[layer_index]
+#     fs_layer_forward = checkify_forward(fs_layer)
+
+#     input_dim = fs_layer.mlp.up_projection.input_dim
+#     sequence_length = 64
+
+#     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
+#     sample_input_torch = to_torch(sample_input).unsqueeze(0)
+
+#     # Get positional embeddings
+#     position_ids = jnp.arange(sequence_length)
+#     position_ids_torch = to_torch(position_ids).unsqueeze(0)
+#     cos, sin = huggingface_gemma2.model.rotary_emb(sample_input_torch, position_ids_torch)
+#     positional_embeddings = fartsovka_gemma2.rope(position_ids)
+
+#     # Create causal mask
+#     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
+#     torch_mask = torch_mask.unsqueeze(0).unsqueeze(0)
+#     jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+#     # Run forward passes
+#     hf_output = from_torch(
+#         hf_layer(sample_input_torch, attention_mask=torch_mask, position_embeddings=(cos, sin))[0].squeeze(0),
+#     )
+#     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+#     err.throw()
+#     assert_close(
+#         result=fs_output.output,
+#         reference=hf_output,
+#         atol=GEMMA_ATOL,
+#         rtol=GEMMA_RTOL,
+#     )
+
+
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_qlora_decoder_layer(
     executorch_llama: ETTransformer,
@@ -73,7 +120,7 @@ def test_qlora_decoder_layer(
     fs_layer_forward = checkify_forward(fs_layer)
     et_layer = executorch_llama.layers[layer_index]
 
-    input_dim = fs_layer.model_dim
+    input_dim = fs_layer.mlp.up_projection.input_dim
     sequence_length = 64
 
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))

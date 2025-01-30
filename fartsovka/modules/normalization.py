@@ -36,34 +36,37 @@ def _compute_adjusted_variance(
     x: Float[Array, " channels"],
     eps: float,
     accumulation_precision: DType,
+    result_precision: DType,
 ) -> Float[Scalar, ""]:
     upcasted_x = x.astype(accumulation_precision)
     result = jnp.mean(jnp.square(upcasted_x)) + eps
-    return result.astype(x.dtype)
+    return result.astype(result_precision)
 
 
 class RMSNorm(AbstractNormalization):
     scale: Float[Array, " channels"]
 
-    precision: DType = eqx.field(static=True)
+    scale_precision: DType = eqx.field(static=True)
     accumulation_precision: DType = eqx.field(static=True)
 
     def __init__(
         self,
+        *,
         model_dim: int,
         eps: float,
-        precision: DType,
+        scale_precision: DType,
         accumulation_precision: DType,
     ) -> None:
         super().__init__(model_dim=model_dim, eps=eps)
 
-        self.precision = precision
         self.accumulation_precision = accumulation_precision
-        self.scale = jnp.ones(model_dim, dtype=precision)
+        self.scale_precision = scale_precision
+        self.scale = jnp.ones(model_dim, dtype=scale_precision)
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        adjusted_variance = _compute_adjusted_variance(x, self.eps, self.accumulation_precision)
-        return x * jax.lax.rsqrt(adjusted_variance) * self.scale
+        adjusted_variance = _compute_adjusted_variance(x, self.eps, self.accumulation_precision, self.scale_precision)
+        result = x * jax.lax.rsqrt(adjusted_variance) * self.scale
+        return result.astype(x.dtype)
 
     def export_weights(self) -> ParameterDict:
         return ParameterDict(scale=self.scale)
@@ -71,11 +74,16 @@ class RMSNorm(AbstractNormalization):
 
 @dataclass
 class RMSNormConfig(AbstractNormalizationConfig[RMSNorm]):
-    precision: DType = DEFAULT_PRECISION
+    scale_precision: DType = DEFAULT_PRECISION
     accumulation_precision: DType = jnp.float32
 
     def __call__(self, model_dim: int, eps: float) -> RMSNorm:
-        return RMSNorm(model_dim, eps, self.precision, self.accumulation_precision)
+        return RMSNorm(
+            model_dim=model_dim,
+            eps=eps,
+            scale_precision=self.scale_precision,
+            accumulation_precision=self.accumulation_precision,
+        )
 
 
 NormalizationConfigType = RMSNormConfig | DummyUnionMember

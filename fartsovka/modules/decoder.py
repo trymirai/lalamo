@@ -7,13 +7,11 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from .activations import Activation
-from .attention import AbstractAttention
 from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
-from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerConfigType
+from .decoder_layer import AbstractDecoderLayer, AbstractDecoderLayerConfig, DecoderLayerConfigType
 from .embedding import AbstractEmbedding, AbstractEmbeddingConfig, EmbeddingConfigType
 from .kv_cache import KVCacheLayerSlice
-from .mlp import AbstractMLP
-from .normalization import AbstractNormalization, RMSNorm, RMSNormConfig
+from .normalization import RMSNorm, RMSNormConfig
 from .rope import AbstractRoPE, AbstractRoPEConfig, RoPEConfigType
 
 __all__ = [
@@ -31,34 +29,12 @@ class DecoderOutput(NamedTuple):
 
 class Decoder[
     EmbeddingType: AbstractEmbedding,
-    MLPNormType: AbstractNormalization,
-    MLPType: AbstractMLP,
-    AttentionNormType: AbstractNormalization,
-    AttentionType: AbstractAttention,
+    DecoderLayerType: AbstractDecoderLayer,
     RoPEType: AbstractRoPE,
 ](FartsovkaModule):
-    num_layers: int = eqx.field(static=True)
-    vocab_dim: int = eqx.field(static=True)
-    model_dim: int = eqx.field(static=True)
-    hidden_dim: int = eqx.field(static=True)
-    num_heads: int = eqx.field(static=True)
-    num_groups: int = eqx.field(static=True)
-    head_dim: int = eqx.field(static=True)
-
-    activation: Activation = eqx.field(static=True)
-    use_mlp_bias: bool = eqx.field(static=True)
-
-    use_attention_qkv_bias: bool = eqx.field(static=True)
-    use_attention_out_bias: bool = eqx.field(static=True)
-    sliding_window_sizes: list[int | None] = eqx.field(static=True)
-
-    rope_theta: float = eqx.field(static=True)
-    max_sequence_length: int = eqx.field(static=True)
-    eps: float = eqx.field(static=True)
-
     embedding: EmbeddingType
     rope: AbstractRoPE
-    layers: list[DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]
+    layers: list[DecoderLayerType]
     output_norm: RMSNorm
 
     def __init__(
@@ -67,7 +43,7 @@ class Decoder[
         num_layers: int,
         embedding_config: AbstractEmbeddingConfig[EmbeddingType],
         rope_config: AbstractRoPEConfig[RoPEType],
-        layer_config: DecoderLayerConfig[MLPNormType, MLPType, AttentionNormType, AttentionType],
+        layer_config: AbstractDecoderLayerConfig[DecoderLayerType],
         output_norm_config: RMSNormConfig,
         vocab_dim: int,
         model_dim: int,
@@ -75,10 +51,14 @@ class Decoder[
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        embedding_input_scale: float | None,
+        output_logits_soft_cap: float | None,
         activation: Activation,
         use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
+        attention_scale: float | None,
+        attention_logit_soft_cap: float | None,
         sliding_window_sizes: list[int | None] | None,
         rope_theta: float,
         max_sequence_length: int,
@@ -86,30 +66,18 @@ class Decoder[
         key: PRNGKeyArray,
     ) -> None:
         super().__init__()
-
-        self.num_layers = num_layers
-        self.vocab_dim = vocab_dim
-        self.model_dim = model_dim
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        self.num_groups = num_groups
-        self.head_dim = head_dim
-
-        self.activation = activation
-        self.use_mlp_bias = use_mlp_bias
-
-        self.use_attention_qkv_bias = use_attention_qkv_bias
-        self.use_attention_out_bias = use_attention_out_bias
-        self.sliding_window_sizes = sliding_window_sizes or [None] * num_layers
-
-        self.rope_theta = rope_theta
-        self.max_sequence_length = max_sequence_length
-        self.eps = eps
+        not_none_sliding_window_sizes = sliding_window_sizes or [None] * num_layers
 
         embedding_key, layers_key = jax.random.split(key)
         layer_keys = jax.random.split(layers_key, num_layers)
 
-        self.embedding = embedding_config(vocab_dim, model_dim, key=embedding_key)
+        self.embedding = embedding_config(
+            vocab_dim=vocab_dim,
+            model_dim=model_dim,
+            input_scale=embedding_input_scale,
+            logits_soft_cap=output_logits_soft_cap,
+            key=embedding_key,
+        )
         self.rope = rope_config(head_dim, max_sequence_length, theta=rope_theta)
         self.layers = [
             layer_config(
@@ -122,11 +90,13 @@ class Decoder[
                 use_attention_qkv_bias=use_attention_qkv_bias,
                 use_attention_out_bias=use_attention_out_bias,
                 use_mlp_bias=use_mlp_bias,
+                attention_scale=attention_scale,
+                attention_logit_soft_cap=attention_logit_soft_cap,
                 sliding_window_size=sliding_window_size,
                 eps=eps,
                 key=layer_key,
             )
-            for layer_key, sliding_window_size in zip(layer_keys, self.sliding_window_sizes, strict=True)
+            for layer_key, sliding_window_size in zip(layer_keys, not_none_sliding_window_sizes, strict=True)
         ]
         self.output_norm = output_norm_config(model_dim, eps)
 
@@ -168,10 +138,7 @@ class Decoder[
 @dataclass
 class DecoderConfig[
     EmbeddingType: AbstractEmbedding,
-    MLPNormType: AbstractNormalization,
-    MLPType: AbstractMLP,
-    AttentionNormType: AbstractNormalization,
-    AttentionType: AbstractAttention,
+    DecoderLayerType: AbstractDecoderLayer,
     RoPEType: AbstractRoPE,
 ]:
     embedding_config: EmbeddingConfigType
@@ -179,46 +146,55 @@ class DecoderConfig[
     layer_config: DecoderLayerConfigType
     output_norm_config: RMSNormConfig
 
+    num_layers: int
+    vocab_dim: int
+    model_dim: int
+    hidden_dim: int
+    num_heads: int
+    num_groups: int
+    head_dim: int
+    embedding_input_scale: float | None
+    output_logits_soft_cap: float | None
+    activation: Activation
+    use_mlp_bias: bool
+    use_attention_qkv_bias: bool
+    use_attention_out_bias: bool
+    attention_scale: float | None
+    attention_logit_soft_cap: float | None
+    sliding_window_sizes: list[int | None] | None
+    rope_theta: float
+    max_sequence_length: int
+    eps: float
+
     def __call__(
         self,
         *,
-        num_layers: int,
-        vocab_dim: int,
-        model_dim: int,
-        hidden_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        activation: Activation,
-        use_mlp_bias: bool,
-        use_attention_qkv_bias: bool,
-        use_attention_out_bias: bool,
-        sliding_window_sizes: list[int | None] | None,
-        rope_theta: float,
-        max_sequence_length: int,
-        eps: float,
         key: PRNGKeyArray,
-    ) -> Decoder[EmbeddingType, MLPNormType, MLPType, AttentionNormType, AttentionType, RoPEType]:
+    ) -> Decoder[EmbeddingType, DecoderLayerType, RoPEType]:
         return Decoder(
-            num_layers=num_layers,
+            num_layers=self.num_layers,
             embedding_config=self.embedding_config,  # type: ignore
             rope_config=self.rope_config,
             layer_config=self.layer_config,  # type: ignore
             output_norm_config=self.output_norm_config,
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            hidden_dim=hidden_dim,
-            num_heads=num_heads,
-            num_groups=num_groups,
-            head_dim=head_dim,
-            activation=activation,
-            use_mlp_bias=use_mlp_bias,
-            use_attention_qkv_bias=use_attention_qkv_bias,
-            use_attention_out_bias=use_attention_out_bias,
-            sliding_window_sizes=sliding_window_sizes,
-            rope_theta=rope_theta,
-            max_sequence_length=max_sequence_length,
-            eps=eps,
+            vocab_dim=self.vocab_dim,
+            model_dim=self.model_dim,
+            hidden_dim=self.hidden_dim,
+            num_heads=self.num_heads,
+            num_groups=self.num_groups,
+            head_dim=self.head_dim,
+            embedding_input_scale=self.embedding_input_scale,
+            output_logits_soft_cap=self.output_logits_soft_cap,
+            activation=self.activation,
+            use_mlp_bias=self.use_mlp_bias,
+            use_attention_qkv_bias=self.use_attention_qkv_bias,
+            use_attention_out_bias=self.use_attention_out_bias,
+            attention_scale=self.attention_scale,
+            attention_logit_soft_cap=self.attention_logit_soft_cap,
+            sliding_window_sizes=self.sliding_window_sizes,
+            rope_theta=self.rope_theta,
+            max_sequence_length=self.max_sequence_length,
+            eps=self.eps,
             key=key,
         )
 

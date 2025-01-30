@@ -3,15 +3,16 @@ from typing import NamedTuple
 
 import equinox as eqx
 import jax
-from einops import rearrange
-from jax import nn, vmap
+from einops import einsum, rearrange, repeat
 from jax import numpy as jnp
+from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
 from .kv_cache import KVCacheLayerSlice
 from .linear import AbstractLinear, AbstractLinearConfig, LinearConfigType
 from .rope import PositionalEmbeddings
+from .utils import apply_soft_capping
 
 __all__ = [
     "AbstractAttention",
@@ -32,6 +33,9 @@ class AbstractAttention(FartsovkaModule):
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
+
+    scale: float | None = eqx.field(static=True)
+    logit_soft_cap: float | None = eqx.field(static=True)
     sliding_window_size: int | None = eqx.field(static=True)
 
     @property
@@ -49,10 +53,86 @@ class AbstractAttention(FartsovkaModule):
         raise NotImplementedError
 
 
-class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](AbstractAttention):
-    use_qkv_bias: bool = eqx.field(static=True)
-    use_out_bias: bool = eqx.field(static=True)
+@dataclass
+class AbstractAttentionConfig[AttentionType: AbstractAttention]:
+    def __call__(
+        self,
+        *,
+        model_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        scale: float | None,
+        logit_soft_cap: float | None,
+        sliding_window_size: int | None,
+        use_qkv_bias: bool,
+        use_out_bias: bool,
+        key: PRNGKeyArray,
+    ) -> AttentionType:
+        raise NotImplementedError
 
+
+def _repeat_kv(
+    keys_or_values: Float[Array, "tokens groups channels"],
+    group_size: int,
+) -> Float[Array, "tokens groups*group_size channels"]:
+    return repeat(
+        keys_or_values,
+        "tokens groups channels -> tokens (groups group_size) channels",
+        group_size=group_size,
+    )
+
+
+def _apply_sliding_window(
+    mask: Bool[Array, "dst_tokens src_tokens"],
+    local_window_size: int,
+) -> Bool[Array, "dst_tokens src_tokens"]:
+    dst_length, src_length = mask.shape
+    dst_indices = jnp.arange(dst_length)[:, None]
+    src_indices = jnp.arange(src_length)[None, :]
+    return mask & (dst_indices - src_indices < local_window_size)
+
+
+def _soft_capped_attention_kernel(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    local_window_size: int | None,
+    scale: float | None,
+    logit_soft_cap: float,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    dst_length, num_heads, head_dim = queries.shape
+    src_length, num_groups, _ = keys.shape
+    if scale is None:
+        scale = head_dim**-0.5
+    if local_window_size is not None:
+        if mask is None:
+            mask = jnp.ones((dst_length, src_length), dtype=jnp.bool_)
+        mask = _apply_sliding_window(mask, local_window_size)
+    group_size = num_heads // num_groups
+    keys = _repeat_kv(keys, group_size)
+    values = _repeat_kv(values, group_size)
+    queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
+    keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
+    attention_logits = einsum(
+        queries_head_first,
+        keys_head_first,
+        "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
+    )
+    if mask is not None:
+        attention_logits = jnp.where(mask, attention_logits, jnp.array(float("-inf"), dtype=attention_logits.dtype))
+    attention_logits = attention_logits * scale
+    attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
+    attention_weights = jax.nn.softmax(attention_logits, axis=-1)
+    return einsum(
+        attention_weights,
+        values,
+        "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
+    )
+
+
+class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](AbstractAttention):
     qkv_projection: QKVProjType
     out_projection: OutProjType
 
@@ -65,15 +145,15 @@ class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](Abstra
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        scale: float | None,
+        logit_soft_cap: float | None,
         sliding_window_size: int | None,
         use_qkv_bias: bool,
         use_out_bias: bool,
         key: PRNGKeyArray,
     ) -> None:
         qkv_key, out_key = jax.random.split(key)
-        super().__init__(model_dim, num_heads, num_groups, head_dim, sliding_window_size)
-        self.use_qkv_bias = use_qkv_bias
-        self.use_out_bias = use_out_bias
+        super().__init__(model_dim, num_heads, num_groups, head_dim, scale, logit_soft_cap, sliding_window_size)
         self.qkv_projection = qkv_projection_config(
             model_dim,
             (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
@@ -126,13 +206,25 @@ class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](Abstra
             all_keys = keys
             all_values = values
 
-        attention_output = nn.dot_product_attention(
-            queries,
-            all_keys,
-            all_values,
-            mask=mask,
-            local_window_size=self.sliding_window_size,
-        )
+        if self.logit_soft_cap is not None:
+            attention_output = _soft_capped_attention_kernel(
+                queries,
+                all_keys,
+                all_values,
+                mask=mask,
+                scale=self.scale,
+                logit_soft_cap=self.logit_soft_cap,
+                local_window_size=self.sliding_window_size,
+            )
+        else:
+            attention_output = jax.nn.dot_product_attention(
+                queries,
+                all_keys,
+                all_values,
+                mask=mask,
+                scale=self.scale,
+                local_window_size=self.sliding_window_size,
+            )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",
@@ -158,23 +250,6 @@ class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](Abstra
 
 
 @dataclass
-class AbstractAttentionConfig[AttentionType: AbstractAttention]:
-    def __call__(
-        self,
-        *,
-        model_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        sliding_window_size: int | None,
-        use_qkv_bias: bool,
-        use_out_bias: bool,
-        key: PRNGKeyArray,
-    ) -> AttentionType:
-        raise NotImplementedError
-
-
-@dataclass
 class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
     AbstractAttentionConfig[Attention[QKVProjType, OutProjType]],
 ):
@@ -188,6 +263,8 @@ class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        scale: float | None,
+        logit_soft_cap: float | None,
         sliding_window_size: int | None,
         use_qkv_bias: bool,
         use_out_bias: bool,
@@ -200,6 +277,8 @@ class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            scale=scale,
+            logit_soft_cap=logit_soft_cap,
             sliding_window_size=sliding_window_size,
             use_qkv_bias=use_qkv_bias,
             use_out_bias=use_out_bias,

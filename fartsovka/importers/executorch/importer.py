@@ -145,7 +145,7 @@ def import_model(
         activation_precision=activation_precision,
         accumulation_precision=accumulation_precision,
     )
-    result = config(jax.random.PRNGKey(0))
+    result = config(key=jax.random.PRNGKey(0))
 
     weights_path = download_weights(model)
     weights_dict = load_torch_checkpoint(

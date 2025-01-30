@@ -120,7 +120,7 @@ class AbstractRoPE(FartsovkaModule):
 
 @dataclass
 class AbstractRoPEConfig[RoPEType: AbstractRoPE]:
-    precision: DType = DEFAULT_PRECISION
+    precision: DType
 
     def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> RoPEType:
         raise NotImplementedError
@@ -202,6 +202,7 @@ class LlamaRoPE(AbstractRoPE):
         return ParameterDict(cosines=self.cosines, sines=self.sines)
 
 
+@dataclass
 class LlamaRoPEConfig(AbstractRoPEConfig[LlamaRoPE]):
     scaling_factor: float
     original_context_length: int

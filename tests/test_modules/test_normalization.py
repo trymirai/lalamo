@@ -3,6 +3,7 @@ import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
+from fartsovka.models.gemma2 import Gemma2Decoder
 from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
@@ -19,6 +20,30 @@ def test_rms_norm(
 ) -> None:
     hf_layer = huggingface_llama.model.layers[layer_index].input_layernorm
     fs_layer = fartsovka_llama.layers[layer_index].attention_norm
+    fs_layer_forward = checkify_forward(fs_layer)
+
+    input_dim = fs_layer.model_dim
+
+    sample_input = jax.random.normal(rng_key, (input_dim,))
+    sample_input_torch = to_torch(sample_input).unsqueeze(0)
+    hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
+    err, fs_output = fs_layer_forward(sample_input)
+    err.throw()
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+        operation_name="rms_norm",
+    )
+
+
+def test_gemma2_rms_norm(
+    huggingface_gemma2: transformers.GemmaModel,
+    fartsovka_gemma2: Gemma2Decoder,
+    rng_key: PRNGKeyArray,
+) -> None:
+    layer_index = 0
+    hf_layer = huggingface_gemma2.model.layers[layer_index].input_layernorm
+    fs_layer = fartsovka_gemma2.layers[layer_index].attention_pre_norm
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim

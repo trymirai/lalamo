@@ -4,9 +4,10 @@ from types import UnionType
 
 import equinox as eqx
 from cattrs import Converter
+from jax import numpy as jnp
 from jaxtyping import Array
 
-from fartsovka.common import ParameterPath
+from fartsovka.common import DType, ParameterPath
 
 type NestedParameters = Mapping[str, Array | NestedParameters] | Iterable[Array | NestedParameters]
 
@@ -57,7 +58,37 @@ class FartsovkaModule(eqx.Module):
         raise NotImplementedError
 
 
+def _is_dtype(value: type) -> bool:
+    return value in [
+        jnp.bfloat16,
+        jnp.float16,
+        jnp.float32,
+        jnp.float64,
+        jnp.bool_,
+        jnp.int8,
+        jnp.int16,
+        jnp.int32,
+        jnp.int64,
+        jnp.uint8,
+        jnp.uint16,
+        jnp.uint32,
+        jnp.uint64,
+    ]
+
+
+def _dtype_to_str(dtype: jnp.dtype) -> str:
+    if dtype == jnp.bfloat16:
+        return "bfloat16"
+    return str(dtype.dtype)  # type: ignore
+
+
 config_converter = Converter()
+
+
+config_converter.register_unstructure_hook_func(
+    lambda t: t in [jnp.dtype, DType],
+    _dtype_to_str,
+)
 
 
 def register_config_union(union_type: UnionType) -> None:

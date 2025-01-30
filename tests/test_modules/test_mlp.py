@@ -3,6 +3,7 @@ import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
+from fartsovka.models.gemma2 import Gemma2Decoder
 from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
@@ -29,7 +30,31 @@ def test_mlp(
     fs_layer = fartsovka_llama.layers[layer_index].mlp
     fs_layer_forward = checkify_forward(fs_layer)
 
-    input_dim = fs_layer.model_dim
+    input_dim = fs_layer.up_projection.input_dim
+
+    sample_input = jax.random.normal(rng_key, (input_dim,))
+    sample_input_torch = to_torch(sample_input).unsqueeze(0)
+    hf_output = from_torch(hf_layer(sample_input_torch).squeeze(0))
+    err, fs_output = fs_layer_forward(sample_input)
+    err.throw()
+    assert_close(
+        result=fs_output,
+        reference=hf_output,
+    )
+
+
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
+def test_gemma2_mlp(
+    huggingface_gemma2: transformers.Gemma2Model,
+    fartsovka_gemma2: Gemma2Decoder,
+    rng_key: PRNGKeyArray,
+    layer_index: int,
+) -> None:
+    hf_layer = huggingface_gemma2.model.layers[layer_index].mlp
+    fs_layer = fartsovka_gemma2.layers[layer_index].mlp
+    fs_layer_forward = checkify_forward(fs_layer)
+
+    input_dim = fs_layer.up_projection.input_dim
 
     sample_input = jax.random.normal(rng_key, (input_dim,))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
@@ -52,7 +77,8 @@ def test_qlora_mlp(
     fs_layer = fartsovka_qlora_llama.layers[layer_index].mlp
     fs_layer_forward = checkify_forward(fs_layer)
     et_layer = executorch_llama.layers[layer_index].feed_forward
-    input_dim = fs_layer.model_dim
+
+    input_dim = fs_layer.up_projection.input_dim
 
     sample_input = jax.random.normal(rng_key, (input_dim,))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)

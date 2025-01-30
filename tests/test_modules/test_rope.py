@@ -153,7 +153,7 @@ def test_executorch_apply_rotary_emb(
     fartsovka_llama: LlamaDecoder,
     rng_key: PRNGKeyArray,
 ) -> None:
-    head_dim = fartsovka_llama.head_dim
+    head_dim = fartsovka_llama.rope.head_dim
     sequence_length = 10
     indices = jnp.arange(sequence_length)
 

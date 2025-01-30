@@ -12,8 +12,6 @@ __all__ = ["MLP", "AbstractMLP", "MLPConfig", "AbstractMLPConfig", "MLPConfigTyp
 
 
 class AbstractMLP(FartsovkaModule):
-    model_dim: int = eqx.field(static=True)
-    hidden_dim: int = eqx.field(static=True)
     use_bias: bool = eqx.field(static=True)
     activation: Activation = eqx.field(static=True)
 
@@ -49,7 +47,7 @@ class MLP[LinearType: AbstractLinear](AbstractMLP):
         *,
         key: PRNGKeyArray,
     ) -> None:
-        super().__init__(model_dim=model_dim, hidden_dim=hidden_dim, use_bias=use_bias, activation=activation)
+        super().__init__(use_bias=use_bias, activation=activation)
 
         up_projection_key, down_projection_key = jax.random.split(key)
         self.up_projection = linear_config(

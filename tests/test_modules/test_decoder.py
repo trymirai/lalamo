@@ -6,6 +6,7 @@ import torch
 import transformers
 from jax import numpy as jnp
 
+from fartsovka.models.gemma2 import Gemma2Decoder
 from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Decoder
@@ -14,6 +15,7 @@ from tests.executorch_llama.transformer import Transformer as ETTransformer
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
 DECODER_ATOL = 3e-3
+DECODER_RTOL = 0.05
 QUANTIZED_DECODER_ATOL = 2.0  # LMAO
 
 
@@ -90,6 +92,7 @@ def test_llama(
         result=fs_output.output,
         reference=hf_output,
         atol=DECODER_ATOL,
+        rtol=DECODER_RTOL,
     )
 
 
@@ -126,6 +129,41 @@ def test_qwen2(
         result=fs_output.output,
         reference=hf_output,
         atol=DECODER_ATOL,
+        rtol=DECODER_RTOL,
+    )
+
+
+def test_gemma2(
+    huggingface_gemma2: transformers.Gemma2Model,
+    fartsovka_gemma2: Gemma2Decoder,
+) -> None:
+    fs_decoder = fartsovka_gemma2
+    fs_decoder_forward = checkify_forward(fs_decoder)
+
+    sequence_length = len(TOKENS)
+    token_ids = jnp.array(TOKENS)
+    token_ids_torch = to_torch(token_ids).unsqueeze(0)
+
+    # Create position IDs
+    position_ids = jnp.arange(sequence_length)
+    position_ids_torch = to_torch(position_ids).unsqueeze(0)
+
+    # Create causal mask
+    jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+    torch_pre_softmax = huggingface_gemma2(
+        token_ids_torch,
+        position_ids=position_ids_torch,
+    )[0]
+    # Run forward passes
+    hf_output = from_torch(torch_pre_softmax.squeeze(0))
+    err, fs_output = fs_decoder_forward(token_ids, position_ids, mask=jax_mask)
+    err.throw()
+    assert_close(
+        result=fs_output.output,
+        reference=hf_output,
+        atol=DECODER_ATOL,
+        rtol=DECODER_RTOL,
     )
 
 

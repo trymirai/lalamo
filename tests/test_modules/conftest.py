@@ -15,6 +15,7 @@ from fartsovka.importers.executorch.importer import download_weights as download
 from fartsovka.importers.executorch.importer import import_model as import_et
 from fartsovka.importers.huggingface.importer import HuggingFaceModel
 from fartsovka.importers.huggingface.importer import import_model as import_hf
+from fartsovka.models.gemma2 import Gemma2Decoder
 from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Decoder
@@ -36,6 +37,26 @@ RANDOM_SEED = 42
 @pytest.fixture
 def rng_key() -> PRNGKeyArray:
     return jax.random.PRNGKey(RANDOM_SEED)
+
+
+@pytest.fixture(scope="package")
+def huggingface_gemma2() -> transformers.Gemma2Model:
+    model = transformers.AutoModelForCausalLM.from_pretrained(
+        "google/gemma-2-2b-it",
+        torch_dtype=torch.float32,
+    )
+    model.eval()
+    return model
+
+
+@pytest.fixture(scope="package")
+def fartsovka_gemma2() -> Gemma2Decoder:
+    model = import_hf(
+        HuggingFaceModel.GEMMA2_2B_INSTRUCT,
+        precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+    )
+    return model  # type: ignore
 
 
 @pytest.fixture(scope="package")

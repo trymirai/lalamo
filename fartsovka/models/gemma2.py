@@ -2,7 +2,7 @@ from fartsovka.common import DType
 from fartsovka.modules.activations import Activation
 from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
-from fartsovka.modules.decoder_layer import PreNormDecoderLayer, PreNormDecoderLayerConfig
+from fartsovka.modules.decoder_layer import PrePostNormDecoderLayer, PrePostNormDecoderLayerConfig
 from fartsovka.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from fartsovka.modules.linear import Linear, LinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
@@ -10,37 +10,41 @@ from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
 from fartsovka.modules.rope import AbstractRoPE, RoPEConfig
 
 __all__ = [
-    "Qwen2Config",
-    "Qwen2Decoder",
-    "Qwen2Attention",
-    "Qwen2DecoderLayer",
-    "Qwen2MLP",
+    "Gemma2Attention",
+    "Gemma2Config",
+    "Gemma2Decoder",
+    "Gemma2DecoderLayer",
+    "Gemma2MLP",
 ]
 
-type Qwen2MLP = MLP[Linear]
+type Gemma2MLP = MLP[Linear]
 
-type Qwen2Attention = Attention[Linear, Linear]
+type Gemma2Attention = Attention[Linear, Linear]
 
-type Qwen2DecoderLayer = PreNormDecoderLayer[
+type Gemma2DecoderLayer = PrePostNormDecoderLayer[
     RMSNorm,
-    Qwen2MLP,
+    Gemma2MLP,
     RMSNorm,
-    Qwen2Attention,
+    RMSNorm,
+    Gemma2Attention,
+    RMSNorm,
 ]
 
-type Qwen2Decoder = Decoder[
+type Gemma2Decoder = Decoder[
     TiedEmbedding,
-    Qwen2DecoderLayer,
+    Gemma2DecoderLayer,
     AbstractRoPE,
 ]
 
 
-QWEN_BETA_FAST = 32.0
-QWEN_BETA_SLOW = 1.0
-QWEN_ROPE_SCALING_FACTOR = 4.0
+type Gemma2DecoderConfig = DecoderConfig[
+    TiedEmbedding,
+    Gemma2DecoderLayer,
+    AbstractRoPE,
+]
 
 
-class Qwen2Config(DecoderConfig[TiedEmbedding, Qwen2DecoderLayer, AbstractRoPE]):
+class Gemma2Config(DecoderConfig[TiedEmbedding, Gemma2DecoderLayer, AbstractRoPE]):
     def __init__(
         self,
         *,
@@ -51,40 +55,51 @@ class Qwen2Config(DecoderConfig[TiedEmbedding, Qwen2DecoderLayer, AbstractRoPE])
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        output_logits_soft_cap: float,
         max_sequence_length: int,
-        sliding_window_sizes: list[int | None] | None,
+        sliding_window_size: int,
+        query_pre_attn_scalar: float,
+        attention_logits_soft_cap: float,
         rope_theta: float,
         eps: float,
         precision: DType,
         accumulation_precision: DType,
     ) -> None:
+        sliding_window_sizes = [sliding_window_size if not bool(i % 2) else None for i in range(num_layers)]
+        embedding_input_scale = model_dim**0.5
+        attention_scale = query_pre_attn_scalar**-0.5
         super().__init__(
             embedding_config=TiedEmbeddingConfig(precision=precision),
             rope_config=RoPEConfig(
                 precision=precision,
-                # scaling_factor=QWEN_ROPE_SCALING_FACTOR,  # noqa: ERA001
-                # beta_fast=QWEN_BETA_FAST,  # noqa: ERA001
-                # beta_slow=QWEN_BETA_SLOW,  # noqa: ERA001
             ),
-            layer_config=PreNormDecoderLayerConfig(
-                attention_norm_config=RMSNormConfig(
-                    scale_precision=precision,
+            layer_config=PrePostNormDecoderLayerConfig(
+                attention_pre_norm_config=RMSNormConfig(
+                    scale_precision=accumulation_precision,
                     accumulation_precision=accumulation_precision,
                 ),
                 attention_config=AttentionConfig(
                     qkv_projection_config=LinearConfig(precision=precision),
                     out_projection_config=LinearConfig(precision=precision),
                 ),
-                mlp_norm_config=RMSNormConfig(
-                    scale_precision=precision,
+                attention_post_norm_config=RMSNormConfig(
+                    scale_precision=accumulation_precision,
+                    accumulation_precision=accumulation_precision,
+                ),
+                mlp_pre_norm_config=RMSNormConfig(
+                    scale_precision=accumulation_precision,
                     accumulation_precision=accumulation_precision,
                 ),
                 mlp_config=MLPConfig(
                     linear_config=LinearConfig(precision=precision),
                 ),
+                mlp_post_norm_config=RMSNormConfig(
+                    scale_precision=accumulation_precision,
+                    accumulation_precision=accumulation_precision,
+                ),
             ),
             output_norm_config=RMSNormConfig(
-                scale_precision=precision,
+                scale_precision=accumulation_precision,
                 accumulation_precision=accumulation_precision,
             ),
             num_layers=num_layers,
@@ -94,14 +109,14 @@ class Qwen2Config(DecoderConfig[TiedEmbedding, Qwen2DecoderLayer, AbstractRoPE])
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            embedding_input_scale=None,
-            output_logits_soft_cap=None,
-            activation=Activation.SILU,
+            embedding_input_scale=embedding_input_scale,
+            output_logits_soft_cap=output_logits_soft_cap,
+            activation=Activation.GELU,
             use_mlp_bias=False,
-            use_attention_qkv_bias=True,
+            use_attention_qkv_bias=False,
             use_attention_out_bias=False,
-            attention_scale=None,
-            attention_logit_soft_cap=None,
+            attention_scale=attention_scale,
+            attention_logit_soft_cap=attention_logits_soft_cap,
             sliding_window_sizes=sliding_window_sizes,
             rope_theta=rope_theta,
             max_sequence_length=max_sequence_length,

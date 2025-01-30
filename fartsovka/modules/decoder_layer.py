@@ -1,24 +1,25 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
-import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .activations import Activation
 from .attention import AbstractAttention, AbstractAttentionConfig, AttentionConfigType
-from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, ParameterDict, register_config_union
 from .kv_cache import KVCacheLayerSlice
 from .mlp import AbstractMLP, AbstractMLPConfig, MLPConfigType
 from .normalization import AbstractNormalization, AbstractNormalizationConfig, NormalizationConfigType
 from .rope import PositionalEmbeddings
 
 __all__ = [
-    "DecoderLayer",
-    "DecoderLayerConfig",
+    "AbstractDecoderLayer",
+    "AbstractDecoderLayerConfig",
     "DecoderLayerConfigType",
     "DecoderLayerOutput",
+    "PreNormDecoderLayer",
+    "PreNormDecoderLayerConfig",
 ]
 
 
@@ -27,25 +28,47 @@ class DecoderLayerOutput(NamedTuple):
     kv_cache: KVCacheLayerSlice | None
 
 
-class DecoderLayer[
+class AbstractDecoderLayer(FartsovkaModule):
+    def __call__(
+        self,
+        x: Float[Array, "suffix_tokens channels"],
+        positional_embeddings: PositionalEmbeddings,
+        kv_cache: KVCacheLayerSlice | None = None,
+        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
+        return_updated_kv_cache: bool = False,
+    ) -> DecoderLayerOutput:
+        raise NotImplementedError
+
+
+@dataclass
+class AbstractDecoderLayerConfig[DecoderLayerType: AbstractDecoderLayer]:
+    def __call__(
+        self,
+        *,
+        model_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        attention_scale: float | None,
+        attention_logit_soft_cap: float | None,
+        sliding_window_size: int | None,
+        eps: float,
+        key: PRNGKeyArray,
+    ) -> DecoderLayerType:
+        raise NotImplementedError
+
+
+class PreNormDecoderLayer[
     MLPNormType: AbstractNormalization,
     MLPType: AbstractMLP,
     AttentionNormType: AbstractNormalization,
     AttentionType: AbstractAttention,
-](FartsovkaModule):
-    model_dim: int = eqx.field(static=True)
-    hidden_dim: int = eqx.field(static=True)
-    num_heads: int = eqx.field(static=True)
-    num_groups: int = eqx.field(static=True)
-    head_dim: int = eqx.field(static=True)
-
-    activation: Activation = eqx.field(static=True)
-    use_mlp_bias: bool = eqx.field(static=True)
-
-    use_attention_qkv_bias: bool = eqx.field(static=True)
-    use_attention_out_bias: bool = eqx.field(static=True)
-    sliding_window_size: int | None = eqx.field(static=True)
-
+](AbstractDecoderLayer):
     attention_norm: AttentionNormType
     attention: AttentionType
     mlp_norm: MLPNormType
@@ -67,24 +90,13 @@ class DecoderLayer[
         use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
+        attention_scale: float | None,
+        attention_logit_soft_cap: float | None,
         sliding_window_size: int | None,
         eps: float,
         key: PRNGKeyArray,
     ) -> None:
         super().__init__()
-
-        self.model_dim = model_dim
-        self.hidden_dim = hidden_dim
-        self.num_heads = num_heads
-        self.num_groups = num_groups
-        self.head_dim = head_dim
-
-        self.activation = activation
-        self.use_mlp_bias = use_mlp_bias
-
-        self.use_attention_qkv_bias = use_attention_qkv_bias
-        self.use_attention_out_bias = use_attention_out_bias
-        self.sliding_window_size = sliding_window_size
 
         attention_key, mlp_key = jax.random.split(key)
 
@@ -94,6 +106,8 @@ class DecoderLayer[
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            scale=attention_scale,
+            logit_soft_cap=attention_logit_soft_cap,
             sliding_window_size=sliding_window_size,
             use_qkv_bias=use_attention_qkv_bias,
             use_out_bias=use_attention_out_bias,
@@ -118,15 +132,14 @@ class DecoderLayer[
     ) -> DecoderLayerOutput:
         residual = x
         x = vmap(self.attention_norm, in_axes=0)(x)
-        attention_output = self.attention(x, positional_embeddings, kv_cache, mask, return_updated_kv_cache)
-        x = residual + attention_output.attention_output
-        updated_kv_cache = attention_output.kv_cache
+        x, kv_cache = self.attention(x, positional_embeddings, kv_cache, mask, return_updated_kv_cache)
+        x = residual + x
 
         residual = x
         x = vmap(self.mlp_norm, in_axes=0)(x)
         x = residual + vmap(self.mlp, in_axes=0)(x)
 
-        return DecoderLayerOutput(output=x, kv_cache=updated_kv_cache)
+        return DecoderLayerOutput(output=x, kv_cache=kv_cache)
 
     def export_weights(self) -> ParameterDict:
         return ParameterDict(
@@ -138,12 +151,12 @@ class DecoderLayer[
 
 
 @dataclass
-class DecoderLayerConfig[
+class PreNormDecoderLayerConfig[
     MLPNormType: AbstractNormalization,
     MLPType: AbstractMLP,
     AttentionNormType: AbstractNormalization,
     AttentionType: AbstractAttention,
-]:
+](AbstractDecoderLayerConfig[PreNormDecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]):
     attention_norm_config: NormalizationConfigType
     attention_config: AttentionConfigType
     mlp_norm_config: NormalizationConfigType
@@ -161,11 +174,13 @@ class DecoderLayerConfig[
         use_mlp_bias: bool,
         use_attention_qkv_bias: bool,
         use_attention_out_bias: bool,
+        attention_scale: float | None,
+        attention_logit_soft_cap: float | None,
         sliding_window_size: int | None,
         eps: float,
         key: PRNGKeyArray,
-    ) -> DecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
-        return DecoderLayer(
+    ) -> PreNormDecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]:
+        return PreNormDecoderLayer(
             attention_norm_config=self.attention_norm_config,  # type: ignore
             attention_config=self.attention_config,  # type: ignore
             mlp_norm_config=self.mlp_norm_config,  # type: ignore
@@ -179,12 +194,191 @@ class DecoderLayerConfig[
             use_mlp_bias=use_mlp_bias,
             use_attention_qkv_bias=use_attention_qkv_bias,
             use_attention_out_bias=use_attention_out_bias,
+            attention_scale=attention_scale,
+            attention_logit_soft_cap=attention_logit_soft_cap,
             sliding_window_size=sliding_window_size,
             eps=eps,
             key=key,
         )
 
 
-DecoderLayerConfigType = DecoderLayerConfig | DummyUnionMember
+class PrePostNormDecoderLayer[
+    MLPPreNormType: AbstractNormalization,
+    MLPType: AbstractMLP,
+    MLPPostNormType: AbstractNormalization,
+    AttentionPreNormType: AbstractNormalization,
+    AttentionType: AbstractAttention,
+    AttentionPostNormType: AbstractNormalization,
+](AbstractDecoderLayer):
+    attention_pre_norm: AttentionPreNormType
+    attention: AttentionType
+    attention_post_norm: AttentionPostNormType
+    mlp_pre_norm: MLPPreNormType
+    mlp: MLPType
+    mlp_post_norm: MLPPostNormType
+
+    def __init__(
+        self,
+        *,
+        attention_pre_norm_config: AbstractNormalizationConfig[AttentionPreNormType],
+        attention_config: AbstractAttentionConfig[AttentionType],
+        attention_post_norm_config: AbstractNormalizationConfig[AttentionPostNormType],
+        mlp_pre_norm_config: AbstractNormalizationConfig[MLPPreNormType],
+        mlp_config: AbstractMLPConfig[MLPType],
+        mlp_post_norm_config: AbstractNormalizationConfig[MLPPostNormType],
+        model_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        attention_scale: float | None,
+        attention_logit_soft_cap: float | None,
+        sliding_window_size: int | None,
+        eps: float,
+        key: PRNGKeyArray,
+    ) -> None:
+        super().__init__()
+
+        attention_key, mlp_key = jax.random.split(key)
+
+        self.attention_pre_norm = attention_pre_norm_config(model_dim, eps)
+        self.attention = attention_config(
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            scale=attention_scale,
+            logit_soft_cap=attention_logit_soft_cap,
+            sliding_window_size=sliding_window_size,
+            use_qkv_bias=use_attention_qkv_bias,
+            use_out_bias=use_attention_out_bias,
+            key=attention_key,
+        )
+        self.attention_post_norm = attention_post_norm_config(model_dim, eps)
+
+        self.mlp_pre_norm = mlp_pre_norm_config(model_dim, eps)
+        self.mlp = mlp_config(
+            model_dim=model_dim,
+            hidden_dim=hidden_dim,
+            use_bias=use_mlp_bias,
+            activation=activation,
+            key=mlp_key,
+        )
+        self.mlp_post_norm = mlp_post_norm_config(model_dim, eps)
+
+    def __call__(
+        self,
+        x: Float[Array, "suffix_tokens channels"],
+        positional_embeddings: PositionalEmbeddings,
+        kv_cache: KVCacheLayerSlice | None = None,
+        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
+        return_updated_kv_cache: bool = False,
+    ) -> DecoderLayerOutput:
+        residual = x
+        x = vmap(self.attention_pre_norm, in_axes=0)(x)
+        x, kv_cache = self.attention(x, positional_embeddings, kv_cache, mask, return_updated_kv_cache)
+        x = vmap(self.attention_post_norm, in_axes=0)(x)
+        x = residual + x
+
+        residual = x
+        x = vmap(self.mlp_pre_norm, in_axes=0)(x)
+        x = vmap(self.mlp, in_axes=0)(x)
+        x = vmap(self.mlp_post_norm, in_axes=0)(x)
+        x = residual + x
+
+        return DecoderLayerOutput(output=x, kv_cache=kv_cache)
+
+    def export_weights(self) -> ParameterDict:
+        return ParameterDict(
+            attention_pre_norm=self.attention_pre_norm.export_weights(),
+            attention=self.attention.export_weights(),
+            attention_post_norm=self.attention_post_norm.export_weights(),
+            mlp_pre_norm=self.mlp_pre_norm.export_weights(),
+            mlp=self.mlp.export_weights(),
+            mlp_post_norm=self.mlp_post_norm.export_weights(),
+        )
+
+
+@dataclass
+class PrePostNormDecoderLayerConfig[
+    MLPPreNormType: AbstractNormalization,
+    MLPType: AbstractMLP,
+    MLPPostNormType: AbstractNormalization,
+    AttentionPreNormType: AbstractNormalization,
+    AttentionType: AbstractAttention,
+    AttentionPostNormType: AbstractNormalization,
+](
+    AbstractDecoderLayerConfig[
+        PrePostNormDecoderLayer[
+            MLPPreNormType,
+            MLPType,
+            MLPPostNormType,
+            AttentionPreNormType,
+            AttentionType,
+            AttentionPostNormType,
+        ]
+    ],
+):
+    attention_pre_norm_config: NormalizationConfigType
+    attention_config: AttentionConfigType
+    attention_post_norm_config: NormalizationConfigType
+    mlp_pre_norm_config: NormalizationConfigType
+    mlp_config: MLPConfigType
+    mlp_post_norm_config: NormalizationConfigType
+
+    def __call__(
+        self,
+        *,
+        model_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        activation: Activation,
+        use_mlp_bias: bool,
+        use_attention_qkv_bias: bool,
+        use_attention_out_bias: bool,
+        attention_scale: float | None,
+        attention_logit_soft_cap: float | None,
+        sliding_window_size: int | None,
+        eps: float,
+        key: PRNGKeyArray,
+    ) -> PrePostNormDecoderLayer[
+        MLPPreNormType,
+        MLPType,
+        MLPPostNormType,
+        AttentionPreNormType,
+        AttentionType,
+        AttentionPostNormType,
+    ]:
+        return PrePostNormDecoderLayer(
+            attention_pre_norm_config=self.attention_pre_norm_config,  # type: ignore
+            attention_config=self.attention_config,  # type: ignore
+            attention_post_norm_config=self.attention_post_norm_config,  # type: ignore
+            mlp_pre_norm_config=self.mlp_pre_norm_config,  # type: ignore
+            mlp_config=self.mlp_config,  # type: ignore
+            mlp_post_norm_config=self.mlp_post_norm_config,  # type: ignore
+            model_dim=model_dim,
+            hidden_dim=hidden_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            activation=activation,
+            use_mlp_bias=use_mlp_bias,
+            use_attention_qkv_bias=use_attention_qkv_bias,
+            use_attention_out_bias=use_attention_out_bias,
+            attention_scale=attention_scale,
+            attention_logit_soft_cap=attention_logit_soft_cap,
+            sliding_window_size=sliding_window_size,
+            eps=eps,
+            key=key,
+        )
+
+
+DecoderLayerConfigType = PreNormDecoderLayerConfig | PrePostNormDecoderLayerConfig
 
 register_config_union(DecoderLayerConfigType)

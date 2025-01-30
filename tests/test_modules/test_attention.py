@@ -6,6 +6,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import DynamicCache, LlamaAttention
 
+from fartsovka.models.gemma2 import Gemma2Decoder
 from fartsovka.models.llama import LlamaDecoder
 from fartsovka.models.qlora_llama import QLoRALlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Decoder
@@ -89,6 +90,45 @@ def test_qwen2_attention(
         hf_layer(sample_input_torch, position_embeddings=(cos, sin), attention_mask=torch_zero_mask)[0].squeeze(0),
     )
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings)
+    err.throw()
+    assert_close(
+        result=fs_output.attention_output,
+        reference=hf_output,
+    )
+
+
+@pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
+def test_gemma2_attention(
+    huggingface_gemma2: transformers.GemmaModel,
+    fartsovka_gemma2: Gemma2Decoder,
+    rng_key: PRNGKeyArray,
+    layer_index: int,
+) -> None:
+    hf_layer = huggingface_gemma2.model.layers[layer_index].self_attn
+    fs_layer = fartsovka_gemma2.layers[layer_index].attention
+    fs_layer_forward = checkify_forward(fs_layer)
+
+    input_dim = fs_layer.model_dim
+    sequence_length = 64
+
+    sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
+    sample_input_torch = to_torch(sample_input).unsqueeze(0)
+
+    # Get positional embeddings
+    position_ids = jnp.arange(sequence_length)
+    position_ids_torch = to_torch(position_ids).unsqueeze(0)
+    cos, sin = huggingface_gemma2.model.rotary_emb(sample_input_torch, position_ids_torch)
+    positional_embeddings = fartsovka_gemma2.rope(position_ids)
+    # Create causal mask
+    torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
+    torch_mask = torch_mask.unsqueeze(0).unsqueeze(0)
+    jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
+
+    # Run forward passes
+    hf_output = from_torch(
+        hf_layer(sample_input_torch, position_embeddings=(cos, sin), attention_mask=torch_mask)[0].squeeze(0),
+    )
+    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
     err.throw()
     assert_close(
         result=fs_output.attention_output,

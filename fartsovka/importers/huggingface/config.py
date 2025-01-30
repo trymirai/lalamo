@@ -5,7 +5,7 @@ from typing import ClassVar, Literal, TypeVar
 
 import cattrs
 
-__all__ = ["RopeScalingConfig", "LlamaConfig", "Qwen2Config"]
+__all__ = ["RopeScalingConfig", "LlamaConfig", "Qwen2Config", "GemmaConfig"]
 
 
 T = TypeVar("T", bound="BaseConfig")
@@ -91,4 +91,36 @@ class Qwen2Config(BaseConfig):
     transformers_version: str
     use_cache: bool
     use_sliding_window: bool
+    vocab_size: int
+
+
+@dataclass
+class GemmaConfig(BaseConfig):
+    architectures: list[Literal["Gemma2ForCausalLM"]]
+    attention_bias: bool
+    attention_dropout: float
+    attn_logit_softcapping: float
+    bos_token_id: int | list[int]
+    cache_implementation: Literal["hybrid"]
+    eos_token_id: int | list[int]
+    final_logit_softcapping: float
+    head_dim: int
+    hidden_act: Literal["gelu_pytorch_tanh"]
+    hidden_activation: Literal["gelu_pytorch_tanh"]
+    hidden_size: int
+    initializer_range: float
+    intermediate_size: int
+    max_position_embeddings: int
+    model_type: Literal["gemma2"]
+    num_attention_heads: int
+    num_hidden_layers: int
+    num_key_value_heads: int
+    pad_token_id: int
+    query_pre_attn_scalar: float
+    rms_norm_eps: float
+    rope_theta: float
+    sliding_window: int
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
+    transformers_version: str
+    use_cache: bool
     vocab_size: int
