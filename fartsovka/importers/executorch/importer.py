@@ -14,7 +14,7 @@ from fartsovka.quantization import QuantizationMode
 from .config import LlamaConfig as ETLlamaConfig
 from .loader import load_llama
 
-__all__ = ["ExecutorchModel", "import_model"]
+__all__ = ["ExecutorchModel", "import_model", "get_model_config"]
 
 
 FLOAT_DTYPES = [jnp.bfloat16, jnp.float16, jnp.float32, jnp.float64]

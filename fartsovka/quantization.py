@@ -9,8 +9,8 @@ __all__ = ["QuantizationMode", "quantize_weights"]
 
 
 class QuantizationMode(Enum):
-    INT4 = auto()
-    INT8 = auto()
+    INT4 = "int4"
+    INT8 = "int8"
 
     @property
     def range(self) -> tuple[int, int]:

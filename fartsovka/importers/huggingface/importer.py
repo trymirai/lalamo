@@ -16,7 +16,7 @@ from .config import LlamaConfig as HFLlamaConfig
 from .config import Qwen2Config as HFQwen2Config
 from .loader import load_huggingface
 
-__all__ = ["HuggingFaceModel", "import_model"]
+__all__ = ["HuggingFaceModel", "import_model", "get_model_config"]
 
 
 class HuggingFaceModel(Enum):
