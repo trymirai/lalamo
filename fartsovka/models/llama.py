@@ -4,7 +4,7 @@ from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import PreNormDecoderLayer, PreNormDecoderLayerConfig
 from fartsovka.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
-from fartsovka.modules.linear import Linear, LinearConfig
+from fartsovka.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
 from fartsovka.modules.rope import LlamaRoPE, LlamaRoPEConfig
@@ -17,9 +17,9 @@ __all__ = [
     "LlamaMLP",
 ]
 
-type LlamaMLP = MLP[Linear]
+type LlamaMLP = MLP[FullPrecisionLinear]
 
-type LlamaAttention = Attention[Linear, Linear]
+type LlamaAttention = Attention[FullPrecisionLinear, FullPrecisionLinear]
 
 type LlamaDecoderLayer = PreNormDecoderLayer[
     RMSNorm,
@@ -78,15 +78,15 @@ class LlamaConfig(DecoderConfig[TiedEmbedding, LlamaDecoderLayer, LlamaRoPE]):
                     accumulation_precision=accumulation_precision,
                 ),
                 attention_config=AttentionConfig(
-                    qkv_projection_config=LinearConfig(precision=precision),
-                    out_projection_config=LinearConfig(precision=precision),
+                    qkv_projection_config=FullPrecisionLinearConfig(precision=precision),
+                    out_projection_config=FullPrecisionLinearConfig(precision=precision),
                 ),
                 mlp_norm_config=RMSNormConfig(
                     scale_precision=precision,
                     accumulation_precision=accumulation_precision,
                 ),
                 mlp_config=MLPConfig(
-                    linear_config=LinearConfig(precision=precision),
+                    linear_config=FullPrecisionLinearConfig(precision=precision),
                 ),
             ),
             output_norm_config=RMSNormConfig(

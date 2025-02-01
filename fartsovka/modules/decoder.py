@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
-import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray

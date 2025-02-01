@@ -6,7 +6,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .activations import Activation
-from .attention import AbstractAttention, AbstractAttentionConfig, AttentionConfigType
+from .attention import AttentionBase, AbstractAttentionConfig, AttentionConfigType
 from .common import FartsovkaModule, ParameterDict, register_config_union
 from .kv_cache import KVCacheLayerSlice
 from .mlp import AbstractMLP, AbstractMLPConfig, MLPConfigType
@@ -67,7 +67,7 @@ class PreNormDecoderLayer[
     MLPNormType: AbstractNormalization,
     MLPType: AbstractMLP,
     AttentionNormType: AbstractNormalization,
-    AttentionType: AbstractAttention,
+    AttentionType: AttentionBase,
 ](AbstractDecoderLayer):
     attention_norm: AttentionNormType
     attention: AttentionType
@@ -155,7 +155,7 @@ class PreNormDecoderLayerConfig[
     MLPNormType: AbstractNormalization,
     MLPType: AbstractMLP,
     AttentionNormType: AbstractNormalization,
-    AttentionType: AbstractAttention,
+    AttentionType: AttentionBase,
 ](AbstractDecoderLayerConfig[PreNormDecoderLayer[MLPNormType, MLPType, AttentionNormType, AttentionType]]):
     attention_norm_config: NormalizationConfigType
     attention_config: AttentionConfigType
@@ -207,7 +207,7 @@ class PrePostNormDecoderLayer[
     MLPType: AbstractMLP,
     MLPPostNormType: AbstractNormalization,
     AttentionPreNormType: AbstractNormalization,
-    AttentionType: AbstractAttention,
+    AttentionType: AttentionBase,
     AttentionPostNormType: AbstractNormalization,
 ](AbstractDecoderLayer):
     attention_pre_norm: AttentionPreNormType
@@ -309,7 +309,7 @@ class PrePostNormDecoderLayerConfig[
     MLPType: AbstractMLP,
     MLPPostNormType: AbstractNormalization,
     AttentionPreNormType: AbstractNormalization,
-    AttentionType: AbstractAttention,
+    AttentionType: AttentionBase,
     AttentionPostNormType: AbstractNormalization,
 ](
     AbstractDecoderLayerConfig[

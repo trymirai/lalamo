@@ -6,7 +6,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 from .activations import Activation
 from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
-from .linear import AbstractLinear, AbstractLinearConfig, LinearConfigType
+from .linear import LinearBase, AbstractLinearConfig, LinearConfig
 
 __all__ = ["MLP", "AbstractMLP", "MLPConfig", "AbstractMLPConfig", "MLPConfigType"]
 
@@ -33,7 +33,7 @@ class AbstractMLPConfig[MLPType: AbstractMLP]:
         raise NotImplementedError
 
 
-class MLP[LinearType: AbstractLinear](AbstractMLP):
+class MLP[LinearType: LinearBase](AbstractMLP):
     up_projection: LinearType
     down_projection: LinearType
 
@@ -77,8 +77,8 @@ class MLP[LinearType: AbstractLinear](AbstractMLP):
 
 
 @dataclass
-class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
-    linear_config: LinearConfigType
+class MLPConfig[LinearType: LinearBase](AbstractMLPConfig[MLP[LinearType]]):
+    linear_config: LinearConfig
 
     def __call__(
         self,

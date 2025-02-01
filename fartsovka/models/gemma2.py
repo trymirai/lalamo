@@ -4,7 +4,7 @@ from fartsovka.modules.attention import Attention, AttentionConfig
 from fartsovka.modules.decoder import Decoder, DecoderConfig
 from fartsovka.modules.decoder_layer import PrePostNormDecoderLayer, PrePostNormDecoderLayerConfig
 from fartsovka.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
-from fartsovka.modules.linear import Linear, LinearConfig
+from fartsovka.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from fartsovka.modules.mlp import MLP, MLPConfig
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
 from fartsovka.modules.rope import AbstractRoPE, RoPEConfig
@@ -17,9 +17,9 @@ __all__ = [
     "Gemma2MLP",
 ]
 
-type Gemma2MLP = MLP[Linear]
+type Gemma2MLP = MLP[FullPrecisionLinear]
 
-type Gemma2Attention = Attention[Linear, Linear]
+type Gemma2Attention = Attention[FullPrecisionLinear, FullPrecisionLinear]
 
 type Gemma2DecoderLayer = PrePostNormDecoderLayer[
     RMSNorm,
@@ -79,8 +79,8 @@ class Gemma2Config(DecoderConfig[TiedEmbedding, Gemma2DecoderLayer, AbstractRoPE
                     accumulation_precision=accumulation_precision,
                 ),
                 attention_config=AttentionConfig(
-                    qkv_projection_config=LinearConfig(precision=precision),
-                    out_projection_config=LinearConfig(precision=precision),
+                    qkv_projection_config=FullPrecisionLinearConfig(precision=precision),
+                    out_projection_config=FullPrecisionLinearConfig(precision=precision),
                 ),
                 attention_post_norm_config=RMSNormConfig(
                     scale_precision=accumulation_precision,
@@ -91,7 +91,7 @@ class Gemma2Config(DecoderConfig[TiedEmbedding, Gemma2DecoderLayer, AbstractRoPE
                     accumulation_precision=accumulation_precision,
                 ),
                 mlp_config=MLPConfig(
-                    linear_config=LinearConfig(precision=precision),
+                    linear_config=FullPrecisionLinearConfig(precision=precision),
                 ),
                 mlp_post_norm_config=RMSNormConfig(
                     scale_precision=accumulation_precision,

@@ -1,4 +1,4 @@
-from enum import Enum, auto
+from enum import Enum
 
 from jax import numpy as jnp
 from jaxtyping import Array, Float

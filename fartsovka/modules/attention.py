@@ -10,13 +10,13 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
 from .kv_cache import KVCacheLayerSlice
-from .linear import AbstractLinear, AbstractLinearConfig, LinearConfigType
+from .linear import AbstractLinearConfig, LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
 from .utils import apply_soft_capping
 
 __all__ = [
-    "AbstractAttention",
-    "AbstractAttentionConfig",
+    "AttentionBase",
+    "AttentionConfigBase",
     "Attention",
     "AttentionConfig",
     "AttentionConfigType",
@@ -28,7 +28,7 @@ class AttentionOutput(NamedTuple):
     kv_cache: KVCacheLayerSlice | None = None
 
 
-class AbstractAttention(FartsovkaModule):
+class AttentionBase(FartsovkaModule):
     model_dim: int = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
@@ -54,7 +54,7 @@ class AbstractAttention(FartsovkaModule):
 
 
 @dataclass
-class AbstractAttentionConfig[AttentionType: AbstractAttention]:
+class AttentionConfigBase[AttentionType: AttentionBase]:
     def __call__(
         self,
         *,
@@ -132,7 +132,7 @@ def _soft_capped_attention_kernel(
     )
 
 
-class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](AbstractAttention):
+class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase):
     qkv_projection: QKVProjType
     out_projection: OutProjType
 
@@ -250,11 +250,11 @@ class Attention[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](Abstra
 
 
 @dataclass
-class AttentionConfig[QKVProjType: AbstractLinear, OutProjType: AbstractLinear](
-    AbstractAttentionConfig[Attention[QKVProjType, OutProjType]],
+class AttentionConfig[QKVProjType: LinearBase, OutProjType: LinearBase](
+    AttentionConfigBase[Attention[QKVProjType, OutProjType]],
 ):
-    qkv_projection_config: LinearConfigType
-    out_projection_config: LinearConfigType
+    qkv_projection_config: LinearConfig
+    out_projection_config: LinearConfig
 
     def __call__(
         self,

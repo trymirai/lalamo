@@ -23,21 +23,21 @@ from fartsovka.models.qwen2 import (
 )
 from fartsovka.modules.decoder_layer import PrePostNormDecoderLayer
 from fartsovka.modules.embedding import TiedEmbedding
-from fartsovka.modules.linear import Linear
+from fartsovka.modules.linear import FullPrecisionLinear
 from fartsovka.modules.normalization import RMSNorm
 
 __all__ = ["load_huggingface"]
 
 
-def load_linear(module: Linear, weights_dict: dict[str, Array], path: ParameterPath) -> Linear:
-    if module.bias is None:
+def load_linear(module: FullPrecisionLinear, weights_dict: dict[str, Array], path: ParameterPath) -> FullPrecisionLinear:
+    if module.biases is None:
         if path / "bias" in weights_dict:
             raise ValueError(f"Bias is not supported for {path}")
         loaded_bias = None
     else:
         loaded_bias = weights_dict[path / "bias"]
     return load_parameters(
-        lambda m: (m.weights, m.bias),
+        lambda m: (m.weights, m.biases),
         module,
         (weights_dict[path / "weight"], loaded_bias),
     )
@@ -82,7 +82,7 @@ def load_attention[T: LlamaAttention | Qwen2Attention | Gemma2Attention](
     qkv_proj_weights = jnp.concatenate([q_proj_weights, k_proj_weights, v_proj_weights], axis=0)
 
     bias_paths = [path / p / "bias" for p in ["q_proj", "k_proj", "v_proj"]]
-    if module.qkv_projection.bias is None:
+    if module.qkv_projection.biases is None:
         for bias_path in bias_paths:
             if bias_path in weights_dict:
                 raise ValueError(f"Bias is not supported for {bias_path}")
@@ -92,7 +92,7 @@ def load_attention[T: LlamaAttention | Qwen2Attention | Gemma2Attention](
         qkv_bias = jnp.concatenate(loaded_biases, axis=0)
 
     return load_parameters(
-        lambda m: (m.qkv_projection.weights, m.qkv_projection.bias, m.out_projection),
+        lambda m: (m.qkv_projection.weights, m.qkv_projection.biases, m.out_projection),
         module,
         (qkv_proj_weights, qkv_bias, out_proj),
     )
