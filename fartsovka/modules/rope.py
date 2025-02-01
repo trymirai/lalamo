@@ -130,6 +130,7 @@ class UnscaledRoPEConfig(RoPEConfigBase):
     pass
 
 
+@dataclass
 class LlamaRoPEConfig(RoPEConfigBase):
     scaling_factor: float
     original_context_length: int
@@ -166,6 +167,7 @@ class LlamaRoPEConfig(RoPEConfigBase):
         return result
 
 
+@dataclass
 class YARNRoPEConfig(RoPEConfigBase):
     scaling_factor: float
     beta_fast: float

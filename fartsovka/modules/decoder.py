@@ -37,8 +37,8 @@ class DecoderConfig:
     num_heads: int
     num_groups: int
     head_dim: int
+    attention_scale: float | None
     num_layers: int
-    use_qkv_bias: bool
     sliding_window_sizes: tuple[int | None, ...] | None
     context_length: int
 
@@ -79,7 +79,7 @@ class DecoderConfig:
                 num_heads=self.num_heads,
                 num_groups=self.num_groups,
                 head_dim=self.head_dim,
-                attention_scale=None,
+                attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
                 key=key,
             )

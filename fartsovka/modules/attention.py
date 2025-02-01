@@ -91,7 +91,6 @@ class AttentionConfig:
     out_projection_config: LinearConfig
 
     logit_soft_cap: float | None
-    sliding_window_size: int | None
     use_qkv_bias: bool
     use_out_bias: bool
 

@@ -11,9 +11,9 @@ from fartsovka.models.gemma2 import Gemma2Config, Gemma2Decoder
 from fartsovka.models.llama import LlamaConfig, LlamaDecoder
 from fartsovka.models.qwen2 import Qwen2Config, Qwen2Decoder
 
-from .config import GemmaConfig as HFGemmaConfig
-from .config import LlamaConfig as HFLlamaConfig
-from .config import Qwen2Config as HFQwen2Config
+from .config import HFGemma2Config as HFGemmaConfig
+from .config import HFLlamaConfig as HFLlamaConfig
+from .config import HFQwen2Config as HFQwen2Config
 from .loader import load_huggingface
 
 __all__ = ["HuggingFaceModel", "import_model", "get_model_config"]
