@@ -53,27 +53,11 @@ class ParameterDict(dict[str, Array]):
         return result
 
 
-class FartsovkaModule(eqx.Module):
+class FartsovkaModule[ConfigT](eqx.Module):
+    config: ConfigT = eqx.field(static=True)
+
     def export_weights(self) -> ParameterDict:
         raise NotImplementedError
-
-
-def _is_dtype(value: type) -> bool:
-    return value in [
-        jnp.bfloat16,
-        jnp.float16,
-        jnp.float32,
-        jnp.float64,
-        jnp.bool_,
-        jnp.int8,
-        jnp.int16,
-        jnp.int32,
-        jnp.int64,
-        jnp.uint8,
-        jnp.uint16,
-        jnp.uint32,
-        jnp.uint64,
-    ]
 
 
 def _dtype_to_str(dtype: jnp.dtype) -> str:

@@ -15,7 +15,6 @@ from .common import FartsovkaModule, ParameterDict, register_config_union
 
 __all__ = [
     "LinearBase",
-    "LinearConfigBase",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
     "FullPrecisionLinear",
@@ -26,9 +25,7 @@ __all__ = [
 ]
 
 
-class LinearBase[ConfigT](FartsovkaModule):
-    config: ConfigT = eqx.field(static=True)
-
+class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
 
     @property
@@ -72,7 +69,40 @@ class LinearConfigBase:
         raise NotImplementedError
 
 
-class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
+@dataclass
+class FullPrecisionLinearConfig(LinearConfigBase):
+    precision: DType
+
+    def random_init(
+        self,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        has_biases: bool,
+        *,
+        key: PRNGKeyArray,
+    ) -> LinearBase:
+        scale = 1 / math.sqrt(input_dim)
+        weights = jax.random.uniform(
+            key,
+            (sum(output_dims), input_dim),
+            minval=-scale,
+            maxval=scale,
+            dtype=self.precision,
+        )
+        if has_biases:
+            biases = jnp.zeros((sum(output_dims),), dtype=self.precision)
+        else:
+            biases = None
+
+        return FullPrecisionLinear(
+            config=self,
+            output_dims=output_dims,
+            weights=weights,
+            biases=biases,
+        )
+
+
+class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
     weights: Float[Array, "total_out_channels in_channels"]
     biases: Float[Array, " total_out_channels"] | None
 
@@ -123,13 +153,16 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         )
         result = ParameterDict(weights=exported_weights)
         if self.biases is not None:
-            result["bias"] = self.biases
+            result["biases"] = self.biases
         return result
 
 
 @dataclass
-class FullPrecisionLinearConfig:
-    precision: DType
+class GroupQuantizedLinearConfig(LinearConfigBase):
+    group_size: int
+    weight_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
+    activation_precision: DType
 
     def random_init(
         self,
@@ -138,42 +171,35 @@ class FullPrecisionLinearConfig:
         has_biases: bool,
         *,
         key: PRNGKeyArray,
-    ) -> FullPrecisionLinear:
-        scale = 1 / math.sqrt(input_dim)
+    ) -> LinearBase:
+        min_val, max_val = self.weight_quantization_mode.range
+        min_abs_val = min(abs(min_val), abs(max_val))
         weights = jax.random.uniform(
             key,
             (sum(output_dims), input_dim),
-            minval=-scale,
-            maxval=scale,
-            dtype=self.precision,
+            minval=-min_abs_val,
+            maxval=min_abs_val,
+            dtype=self.activation_precision,
         )
+        num_groups = input_dim // self.group_size
+        scale = 1 / (min_abs_val * math.sqrt(input_dim))
+        scales = scale * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
+
         if has_biases:
-            biases = jnp.zeros((sum(output_dims),), dtype=self.precision)
+            biases = jnp.zeros((sum(output_dims),), dtype=self.activation_precision)
         else:
             biases = None
 
-        return FullPrecisionLinear(
+        return GroupQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
-            biases=biases,
-        )
-
-    def from_weights(
-        self,
-        output_dims: tuple[int, ...],
-        weights: Float[Array, "total_out_channels in_channels"],
-        biases: Float[Array, " total_out_channels"],
-    ) -> FullPrecisionLinear:
-        return FullPrecisionLinear(
-            config=self,
-            output_dims=output_dims,
-            weights=weights,
+            scales=scales,
             biases=biases,
         )
 
 
-class GroupQuantizedLinearBase[ConfigT: "GroupQuantizedLinearConfig"](LinearBase[ConfigT]):
+class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[ConfigT]):
     weights: Float[Array, "total_out_channels in_channels"]
     scales: Float[Array, "total_out_channels groups"]
     biases: Float[Array, " total_out_channels"] | None
@@ -278,22 +304,21 @@ class GroupQuantizedLinearBase[ConfigT: "GroupQuantizedLinearConfig"](LinearBase
 
         result = ParameterDict(
             weights=exported_weights,
-            weights_scales=exported_scales,
+            scales=exported_scales,
         )
         if self.biases is not None:
-            result["bias"] = self.biases
+            result["biases"] = self.biases
         return result
 
 
-class GroupQuantizedLinear(GroupQuantizedLinearBase["GroupQuantizedLinearConfig"]):
+class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
     pass
 
 
 @dataclass
-class GroupQuantizedLinearConfig(LinearConfigBase):
-    group_size: int
-    weight_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
+class QLoRALinearConfig(GroupQuantizedLinearConfig):
+    lora_rank: int
+    lora_scale: float
     activation_precision: DType
 
     def random_init(
@@ -303,50 +328,47 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
         has_biases: bool,
         *,
         key: PRNGKeyArray,
-    ) -> GroupQuantizedLinearBase:
-        scale = 1 / math.sqrt(input_dim)
-        min_val, max_val = self.weight_quantization_mode.range
-        min_abs_val = min(abs(min_val), abs(max_val))
-        weights = jax.random.uniform(
-            key,
-            (sum(output_dims), input_dim),
-            minval=-min_abs_val,
-            maxval=min_abs_val,
+    ) -> LinearBase:
+        base_key, derived_key = jax.random.split(key)
+        group_quantized_linear = super().random_init(input_dim, output_dims, has_biases, key=base_key)
+        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
+
+        down_key, up_key_root = jax.random.split(derived_key)
+        hidden_lora_rank = len(output_dims) * self.lora_rank
+        max_down_abs_value = 1 / math.sqrt(input_dim)
+        lora_down_weights = jax.random.uniform(
+            down_key,
+            (hidden_lora_rank, input_dim),
+            minval=-max_down_abs_value,
+            maxval=max_down_abs_value,
             dtype=self.activation_precision,
         )
-        num_groups = input_dim // self.group_size
-        scales = scale * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
-        if has_biases:
-            biases = jnp.zeros((sum(output_dims),), dtype=self.activation_precision)
-        else:
-            biases = None
-
-        return GroupQuantizedLinear(
-            config=self,
-            output_dims=output_dims,
-            weights=weights,
-            scales=scales,
-            biases=biases,
+        up_keys = jax.random.split(up_key_root, len(output_dims))
+        max_up_abs_value = 1 / math.sqrt(hidden_lora_rank)
+        lora_up_weights = tuple(
+            jax.random.uniform(
+                up_key,
+                (output_dim, self.lora_rank),
+                minval=-max_up_abs_value,
+                maxval=max_up_abs_value,
+                dtype=self.activation_precision,
+            )
+            for up_key, output_dim in zip(up_keys, output_dims, strict=True)
         )
 
-    def from_weights(
-        self,
-        output_dims: tuple[int, ...],
-        weights: Float[Array, "total_out_channels in_channels"],
-        scales: Float[Array, "total_out_channels groups"],
-        biases: Float[Array, " total_out_channels"],
-    ) -> GroupQuantizedLinear:
-        return GroupQuantizedLinear(
+        return QLoRALinear(
             config=self,
             output_dims=output_dims,
-            weights=weights,
-            scales=scales,
-            biases=biases,
+            weights=group_quantized_linear.weights,
+            scales=group_quantized_linear.scales,
+            biases=group_quantized_linear.biases,
+            lora_down_weights=lora_down_weights,
+            lora_up_weights=lora_up_weights,
         )
 
 
-class QLoRALinear(GroupQuantizedLinearBase["QLoRALinearConfig"]):
+class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     lora_down_weights: Float[Array, "total_lora_channels in_channels"]
     lora_up_weights: tuple[Float[Array, "out_channels lora_channels"], ...]
 
@@ -431,58 +453,6 @@ class QLoRALinear(GroupQuantizedLinearBase["QLoRALinearConfig"]):
             **quantized_linear_weights,
             down_weights=exported_lora_down_weights,
             up_weights=exported_lora_up_weights,
-        )
-
-
-@dataclass
-class QLoRALinearConfig(GroupQuantizedLinearConfig):
-    lora_rank: int
-    lora_scale: float
-    activation_precision: DType
-
-    def random_init(
-        self,
-        input_dim: int,
-        output_dims: tuple[int, ...],
-        has_biases: bool,
-        *,
-        key: PRNGKeyArray,
-    ) -> QLoRALinear:
-        base_key, derived_key = jax.random.split(key)
-        group_quantized_linear = super().random_init(input_dim, output_dims, has_biases, key=base_key)
-
-        down_key, up_key_root = jax.random.split(derived_key)
-        hidden_lora_rank = len(output_dims) * self.lora_rank
-        max_down_abs_value = 1 / math.sqrt(input_dim)
-        lora_down_weights = jax.random.uniform(
-            down_key,
-            (hidden_lora_rank, input_dim),
-            minval=-max_down_abs_value,
-            maxval=max_down_abs_value,
-            dtype=self.activation_precision,
-        )
-
-        up_keys = jax.random.split(up_key_root, len(output_dims))
-        max_up_abs_value = 1 / math.sqrt(hidden_lora_rank)
-        lora_up_weights = tuple(
-            jax.random.uniform(
-                up_key,
-                (output_dim, self.lora_rank),
-                minval=-max_up_abs_value,
-                maxval=max_up_abs_value,
-                dtype=self.activation_precision,
-            )
-            for up_key, output_dim in zip(up_keys, output_dims, strict=True)
-        )
-
-        return QLoRALinear(
-            config=self,
-            output_dims=output_dims,
-            weights=group_quantized_linear.weights,
-            scales=group_quantized_linear.scales,
-            biases=group_quantized_linear.biases,
-            lora_down_weights=lora_down_weights,
-            lora_up_weights=lora_up_weights,
         )
 
 

@@ -22,20 +22,17 @@ import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
-from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.common import DType
 
 from .common import FartsovkaModule, ParameterDict, register_config_union
 
 __all__ = [
     "PositionalEmbeddings",
-    "AbstractRoPE",
-    "AbstractRoPEConfig",
-    "RoPEConfig",
-    "LlamaRoPE",
+    "RoPE",
+    "RoPEConfigBase",
+    "UnscaledRoPEConfig",
     "LlamaRoPEConfig",
-    "YARNRoPE",
     "YARNRoPEConfig",
-    "RoPEConfigType",
 ]
 
 
@@ -56,57 +53,68 @@ class PositionalEmbeddings(eqx.Module):
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
 
-class AbstractRoPE(FartsovkaModule):
-    head_dim: int = eqx.field(static=True)
-    max_sequence_length: int = eqx.field(static=True)
-    theta: float = eqx.field(static=True)
-
-    precision: DType = eqx.field(static=True)
+@dataclass
+class RoPEConfigBase:
+    precision: DType
+    base: float
+    max_sequence_length: int
 
     @property
-    def attention_scaling_factor(self) -> float:
+    def _attention_scaling_factor(self) -> float:
         return 1.0
 
-    sines: Float[Array, "tokens head_channels"]
-    cosines: Float[Array, "tokens head_channels"]
-
-    def _scale_frequencies(
+    def _scale_inverse_frequencies(
         self,
-        frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " tokens"],
+        head_dim: int,  # noqa: ARG002
+        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " tokens"]:
-        return frequencies
+        return inverse_frequencies
 
-    def _precompute_values(
+    def init(
         self,
         head_dim: int,
         num_timesteps: int,
-    ) -> tuple[Float[Array, "{num_timesteps} {head_dim}"], Float[Array, "{num_timesteps} {head_dim}"]]:
+    ) -> "RoPE":
         timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
         channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
-        frequencies = 1.0 / (self.theta ** (channel_indices.astype(jnp.float32) / head_dim))
-        frequencies = self._scale_frequencies(frequencies)
-        outer_frequencies = jnp.outer(timesteps, frequencies)
-        embeddings = jnp.concatenate((outer_frequencies, outer_frequencies), axis=-1)
-        cosines = jnp.cos(embeddings).astype(self.precision) * self.attention_scaling_factor
-        sines = jnp.sin(embeddings).astype(self.precision) * self.attention_scaling_factor
-        return cosines, sines
+        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / head_dim))
+        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
+        outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
+        embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
+        cosines = jnp.cos(embeddings).astype(self.precision) * self._attention_scaling_factor
+        sines = jnp.sin(embeddings).astype(self.precision) * self._attention_scaling_factor
+        return RoPE(config=self, cosines=cosines, sines=sines)
 
-    def __init__(
-        self,
-        *,
-        head_dim: int,
-        max_sequence_length: int,
-        theta: float,
-        precision: DType,
-    ) -> None:
-        super().__init__()
 
-        self.head_dim = head_dim
-        self.max_sequence_length = max_sequence_length
-        self.theta = theta
-        self.precision = precision
+class RoPE(FartsovkaModule[RoPEConfigBase]):
+    sines: Float[Array, "tokens head_channels"]
+    cosines: Float[Array, "tokens head_channels"]
 
-        self.cosines, self.sines = self._precompute_values(head_dim, max_sequence_length)
+    def __post_init__(self) -> None:
+        if self.cosines.dtype != self.config.precision:
+            raise ValueError(
+                f"Cosines dtype {self.cosines.dtype} does not match the specified precision {self.config.precision}",
+            )
+        if self.sines.dtype != self.config.precision:
+            raise ValueError(
+                f"Sines dtype {self.sines.dtype} does not match the specified precision {self.config.precision}",
+            )
+        if self.cosines.shape != self.sines.shape:
+            raise ValueError(
+                f"Cosines and sines shape mismatch: cosines have shape {self.cosines.shape},"
+                f" while sines have shape {self.sines.shape}",
+            )
+
+    @property
+    def head_dim(self) -> int:
+        _, result = self.sines.shape
+        return result
+
+    @property
+    def max_sequence_length(self) -> int:
+        result, _ = self.sines.shape
+        return result
 
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
@@ -118,39 +126,26 @@ class AbstractRoPE(FartsovkaModule):
         return ParameterDict(cosines=self.cosines, sines=self.sines)
 
 
-@dataclass
-class AbstractRoPEConfig[RoPEType: AbstractRoPE]:
-    precision: DType
-
-    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> RoPEType:
-        raise NotImplementedError
+class UnscaledRoPEConfig(RoPEConfigBase):
+    pass
 
 
-@dataclass
-class RoPEConfig(AbstractRoPEConfig[AbstractRoPE]):
-    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> AbstractRoPE:
-        return AbstractRoPE(
-            head_dim=head_dim,
-            max_sequence_length=max_sequence_length,
-            theta=theta,
-            precision=self.precision,
-        )
+class LlamaRoPEConfig(RoPEConfigBase):
+    scaling_factor: float
+    original_context_length: int
+    low_frequency_factor: float
+    high_frequency_factor: float
 
-
-class LlamaRoPE(AbstractRoPE):
-    scaling_factor: float = eqx.field(static=True)
-    original_context_length: int = eqx.field(static=True)
-    low_frequency_factor: float = eqx.field(static=True)
-    high_frequency_factor: float = eqx.field(static=True)
-
-    def _scale_frequencies(
+    def _scale_inverse_frequencies(
         self,
-        frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " tokens"],
+        head_dim: int,  # noqa: ARG002
+        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " tokens"]:
         low_frequency_wavelength = self.original_context_length / self.low_frequency_factor
         high_frequency_wavelength = self.original_context_length / self.high_frequency_factor
 
-        wavelengths = 2 * jnp.pi / frequencies
+        wavelengths = 2 * jnp.pi / inverse_frequencies
 
         high_frequency_mask = wavelengths < high_frequency_wavelength
         low_frequency_mask = wavelengths > low_frequency_wavelength
@@ -159,111 +154,22 @@ class LlamaRoPE(AbstractRoPE):
         smoothing_factors = self.original_context_length / wavelengths - self.low_frequency_factor
         smoothing_factors = smoothing_factors / (self.high_frequency_factor - self.low_frequency_factor)
 
-        scaled_frequencies = frequencies / self.scaling_factor
-        smoothly_scaled_frequencies = smoothing_factors * frequencies + (1 - smoothing_factors) * scaled_frequencies
+        scaled_frequencies = inverse_frequencies / self.scaling_factor
+        smoothly_scaled_frequencies = (
+            smoothing_factors * inverse_frequencies + (1 - smoothing_factors) * scaled_frequencies
+        )
 
-        result = frequencies * high_frequency_mask.astype(jnp.float32)
+        result = inverse_frequencies * high_frequency_mask.astype(jnp.float32)
         result = result + smoothly_scaled_frequencies * mid_frequency_mask.astype(jnp.float32)
         result = result + scaled_frequencies * low_frequency_mask.astype(jnp.float32)
 
         return result
 
-    def __init__(
-        self,
-        *,
-        head_dim: int,
-        max_sequence_length: int,
-        theta: float,
-        precision: DType,
-        scaling_factor: float,
-        original_context_length: int,
-        low_frequency_factor: float,
-        high_frequency_factor: float,
-    ) -> None:
-        self.scaling_factor = scaling_factor
-        self.original_context_length = original_context_length
-        self.low_frequency_factor = low_frequency_factor
-        self.high_frequency_factor = high_frequency_factor
 
-        super().__init__(
-            head_dim=head_dim,
-            max_sequence_length=max_sequence_length,
-            theta=theta,
-            precision=precision,
-        )
-
-    def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
-        return PositionalEmbeddings(
-            cosines=self.cosines[timesteps],
-            sines=self.sines[timesteps],
-        )
-
-    def export_weights(self) -> ParameterDict:
-        return ParameterDict(cosines=self.cosines, sines=self.sines)
-
-
-@dataclass
-class LlamaRoPEConfig(AbstractRoPEConfig[LlamaRoPE]):
+class YARNRoPEConfig(RoPEConfigBase):
     scaling_factor: float
-    original_context_length: int
-    low_frequency_factor: float
-    high_frequency_factor: float
-
-    def __init__(
-        self,
-        *,
-        precision: DType,
-        scaling_factor: float,
-        original_context_length: int,
-        low_frequency_factor: float,
-        high_frequency_factor: float,
-    ) -> None:
-        super().__init__(precision=precision)
-
-        self.scaling_factor = scaling_factor
-        self.original_context_length = original_context_length
-        self.low_frequency_factor = low_frequency_factor
-        self.high_frequency_factor = high_frequency_factor
-
-    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> LlamaRoPE:
-        return LlamaRoPE(
-            head_dim=head_dim,
-            max_sequence_length=max_sequence_length,
-            theta=theta,
-            precision=self.precision,
-            scaling_factor=self.scaling_factor,
-            original_context_length=self.original_context_length,
-            low_frequency_factor=self.low_frequency_factor,
-            high_frequency_factor=self.high_frequency_factor,
-        )
-
-
-class YARNRoPE(AbstractRoPE):
-    scaling_factor: float = eqx.field(static=True)
-    beta_fast: float = eqx.field(static=True)
-    beta_slow: float = eqx.field(static=True)
-
-    def __init__(
-        self,
-        *,
-        head_dim: int,
-        max_sequence_length: int,
-        theta: float,
-        precision: DType,
-        scaling_factor: float,
-        beta_fast: float,
-        beta_slow: float,
-    ) -> None:
-        self.scaling_factor = scaling_factor
-        self.beta_fast = beta_fast
-        self.beta_slow = beta_slow
-
-        super().__init__(
-            head_dim=head_dim,
-            max_sequence_length=max_sequence_length,
-            theta=theta,
-            precision=precision,
-        )
+    beta_fast: float
+    beta_slow: float
 
     @classmethod
     def _find_correction_dim(cls, num_rotations: float, dim: int, base: float, max_position_embeddings: int) -> float:
@@ -293,53 +199,31 @@ class YARNRoPE(AbstractRoPE):
         ramp_func = jnp.clip(linear_func, 0, 1)
         return ramp_func
 
-    def _scale_frequencies(
+    def _scale_inverse_frequencies(
         self,
-        frequencies: Float[Array, " tokens"],
+        inverse_frequencies: Float[Array, " tokens"],
+        head_dim: int,
+        max_sequence_length: int,
     ) -> Float[Array, " tokens"]:
-        scaled_frequencies = frequencies / self.scaling_factor
+        scaled_frequencies = inverse_frequencies / self.scaling_factor
 
         low, high = self._find_correction_range(
             self.beta_fast,
             self.beta_slow,
-            self.head_dim,
-            self.theta,
-            self.max_sequence_length,
+            head_dim,
+            self.base,
+            max_sequence_length,
         )
 
         # Get n-dimensional rotational scaling corrected for extrapolation
-        smoothing_factor = 1 - self._linear_ramp_factor(low, high, self.head_dim // 2)
-        return scaled_frequencies * (1 - smoothing_factor) + frequencies * smoothing_factor
+        smoothing_factor = 1 - self._linear_ramp_factor(low, high, head_dim // 2)
+        return scaled_frequencies * (1 - smoothing_factor) + inverse_frequencies * smoothing_factor
 
     @property
     def attention_scaling_factor(self) -> float:
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 
-class YARNRoPEConfig(AbstractRoPEConfig[YARNRoPE]):
-    scaling_factor: float
-    beta_fast: float
-    beta_slow: float
+RoPEConfig = UnscaledRoPEConfig | LlamaRoPEConfig | YARNRoPEConfig
 
-    def __init__(self, *, precision: DType, scaling_factor: float, beta_fast: float, beta_slow: float) -> None:
-        super().__init__(precision=precision)
-
-        self.scaling_factor = scaling_factor
-        self.beta_fast = beta_fast
-        self.beta_slow = beta_slow
-
-    def __call__(self, head_dim: int, max_sequence_length: int, theta: float) -> YARNRoPE:
-        return YARNRoPE(
-            head_dim=head_dim,
-            max_sequence_length=max_sequence_length,
-            theta=theta,
-            precision=self.precision,
-            scaling_factor=self.scaling_factor,
-            beta_fast=self.beta_fast,
-            beta_slow=self.beta_slow,
-        )
-
-
-RoPEConfigType = RoPEConfig | LlamaRoPEConfig | YARNRoPEConfig
-
-register_config_union(RoPEConfigType)
+register_config_union(RoPEConfig)

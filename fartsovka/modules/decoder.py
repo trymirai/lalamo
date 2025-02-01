@@ -5,18 +5,16 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from .activations import Activation
-from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
-from .decoder_layer import AbstractDecoderLayer, AbstractDecoderLayerConfig, DecoderLayerConfigType
-from .embedding import AbstractEmbedding, AbstractEmbeddingConfig, EmbeddingConfigType
+from .common import FartsovkaModule, ParameterDict
+from .decoder_layer import DecoderLayer, DecoderLayerConfig
+from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
 from .normalization import RMSNorm, RMSNormConfig
-from .rope import AbstractRoPE, AbstractRoPEConfig, RoPEConfigType
+from .rope import RoPE, RoPEConfig
 
 __all__ = [
     "Decoder",
     "DecoderConfig",
-    "DecoderConfigType",
     "DecoderOutput",
 ]
 
@@ -26,78 +24,82 @@ class DecoderOutput(NamedTuple):
     kv_cache: list[KVCacheLayerSlice] | None = None
 
 
-class Decoder[
-    EmbeddingType: AbstractEmbedding,
-    DecoderLayerType: AbstractDecoderLayer,
-    RoPEType: AbstractRoPE,
-](FartsovkaModule):
-    embedding: EmbeddingType
-    rope: AbstractRoPE
-    layers: list[DecoderLayerType]
-    output_norm: RMSNorm
+@dataclass
+class DecoderConfig:
+    embedding_config: EmbeddingConfig
+    rope_config: RoPEConfig
+    layer_config: DecoderLayerConfig
+    output_norm_config: RMSNormConfig
 
-    def __init__(
+    vocab_dim: int
+    model_dim: int
+    hidden_dim: int
+    num_heads: int
+    num_groups: int
+    head_dim: int
+    num_layers: int
+    use_qkv_bias: bool
+    sliding_window_sizes: tuple[int | None, ...] | None
+    context_length: int
+
+    def __post_init__(self) -> None:
+        if self.sliding_window_sizes is None:
+            return
+        if len(self.sliding_window_sizes) != self.num_layers:
+            raise ValueError(
+                f"Number of sliding window sizes {len(self.sliding_window_sizes)} does not match"
+                f" the number of layers {self.num_layers}",
+            )
+
+    def random_init(
         self,
         *,
-        num_layers: int,
-        embedding_config: AbstractEmbeddingConfig[EmbeddingType],
-        rope_config: AbstractRoPEConfig[RoPEType],
-        layer_config: AbstractDecoderLayerConfig[DecoderLayerType],
-        output_norm_config: RMSNormConfig,
-        vocab_dim: int,
-        model_dim: int,
-        hidden_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        embedding_input_scale: float | None,
-        output_logits_soft_cap: float | None,
-        activation: Activation,
-        use_mlp_bias: bool,
-        use_attention_qkv_bias: bool,
-        use_attention_out_bias: bool,
-        attention_scale: float | None,
-        attention_logit_soft_cap: float | None,
-        sliding_window_sizes: list[int | None] | None,
-        rope_theta: float,
-        max_sequence_length: int,
-        eps: float,
         key: PRNGKeyArray,
-    ) -> None:
-        super().__init__()
-        not_none_sliding_window_sizes = sliding_window_sizes or [None] * num_layers
-
+    ) -> "Decoder":
         embedding_key, layers_key = jax.random.split(key)
-        layer_keys = jax.random.split(layers_key, num_layers)
-
-        self.embedding = embedding_config(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=embedding_input_scale,
-            logits_soft_cap=output_logits_soft_cap,
+        embedding = self.embedding_config.random_init(
+            vocab_dim=self.vocab_dim,
+            model_dim=self.model_dim,
             key=embedding_key,
         )
-        self.rope = rope_config(head_dim, max_sequence_length, theta=rope_theta)
-        self.layers = [
-            layer_config(
-                model_dim=model_dim,
-                hidden_dim=hidden_dim,
-                num_heads=num_heads,
-                num_groups=num_groups,
-                head_dim=head_dim,
-                activation=activation,
-                use_attention_qkv_bias=use_attention_qkv_bias,
-                use_attention_out_bias=use_attention_out_bias,
-                use_mlp_bias=use_mlp_bias,
-                attention_scale=attention_scale,
-                attention_logit_soft_cap=attention_logit_soft_cap,
+        rope = self.rope_config.init(
+            head_dim=self.head_dim,
+            num_timesteps=self.context_length,
+        )
+
+        if self.sliding_window_sizes is None:
+            sliding_window_sizes = [None] * self.num_layers
+        else:
+            sliding_window_sizes = self.sliding_window_sizes
+        layers_keys = jax.random.split(layers_key, self.num_layers)
+        layers = tuple(
+            self.layer_config.random_init(
+                model_dim=self.model_dim,
+                hidden_dim=self.hidden_dim,
+                num_heads=self.num_heads,
+                num_groups=self.num_groups,
+                head_dim=self.head_dim,
+                attention_scale=None,
                 sliding_window_size=sliding_window_size,
-                eps=eps,
-                key=layer_key,
+                key=key,
             )
-            for layer_key, sliding_window_size in zip(layer_keys, not_none_sliding_window_sizes, strict=True)
-        ]
-        self.output_norm = output_norm_config(model_dim, eps)
+            for sliding_window_size, key in zip(sliding_window_sizes, layers_keys, strict=True)
+        )
+        output_norm = self.output_norm_config.init(self.model_dim)
+        return Decoder(
+            self,
+            embedding=embedding,
+            rope=rope,
+            layers=layers,
+            output_norm=output_norm,
+        )
+
+
+class Decoder(FartsovkaModule[DecoderConfig]):
+    embedding: EmbeddingBase
+    rope: RoPE
+    layers: tuple[DecoderLayer, ...]
+    output_norm: RMSNorm
 
     def __call__(
         self,
@@ -132,72 +134,3 @@ class Decoder[
             layers=[layer.export_weights() for layer in self.layers],
             output_norm=self.output_norm.export_weights(),
         )
-
-
-@dataclass
-class DecoderConfig[
-    EmbeddingType: AbstractEmbedding,
-    DecoderLayerType: AbstractDecoderLayer,
-    RoPEType: AbstractRoPE,
-]:
-    embedding_config: EmbeddingConfigType
-    rope_config: RoPEConfigType
-    layer_config: DecoderLayerConfigType
-    output_norm_config: RMSNormConfig
-
-    num_layers: int
-    vocab_dim: int
-    model_dim: int
-    hidden_dim: int
-    num_heads: int
-    num_groups: int
-    head_dim: int
-    embedding_input_scale: float | None
-    output_logits_soft_cap: float | None
-    activation: Activation
-    use_mlp_bias: bool
-    use_attention_qkv_bias: bool
-    use_attention_out_bias: bool
-    attention_scale: float | None
-    attention_logit_soft_cap: float | None
-    sliding_window_sizes: list[int | None] | None
-    rope_theta: float
-    max_sequence_length: int
-    eps: float
-
-    def __call__(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> Decoder[EmbeddingType, DecoderLayerType, RoPEType]:
-        return Decoder(
-            num_layers=self.num_layers,
-            embedding_config=self.embedding_config,  # type: ignore
-            rope_config=self.rope_config,
-            layer_config=self.layer_config,  # type: ignore
-            output_norm_config=self.output_norm_config,
-            vocab_dim=self.vocab_dim,
-            model_dim=self.model_dim,
-            hidden_dim=self.hidden_dim,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            embedding_input_scale=self.embedding_input_scale,
-            output_logits_soft_cap=self.output_logits_soft_cap,
-            activation=self.activation,
-            use_mlp_bias=self.use_mlp_bias,
-            use_attention_qkv_bias=self.use_attention_qkv_bias,
-            use_attention_out_bias=self.use_attention_out_bias,
-            attention_scale=self.attention_scale,
-            attention_logit_soft_cap=self.attention_logit_soft_cap,
-            sliding_window_sizes=self.sliding_window_sizes,
-            rope_theta=self.rope_theta,
-            max_sequence_length=self.max_sequence_length,
-            eps=self.eps,
-            key=key,
-        )
-
-
-DecoderConfigType = DecoderConfig | DummyUnionMember
-
-register_config_union(DecoderConfigType)

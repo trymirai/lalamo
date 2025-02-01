@@ -8,68 +8,16 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, ParameterDict
 from .kv_cache import KVCacheLayerSlice
-from .linear import AbstractLinearConfig, LinearBase, LinearConfig
+from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
 from .utils import apply_soft_capping
 
 __all__ = [
-    "AttentionBase",
-    "AttentionConfigBase",
     "Attention",
     "AttentionConfig",
-    "AttentionConfigType",
 ]
-
-
-class AttentionOutput(NamedTuple):
-    attention_output: Float[Array, "suffix_tokens channels"]
-    kv_cache: KVCacheLayerSlice | None = None
-
-
-class AttentionBase(FartsovkaModule):
-    model_dim: int = eqx.field(static=True)
-    num_heads: int = eqx.field(static=True)
-    num_groups: int = eqx.field(static=True)
-    head_dim: int = eqx.field(static=True)
-
-    scale: float | None = eqx.field(static=True)
-    logit_soft_cap: float | None = eqx.field(static=True)
-    sliding_window_size: int | None = eqx.field(static=True)
-
-    @property
-    def group_dim(self) -> int:
-        return self.num_heads // self.num_groups
-
-    def __call__(
-        self,
-        x: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
-        kv_cache: KVCacheLayerSlice | None = None,
-        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
-        return_updated_kv_cache: bool = False,
-    ) -> AttentionOutput:
-        raise NotImplementedError
-
-
-@dataclass
-class AttentionConfigBase[AttentionType: AttentionBase]:
-    def __call__(
-        self,
-        *,
-        model_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        scale: float | None,
-        logit_soft_cap: float | None,
-        sliding_window_size: int | None,
-        use_qkv_bias: bool,
-        use_out_bias: bool,
-        key: PRNGKeyArray,
-    ) -> AttentionType:
-        raise NotImplementedError
 
 
 def _repeat_kv(
@@ -132,40 +80,115 @@ def _soft_capped_attention_kernel(
     )
 
 
-class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase):
-    qkv_projection: QKVProjType
-    out_projection: OutProjType
+class AttentionOutput(NamedTuple):
+    attention_output: Float[Array, "suffix_tokens channels"]
+    kv_cache: KVCacheLayerSlice | None = None
 
-    def __init__(
+
+@dataclass
+class AttentionConfig:
+    qkv_projection_config: LinearConfig
+    out_projection_config: LinearConfig
+
+    logit_soft_cap: float | None
+    sliding_window_size: int | None
+    use_qkv_bias: bool
+    use_out_bias: bool
+
+    def random_init(
         self,
-        *,
-        qkv_projection_config: AbstractLinearConfig[QKVProjType],
-        out_projection_config: AbstractLinearConfig[OutProjType],
         model_dim: int,
         num_heads: int,
         num_groups: int,
         head_dim: int,
         scale: float | None,
-        logit_soft_cap: float | None,
         sliding_window_size: int | None,
-        use_qkv_bias: bool,
-        use_out_bias: bool,
+        *,
         key: PRNGKeyArray,
-    ) -> None:
+    ) -> "Attention":
         qkv_key, out_key = jax.random.split(key)
-        super().__init__(model_dim, num_heads, num_groups, head_dim, scale, logit_soft_cap, sliding_window_size)
-        self.qkv_projection = qkv_projection_config(
-            model_dim,
-            (num_heads * head_dim, num_groups * head_dim, num_groups * head_dim),
+        qkv_projection = self.qkv_projection_config.random_init(
+            input_dim=model_dim,
+            output_dims=(
+                num_heads * head_dim,
+                num_groups * head_dim,
+                num_groups * head_dim,
+            ),
+            has_biases=self.use_qkv_bias,
             key=qkv_key,
-            use_bias=use_qkv_bias,
         )
-        self.out_projection = out_projection_config(
+        out_projection = self.out_projection_config.random_init(
             num_heads * head_dim,
             (model_dim,),
+            has_biases=self.use_out_bias,
             key=out_key,
-            use_bias=use_out_bias,
         )
+        return Attention(
+            self,
+            qkv_projection=qkv_projection,
+            out_projection=out_projection,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            scale=scale,
+            sliding_window_size=sliding_window_size,
+        )
+
+
+class Attention(FartsovkaModule[AttentionConfig]):
+    qkv_projection: LinearBase
+    out_projection: LinearBase
+
+    num_heads: int = eqx.field(static=True)
+    num_groups: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+
+    scale: float | None = eqx.field(static=True)
+    sliding_window_size: int | None = eqx.field(static=True)
+
+    @property
+    def model_dim(self) -> int:
+        return self.qkv_projection.input_dim
+
+    @property
+    def group_size(self) -> int:
+        return self.num_heads // self.num_groups
+
+    @property
+    def use_sliding_window(self) -> bool:
+        return self.sliding_window_size is not None
+
+    def __post_init__(self) -> None:
+        if self.num_heads % self.num_groups != 0:
+            raise ValueError(
+                "Number of heads must be divisible by the number of groups,"
+                f" got {self.num_heads} heads and {self.num_groups} groups",
+            )
+        if self.out_projection.input_dim != self.num_heads * self.head_dim:
+            raise ValueError(
+                f"Output projection input dimension must be num_heads * head_dim"
+                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
+                f" got {self.out_projection.input_dim}",
+            )
+        q_output_dim, k_output_dim, v_output_dim = self.qkv_projection.output_dims
+        if q_output_dim != self.num_heads * self.head_dim:
+            raise ValueError(
+                f"Query projection output dimension must be num_heads * head_dim"
+                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
+                f" got {q_output_dim}",
+            )
+        if k_output_dim != self.num_groups * self.head_dim:
+            raise ValueError(
+                f"Key projection output dimension must be num_groups * head_dim"
+                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
+                f" got {k_output_dim}",
+            )
+        if v_output_dim != self.num_groups * self.head_dim:
+            raise ValueError(
+                f"Value projection output dimension must be num_groups * head_dim"
+                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
+                f" got {v_output_dim}",
+            )
 
     def __call__(
         self,
@@ -206,14 +229,14 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
             all_keys = keys
             all_values = values
 
-        if self.logit_soft_cap is not None:
+        if self.config.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
                 queries,
                 all_keys,
                 all_values,
                 mask=mask,
                 scale=self.scale,
-                logit_soft_cap=self.logit_soft_cap,
+                logit_soft_cap=self.config.logit_soft_cap,
                 local_window_size=self.sliding_window_size,
             )
         else:
@@ -247,46 +270,3 @@ class Attention[QKVProjType: LinearBase, OutProjType: LinearBase](AttentionBase)
             qkv_proj=self.qkv_projection.export_weights(),
             out_proj=self.out_projection.export_weights(),
         )
-
-
-@dataclass
-class AttentionConfig[QKVProjType: LinearBase, OutProjType: LinearBase](
-    AttentionConfigBase[Attention[QKVProjType, OutProjType]],
-):
-    qkv_projection_config: LinearConfig
-    out_projection_config: LinearConfig
-
-    def __call__(
-        self,
-        *,
-        model_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        scale: float | None,
-        logit_soft_cap: float | None,
-        sliding_window_size: int | None,
-        use_qkv_bias: bool,
-        use_out_bias: bool,
-        key: PRNGKeyArray,
-    ) -> Attention[QKVProjType, OutProjType]:
-        return Attention(
-            qkv_projection_config=self.qkv_projection_config,  # type: ignore
-            out_projection_config=self.out_projection_config,  # type: ignore
-            model_dim=model_dim,
-            num_heads=num_heads,
-            num_groups=num_groups,
-            head_dim=head_dim,
-            scale=scale,
-            logit_soft_cap=logit_soft_cap,
-            sliding_window_size=sliding_window_size,
-            use_qkv_bias=use_qkv_bias,
-            use_out_bias=use_out_bias,
-            key=key,
-        )
-
-
-AttentionConfigType = AttentionConfig | DummyUnionMember
-
-
-register_config_union(AttentionConfigType)
