@@ -5,7 +5,9 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from .common import FartsovkaModule, ParameterDict
+from fartsovka.common import ParameterDict
+
+from .common import FartsovkaModule
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
@@ -31,7 +33,7 @@ class DecoderConfig:
     layer_config: DecoderLayerConfig
     output_norm_config: RMSNormConfig
 
-    vocab_dim: int
+    vocab_size: int
     model_dim: int
     hidden_dim: int
     num_heads: int
@@ -58,7 +60,7 @@ class DecoderConfig:
     ) -> "Decoder":
         embedding_key, layers_key = jax.random.split(key)
         embedding = self.embedding_config.random_init(
-            vocab_dim=self.vocab_dim,
+            vocab_size=self.vocab_size,
             model_dim=self.model_dim,
             key=embedding_key,
         )

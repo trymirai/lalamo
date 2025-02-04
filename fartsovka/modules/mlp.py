@@ -3,8 +3,10 @@ from dataclasses import dataclass
 import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from fartsovka.common import ParameterDict
+
 from .activations import Activation
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule
 from .linear import LinearBase, LinearConfig
 
 __all__ = ["MLP", "MLPConfig"]

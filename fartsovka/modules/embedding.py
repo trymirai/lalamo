@@ -4,10 +4,10 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DType
+from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, register_config_union
 from .utils import apply_soft_capping
 
 __all__ = [
@@ -29,7 +29,7 @@ class EmbeddingConfigBase:
 
     def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
         *,
         key: PRNGKeyArray,
@@ -42,6 +42,14 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](FartsovkaModule[ConfigT]):
         raise NotImplementedError
 
     def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
+        raise NotImplementedError
+
+    @property
+    def vocab_size(self) -> int:
+        raise NotImplementedError
+
+    @property
+    def model_dim(self) -> int:
         raise NotImplementedError
 
     def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens model_dim"]:
@@ -63,12 +71,12 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
 
     def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
         *,
         key: PRNGKeyArray,
     ) -> "TiedEmbedding":
-        weights = jax.random.normal(key, (vocab_dim, model_dim), dtype=self.precision)
+        weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.precision)
         return TiedEmbedding(config=self, weights=weights)
 
 
@@ -107,14 +115,14 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 
     def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
         *,
         key: PRNGKeyArray,
     ) -> "UntiedEmbedding":
         input_key, output_key = jax.random.split(key)
-        input_weights = jax.random.normal(input_key, (vocab_dim, model_dim), dtype=self.precision)
-        output_weights = jax.random.normal(output_key, (model_dim, vocab_dim), dtype=self.precision)
+        input_weights = jax.random.normal(input_key, (vocab_size, model_dim), dtype=self.precision)
+        output_weights = jax.random.normal(output_key, (model_dim, vocab_size), dtype=self.precision)
         return UntiedEmbedding(
             config=self,
             input_weights=input_weights,
@@ -125,6 +133,16 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_weights: Float[Array, "token_ids channels"]
     output_weights: Float[Array, "channels token_ids"]
+
+    @property
+    def model_dim(self) -> int:
+        _, model_dim = self.input_weights.shape
+        return model_dim
+
+    @property
+    def vocab_size(self) -> int:
+        vocab_size, _ = self.input_weights.shape
+        return vocab_size
 
     def __post_init__(self) -> None:
         if self.config.precision != self.input_weights.dtype:
@@ -169,7 +187,7 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 
     def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
         *,
         key: PRNGKeyArray,
@@ -177,8 +195,8 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
         min_val, max_val = self.embedding_quantization_mode.range
         min_abs_val = min(abs(min_val), abs(max_val))
         scale = 1 / min_abs_val
-        scales = scale * jnp.ones(vocab_dim, dtype=self.embedding_quantization_mode.dtype)
-        weights = jax.random.normal(key, (vocab_dim, model_dim), dtype=self.embedding_quantization_mode.dtype)
+        scales = scale * jnp.ones(vocab_size, dtype=self.activation_precision)
+        weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.activation_precision)
         weights = quantize_weights(weights * min_abs_val, self.embedding_quantization_mode)
         return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
 
@@ -186,6 +204,16 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
     weights: Float[Array, "token_ids channels"]
     scales: Float[Array, " token_ids"]
+
+    @property
+    def model_dim(self) -> int:
+        _, model_dim = self.weights.shape
+        return model_dim
+
+    @property
+    def vocab_size(self) -> int:
+        vocab_size, _ = self.weights.shape
+        return vocab_size
 
     def __post_init__(self) -> None:
         if self.weights.dtype != self.config.activation_precision:

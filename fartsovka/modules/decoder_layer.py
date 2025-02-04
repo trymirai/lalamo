@@ -5,8 +5,10 @@ import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
+from fartsovka.common import ParameterDict
+
 from .attention import Attention, AttentionConfig
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig

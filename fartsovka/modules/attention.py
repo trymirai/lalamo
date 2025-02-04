@@ -8,7 +8,9 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
-from .common import FartsovkaModule, ParameterDict
+from fartsovka.common import ParameterDict
+
+from .common import FartsovkaModule
 from .kv_cache import KVCacheLayerSlice
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -91,8 +93,8 @@ class AttentionConfig:
     out_projection_config: LinearConfig
 
     logit_soft_cap: float | None
-    use_qkv_bias: bool
-    use_out_bias: bool
+    has_qkv_biases: bool
+    has_out_biases: bool
 
     def random_init(
         self,
@@ -113,13 +115,13 @@ class AttentionConfig:
                 num_groups * head_dim,
                 num_groups * head_dim,
             ),
-            has_biases=self.use_qkv_bias,
+            has_biases=self.has_qkv_biases,
             key=qkv_key,
         )
         out_projection = self.out_projection_config.random_init(
             num_heads * head_dim,
             (model_dim,),
-            has_biases=self.use_out_bias,
+            has_biases=self.has_out_biases,
             key=out_key,
         )
         return Attention(
@@ -158,6 +160,16 @@ class Attention(FartsovkaModule[AttentionConfig]):
         return self.sliding_window_size is not None
 
     def __post_init__(self) -> None:
+        if self.qkv_projection.has_biases != self.config.has_qkv_biases:
+            raise ValueError(
+                f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"
+                f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
+            )
+        if self.out_projection.has_biases != self.config.has_out_biases:
+            raise ValueError(
+                f"Output projection has_biases {self.out_projection.has_biases} does not match"
+                f" the specified config has_out_biases {self.config.has_out_biases}",
+            )
         if self.num_heads % self.num_groups != 0:
             raise ValueError(
                 "Number of heads must be divisible by the number of groups,"

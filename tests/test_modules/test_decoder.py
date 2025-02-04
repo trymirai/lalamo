@@ -6,10 +6,7 @@ import torch
 import transformers
 from jax import numpy as jnp
 
-from fartsovka.models.gemma2 import Gemma2Decoder
-from fartsovka.models.llama import LlamaDecoder
-from fartsovka.models.qlora_llama import QLoRALlamaDecoder
-from fartsovka.models.qwen2 import Qwen2Decoder
+from fartsovka.modules import Decoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -61,7 +58,7 @@ NUM_LAYERS_IN_TRUNCATED_MODELS = [0, 1, 3, 7]
 
 def test_llama(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: LlamaDecoder,
+    fartsovka_llama: Decoder,
 ) -> None:
     fs_decoder = fartsovka_llama
     fs_decoder_forward = checkify_forward(fs_decoder)
@@ -98,7 +95,7 @@ def test_llama(
 
 def test_qwen2(
     huggingface_qwen25: transformers.Qwen2Model,
-    fartsovka_qwen25: Qwen2Decoder,
+    fartsovka_qwen25: Decoder,
 ) -> None:
     fs_decoder = fartsovka_qwen25
     fs_decoder_forward = checkify_forward(fs_decoder)
@@ -135,7 +132,7 @@ def test_qwen2(
 
 def test_gemma2(
     huggingface_gemma2: transformers.Gemma2Model,
-    fartsovka_gemma2: Gemma2Decoder,
+    fartsovka_gemma2: Decoder,
 ) -> None:
     fs_decoder = fartsovka_gemma2
     fs_decoder_forward = checkify_forward(fs_decoder)
@@ -170,7 +167,7 @@ def test_gemma2(
 @pytest.mark.parametrize("num_layers_in_truncated_model", NUM_LAYERS_IN_TRUNCATED_MODELS)
 def test_qlora_decoder_truncated(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlamaDecoder,
+    fartsovka_qlora_llama: Decoder,
     num_layers_in_truncated_model: int,
 ) -> None:
     fs_decoder_big = fartsovka_qlora_llama
@@ -204,7 +201,7 @@ def test_qlora_decoder_truncated(
 
 def test_qlora_decoder(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlamaDecoder,
+    fartsovka_qlora_llama: Decoder,
 ) -> None:
     fs_decoder = fartsovka_qlora_llama
     fs_decoder_forward = checkify_forward(fs_decoder)

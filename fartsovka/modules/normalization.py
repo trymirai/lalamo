@@ -4,9 +4,9 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Scalar
 
-from fartsovka.common import DType
+from fartsovka.common import DType, ParameterDict
 
-from .common import FartsovkaModule, ParameterDict
+from .common import FartsovkaModule
 
 __all__ = [
     "RMSNorm",

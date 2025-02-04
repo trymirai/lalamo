@@ -1,16 +1,20 @@
 from dataclasses import dataclass
 
+from jaxtyping import Array
+
 from fartsovka.common import DType
+from fartsovka.importers.loaders import load_executorch
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
+    Decoder,
     DecoderConfig,
     DecoderLayerConfig,
     LlamaRoPEConfig,
     MLPConfig,
     QLoRALinearConfig,
+    QuantizedTiedEmbeddingConfig,
     RMSNormConfig,
-    TiedEmbeddingConfig,
 )
 from fartsovka.quantization import QuantizationMode
 
@@ -44,7 +48,18 @@ class LoraConfig:
 
 
 @dataclass
-class ETLlamaConfig(ForeignConfig):
+class ExecutorchConfig(ForeignConfig):
+    @classmethod
+    def _load_weights(
+        cls,
+        model: Decoder,
+        weights_dict: dict[str, Array],
+    ) -> Decoder:
+        return load_executorch(model, weights_dict)
+
+
+@dataclass
+class ETLlamaConfig(ExecutorchConfig):
     dim: int
     n_layers: int
     n_heads: int
@@ -75,10 +90,12 @@ class ETLlamaConfig(ForeignConfig):
         if self.quantization_args is None:
             raise ValueError("Quantization arguments are required for QLoRA models.")
 
-        embedding_config = TiedEmbeddingConfig(
+        embedding_config = QuantizedTiedEmbeddingConfig(
             input_scale=None,
             logits_soft_cap=None,
-            precision=activation_precision,
+            embedding_quantization_mode=EMBEDDING_QUANTIZATION_MODE,
+            activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
+            activation_precision=activation_precision,
         )
         rope_config = LlamaRoPEConfig(
             precision=activation_precision,
@@ -106,8 +123,8 @@ class ETLlamaConfig(ForeignConfig):
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             logit_soft_cap=None,
-            use_qkv_bias=False,
-            use_out_bias=False,
+            has_qkv_biases=False,
+            has_out_biases=False,
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
@@ -126,7 +143,7 @@ class ETLlamaConfig(ForeignConfig):
             rope_config=rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_dim=self.vocab_size,
+            vocab_size=self.vocab_size,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),
             num_heads=self.n_heads,

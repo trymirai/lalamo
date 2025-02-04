@@ -8,10 +8,10 @@ from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DType
+from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, register_config_union
 
 __all__ = [
     "LinearBase",
@@ -400,7 +400,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
             raise ValueError(
                 f"Expected {self.num_outputs} LORA up weights, got {len(self.lora_up_weights)}.",
             )
-        for lora_up_weight in self.lora_up_weights:
+        for lora_up_weight, output_dim in zip(self.lora_up_weights, self.output_dims, strict=True):
             if lora_up_weight.dtype != self.config.activation_precision:
                 raise ValueError(
                     f"LORA up weight dtype ({lora_up_weight.dtype}) is not equal to specified activation precision"
@@ -408,7 +408,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                     " Quantized layers require parameter dtypes to be equal to the activation precision.",
                 )
             lora_up_output_dim, lora_up_input_dim = lora_up_weight.shape
-            if lora_up_output_dim != self.output_dims:
+            if lora_up_output_dim != output_dim:
                 raise ValueError(
                     f"Number of output channels in LORA up weights ({lora_up_output_dim}) is not"
                     f" equal to number of output dims ({self.output_dims}).",

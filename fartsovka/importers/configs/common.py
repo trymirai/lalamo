@@ -4,9 +4,12 @@ from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
+import jax
+from jaxtyping import Array
 
 from fartsovka.common import DType
 from fartsovka.modules import (
+    Decoder,
     DecoderConfig,
 )
 
@@ -37,3 +40,22 @@ class ForeignConfig:
         accumulation_precision: DType,
     ) -> DecoderConfig:
         raise NotImplementedError
+
+    @classmethod
+    def _load_weights(
+        cls,
+        model: Decoder,
+        weights_dict: dict[str, Array],
+    ) -> Decoder:
+        raise NotImplementedError
+
+    def load_model(
+        self,
+        context_length: int,
+        activation_precision: DType,
+        accumulation_precision: DType,
+        weights_dict: dict[str, Array],
+    ) -> Decoder:
+        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
+        model = config.random_init(key=jax.random.PRNGKey(0))
+        return self._load_weights(model, weights_dict)

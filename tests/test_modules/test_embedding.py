@@ -2,8 +2,7 @@ import jax
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.models.llama import LlamaDecoder
-from fartsovka.models.qlora_llama import QLoRALlamaDecoder
+from fartsovka.modules import Decoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -11,7 +10,7 @@ from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, 
 
 def test_embedding(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: LlamaDecoder,
+    fartsovka_llama: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     hf_layer = huggingface_llama.model.embed_tokens
@@ -19,12 +18,12 @@ def test_embedding(
     fs_embed = checkify_forward(fs_layer.embed)
     fs_readout = checkify_forward(fs_layer.readout)
 
-    vocab_dim = fs_layer.vocab_dim
+    vocab_size = fs_layer.vocab_size
     model_dim = fs_layer.model_dim
 
     # Generate random token IDs
     token_key, _ = jax.random.split(rng_key)
-    token_ids = jax.random.randint(token_key, (64,), 0, vocab_dim)
+    token_ids = jax.random.randint(token_key, (64,), 0, vocab_size)
     token_ids_torch = to_torch(token_ids).unsqueeze(0)
 
     # Test embedding
@@ -52,7 +51,7 @@ def test_embedding(
 
 def test_quantized_embedding(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlamaDecoder,
+    fartsovka_qlora_llama: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     fs_layer = fartsovka_qlora_llama.embedding
@@ -60,12 +59,12 @@ def test_quantized_embedding(
     fs_readout = checkify_forward(fs_layer.readout)
     et_layer = executorch_llama.tok_embeddings
 
-    vocab_dim = fs_layer.vocab_dim
+    vocab_size = fs_layer.vocab_size
     model_dim = fs_layer.model_dim
 
     # Generate random token IDs
     token_key, _ = jax.random.split(rng_key)
-    token_ids = jax.random.randint(token_key, (64,), 0, vocab_dim)
+    token_ids = jax.random.randint(token_key, (64,), 0, vocab_size)
     token_ids_torch = to_torch(token_ids).unsqueeze(0)
 
     # Test embedding

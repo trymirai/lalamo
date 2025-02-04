@@ -1,10 +1,14 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
+
+from jaxtyping import Array
 
 from fartsovka.common import DType
+from fartsovka.importers.loaders import load_huggingface
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
+    Decoder,
     DecoderConfig,
     DecoderLayerConfig,
     FullPrecisionLinearConfig,
@@ -21,6 +25,19 @@ __all__ = ["HFLlamaConfig", "HFQwen2Config", "HFGemma2Config"]
 
 
 @dataclass
+class HuggingFaceConfig(ForeignConfig):
+    _add_one_to_rms_norm_weights: ClassVar[bool] = False
+
+    @classmethod
+    def _load_weights(
+        cls,
+        model: Decoder,
+        weights_dict: dict[str, Array],
+    ) -> Decoder:
+        return load_huggingface(model, weights_dict, cls._add_one_to_rms_norm_weights)
+
+
+@dataclass
 class HFRopeScalingConfig:
     factor: float
     high_freq_factor: float
@@ -30,7 +47,7 @@ class HFRopeScalingConfig:
 
 
 @dataclass
-class HFLlamaConfig(ForeignConfig):
+class HFLlamaConfig(HuggingFaceConfig):
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
@@ -89,8 +106,8 @@ class HFLlamaConfig(ForeignConfig):
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             logit_soft_cap=None,
-            use_qkv_bias=self.attention_bias,
-            use_out_bias=False,
+            has_qkv_biases=self.attention_bias,
+            has_out_biases=False,
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
@@ -109,7 +126,7 @@ class HFLlamaConfig(ForeignConfig):
             rope_config=rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_dim=self.vocab_size,
+            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -123,7 +140,7 @@ class HFLlamaConfig(ForeignConfig):
 
 
 @dataclass
-class HFQwen2Config(ForeignConfig):
+class HFQwen2Config(HuggingFaceConfig):
     architectures: list[Literal["Qwen2ForCausalLM"]]
     attention_dropout: float
     bos_token_id: int | list[int]
@@ -185,8 +202,8 @@ class HFQwen2Config(ForeignConfig):
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             logit_soft_cap=None,
-            use_qkv_bias=True,
-            use_out_bias=False,
+            has_qkv_biases=True,
+            has_out_biases=False,
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
@@ -205,7 +222,7 @@ class HFQwen2Config(ForeignConfig):
             rope_config=rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_dim=self.vocab_size,
+            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -219,7 +236,9 @@ class HFQwen2Config(ForeignConfig):
 
 
 @dataclass
-class HFGemma2Config(ForeignConfig):
+class HFGemma2Config(HuggingFaceConfig):
+    _add_one_to_rms_norm_weights: ClassVar[bool] = True
+
     architectures: list[Literal["Gemma2ForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
@@ -282,8 +301,8 @@ class HFGemma2Config(ForeignConfig):
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             logit_soft_cap=self.attn_logit_softcapping,
-            use_qkv_bias=self.attention_bias,
-            use_out_bias=False,
+            has_qkv_biases=self.attention_bias,
+            has_out_biases=False,
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
@@ -302,7 +321,7 @@ class HFGemma2Config(ForeignConfig):
             rope_config=rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_dim=self.vocab_size,
+            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,

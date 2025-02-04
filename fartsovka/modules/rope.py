@@ -22,9 +22,9 @@ import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
 
-from fartsovka.common import DType
+from fartsovka.common import DType, ParameterDict
 
-from .common import FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, register_config_union
 
 __all__ = [
     "PositionalEmbeddings",
@@ -117,6 +117,10 @@ class RoPE(FartsovkaModule[RoPEConfigBase]):
         return result
 
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
+        if timesteps.max() >= self.max_sequence_length or timesteps.min() < 0:
+            raise ValueError(
+                f"Positional indices are out of bounds for maximum sequence length {self.max_sequence_length}",
+            )
         return PositionalEmbeddings(
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
