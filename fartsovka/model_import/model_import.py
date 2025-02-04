@@ -8,10 +8,17 @@ import torch
 from jaxtyping import Array
 from safetensors.flax import load_file as load_safetensors
 
-from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.common import DType
 from fartsovka.modules import Decoder
 
 from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config
+
+__all__ = [
+    "ModelSpec",
+    "MODELS",
+    "REPO_TO_MODEL",
+    "import_model",
+]
 
 
 @torch.no_grad()
@@ -45,6 +52,7 @@ class WeightsType(Enum):
 
 @dataclass
 class ModelSpec:
+    name: str
     repo: str
     config_type: type[ForeignConfig]
     config_file_name: str
@@ -54,6 +62,7 @@ class ModelSpec:
 
 MODELS = [
     ModelSpec(
+        name="Llama-3.2-1B-Instruct",
         repo="meta-llama/Llama-3.2-1B-Instruct",
         config_type=HFLlamaConfig,
         config_file_name="config.json",
@@ -61,6 +70,7 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        name="Llama-3.2-1B-Instruct-QLoRA",
         repo="meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8",
         config_type=ETLlamaConfig,
         config_file_name="params.json",
@@ -68,6 +78,7 @@ MODELS = [
         weights_type=WeightsType.TORCH,
     ),
     ModelSpec(
+        name="Gemma-2-2B-Instruct",
         repo="google/gemma-2-2b-it",
         config_type=HFGemma2Config,
         config_file_name="config.json",
@@ -78,6 +89,7 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        name="Qwen2.5-1.5B-Instruct",
         repo="Qwen/Qwen2.5-1.5B-Instruct",
         config_type=HFQwen2Config,
         config_file_name="config.json",
@@ -85,6 +97,7 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        name="R1-Distill-Qwen-1.5B",
         repo="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
         config_type=HFQwen2Config,
         config_file_name="config.json",
@@ -94,7 +107,7 @@ MODELS = [
 ]
 
 
-_REPO_TO_MODEL = {model.repo: model for model in MODELS}
+REPO_TO_MODEL = {model.repo: model for model in MODELS}
 
 
 def download_weights(model_spec: ModelSpec, output_dir: Path | str | None = None) -> list[Path]:
@@ -119,15 +132,16 @@ def download_config_file(model_spec: ModelSpec, output_dir: Path | str | None = 
 
 
 def import_model(
-    model_repo: str,
+    model_spec: ModelSpec,
     *,
     context_length: int = 8192,
-    precision: DType = DEFAULT_PRECISION,
+    precision: DType | None = None,
     accumulation_precision: DType = jnp.float32,
 ) -> Decoder:
-    model_spec = _REPO_TO_MODEL[model_repo]
     config_file = download_config_file(model_spec)
     config = model_spec.config_type.from_json(config_file)
+    if precision is None:
+        precision = config.default_precision
 
     weights_paths = download_weights(model_spec)
     weights_dict = {}

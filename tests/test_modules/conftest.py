@@ -10,7 +10,7 @@ import torch
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.importers import import_model
+from fartsovka.model_import import REPO_TO_MODEL, import_model
 from fartsovka.modules import Decoder
 from tests.executorch_llama.source_transformation.lora import (
     transform_linear_for_lora_after_quantization,
@@ -45,7 +45,7 @@ def huggingface_gemma2() -> transformers.Gemma2Model:
 @pytest.fixture(scope="package")
 def fartsovka_gemma2() -> Decoder:
     model = import_model(
-        "google/gemma-2-2b-it",
+        REPO_TO_MODEL["google/gemma-2-2b-it"],
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
@@ -65,7 +65,7 @@ def huggingface_llama() -> transformers.LlamaModel:
 @pytest.fixture(scope="package")
 def fartsovka_llama() -> Decoder:
     model = import_model(
-        "meta-llama/Llama-3.2-1B-Instruct",
+        REPO_TO_MODEL["meta-llama/Llama-3.2-1B-Instruct"],
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
@@ -85,7 +85,7 @@ def huggingface_qwen25() -> transformers.Qwen2Model:
 @pytest.fixture(scope="package")
 def fartsovka_qwen25() -> Decoder:
     model = import_model(
-        "Qwen/Qwen2.5-1.5B-Instruct",
+        REPO_TO_MODEL["Qwen/Qwen2.5-1.5B-Instruct"],
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
@@ -95,7 +95,7 @@ def fartsovka_qwen25() -> Decoder:
 @pytest.fixture(scope="package")
 def fartsovka_qlora_llama() -> Decoder:
     model = import_model(
-        "meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8",
+        REPO_TO_MODEL["meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"],
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )

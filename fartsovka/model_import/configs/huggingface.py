@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
+import jax.numpy as jnp
 from jaxtyping import Array
 
 from fartsovka.common import DType
-from fartsovka.importers.loaders import load_huggingface
+from fartsovka.model_import.loaders import load_huggingface
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
@@ -27,6 +28,12 @@ __all__ = ["HFLlamaConfig", "HFQwen2Config", "HFGemma2Config"]
 @dataclass
 class HuggingFaceConfig(ForeignConfig):
     _add_one_to_rms_norm_weights: ClassVar[bool] = False
+
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
+
+    @property
+    def default_precision(self) -> DType:
+        return jnp.dtype(self.torch_dtype)
 
     @classmethod
     def _load_weights(
@@ -69,7 +76,6 @@ class HFLlamaConfig(HuggingFaceConfig):
     rope_scaling: HFRopeScalingConfig
     rope_theta: float
     tie_word_embeddings: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     transformers_version: str
     use_cache: bool
     vocab_size: int
@@ -159,7 +165,6 @@ class HFQwen2Config(HuggingFaceConfig):
     rope_theta: float
     sliding_window: int
     tie_word_embeddings: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     transformers_version: str
     use_cache: bool
     use_sliding_window: bool
@@ -263,7 +268,6 @@ class HFGemma2Config(HuggingFaceConfig):
     rms_norm_eps: float
     rope_theta: float
     sliding_window: int
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     transformers_version: str
     use_cache: bool
     vocab_size: int

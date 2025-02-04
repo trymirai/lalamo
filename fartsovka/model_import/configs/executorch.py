@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 
+import jax.numpy as jnp
 from jaxtyping import Array
 
 from fartsovka.common import DType
-from fartsovka.importers.loaders import load_executorch
+from fartsovka.model_import.loaders import load_executorch
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
@@ -49,6 +50,10 @@ class LoraConfig:
 
 @dataclass
 class ExecutorchConfig(ForeignConfig):
+    @property
+    def default_precision(self) -> DType:
+        return jnp.bfloat16
+
     @classmethod
     def _load_weights(
         cls,
