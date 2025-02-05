@@ -1,22 +1,54 @@
 import json
+from enum import Enum
 from pathlib import Path
+from typing import Annotated
 
 from safetensors.flax import save_file
-from typer import run
+from typer import Argument, Option, run
 
 from fartsovka.common import DType
 from fartsovka.model_import import REPO_TO_MODEL, import_model
 from fartsovka.modules import DecoderConfig, config_converter
 
 
+class Precision(Enum):
+    FLOAT32 = "float32"
+    FLOAT16 = "float16"
+    BFLOAT16 = "bfloat16"
+
+
 def main(
-    model_repo: str,
-    precision: str | None = None,
-    output_dir: Path | None = None,
-    context_length: int = 8192,
+    model_repo: Annotated[
+        str,
+        Argument(
+            help="Huggingface model repo. Example: 'meta-llama/Llama-3.2-1B-Instruct'",
+            show_default=False,
+            metavar="MODEL_REPO",
+        ),
+    ],
+    precision: Annotated[
+        Precision | None,
+        Option(
+            help="Precision to use for activations and non-quantized weights.",
+            show_default="Native precision of the model",
+        ),
+    ] = None,
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the converted model to.",
+            show_default="Creates a new directory with the model name",
+        ),
+    ] = None,
+    context_length: Annotated[
+        int,
+        Option(
+            help="Maximum supported context length. Used to precompute positional embeddings.",
+        ),
+    ] = 8192,
 ) -> None:
     if precision is not None:
-        precision_dtype = config_converter.structure(precision, DType)  # type: ignore
+        precision_dtype = config_converter.structure(precision.value, DType)  # type: ignore
     else:
         precision_dtype = None
 
