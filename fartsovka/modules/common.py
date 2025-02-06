@@ -28,6 +28,20 @@ def _dtype_to_str(dtype: jnp.dtype) -> str:
     return str(dtype.dtype)  # type: ignore
 
 
+def _str_to_dtype(dtype_str: str) -> jnp.dtype:
+    return {
+        "int4": jnp.int4,
+        "int8": jnp.int8,
+        "int16": jnp.int16,
+        "int32": jnp.int32,
+        "int64": jnp.int64,
+        "bfloat16": jnp.bfloat16,
+        "float16": jnp.float16,
+        "float32": jnp.float32,
+        "float64": jnp.float64,
+    }[dtype_str]
+
+
 config_converter = Converter()
 
 
@@ -38,7 +52,7 @@ config_converter.register_unstructure_hook_func(
 
 config_converter.register_structure_hook_func(
     lambda t: t in [jnp.dtype, DType],
-    jnp.dtype,
+    lambda s, _: _str_to_dtype(s),
 )
 
 
