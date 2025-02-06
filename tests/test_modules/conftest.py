@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import cattrs
+import huggingface_hub
 import jax
 import jax.numpy as jnp
 import pytest
@@ -9,16 +10,8 @@ import torch
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.importers.executorch.importer import ExecutorchModel
-from fartsovka.importers.executorch.importer import download_config_file as download_et_config
-from fartsovka.importers.executorch.importer import download_weights as download_et_weights
-from fartsovka.importers.executorch.importer import import_model as import_et
-from fartsovka.importers.huggingface.importer import HuggingFaceModel
-from fartsovka.importers.huggingface.importer import import_model as import_hf
-from fartsovka.models.gemma2 import Gemma2Decoder
-from fartsovka.models.llama import LlamaDecoder
-from fartsovka.models.qlora_llama import QLoRALlamaDecoder
-from fartsovka.models.qwen2 import Qwen2Decoder
+from fartsovka.model_import import REPO_TO_MODEL, import_model
+from fartsovka.modules import Decoder
 from tests.executorch_llama.source_transformation.lora import (
     transform_linear_for_lora_after_quantization,
 )
@@ -50,13 +43,13 @@ def huggingface_gemma2() -> transformers.Gemma2Model:
 
 
 @pytest.fixture(scope="package")
-def fartsovka_gemma2() -> Gemma2Decoder:
-    model = import_hf(
-        HuggingFaceModel.GEMMA2_2B_INSTRUCT,
+def fartsovka_gemma2() -> Decoder:
+    model = import_model(
+        REPO_TO_MODEL["google/gemma-2-2b-it"],
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
-    return model  # type: ignore
+    return model
 
 
 @pytest.fixture(scope="package")
@@ -66,6 +59,16 @@ def huggingface_llama() -> transformers.LlamaModel:
         torch_dtype=torch.float32,
     )
     model.eval()
+    return model
+
+
+@pytest.fixture(scope="package")
+def fartsovka_llama() -> Decoder:
+    model = import_model(
+        REPO_TO_MODEL["meta-llama/Llama-3.2-1B-Instruct"],
+        precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+    )
     return model
 
 
@@ -80,30 +83,20 @@ def huggingface_qwen25() -> transformers.Qwen2Model:
 
 
 @pytest.fixture(scope="package")
-def fartsovka_llama() -> LlamaDecoder:
-    model = import_hf(
-        HuggingFaceModel.LLAMA32_1B_INSTRUCT,
+def fartsovka_qwen25() -> Decoder:
+    model = import_model(
+        REPO_TO_MODEL["Qwen/Qwen2.5-1.5B-Instruct"],
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
-    return model  # type: ignore
+    return model
 
 
 @pytest.fixture(scope="package")
-def fartsovka_qwen25() -> Qwen2Decoder:
-    model = import_hf(
-        HuggingFaceModel.QWEN25_1POINT5B_INSTRUCT,
+def fartsovka_qlora_llama() -> Decoder:
+    model = import_model(
+        REPO_TO_MODEL["meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"],
         precision=jnp.float32,
-        accumulation_precision=jnp.float32,
-    )
-    return model  # type: ignore
-
-
-@pytest.fixture(scope="package")
-def fartsovka_qlora_llama() -> QLoRALlamaDecoder:
-    model = import_et(
-        ExecutorchModel.LLAMA32_1B_INSTRUCT_QLORA,
-        activation_precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
     return model
@@ -148,8 +141,15 @@ def _load_et_config(path: str | Path) -> ETModelArgs:
 
 @pytest.fixture(scope="package")
 def executorch_llama() -> ETTransformer:
-    config_path = download_et_config(ExecutorchModel.LLAMA32_1B_INSTRUCT_QLORA)
-    weights_path = download_et_weights(ExecutorchModel.LLAMA32_1B_INSTRUCT_QLORA)
+    repo_id = "meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"
+    config_path = huggingface_hub.hf_hub_download(
+        repo_id=repo_id,
+        filename="params.json",
+    )
+    weights_path = huggingface_hub.hf_hub_download(
+        repo_id=repo_id,
+        filename="consolidated.00.pth",
+    )
     params = _load_et_config(config_path)
     model = ETTransformer(params)
 

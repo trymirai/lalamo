@@ -1,71 +1,70 @@
 from dataclasses import dataclass
 
-import equinox as eqx
 import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from fartsovka.common import ParameterDict
+
 from .activations import Activation
-from .common import DummyUnionMember, FartsovkaModule, ParameterDict, register_config_union
-from .linear import AbstractLinear, AbstractLinearConfig, LinearConfigType
+from .common import FartsovkaModule
+from .linear import LinearBase, LinearConfig
 
-__all__ = ["MLP", "AbstractMLP", "MLPConfig", "AbstractMLPConfig", "MLPConfigType"]
-
-
-class AbstractMLP(FartsovkaModule):
-    use_bias: bool = eqx.field(static=True)
-    activation: Activation = eqx.field(static=True)
-
-    def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        raise NotImplementedError
+__all__ = ["MLP", "MLPConfig"]
 
 
 @dataclass
-class AbstractMLPConfig[MLPType: AbstractMLP]:
-    def __call__(
-        self,
-        *,
-        model_dim: int,
-        hidden_dim: int,
-        use_bias: bool,
-        activation: Activation,
-        key: PRNGKeyArray,
-    ) -> MLPType:
-        raise NotImplementedError
+class MLPConfig:
+    linear_config: LinearConfig
+    activation: Activation
 
-
-class MLP[LinearType: AbstractLinear](AbstractMLP):
-    up_projection: LinearType
-    down_projection: LinearType
-
-    def __init__(
-        self,
-        linear_config: AbstractLinearConfig[LinearType],
-        model_dim: int,
-        hidden_dim: int,
-        use_bias: bool,
-        activation: Activation,
-        *,
-        key: PRNGKeyArray,
-    ) -> None:
-        super().__init__(use_bias=use_bias, activation=activation)
-
-        up_projection_key, down_projection_key = jax.random.split(key)
-        self.up_projection = linear_config(
-            model_dim,
-            (hidden_dim, hidden_dim),
-            use_bias=use_bias,
-            key=up_projection_key,
+    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MLP":
+        up_key, down_key = jax.random.split(key)
+        return MLP(
+            self,
+            up_projection=self.linear_config.random_init(
+                model_dim,
+                (hidden_dim, hidden_dim),
+                has_biases=False,
+                key=up_key,
+            ),
+            down_projection=self.linear_config.random_init(
+                hidden_dim,
+                (model_dim,),
+                has_biases=False,
+                key=down_key,
+            ),
         )
-        self.down_projection = linear_config(
-            hidden_dim,
-            (model_dim,),
-            use_bias=use_bias,
-            key=down_projection_key,
-        )
+
+
+class MLP(FartsovkaModule):
+    up_projection: LinearBase
+    down_projection: LinearBase
+
+    @property
+    def model_dim(self) -> int:
+        return self.up_projection.input_dim
+
+    @property
+    def hidden_dim(self) -> int:
+        return self.down_projection.input_dim
+
+    def __post_init__(self) -> None:
+        up_output_dim, gate_output_dim = self.up_projection.output_dims
+        if up_output_dim != gate_output_dim:
+            raise ValueError(
+                f"Up projection output dimension {up_output_dim} does not match"
+                f" the gate output dimension {gate_output_dim}",
+            )
+        (down_output_dim,) = self.down_projection.output_dims
+        if self.up_projection.input_dim != down_output_dim:
+            raise ValueError(
+                f"Down projection input dimension {down_output_dim} does not match"
+                f" the up projection output dimension {self.up_projection.input_dim}",
+            )
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
         up_proj, gate = self.up_projection(x)
-        gate = self.activation(gate)
+        gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
         return result
 
@@ -74,32 +73,3 @@ class MLP[LinearType: AbstractLinear](AbstractMLP):
             up_projection=self.up_projection.export_weights(),
             down_projection=self.down_projection.export_weights(),
         )
-
-
-@dataclass
-class MLPConfig[LinearType: AbstractLinear](AbstractMLPConfig[MLP[LinearType]]):
-    linear_config: LinearConfigType
-
-    def __call__(
-        self,
-        *,
-        model_dim: int,
-        hidden_dim: int,
-        use_bias: bool,
-        activation: Activation,
-        key: PRNGKeyArray,
-    ) -> MLP[LinearType]:
-        return MLP(
-            linear_config=self.linear_config,  # type: ignore
-            model_dim=model_dim,
-            hidden_dim=hidden_dim,
-            use_bias=use_bias,
-            activation=activation,
-            key=key,
-        )
-
-
-MLPConfigType = MLPConfig | DummyUnionMember
-
-
-register_config_union(MLPConfigType)

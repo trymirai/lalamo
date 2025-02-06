@@ -5,8 +5,7 @@ from einops import rearrange
 from jaxtyping import PRNGKeyArray
 from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
 
-from fartsovka.models.llama import LlamaDecoder
-from fartsovka.modules.rope import AbstractRoPE, LlamaRoPE
+from fartsovka.modules import Decoder, LlamaRoPEConfig, UnscaledRoPEConfig
 from tests.executorch_llama.rope import apply_rotary_emb
 
 from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -32,12 +31,12 @@ def test_unscaled_rope() -> None:
     hf_layer = LlamaRotaryEmbedding(
         config=llama_config,
     )
-    fs_layer = AbstractRoPE(
-        head_dim=head_size,
-        max_sequence_length=max_position_embeddings,
-        theta=rope_theta,
+    fs_layer_config = UnscaledRoPEConfig(
         precision=jnp.float32,
+        max_sequence_length=max_position_embeddings,
+        base=rope_theta,
     )
+    fs_layer = fs_layer_config.init(head_size, max_position_embeddings)
     fs_layer_forward = checkify_forward(fs_layer)
 
     sample_input = jnp.arange(0, 8192, 1)
@@ -87,16 +86,16 @@ def test_scaled_rope() -> None:
     hf_layer = LlamaRotaryEmbedding(
         config=llama_config,
     )
-    fs_layer = LlamaRoPE(
-        head_dim=head_size,
+    fs_layer_config = LlamaRoPEConfig(
+        precision=jnp.float32,
+        base=rope_theta,
         max_sequence_length=max_position_embeddings,
-        theta=rope_theta,
         scaling_factor=scaling_factor,
         original_context_length=original_context_length,
         low_frequency_factor=low_frequency_factor,
         high_frequency_factor=high_frequency_factor,
-        precision=jnp.float32,
     )
+    fs_layer = fs_layer_config.init(head_size, max_position_embeddings)
     fs_layer_forward = checkify_forward(fs_layer)
 
     sample_input = jnp.arange(0, 8192 * 32, 17)
@@ -122,13 +121,13 @@ def test_scaled_rope() -> None:
 
 def test_rope(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: LlamaDecoder,
+    fartsovka_llama: Decoder,
 ) -> None:
     hf_layer = huggingface_llama.model.rotary_emb
     fs_layer = fartsovka_llama.rope
     fs_layer_forward = checkify_forward(fs_layer)
 
-    sample_input = jnp.arange(0, 8192 * 16, 17)
+    sample_input = jnp.arange(0, 8192, 17)
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
     hf_cosines, hf_sines = hf_layer(sample_input_torch.float(), sample_input_torch)
     hf_cosines = from_torch(hf_cosines.squeeze(0))
@@ -150,7 +149,7 @@ def test_rope(
 
 
 def test_executorch_apply_rotary_emb(
-    fartsovka_llama: LlamaDecoder,
+    fartsovka_llama: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     head_dim = fartsovka_llama.rope.head_dim

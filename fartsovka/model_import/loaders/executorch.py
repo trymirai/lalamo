@@ -6,18 +6,11 @@ from einops import rearrange
 from jaxtyping import Array, Float, Int
 
 from fartsovka.common import ParameterPath
-from fartsovka.importers.common import load_parameters
-from fartsovka.models.qlora_llama import (
-    QLoRALlamaAttention,
-    QLoRALlamaDecoder,
-    QLoRALlamaDecoderLayer,
-    QLoRALlamaMLP,
-)
-from fartsovka.modules.embedding import QuantizedTiedEmbedding
-from fartsovka.modules.linear import QLoRALinear
-from fartsovka.modules.normalization import RMSNorm
+from fartsovka.modules import MLP, Attention, Decoder, DecoderLayer, QLoRALinear, QuantizedTiedEmbedding, RMSNorm
 
-__all__ = ["load_llama"]
+from .common import load_parameters
+
+__all__ = ["load_executorch"]
 
 
 @dataclass
@@ -68,7 +61,12 @@ def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: Param
     return load_parameters(params_selector, module, params)
 
 
-def load_mlp(module: QLoRALlamaMLP, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALlamaMLP:
+def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -> MLP:
+    if not isinstance(module.up_projection, QLoRALinear):
+        raise TypeError(f"Expected up_projection to be QLoRALinear, got {type(module.up_projection)}")
+    if not isinstance(module.down_projection, QLoRALinear):
+        raise TypeError(f"Expected down_projection to be QLoRALinear, got {type(module.down_projection)}")
+
     up_proj_params = get_qlora_linear_params(weights_dict, path / "w3")
     gate_proj_params = get_qlora_linear_params(weights_dict, path / "w1")
     down_proj_params = get_qlora_linear_params(weights_dict, path / "w2")
@@ -76,14 +74,14 @@ def load_mlp(module: QLoRALlamaMLP, weights_dict: dict[str, Array], path: Parame
     fused_up_gate_params = merge_linear_params([up_proj_params, gate_proj_params])
 
     return load_parameters(
-        lambda m: (*params_selector(m.up_projection), *params_selector(m.down_projection)),
+        lambda m: (*params_selector(m.up_projection), *params_selector(m.down_projection)),  # type: ignore
         module,
         (*fused_up_gate_params, *down_proj_params),
     )
 
 
 def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: ParameterPath) -> RMSNorm:
-    return load_parameters(lambda m: (m.scale,), module, (weights_dict[path / "weight"],))
+    return load_parameters(lambda m: (m.scales,), module, (weights_dict[path / "weight"],))
 
 
 def permute_qk_weights(weights: Array, input_dim: int, num_heads: int, head_dim: int) -> Array:
@@ -117,15 +115,18 @@ def permute_qk_params(
 
 
 def load_attention(
-    module: QLoRALlamaAttention,
+    module: Attention,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> QLoRALlamaAttention:
+) -> Attention:
+    if not isinstance(module.qkv_projection, QLoRALinear):
+        raise TypeError(f"Expected qkv_projection to be QLoRALinear, got {type(module.qkv_projection)}")
+
     model_dim = module.model_dim
     num_heads = module.num_heads
     num_groups = module.num_groups
     head_dim = module.head_dim
-    lora_rank = module.qkv_projection.lora_rank
+    lora_rank = module.qkv_projection.config.lora_rank
 
     q_params = get_qlora_linear_params(weights_dict, path / "wq")
     q_params = permute_qk_params(
@@ -133,7 +134,7 @@ def load_attention(
         model_dim=model_dim,
         num_heads=num_heads,
         head_dim=head_dim,
-        quantization_group_size=module.qkv_projection.group_size,
+        quantization_group_size=module.qkv_projection.config.group_size,
         lora_rank=lora_rank,
     )
 
@@ -143,7 +144,7 @@ def load_attention(
         model_dim=model_dim,
         num_heads=num_groups,
         head_dim=head_dim,
-        quantization_group_size=module.qkv_projection.group_size,
+        quantization_group_size=module.qkv_projection.config.group_size,
         lora_rank=lora_rank,
     )
 
@@ -153,23 +154,27 @@ def load_attention(
 
     qkv_params = merge_linear_params([q_params, k_params, v_params])
     return load_parameters(
-        lambda m: (*params_selector(m.qkv_projection), *params_selector(m.out_projection)),
+        lambda m: (*params_selector(m.qkv_projection), *params_selector(m.out_projection)),  # type: ignore
         module,
         (*qkv_params, *out_params),
     )
 
 
 def load_decoder_layer(
-    module: QLoRALlamaDecoderLayer,
+    module: DecoderLayer,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> QLoRALlamaDecoderLayer:
-    attention_norm = load_rmsnorm(module.attention_norm, weights_dict, path / "attention_norm")
+) -> DecoderLayer:
+    if module.post_attention_norm is not None:
+        raise ValueError("Post attention normalization is not supported")
+    if module.post_mlp_norm is not None:
+        raise ValueError("Post MLP normalization is not supported")
+    attention_norm = load_rmsnorm(module.pre_attention_norm, weights_dict, path / "attention_norm")
     attention = load_attention(module.attention, weights_dict, path / "attention")
-    mlp_norm = load_rmsnorm(module.mlp_norm, weights_dict, path / "ffn_norm")
+    mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
     mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward")
     return load_parameters(
-        lambda m: (m.attention_norm, m.attention, m.mlp_norm, m.mlp),
+        lambda m: (m.pre_attention_norm, m.attention, m.pre_mlp_norm, m.mlp),
         module,
         (attention_norm, attention, mlp_norm, mlp),
     )
@@ -185,12 +190,15 @@ def load_embedding(
     return load_parameters(lambda m: (m.weights, m.scales), module, (weights, scales))
 
 
-def load_llama(module: QLoRALlamaDecoder, weights_dict: dict[str, Array]) -> QLoRALlamaDecoder:
+def load_executorch(module: Decoder, weights_dict: dict[str, Array]) -> Decoder:
     root_path = ParameterPath()
+    if not isinstance(module.embedding, QuantizedTiedEmbedding):
+        raise TypeError(f"Expected embedding to be QuantizedTiedEmbedding, got {type(module.embedding)}")
+
     embedding = load_embedding(module.embedding, weights_dict, root_path / "tok_embeddings")
-    decoder_layers = [
+    decoder_layers = tuple(
         load_decoder_layer(layer, weights_dict, root_path / f"layers.{i}") for i, layer in enumerate(module.layers)
-    ]
+    )
     output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm")
     return load_parameters(
         lambda m: (m.embedding, m.layers, m.output_norm),

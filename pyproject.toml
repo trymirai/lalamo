@@ -12,6 +12,7 @@ dependencies = [
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "jax>=0.4.38",
     "jaxtyping>=0.2.36",
+    "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
     "safetensors>=0.5.2",
     "torch>=2.5.1",

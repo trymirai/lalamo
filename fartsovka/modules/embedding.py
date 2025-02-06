@@ -1,90 +1,103 @@
 from dataclasses import dataclass
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, register_config_union
 from .utils import apply_soft_capping
 
 __all__ = [
-    "AbstractEmbedding",
+    "EmbeddingBase",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
-    "EmbeddingConfigType",
+    "EmbeddingConfig",
 ]
 
 
-class AbstractEmbedding(FartsovkaModule):
-    vocab_dim: int = eqx.field(static=True)
-    model_dim: int = eqx.field(static=True)
-    input_scale: float | None = eqx.field(static=True)
-    logits_soft_cap: float | None = eqx.field(static=True)
+@dataclass
+class EmbeddingConfigBase:
+    input_scale: float | None
+    logits_soft_cap: float | None
 
+    def random_init(
+        self,
+        vocab_size: int,
+        model_dim: int,
+        *,
+        key: PRNGKeyArray,
+    ) -> "EmbeddingBase":
+        raise NotImplementedError
+
+
+class EmbeddingBase[ConfigT: EmbeddingConfigBase](FartsovkaModule[ConfigT]):
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         raise NotImplementedError
 
     def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
         raise NotImplementedError
 
+    @property
+    def vocab_size(self) -> int:
+        raise NotImplementedError
+
+    @property
+    def model_dim(self) -> int:
+        raise NotImplementedError
+
     def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens model_dim"]:
         result = self._prepare_input_weights()[x]
-        if self.input_scale is not None:
-            result = result * jnp.array(self.input_scale, dtype=result.dtype)
+        if self.config.input_scale is not None:
+            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
         return result
 
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
         logits = self._prepare_output_weights() @ x
-        if self.logits_soft_cap is not None:
-            logits = apply_soft_capping(logits, self.logits_soft_cap)
+        if self.config.logits_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logits_soft_cap)
         return logits
 
 
 @dataclass
-class AbstractEmbeddingConfig[EmbeddingType: AbstractEmbedding]:
-    def __call__(
+class TiedEmbeddingConfig(EmbeddingConfigBase):
+    precision: DType
+
+    def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
         *,
         key: PRNGKeyArray,
-    ) -> EmbeddingType:
-        raise NotImplementedError
+    ) -> "TiedEmbedding":
+        weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.precision)
+        return TiedEmbedding(config=self, weights=weights)
 
 
-class TiedEmbedding(AbstractEmbedding):
+class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     weights: Float[Array, "token_ids channels"]
 
-    precision: DType = eqx.field(static=True)
+    def __post_init__(self) -> None:
+        if self.config.precision != self.weights.dtype:
+            raise ValueError(
+                f"Embedding dtype {self.weights.dtype} does not match the specified precision {self.config.precision}",
+            )
 
-    def __init__(
-        self,
-        vocab_dim: int,
-        model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
-        precision: DType,
-        *,
-        key: PRNGKeyArray,
-    ) -> None:
-        super().__init__(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=input_scale,
-            logits_soft_cap=logits_soft_cap,
-        )
-        self.precision = precision
-        self.weights = jax.random.normal(key, (vocab_dim, model_dim), dtype=precision)
+    @property
+    def model_dim(self) -> int:
+        _, model_dim = self.weights.shape
+        return model_dim
+
+    @property
+    def vocab_size(self) -> int:
+        vocab_size, _ = self.weights.shape
+        return vocab_size
 
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         return self.weights
@@ -97,53 +110,61 @@ class TiedEmbedding(AbstractEmbedding):
 
 
 @dataclass
-class TiedEmbeddingConfig(AbstractEmbeddingConfig[TiedEmbedding]):
-    precision: DType = DEFAULT_PRECISION
+class UntiedEmbeddingConfig(EmbeddingConfigBase):
+    precision: DType
 
-    def __call__(
+    def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
         *,
         key: PRNGKeyArray,
-    ) -> TiedEmbedding:
-        return TiedEmbedding(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=input_scale,
-            logits_soft_cap=logits_soft_cap,
-            precision=self.precision,
-            key=key,
+    ) -> "UntiedEmbedding":
+        input_key, output_key = jax.random.split(key)
+        input_weights = jax.random.normal(input_key, (vocab_size, model_dim), dtype=self.precision)
+        output_weights = jax.random.normal(output_key, (model_dim, vocab_size), dtype=self.precision)
+        return UntiedEmbedding(
+            config=self,
+            input_weights=input_weights,
+            output_weights=output_weights,
         )
 
 
-class UntiedEmbedding(AbstractEmbedding):
+class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_weights: Float[Array, "token_ids channels"]
     output_weights: Float[Array, "channels token_ids"]
 
-    def __init__(
-        self,
-        vocab_dim: int,
-        model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
-        precision: DType,
-        *,
-        key: PRNGKeyArray,
-    ) -> None:
-        super().__init__(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=input_scale,
-            logits_soft_cap=logits_soft_cap,
-        )
-        self.precision = precision
+    @property
+    def model_dim(self) -> int:
+        _, model_dim = self.input_weights.shape
+        return model_dim
 
-        input_key, output_key = jax.random.split(key)
-        self.input_weights = jax.random.normal(input_key, (vocab_dim, model_dim), dtype=precision)
-        self.output_weights = jax.random.normal(output_key, (model_dim, vocab_dim), dtype=precision)
+    @property
+    def vocab_size(self) -> int:
+        vocab_size, _ = self.input_weights.shape
+        return vocab_size
+
+    def __post_init__(self) -> None:
+        if self.config.precision != self.input_weights.dtype:
+            raise ValueError(
+                f"Embedding dtype {self.input_weights.dtype} does not match",
+                f" the specified precision {self.config.precision}",
+            )
+        if self.config.precision != self.output_weights.dtype:
+            raise ValueError(
+                f"Embedding dtype {self.output_weights.dtype} does not match"
+                f" the specified precision {self.config.precision}",
+            )
+        input_vocab_size, input_model_dim = self.input_weights.shape
+        output_model_dim, output_vocab_size = self.output_weights.shape
+        if input_vocab_size != output_vocab_size:
+            raise ValueError(
+                f"Input vocab size {input_vocab_size} does not match the output vocab size {output_vocab_size}",
+            )
+        if input_model_dim != output_model_dim:
+            raise ValueError(
+                f"Input model dim {input_model_dim} does not match the output model dim {output_model_dim}",
+            )
 
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         return self.input_weights
@@ -158,77 +179,70 @@ class UntiedEmbedding(AbstractEmbedding):
         )
 
 
-class UntiedEmbeddingConfig(AbstractEmbeddingConfig[UntiedEmbedding]):
-    precision: DType = DEFAULT_PRECISION
+@dataclass
+class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
+    embedding_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
+    activation_precision: DType
 
-    def __call__(
+    def random_init(
         self,
-        vocab_dim: int,
+        vocab_size: int,
         model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
         *,
         key: PRNGKeyArray,
-    ) -> UntiedEmbedding:
-        return UntiedEmbedding(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=input_scale,
-            logits_soft_cap=logits_soft_cap,
-            precision=self.precision,
-            key=key,
-        )
+    ) -> "QuantizedTiedEmbedding":
+        min_val, max_val = self.embedding_quantization_mode.range
+        min_abs_val = min(abs(min_val), abs(max_val))
+        scale = 1 / min_abs_val
+        scales = scale * jnp.ones(vocab_size, dtype=self.activation_precision)
+        weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.activation_precision)
+        weights = quantize_weights(weights * min_abs_val, self.embedding_quantization_mode)
+        return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
 
 
-class QuantizedTiedEmbedding(AbstractEmbedding):
+class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
     weights: Float[Array, "token_ids channels"]
+    scales: Float[Array, " token_ids"]
+
+    @property
+    def model_dim(self) -> int:
+        _, model_dim = self.weights.shape
+        return model_dim
+
+    @property
+    def vocab_size(self) -> int:
+        vocab_size, _ = self.weights.shape
+        return vocab_size
+
+    def __post_init__(self) -> None:
+        if self.weights.dtype != self.config.activation_precision:
+            raise ValueError(
+                f"Embedding dtype ({self.scales.dtype}) is not equal to specified activation precision"
+                f" ({self.config.activation_precision})."
+                " Quantized layers require parameter dtypes to be equal to the activation precision.",
+            )
+        if self.scales.dtype != self.config.activation_precision:
+            raise ValueError(
+                f"Scales dtype {self.scales.dtype} does not match the specified activation precision"
+                f" {self.config.activation_precision}"
+                " Quantized layers require parameter dtypes to be equal to the activation precision.",
+            )
+        weights_vocab_size, weights_model_dim = self.weights.shape
+        (scales_vocab_size,) = self.scales.shape
+        if weights_vocab_size != scales_vocab_size:
+            raise ValueError(
+                f"Embedding vocab size {weights_vocab_size} does not match"
+                f" the scales dimension size {scales_vocab_size}",
+            )
 
     @property
     def int_weights(self) -> Int[Array, "token_ids channels"]:
-        result = quantize_weights(self.weights, self.embedding_quantization_mode)
-        return result.astype(self.embedding_quantization_mode.dtype)
-
-    scales: Float[Array, " token_ids"]
-
-    embedding_quantization_mode: QuantizationMode = eqx.field(static=True)
-    activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
-    activation_precision: DType = eqx.field(static=True)
-
-    def __init__(
-        self,
-        *,
-        vocab_dim: int,
-        model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
-        embedding_quantization_mode: QuantizationMode,
-        activation_quantization_mode: QuantizationMode | None,
-        activation_precision: DType,
-        key: PRNGKeyArray,
-    ) -> None:
-        super().__init__(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=input_scale,
-            logits_soft_cap=logits_soft_cap,
-        )
-
-        self.embedding_quantization_mode = embedding_quantization_mode
-        self.activation_quantization_mode = activation_quantization_mode
-        self.activation_precision = activation_precision
-
-        min_val, max_val = embedding_quantization_mode.range
-        self.weights = jax.random.uniform(
-            key,
-            (vocab_dim, model_dim),
-            minval=min_val,
-            maxval=max_val,
-            dtype=activation_precision,
-        )
-        self.scales = jnp.ones((vocab_dim,), dtype=activation_precision)
+        result = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+        return result.astype(self.config.embedding_quantization_mode.dtype)
 
     def _prepare_weights(self) -> Float[Array, "out_channels in_channels"]:
-        quantized_weights = quantize_weights(self.weights, self.embedding_quantization_mode)
+        quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         quantized_weights = quantized_weights * self.scales.reshape(-1, 1)
         return quantized_weights
 
@@ -239,45 +253,19 @@ class QuantizedTiedEmbedding(AbstractEmbedding):
         return self._prepare_weights()
 
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
-        if self.activation_quantization_mode is not None:
-            x = dynamically_quantize_activations(x, self.activation_quantization_mode)
+        if self.config.activation_quantization_mode is not None:
+            x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
     def export_weights(self) -> ParameterDict:
-        exported_weights = quantize_weights(self.weights, self.embedding_quantization_mode)
+        exported_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         return ParameterDict(
             token_embeddings=exported_weights,
             scales=self.scales,
         )
 
 
-@dataclass
-class QuantizedTiedEmbeddingConfig(AbstractEmbeddingConfig[QuantizedTiedEmbedding]):
-    embedding_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
-    activation_precision: DType = DEFAULT_PRECISION
-
-    def __call__(
-        self,
-        vocab_dim: int,
-        model_dim: int,
-        input_scale: float | None,
-        logits_soft_cap: float | None,
-        *,
-        key: PRNGKeyArray,
-    ) -> QuantizedTiedEmbedding:
-        return QuantizedTiedEmbedding(
-            vocab_dim=vocab_dim,
-            model_dim=model_dim,
-            input_scale=input_scale,
-            logits_soft_cap=logits_soft_cap,
-            embedding_quantization_mode=self.embedding_quantization_mode,
-            activation_quantization_mode=self.activation_quantization_mode,
-            activation_precision=self.activation_precision,
-            key=key,
-        )
+EmbeddingConfig = TiedEmbeddingConfig | UntiedEmbeddingConfig | QuantizedTiedEmbeddingConfig
 
 
-EmbeddingConfigType = TiedEmbeddingConfig | QuantizedTiedEmbeddingConfig | UntiedEmbeddingConfig
-
-register_config_union(EmbeddingConfigType)
+register_config_union(EmbeddingConfig)

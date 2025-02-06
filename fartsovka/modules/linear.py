@@ -8,41 +8,37 @@ from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DEFAULT_PRECISION, DType
+from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, ParameterDict, register_config_union
+from .common import FartsovkaModule, register_config_union
 
 __all__ = [
-    "AbstractLinear",
-    "AbstractLinearConfig",
+    "LinearBase",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "Linear",
-    "LinearConfig",
+    "FullPrecisionLinear",
+    "FullPrecisionLinearConfig",
     "QLoRALinear",
     "QLoRALinearConfig",
-    "LinearConfigType",
+    "LinearConfig",
 ]
 
 
-class AbstractLinear(FartsovkaModule):
-    input_dim: int = eqx.field(static=True)
+class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
-    use_bias: bool = eqx.field(static=True)
+
+    @property
+    def input_dim(self) -> int:
+        raise NotImplementedError
 
     @property
     def num_outputs(self) -> int:
         return len(self.output_dims)
 
-    @classmethod
-    def _split_points(cls, output_dims: Sequence[int]) -> tuple[int, ...]:
-        result = []
-        last_split_point = 0
-        for dim in output_dims[:-1]:
-            last_split_point += dim
-            result.append(last_split_point)
-        return tuple(result)
+    @property
+    def has_biases(self) -> bool:
+        raise NotImplementedError
 
     def __call__(
         self,
@@ -50,56 +46,105 @@ class AbstractLinear(FartsovkaModule):
     ) -> tuple[Float[Array, " out_channels"], ...]:
         raise NotImplementedError
 
+    @classmethod
+    def _get_split_points(cls, output_dims: Sequence[int]) -> tuple[int, ...]:
+        result = []
+        last_split_point = 0
+        for dim in output_dims[:-1]:
+            last_split_point += dim
+            result.append(last_split_point)
+        return tuple(result)
+
 
 @dataclass
-class AbstractLinearConfig[LinearType: AbstractLinear]:
-    def __call__(
+class LinearConfigBase:
+    def random_init(
         self,
         input_dim: int,
         output_dims: tuple[int, ...],
-        use_bias: bool,
+        has_biases: bool,
         *,
         key: PRNGKeyArray,
-    ) -> LinearType:
+    ) -> LinearBase:
         raise NotImplementedError
 
 
-class Linear(AbstractLinear):
-    weights: Float[Array, "total_out_channels in_channels"]
-    bias: Float[Array, " total_out_channels"] | None
+@dataclass
+class FullPrecisionLinearConfig(LinearConfigBase):
+    precision: DType
 
-    precision: DType = eqx.field(static=True)
-
-    def __init__(
+    def random_init(
         self,
         input_dim: int,
         output_dims: tuple[int, ...],
-        use_bias: bool,
-        precision: DType,
+        has_biases: bool,
         *,
         key: PRNGKeyArray,
-    ) -> None:
-        super().__init__(input_dim=input_dim, output_dims=output_dims, use_bias=use_bias)
-
-        self.precision = precision
-        max_abs_value = 1 / math.sqrt(input_dim)
-        self.weights = jax.random.uniform(
+    ) -> LinearBase:
+        scale = 1 / math.sqrt(input_dim)
+        weights = jax.random.uniform(
             key,
             (sum(output_dims), input_dim),
-            minval=-max_abs_value,
-            maxval=max_abs_value,
+            minval=-scale,
+            maxval=scale,
             dtype=self.precision,
         )
-        if use_bias:
-            self.bias = jnp.zeros((sum(output_dims),), dtype=self.precision)
+        if has_biases:
+            biases = jnp.zeros((sum(output_dims),), dtype=self.precision)
         else:
-            self.bias = None
+            biases = None
+
+        return FullPrecisionLinear(
+            config=self,
+            output_dims=output_dims,
+            weights=weights,
+            biases=biases,
+        )
+
+
+class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
+    weights: Float[Array, "total_out_channels in_channels"]
+    biases: Float[Array, " total_out_channels"] | None
+
+    @property
+    def input_dim(self) -> int:
+        _, input_dim = self.weights.shape
+        return input_dim
+
+    @property
+    def has_biases(self) -> bool:
+        return self.biases is not None
+
+    def __post_init__(self) -> None:
+        if self.weights.dtype != self.config.precision:
+            raise ValueError(
+                f"Weight dtype ({self.weights.dtype}) is not equal to specified precision"
+                f" ({self.config.precision}).",
+            )
+        w_output_dim, w_input_dim = self.weights.shape
+        if w_output_dim != sum(self.output_dims):
+            raise ValueError(
+                f"Number of output channels in weights ({w_output_dim}) is not"
+                f" equal to sum of output dims ({sum(self.output_dims)}).",
+            )
+        if self.biases is None:
+            return
+        (b_output_dim,) = self.biases.shape
+        if w_output_dim != b_output_dim:
+            raise ValueError(
+                f"Number of output channels in weights ({w_output_dim}) is not"
+                f" equal to number of output channels in biases ({b_output_dim}).",
+            )
+        if self.biases.dtype != self.config.precision:
+            raise ValueError(
+                f"Bias dtype ({self.biases.dtype}) is not equal to specified precision ({self.config.precision}).",
+            )
 
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
         result = self.weights @ x
-        if self.bias is not None:
-            result = result + self.bias
-        return tuple(jnp.split(result, self._split_points(self.output_dims)))
+        if self.biases is not None:
+            result = result + self.biases
+        return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterDict:
         exported_weights = rearrange(
@@ -107,77 +152,123 @@ class Linear(AbstractLinear):
             "total_out_channels in_channels -> in_channels total_out_channels",
         )
         result = ParameterDict(weights=exported_weights)
-        if self.bias is not None:
-            result["bias"] = self.bias
+        if self.biases is not None:
+            result["biases"] = self.biases
         return result
 
 
 @dataclass
-class LinearConfig(AbstractLinearConfig[Linear]):
-    precision: DType = DEFAULT_PRECISION
+class GroupQuantizedLinearConfig(LinearConfigBase):
+    group_size: int
+    weight_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
+    activation_precision: DType
 
-    def __call__(self, input_dim: int, output_dims: tuple[int, ...], use_bias: bool, *, key: PRNGKeyArray) -> Linear:
-        return Linear(input_dim, output_dims, use_bias=use_bias, precision=self.precision, key=key)
+    def random_init(
+        self,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        has_biases: bool,
+        *,
+        key: PRNGKeyArray,
+    ) -> LinearBase:
+        min_val, max_val = self.weight_quantization_mode.range
+        min_abs_val = min(abs(min_val), abs(max_val))
+        weights = jax.random.uniform(
+            key,
+            (sum(output_dims), input_dim),
+            minval=-min_abs_val,
+            maxval=min_abs_val,
+            dtype=self.activation_precision,
+        )
+        num_groups = input_dim // self.group_size
+        scale = 1 / (min_abs_val * math.sqrt(input_dim))
+        scales = scale * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
+
+        if has_biases:
+            biases = jnp.zeros((sum(output_dims),), dtype=self.activation_precision)
+        else:
+            biases = None
+
+        return GroupQuantizedLinear(
+            config=self,
+            output_dims=output_dims,
+            weights=weights,
+            scales=scales,
+            biases=biases,
+        )
 
 
-class GroupQuantizedLinear(AbstractLinear):
-    group_size: int = eqx.field(static=True)
-    weight_quantization_mode: QuantizationMode = eqx.field(static=True)
-    activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
+class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[ConfigT]):
+    weights: Float[Array, "total_out_channels in_channels"]
+    scales: Float[Array, "total_out_channels groups"]
+    biases: Float[Array, " total_out_channels"] | None
 
     @property
-    def int_weights(self) -> Int[Array, "out_channels (groups in_channels)"]:
-        result = quantize_weights(self.weights, self.weight_quantization_mode)
-        return result.astype(self.weight_quantization_mode.dtype)
+    def input_dim(self) -> int:
+        _, input_dim = self.weights.shape
+        return input_dim
+
+    @property
+    def has_biases(self) -> bool:
+        return self.biases is not None
 
     @property
     def num_groups(self) -> int:
-        return self.input_dim // self.group_size
+        return self.input_dim // self.config.group_size
 
-    weights: Float[Array, "total_out_channels in_channels"]
-    bias: Float[Array, " total_out_channels"] | None
+    @property
+    def int_weights(self) -> Int[Array, "out_channels (groups in_channels)"]:
+        result = quantize_weights(self.weights, self.config.weight_quantization_mode)
+        return result.astype(self.config.weight_quantization_mode.dtype)
 
-    scales: Float[Array, "total_out_channels groups"]
+    def __post_init__(self) -> None:
+        if self.weights.dtype != self.config.activation_precision:
+            raise ValueError(
+                f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
+                f" ({self.config.activation_precision}).",
+                " Quantized layers require parameter dtypes to be equal to the activation precision.",
+            )
+        w_output_dim, w_input_dim = self.weights.shape
+        if w_output_dim != sum(self.output_dims):
+            raise ValueError(
+                f"Number of output channels in weights ({w_output_dim}) is not"
+                f" equal to sum of output dims ({sum(self.output_dims)}).",
+            )
+        if self.scales.dtype != self.config.activation_precision:
+            raise ValueError(
+                f"Scale dtype ({self.scales.dtype}) is not equal to specified activation precision"
+                f" ({self.config.activation_precision}).",
+                " Quantized layers require parameter dtypes to be equal to the activation precision.",
+            )
+        s_output_dim, s_num_groups = self.scales.shape
+        if w_output_dim != s_output_dim:
+            raise ValueError(
+                f"Number of output channels in weights ({w_output_dim}) is not"
+                f" equal to number of output channels in scales ({s_output_dim}).",
+            )
+        if s_num_groups != self.num_groups:
+            raise ValueError(
+                f"Number of groups in scales ({s_num_groups}) is incompatible with"
+                f" the specified group size ({self.config.group_size}).",
+            )
+        if self.biases is None:
+            return
+        if self.biases.dtype != self.config.activation_precision:
+            raise ValueError(
+                f"Bias dtype ({self.biases.dtype}) is not equal to specified activation precision"
+                f" ({self.config.activation_precision}).",
+                " Quantized layers require parameter dtypes to be equal to the activation precision.",
+            )
+        (b_output_dim,) = self.biases.shape
+        if w_output_dim != b_output_dim:
+            raise ValueError(
+                f"Number of output channels in weights ({w_output_dim}) is not"
+                f" equal to number of output channels in biases ({b_output_dim}).",
+            )
 
-    activation_precision: DType = eqx.field(static=True)
-
-    def __init__(
-        self,
-        *,
-        input_dim: int,
-        output_dims: tuple[int, ...],
-        use_bias: bool,
-        group_size: int,
-        weight_quantization_mode: QuantizationMode,
-        activation_quantization_mode: QuantizationMode | None,
-        activation_precision: DType,
-        key: PRNGKeyArray,
-    ) -> None:
-        if input_dim % group_size != 0:
-            raise ValueError(f"input_dim {input_dim} must be divisible by group_size {group_size}")
-        super().__init__(input_dim=input_dim, output_dims=output_dims, use_bias=use_bias)
-        self.group_size = group_size
-        self.weight_quantization_mode = weight_quantization_mode
-        self.activation_quantization_mode = activation_quantization_mode
-        self.activation_precision = activation_precision
-
-        min_val, max_val = weight_quantization_mode.range
-        self.weights = jax.random.uniform(
-            key,
-            (sum(output_dims), input_dim),
-            minval=min_val,
-            maxval=max_val,
-            dtype=activation_precision,
-        )
-        self.scales = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
-
-        if use_bias:
-            self.bias = jnp.ones((sum(output_dims), self.num_groups), dtype=activation_precision)
-        else:
-            self.bias = None
-
-    def _prepare_weights(self) -> Float[Array, "total_out_channels in_channels"]:
-        quantized_weights = quantize_weights(self.weights, self.weight_quantization_mode)
+    def _prepare_scaled_weights(self) -> Float[Array, "total_out_channels in_channels"]:
+        quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
             "total_out_channels (groups group_channels) -> total_out_channels groups group_channels",
@@ -191,129 +282,162 @@ class GroupQuantizedLinear(AbstractLinear):
         )
         return result
 
+    def _apply_weights(self, x: Float[Array, " in_channels"]) -> Float[Array, " total_out_channels"]:
+        if self.config.activation_quantization_mode is not None:
+            x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
+        return self._prepare_scaled_weights() @ x
+
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        if self.activation_quantization_mode is not None:
-            x = dynamically_quantize_activations(x, self.activation_quantization_mode)
-        weights = self._prepare_weights()
-        return tuple(jnp.split(weights @ x, self._split_points(self.output_dims)))
+        result = self._apply_weights(x)
+        if self.biases is not None:
+            result = result + self.biases
+        return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterDict:
         exported_weights = rearrange(
-            quantize_weights(self.weights, self.weight_quantization_mode),
+            quantize_weights(self.weights, self.config.weight_quantization_mode),
             "total_out_channels in_channels -> in_channels total_out_channels",
         )
-        exported_weights = exported_weights.astype(self.weight_quantization_mode.dtype)
+        exported_weights = exported_weights.astype(self.config.weight_quantization_mode.dtype)
 
         exported_scales = rearrange(self.scales, "total_out_channels groups -> groups total_out_channels")
 
         result = ParameterDict(
             weights=exported_weights,
-            weights_scales=exported_scales,
+            scales=exported_scales,
         )
-        if self.bias is not None:
-            result["bias"] = self.bias
+        if self.biases is not None:
+            result["biases"] = self.biases
         return result
 
 
+class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
+    pass
+
+
 @dataclass
-class GroupQuantizedLinearConfig(AbstractLinearConfig[GroupQuantizedLinear]):
-    group_size: int
-    weight_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None = None
-    activation_precision: DType = DEFAULT_PRECISION
+class QLoRALinearConfig(GroupQuantizedLinearConfig):
+    lora_rank: int
+    lora_scale: float
+    activation_precision: DType
 
-    def __call__(
+    def random_init(
         self,
         input_dim: int,
         output_dims: tuple[int, ...],
-        use_bias: bool,
+        has_biases: bool,
         *,
         key: PRNGKeyArray,
-    ) -> GroupQuantizedLinear:
-        return GroupQuantizedLinear(
-            input_dim=input_dim,
-            output_dims=output_dims,
-            use_bias=use_bias,
-            group_size=self.group_size,
-            weight_quantization_mode=self.weight_quantization_mode,
-            activation_quantization_mode=self.activation_quantization_mode,
-            activation_precision=self.activation_precision,
-            key=key,
-        )
+    ) -> LinearBase:
+        base_key, derived_key = jax.random.split(key)
+        group_quantized_linear = super().random_init(input_dim, output_dims, has_biases, key=base_key)
+        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
 
-
-class QLoRALinear(GroupQuantizedLinear):
-    lora_rank: int = eqx.field(static=True)
-    lora_scale: float = eqx.field(static=True)
-
-    lora_down_weights: Float[Array, "total_lora_channels in_channels"]
-    lora_up_weights: tuple[Float[Array, "out_channels lora_channels"], ...]
-
-    def __init__(
-        self,
-        *,
-        input_dim: int,
-        output_dims: tuple[int, ...],
-        use_bias: bool,
-        group_size: int,
-        weight_quantization_mode: QuantizationMode,
-        activation_quantization_mode: QuantizationMode | None,
-        lora_rank: int,
-        lora_scale: float,
-        activation_precision: DType,
-        key: PRNGKeyArray,
-    ) -> None:
-        linear_key, down_key, up_key_root = jax.random.split(key, 3)
-
-        super().__init__(
-            input_dim=input_dim,
-            output_dims=output_dims,
-            use_bias=use_bias,
-            group_size=group_size,
-            weight_quantization_mode=weight_quantization_mode,
-            activation_quantization_mode=activation_quantization_mode,
-            activation_precision=activation_precision,
-            key=linear_key,
-        )
-
-        self.lora_rank = lora_rank
-        self.lora_scale = lora_scale
-
-        hidden_lora_rank = len(output_dims) * lora_rank
+        down_key, up_key_root = jax.random.split(derived_key)
+        hidden_lora_rank = len(output_dims) * self.lora_rank
         max_down_abs_value = 1 / math.sqrt(input_dim)
-        self.lora_down_weights = jax.random.uniform(
+        lora_down_weights = jax.random.uniform(
             down_key,
             (hidden_lora_rank, input_dim),
             minval=-max_down_abs_value,
             maxval=max_down_abs_value,
-            dtype=activation_precision,
+            dtype=self.activation_precision,
         )
 
         up_keys = jax.random.split(up_key_root, len(output_dims))
         max_up_abs_value = 1 / math.sqrt(hidden_lora_rank)
-        self.lora_up_weights = tuple(
+        lora_up_weights = tuple(
             jax.random.uniform(
                 up_key,
-                (output_dim, lora_rank),
+                (output_dim, self.lora_rank),
                 minval=-max_up_abs_value,
                 maxval=max_up_abs_value,
-                dtype=activation_precision,
+                dtype=self.activation_precision,
             )
             for up_key, output_dim in zip(up_keys, output_dims, strict=True)
         )
 
+        return QLoRALinear(
+            config=self,
+            output_dims=output_dims,
+            weights=group_quantized_linear.weights,
+            scales=group_quantized_linear.scales,
+            biases=group_quantized_linear.biases,
+            lora_down_weights=lora_down_weights,
+            lora_up_weights=lora_up_weights,
+        )
+
+
+class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
+    lora_down_weights: Float[Array, "total_lora_channels in_channels"]
+    lora_up_weights: tuple[Float[Array, "out_channels lora_channels"], ...]
+
+    def _split_biases(self) -> tuple[Float[Array, " out_channels"] | None, ...]:
+        if self.biases is not None:
+            return tuple(jnp.split(self.biases, self._get_split_points(self.output_dims)))
+        return (None,) * len(self.output_dims)
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        if self.lora_down_weights.dtype != self.config.activation_precision:
+            raise ValueError(
+                f"LORA down weight dtype ({self.lora_down_weights.dtype}) is not equal to the"
+                f" specified activation precision ({self.config.activation_precision}).",
+                " Quantized layers require parameter dtypes to be equal to the activation precision.",
+            )
+        lora_down_output_dim, lora_down_input_dim = self.lora_down_weights.shape
+        if lora_down_output_dim != self.config.lora_rank * self.num_outputs:
+            raise ValueError(
+                f"Number of output channels in LORA down weights ({lora_down_output_dim}) is not"
+                f" equal to lora_rank * num_outputs ({self.config.lora_rank * self.num_outputs}).",
+            )
+        if lora_down_input_dim != self.input_dim:
+            raise ValueError(
+                f"Number of input channels in LORA down weights ({lora_down_input_dim}) is not"
+                f" equal to input_dim ({self.input_dim}).",
+            )
+        if len(self.lora_up_weights) != self.num_outputs:
+            raise ValueError(
+                f"Expected {self.num_outputs} LORA up weights, got {len(self.lora_up_weights)}.",
+            )
+        for lora_up_weight, output_dim in zip(self.lora_up_weights, self.output_dims, strict=True):
+            if lora_up_weight.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"LORA up weight dtype ({lora_up_weight.dtype}) is not equal to specified activation precision"
+                    f" ({self.config.activation_precision}).",
+                    " Quantized layers require parameter dtypes to be equal to the activation precision.",
+                )
+            lora_up_output_dim, lora_up_input_dim = lora_up_weight.shape
+            if lora_up_output_dim != output_dim:
+                raise ValueError(
+                    f"Number of output channels in LORA up weights ({lora_up_output_dim}) is not"
+                    f" equal to number of output dims ({self.output_dims}).",
+                )
+            if lora_up_input_dim != self.config.lora_rank:
+                raise ValueError(
+                    f"Number of input channels in LORA up weights ({lora_up_input_dim}) is not"
+                    f" equal to lora_rank ({self.config.lora_rank}).",
+                )
+
     def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        quantized_outputs = super().__call__(x)
+        joint_q_out = self._apply_weights(x)
+        q_outs = jnp.split(joint_q_out, self._get_split_points(self.output_dims))
+
         joint_lora_hidden = self.lora_down_weights @ x
-        lora_hiddens = jnp.split(joint_lora_hidden, self._split_points([self.lora_rank] * len(self.output_dims)))
-        lora_outputs = tuple(
+        lora_hiddens = jnp.split(joint_lora_hidden, self._get_split_points([self.config.lora_rank] * self.num_outputs))
+        lora_outs = [
             lora_up_weight @ lora_hidden
             for lora_up_weight, lora_hidden in zip(self.lora_up_weights, lora_hiddens, strict=True)
-        )
-        return tuple(
-            quantized_output + self.lora_scale * lora_output
-            for quantized_output, lora_output in zip(quantized_outputs, lora_outputs, strict=True)
-        )
+        ]
+
+        results = []
+        for q_out, lora_out, bias in zip(q_outs, lora_outs, self._split_biases(), strict=True):
+            result = q_out + self.config.lora_scale * lora_out
+            if bias is not None:
+                result = result + bias
+            results.append(result)
+
+        return tuple(results)
 
     def export_weights(self) -> ParameterDict:
         quantized_linear_weights = super().export_weights()
@@ -332,38 +456,7 @@ class QLoRALinear(GroupQuantizedLinear):
         )
 
 
-@dataclass
-class QLoRALinearConfig(AbstractLinearConfig[QLoRALinear]):
-    group_size: int
-    weight_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
-    lora_rank: int
-    lora_scale: float = 2.0
-    activation_precision: DType = DEFAULT_PRECISION
-
-    def __call__(
-        self,
-        input_dim: int,
-        output_dims: tuple[int, ...],
-        use_bias: bool,
-        *,
-        key: PRNGKeyArray,
-    ) -> QLoRALinear:
-        return QLoRALinear(
-            input_dim=input_dim,
-            output_dims=output_dims,
-            use_bias=use_bias,
-            group_size=self.group_size,
-            weight_quantization_mode=self.weight_quantization_mode,
-            activation_quantization_mode=self.activation_quantization_mode,
-            lora_rank=self.lora_rank,
-            lora_scale=self.lora_scale,
-            activation_precision=self.activation_precision,
-            key=key,
-        )
+LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | QLoRALinearConfig
 
 
-LinearConfigType = LinearConfig | GroupQuantizedLinearConfig | QLoRALinearConfig
-
-
-register_config_union(LinearConfigType)
+register_config_union(LinearConfig)

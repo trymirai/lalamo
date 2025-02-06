@@ -3,9 +3,7 @@ import pytest
 import transformers
 from jaxtyping import PRNGKeyArray
 
-from fartsovka.models.gemma2 import Gemma2Decoder
-from fartsovka.models.llama import LlamaDecoder
-from fartsovka.models.qlora_llama import QLoRALlamaDecoder
+from fartsovka.modules import Decoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
@@ -14,15 +12,15 @@ from .common import LAYERS_TO_TEST, QUANTIZED_RTOL, assert_close, checkify_forwa
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
 def test_rms_norm(
     huggingface_llama: transformers.LlamaModel,
-    fartsovka_llama: LlamaDecoder,
+    fartsovka_llama: Decoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
     hf_layer = huggingface_llama.model.layers[layer_index].input_layernorm
-    fs_layer = fartsovka_llama.layers[layer_index].attention_norm
+    fs_layer = fartsovka_llama.layers[layer_index].pre_attention_norm
     fs_layer_forward = checkify_forward(fs_layer)
 
-    input_dim = fs_layer.model_dim
+    input_dim = fs_layer.input_dim
 
     sample_input = jax.random.normal(rng_key, (input_dim,))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
@@ -38,15 +36,15 @@ def test_rms_norm(
 
 def test_gemma2_rms_norm(
     huggingface_gemma2: transformers.GemmaModel,
-    fartsovka_gemma2: Gemma2Decoder,
+    fartsovka_gemma2: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     layer_index = 0
     hf_layer = huggingface_gemma2.model.layers[layer_index].input_layernorm
-    fs_layer = fartsovka_gemma2.layers[layer_index].attention_pre_norm
+    fs_layer = fartsovka_gemma2.layers[layer_index].pre_attention_norm
     fs_layer_forward = checkify_forward(fs_layer)
 
-    input_dim = fs_layer.model_dim
+    input_dim = fs_layer.input_dim
 
     sample_input = jax.random.normal(rng_key, (input_dim,))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
@@ -62,14 +60,14 @@ def test_gemma2_rms_norm(
 
 def test_out_norm_executorch(
     executorch_llama: ETTransformer,
-    fartsovka_qlora_llama: QLoRALlamaDecoder,
+    fartsovka_qlora_llama: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
     hf_layer = executorch_llama.norm
     fs_layer = fartsovka_qlora_llama.output_norm
     fs_layer_forward = checkify_forward(fs_layer)
 
-    input_dim = fs_layer.model_dim
+    input_dim = fs_layer.input_dim
 
     sample_input = jax.random.normal(rng_key, (input_dim,))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
