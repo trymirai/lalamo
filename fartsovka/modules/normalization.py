@@ -14,7 +14,7 @@ __all__ = [
 ]
 
 
-def _compute_adjusted_variance(
+def _inverse_rms(
     x: Float[Array, " channels"],
     eps: float,
     accumulation_precision: DType,
@@ -52,7 +52,7 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
             )
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        adjusted_variance = _compute_adjusted_variance(
+        adjusted_variance = _inverse_rms(
             x,
             self.config.epsilon,
             self.config.accumulation_precision,

@@ -62,6 +62,14 @@ class ModelSpec:
 
 MODELS = [
     ModelSpec(
+        name="SmolLM2-1.7B-Instruct",
+        repo="HuggingFaceTB/SmolLM2-1.7B-Instruct",
+        config_type=HFLlamaConfig,
+        config_file_name="config.json",
+        weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
         name="Llama-3.2-1B-Instruct",
         repo="meta-llama/Llama-3.2-1B-Instruct",
         config_type=HFLlamaConfig,

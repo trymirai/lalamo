@@ -60,7 +60,6 @@ class HFLlamaConfig(HuggingFaceConfig):
     attention_dropout: float
     bos_token_id: int | list[int]
     eos_token_id: int | list[int]
-    head_dim: int
     hidden_act: Literal["silu"]
     hidden_size: int
     initializer_range: float
@@ -73,12 +72,13 @@ class HFLlamaConfig(HuggingFaceConfig):
     num_key_value_heads: int
     pretraining_tp: int
     rms_norm_eps: float
-    rope_scaling: HFRopeScalingConfig
+    rope_scaling: HFRopeScalingConfig | None
     rope_theta: float
     tie_word_embeddings: bool
     transformers_version: str
     use_cache: bool
     vocab_size: int
+    head_dim: int | None = None
 
     def to_decoder_config(
         self,
@@ -91,15 +91,22 @@ class HFLlamaConfig(HuggingFaceConfig):
             logits_soft_cap=None,
             precision=activation_precision,
         )
-        rope_config = LlamaRoPEConfig(
-            precision=activation_precision,
-            base=self.rope_theta,
-            max_sequence_length=self.max_position_embeddings,
-            scaling_factor=self.rope_scaling.factor,
-            original_context_length=self.rope_scaling.original_max_position_embeddings,
-            low_frequency_factor=self.rope_scaling.low_freq_factor,
-            high_frequency_factor=self.rope_scaling.high_freq_factor,
-        )
+        if self.rope_scaling is None:
+            rope_config = UnscaledRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=self.max_position_embeddings,
+            )
+        else:
+            rope_config = LlamaRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=self.max_position_embeddings,
+                scaling_factor=self.rope_scaling.factor,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
+                low_frequency_factor=self.rope_scaling.low_freq_factor,
+                high_frequency_factor=self.rope_scaling.high_freq_factor,
+            )
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
@@ -137,7 +144,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim,
+            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=None,
