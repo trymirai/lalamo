@@ -20,7 +20,14 @@ Usage:
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-Currently supported models:
+## Features
+
+- Convert various model formats (HuggingFace, ExecutorTorch) to a unified format
+- Support for HuggingFace tokenizers
+- Export language models with their tokenizers and message formatting specs
+- Various model architectures (Llama, Gemma, Qwen)
+
+## Currently supported models:
 
 ```shell
 meta-llama/Llama-3.2-1B-Instruct
@@ -30,7 +37,16 @@ Qwen/Qwen2.5-1.5B-Instruct
 deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 ```
 
-To add support for a new model write the corresponding `ModelSpec` in `fartsovka.model_import.model_import.py`
+## Output Format
+
+When you convert a model, the output directory will contain:
+- `config.json` - Complete model configuration including decoder and tokenizer
+- `model.safetensors` - Model weights in safetensors format
+- `tokenizer.json` - Tokenizer configuration for the HuggingFace tokenizers library
+
+## Adding Support for New Models
+
+To add support for a new model, write the corresponding `ModelSpec` in `fartsovka.model_import.model_import.py`
 
 Example:
 
@@ -45,5 +61,18 @@ ModelSpec(
         "model-00002-of-00002.safetensors",
     ),
     weights_type=WeightsType.SAFETENSORS,
+    # Message format type for this model family
+    message_format_type=MessageFormatType.GEMMA,
+    # Optional: custom format specification if needed
+    custom_format_spec=None,
 )
 ```
+
+## Message Formatting
+
+The library supports different message format types for various model families:
+- `PLAIN` - Simple text without formatting
+- `LLAMA` - Llama-style chat format with system, user, and assistant messages
+- `GEMMA` - Gemma-style chat format with turn indicators
+- `QWEN` - Qwen-style chat format with message markers
+- `CUSTOM` - Custom formats defined by the user

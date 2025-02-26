@@ -1,9 +1,29 @@
 import numpy as np
 import torch
+import jax
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, index_checks, nan_checks, user_checks
+from jaxtyping import PRNGKeyArray
 
-__all__ = ["assert_close", "from_torch", "to_torch"]
+from fartsovka.modules import (
+    Activation,
+    AttentionConfig,
+    Decoder,
+    DecoderConfig,
+    DecoderLayerConfig,
+    FullPrecisionLinearConfig,
+    MLPConfig,
+    RMSNormConfig,
+    TiedEmbeddingConfig as EmbeddingConfig,
+    UnscaledRoPEConfig,
+)
+
+__all__ = [
+    "assert_close", 
+    "from_torch", 
+    "to_torch", 
+    "create_dummy_decoder",
+]
 
 ATOL = 1e-3
 RTOL = 0.01
@@ -71,3 +91,85 @@ def checkify_forward(module):  # noqa: ANN001, ANN202
         module.__call__,
         errors=index_checks | nan_checks | div_checks | user_checks,
     )
+
+
+def create_dummy_decoder(rng_key: PRNGKeyArray, vocab_size: int = 32000, num_layers: int = 2) -> Decoder:
+    """Create a small dummy decoder for testing."""
+    # Define a minimal configuration
+    model_dim = 128
+    hidden_dim = 256
+    num_heads = 4
+    num_groups = 2
+    head_dim = 32
+    context_length = 128
+    
+    # Create embedding config
+    embedding_config = EmbeddingConfig(
+        input_scale=None,
+        logits_soft_cap=None,
+        precision=jnp.float32,
+    )
+    
+    # Create RoPE config
+    rope_config = UnscaledRoPEConfig(
+        precision=jnp.float32,
+        base=10000.0,
+        max_sequence_length=context_length,
+    )
+    
+    # Create norm config
+    norm_config = RMSNormConfig(
+        scale_precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+        epsilon=1e-6,
+    )
+    
+    # Create linear config
+    linear_config = FullPrecisionLinearConfig(
+        precision=jnp.float32,
+    )
+    
+    # Create attention and MLP configs
+    attention_config = AttentionConfig(
+        qkv_projection_config=linear_config,
+        out_projection_config=linear_config,
+        logit_soft_cap=None,
+        has_qkv_biases=False,
+        has_out_biases=False,
+    )
+    
+    mlp_config = MLPConfig(
+        linear_config=linear_config,
+        activation=Activation.SILU,
+    )
+    
+    # Create decoder layer config
+    layer_config = DecoderLayerConfig(
+        pre_attention_norm_config=norm_config,
+        attention_config=attention_config,
+        post_attention_norm_config=None,
+        pre_mlp_norm_config=norm_config,
+        mlp_config=mlp_config,
+        post_mlp_norm_config=None,
+    )
+    
+    # Create decoder config
+    decoder_config = DecoderConfig(
+        embedding_config=embedding_config,
+        rope_config=rope_config,
+        layer_config=layer_config,
+        output_norm_config=norm_config,
+        vocab_size=vocab_size,
+        model_dim=model_dim,
+        hidden_dim=hidden_dim,
+        num_heads=num_heads,
+        num_groups=num_groups,
+        head_dim=head_dim,
+        attention_scale=None,
+        num_layers=num_layers,
+        sliding_window_sizes=None,
+        context_length=context_length,
+    )
+    
+    # Initialize the decoder
+    return decoder_config.random_init(key=rng_key)
