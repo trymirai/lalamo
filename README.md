@@ -26,6 +26,8 @@ Usage:
 - Support for HuggingFace tokenizers
 - Export language models with their tokenizers and message formatting specs
 - Various model architectures (Llama, Gemma, Qwen)
+- Text generation with different sampling strategies (greedy, temperature, top-p)
+- Vectorized batch decoding for parallel text generation
 
 ## Currently supported models:
 
@@ -76,3 +78,43 @@ The library supports different message format types for various model families:
 - `GEMMA` - Gemma-style chat format with turn indicators
 - `QWEN` - Qwen-style chat format with message markers
 - `CUSTOM` - Custom formats defined by the user
+
+## Text Generation
+
+The library provides text generation capabilities with different decoding strategies:
+
+```python
+from fartsovka.language_model import (
+    DecodingStrategy, 
+    DecodingConfig, 
+    decode_text,
+    decode_batch
+)
+import jax
+
+# Create decoding configuration
+config = DecodingConfig(
+    strategy=DecodingStrategy.TOP_P,  # Can be GREEDY, SAMPLE, or TOP_P
+    max_tokens=100,                   # Maximum tokens to generate
+    temperature=0.8,                  # Temperature for sampling (higher = more random)
+    top_p=0.9,                        # Nucleus sampling parameter (0.0-1.0)
+    stop_tokens=[2],                  # Optional: tokens that trigger early stopping
+    stop_strings=["</s>"],            # Optional: strings that trigger early stopping
+)
+
+# Generate text from a single prompt
+output = decode_text(
+    model=language_model,
+    text="Hello, how are you?",
+    config=config,
+    key=jax.random.PRNGKey(42)  # Only needed for sampling strategies
+)
+
+# Or generate text from multiple prompts in parallel
+outputs = decode_batch(
+    model=language_model,
+    texts=["Hello!", "What's the weather like?", "Tell me a joke."],
+    config=config,
+    key=jax.random.PRNGKey(42)
+)
+```
