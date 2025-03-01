@@ -26,6 +26,7 @@ from .linear import (
 )
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
+from .resblock import ResBlock, ResBlockConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 
 __all__ = [
@@ -52,6 +53,8 @@ __all__ = [
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
+    "ResBlock",
+    "ResBlockConfig",
     "RMSNorm",
     "RMSNormConfig",
     "RoPE",
