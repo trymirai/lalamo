@@ -70,7 +70,7 @@ class MedusaConfig:
             proj_key = keys[i * 2 + 1]
             head_projection = self.linear_config.random_init(
                 hidden_size, 
-                (vocab_size,),
+                (hidden_size,),
                 has_biases=True,
                 key=proj_key,
             )

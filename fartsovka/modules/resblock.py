@@ -22,7 +22,7 @@ class ResBlockConfig:
             linear=self.linear_config.random_init(
                 hidden_size,
                 (hidden_size,),
-                has_biases=False,
+                has_biases=True,
                 key=key,
             ),
         )
