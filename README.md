@@ -1,10 +1,14 @@
+# Fartsovka
+
 To convert model run
+
 ```bash
 uv run convert_model.py
 ```
 
 Usage:
-```
+
+```shell
 ╭─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
 │ *    model_repo      TEXT  [default: None] [required]                                                                                                                       │
 ╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
@@ -17,7 +21,8 @@ Usage:
 ```
 
 Currently supported models:
-```
+
+```shell
 meta-llama/Llama-3.2-1B-Instruct
 meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8
 google/gemma-2-2b-it
@@ -28,6 +33,7 @@ deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
 To add support for a new model write the corresponding `ModelSpec` in `fartsovka.model_import.model_import.py`
 
 Example:
+
 ```python
 ModelSpec(
     name="Gemma-2-2B-Instruct",
