@@ -27,11 +27,11 @@ from fartsovka.common import DType, ParameterDict
 from .common import FartsovkaModule, register_config_union
 
 __all__ = [
+    "LlamaRoPEConfig",
     "PositionalEmbeddings",
     "RoPE",
     "RoPEConfigBase",
     "UnscaledRoPEConfig",
-    "LlamaRoPEConfig",
     "YARNRoPEConfig",
 ]
 

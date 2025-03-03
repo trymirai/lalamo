@@ -14,14 +14,14 @@ from fartsovka.quantization import QuantizationMode, dynamically_quantize_activa
 from .common import FartsovkaModule, register_config_union
 
 __all__ = [
-    "LinearBase",
-    "GroupQuantizedLinear",
-    "GroupQuantizedLinearConfig",
     "FullPrecisionLinear",
     "FullPrecisionLinearConfig",
+    "GroupQuantizedLinear",
+    "GroupQuantizedLinearConfig",
+    "LinearBase",
+    "LinearConfig",
     "QLoRALinear",
     "QLoRALinearConfig",
-    "LinearConfig",
 ]
 
 
@@ -118,8 +118,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
     def __post_init__(self) -> None:
         if self.weights.dtype != self.config.precision:
             raise ValueError(
-                f"Weight dtype ({self.weights.dtype}) is not equal to specified precision"
-                f" ({self.config.precision}).",
+                f"Weight dtype ({self.weights.dtype}) is not equal to specified precision ({self.config.precision}).",
             )
         w_output_dim, w_input_dim = self.weights.shape
         if w_output_dim != sum(self.output_dims):

@@ -4,7 +4,10 @@ import jax
 from jax import jit
 from jaxtyping import Array, Float
 
-__all__ = ["silu", "Activation"]
+__all__ = [
+    "Activation",
+    "silu",
+]
 
 
 @jit

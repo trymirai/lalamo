@@ -22,7 +22,7 @@ from fartsovka.modules import (
 
 from .common import ForeignConfig
 
-__all__ = ["HFLlamaConfig", "HFQwen2Config", "HFGemma2Config"]
+__all__ = ["HFGemma2Config", "HFLlamaConfig", "HFQwen2Config"]
 
 
 @dataclass

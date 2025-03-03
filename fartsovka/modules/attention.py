@@ -235,7 +235,7 @@ class Attention(FartsovkaModule[AttentionConfig]):
 
         if kv_cache is not None:
             all_keys = jnp.concatenate([kv_cache.keys, keys], axis=0)
-            all_values = jnp.concatenate([kv_cache.values, values], axis=0)  # noqa: PD011
+            all_values = jnp.concatenate([kv_cache.values, values], axis=0)
         else:
             all_keys = keys
             all_values = values

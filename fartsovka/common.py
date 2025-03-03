@@ -7,8 +7,8 @@ from jaxtyping import Array
 __all__ = [
     "DEFAULT_PRECISION",
     "DType",
-    "ParameterPath",
     "ParameterDict",
+    "ParameterPath",
 ]
 
 

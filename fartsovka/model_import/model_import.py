@@ -14,9 +14,9 @@ from fartsovka.modules import Decoder
 from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config
 
 __all__ = [
-    "ModelSpec",
     "MODELS",
     "REPO_TO_MODEL",
+    "ModelSpec",
     "import_model",
 ]
 

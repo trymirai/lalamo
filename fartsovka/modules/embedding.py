@@ -12,13 +12,13 @@ from .utils import apply_soft_capping
 
 __all__ = [
     "EmbeddingBase",
-    "TiedEmbedding",
-    "TiedEmbeddingConfig",
+    "EmbeddingConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
+    "TiedEmbedding",
+    "TiedEmbeddingConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
-    "EmbeddingConfig",
 ]
 
 
