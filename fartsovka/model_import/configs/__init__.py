@@ -3,8 +3,8 @@ from .executorch import ETLlamaConfig
 from .huggingface import HFGemma2Config, HFLlamaConfig, HFQwen2Config
 
 __all__ = [
-    "ForeignConfig",
     "ETLlamaConfig",
+    "ForeignConfig",
     "HFGemma2Config",
     "HFLlamaConfig",
     "HFQwen2Config",

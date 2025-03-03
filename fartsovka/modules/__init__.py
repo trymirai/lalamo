@@ -29,6 +29,7 @@ from .normalization import RMSNorm, RMSNormConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 
 __all__ = [
+    "MLP",
     "Activation",
     "Attention",
     "AttentionConfig",
@@ -46,7 +47,6 @@ __all__ = [
     "LinearBase",
     "LinearConfig",
     "LlamaRoPEConfig",
-    "MLP",
     "MLPConfig",
     "QLoRALinear",
     "QLoRALinearConfig",

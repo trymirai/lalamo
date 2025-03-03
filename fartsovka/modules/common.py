@@ -8,8 +8,8 @@ from jax import numpy as jnp
 from fartsovka.common import DType, ParameterDict
 
 __all__ = [
-    "FartsovkaModule",
     "DummyUnionMember",
+    "FartsovkaModule",
     "config_converter",
     "register_config_union",
 ]
