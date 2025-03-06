@@ -53,4 +53,4 @@ class ResBlock(FartsovkaModule):
     def export_weights(self) -> ParameterDict:
         return ParameterDict(
             linear=self.linear.export_weights(),
-        ) 
+        )

@@ -1,7 +1,7 @@
 import jax
 import equinox as eqx
 import jax.numpy as jnp
-from typing import List, Optional
+from typing import Optional, Self
 from dataclasses import dataclass, field
 from jaxtyping import Array, Float, PRNGKeyArray
 
@@ -40,11 +40,11 @@ class MedusaConfig:
         
         keys = jax.random.split(key, 2 * actual_num_heads)
         
-        medusa_heads = []
+        medusa_heads: list[list[ResBlock]] = []
         
         for i in range(actual_num_heads):
 
-            head_blocks = []
+            head_blocks: list[ResBlock] = []
             blocks_key = keys[i * 2]
             
             if self.num_layers > 1:
@@ -74,14 +74,14 @@ class Medusa(FartsovkaModule):
 
     num_heads: int = eqx.field(static=True)
     
-    medusa_heads: List[List[ResBlock]]
+    medusa_heads: list[list[ResBlock]]
     
     def __init__(
         self,
         config: MedusaConfig,
         num_heads: int,
-        medusa_heads: List[List[ResBlock]],
-    ):
+        medusa_heads: list[list[ResBlock]],
+    ) -> None:
         
         super().__init__(config)
         self.num_heads = num_heads
@@ -101,7 +101,7 @@ class Medusa(FartsovkaModule):
         hidden_states: Float[Array, "hidde hidden"]
     ) -> Float[Array, "num_heads hidden hidden"]:
         
-        medusa_states = []
+        medusa_states: list[Float[Array, "hidden hidden"]] = []
         
         for i in range(self.num_heads):
 
@@ -115,11 +115,11 @@ class Medusa(FartsovkaModule):
     
     def export_weights(self) -> ParameterDict:
 
-        heads_weights = []
+        heads_weights: list[list[ParameterDict]] = []
         
         for i in range(self.num_heads):
             
-            head_blocks_weights = []
+            head_blocks_weights: list[ParameterDict] = []
             for j in range(len(self.medusa_heads[i])):
                 head_blocks_weights.append(
                     self.medusa_heads[i][j].export_weights()

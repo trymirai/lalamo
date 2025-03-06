@@ -18,18 +18,20 @@ from .common import (
     to_torch,
 )
 
+
 def load_medusa_weights(repo_id: str, filename: str) -> dict[str, torch.Tensor]:
     file_path = hf_hub_download(repo_id=repo_id, filename=filename)
     with safe_open(file_path, framework="pt") as f:
         return {key: f.get_tensor(key).to(torch.float32) for key in f.keys()}
 
+
 def load_medusa_into_fartsovka(
     model: Medusa, 
     weights_dict: dict[str, torch.Tensor]
 ) -> Medusa:
-    new_heads = []
+    new_heads: list[list] = []
     for i in range(model.num_heads):
-        head_blocks = []
+        head_blocks: list = []
         old_block = model.medusa_heads[i][0]
         
         weight_key = f"{i}.0.linear.weight"
@@ -101,7 +103,7 @@ def test_medusa_weights_loading(rng_key: PRNGKeyArray) -> None:
 
 
 class TorchTransposedLinear(torch.nn.Module):
-    def __init__(self, hidden_size: int):
+    def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.weights = torch.nn.Parameter(torch.randn(hidden_size, hidden_size) / math.sqrt(hidden_size))
         self.biases = torch.nn.Parameter(torch.zeros(hidden_size))
@@ -111,7 +113,7 @@ class TorchTransposedLinear(torch.nn.Module):
 
 
 class TorchResBlock(torch.nn.Module):
-    def __init__(self, hidden_size: int):
+    def __init__(self, hidden_size: int) -> None:
         super().__init__()
         self.linear = TorchTransposedLinear(hidden_size)
         self.act = torch.nn.SiLU()
@@ -121,7 +123,7 @@ class TorchResBlock(torch.nn.Module):
 
 
 class TorchMedusa(torch.nn.Module):
-    def __init__(self, hidden_size: int, num_heads: int, num_layers: int):
+    def __init__(self, hidden_size: int, num_heads: int, num_layers: int) -> None:
         super().__init__()
         self.hidden_size = hidden_size
         self.num_heads = num_heads
@@ -135,10 +137,10 @@ class TorchMedusa(torch.nn.Module):
         ])
 
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        medusa_states = []
-        for i in range(self.num_heads):
-            mhidden_states = self.medusa_heads[i](hidden_states)
-            medusa_states.append(mhidden_states)
+        medusa_states = [
+            self.medusa_heads[i](hidden_states) 
+            for i in range(self.num_heads)
+        ]
         return torch.stack(medusa_states, dim=0)
 
 
