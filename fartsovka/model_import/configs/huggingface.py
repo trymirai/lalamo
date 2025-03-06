@@ -18,11 +18,13 @@ from fartsovka.modules import (
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
+    MedusaConfig,
+    ResBlockConfig,
 )
 
 from .common import ForeignConfig
 
-__all__ = ["HFLlamaConfig", "HFQwen2Config", "HFGemma2Config"]
+__all__ = ["HFLlamaConfig", "HFQwen2Config", "HFGemma2Config", "HFLlamaMedusaConfig"]
 
 
 @dataclass
@@ -342,4 +344,93 @@ class HFGemma2Config(HuggingFaceConfig):
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=sliding_window_sizes,
             context_length=context_length,
+        )
+
+
+@dataclass
+class HFLlamaMedusaConfig(HFLlamaConfig):
+    
+    medusa_num_heads: int = 3
+    medusa_num_layers: int = 1
+    
+    def to_decoder_config(
+        self,
+        context_length: int,
+        activation_precision: DType,
+        accumulation_precision: DType,
+    ) -> DecoderConfig:
+        embedding_config = TiedEmbeddingConfig(
+            input_scale=None,
+            logits_soft_cap=None,
+            precision=activation_precision,
+        )
+        if self.rope_scaling is None:
+            rope_config = UnscaledRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=self.max_position_embeddings,
+            )
+        else:
+            rope_config = LlamaRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=self.max_position_embeddings,
+                scaling_factor=self.rope_scaling.factor,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
+                low_frequency_factor=self.rope_scaling.low_freq_factor,
+                high_frequency_factor=self.rope_scaling.high_freq_factor,
+            )
+        rmsnorm_config = RMSNormConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=accumulation_precision,
+            epsilon=self.rms_norm_eps,
+        )
+        linear_config = FullPrecisionLinearConfig(
+            precision=activation_precision,
+        )
+        attention_config = AttentionConfig(
+            qkv_projection_config=linear_config,
+            out_projection_config=linear_config,
+            logit_soft_cap=None,
+            has_qkv_biases=self.attention_bias,
+            has_out_biases=False,
+        )
+        mlp_config = MLPConfig(
+            linear_config=linear_config,
+            activation=Activation.SILU,
+        )
+        decoder_layer_config = DecoderLayerConfig(
+            pre_attention_norm_config=rmsnorm_config,
+            attention_config=attention_config,
+            post_attention_norm_config=None,
+            pre_mlp_norm_config=rmsnorm_config,
+            mlp_config=mlp_config,
+            post_mlp_norm_config=None,
+        )
+        
+        # Create Medusa config
+        medusa_config = MedusaConfig(
+            num_heads=self.medusa_num_heads,
+            num_layers=self.medusa_num_layers,
+            resblock_config=ResBlockConfig(
+                linear_config=FullPrecisionLinearConfig(precision=activation_precision)
+            ),
+        )
+        
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            rope_config=rope_config,
+            layer_config=decoder_layer_config,
+            output_norm_config=rmsnorm_config,
+            vocab_size=self.vocab_size,
+            model_dim=self.hidden_size,
+            hidden_dim=self.intermediate_size,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
+            attention_scale=None,
+            num_layers=self.num_hidden_layers,
+            sliding_window_sizes=None,
+            context_length=context_length,
+            medusa_config=medusa_config,
         )

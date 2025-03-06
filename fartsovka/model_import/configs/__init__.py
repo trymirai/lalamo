@@ -1,6 +1,6 @@
 from .common import ForeignConfig
 from .executorch import ETLlamaConfig
-from .huggingface import HFGemma2Config, HFLlamaConfig, HFQwen2Config
+from .huggingface import HFGemma2Config, HFLlamaConfig, HFQwen2Config, HFLlamaMedusaConfig
 
 __all__ = [
     "ForeignConfig",
@@ -8,4 +8,5 @@ __all__ = [
     "HFGemma2Config",
     "HFLlamaConfig",
     "HFQwen2Config",
+    "HFLlamaMedusaConfig",
 ]

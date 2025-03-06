@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Optional
 
 import huggingface_hub
 import jax.numpy as jnp
@@ -11,7 +12,7 @@ from safetensors.flax import load_file as load_safetensors
 from fartsovka.common import DType
 from fartsovka.modules import Decoder
 
-from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config
+from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config, HFLlamaMedusaConfig
 
 __all__ = [
     "ModelSpec",
@@ -51,6 +52,14 @@ class WeightsType(Enum):
 
 
 @dataclass
+class MedusaSpec:
+    repo: str
+    weights_file_name: str
+    num_heads: int = 3
+    num_layers: int = 1
+
+
+@dataclass
 class ModelSpec:
     name: str
     repo: str
@@ -58,6 +67,7 @@ class ModelSpec:
     config_file_name: str
     weights_file_names: tuple[str, ...]
     weights_type: WeightsType
+    medusa_spec: Optional[MedusaSpec] = None
 
 
 MODELS = [
@@ -76,6 +86,20 @@ MODELS = [
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
         weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
+        name="Llama-3.2-1B-Instruct-Medusa",
+        repo="meta-llama/Llama-3.2-1B-Instruct",
+        config_type=HFLlamaMedusaConfig,
+        config_file_name="config.json",
+        weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+        medusa_spec=MedusaSpec(
+            repo="getmirai/llama-3.2-1b-medusa-3-1",
+            weights_file_name="medusa_lm_head.safetensors",
+            num_heads=3,
+            num_layers=1,
+        ),
     ),
     ModelSpec(
         name="Llama-3.2-1B-Instruct-QLoRA",
@@ -127,6 +151,15 @@ def download_weights(model_spec: ModelSpec, output_dir: Path | str | None = None
         )
         for filename in model_spec.weights_file_names
     ]
+    
+    if model_spec.medusa_spec is not None:
+        medusa_weights_path = huggingface_hub.hf_hub_download(
+            repo_id=model_spec.medusa_spec.repo,
+            local_dir=output_dir,
+            filename=model_spec.medusa_spec.weights_file_name,
+        )
+        result.append(medusa_weights_path)
+        
     return [Path(path) for path in result]
 
 
@@ -157,5 +190,5 @@ def import_model(
         weights_dict.update(model_spec.weights_type.load(weights_path, precision))
 
     result = config.load_model(context_length, precision, accumulation_precision, weights_dict)
-
+    
     return result

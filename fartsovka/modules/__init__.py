@@ -1,7 +1,7 @@
 from .activations import Activation
-from .attention import Attention, AttentionConfig
 from .common import config_converter
 from .decoder import Decoder, DecoderConfig
+from .attention import Attention, AttentionConfig
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
 from .embedding import (
     EmbeddingBase,
@@ -25,8 +25,9 @@ from .linear import (
     QLoRALinearConfig,
 )
 from .mlp import MLP, MLPConfig
-from .normalization import RMSNorm, RMSNormConfig
+from .medusa import Medusa, MedusaConfig
 from .resblock import ResBlock, ResBlockConfig
+from .normalization import RMSNorm, RMSNormConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 
 __all__ = [
@@ -49,6 +50,8 @@ __all__ = [
     "LlamaRoPEConfig",
     "MLP",
     "MLPConfig",
+    "Medusa",
+    "MedusaConfig",
     "QLoRALinear",
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
