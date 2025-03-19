@@ -1,5 +1,7 @@
 # Fartsovka
 
+A set of tools for adapting Large Language Models to on-device inference using Mirai Inference Engine
+
 To convert model run
 
 ```bash
