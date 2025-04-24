@@ -78,6 +78,14 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        name="Pleias-RAG-1B",
+        repo="PleIAs/Pleias-RAG-1B",
+        config_type=HFLlamaConfig,
+        config_file_name="config.json",
+        weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
         name="Llama-3.2-1B-Instruct-QLoRA",
         repo="meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8",
         config_type=ETLlamaConfig,
