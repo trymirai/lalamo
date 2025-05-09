@@ -5,7 +5,7 @@ from jax import jit
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from fartsovka.common import ParameterDict, DType
-from fartsovka.modules.common import ModuleSample
+from fartsovka.samples import ModuleSample
 
 __all__ = [
     "Activation",

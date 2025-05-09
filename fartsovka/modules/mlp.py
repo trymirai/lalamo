@@ -4,9 +4,10 @@ import jax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
+from fartsovka.samples import ModuleSample, DecoderSamplesContext
 
 from .activations import Activation
-from .common import FartsovkaModule, ModuleSample
+from .common import FartsovkaModule
 from .linear import LinearBase, LinearConfig
 
 __all__ = ["MLP", "MLPConfig"]
@@ -74,12 +75,12 @@ class MLP(FartsovkaModule):
             down_projection=self.down_projection.export_weights(),
         )
 
-    def export_samples(self, suffix_length: int, key: PRNGKeyArray) -> ParameterDict:
+    def export_samples(self, context: DecoderSamplesContext, key: PRNGKeyArray) -> ParameterDict:
         up_projection_key, down_projection_key, activation_key, mlp_key = jax.random.split(key, num=4)
 
         x = jax.random.uniform(
             mlp_key,
-            (suffix_length, self.model_dim),
+            (context.suffix_length, self.model_dim),
             minval=-2,
             maxval=2,
             dtype=self.config.linear_config.precision,
@@ -88,8 +89,8 @@ class MLP(FartsovkaModule):
         sample = ModuleSample(inputs=(x,), outputs=(y,))
 
         return ParameterDict(
-            up_projection=self.up_projection.export_samples(suffix_length, up_projection_key),
-            down_projection=self.down_projection.export_samples(suffix_length, down_projection_key),
-            activation=self.config.activation.export_samples([suffix_length, self.hidden_dim], self.config.linear_config.precision, activation_key),
+            up_projection=self.up_projection.export_samples(context, up_projection_key),
+            down_projection=self.down_projection.export_samples(context, down_projection_key),
+            activation=self.config.activation.export_samples([context.suffix_length, self.hidden_dim], self.config.linear_config.precision, activation_key),
             value=sample.export(),
         )

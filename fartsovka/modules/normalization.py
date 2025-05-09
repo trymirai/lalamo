@@ -1,10 +1,11 @@
 from dataclasses import dataclass
 
 import jax
-from jax import numpy as jnp
-from jaxtyping import Array, Float, Scalar
+from jax import numpy as jnp, Array
+from jaxtyping import Array, Float, Scalar, PRNGKeyArray
 
 from fartsovka.common import DType, ParameterDict
+from fartsovka.samples import ModuleSample, DecoderSamplesContext
 
 from .common import FartsovkaModule
 
@@ -63,3 +64,15 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
 
     def export_weights(self) -> ParameterDict:
         return ParameterDict(scales=self.scales)
+
+    def export_samples(self, context: DecoderSamplesContext, key: PRNGKeyArray) -> ParameterDict:
+        x = jax.random.uniform(
+            key,
+            (context.suffix_length, self.input_dim),
+            minval=-1,
+            maxval=1,
+            dtype=self.config.scale_precision,
+        )
+        y = self(x)
+        sample = ModuleSample(inputs=(x,), outputs=(y,))
+        return ParameterDict(value=sample.export())

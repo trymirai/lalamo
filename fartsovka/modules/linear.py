@@ -9,9 +9,10 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from fartsovka.common import DType, ParameterDict
+from fartsovka.samples import ModuleSample, DecoderSamplesContext
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import ModuleSample, FartsovkaModule, register_config_union
+from .common import FartsovkaModule, register_config_union
 
 __all__ = [
     "FullPrecisionLinear",
@@ -55,10 +56,10 @@ class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
             result.append(last_split_point)
         return tuple(result)
 
-    def export_samples(self, suffix_length: int, key: PRNGKeyArray) -> ParameterDict:
+    def export_samples(self, context: DecoderSamplesContext, key: PRNGKeyArray) -> ParameterDict:
         x = jax.random.uniform(
             key,
-            (suffix_length, self.input_dim),
+            (context.suffix_length, self.input_dim),
             minval=-2,
             maxval=2,
             dtype=self.config.precision,

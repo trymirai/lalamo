@@ -6,6 +6,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
+from fartsovka.samples import ModuleSample, DecoderSamplesContext
 
 from .attention import Attention, AttentionConfig
 from .common import FartsovkaModule
@@ -150,4 +151,40 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
             result["post_attention_norm"] = self.post_attention_norm.export_weights()
         if self.post_mlp_norm is not None:
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
+        return result
+
+    def export_samples(self, context: DecoderSamplesContext, key: PRNGKeyArray) -> ParameterDict:
+        pre_attention_norm_key, attention_key, pre_mlp_norm_key, mlp_key, post_attention_norm_key, post_mlp_norm_key, decoder_layer_key = jax.random.split(key, num=7)
+
+        attention_x = jax.random.uniform(
+            attention_key,
+            (context.suffix_length, self.attention.model_dim),
+            minval=-3,
+            maxval=3,
+            dtype=self.config.attention_config.out_projection_config.precision,
+        )
+        attention_y = self.attention(attention_x, context.positional_embeddings, None, context.mask, False)
+        attention_sample = ModuleSample(inputs=(attention_x,), outputs=(attention_y.attention_output,))
+
+        x = jax.random.uniform(
+            decoder_layer_key,
+            (context.suffix_length, self.attention.model_dim),
+            minval=-4,
+            maxval=4,
+            dtype=self.config.mlp_config.linear_config.precision,
+        )
+        y = self(x, context.positional_embeddings, None, context.mask, False)
+        sample = ModuleSample(inputs=(x,), outputs=(y.output,))
+
+        result = ParameterDict(
+            pre_attention_norm=self.pre_attention_norm.export_samples(context, pre_attention_norm_key),
+            attention=attention_sample.export(),
+            pre_mlp_norm=self.pre_mlp_norm.export_samples(context, pre_mlp_norm_key),
+            mlp=self.mlp.export_samples(context, mlp_key),
+            value=sample.export(),
+        )
+        if self.post_attention_norm is not None:
+            result["post_attention_norm"] = self.post_attention_norm.export_samples(context, post_attention_norm_key),
+        if self.post_mlp_norm is not None:
+            result["post_mlp_norm"] = self.post_mlp_norm.export_samples(context, post_mlp_norm_key),
         return result
