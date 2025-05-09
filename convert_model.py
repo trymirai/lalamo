@@ -9,6 +9,7 @@ from typer import Argument, Option, run
 from fartsovka.common import DType
 from fartsovka.model_import import REPO_TO_MODEL, import_model
 from fartsovka.modules import DecoderConfig, config_converter
+from fartsovka.samples import DecoderSamplesContext
 
 
 class Precision(Enum):
@@ -59,6 +60,10 @@ def main(
         )
 
     model = import_model(model_spec, precision=precision_dtype, context_length=context_length)
+
+    samples_context = DecoderSamplesContext(42, 16, model.rope)
+    samples = dict(model.export_samples(samples_context, samples_context.root_key))
+
     config_json = config_converter.unstructure(model.config, DecoderConfig)
     weights = dict(model.export_weights())
 
@@ -66,6 +71,7 @@ def main(
         output_dir = Path(model_spec.name)
     output_dir.mkdir(exist_ok=True)
     save_file(weights, output_dir / "model.safetensors")
+    save_file(samples, output_dir / "samples.safetensors")
     with open(output_dir / "config.json", "w") as file:
         json.dump(config_json, file, indent=4)
 

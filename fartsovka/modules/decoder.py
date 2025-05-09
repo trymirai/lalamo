@@ -6,6 +6,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
+from fartsovka.samples import ModuleSample, DecoderSamplesContext
 
 from .common import FartsovkaModule
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
@@ -135,4 +136,41 @@ class Decoder(FartsovkaModule[DecoderConfig]):
             rope=self.rope.export_weights(),
             layers=[layer.export_weights() for layer in self.layers],
             output_norm=self.output_norm.export_weights(),
+        )
+
+    def export_samples(self, context: DecoderSamplesContext, key: PRNGKeyArray) -> ParameterDict:
+        embedding_key, rope_key, layers_all_key, decoder_key, output_norm_key = jax.random.split(key, num=5)
+        layers_keys = jax.random.split(layers_all_key, len(self.layers))
+
+        embedding_x = context.token_ids
+        embedding_y = self.embedding.embed(embedding_x)
+        embedding_sample = ModuleSample(inputs=(embedding_x,), outputs=(embedding_y,))
+
+        rope_x = context.token_positions
+        rope_y = self.rope(rope_x)
+        rope_sample = ModuleSample(inputs=(rope_x,), outputs=(rope_y.sines, rope_y.cosines))
+
+        layers_samples: [ParameterDict] = []
+        for index, layer in enumerate(self.layers):
+            key = layers_keys[index]
+            parameters = layer.export_samples(context, key)
+            layers_samples.append(parameters)
+
+        context_parameters = ParameterDict(
+            token_ids=context.token_ids,
+            token_positions=context.token_positions,
+            mask=context.mask,
+        )
+
+        x = context.token_ids
+        y = self(x, context.token_positions, None, context.mask, False)
+        sample = ModuleSample(inputs=(x,), outputs=(y.output,))
+
+        return ParameterDict(
+            embedding=embedding_sample.export(),
+            rope=rope_sample.export(),
+            layers=layers_samples,
+            output_norm=self.output_norm.export_samples(context, output_norm_key),
+            context=context_parameters,
+            value=sample.export(),
         )

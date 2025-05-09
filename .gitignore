@@ -24,3 +24,6 @@ notebooks/
 
 # Downloads
 downloads/
+
+# IDE
+.idea/
