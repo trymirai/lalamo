@@ -4,21 +4,37 @@ from types import UnionType
 import equinox as eqx
 from cattrs import Converter
 from jax import numpy as jnp
+from jaxtyping import Array, PRNGKeyArray
 
 from fartsovka.common import DType, ParameterDict
 
 __all__ = [
-    "DummyUnionMember",
+    "ModuleSample",
     "FartsovkaModule",
     "config_converter",
     "register_config_union",
 ]
 
 
+@dataclass
+class ModuleSample:
+    inputs: tuple[Array, ...]
+    outputs: tuple[Array, ...]
+
+    def export(self) -> ParameterDict:
+        return ParameterDict(
+            inputs=self.inputs,
+            outputs=self.outputs
+        )
+
+
 class FartsovkaModule[ConfigT](eqx.Module):
     config: ConfigT = eqx.field(static=True)
 
     def export_weights(self) -> ParameterDict:
+        raise NotImplementedError
+
+    def export_samples(self, suffix_length: int, key: PRNGKeyArray) -> ParameterDict:
         raise NotImplementedError
 
 

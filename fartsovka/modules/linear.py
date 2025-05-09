@@ -11,7 +11,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, register_config_union
+from .common import ModuleSample, FartsovkaModule, register_config_union
 
 __all__ = [
     "FullPrecisionLinear",
@@ -54,6 +54,18 @@ class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
             last_split_point += dim
             result.append(last_split_point)
         return tuple(result)
+
+    def export_samples(self, suffix_length: int, key: PRNGKeyArray) -> ParameterDict:
+        x = jax.random.uniform(
+            key,
+            (suffix_length, self.input_dim),
+            minval=-2,
+            maxval=2,
+            dtype=self.config.precision,
+        )
+        y = tuple([value.T for value in self(x.T)])
+        sample = ModuleSample(inputs=(x,), outputs=y)
+        return ParameterDict(value=sample.export())
 
 
 @dataclass
