@@ -27,6 +27,18 @@ from .linear import (
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
+from .vision_rope import VisionRoPE, VisionRoPEConfig, VisionPositionalEmbeddings
+from .vision_transformer import (
+    VisionConfig, 
+    VisionTransformer, 
+    VisionOutput,
+    PatchEmbeddingConfig,
+    PatchEmbedding,
+    VisionLayerConfig,
+    VisionLayer,
+    PatchMergerConfig,
+    PatchMerger,
+)
 
 __all__ = [
     "MLP",
@@ -61,6 +73,18 @@ __all__ = [
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
+    "VisionConfig",
+    "VisionTransformer",
+    "VisionOutput",
+    "PatchEmbeddingConfig",
+    "PatchEmbedding",
+    "VisionLayerConfig",
+    "VisionLayer",
+    "PatchMergerConfig",
+    "PatchMerger",
+    "VisionRoPE",
+    "VisionRoPEConfig",
+    "VisionPositionalEmbeddings",
     "YARNRoPEConfig",
     "config_converter",
 ]

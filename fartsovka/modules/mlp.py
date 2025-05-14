@@ -16,6 +16,7 @@ __all__ = ["MLP", "MLPConfig"]
 class MLPConfig:
     linear_config: LinearConfig
     activation: Activation
+    has_biases: bool = False
 
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MLP":
         up_key, down_key = jax.random.split(key)
@@ -24,19 +25,19 @@ class MLPConfig:
             up_projection=self.linear_config.random_init(
                 model_dim,
                 (hidden_dim, hidden_dim),
-                has_biases=False,
+                has_biases=self.has_biases,
                 key=up_key,
             ),
             down_projection=self.linear_config.random_init(
                 hidden_dim,
                 (model_dim,),
-                has_biases=False,
+                has_biases=self.has_biases,
                 key=down_key,
             ),
         )
 
 
-class MLP(FartsovkaModule):
+class MLP(FartsovkaModule[MLPConfig]):
     up_projection: LinearBase
     down_projection: LinearBase
 

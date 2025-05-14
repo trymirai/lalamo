@@ -11,7 +11,7 @@ from safetensors.flax import load_file as load_safetensors
 from fartsovka.common import DType
 from fartsovka.modules import Decoder
 
-from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config
+from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config, HFQwen25VLConfig
 
 __all__ = [
     "MODELS",
@@ -110,6 +110,14 @@ MODELS = [
         config_type=HFQwen2Config,
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
+        name="Qwen2.5-VL-3B-Instruct",
+        repo="Qwen/Qwen2.5-VL-3B-Instruct",
+        config_type=HFQwen25VLConfig,
+        config_file_name="config.json",
+        weights_file_names=("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"),
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
