@@ -462,13 +462,11 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         
         print(f"DEBUG: HF vision_config: {vc}")
 
-        # Main operational dimension from HF config
         hf_main_hidden_size = vc["hidden_size"] # e.g., 1280
         hf_total_depth = vc["depth"] # e.g., 32
         hf_main_num_heads = vc["num_heads"] # e.g., 16 for the 1280-dim stage
         hf_main_intermediate_size = vc.get("intermediate_size", hf_main_hidden_size * 4)
 
-        # Create patch embedding config - projects to the main ViT dimension
         patch_embedding_config = PatchEmbeddingConfig(
             precision=precision,
             patch_size=vc["patch_size"],
@@ -476,7 +474,6 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             in_channels=vc.get("in_chans", vc.get("in_channels", 3)), 
         )
         
-        # RoPE config - head_dim is derived from the main ViT dimension
         if hf_main_hidden_size % hf_main_num_heads != 0:
             raise ValueError(f"HF vision_config hidden_size {hf_main_hidden_size} not divisible by num_heads {hf_main_num_heads}")
         actual_head_dim = hf_main_hidden_size // hf_main_num_heads

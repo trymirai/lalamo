@@ -197,8 +197,8 @@ def huggingface_qwen25vl():
 def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
     """Load Fartsovka vision model with weights from HuggingFace Qwen2.5-VL."""
     model_repo_id = "Qwen/Qwen2.5-VL-3B-Instruct"
-    weights_jax_dtype = jnp.bfloat16 
-    fartsovka_compute_precision = jnp.bfloat16 
+    weights_jax_dtype = jnp.float32 
+    fartsovka_compute_precision = jnp.float32 
     fartsovka_accumulation_precision = jnp.float32
 
     try:
@@ -212,9 +212,9 @@ def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
         hf_config_path = download_config_file(model_spec)
         with open(hf_config_path, "r") as f:
             full_hf_config_json = json.load(f)
-        
+
         hf_qwen_vl_config_obj = cattrs.structure(full_hf_config_json, HFQwen25VLConfig)
-        weights_jax_dtype = hf_qwen_vl_config_obj.default_precision
+        weights_jax_dtype = jnp.float32 #hf_qwen_vl_config_obj.default_precision
         fartsovka_compute_precision = weights_jax_dtype
         print(f"Using JAX dtype for weights & Fartsovka model init: {weights_jax_dtype}")
 
@@ -224,7 +224,7 @@ def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
         for shard_path in weight_files_paths:
             with safe_open(str(shard_path), framework="numpy") as f:
                 for key in f.keys():
-                    tensor_np = f.get_tensor(key)          # NumPy array, zero-copy
+                    tensor_np = f.get_tensor(key)
                     weights_dict_jax[key] = jnp.array(tensor_np).astype(weights_jax_dtype)
                 
         print(f"Successfully converted all HF weight shards to Fartsovka JAX arrays.")
