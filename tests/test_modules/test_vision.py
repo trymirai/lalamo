@@ -8,6 +8,7 @@ import pytest
 import torch
 from jaxtyping import Array, Float, PRNGKeyArray
 from PIL import Image
+from jax import vmap
 
 # NOTE: **NO hard dependency on Fartsovka VisionTransformer**
 # --------------------------------------------------------
@@ -240,7 +241,6 @@ def _find_hf_rotary_emb(hf_vis):
 
     return None  # not found
 
-
 @pytest.mark.parametrize("seq_len", [64])
 def test_vision_rope_cos_sin(huggingface_qwen25vl, fartsovka_qwen25vl_vision, seq_len):
     """Cosine/Sine tables produced by VisionRoPE match the HF implementation."""
@@ -289,3 +289,180 @@ def test_vision_rope_cos_sin(huggingface_qwen25vl, fartsovka_qwen25vl_vision, se
     assert_close(result=sin_fs, reference=sin_hf, atol=1e-6, rtol=1e-6, operation_name="VisionRoPE sin")
 
     print("\n✓ VisionRoPE cosine/sine tables match HF implementation (seq_len =", seq_len, ")")
+
+# ---------------------------------------------------------------------------
+# Patch-merger parity
+# ---------------------------------------------------------------------------
+
+def _find_hf_patch_merger(hf_vis):
+    """
+    Locate the *first* PatchMerger-like module inside the HF vision tower.
+
+    We walk through a list of candidate attribute names that appear in
+    different Qwen-2.5-VL revisions.
+    """
+    candidate_attrs = [
+        "merger",           # Current HF naming (Qwen2-5-VL)
+        "patch_merger",     # Alternate spelling
+        "final_merger",     # Some forks expose a final projection this way
+    ]
+    for name in candidate_attrs:
+        if hasattr(hf_vis, name):
+            return getattr(hf_vis, name)
+    return None
+
+
+@pytest.mark.parametrize("dtype", [jnp.float32])
+def test_vision_patch_merger(huggingface_qwen25vl, fartsovka_qwen25vl_vision, dtype):
+    """
+    Compare **one** patch-merger block between HF and Fartsovka.
+
+    We use:
+      • HF  : vision_tower.<merger candidate>
+      • FS  : VisionTransformer.final_merger
+
+    Both modules receive identical random hidden-states.  Outputs must match
+    within 1 e-6 (f32) or 1 e-3 (bf16).
+    """
+    if huggingface_qwen25vl is None:
+        pytest.skip("HF reference model missing")
+    if fartsovka_qwen25vl_vision is None:
+        pytest.skip("Fartsovka vision model failed to load")
+
+    # -------- locate the two merger modules --------------------------------
+    hf_vis = getattr(
+        huggingface_qwen25vl, "vision_tower",
+        getattr(huggingface_qwen25vl, "visual")
+    )
+    hf_merger = _find_hf_patch_merger(hf_vis)
+    if hf_merger is None:
+        pytest.skip("Could not locate patch-merger module inside HF model")
+
+    fs_merger = fartsovka_qwen25vl_vision.final_merger
+
+    # ------------------------------------------------------------------
+    # Sanity‑check: loaded Fartsovka weights ≈ HF weights
+    # ------------------------------------------------------------------
+    try:
+        import torch
+
+        # ----- hidden projection (mlp[0] ↔ hidden_proj) -----
+        hf_w0 = hf_merger.mlp[0].weight.detach().cpu().to(torch.float32).numpy()
+        fs_w0 = jnp.asarray(fs_merger.hidden_proj.weights, dtype=jnp.float32)
+        print("hidden_proj.weight first 10 FS vs HF:", fs_w0.flatten()[:10], hf_w0.flatten()[:10])
+        assert_close(result=fs_w0, reference=hf_w0, atol=1e-6, rtol=1e-6,
+                     operation_name="PatchMerger hidden_proj.weight")
+
+        hf_b0 = hf_merger.mlp[0].bias.detach().cpu().to(torch.float32).numpy()
+        fs_b0 = jnp.asarray(fs_merger.hidden_proj.biases, dtype=jnp.float32)
+        print("hidden_proj.bias first 10 FS vs HF:", fs_b0.flatten()[:10], hf_b0.flatten()[:10])
+        assert_close(result=fs_b0, reference=hf_b0, atol=1e-6, rtol=1e-6,
+                     operation_name="PatchMerger hidden_proj.bias")
+
+        # ----- output projection (mlp[2] ↔ out_proj) -----
+        hf_w2 = hf_merger.mlp[2].weight.detach().cpu().to(torch.float32).numpy()
+        fs_w2 = jnp.asarray(fs_merger.out_proj.weights, dtype=jnp.float32)
+        print("out_proj.weight first 10 FS vs HF:", fs_w2.flatten()[:10], hf_w2.flatten()[:10])
+        assert_close(result=fs_w2, reference=hf_w2, atol=1e-6, rtol=1e-6,
+                     operation_name="PatchMerger out_proj.weight")
+
+        hf_b2 = hf_merger.mlp[2].bias.detach().cpu().to(torch.float32).numpy()
+        fs_b2 = jnp.asarray(fs_merger.out_proj.biases, dtype=jnp.float32)
+        print("out_proj.bias first 10 FS vs HF:", fs_b2.flatten()[:10], hf_b2.flatten()[:10])
+        assert_close(result=fs_b2, reference=hf_b2, atol=1e-6, rtol=1e-6,
+                     operation_name="PatchMerger out_proj.bias")
+
+        # ----- RMSNorm / ln_q -----
+        hf_scale = hf_merger.ln_q.weight.detach().cpu().to(torch.float32).numpy()
+        fs_scale = jnp.asarray(fs_merger.norm.scales, dtype=jnp.float32)
+        print("ln_q.scale first 10 FS vs HF:", fs_scale.flatten()[:10], hf_scale.flatten()[:10])
+        assert_close(result=fs_scale, reference=hf_scale, atol=1e-6, rtol=1e-6,
+                     operation_name="PatchMerger ln_q/scale")
+    except Exception as e:
+        # If any of the above asserts fail or shapes mismatch we re‑raise so
+        # pytest surfaces the exact reason.
+        raise
+
+    # -------- craft identical random input ---------------------------------
+    seq_len_multiple = fs_merger.config.spatial_merge_size ** 2
+    seq_len = 8 * seq_len_multiple            # keep it small but divisible
+
+    hidden_dim = int(fs_merger.norm.input_dim)
+    key = jax.random.PRNGKey(0)
+    hidden_states = jax.random.normal(key, (seq_len, hidden_dim), dtype=dtype)
+
+    # -------- HF forward (Torch) -------------------------------------------
+    import torch
+    with torch.no_grad():
+        # Convert via helper → NumPy → Torch.  This avoids JAX array incompatibility
+        torch_inp = to_torch(hidden_states).to(
+            torch.float32 if dtype == jnp.float32 else torch.bfloat16
+        )
+        # Make sure input lives on the *same* device as the HF module weights
+        merger_device = next(hf_merger.parameters()).device
+        torch_inp = torch_inp.to(merger_device)
+        hf_merger = hf_merger.to(merger_device)
+        torch_out = hf_merger(torch_inp).to(torch.float32).cpu().numpy()  # promote + move to CPU
+        out_hf = torch_out
+
+    # ------------------------------------------------------------------
+    # 🔎  STEP‑WISE DIFF (ln → hidden proj → GELU) – helps pinpoint drift
+    # ------------------------------------------------------------------
+    # ---- HF intermediate tensors (always float32 CPU copies) ----------
+    hf_after_ln   = hf_merger.ln_q(torch_inp).view(-1, fs_merger.hidden_proj.input_dim)
+    hf_after_hid  = hf_merger.mlp[0](hf_after_ln)
+    hf_after_gelu = torch.nn.functional.gelu(hf_after_hid)  # intrinsic GELU (exact‑erf)
+
+    # ---- FS intermediate tensors --------------------------------------
+    fs_after_ln   = vmap(fs_merger.norm)(hidden_states).reshape(hf_after_ln.shape)
+    fs_after_hid, = vmap(fs_merger.hidden_proj)(fs_after_ln)
+    fs_after_gelu = jax.nn.gelu(fs_after_hid, approximate=False)  # use exact‑erf for parity
+
+    # ---- Quick numeric snapshots --------------------------------------
+    import numpy as _np
+    def _max_abs(a, b): return float(_np.max(_np.abs(a - b)))
+
+    # ---- EXTRA DEBUG: input → variance → rsqrt ------------------------
+    # raw marshal diff
+    print("│Δ│ input        :", _max_abs(from_torch(torch_inp), hidden_states))
+
+    # variance over last dim (float32 for both)
+    hf_var  = (torch_inp.float() ** 2).mean(-1, keepdim=True).cpu().numpy()
+    fs_var  = (hidden_states.astype(jnp.float32) ** 2).mean(-1, keepdims=True)
+    print("│Δ│ variance     :", _max_abs(fs_var, hf_var))
+
+    # reciprocal sqrt with identical epsilon
+    eps = 1e-6
+    hf_rsqrt = 1.0 / _np.sqrt(hf_var + eps)
+    fs_rsqrt = 1.0 / _np.sqrt(_np.asarray(fs_var) + eps)
+    print("│Δ│ rsqrt        :", _max_abs(fs_rsqrt, hf_rsqrt))
+
+    # first 6 elements after reshape to ensure flat order parity
+    print("reshape HF first 6:", from_torch(hf_after_ln).reshape(-1)[:6])
+    print("reshape FS first 6:", fs_after_ln.reshape(-1)[:6])
+
+    print("│Δ│ after LN   :", _max_abs(fs_after_ln,   from_torch(hf_after_ln)))
+    print("│Δ│ after hid  :", _max_abs(fs_after_hid,  from_torch(hf_after_hid)))
+    print("│Δ│ after GELU :", _max_abs(fs_after_gelu, from_torch(hf_after_gelu)))
+
+    # -------- Fartsovka forward (JAX) --------------------------------------
+    out_fs = fs_merger(hidden_states).astype(jnp.float32)
+    out_fs_np = jnp.asarray(out_fs)
+
+    # -------- numerical parity --------------------------------------------
+    # -- quick peek at outputs before asserting
+    import numpy as _np
+    print("out_fs first 10:", _np.asarray(out_fs_np.flatten()[:10]))
+    print("out_hf first 10:", _np.asarray(out_hf.flatten()[:10]))
+    print("max |Δ|:", float(_np.max(_np.abs(out_fs_np - out_hf))))
+    atol = 1e-6 if dtype == jnp.float32 else 1e-3
+    rtol = atol
+    assert_close(
+        result=out_fs_np,
+        reference=out_hf,
+        atol=atol,
+        rtol=rtol,
+        operation_name=f"PatchMerger ({dtype})",
+    )
+
+    print(f"\n✓ PatchMerger parity passed for dtype={dtype}")

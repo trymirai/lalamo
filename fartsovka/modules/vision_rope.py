@@ -182,11 +182,7 @@ class VisionRoPE(FartsovkaModule[VisionRoPEConfig]):
         else:
             theta = self._2d_freqs(position)                 # 2‑D mode
 
-        # Return θ values with shape [tokens, head_dim//2] (matches HF)
         return VisionPositionalEmbeddings(theta)
 
-    # -------------------------------------------------------------------------------
-    # No learnable parameters
-    # -------------------------------------------------------------------------------
     def export_weights(self) -> ParameterDict:
         return ParameterDict()

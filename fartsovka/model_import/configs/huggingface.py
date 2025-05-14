@@ -525,14 +525,12 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             mlp_config=mlp_config,
         )
         
-        # Final patch merger (projects from main_hidden_size to out_hidden_size)
         patch_merger_config = PatchMergerConfig(
             precision=precision,
             spatial_merge_size=vc["spatial_merge_size"],
             has_biases=True, 
         )
         
-        # Simplified Fartsovka ViT config: Single stage based on HF main dimensions
         fartsovka_vision_config = VisionConfig(
             patch_embedding_config=patch_embedding_config,
             rope_config=rope_config,

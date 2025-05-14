@@ -249,66 +249,6 @@ def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
         return None
 
 
-@pytest.fixture(scope="package")
-def vision_config() -> VisionConfig:
-    """Provide a vision configuration for testing (generic, random)."""
-    # This fixture provides a smaller, generic config for basic tests not requiring HF weights.
-    # It's kept separate from the HF-specific loading.
-    # If a test specifically needs the HF-derived VisionConfig, it should use fartsovka_qwen25vl_vision.config
-    
-    patch_embedding_config = PatchEmbeddingConfig(
-        precision=jnp.float32, patch_size=14, temporal_patch_size=2, in_channels=3,
-    )
-    rope_config = VisionRoPEConfig(
-        precision=jnp.float32, base=10000.0, max_sequence_length=1024,
-    )
-    norm_config = RMSNormConfig(
-        scale_precision=jnp.float32, accumulation_precision=jnp.float32, epsilon=1e-6,
-    )
-    linear_config = FullPrecisionLinearConfig(precision=jnp.float32)
-    attention_config = AttentionConfig(
-        qkv_projection_config=linear_config, out_projection_config=linear_config,
-        logit_soft_cap=None, has_qkv_biases=True, has_out_biases=True,
-    )
-    mlp_config = MLPConfig(
-        linear_config=linear_config, activation=Activation.SILU, has_biases=True,
-    )
-    layer_config = VisionLayerConfig(
-        norm_config=norm_config, attention_config=attention_config, mlp_config=mlp_config,
-    )
-    patch_merger_config = PatchMergerConfig(
-        precision=jnp.float32, spatial_merge_size=2, has_biases=True,
-    )
-    
-    # Using smaller dimensions for this generic config to keep tests fast if they use it
-    return VisionConfig(
-        patch_embedding_config=patch_embedding_config,
-        rope_config=rope_config,
-        layer_config=layer_config,
-        patch_merger_config=patch_merger_config,
-        output_norm_config=norm_config,
-        # Stage-specific parameters for a generic small model
-        stage_hidden_dims=(256,),  # Single stage with model_dim 256
-        stage_depths=(2,),         # 2 layers in this stage
-        stage_num_heads=(4,),      # 4 heads in this stage
-        stage_mlp_intermediate_dims=(512,), # MLP intermediate dim 512
-        attention_scale=None,
-        image_size=224,
-        patch_size=14,
-        in_channels=3,
-        temporal_patch_size=2,
-        spatial_merge_size=2,
-        out_hidden_size=512, # Final output dimension
-        fullatt_block_indexes=(0, 1), # All 2 layers use full attention
-    )
-
-
-@pytest.fixture(scope="package")
-def vision_model(vision_config: VisionConfig, rng_key: PRNGKeyArray) -> VisionTransformer:
-    """Provide a vision transformer model for testing (generic, random)."""
-    return vision_config.random_init(key=rng_key)
-
-
 EMBEDDING_BIT_WIDTH = 8
 
 

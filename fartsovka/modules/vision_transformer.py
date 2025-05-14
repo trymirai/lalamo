@@ -438,34 +438,17 @@ class PatchMerger(FartsovkaModule[PatchMergerConfig]):
         self, 
         x: Float[Array, "seq_len hidden_size"]
     ) -> Float[Array, "reduced_seq_len out_hidden_size"]:
-        """Merge patches and project to output dimension.
-        
-        Args:
-            x: Input sequence of features, shape [seq_len, hidden_size]
-            
-        Returns:
-            Merged and projected features, shape [reduced_seq_len, out_hidden_size]
-        """
-        # Print input shape for debugging
+
         print(f"PatchMerger input shape: {x.shape}")
         
-        # Apply layer normalization
         x = vmap(self.norm, in_axes=0)(x)
-        
-        # Calculate the hidden size after merging spatial dimensions
         hidden_size = self.config.spatial_merge_size ** 2 * x.shape[-1]
         
-        # Reshape to prepare for spatial merging - similar to HF's view(-1, self.hidden_size)
         x = x.reshape(-1, hidden_size)
         print(f"PatchMerger after reshaping to hidden_size: {x.shape}")
-        
-        # Apply the hidden projection (similar to first linear in HF's Sequential)
         (x,) = vmap(self.hidden_proj, in_axes=0)(x)
         
-        # Apply GELU activation (similar to GELU in HF's Sequential)
         x = self.gelu(x)
-        
-        # Apply the output projection (similar to second linear in HF's Sequential)
         (x,) = vmap(self.out_proj, in_axes=0)(x)
         
         print(f"PatchMerger final output shape: {x.shape}")
