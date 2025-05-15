@@ -42,6 +42,8 @@ class DecoderSamplesContext(ModuleSamplesContext):
     positional_embeddings: PositionalEmbeddings
 
     def __init__(self, seed: int, suffix_length: int, rope: RoPE):
+        jax.config.update("jax_enable_x64", True)
+
         key = jax.random.PRNGKey(seed)
         tokens_key, root_key = jax.random.split(key, num=2)
 
@@ -55,8 +57,8 @@ class DecoderSamplesContext(ModuleSamplesContext):
             minval=0,
             maxval=10000,
             dtype=int
-        )
-        self.token_positions = jnp.arange(suffix_length)
+        ).astype(jnp.uint64)
+        self.token_positions = jnp.arange(suffix_length).astype(jnp.int64)
         self.mask = jnp.tril(jnp.ones((suffix_length, suffix_length), dtype=bool))
 
         self.positional_embeddings = rope(self.token_positions)

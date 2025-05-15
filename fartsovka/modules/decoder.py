@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
+import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
@@ -164,7 +165,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
 
         x = context.token_ids
         y = self(x, context.token_positions, None, context.mask, False)
-        sample = ModuleSample(inputs=(x,), outputs=(y.output,))
+        sample = ModuleSample(inputs=(x.astype(jnp.int64),), outputs=(y.output,))
 
         return ParameterDict(
             embedding=embedding_sample.export(),
