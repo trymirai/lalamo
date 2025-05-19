@@ -71,20 +71,51 @@ class RoPEConfigBase:
     ) -> Float[Array, " tokens"]:
         return inverse_frequencies
 
+    def _calculate_scaled_inverse_frequencies(self, head_dim: int) -> Float[Array, " head_dim_div_2"]:
+        channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
+        inv_freq = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / head_dim))
+        scaled_inv_freq = self._scale_inverse_frequencies(inv_freq, head_dim, self.max_sequence_length)
+        return scaled_inv_freq
+
+    def compute_projected_frequencies(
+        self,
+        frequencies_config_dim: int,
+        positions: Int[Array, "num_tokens num_pos_dims"],
+    ) -> Float[Array, "num_tokens output_freq_dims"]:
+        scaled_inv_freq = self._calculate_scaled_inverse_frequencies(head_dim=frequencies_config_dim)
+
+        projected_tensor = jnp.einsum(
+            "np,f->npf", positions.astype(jnp.float32), scaled_inv_freq
+        )
+
+        num_tokens = positions.shape[0]
+        output_freq_dims = positions.shape[1] * scaled_inv_freq.shape[0]
+        return projected_tensor.reshape(num_tokens, output_freq_dims)
+    
+    def init_with_positions(
+        self,
+        head_dim: int,
+        positions: Int[Array, "num_tokens num_pos_dims"],
+    ) -> "RoPE":
+        projected_freqs = self.compute_projected_frequencies(
+            frequencies_config_dim=head_dim, positions=positions
+        )
+        
+        embeddings = jnp.concatenate((projected_freqs, projected_freqs), axis=-1)
+        
+        cosines = jnp.cos(embeddings).astype(self.precision) * self._attention_scaling_factor
+        sines = jnp.sin(embeddings).astype(self.precision) * self._attention_scaling_factor
+        
+        return RoPE(config=self, cosines=cosines, sines=sines)
+
     def init(
         self,
         head_dim: int,
         num_timesteps: int,
     ) -> "RoPE":
-        timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
-        channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
-        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / head_dim))
-        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
-        outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
-        embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        cosines = jnp.cos(embeddings).astype(self.precision) * self._attention_scaling_factor
-        sines = jnp.sin(embeddings).astype(self.precision) * self._attention_scaling_factor
-        return RoPE(config=self, cosines=cosines, sines=sines)
+        timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)[:, jnp.newaxis]
+
+        return self.init_with_positions(head_dim=head_dim, positions=timesteps)
 
 
 class RoPE(FartsovkaModule[RoPEConfigBase]):

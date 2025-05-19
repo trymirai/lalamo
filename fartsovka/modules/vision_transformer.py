@@ -14,10 +14,11 @@ from fartsovka.common import DType, ParameterDict
 
 from .common import FartsovkaModule
 from .normalization import RMSNorm, RMSNormConfig
-from .vision_rope import VisionRoPE, VisionRoPEConfig
+from .vision_rope import VisionRoPE, VisionPositionalEmbeddings
 from .vision_layer import VisionLayer, VisionLayerConfig
 from .patch_embedding import PatchEmbedding, PatchEmbeddingConfig
 from .patch_merger import PatchMerger, PatchMergerConfig
+from .rope import RoPEConfigBase
 
 hf_activations: Dict[str, Any] = {}
 
@@ -34,7 +35,7 @@ class VisionOutput(NamedTuple):
 @dataclass
 class VisionConfig:
     patch_embedding_config: PatchEmbeddingConfig
-    rope_config: VisionRoPEConfig 
+    rope_config: RoPEConfigBase
     layer_config: VisionLayerConfig 
     patch_merger_config: PatchMergerConfig
     output_norm_config: RMSNormConfig
@@ -117,7 +118,6 @@ class VisionConfig:
         """Initialize a VisionTransformer with random weights, adapting for stages, or from loaded_weights."""
         embedding_key, rope_key, stages_key, final_merger_key, norm_key = jax.random.split(key, 5)
 
-        # --- Patch Embedding (Handles initial projection to first stage dim) ---
         patch_embed_initial_weights = None
         patch_embed_initial_biases = None
         if loaded_weights is not None:
@@ -133,12 +133,11 @@ class VisionConfig:
         )
 
         first_stage_head_dim = self.stage_hidden_dims[0] // self.stage_num_heads[0]
-        num_patches_per_dim  = self.image_size // self.patch_size     # e.g. 224//14 → 16
-        num_timesteps_for_rope = num_patches_per_dim * num_patches_per_dim  # 16×16 = 256
 
-        rope = self.rope_config.init(
+        rope = VisionRoPE(
+            config=self.rope_config,
             head_dim=first_stage_head_dim,
-            num_timesteps=num_timesteps_for_rope,   # ← updated value
+            spatial_merge_size=self.spatial_merge_size
         )
 
         all_layers = []
@@ -341,7 +340,6 @@ class VisionTransformer(FartsovkaModule[VisionConfig]):
             if stage_idx < len(self.inter_stage_mergers):
                 merger_instance = self.inter_stage_mergers[stage_idx]
                 hidden_states = merger_instance(hidden_states)
-                
 
         hidden_states = self.final_merger(hidden_states)
         

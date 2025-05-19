@@ -25,7 +25,7 @@ from fartsovka.modules import (
     PatchEmbeddingConfig,
     VisionLayerConfig,
     PatchMergerConfig,
-    VisionRoPEConfig,
+    RoPEConfigBase,
     VisionSdpaAttentionConfig
 )
 
@@ -482,7 +482,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             # Fallback or error, for now, let it pass to see if VisionRoPEConfig catches it or if model runs.
 
         max_spatial_patches_for_rope = vc.get("image_size", vc.get("window_size", 224)) // vc["patch_size"]
-        rope_config = VisionRoPEConfig(
+        rope_config = RoPEConfigBase(
             precision=precision,
             base=10000.0, 
             max_sequence_length=max_spatial_patches_for_rope,
