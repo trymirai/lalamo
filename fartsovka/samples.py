@@ -58,7 +58,7 @@ class DecoderSamplesContext(ModuleSamplesContext):
             maxval=10000,
             dtype=int
         ).astype(jnp.uint64)
-        self.token_positions = jnp.arange(suffix_length).astype(jnp.int64)
+        self.token_positions = jnp.arange(suffix_length).astype(jnp.uint64)
         self.mask = jnp.tril(jnp.ones((suffix_length, suffix_length), dtype=bool))
 
         self.positional_embeddings = rope(self.token_positions)

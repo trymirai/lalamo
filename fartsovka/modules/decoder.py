@@ -165,7 +165,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
 
         x = context.token_ids
         y = self(x, context.token_positions, None, context.mask, False)
-        sample = ModuleSample(inputs=(x.astype(jnp.int64),), outputs=(y.output,))
+        sample = ModuleSample(inputs=(x.astype(jnp.uint64),), outputs=(y.output,))
 
         return ParameterDict(
             embedding=embedding_sample.export(),
