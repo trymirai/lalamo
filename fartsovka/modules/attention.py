@@ -64,18 +64,7 @@ def _soft_capped_attention_kernel(
         if mask is None:
             mask = jnp.ones((dst_length, src_length), dtype=jnp.bool_)
         mask = _apply_sliding_window(mask, local_window_size)
-    # ------------------------------------------------------------------
-    # DEBUG: dump the local/block attention mask once per program run
-    # ------------------------------------------------------------------
-    if os.getenv("DEBUG_ATTN", "0") == "1" and not getattr(_soft_capped_attention_kernel, "_mask_dumped", False):
-        if mask is not None:
-            _arr = _np_debug.asarray(mask, dtype=_np_debug.float32)
-            print("DEBUG FS STATS: --- FS_Block0_AttnMask (NumPy) ---")
-            print(f"  Shape: {_arr.shape}, Dtype: {_arr.dtype}, "
-                  f"Min: {_arr.min():.1f}, Max: {_arr.max():.1f}, "
-                  f"Unique vals (first 6): {_np_debug.unique(_arr)[:6]}")
-            print("DEBUG FS STATS: --- END FS_Block0_AttnMask ---")
-        _soft_capped_attention_kernel._mask_dumped = True
+
     group_size = num_heads // num_groups
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
@@ -358,14 +347,6 @@ class VisionSdpaAttention(FartsovkaModule[VisionSdpaAttentionConfig]):
             raise ValueError(
                 f"Input channels {dim} does not match num_heads*head_dim ({self.num_heads}*{self.head_dim})"
             )
-
-        print(f"({seq_length}, {dim}) hidden_states.shape before qkv")
-        print(f"{self.qkv.output_dims} qkv.output_dims")
-        print(f"{self.qkv} qkv")
-
-        # QKV projection using vmap like the regular Attention class
-        # vmap applies the function to each sequence element independently
-        # This eliminates the broadcasting issue when adding bias
         (qkv_out,) = vmap(self.qkv, in_axes=0)(hidden_states)  # Shape: "seq_length (3*dim)"
 
         qkv_reshaped = rearrange(

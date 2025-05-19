@@ -1,4 +1,3 @@
-# Copyright 2025 The Fartsovka Team.
 from dataclasses import dataclass
 from typing import Optional
 

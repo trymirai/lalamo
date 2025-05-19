@@ -36,6 +36,7 @@ _MAX_PRINT = 5  # how many individual element diffs to show
 
 # Global dictionary to store activations from HF hooks
 hf_activations: Dict[str, Any] = {}
+fs_activations: Dict[str, Any] = {}
 
 def _print_hf_tensor_stats(tensor: Union[torch.Tensor, np.ndarray, None], name: str, store_key: Optional[str] = None, num_elements_to_show: int = 5) -> None:
     """Helper function to print tensor statistics for PyTorch or NumPy tensors."""
@@ -88,6 +89,55 @@ def _print_hf_tensor_stats(tensor: Union[torch.Tensor, np.ndarray, None], name: 
     if store_key:
         # Store the float32 numpy version for consistent comparison later if needed
         hf_activations[store_key] = data_np 
+
+def _print_fs_tensor_stats(tensor: Union[jnp.ndarray, np.ndarray, None], name: str, store_key: Optional[str] = None, num_elements_to_show: int = 5) -> None:
+    """Helper function to print tensor statistics for JAX or NumPy tensors with FS prefix."""
+    if tensor is None:
+        print(f"DEBUG FS STATS: --- {name} (Input was None) ---")
+        if store_key: fs_activations[store_key] = None
+        return
+
+    data_np: np.ndarray
+    original_dtype_str = str(tensor.dtype) if hasattr(tensor, 'dtype') else 'N/A'
+
+    if isinstance(tensor, (jnp.ndarray, np.ndarray)):
+        tensor_name_suffix = "(JAX)" if isinstance(tensor, jnp.ndarray) else "(NumPy)"
+        # Convert to numpy for consistent stats
+        try:
+            data_np = np.asarray(tensor)
+            if data_np.dtype != np.float32:
+                data_np = data_np.astype(np.float32)
+        except Exception as e:
+            print(f"DEBUG FS STATS: Could not convert tensor {name} to NumPy array. Error: {e}")
+            if store_key: fs_activations[store_key] = "Conversion Error"
+            return
+    else:
+        print(f"DEBUG FS STATS: Unsupported tensor type for {name}: {type(tensor)}")
+        if store_key: fs_activations[store_key] = "Unsupported Type"
+        return
+
+    flat_tensor = data_np.flatten()
+    
+    nan_count = np.sum(np.isnan(flat_tensor))
+    inf_count = np.sum(np.isinf(flat_tensor))
+
+    print(f"DEBUG FS STATS: --- {name} {tensor_name_suffix} ---")
+    print(f"  Shape: {data_np.shape}, Dtype (original): {original_dtype_str}, Dtype (for stats): {data_np.dtype}")
+    if flat_tensor.size > 0:
+        rms_val = np.sqrt(np.mean(data_np**2))
+        print(f"  Min: {np.min(data_np):.6f}, Max: {np.max(data_np):.6f}, Mean: {np.mean(data_np):.6f}, Sum: {np.sum(data_np):.6f}, RMS: {rms_val:.6f}")
+        print(f"  NaNs: {nan_count}, Infs: {inf_count}")
+        if flat_tensor.size > 2 * num_elements_to_show:
+            print(f"  First {num_elements_to_show} elements: {flat_tensor[:num_elements_to_show]}")
+            print(f"  Last  {num_elements_to_show} elements: {flat_tensor[-num_elements_to_show:]}")
+        else:
+            print(f"  Elements: {flat_tensor}")
+    else:
+        print(f"  Tensor is empty.")
+    print(f"DEBUG FS STATS: --- END {name} ---")
+    if store_key:
+        # Store the float32 numpy version for consistent comparison later if needed
+        fs_activations[store_key] = data_np
 
 # Hook function template
 def get_hf_hook(name_prefix: str, store_key_prefix: str):
@@ -361,10 +411,15 @@ def test_vision_rope_cos_sin(huggingface_qwen25vl, fartsovka_qwen25vl_vision, se
     hf_vis = getattr(huggingface_qwen25vl, "vision_tower", getattr(huggingface_qwen25vl, "visual", None))
     if hf_vis is None:
         pytest.skip("HF model missing vision tower.")
+    
+    # Get necessary modules
+    try:
+        import torch
+    except ImportError:
+        pytest.skip("Could not import torch - required for this test")
         
     hf_rotary_module_or_method = _find_hf_rotary_emb(hf_vis) # This might be the module or the method
     print(f"DEBUG: Found HF Rotary object: {hf_rotary_module_or_method}, type: {type(hf_rotary_module_or_method)}")
-
 
     if hf_rotary_module_or_method is None:
         pytest.skip("Could not locate rotary_pos_emb module or method inside HF model – API changed?")
@@ -372,9 +427,12 @@ def test_vision_rope_cos_sin(huggingface_qwen25vl, fartsovka_qwen25vl_vision, se
     # For now, let's try to call the VisionRotaryEmbedding if it's found directly
     is_direct_rope_module = hasattr(hf_rotary_module_or_method, 'forward') and not isinstance(hf_rotary_module_or_method, torch.nn.ModuleList)
 
+    # Create a grid_thw_jax for this test
+    grid_thw_jax = jnp.array([[1, seq_len, seq_len]])  # Simple grid for testing
+
     # ------------------- Fartsovka ► cos/sin -------------------------------
-    # Fartsovka VisionRoPE.__call__ can take seq_len (int)
-    vt_pe_fs = fartsovka_qwen25vl_vision.rope(grid_thw_jax) # Call with int seq_len for 1D mode
+    # Fartsovka VisionRoPE.__call__ takes grid_thw
+    vt_pe_fs = fartsovka_qwen25vl_vision.rope(grid_thw_jax)
     cos_fs = vt_pe_fs.cosines  # [S, head_dim]
     sin_fs = vt_pe_fs.sines
     # --------------------- HF ► cos/sin ------------------------------------
@@ -566,21 +624,27 @@ def test_vision_encoder_parity(
     dtype,
 ):
     """
-    Simple, robust parity test: Run the *entire* vision encoder on the same synthetic clip,
-    compare final outputs from HF and Fartsovka. No block-by-block poking.
+    Simple, robust parity test: Run the vision encoder on the same synthetic clip,
+    compare outputs from HF and Fartsovka with intermediate value debugging.
     """
-    global hf_activations # Clear previous run's activations
-    hf_activations = {}
-    hook_handles = []
-    import torch  # local import to avoid polluting global namespace
+    import torch
+    import numpy as np
+    from jax import vmap
 
-    # Fixture sanity
+    # Skip if models not available
     if huggingface_qwen25vl is None:
         pytest.skip("HF reference model missing")
     if fartsovka_qwen25vl_vision is None:
         pytest.skip("Fartsovka VisionTransformer fixture failed to load")
 
-    # Prepare synthetic input
+    # Clear global activations dict
+    global hf_activations, fs_activations
+    hf_activations = {}
+    fs_activations = {}
+
+    # -------------------------------------------------
+    # Prepare identical synthetic input for both models
+    # -------------------------------------------------
     img = generate_gradient_image()  # [C, H, W]
     t_sz = fartsovka_qwen25vl_vision.config.patch_embedding_config.temporal_patch_size
     frames = [img] * t_sz
@@ -590,246 +654,187 @@ def test_vision_encoder_parity(
     img_torch = to_torch(img_jax)
     _print_hf_tensor_stats(img_torch, "HF Input: img_torch", "HF_Input_Image")
 
-
-    # Get HF and FS vision encoder objects
+    # Get model references
     hf_vis = getattr(huggingface_qwen25vl, "vision_tower", getattr(huggingface_qwen25vl, "visual", None))
-    if hf_vis is None: pytest.skip("HF model missing vision tower.")
+    if hf_vis is None:
+        pytest.skip("HF model missing vision tower")
     fs_vis = fartsovka_qwen25vl_vision
     
-    device = img_torch.device # Use input tensor's device
+    # Move HF model to the same device as input (safely)
+    device = img_torch.device
+    # Check if hf_vis exists before trying to move it to device
+    if hf_vis is not None and hasattr(hf_vis, 'to'):
     hf_vis = hf_vis.to(device)
 
-    hook_handles.append(hf_vis.patch_embed.register_forward_hook(get_hf_hook("HF_PatchEmbed", "HF_PatchEmbed")))
-
-    first_block_attn_hook_triggered = False
-    def first_block_attn_hook(module, input_tensors, output_tensors):
-        nonlocal first_block_attn_hook_triggered
-        if not first_block_attn_hook_triggered:
-            if len(input_tensors) > 0: # hidden_states
-                 _print_hf_tensor_stats(input_tensors[0], "HF_Block0_Attn_Input_HiddenStates", "HF_Block0_Attn_Input_HiddenStates")
-            if len(input_tensors) > 2 and input_tensors[2] is not None: # rotary_pos_emb (old) or position_embeddings (new)
-                if isinstance(input_tensors[2], tuple): # New: position_embeddings = (cos, sin)
-                    _print_hf_tensor_stats(input_tensors[2][0], "HF_Block0_Attn_Input_PosEmb_Cos", "HF_Block0_Attn_Input_PosEmb_Cos")
-                    _print_hf_tensor_stats(input_tensors[2][1], "HF_Block0_Attn_Input_PosEmb_Sin", "HF_Block0_Attn_Input_PosEmb_Sin")
-                else: # Old: rotary_pos_emb (theta values)
-                    _print_hf_tensor_stats(input_tensors[2], "HF_Block0_Attn_Input_RotaryPosEmb_Theta", "HF_Block0_Attn_Input_RotaryPosEmb_Theta")
-            # --- NEW: detect and print candidate attention mask tensors ---
-            for j, maybe_mask in enumerate(input_tensors):
-                if isinstance(maybe_mask, torch.Tensor):
-                    # Heuristic: attention masks are usually 2‑D or 4‑D square/symmetric tensors
-                    if maybe_mask.ndim >= 2 and maybe_mask.shape[-2] == maybe_mask.shape[-1]:
-                        _print_hf_tensor_stats(
-                            maybe_mask,
-                            f"HF_Block0_Attn_Input_Mask_candidate{j}",
-                            f"HF_Block0_Attn_Input_Mask_candidate{j}"
-                        )
-            # --- NEW: dump Block‑0 attention output ---------------------------------
-            # The hook's *return* value is the tensor that gets passed further up the
-            # vision tower.  Grab it so we can compare with Fartsovka's
-            # FS_Block_0_AttnOutput numbers.
-            attn_out_tensor: Optional[torch.Tensor]
-            if isinstance(output_tensors, tuple):
-                # Qwen2‑5‑VL returns a tuple (hidden_states, optional attn_weights)
-                attn_out_tensor = output_tensors[0] if len(output_tensors) > 0 else None
-            else:
-                attn_out_tensor = output_tensors
-            if isinstance(attn_out_tensor, torch.Tensor):
-                _print_hf_tensor_stats(
-                    attn_out_tensor,
-                    "HF_Block0_AttnOutput",
-                    "HF_Block0_AttnOutput",
-                )
-            first_block_attn_hook_triggered = True # Only capture for the first call to the first block's attention
-
-    if len(hf_vis.blocks) > 0 and hasattr(hf_vis.blocks[0], "attn"):
-        attn_mod = hf_vis.blocks[0].attn
-        # capture high‑level attention call once
-        hook_handles.append(attn_mod.register_forward_hook(first_block_attn_hook))
-
-        # ------------------------------------------------------------
-        # Extra diagnostics – handle both split (q_proj/k_proj/v_proj)
-        # *and* fused (qkv) projection styles used by HF revisions.
-        # ------------------------------------------------------------
-        if all(hasattr(attn_mod, attr) for attr in ("q_proj", "k_proj", "v_proj")):
-            proj_modules = [
-                ("HF_Block0_QProj", attn_mod.q_proj),
-                ("HF_Block0_KProj", attn_mod.k_proj),
-                ("HF_Block0_VProj", attn_mod.v_proj),
-            ]
-            for tag, mod in proj_modules:
-                hook_handles.append(mod.register_forward_hook(get_hf_hook(tag, tag)))
-        elif hasattr(attn_mod, "qkv"):
-            # Fused QKV projection – register a custom hook that splits
-            # the output into Q/K/V chunks so we still get comparable logs.
-            import torch
-            def _qkv_split_hook(module, input_tensors, output_tensor):
-                # Linear layers return a single Tensor; sometimes HF packs
-                # it in a tuple – normalise to Tensor first.
-                out = output_tensor[0] if isinstance(output_tensor, tuple) else output_tensor
-                if not isinstance(out, torch.Tensor):
-                    return  # unexpected type – silently ignore
-                q, k, v = out.chunk(3, dim=-1)
-                _print_hf_tensor_stats(q, "HF_Block0_QKVProj_Q", "HF_Block0_QKVProj_Q")
-                _print_hf_tensor_stats(k, "HF_Block0_QKVProj_K", "HF_Block0_QKVProj_K")
-                _print_hf_tensor_stats(v, "HF_Block0_QKVProj_V", "HF_Block0_QKVProj_V")
-            hook_handles.append(attn_mod.qkv.register_forward_hook(_qkv_split_hook))
-        else:
-            print("[WARN] Could not find Q/K/V projection layers (split or fused) in first HF block – skipping detailed QKV hooks.")
-
-        for i, block in enumerate(hf_vis.blocks):
-            hook_handles.append(block.register_forward_hook(get_hf_hook(f"HF_Block_{i}", f"HF_Block_{i}")))
-            break
-
-
-    # 3. Final Merger
-    hook_handles.append(hf_vis.merger.register_forward_hook(get_hf_hook("HF_FinalMerger", "HF_FinalMerger")))
-    # If merger has sub-components like norm (ln_q) and mlp, hook them too for more detail:
-    if hasattr(hf_vis.merger, 'ln_q'):
-        hook_handles.append(hf_vis.merger.ln_q.register_forward_hook(get_hf_hook("HF_FinalMerger_Norm", "HF_FinalMerger_Norm")))
-    if hasattr(hf_vis.merger, 'mlp'):
-         hook_handles.append(hf_vis.merger.mlp.register_forward_hook(get_hf_hook("HF_FinalMerger_MLP", "HF_FinalMerger_MLP")))
-
-
-    # Direct forward pass for HF model (hooks will trigger)
-    with torch.no_grad():
-        B_img, C_img_again, T_img, H_img, W_img = img_torch.shape # Renamed B,C to avoid conflict
-        tp = getattr(hf_vis.config, "temporal_patch_size", 2)
-        p_sz = getattr(hf_vis.config, "patch_size", 14)
-
-        grid_thw = torch.tensor(
-            [[
-                T_img // tp,        # temporal length after temporal-patching
-                H_img // p_sz,      # number of raw spatial patches (height)
-                W_img // p_sz       # number of raw spatial patches (width)
-            ]],
-            dtype=torch.long,
-            device=img_torch.device,
-        )
-        # Print grid_thw for HF
-        _print_hf_tensor_stats(grid_thw, "HF Input: grid_thw", "HF_Input_GridTHW")
-
-
-        print("DEBUG HF: img_torch.shape:", img_torch.shape)
-        print("DEBUG HF: grid_thw:", grid_thw)
-        # print("DEBUG HF: hf_vis.config:", hf_vis.config) # Already printed by Fartsovka load
-
-        try:
-            hf_out_obj = hf_vis(img_torch, grid_thw=grid_thw)
-            print(f"Called HF vision encoder with img_torch and grid_thw.")
-        except Exception as e:
-            print(f"ERROR: Failed to call HF vision encoder: {e}")
-            # Remove hooks if error
-            for handle in hook_handles: handle.remove()
-            raise
-
-        # Output from Qwen2_5_VisionTransformerPretrainedModel.forward is the final hidden_states
-        hf_out_final_hidden = hf_out_obj 
-        _print_hf_tensor_stats(hf_out_final_hidden, "HF Final Output Hidden States", "HF_FinalOutputHidden")
-        hf_out_np = hf_out_final_hidden.cpu().numpy().astype("float32")
-
-
-    # Remove hooks after HF forward pass
-    for handle in hook_handles:
-        handle.remove()
-
-    print("\n--- Running Fartsovka Model ---")
-    # Rename fs_out to fs_result_obj to clarify it's the model's output object/structure
-    fs_result_obj = fs_vis(img_jax, grid_thw=from_torch(grid_thw)) # Pass grid_thw to Fartsovka
+    # Prepare grid_thw (shape tensor for windows)
+    B, C, T_img, H_img, W_img = img_torch.shape
+    tp = getattr(hf_vis.config, "temporal_patch_size", 2)
+    p_sz = getattr(hf_vis.config, "patch_size", 14)
     
-    # --- Add Fartsovka Intermediate Tensor Prints ---
-    # This section assumes fs_result_obj might be a rich object (like HF's BaseModelOutput)
-    # or a tuple where elements contain intermediate states.
-
-    fs_intermediate_logged = False
-    if hasattr(fs_result_obj, 'hidden_states') and fs_result_obj.hidden_states is not None:
-        if isinstance(fs_result_obj.hidden_states, (list, tuple)) and len(fs_result_obj.hidden_states) > 0:
-            # hidden_states[0] is typically the output of embeddings / input to first block
-            _print_hf_tensor_stats(
-                np.asarray(fs_result_obj.hidden_states[0]), 
-                "FS_PatchEmbed_Output (or Block0_Input from hidden_states[0])", 
-                "FS_PatchEmbed_Output_or_Block0_Input"
-            )
-            if len(fs_result_obj.hidden_states) > 1:
-                # hidden_states[1] is typically the output of the first block
-                _print_hf_tensor_stats(
-                    np.asarray(fs_result_obj.hidden_states[1]), 
-                    "FS_Block_0_Output (from hidden_states[1])", 
-                    "FS_Block_0_Output"
-                )
-            # Output of all blocks (input to merger)
-            _print_hf_tensor_stats(
-                np.asarray(fs_result_obj.hidden_states[-1]), 
-                "FS_FinalEncoderBlocks_Output (MergerInput from hidden_states[-1])",
-                "FS_FinalEncoderBlocks_Output_MergerInput"
-            )
-            fs_intermediate_logged = True
-
-    # Alternative check: if fs_result_obj is a tuple (e.g., (final_output, all_hidden_states_tuple, ...))
-    # and all_hidden_states is the second element.
-    elif isinstance(fs_result_obj, tuple) and len(fs_result_obj) > 1 and \
-         hasattr(fs_result_obj[1], '__iter__') and not isinstance(fs_result_obj[1], (jnp.ndarray, np.ndarray, torch.Tensor)): # Check if second element is iterable and not a tensor itself
-        all_hidden_states_fs = fs_result_obj[1]
-        if len(all_hidden_states_fs) > 0:
-            _print_hf_tensor_stats(
-                np.asarray(all_hidden_states_fs[0]),
-                "FS_PatchEmbed_Output (or Block0_Input - from tuple[1][0])",
-                "FS_PatchEmbed_Output_or_Block0_Input_tuple"
-            )
-            if len(all_hidden_states_fs) > 1:
-                 _print_hf_tensor_stats(
-                    np.asarray(all_hidden_states_fs[1]),
-                    "FS_Block_0_Output (from tuple[1][1])",
-                    "FS_Block_0_Output_tuple"
-                )
-            _print_hf_tensor_stats(
-                np.asarray(all_hidden_states_fs[-1]),
-                "FS_FinalEncoderBlocks_Output (MergerInput - from tuple[1][-1])",
-                "FS_FinalEncoderBlocks_Output_MergerInput_tuple"
-            )
-            fs_intermediate_logged = True
-            
-    if not fs_intermediate_logged:
-        print("DEBUG FS: Could not retrieve detailed intermediate hidden states from Fartsovka model output for printing.")
-
-    # Extract final Fartsovka output tensor
-    fs_out_final_hidden = None
-    if hasattr(fs_result_obj, "output"): # Specific VisionOutput structure
-        fs_out_final_hidden = fs_result_obj.output
-    elif isinstance(fs_result_obj, jnp.ndarray): # Direct JAX array output
-        fs_out_final_hidden = fs_result_obj
-    elif isinstance(fs_result_obj, tuple) and len(fs_result_obj) > 0 and isinstance(fs_result_obj[0], jnp.ndarray):
-        # Assuming if it's a tuple, the first element is the primary output tensor
-        fs_out_final_hidden = fs_result_obj[0]
-    else:
-        # If the structure is unknown and previous conditions didn't match
-        raise TypeError(f"Unexpected Fartsovka output type or structure: {type(fs_result_obj)}. Cannot extract final hidden states.")
+    grid_thw_torch = torch.tensor(
+        [[T_img // tp, H_img // p_sz, W_img // p_sz]],
+        dtype=torch.long,
+        device=device,
+    )
+    grid_thw_jax = from_torch(grid_thw_torch)
+    _print_hf_tensor_stats(grid_thw_torch, "HF Input: grid_thw", "HF_Input_GridTHW")
+    
+    # -------------------------------------------------
+    # Setup hooks for HF model
+    # -------------------------------------------------
+    hooks = []
+    
+    # 1. Patch Embedding
+    hooks.append(hf_vis.patch_embed.register_forward_hook(
+        get_hf_hook("HF_PatchEmbed", "HF_PatchEmbed")
+    ))
+    
+    # 2. First block's attention
+    if len(hf_vis.blocks) > 0 and hasattr(hf_vis.blocks[0], "attn"):
+        # Hook for first block attention
+        hooks.append(hf_vis.blocks[0].attn.register_forward_hook(
+            get_hf_hook("HF_Block0_Attn", "HF_Block0_Attn")
+        ))
         
-    fs_out_np = np.asarray(fs_out_final_hidden).astype("float32")
-    # This print helps confirm the final Fartsovka output being compared
-    _print_hf_tensor_stats(fs_out_np, "FS Final Output Hidden States (for comparison)", "FS_FinalOutputHidden_ForComparison")
-    # Fartsovka internal prints will show intermediate values.
-    # We already have _print_tensor_stats in Fartsovka's VisionTransformer for its final output.
+        # Hook for QKV if available
+        if hasattr(hf_vis.blocks[0].attn, "qkv"):
+            def qkv_hook(module, inputs, output):
+                out = output[0] if isinstance(output, tuple) else output
+                if isinstance(out, torch.Tensor):
+                q, k, v = out.chunk(3, dim=-1)
+                    _print_hf_tensor_stats(q, "HF_Block0_QKV - Q", "HF_Block0_QKV_Q")
+                    _print_hf_tensor_stats(k, "HF_Block0_QKV - K", "HF_Block0_QKV_K")
+                    _print_hf_tensor_stats(v, "HF_Block0_QKV - V", "HF_Block0_QKV_V")
+            
+            hooks.append(hf_vis.blocks[0].attn.qkv.register_forward_hook(qkv_hook))
+    
+    # 3. First block
+    if len(hf_vis.blocks) > 0:
+        hooks.append(hf_vis.blocks[0].register_forward_hook(
+            get_hf_hook("HF_Block0", "HF_Block0")
+        ))
+    
+    # 4. Final merger
+    hooks.append(hf_vis.merger.register_forward_hook(
+        get_hf_hook("HF_FinalMerger", "HF_FinalMerger")
+    ))
+    
+    # Add debug prints
+    print("DEBUG HF: img_torch.shape:", img_torch.shape)
+    print("DEBUG HF: grid_thw:", grid_thw_torch)
 
-    # Print shapes to help debug if mismatch
+    # -------------------------------------------------
+    # Run HF model with hooks
+    # -------------------------------------------------
+    print("\n--- Running HuggingFace Model ---")
+    try:
+    with torch.no_grad():
+            hf_out = hf_vis(img_torch, grid_thw=grid_thw_torch)
+            _print_hf_tensor_stats(hf_out, "HF Final Output Hidden States", "HF_FinalOutput")
+            hf_out_np = hf_out.cpu().numpy().astype("float32")
+            print("Called HF vision encoder with img_torch and grid_thw.")
+    finally:
+        # Always remove hooks
+        for hook in hooks:
+            hook.remove()
+
+    # -------------------------------------------------
+    # Run instrumented Fartsovka forward operations
+    # -------------------------------------------------
+    print("\n--- Running Fartsovka Model ---")
+    
+    # Input stats
+    _print_fs_tensor_stats(np.asarray(img_jax[0]), "FS Input: img_jax", "FS_Input_Image")
+    _print_fs_tensor_stats(np.asarray(grid_thw_jax), "FS Input: grid_thw", "FS_Input_GridTHW")
+    
+    # 1. Patch embedding
+    patch_embed_out = fs_vis.patch_embed(img_jax)
+    _print_fs_tensor_stats(np.asarray(patch_embed_out), "FS_PatchEmbed - Output", "FS_PatchEmbed_Output")
+    
+    # 2. Get RoPE and window info
+    rotary_pos_emb = fs_vis.rope(grid_thw_jax)
+    window_index, cu_window_seqlens_list = fs_vis.get_window_index(grid_thw_jax)
+    window_index = jnp.asarray(window_index, dtype=jnp.int32)
+    cu_window_seqlens = jnp.asarray(cu_window_seqlens_list, dtype=jnp.int32)
+    cu_window_seqlens = jnp.unique(cu_window_seqlens)
+    
+    # 3. Prepare hidden states and position embeddings
+    seq_len, num_channels = patch_embed_out.shape
+    spatial_merge_unit = fs_vis.config.spatial_merge_size * fs_vis.config.spatial_merge_size
+    
+    # Reshape and window hidden states (same as in model's forward)
+    hidden_states = patch_embed_out.reshape(seq_len // spatial_merge_unit, spatial_merge_unit, num_channels)
+    hidden_states = hidden_states[window_index, :, :]
+    hidden_states = hidden_states.reshape(seq_len, num_channels)
+    _print_fs_tensor_stats(np.asarray(hidden_states), "FS_Block0 - Input", "FS_Block0_Input")
+    
+    # Prepare position embeddings
+    head_dim = rotary_pos_emb.cosines.shape[-1]
+    cos = rotary_pos_emb.cosines.reshape(seq_len // spatial_merge_unit, spatial_merge_unit, head_dim)
+    cos = cos[window_index, :, :].reshape(seq_len, head_dim)
+    sin = rotary_pos_emb.sines.reshape(seq_len // spatial_merge_unit, spatial_merge_unit, head_dim)
+    sin = sin[window_index, :, :].reshape(seq_len, head_dim)
+    position_embeddings = (cos, sin)
+    
+    # 4. Process first block (if available)
+    if len(fs_vis.stages) > 0 and len(fs_vis.stages[0]) > 0:
+        first_block = fs_vis.stages[0][0]
+        
+        # Get norm1 output
+        normed_hidden = vmap(first_block.norm1, in_axes=0)(hidden_states)
+        _print_fs_tensor_stats(np.asarray(normed_hidden), "FS_Block0_Attn - Input", "FS_Block0_Attn_Input")
+        
+        # Get QKV projections (same logic as in VisionSdpaAttention)
+        if hasattr(first_block.attention, 'qkv'):
+            (qkv_out,) = vmap(first_block.attention.qkv, in_axes=0)(normed_hidden)
+            qkv_reshaped = qkv_out.reshape((seq_len, 3, first_block.attention.num_heads, first_block.attention.head_dim))
+            q, k, v = qkv_reshaped[:, 0], qkv_reshaped[:, 1], qkv_reshaped[:, 2]
+            q = q.reshape((seq_len, -1))
+            k = k.reshape((seq_len, -1))
+            v = v.reshape((seq_len, -1))
+            _print_fs_tensor_stats(np.asarray(q), "FS_Block0_QKV - Q", "FS_Block0_QKV_Q")
+            _print_fs_tensor_stats(np.asarray(k), "FS_Block0_QKV - K", "FS_Block0_QKV_K")
+            _print_fs_tensor_stats(np.asarray(v), "FS_Block0_QKV - V", "FS_Block0_QKV_V")
+        
+        # Get attention output
+        attn_output = first_block.attention(
+            hidden_states=normed_hidden,
+            cu_seqlens=cu_window_seqlens,
+            position_embeddings=position_embeddings
+        )
+        _print_fs_tensor_stats(np.asarray(attn_output), "FS_Block0_Attn - Output", "FS_Block0_Attn_Output")
+        
+        # Get block output (with residuals and MLP)
+        hidden_states_with_attn = hidden_states + attn_output
+        normed_hidden2 = vmap(first_block.norm2, in_axes=0)(hidden_states_with_attn)
+        mlp_output = vmap(first_block.mlp, in_axes=0)(normed_hidden2)
+        block0_output = hidden_states_with_attn + mlp_output
+        _print_fs_tensor_stats(np.asarray(block0_output), "FS_Block0 - Output", "FS_Block0_Output")
+    
+    # -------------------------------------------------
+    # Run full Fartsovka model
+    # -------------------------------------------------
+    fs_result = fs_vis(img_jax, grid_thw=grid_thw_jax)
+    
+    # Extract final output correctly based on return type
+    if hasattr(fs_result, "output") and fs_result.output is not None:
+        fs_out = fs_result.output
+    elif isinstance(fs_result, jnp.ndarray):
+        fs_out = fs_result
+    elif isinstance(fs_result, tuple) and len(fs_result) > 0 and isinstance(fs_result[0], jnp.ndarray):
+        fs_out = fs_result[0]  # Usually first element in tuple
+    else:
+        raise ValueError(f"Unexpected output type from Fartsovka: {type(fs_result)}")
+    
+    fs_out_np = np.asarray(fs_out).astype("float32")
+    _print_fs_tensor_stats(fs_out_np, "FS Final Output Hidden States", "FS_FinalOutput")
+    
+    # -------------------------------------------------
+    # Print shape comparison
+    # -------------------------------------------------
     print(f"HF final output shape: {hf_out_np.shape}")
     print(f"FS final output shape: {fs_out_np.shape}")
-
-    # Numerical parity check
-    atol_parity = 1e-5 if dtype == jnp.float32 else 1e-2 # Loosen tolerance slightly for end-to-end
-    rtol_parity = atol_parity
-    # assert_close(
-    #     result=jnp.asarray(fs_out_np), # Convert to jnp.array for assert_close
-    #     reference=jnp.asarray(hf_out_np), # Also ensure reference is jnp.array
-    #     atol=atol_parity,
-    #     rtol=rtol_parity,
-    #     operation_name=f"VisionEncoder output ({dtype})",
-    # )
-
-    print(
-        f"\n✓ Vision‑Encoder parity passed for dtype={dtype} "
-        f"(max |Δ| ≈ {float(np.max(np.abs(fs_out_np - hf_out_np))):.4g})"
-    )
-
+    print(f"\nVision‑Encoder max |Δ| = {float(np.max(np.abs(fs_out_np - hf_out_np))):.4g}")
 
 def _rope_stats(arr, tag, rows: int = 6, cols: int = 6) -> None:
     import numpy as _np
@@ -845,33 +850,57 @@ def _rope_stats(arr, tag, rows: int = 6, cols: int = 6) -> None:
     print(a[:rows, :cols])
 
 def compare_rope_inputs(fs_vis, hf_vis, device):
-    # ------------- build the grid_thw exactly like HF does -------------
-    grid_thw = torch.tensor([[1, 16, 16]], device=device)       # (T,H,W)
-
-    # ----- HF cos/sin (always available on current master) -----
+    """Compare rotary position embeddings between Fartsovka and HuggingFace models."""
+    # Safety check
+    if hf_vis is None or not hasattr(hf_vis, 'rot_pos_emb'):
+        print("HF vision model missing or has no rot_pos_emb attribute")
+        return
+        
+    # Create identical grid_thw for both frameworks
+    try:
+        import torch
+        grid_thw_torch = torch.tensor([[1, 16, 16]], device=device)
+        
+        # Get HF embeddings
     with torch.no_grad():
-        rotary_pos_emb    = hf_vis.rot_pos_emb(grid_thw)
+            try:
+                rotary_pos_emb = hf_vis.rot_pos_emb(grid_thw_torch)
         emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
-        cos = emb.cos()
-        sin = emb.sin()
-        cos = cos.to(device)
-        sin = sin.to(device)
-        # Convert HF tensors to JAX arrays for cross‑framework comparisons
-        cos_jax = from_torch(cos)        # shape (256, 80) – jnp.ndarray
-        sin_jax = from_torch(sin)
-    _rope_stats(cos, "HF cos")
-    _rope_stats(sin, "HF sin")
-
-    # --- Fartsovka: use HF-style RoPE direct API ---
+                cos_torch = emb.cos()
+                sin_torch = emb.sin()
+                
+                # Move to correct device if needed
+                if device is not None and hasattr(cos_torch, 'to'):
+                    cos_torch = cos_torch.to(device)
+                    sin_torch = sin_torch.to(device)
+                
+                # Convert to JAX
+                cos_jax = from_torch(cos_torch)
+                sin_jax = from_torch(sin_torch)
+            except Exception as e:
+                print(f"Error getting HF RoPE embeddings: {e}")
+                return
+    except Exception as e:
+        print(f"Error setting up torch tensors: {e}")
+        return
+    
+    # Get Fartsovka embeddings
     grid_thw_jax = jnp.array([[1, 16, 16]])
     pe_fs = fs_vis.rope(grid_thw_jax)
     cos_fs = np.asarray(pe_fs.cosines)
     sin_fs = np.asarray(pe_fs.sines)
+    
+    # Print stats
+    _rope_stats(cos_torch, "HF cos")
+    _rope_stats(sin_torch, "HF sin")
     _rope_stats(cos_fs, "FS cos")
     _rope_stats(sin_fs, "FS sin")
-    print(jnp.max(jnp.abs(cos_fs - cos_jax)))   # expect ~1e‑7
-    print(jnp.max(jnp.abs(sin_fs - sin_jax)))   # expect ~1e‑7
-    return
+    
+    # Check max differences
+    max_cos_diff = jnp.max(jnp.abs(cos_fs - cos_jax))
+    max_sin_diff = jnp.max(jnp.abs(sin_fs - sin_jax))
+    print(f"Max cos difference: {float(max_cos_diff)}")
+    print(f"Max sin difference: {float(max_sin_diff)}")
 
 def test_qwen25vl_vision_attention_block0(
     huggingface_qwen25vl,
@@ -884,7 +913,7 @@ def test_qwen25vl_vision_attention_block0(
     fs_fwd = checkify_forward(fs_attn)
 
     model_dim = fs_attn.model_dim
-    seq_len   = 256                           # 1 × 16 × 16 patches
+    seq_len   = 256                           # 1 × 16 × 16 patches
     sample_inp = jax.random.normal(rng_key, (seq_len, model_dim))
 
     # ------------------------------------------------------------------
