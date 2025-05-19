@@ -3,7 +3,6 @@ from pathlib import Path
 from typing import Any
 
 import cattrs
-import huggingface_hub
 import jax
 import jax.numpy as jnp
 import pytest
@@ -103,16 +102,7 @@ def fartsovka_qlora_llama() -> Decoder:
 def huggingface_qwen25vl():
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     try:
-        # Ensure torch and necessary transformers components are importable
         import torch 
-        from transformers.models.auto.modeling_auto import AutoModelForCausalLM # General purpose, but Qwen2_5_VL might need specific class
-        # For Qwen2.5 VL, it's better to use the specific class if available and stable
-        # from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
-        
-        # Using AutoModelForCausalLM and letting it dispatch if possible,
-        # or falling back to the specific class if it was intended.
-        # The original code used Qwen2_5_VLForConditionalGeneration.
-        # Let's stick to that for consistency if that was the working version.
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
         
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(

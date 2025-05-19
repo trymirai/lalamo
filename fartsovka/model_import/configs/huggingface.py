@@ -459,11 +459,8 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         precision: DType,
         accumulation_precision: DType,
     ) -> VisionConfig:
-        """Convert to fartsovka VisionConfig."""
         vc = self.vision_config # This is the HF vision_config dict
         
-        print(f"DEBUG: HF vision_config: {vc}")
-
         hf_main_hidden_size = vc["hidden_size"] # e.g., 1280
         hf_total_depth = vc["depth"] # e.g., 32
         hf_main_num_heads = vc["num_heads"] # e.g., 16 for the 1280-dim stage
@@ -552,12 +549,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             out_hidden_size=vc["out_hidden_size"],
             fullatt_block_indexes=tuple(vc.get("fullatt_block_indexes", [])),
         )
-        
-        print(f"DEBUG: fartsovka VisionConfig (single stage): stage_hidden_dims: {fartsovka_vision_config.stage_hidden_dims}")
-        print(f"DEBUG: fartsovka VisionConfig (single stage): stage_depths: {fartsovka_vision_config.stage_depths}")
-        print(f"DEBUG: fartsovka VisionConfig (single stage): stage_num_heads: {fartsovka_vision_config.stage_num_heads}")
-        print(f"DEBUG: fartsovka VisionConfig (single stage): out_hidden_size: {fartsovka_vision_config.out_hidden_size}")
-        
+
         return fartsovka_vision_config
 
     def load_vision_model(
@@ -572,7 +564,6 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         
         # Initialize random model
         model = vision_config.random_init(key=jax.random.PRNGKey(0))
-        print(f"DEBUG: Created vision model: {model}")
         
         # Import here to avoid circular imports
         from fartsovka.model_import.loaders.huggingface import load_vision_huggingface
