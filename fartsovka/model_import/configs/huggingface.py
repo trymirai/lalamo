@@ -561,8 +561,6 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         """Load Qwen 2.5 VL vision model from weights."""
         # Convert to our config format
         vision_config = self.to_vision_config(precision, accumulation_precision)
-        
-        # Initialize random model
         model = vision_config.random_init(key=jax.random.PRNGKey(0))
         
         # Import here to avoid circular imports

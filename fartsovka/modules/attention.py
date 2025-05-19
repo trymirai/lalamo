@@ -369,18 +369,8 @@ class VisionSdpaAttention(FartsovkaModule[VisionSdpaAttentionConfig]):
 
         # Attention Mask
         final_attention_mask: Bool[Array, "... seq_length seq_length"] | None = None
-        if attention_mask_external is not None:
-            if attention_mask_external.ndim == 2: # "seq_length seq_length"
-                final_attention_mask = attention_mask_external[None, :, :] # -> "1 seq_length seq_length"
-            elif attention_mask_external.ndim == 3: # "1 seq_length seq_length" or "num_heads seq_length seq_length"
-                final_attention_mask = attention_mask_external
-            else:
-                raise ValueError(
-                    f"attention_mask_external has invalid ndim {attention_mask_external.ndim}, expected 2 or 3"
-                )
-        elif cu_seqlens is not None:
+        if cu_seqlens is not None:
             final_attention_mask = _create_mask_from_cu_seqlens_jax(seq_length, cu_seqlens)
-        # If both are None, final_attention_mask remains None (full attention)
 
         attn_output = jax.nn.dot_product_attention(
             query=q,
@@ -431,7 +421,6 @@ def _apply_rotary_pos_emb_vision_jax(
     k_embed = (k * cos_emb_broadcast) + (_rotate_half_jax(k) * sin_emb_broadcast)
     return q_embed, k_embed
 
-# Helper for mask from cu_seqlens
 def _create_mask_from_cu_seqlens_jax(
     seq_length: int,
     cu_seqlens: Int[Array, "num_segments_plus_1"], # e.g., [0, len1, len1+len2, ...]
