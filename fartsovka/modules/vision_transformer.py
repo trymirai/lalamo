@@ -434,24 +434,37 @@ class PatchMerger(FartsovkaModule[PatchMergerConfig]):
     
     def __call__(
         self, 
-        x: Float[Array, "seq_len hidden_size"]
+        x: Float[Array, "seq_len hidden_size"],
+        debug_prefix: str | None = None
     ) -> Float[Array, "reduced_seq_len out_hidden_size"]:
 
-        print(f"PatchMerger input shape: {x.shape}")
+        if debug_prefix:
+            _debug_stats_fs(x, f"{debug_prefix}_Input")
         
-        x = vmap(self.norm, in_axes=0)(x)
-        hidden_size = self.config.spatial_merge_size ** 2 * x.shape[-1]
+        norm_out = vmap(self.norm, in_axes=0)(x)
+        if debug_prefix:
+            _debug_stats_fs(norm_out, f"{debug_prefix}_NormOutput")
+            
+        hidden_size_after_spatial_merge = self.config.spatial_merge_size ** 2 * norm_out.shape[-1]
         
-        x = x.reshape(-1, hidden_size)
-        print(f"PatchMerger after reshaping to hidden_size: {x.shape}")
-        (x,) = vmap(self.hidden_proj, in_axes=0)(x)
+        reshaped_for_mlp = norm_out.reshape(-1, hidden_size_after_spatial_merge)
+        if debug_prefix:
+            _debug_stats_fs(reshaped_for_mlp, f"{debug_prefix}_ReshapedInputToMLP")
+            
+        (hidden_proj_out,) = vmap(self.hidden_proj, in_axes=0)(reshaped_for_mlp)
+        if debug_prefix:
+            _debug_stats_fs(hidden_proj_out, f"{debug_prefix}_HiddenProjOutput")
         
-        x = self.gelu(x)
-        (x,) = vmap(self.out_proj, in_axes=0)(x)
+        gelu_out = self.gelu(hidden_proj_out)
+        if debug_prefix:
+            _debug_stats_fs(gelu_out, f"{debug_prefix}_GeluOutput")
+            
+        (final_out,) = vmap(self.out_proj, in_axes=0)(gelu_out)
         
-        print(f"PatchMerger final output shape: {x.shape}")
-        
-        return x
+        if debug_prefix:
+            _debug_stats_fs(final_out, f"{debug_prefix}_Output")
+            
+        return final_out
     
     def export_weights(self) -> ParameterDict:
         """Export model weights as a ParameterDict."""
@@ -793,13 +806,22 @@ class VisionTransformer(FartsovkaModule[VisionConfig]):
                 hidden_states = merger_instance(hidden_states)
                 
         print("global_layer_idx", global_layer_idx)
-        hidden_states = vmap(self.output_norm, in_axes=0)(hidden_states)
-        hidden_states = self.final_merger(hidden_states)
+        
+        final_merger_debug_prefix = None
+        if debug_layer_indices_map is not None: 
+            final_merger_debug_prefix = "FS_FinalMerger"
+
+        if final_merger_debug_prefix:
+            _debug_stats_fs(hidden_states, f"{final_merger_debug_prefix}_InputToMerger") 
+
+        hidden_states = self.final_merger(hidden_states, debug_prefix=final_merger_debug_prefix)
         
         inv_window_index = jnp.argsort(window_index)
-        hidden_states = hidden_states[inv_window_index, :] 
+        hidden_states_after_unshuffle = hidden_states[inv_window_index, :] 
+        if final_merger_debug_prefix:
+             _debug_stats_fs(hidden_states_after_unshuffle, f"{final_merger_debug_prefix}_UnshuffledOutput")
 
-        return VisionOutput(output=hidden_states)
+        return VisionOutput(output=hidden_states_after_unshuffle)
     
     # ------------------------------------------------------------------  
     # Helper: local‑attention mask  

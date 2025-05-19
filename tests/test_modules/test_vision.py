@@ -718,7 +718,7 @@ def test_vision_encoder_parity(
     hooks = []
     hooks.append(hf_vis.patch_embed.register_forward_hook(get_hf_hook("HF_PatchEmbed", "HF_PatchEmbed")))
     
-    target_block_idx = 16
+    target_block_idx = 31
     hf_block_prefix = f"HF_Block{target_block_idx}"
     fs_block_prefix = f"FS_Block{target_block_idx}"
 
@@ -750,8 +750,18 @@ def test_vision_encoder_parity(
         print(f"WARN: target_block_idx {target_block_idx} is out of bounds for HF model with {len(hf_vis.blocks)} blocks.")
 
     if hasattr(hf_vis, "merger"):
-        hooks.append(hf_vis.merger.register_forward_hook(get_hf_hook("HF_FinalMerger", "HF_FinalMerger")))
-    
+        hf_final_merger = hf_vis.merger
+        hooks.append(hf_final_merger.register_forward_hook(get_hf_hook("HF_FinalMerger", "HF_FinalMerger")))
+        if hasattr(hf_final_merger, 'ln_q'):
+            hooks.append(hf_final_merger.ln_q.register_forward_hook(get_hf_hook("HF_FinalMerger_Norm", "HF_FinalMerger_Norm")))
+        if hasattr(hf_final_merger, 'mlp') and isinstance(hf_final_merger.mlp, torch.nn.Sequential) and len(hf_final_merger.mlp) == 3:
+            # MLP is nn.Sequential(Linear, GELU, Linear)
+            hooks.append(hf_final_merger.mlp[0].register_forward_hook(get_hf_hook("HF_FinalMerger_MLP_Linear1", "HF_FinalMerger_MLP_Linear1")))
+            hooks.append(hf_final_merger.mlp[1].register_forward_hook(get_hf_hook("HF_FinalMerger_MLP_GELU", "HF_FinalMerger_MLP_GELU")))
+            # The final output of mlp[2] is the output of the whole merger.mlp, which is HF_FinalMerger_Output if mlp is the last step before return.
+            # If merger output is directly from mlp[2], its output is captured by HF_FinalMerger_Output hook on hf_final_merger.
+            # Let's assume HF_FinalMerger_Output is the output after mlp[2].
+
     print("DEBUG HF: img_torch.shape:", img_torch.shape)
     print("DEBUG HF: grid_thw:", grid_thw_torch)
 
@@ -818,15 +828,22 @@ def test_vision_encoder_parity(
     # --- Detailed Intermediate Value Comparison for TARGET_BLOCK_IDX ---
     print(f"\n--- Detailed Intermediate Value Comparison for Block {target_block_idx} ---")
     intermediate_value_keys = [
-        ("HF_PatchEmbed_Output", "FS_PatchEmbed_Output"), # This is always block-agnostic
-        
+        ("HF_PatchEmbed_Output", "FS_PatchEmbed_Output"),
         (f"{hf_block_prefix}_Norm1_Output", f"{fs_block_prefix}_Norm1"),
         (f"{hf_block_prefix}_Attn_Output", f"{fs_block_prefix}_AttnOutput"),
         (f"{hf_block_prefix}_Norm2_Input_0", f"{fs_block_prefix}_AfterAttnResidual"),
         (f"{hf_block_prefix}_Norm2_Output", f"{fs_block_prefix}_Norm2"),
-        (f"{hf_block_prefix}_MLP_Input_0", f"{fs_block_prefix}_Norm2"), # MLP input is Norm2 output
+        (f"{hf_block_prefix}_MLP_Input_0", f"{fs_block_prefix}_Norm2"),
         (f"{hf_block_prefix}_MLP_Output", f"{fs_block_prefix}_MLPOutput"),
-        (f"{hf_block_prefix}_Output", f"{fs_block_prefix}_Output") # Final output of the target block
+        (f"{hf_block_prefix}_Output", f"{fs_block_prefix}_Output"),
+        # Final Merger specific comparisons
+        ("HF_FinalMerger_Input_0", "FS_FinalMerger_InputToMerger"),
+        ("HF_FinalMerger_Norm_Output", "FS_FinalMerger_NormOutput"),
+        ("HF_FinalMerger_MLP_Linear1_Input_0", "FS_FinalMerger_ReshapedInputToMLP"),
+        ("HF_FinalMerger_MLP_Linear1_Output", "FS_FinalMerger_HiddenProjOutput"),
+        ("HF_FinalMerger_MLP_GELU_Output", "FS_FinalMerger_GeluOutput"),
+        ("HF_FinalMerger_Output", "FS_FinalMerger_Output"),
+        ("HF_FinalOutput", "FS_FinalOutput") # Compares the very end results
     ]
 
     for hf_key, fs_key in intermediate_value_keys:
