@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import ClassVar, Literal, Optional, List, Tuple, Union
 from pathlib import Path
 
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Int, Bool
 
@@ -25,6 +26,7 @@ from fartsovka.modules import (
     VisionLayerConfig,
     PatchMergerConfig,
     VisionRoPEConfig,
+    VisionSdpaAttentionConfig
 )
 
 from .common import ForeignConfig
@@ -477,9 +479,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         if hf_main_hidden_size % hf_main_num_heads != 0:
             raise ValueError(f"HF vision_config hidden_size {hf_main_hidden_size} not divisible by num_heads {hf_main_num_heads}")
         actual_head_dim = hf_main_hidden_size // hf_main_num_heads
-        
-        # For 2D RoPE, head_dim must be div by 4 if inv_freq_part is head_dim/4 for H & W
-        # Or div by 2 if inv_freq is head_dim/2 shared/concatenated for H&W. Our current 2D RoPE expects div by 4.
+
         if actual_head_dim % 4 != 0: 
             print(f"WARNING: actual_head_dim ({actual_head_dim}) is not divisible by 4. RoPE might be incorrect or fail.")
             # Fallback or error, for now, let it pass to see if VisionRoPEConfig catches it or if model runs.
@@ -501,15 +501,14 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         
         hf_activation = vc.get("hidden_act", "silu")
         activation = Activation.SILU if hf_activation == "silu" else Activation.GELU
-        
-        attention_config = AttentionConfig(
+    
+        attention_config = VisionSdpaAttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             logit_soft_cap=None,
             has_qkv_biases=vc.get("attention_bias", vc.get("qkv_bias", True)),
             has_out_biases=vc.get("attention_bias", vc.get("proj_bias", True)),
         )
-        
         mlp_config = MLPConfig(
             linear_config=linear_config,
             activation=activation,
@@ -521,7 +520,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             attention_config=attention_config,
             mlp_config=mlp_config,
         )
-        
+
         patch_merger_config = PatchMergerConfig(
             precision=precision,
             spatial_merge_size=vc["spatial_merge_size"],
@@ -572,8 +571,8 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         vision_config = self.to_vision_config(precision, accumulation_precision)
         
         # Initialize random model
-        import jax
         model = vision_config.random_init(key=jax.random.PRNGKey(0))
+        print(f"DEBUG: Created vision model: {model}")
         
         # Import here to avoid circular imports
         from fartsovka.model_import.loaders.huggingface import load_vision_huggingface
@@ -593,7 +592,6 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             activation_precision=precision,
             accumulation_precision=accumulation_precision,
         )
-        import jax
         # Initialize decoder with random weights
         decoder = decoder_config.random_init(key=jax.random.PRNGKey(0))
         # Load weights from HF

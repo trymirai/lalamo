@@ -124,70 +124,21 @@ def fartsovka_qlora_llama() -> Decoder:
 
 @pytest.fixture(scope="package")
 def huggingface_qwen25vl():
-    """Load Qwen2.5-VL model from HuggingFace.
-    
-    As indicated in the Qwen2.5-VL model card:
-    1. The model requires the latest transformers version from GitHub
-    2. It uses the specific Qwen2_5_VLForConditionalGeneration class
-    
-    Returns None if the model cannot be loaded due to dependencies or other issues.
-    """
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
-    
-    try:
-        # Check transformers version
-        import transformers
-        print(f"Transformers version: {transformers.__version__}")
-        
-        # Check available Qwen models
-        qwen_classes = [cls for cls in dir(transformers) if 'qwen' in cls.lower()]
-        has_qwen2_5 = any('qwen2_5' in cls.lower() for cls in qwen_classes)
-        
-        print(f"Available Qwen classes: {', '.join(qwen_classes)}")
-        print(f"Has Qwen2.5 classes: {has_qwen2_5}")
-        
-        if not has_qwen2_5:
-            print("\n===== IMPORTANT INFORMATION =====")
-            print("Qwen2.5-VL model requires special transformers version")
-            print("Current transformers version does not include Qwen2.5-VL support.")
-            print("To enable the reference model test, please install the appropriate version:")
-            print("pip install git+https://github.com/huggingface/transformers accelerate")
-            print("=====================================\n")
-            return None
 
-        # Try to load model
-        try:
-            # This will fail at the module import stage due to missing TorchAO dependencies
-            # We can't work around this with loading parameters
-            import torch
-            import torchao
-            print(f"TorchAO version: {torchao.__version__}")
-            
-            # Try to import the necessary module - this will likely fail
-            from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
-            
-            print("\nHave all necessary dependencies!")
-            
-            # If we get here, we can try loading the model
-            model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-                model_id,
-                torch_dtype=torch.float32,
-                device_map="auto"
-            )
-            model.eval()
-            print("Successfully loaded Qwen2.5-VL model!")
-            return model
-            
-        except ImportError as e:
-            print(f"\n===== DEPENDENCY ISSUE =====")
-            print(f"Error: {e}")
-            print("\nThe Qwen2.5-VL model has complex dependencies that can't be resolved in the current environment.")
-            print("The model implementation requires a specific version of torchao with Int4WeightOnlyConfig.")
-            print("This dependency is required at module import time, so we can't work around it with load parameters.")
-            print("\nAt this time, the best approach is likely to continue using your Fartsovka model for testing")
-            print("and skip the reference model comparison until the libraries stabilize.")
-            print("=====================================\n")
-            return None
+    try:
+        import torch
+        
+        from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
+                    
+        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            model_id,
+            torch_dtype=torch.float32,
+            device_map="auto"
+        )
+        model.eval()
+        print("Successfully loaded Qwen2.5-VL model!")
+        return model
     except Exception as e:
         print(f"Failed to load Qwen2.5-VL model: {e}")
         return None
@@ -239,12 +190,8 @@ def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
         return fartsovka_vision_model
 
     except Exception as e:
-        import traceback
         print(f"\n===== ERROR creating Fartsovka Qwen2.5-VL Vision Model with HF Weights =====")
         print(f"Error type: {type(e).__name__}")
-        print(f"Error message: {e}")
-        print(f"Detailed stacktrace for Fartsovka vision model loading failure:")
-        print(traceback.format_exc())
         print("==============================================================================\n")
         return None
 

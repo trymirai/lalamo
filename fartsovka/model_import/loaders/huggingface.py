@@ -16,6 +16,7 @@ from fartsovka.modules import (
     VisionLayer,
     PatchMerger,
     LinearBase,
+    VisionSdpaAttention
 )
 from fartsovka.modules.decoder import Decoder
 
@@ -30,27 +31,13 @@ def load_linear(
     path: ParameterPath,
 ) -> FullPrecisionLinear:
     if module.biases is None:
-        if path / "bias" in weights_dict:
-            # If module has no bias but weights_dict does, it might be an issue or expected for some models.
-            # For strict loading, one might raise ValueError here.
-            # For flexibility (e.g. if a model sometimes has bias, sometimes not, for same param name):
-            print(f"WARN: {path / 'bias'} found in weights_dict, but module {module} has no biases. Ignoring HF bias.")
-            loaded_bias = None
-        else:
-            loaded_bias = None
+        # The Equinox module was instantiated without a bias, but the HF
+        # checkpoint *does* contain one.  Adopt the HF bias so we preserve
+        # numerical parity.
+        loaded_bias = weights_dict.get(path / "bias")
     else:
         loaded_bias_path = path / "bias"
-        if loaded_bias_path not in weights_dict:
-            # This can happen if HF model has optional bias and it's not present for this instance.
-            print(f"WARN: Bias for {path} not found in weights_dict. Module expects bias. Using None or allowing error in load_parameters.")
-            # Depending on how load_parameters handles None for an expected field, this might error or use existing.
-            # For safety, if module.biases is not None, we should expect a bias or handle its absence explicitly.
-            # However, load_parameters should handle this by checking if new_value is None.
-            # If we pass None and load_parameters tries to assign None to a non-Optional field, it will fail, which is good.
-            loaded_bias = None # Let load_parameters decide if None is acceptable for module.biases
-        else:
-            loaded_bias = weights_dict[loaded_bias_path]
-            
+        loaded_bias = weights_dict.get(loaded_bias_path)
     return load_parameters(
         lambda m: (m.weights, m.biases),
         module,
@@ -90,10 +77,38 @@ def load_rmsnorm(
 
 
 def load_attention(
-    module: Attention,
+    module: Attention | VisionSdpaAttention,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> Attention:
+) -> Attention | VisionSdpaAttention:
+    """Load attention weights from HuggingFace checkpoint.
+    
+    Handles both standard Attention and VisionSdpaAttention modules.
+    """
+
+    # Handle VisionSdpaAttention
+    if isinstance(module, VisionSdpaAttention):
+        if not isinstance(module.qkv, LinearBase):
+            raise TypeError(f"Expected qkv to be LinearBase, got {type(module.qkv)}")
+        if not isinstance(module.proj, LinearBase):
+            raise TypeError(f"Expected proj to be LinearBase, got {type(module.proj)}")
+        
+        # Load output projection
+        out_proj_path = path / "proj"
+        loaded_proj = load_linear(deepcopy(module.proj), weights_dict, out_proj_path)
+        
+        # Load QKV projection
+        qkv_path = path / "qkv"
+        loaded_qkv = load_linear(deepcopy(module.qkv), weights_dict, qkv_path)
+        
+        # Load both projections into the VisionSdpaAttention module
+        return load_parameters(
+            lambda m: (m.qkv, m.proj),
+            module,
+            (loaded_qkv, loaded_proj),
+        )
+    
+    # Original code for standard Attention
     if not isinstance(module.qkv_projection, FullPrecisionLinear):
         raise TypeError(f"Expected qkv_projection to be FullPrecisionLinear, got {type(module.qkv_projection)}")
     if not isinstance(module.out_projection, FullPrecisionLinear):
@@ -256,9 +271,6 @@ def load_vision_patch_embedding(
 
     fs_w = jnp.transpose(hf_w, (0, 2, 3, 4, 1))   # (out, T, H, W, in)
 
-    # ─────────────────────────────────────────────────────────────
-    # NEW: if the checkpoint provides a bias, keep it.
-    # ─────────────────────────────────────────────────────────────
     if hf_b is not None:
         module.config = dataclasses.replace(module.config, has_bias=True)
         fs_b: Array | None = hf_b
@@ -300,11 +312,14 @@ def load_vision_huggingface(
     weights_dict: dict[str, Array],
 ) -> VisionTransformer:
     """Load VisionTransformer model from Hugging Face weights."""
+    print(f"DEBUG: Entering load_vision_huggingface for module: {type(module)}")
     root_path: ParameterPath = ParameterPath("visual")
     
+    print(f"DEBUG: Attempting to load patch_embed from path: {root_path / 'patch_embed' / 'proj'}")
     patch_embed = load_vision_patch_embedding(
         module.patch_embed, weights_dict, root_path / "patch_embed" / "proj" 
     )
+    print(f"DEBUG: Successfully loaded patch_embed")
     
     rope = module.rope 
     print(f"DEBUG: VisionRoPE inv_freq for the current vision model will be taken from Fartsovka module init, not checkpoint.")
@@ -313,23 +328,48 @@ def load_vision_huggingface(
     if not module.stages or len(module.stages) != 1:
         raise ValueError(f"Expected VisionTransformer to have exactly one stage for current HF loading, got {len(module.stages) if module.stages else 0}")
     actual_layers_tuple = module.stages[0]
+    print(f"DEBUG: Attempting to load {len(actual_layers_tuple)} layers in the stage.")
     
     loaded_layers = tuple(
         load_vision_layer(layer, weights_dict, root_path / "blocks" / i)
         for i, layer in enumerate(actual_layers_tuple)
     )
-    
-    output_norm_key = root_path / "norm" / "weight"
-    if output_norm_key in weights_dict:
-        output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm", False)
-        print("DEBUG: Loaded output_norm from visual.norm.weight")
+    print(f"DEBUG: Successfully loaded {len(loaded_layers)} layers.")
+
+    output_norm_primary = root_path / "norm"  # visual.norm.*
+    output_norm_alt     = root_path / "merger" / "ln_q"  # visual.merger.ln_q.*
+    print(f"DEBUG: Attempting to load output_norm. Primary path: {output_norm_primary}, Alt path: {output_norm_alt}")
+
+    if (output_norm_primary / "weight") in weights_dict:
+        output_norm = load_rmsnorm(
+            module.output_norm, weights_dict, output_norm_primary, False
+        )
+        print("DEBUG: Loaded output_norm from visual.norm.weight (primary key)")
+
+    elif (output_norm_alt / "weight") in weights_dict:
+        # Older checkpoints store the final norm only inside the merger.
+        output_norm = load_rmsnorm(
+            module.output_norm, weights_dict, output_norm_alt, False
+        )
+        print("DEBUG: Loaded output_norm from visual.merger.ln_q.weight (fallback)")
+
     else:
-        output_norm = module.output_norm 
-        print(f"DEBUG: visual.norm.weight (key: {output_norm_key}) not found. Using randomly initialized output_norm.")
+        # No pretrained weights → turn the RMSNorm into an identity op
+        identity_scales = jnp.ones_like(module.output_norm.scales)
+        output_norm = load_parameters(
+            lambda m: (m.scales,), module.output_norm, (identity_scales,)
+        )
+        print(
+            "DEBUG: No pretrained output_norm weights found; using identity RMSNorm (scales = 1)."
+        )
+    print(f"DEBUG: Successfully processed output_norm.")
 
     # The HF 'merger' corresponds to our 'final_merger' in the single-stage context
+    print(f"DEBUG: Attempting to load final_merger from path: {root_path / 'merger'}")
     merger = load_vision_merger(module.final_merger, weights_dict, root_path / "merger")
+    print(f"DEBUG: Successfully loaded final_merger.")
     
+    print(f"DEBUG: Finalizing load_vision_huggingface.")
     return load_parameters(
         lambda m: (m.patch_embed, m.rope, m.stages, m.inter_stage_mergers, m.output_norm, m.final_merger),
         module,

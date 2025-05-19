@@ -38,6 +38,8 @@ from .vision_transformer import (
     VisionLayer,
     PatchMergerConfig,
     PatchMerger,
+    VisionSdpaAttention,
+    VisionSdpaAttentionConfig
 )
 
 __all__ = [
@@ -87,4 +89,6 @@ __all__ = [
     "VisionPositionalEmbeddings",
     "YARNRoPEConfig",
     "config_converter",
+    "VisionSdpaAttention",
+    "VisionSdpaAttentionConfig"
 ]
