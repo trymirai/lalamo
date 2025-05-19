@@ -100,9 +100,8 @@ from .common import FartsovkaModule
 from .mlp import MLP, MLPConfig
 from .attention import VisionSdpaAttention, VisionSdpaAttentionConfig
 from .normalization import RMSNorm, RMSNormConfig
-from .rope import RoPE, RoPEConfig, PositionalEmbeddings
-from .vision_rope import VisionRoPE, VisionRoPEConfig, VisionPositionalEmbeddings
-from .linear import FullPrecisionLinearConfig, LinearBase, LinearConfig
+from .vision_rope import VisionRoPE, VisionRoPEConfig
+from .linear import FullPrecisionLinearConfig, LinearBase
 
 __all__ = [
     "VisionConfig",
@@ -119,64 +118,6 @@ __all__ = [
 
 class VisionOutput(NamedTuple):
     output: Float[Array, "batch_size out_hidden_size"]
-
-
-# -------------------------------------------------------------------------
-# Compatibility wrapper for Attention.positional_embeddings argument
-# -------------------------------------------------------------------------
-class PositionalEmbeddingsAdapter(PositionalEmbeddings):
-    """
-    Tiny shim that lets Fartsovka Attention accept **either** a *pre‑computed*
-    :class:`VisionPositionalEmbeddings` **or** a :class:`VisionRoPE`
-    generator.  The latter case is handy in tests where we only have the
-    raw RoPE module but not the tables yet.
-
-    The adapter presents the same ``.apply()`` method expected by the kernel.
-    """
-
-    # Store the wrapped object – may be either VisionPositionalEmbeddings *or*
-    # VisionRoPE.  Keep the type loose so we don't depend on ordering of class
-    # definitions in this file.
-    embeddings: Any
-
-    def __init__(self, embeddings: Union[VisionPositionalEmbeddings, VisionRoPE]):
-        # The parent interface defines ``cosines`` / ``sines`` but they are
-        # unused by the adapter; initialise with tiny dummies to satisfy Equinox.
-        self.cosines = jnp.zeros((1, 1))
-        self.sines = jnp.zeros((1, 1))
-        self.embeddings = embeddings
-
-    # ------------------------------------------------------------------ API
-    def apply(
-        self,
-        heads: Float[Array, "tokens head_channels"],
-    ) -> Float[Array, "tokens head_channels"]:
-        """
-        Apply rotary position embeddings to *heads*.
-
-        * If ``self.embeddings`` is a ``VisionPositionalEmbeddings`` instance,
-          we simply delegate to its ``apply`` method.
-
-        * If it is a ``VisionRoPE`` generator, we build the cos/sin tables on
-          the fly **for the current sequence length** (identical to HF's
-          behaviour when the int *seq_len* variant is used) and then apply.
-        """
-
-        # Case 1: pre‑computed tables – just forward the call
-        if isinstance(self.embeddings, VisionPositionalEmbeddings):
-            return self.embeddings.apply(heads)
-
-        # Case 2: raw VisionRoPE – create tables for the given seq_len
-        if isinstance(self.embeddings, VisionRoPE):
-            seq_len = heads.shape[0]
-            tables = self.embeddings(seq_len)          # → VisionPositionalEmbeddings
-            return tables.apply(heads)
-
-        # Anything else is a misuse.
-        raise TypeError(
-            f"Unsupported embeddings type {type(self.embeddings).__name__}; "
-            "expected VisionPositionalEmbeddings or VisionRoPE."
-        )
 
 
 @dataclass
@@ -379,16 +320,6 @@ class VisionLayer(FartsovkaModule[VisionLayerConfig]):
         if debug_enabled:
             _debug_stats_fs(hidden_states, f"{prefix}_Input")
 
-        layer_model_dim = self.norm1.input_dim
-        if hidden_states.shape[-1] != layer_model_dim:
-            print(f"WARN: VisionLayer __call__ adjusting input hidden_states shape ({hidden_states.shape}) to layer model_dim ({layer_model_dim})")
-            current_input_dim = hidden_states.shape[-1]
-            if current_input_dim < layer_model_dim:
-                padding_width = ((0, 0),) * (hidden_states.ndim - 1) + ((0, layer_model_dim - current_input_dim),)
-                hidden_states = jnp.pad(hidden_states, padding_width, mode='constant', constant_values=0)
-            else:
-                hidden_states = hidden_states[..., :layer_model_dim]
-            print(f"Adjusted input hidden_states shape to: {hidden_states.shape} for layer {self}")
         residual = hidden_states
 
 
@@ -417,18 +348,6 @@ class VisionLayer(FartsovkaModule[VisionLayerConfig]):
         mlp_output = vmap(self.mlp, in_axes=0)(normed_hidden_states_mlp)
         if debug_enabled:
             _debug_stats_fs(mlp_output, f"{prefix}_MLPOutput")
-
-        # Ensure residual_mlp has the same shape as mlp_output for addition
-        if residual_mlp.shape[-1] != mlp_output.shape[-1]:
-            print(f"WARN: VisionLayer residual_mlp shape {residual_mlp.shape} mismatch with mlp output {mlp_output.shape}. Adjusting residual_mlp.")
-            target_dim = mlp_output.shape[-1]
-            current_dim = residual_mlp.shape[-1]
-            if current_dim < target_dim:
-                padding_width = ((0, 0),) * (residual_mlp.ndim - 1) + ((0, target_dim - current_dim),)
-                residual_mlp = jnp.pad(residual_mlp, padding_width, mode='constant')
-            else:
-                residual_mlp = residual_mlp[..., :target_dim]
-            print(f"Adjusted residual_mlp shape to: {residual_mlp.shape}")
 
         hidden_states = residual_mlp + mlp_output
         if debug_enabled:
@@ -804,6 +723,7 @@ class VisionTransformer(FartsovkaModule[VisionConfig]):
         self,
         images: Float[Array, "batch channels time height width"],
         grid_thw: Int[Array, "batch 3"] | None = None,
+        debug_layer_indices_map: dict[int, str] | None = None,
     ) -> VisionOutput:
         if grid_thw is None:
             B, _, T, H, W = images.shape
@@ -850,23 +770,29 @@ class VisionTransformer(FartsovkaModule[VisionConfig]):
         _cu_seqlens_full_intermediate = jnp.cumsum(total_patches_per_item_in_grid.astype(jnp.int32))
         cu_seqlens_full_attention = jnp.concatenate([jnp.array([0], dtype=jnp.int32), _cu_seqlens_full_intermediate])
 
-        global_layer_index = 0
+        global_layer_idx = 0
         for stage_idx, stage_layers_in_current_stage in enumerate(self.stages):
             for layer_idx, layer_instance in enumerate(stage_layers_in_current_stage):
-                is_full_attention_block = global_layer_index in self.config.fullatt_block_indexes
+                is_full_attention_block = global_layer_idx in self.config.fullatt_block_indexes
+                
+                current_layer_debug_prefix = None
+                if debug_layer_indices_map and global_layer_idx in debug_layer_indices_map:
+                    current_layer_debug_prefix = debug_layer_indices_map[global_layer_idx]
                 
                 cu_seqlens_for_this_layer = cu_seqlens_full_attention if is_full_attention_block else cu_window_seqlens
                 hidden_states = layer_instance(
                     hidden_states,
                     position_embeddings_tuple=position_embeddings_tuple, 
                     cu_seqlens=cu_seqlens_for_this_layer,
+                    debug_prefix=current_layer_debug_prefix
                 )
-                global_layer_index += 1
+                global_layer_idx += 1
 
             if stage_idx < len(self.inter_stage_mergers):
                 merger_instance = self.inter_stage_mergers[stage_idx]
                 hidden_states = merger_instance(hidden_states)
                 
+        print("global_layer_idx", global_layer_idx)
         hidden_states = vmap(self.output_norm, in_axes=0)(hidden_states)
         hidden_states = self.final_merger(hidden_states)
         

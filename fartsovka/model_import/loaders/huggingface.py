@@ -51,16 +51,45 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
     if not isinstance(module.down_projection, FullPrecisionLinear):
         raise TypeError(f"Expected down_projection to be FullPrecisionLinear, got {type(module.down_projection)}")
 
+    # Load weights
     up_proj_weights = weights_dict[path / "up_proj" / "weight"]
     gate_proj_weights = weights_dict[path / "gate_proj" / "weight"]
     fused_up_gate_weights = jnp.concatenate([up_proj_weights, gate_proj_weights], axis=0)
-
     down_proj_weights = weights_dict[path / "down_proj" / "weight"]
 
+    # Load biases if the module is configured to have them
+    fused_up_gate_biases: Array | None = None
+    down_proj_biases: Array | None = None
+
+    if module.config.has_biases:
+        # Check if HF checkpoint actually has these biases
+        up_proj_bias_hf = weights_dict.get(path / "up_proj" / "bias")
+        gate_proj_bias_hf = weights_dict.get(path / "gate_proj" / "bias")
+        down_proj_bias_hf = weights_dict.get(path / "down_proj" / "bias")
+
+        if up_proj_bias_hf is not None and gate_proj_bias_hf is not None:
+            fused_up_gate_biases = jnp.concatenate([up_proj_bias_hf, gate_proj_bias_hf], axis=0)
+        elif up_proj_bias_hf is not None:
+            zeros_for_gate_bias = jnp.zeros_like(up_proj_bias_hf) # Assuming same shape for fusion
+            fused_up_gate_biases = jnp.concatenate([up_proj_bias_hf, zeros_for_gate_bias], axis=0)
+        elif gate_proj_bias_hf is not None:
+            zeros_for_up_bias = jnp.zeros_like(gate_proj_bias_hf)
+            fused_up_gate_biases = jnp.concatenate([zeros_for_up_bias, gate_proj_bias_hf], axis=0)
+        else:
+            print(f"WARN: MLP at {path} configured with has_biases=True, but no up_proj/gate_proj biases found in checkpoint.")
+            intermediate_dim_x2 = fused_up_gate_weights.shape[0]
+            fused_up_gate_biases = jnp.zeros((intermediate_dim_x2,), dtype=fused_up_gate_weights.dtype)
+
+        if down_proj_bias_hf is not None:
+            down_proj_biases = down_proj_bias_hf
+        else:
+            print(f"WARN: MLP at {path} configured with has_biases=True, but no down_proj.bias found in checkpoint.")
+            down_proj_biases = jnp.zeros((module.down_projection.weights.shape[0],), dtype=down_proj_weights.dtype) # Bias shape is (out_features,)
+
     return load_parameters(
-        lambda m: (m.up_projection.weights, m.down_projection.weights),  # type: ignore
+        lambda m: (m.up_projection.weights, m.up_projection.biases, m.down_projection.weights, m.down_projection.biases), # type: ignore
         module,
-        (fused_up_gate_weights, down_proj_weights),
+        (fused_up_gate_weights, fused_up_gate_biases, down_proj_weights, down_proj_biases),
     )
 
 

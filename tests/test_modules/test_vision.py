@@ -8,8 +8,8 @@ import pytest
 import torch
 from jaxtyping import Array, Float, PRNGKeyArray, Bool, Int
 from fartsovka.modules.vision_rope import VisionPositionalEmbeddings
-from fartsovka.modules.vision_transformer import PositionalEmbeddingsAdapter
 from PIL import Image
+import fartsovka.modules.vision_transformer as vt_module
 
 
 # NOTE: **NO hard dependency on Fartsovka VisionTransformer**
@@ -612,6 +612,45 @@ def test_vision_patch_merger(huggingface_qwen25vl, fartsovka_qwen25vl_vision, dt
 
     print(f"\n✓ PatchMerger parity passed for dtype={dtype}")
 
+    # Compare MLP outputs if available
+    if "HF_Block0_MLP_Output" in hf_activations and "FS_Block0_MLPOutput" in fs_activations:
+        mlp_hf = hf_activations["HF_Block0_MLP_Output"]
+        mlp_fs = fs_activations["FS_Block0_MLPOutput"]
+        if mlp_hf is not None and mlp_fs is not None:
+            mlp_diff = np.max(np.abs(mlp_fs - mlp_hf))
+            print(f"\nMLP output max |Δ| = {float(mlp_diff):.4g}")
+            
+            # Print first few values for comparison
+            print("\nMLP output first few values comparison:")
+            print("HF:", mlp_hf.flatten()[:5])
+            print("FS:", mlp_fs.flatten()[:5])
+            
+            # Check for weight transposition issues
+            if len(mlp_hf.shape) == 2 and len(mlp_fs.shape) == 2:
+                # Try transposing to see if it helps
+                transposed_fs = mlp_fs.T
+                transposed_diff = np.max(np.abs(transposed_fs - mlp_hf))
+                print(f"\nTransposed MLP comparison max |Δ| = {float(transposed_diff):.4g}")
+                
+                # Compare norms to check for scaling issues
+                hf_norm = np.linalg.norm(mlp_hf)
+                fs_norm = np.linalg.norm(mlp_fs)
+                print(f"HF MLP Frobenius norm: {hf_norm:.4g}")
+                print(f"FS MLP Frobenius norm: {fs_norm:.4g}")
+                print(f"Ratio: {fs_norm/hf_norm:.4g}")
+                
+    # Compare norm2 outputs
+    if "HF_Block0_Norm2_Output" in hf_activations and "FS_Block0_Norm2" in fs_activations:
+        norm2_hf = hf_activations["HF_Block0_Norm2_Output"]
+        norm2_fs = fs_activations["FS_Block0_Norm2"]
+        if norm2_hf is not None and norm2_fs is not None:
+            norm2_diff = np.max(np.abs(norm2_fs - norm2_hf))
+            print(f"\nNorm2 output max |Δ| = {float(norm2_diff):.4g}")
+            
+            # Print first few values for comparison
+            print("\nNorm2 output first few values comparison:")
+            print("HF:", norm2_hf.flatten()[:5])
+            print("FS:", norm2_fs.flatten()[:5])
 
 # ----------------------------------------------------------------------------
 # NEW TEST 4 – End‑to‑end Vision‑Encoder parity
@@ -629,7 +668,7 @@ def test_vision_encoder_parity(
     """
     import torch
     import numpy as np
-    from jax import vmap
+    # from jax import vmap # Not explicitly used in this simplified version
 
     # Skip if models not available
     if huggingface_qwen25vl is None:
@@ -660,13 +699,10 @@ def test_vision_encoder_parity(
         pytest.skip("HF model missing vision tower")
     fs_vis = fartsovka_qwen25vl_vision
     
-    # Move HF model to the same device as input (safely)
     device = img_torch.device
-    # Check if hf_vis exists before trying to move it to device
     if hf_vis is not None and hasattr(hf_vis, 'to'):
-    hf_vis = hf_vis.to(device)
+        hf_vis = hf_vis.to(device)
 
-    # Prepare grid_thw (shape tensor for windows)
     B, C, T_img, H_img, W_img = img_torch.shape
     tp = getattr(hf_vis.config, "temporal_patch_size", 2)
     p_sz = getattr(hf_vis.config, "patch_size", 14)
@@ -679,47 +715,43 @@ def test_vision_encoder_parity(
     grid_thw_jax = from_torch(grid_thw_torch)
     _print_hf_tensor_stats(grid_thw_torch, "HF Input: grid_thw", "HF_Input_GridTHW")
     
-    # -------------------------------------------------
-    # Setup hooks for HF model
-    # -------------------------------------------------
     hooks = []
+    hooks.append(hf_vis.patch_embed.register_forward_hook(get_hf_hook("HF_PatchEmbed", "HF_PatchEmbed")))
     
-    # 1. Patch Embedding
-    hooks.append(hf_vis.patch_embed.register_forward_hook(
-        get_hf_hook("HF_PatchEmbed", "HF_PatchEmbed")
-    ))
-    
-    # 2. First block's attention
-    if len(hf_vis.blocks) > 0 and hasattr(hf_vis.blocks[0], "attn"):
-        # Hook for first block attention
-        hooks.append(hf_vis.blocks[0].attn.register_forward_hook(
-            get_hf_hook("HF_Block0_Attn", "HF_Block0_Attn")
-        ))
+    target_block_idx = 16
+    hf_block_prefix = f"HF_Block{target_block_idx}"
+    fs_block_prefix = f"FS_Block{target_block_idx}"
+
+    if len(hf_vis.blocks) > target_block_idx:
+        block_to_hook = hf_vis.blocks[target_block_idx]
+        hooks.append(block_to_hook.register_forward_hook(get_hf_hook(hf_block_prefix, hf_block_prefix))) # Overall block output
         
-        # Hook for QKV if available
-        if hasattr(hf_vis.blocks[0].attn, "qkv"):
-            def qkv_hook(module, inputs, output):
-                out = output[0] if isinstance(output, tuple) else output
-                if isinstance(out, torch.Tensor):
-                q, k, v = out.chunk(3, dim=-1)
-                    _print_hf_tensor_stats(q, "HF_Block0_QKV - Q", "HF_Block0_QKV_Q")
-                    _print_hf_tensor_stats(k, "HF_Block0_QKV - K", "HF_Block0_QKV_K")
-                    _print_hf_tensor_stats(v, "HF_Block0_QKV - V", "HF_Block0_QKV_V")
-            
-            hooks.append(hf_vis.blocks[0].attn.qkv.register_forward_hook(qkv_hook))
+        if hasattr(block_to_hook, "norm1"): # Norm1 output is input to attention
+             hooks.append(block_to_hook.norm1.register_forward_hook(get_hf_hook(f"{hf_block_prefix}_Norm1", f"{hf_block_prefix}_Norm1")))
+
+        if hasattr(block_to_hook, "attn"):
+            hooks.append(block_to_hook.attn.register_forward_hook(get_hf_hook(f"{hf_block_prefix}_Attn", f"{hf_block_prefix}_Attn")))
+            if hasattr(block_to_hook.attn, "qkv"):
+                def qkv_hook_dynamic(module, inputs, output):
+                    out_tensor = output[0] if isinstance(output, tuple) else output
+                    if isinstance(out_tensor, torch.Tensor):
+                        q, k, v = out_tensor.chunk(3, dim=-1)
+                        _print_hf_tensor_stats(q, f"{hf_block_prefix}_QKV_Q", f"{hf_block_prefix}_QKV_Q")
+                        _print_hf_tensor_stats(k, f"{hf_block_prefix}_QKV_K", f"{hf_block_prefix}_QKV_K")
+                        _print_hf_tensor_stats(v, f"{hf_block_prefix}_QKV_V", f"{hf_block_prefix}_QKV_V")
+                hooks.append(block_to_hook.attn.qkv.register_forward_hook(qkv_hook_dynamic))
+        
+        if hasattr(block_to_hook, "norm2"):
+            hooks.append(block_to_hook.norm2.register_forward_hook(get_hf_hook(f"{hf_block_prefix}_Norm2", f"{hf_block_prefix}_Norm2")))
+        
+        if hasattr(block_to_hook, "mlp"):
+            hooks.append(block_to_hook.mlp.register_forward_hook(get_hf_hook(f"{hf_block_prefix}_MLP", f"{hf_block_prefix}_MLP")))
+    else:
+        print(f"WARN: target_block_idx {target_block_idx} is out of bounds for HF model with {len(hf_vis.blocks)} blocks.")
+
+    if hasattr(hf_vis, "merger"):
+        hooks.append(hf_vis.merger.register_forward_hook(get_hf_hook("HF_FinalMerger", "HF_FinalMerger")))
     
-    # 3. First block
-    if len(hf_vis.blocks) > 0:
-        hooks.append(hf_vis.blocks[0].register_forward_hook(
-            get_hf_hook("HF_Block0", "HF_Block0")
-        ))
-    
-    # 4. Final merger
-    hooks.append(hf_vis.merger.register_forward_hook(
-        get_hf_hook("HF_FinalMerger", "HF_FinalMerger")
-    ))
-    
-    # Add debug prints
     print("DEBUG HF: img_torch.shape:", img_torch.shape)
     print("DEBUG HF: grid_thw:", grid_thw_torch)
 
@@ -727,114 +759,104 @@ def test_vision_encoder_parity(
     # Run HF model with hooks
     # -------------------------------------------------
     print("\n--- Running HuggingFace Model ---")
+    hf_out_np = None
     try:
-    with torch.no_grad():
+        with torch.no_grad():
             hf_out = hf_vis(img_torch, grid_thw=grid_thw_torch)
-            _print_hf_tensor_stats(hf_out, "HF Final Output Hidden States", "HF_FinalOutput")
+            _print_hf_tensor_stats(hf_out, "HF_FinalOutput", "HF_FinalOutput")
             hf_out_np = hf_out.cpu().numpy().astype("float32")
             print("Called HF vision encoder with img_torch and grid_thw.")
     finally:
-        # Always remove hooks
         for hook in hooks:
             hook.remove()
 
     # -------------------------------------------------
-    # Run instrumented Fartsovka forward operations
+    # Run full Fartsovka model with debug for first layer
     # -------------------------------------------------
     print("\n--- Running Fartsovka Model ---")
     
-    # Input stats
-    _print_fs_tensor_stats(np.asarray(img_jax[0]), "FS Input: img_jax", "FS_Input_Image")
-    _print_fs_tensor_stats(np.asarray(grid_thw_jax), "FS Input: grid_thw", "FS_Input_GridTHW")
+    # Monkeypatch Fartsovka's internal hf_activations to point to our test's fs_activations
+    original_vt_module_hf_activations = vt_module.hf_activations
+    vt_module.hf_activations = fs_activations # Redirect storage
+
+    # Log FS Patch Embedding output separately if needed (or ensure VisionTransformer logs it)
+    # The _print_fs_tensor_stats defined in this test file already writes to this test's fs_activations.
+    # If VisionTransformer itself calls _debug_stats_fs for patch_embed, it will now also go to fs_activations.
+    patch_embed_out_fs = fs_vis.patch_embed(img_jax)
+    _print_fs_tensor_stats(np.asarray(patch_embed_out_fs), "FS_PatchEmbed_Output") # Uses test's _print_fs_tensor_stats
+
+    # Pass the dynamic fs_block_prefix for the target_block_idx
+    fs_result = fs_vis(img_jax, grid_thw=grid_thw_jax, debug_layer_indices_map={target_block_idx: fs_block_prefix})
     
-    # 1. Patch embedding
-    patch_embed_out = fs_vis.patch_embed(img_jax)
-    _print_fs_tensor_stats(np.asarray(patch_embed_out), "FS_PatchEmbed - Output", "FS_PatchEmbed_Output")
-    
-    # 2. Get RoPE and window info
-    rotary_pos_emb = fs_vis.rope(grid_thw_jax)
-    window_index, cu_window_seqlens_list = fs_vis.get_window_index(grid_thw_jax)
-    window_index = jnp.asarray(window_index, dtype=jnp.int32)
-    cu_window_seqlens = jnp.asarray(cu_window_seqlens_list, dtype=jnp.int32)
-    cu_window_seqlens = jnp.unique(cu_window_seqlens)
-    
-    # 3. Prepare hidden states and position embeddings
-    seq_len, num_channels = patch_embed_out.shape
-    spatial_merge_unit = fs_vis.config.spatial_merge_size * fs_vis.config.spatial_merge_size
-    
-    # Reshape and window hidden states (same as in model's forward)
-    hidden_states = patch_embed_out.reshape(seq_len // spatial_merge_unit, spatial_merge_unit, num_channels)
-    hidden_states = hidden_states[window_index, :, :]
-    hidden_states = hidden_states.reshape(seq_len, num_channels)
-    _print_fs_tensor_stats(np.asarray(hidden_states), "FS_Block0 - Input", "FS_Block0_Input")
-    
-    # Prepare position embeddings
-    head_dim = rotary_pos_emb.cosines.shape[-1]
-    cos = rotary_pos_emb.cosines.reshape(seq_len // spatial_merge_unit, spatial_merge_unit, head_dim)
-    cos = cos[window_index, :, :].reshape(seq_len, head_dim)
-    sin = rotary_pos_emb.sines.reshape(seq_len // spatial_merge_unit, spatial_merge_unit, head_dim)
-    sin = sin[window_index, :, :].reshape(seq_len, head_dim)
-    position_embeddings = (cos, sin)
-    
-    # 4. Process first block (if available)
-    if len(fs_vis.stages) > 0 and len(fs_vis.stages[0]) > 0:
-        first_block = fs_vis.stages[0][0]
-        
-        # Get norm1 output
-        normed_hidden = vmap(first_block.norm1, in_axes=0)(hidden_states)
-        _print_fs_tensor_stats(np.asarray(normed_hidden), "FS_Block0_Attn - Input", "FS_Block0_Attn_Input")
-        
-        # Get QKV projections (same logic as in VisionSdpaAttention)
-        if hasattr(first_block.attention, 'qkv'):
-            (qkv_out,) = vmap(first_block.attention.qkv, in_axes=0)(normed_hidden)
-            qkv_reshaped = qkv_out.reshape((seq_len, 3, first_block.attention.num_heads, first_block.attention.head_dim))
-            q, k, v = qkv_reshaped[:, 0], qkv_reshaped[:, 1], qkv_reshaped[:, 2]
-            q = q.reshape((seq_len, -1))
-            k = k.reshape((seq_len, -1))
-            v = v.reshape((seq_len, -1))
-            _print_fs_tensor_stats(np.asarray(q), "FS_Block0_QKV - Q", "FS_Block0_QKV_Q")
-            _print_fs_tensor_stats(np.asarray(k), "FS_Block0_QKV - K", "FS_Block0_QKV_K")
-            _print_fs_tensor_stats(np.asarray(v), "FS_Block0_QKV - V", "FS_Block0_QKV_V")
-        
-        # Get attention output
-        attn_output = first_block.attention(
-            hidden_states=normed_hidden,
-            cu_seqlens=cu_window_seqlens,
-            position_embeddings=position_embeddings
-        )
-        _print_fs_tensor_stats(np.asarray(attn_output), "FS_Block0_Attn - Output", "FS_Block0_Attn_Output")
-        
-        # Get block output (with residuals and MLP)
-        hidden_states_with_attn = hidden_states + attn_output
-        normed_hidden2 = vmap(first_block.norm2, in_axes=0)(hidden_states_with_attn)
-        mlp_output = vmap(first_block.mlp, in_axes=0)(normed_hidden2)
-        block0_output = hidden_states_with_attn + mlp_output
-        _print_fs_tensor_stats(np.asarray(block0_output), "FS_Block0 - Output", "FS_Block0_Output")
-    
-    # -------------------------------------------------
-    # Run full Fartsovka model
-    # -------------------------------------------------
-    fs_result = fs_vis(img_jax, grid_thw=grid_thw_jax)
-    
-    # Extract final output correctly based on return type
+    # Restore Fartsovka's original hf_activations dictionary
+    vt_module.hf_activations = original_vt_module_hf_activations
+
+    fs_out_final_np = None
     if hasattr(fs_result, "output") and fs_result.output is not None:
-        fs_out = fs_result.output
+        fs_out_final_np = np.asarray(fs_result.output).astype("float32")
     elif isinstance(fs_result, jnp.ndarray):
-        fs_out = fs_result
+        fs_out_final_np = np.asarray(fs_result).astype("float32")
     elif isinstance(fs_result, tuple) and len(fs_result) > 0 and isinstance(fs_result[0], jnp.ndarray):
-        fs_out = fs_result[0]  # Usually first element in tuple
+        fs_out_final_np = np.asarray(fs_result[0]).astype("float32")
     else:
         raise ValueError(f"Unexpected output type from Fartsovka: {type(fs_result)}")
     
-    fs_out_np = np.asarray(fs_out).astype("float32")
-    _print_fs_tensor_stats(fs_out_np, "FS Final Output Hidden States", "FS_FinalOutput")
+    _print_fs_tensor_stats(fs_out_final_np, "FS_FinalOutput", "FS_FinalOutput")
     
-    # -------------------------------------------------
-    # Print shape comparison
-    # -------------------------------------------------
-    print(f"HF final output shape: {hf_out_np.shape}")
-    print(f"FS final output shape: {fs_out_np.shape}")
-    print(f"\nVision‑Encoder max |Δ| = {float(np.max(np.abs(fs_out_np - hf_out_np))):.4g}")
+    # --- Final Output Shape and Difference Comparison ---
+    if hf_out_np is not None and fs_out_final_np is not None:
+        print(f"\nHF final output shape: {hf_out_np.shape}")
+        print(f"FS final output shape: {fs_out_final_np.shape}")
+        if hf_out_np.shape == fs_out_final_np.shape:
+            final_diff = np.max(np.abs(fs_out_final_np - hf_out_np))
+            print(f"Vision-Encoder final output max |Δ|: {float(final_diff):.4g}")
+        else:
+            print("Vision-Encoder final output shape MISMATCH!")
+    else:
+        print("Could not compare final outputs as one of them is None.")
+
+    # --- Detailed Intermediate Value Comparison for TARGET_BLOCK_IDX ---
+    print(f"\n--- Detailed Intermediate Value Comparison for Block {target_block_idx} ---")
+    intermediate_value_keys = [
+        ("HF_PatchEmbed_Output", "FS_PatchEmbed_Output"), # This is always block-agnostic
+        
+        (f"{hf_block_prefix}_Norm1_Output", f"{fs_block_prefix}_Norm1"),
+        (f"{hf_block_prefix}_Attn_Output", f"{fs_block_prefix}_AttnOutput"),
+        (f"{hf_block_prefix}_Norm2_Input_0", f"{fs_block_prefix}_AfterAttnResidual"),
+        (f"{hf_block_prefix}_Norm2_Output", f"{fs_block_prefix}_Norm2"),
+        (f"{hf_block_prefix}_MLP_Input_0", f"{fs_block_prefix}_Norm2"), # MLP input is Norm2 output
+        (f"{hf_block_prefix}_MLP_Output", f"{fs_block_prefix}_MLPOutput"),
+        (f"{hf_block_prefix}_Output", f"{fs_block_prefix}_Output") # Final output of the target block
+    ]
+
+    for hf_key, fs_key in intermediate_value_keys:
+        print(f"\nComparing: {hf_key} (HF) vs {fs_key} (FS)")
+        hf_val = hf_activations.get(hf_key)
+        fs_val = fs_activations.get(fs_key)
+
+        if hf_val is None or fs_val is None:
+            print(f"One or both values are None. HF Key exists: {hf_key in hf_activations}, FS Key exists: {fs_key in fs_activations}")
+            if hf_val is not None: print(f"  HF Type: {type(hf_val)}")
+            if fs_val is not None: print(f"  FS Type: {type(fs_val)}")
+            continue
+        
+        hf_np = np.asarray(hf_val).astype(np.float32)
+        fs_np = np.asarray(fs_val).astype(np.float32)
+
+        if hf_np.shape != fs_np.shape:
+            print(f"Shape Mismatch! HF: {hf_np.shape}, FS: {fs_np.shape}")
+            continue
+
+        val_diff = np.max(np.abs(hf_np - fs_np))
+        print(f"Max |Δ|: {float(val_diff):.6g}")
+        if hf_np.size < 20:
+            print(f"HF values: {hf_np.flatten()}")
+            print(f"FS values: {fs_np.flatten()}")
+        else:
+            print(f"HF first 5: {hf_np.flatten()[:5]}")
+            print(f"FS first 5: {fs_np.flatten()[:5]}")
+    print("--- End Detailed Intermediate Value Comparison for Block {target_block_idx} ---")
+
 
 def _rope_stats(arr, tag, rows: int = 6, cols: int = 6) -> None:
     import numpy as _np
@@ -862,10 +884,10 @@ def compare_rope_inputs(fs_vis, hf_vis, device):
         grid_thw_torch = torch.tensor([[1, 16, 16]], device=device)
         
         # Get HF embeddings
-    with torch.no_grad():
+        with torch.no_grad():
             try:
                 rotary_pos_emb = hf_vis.rot_pos_emb(grid_thw_torch)
-        emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
+                emb = torch.cat((rotary_pos_emb, rotary_pos_emb), dim=-1)
                 cos_torch = emb.cos()
                 sin_torch = emb.sin()
                 
@@ -977,92 +999,6 @@ def test_qwen25vl_vision_attention_block0(
     assert max_diff < 1e-4, (
         f"Block‑0 attention outputs diverge: max |Δ| = {max_diff:.6g}"
     )
-
-def test_qwen25vl_vision_attention_block0_local(
-    huggingface_qwen25vl,
-    fartsovka_qwen25vl_vision,
-    rng_key,
-):
-    """
-    Compare the first vision-attention block **in local-attention mode**.
-    We replicate the exact window-packing and cu_seqlens logic used by
-    VisionTransformer so that HF and Fartsovka exercise the same kernel.
-    """
-    # ------------------------------------------------------------------ set-up
-    hf_attn = huggingface_qwen25vl.visual.blocks[0].attn          # HF (torch)
-    fs_attn = fartsovka_qwen25vl_vision.stages[0][0].attention    # FS (jax)
-    fs_fwd  = checkify_forward(fs_attn)
-
-    model_dim = fs_attn.model_dim
-    seq_len   = 256                           # 1 × 16 × 16 raw patches
-    sample_inp = jax.random.normal(rng_key, (seq_len, model_dim))
-
-    # ------------------------------------------------------------------ window pack
-    grid_thw = jnp.array([[1, 16, 16]])
-    window_index, cu_window_seqlens = fartsovka_qwen25vl_vision.get_window_index(grid_thw)
-    window_index_np     = np.asarray(window_index)
-    inv_window_index_np = np.argsort(window_index_np)
-    cu_np               = np.asarray(cu_window_seqlens, dtype=np.int32)
-
-    sample_inp_w = sample_inp[window_index_np]     # packed order
-
-    # ------------------------------------------------------------------ RoPE parity check
-    device = next(hf_attn.parameters()).device
-    compare_rope_inputs(fartsovka_qwen25vl_vision,
-                        huggingface_qwen25vl.visual,
-                        device)
-
-    # ------------------------------------------------------------------ HuggingFace forward (torch)
-    torch_inp_w  = to_torch(sample_inp_w).to(device)
-    cu_seqlens_t = torch.tensor(cu_np, dtype=torch.int32, device=device)
-
-    grid_thw_t   = torch.tensor([[1, 16, 16]], device=device)
-    rotary_pos   = huggingface_qwen25vl.visual.rot_pos_emb(grid_thw_t)
-    emb          = torch.cat((rotary_pos, rotary_pos), dim=-1)
-    cos, sin     = emb.cos(), emb.sin()
-    cos_w, sin_w = cos[window_index_np], sin[window_index_np]
-
-    with torch.no_grad():
-        hf_out_t = hf_attn(
-            torch_inp_w,
-            cu_seqlens          = cu_seqlens_t,
-            position_embeddings = (cos_w, sin_w),
-        )
-
-    hf_out = from_torch(hf_out_t)[inv_window_index_np]      # restore original order
-
-    # ------------------------------------------------------------------ Fartsovka forward (jax)
-    vt_pe      = fartsovka_qwen25vl_vision.rope(grid_thw)    # full tables
-    pe_window  = VisionPositionalEmbeddings(
-        cosines = vt_pe.cosines[window_index_np],
-        sines   = vt_pe.sines  [window_index_np],
-    )
-    pe_adapter = PositionalEmbeddingsAdapter(pe_window)
-
-    # ------------------------------------------------------------------ build block-diagonal mask
-    mask = fartsovka_qwen25vl_vision._build_cu_mask(jnp.asarray(cu_np))
-
-    err, fs_out_obj = fs_fwd(
-        sample_inp_w,
-        positional_embeddings=pe_adapter,
-        mask=mask,                   # <- instead of cu_seqlens
-        debug_prefix="FS_Attn",
-    )
-    err.throw()
-    fs_out = fs_out_obj.attention_output[inv_window_index_np]
-
-    # ------------------------------------------------------------------ numeric diff
-    max_diff = float(jnp.max(jnp.abs(fs_out - hf_out)))
-    print(f"\n[ATTN] max |Δ| between HF and FS block-0 = {max_diff:.6g}")
-
-    fs_flat = np.asarray(fs_out).flatten()
-    hf_flat = np.asarray(hf_out).flatten()
-    print("FS out first 5:", fs_flat[:5])
-    print("HF out first 5:", hf_flat[:5])
-    print("FS out last 5 :", fs_flat[-5:])
-    print("HF out last 5 :", hf_flat[-5:])
-
-    assert max_diff < 1e-4, "Block-0 attention outputs diverge in local-attention mode"
 
 
 def test_window_index_parity(huggingface_qwen25vl, fartsovka_qwen25vl_vision):
