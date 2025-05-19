@@ -316,18 +316,16 @@ def load_vision_merger(
     path: ParameterPath,
 ) -> PatchMerger:
     """Load PatchMerger weights from Hugging Face Qwen2.5-VL structure."""
-    # module.norm should map to path / "ln_q" (HF: self.ln_q in Qwen2_5_VLPatchMerger)
     norm = load_rmsnorm(module.norm, weights_dict, path / "ln_q", False) # CORRECTED path
     
-    # module.hidden_proj should map to path / "mlp" / "0" (HF: self.mlp[0] in Qwen2_5_VLPatchMerger)
-    # module.out_proj should map to path / "mlp" / "2" (HF: self.mlp[2] in Qwen2_5_VLPatchMerger)
+
     if not isinstance(module.hidden_proj, FullPrecisionLinear):
         raise TypeError(f"Expected hidden_proj to be FullPrecisionLinear, got {type(module.hidden_proj)}")
     if not isinstance(module.out_proj, FullPrecisionLinear):
         raise TypeError(f"Expected out_proj to be FullPrecisionLinear, got {type(module.out_proj)}")
         
-    hidden_proj = load_linear(module.hidden_proj, weights_dict, path / "mlp" / "0") # CORRECTED path
-    out_proj = load_linear(module.out_proj, weights_dict, path / "mlp" / "2") # CORRECTED path
+    hidden_proj = load_linear(module.hidden_proj, weights_dict, path / "mlp" / "0")
+    out_proj = load_linear(module.out_proj, weights_dict, path / "mlp" / "2")
     
     return load_parameters(
         lambda m: (m.norm, m.hidden_proj, m.out_proj),
@@ -341,46 +339,37 @@ def load_vision_huggingface(
     weights_dict: dict[str, Array],
 ) -> VisionTransformer:
     """Load VisionTransformer model from Hugging Face weights."""
-    print(f"DEBUG: Entering load_vision_huggingface for module: {type(module)}")
     root_path: ParameterPath = ParameterPath("visual")
     
-    print(f"DEBUG: Attempting to load patch_embed from path: {root_path / 'patch_embed' / 'proj'}")
     patch_embed = load_vision_patch_embedding(
         module.patch_embed, weights_dict, root_path / "patch_embed" / "proj" 
     )
-    print(f"DEBUG: Successfully loaded patch_embed")
     
     rope = module.rope 
-    print(f"DEBUG: VisionRoPE inv_freq for the current vision model will be taken from Fartsovka module init, not checkpoint.")
     
     # Assuming a single stage for current HF ViT mapping
     if not module.stages or len(module.stages) != 1:
         raise ValueError(f"Expected VisionTransformer to have exactly one stage for current HF loading, got {len(module.stages) if module.stages else 0}")
     actual_layers_tuple = module.stages[0]
-    print(f"DEBUG: Attempting to load {len(actual_layers_tuple)} layers in the stage.")
     
     loaded_layers = tuple(
         load_vision_layer(layer, weights_dict, root_path / "blocks" / i)
         for i, layer in enumerate(actual_layers_tuple)
     )
-    print(f"DEBUG: Successfully loaded {len(loaded_layers)} layers.")
 
     output_norm_primary = root_path / "norm"  # visual.norm.*
     output_norm_alt     = root_path / "merger" / "ln_q"  # visual.merger.ln_q.*
-    print(f"DEBUG: Attempting to load output_norm. Primary path: {output_norm_primary}, Alt path: {output_norm_alt}")
 
     if (output_norm_primary / "weight") in weights_dict:
         output_norm = load_rmsnorm(
             module.output_norm, weights_dict, output_norm_primary, False
         )
-        print("DEBUG: Loaded output_norm from visual.norm.weight (primary key)")
 
     elif (output_norm_alt / "weight") in weights_dict:
         # Older checkpoints store the final norm only inside the merger.
         output_norm = load_rmsnorm(
             module.output_norm, weights_dict, output_norm_alt, False
         )
-        print("DEBUG: Loaded output_norm from visual.merger.ln_q.weight (fallback)")
 
     else:
         # No pretrained weights → turn the RMSNorm into an identity op
@@ -388,17 +377,10 @@ def load_vision_huggingface(
         output_norm = load_parameters(
             lambda m: (m.scales,), module.output_norm, (identity_scales,)
         )
-        print(
-            "DEBUG: No pretrained output_norm weights found; using identity RMSNorm (scales = 1)."
-        )
-    print(f"DEBUG: Successfully processed output_norm.")
 
-    # The HF 'merger' corresponds to our 'final_merger' in the single-stage context
-    print(f"DEBUG: Attempting to load final_merger from path: {root_path / 'merger'}")
+
     merger = load_vision_merger(module.final_merger, weights_dict, root_path / "merger")
-    print(f"DEBUG: Successfully loaded final_merger.")
     
-    print(f"DEBUG: Finalizing load_vision_huggingface.")
     return load_parameters(
         lambda m: (m.patch_embed, m.rope, m.stages, m.inter_stage_mergers, m.output_norm, m.final_merger),
         module,

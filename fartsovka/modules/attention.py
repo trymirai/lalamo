@@ -437,43 +437,32 @@ def _create_mask_from_cu_seqlens_jax(
     cu_seqlens: Int[Array, "num_segments_plus_1"], # e.g., [0, len1, len1+len2, ...]
     dtype: jnp.dtype = jnp.bool_
 ) -> Bool[Array, "1 seq_length seq_length"]:
-    """Creates a block-diagonal attention mask from cumulative sequence lengths."""
-    # Initialize an empty (all-False) mask
     mask = jnp.zeros((1, seq_length, seq_length), dtype=dtype)
     num_segments = cu_seqlens.shape[0] - 1
 
-    if num_segments < 0: # Should not happen with "num_segments_plus_1"
+    if num_segments < 0:
         raise ValueError("cu_seqlens must have at least one element.")
 
-    if seq_length == 0: # Handle empty sequence case
+    if seq_length == 0:
         return mask
     
-    # Create a different implementation that avoids dynamic slicing.
-    # We'll create a mask based on comparing indices.
-    
-    # Create coordinate arrays
     row_indices = jnp.arange(seq_length)
     col_indices = jnp.arange(seq_length)
     
-    # Expand to shape [1, seq_length, seq_length]
     row_indices = row_indices.reshape(1, seq_length, 1).repeat(seq_length, axis=2)
     col_indices = col_indices.reshape(1, 1, seq_length).repeat(seq_length, axis=1)
     
-    # Function to create a segment mask for a single segment
     def create_segment_mask(segment_idx, seqlens_array):
         start_idx = seqlens_array[segment_idx]
         end_idx = seqlens_array[segment_idx + 1]
         
-        # Create mask where both row and column indices are within range [start_idx, end_idx)
         segment_mask = (row_indices >= start_idx) & (row_indices < end_idx) & \
                        (col_indices >= start_idx) & (col_indices < end_idx)
         
         return segment_mask
     
-    # Initialize result mask
     result_mask = jnp.zeros((1, seq_length, seq_length), dtype=dtype)
     
-    # Combine all segment masks
     for i in range(num_segments):
         segment_mask = create_segment_mask(i, cu_seqlens)
         result_mask = result_mask | segment_mask

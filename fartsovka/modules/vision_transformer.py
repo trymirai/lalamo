@@ -124,11 +124,6 @@ class VisionConfig:
             patch_embed_initial_weights = loaded_weights.get("patch_embed.weights")
             if self.patch_embedding_config.has_bias:
                  patch_embed_initial_biases = loaded_weights.get("patch_embed.biases")
-            
-            if patch_embed_initial_weights is not None:
-                print(f"DEBUG VisionConfig.random_init: Found patch_embed.weights in loaded_weights.")
-            if patch_embed_initial_biases is not None:
-                print(f"DEBUG VisionConfig.random_init: Found patch_embed.biases in loaded_weights.")
 
         patch_embed = self.patch_embedding_config.random_init(
             hidden_size=self.stage_hidden_dims[0],
@@ -171,7 +166,6 @@ class VisionConfig:
                     num_heads=stage_heads,
                     key=layer_key,
                 )
-                print(f"DEBUG: Created layer: {layer}")
                 stage_layers.append(layer)
                 global_layer_index += 1
             all_layers.append(tuple(stage_layers))
