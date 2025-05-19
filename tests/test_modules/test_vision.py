@@ -720,7 +720,6 @@ def test_vision_encoder_parity(
     
     target_block_idx = 31
     hf_block_prefix = f"HF_Block{target_block_idx}"
-    fs_block_prefix = f"FS_Block{target_block_idx}"
 
     if len(hf_vis.blocks) > target_block_idx:
         block_to_hook = hf_vis.blocks[target_block_idx]
@@ -781,26 +780,16 @@ def test_vision_encoder_parity(
             hook.remove()
 
     # -------------------------------------------------
-    # Run full Fartsovka model with debug for first layer
+    # Run full Fartsovka model (cleaned call)
     # -------------------------------------------------
     print("\n--- Running Fartsovka Model ---")
     
-    # Monkeypatch Fartsovka's internal hf_activations to point to our test's fs_activations
-    original_vt_module_hf_activations = vt_module.hf_activations
-    vt_module.hf_activations = fs_activations # Redirect storage
-
-    # Log FS Patch Embedding output separately if needed (or ensure VisionTransformer logs it)
-    # The _print_fs_tensor_stats defined in this test file already writes to this test's fs_activations.
-    # If VisionTransformer itself calls _debug_stats_fs for patch_embed, it will now also go to fs_activations.
+    # Log FS Patch Embedding output (if desired for direct comparison)
     patch_embed_out_fs = fs_vis.patch_embed(img_jax)
-    _print_fs_tensor_stats(np.asarray(patch_embed_out_fs), "FS_PatchEmbed_Output") # Uses test's _print_fs_tensor_stats
+    _print_fs_tensor_stats(np.asarray(patch_embed_out_fs), "FS_PatchEmbed_Output") # This logs to test's fs_activations
 
-    # Pass the dynamic fs_block_prefix for the target_block_idx
-    fs_result = fs_vis(img_jax, grid_thw=grid_thw_jax, debug_layer_indices_map={target_block_idx: fs_block_prefix})
+    fs_result = fs_vis(img_jax, grid_thw=grid_thw_jax) # Cleaned call
     
-    # Restore Fartsovka's original hf_activations dictionary
-    vt_module.hf_activations = original_vt_module_hf_activations
-
     fs_out_final_np = None
     if hasattr(fs_result, "output") and fs_result.output is not None:
         fs_out_final_np = np.asarray(fs_result.output).astype("float32")
@@ -825,54 +814,56 @@ def test_vision_encoder_parity(
     else:
         print("Could not compare final outputs as one of them is None.")
 
-    # --- Detailed Intermediate Value Comparison for TARGET_BLOCK_IDX ---
-    print(f"\n--- Detailed Intermediate Value Comparison for Block {target_block_idx} ---")
-    intermediate_value_keys = [
+    # --- Simplified Intermediate Value Comparison ---
+    print(f"\n--- Intermediate Value Comparison (HF Block {target_block_idx} vs specific FS points) ---")
+    
+    # Only compare points explicitly logged by the test for FS side
+    comparison_pairs = [
         ("HF_PatchEmbed_Output", "FS_PatchEmbed_Output"),
-        (f"{hf_block_prefix}_Norm1_Output", f"{fs_block_prefix}_Norm1"),
-        (f"{hf_block_prefix}_Attn_Output", f"{fs_block_prefix}_AttnOutput"),
-        (f"{hf_block_prefix}_Norm2_Input_0", f"{fs_block_prefix}_AfterAttnResidual"),
-        (f"{hf_block_prefix}_Norm2_Output", f"{fs_block_prefix}_Norm2"),
-        (f"{hf_block_prefix}_MLP_Input_0", f"{fs_block_prefix}_Norm2"),
-        (f"{hf_block_prefix}_MLP_Output", f"{fs_block_prefix}_MLPOutput"),
-        (f"{hf_block_prefix}_Output", f"{fs_block_prefix}_Output"),
-        # Final Merger specific comparisons
-        ("HF_FinalMerger_Input_0", "FS_FinalMerger_InputToMerger"),
-        ("HF_FinalMerger_Norm_Output", "FS_FinalMerger_NormOutput"),
-        ("HF_FinalMerger_MLP_Linear1_Input_0", "FS_FinalMerger_ReshapedInputToMLP"),
-        ("HF_FinalMerger_MLP_Linear1_Output", "FS_FinalMerger_HiddenProjOutput"),
-        ("HF_FinalMerger_MLP_GELU_Output", "FS_FinalMerger_GeluOutput"),
-        ("HF_FinalMerger_Output", "FS_FinalMerger_Output"),
-        ("HF_FinalOutput", "FS_FinalOutput") # Compares the very end results
+        # Add other specific HF keys you want to see here, their FS counterparts will be missing
+        # For example, if you still want to see HF's block output:
+        (f"{hf_block_prefix}_Output", None), # No direct FS counterpart logged from within anymore
+        # And the final outputs which are explicitly logged by the test:
+        ("HF_FinalOutput", "FS_FinalOutput")
     ]
 
-    for hf_key, fs_key in intermediate_value_keys:
-        print(f"\nComparing: {hf_key} (HF) vs {fs_key} (FS)")
+    for hf_key, fs_key_or_none in comparison_pairs:
+        print(f"\nComparing: {hf_key} (HF)", end="")
         hf_val = hf_activations.get(hf_key)
-        fs_val = fs_activations.get(fs_key)
 
-        if hf_val is None or fs_val is None:
-            print(f"One or both values are None. HF Key exists: {hf_key in hf_activations}, FS Key exists: {fs_key in fs_activations}")
-            if hf_val is not None: print(f"  HF Type: {type(hf_val)}")
-            if fs_val is not None: print(f"  FS Type: {type(fs_val)}")
+        fs_val = None
+        if fs_key_or_none:
+            print(f" vs {fs_key_or_none} (FS)", end="")
+            fs_val = fs_activations.get(fs_key_or_none)
+        print()
+
+        if hf_val is None and (fs_key_or_none is None or fs_val is None):
+            print(f"At least one value is None or FS key not specified. HF Key exists: {hf_key in hf_activations}, FS Key specified: {fs_key_or_none is not None}, FS Key exists: {fs_key_or_none and fs_key_or_none in fs_activations}")
             continue
-        
+        elif hf_val is None:
+            print(f"HF value is None (key: {hf_key}). FS value type: {type(fs_val) if fs_val is not None else 'None'}")
+            continue
+        elif fs_key_or_none and fs_val is None:
+            print(f"FS value is None (key: {fs_key_or_none}). HF value type: {type(hf_val)}")
+            # continue # Allow printing HF stats even if FS is missing
+
         hf_np = np.asarray(hf_val).astype(np.float32)
-        fs_np = np.asarray(fs_val).astype(np.float32)
+        print(f"HF ({hf_key}): Shape {hf_np.shape}, Mean {hf_np.mean():.4g}, RMS {np.sqrt(np.mean(hf_np**2)):.4g}")
+        print(f"HF first 5: {hf_np.flatten()[:5]}")
 
-        if hf_np.shape != fs_np.shape:
-            print(f"Shape Mismatch! HF: {hf_np.shape}, FS: {fs_np.shape}")
-            continue
-
-        val_diff = np.max(np.abs(hf_np - fs_np))
-        print(f"Max |Δ|: {float(val_diff):.6g}")
-        if hf_np.size < 20:
-            print(f"HF values: {hf_np.flatten()}")
-            print(f"FS values: {fs_np.flatten()}")
-        else:
-            print(f"HF first 5: {hf_np.flatten()[:5]}")
+        if fs_val is not None:
+            fs_np = np.asarray(fs_val).astype(np.float32)
+            print(f"FS ({fs_key_or_none}): Shape {fs_np.shape}, Mean {fs_np.mean():.4g}, RMS {np.sqrt(np.mean(fs_np**2)):.4g}")
             print(f"FS first 5: {fs_np.flatten()[:5]}")
-    print("--- End Detailed Intermediate Value Comparison for Block {target_block_idx} ---")
+            if hf_np.shape == fs_np.shape:
+                val_diff = np.max(np.abs(hf_np - fs_np))
+                print(f"Max |Δ|: {float(val_diff):.6g}")
+            else:
+                print("Shape Mismatch!")
+        else:
+            print(f"FS value for {fs_key_or_none} not found or not specified.")
+
+    print(f"--- End Intermediate Value Comparison ---")
 
 
 def _rope_stats(arr, tag, rows: int = 6, cols: int = 6) -> None:

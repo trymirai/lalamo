@@ -28,6 +28,7 @@ from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from .vision_rope import VisionRoPE, VisionRoPEConfig, VisionPositionalEmbeddings
+from .attention import VisionSdpaAttention, VisionSdpaAttentionConfig
 from .vision_transformer import (
     VisionConfig, 
     VisionTransformer, 
@@ -37,9 +38,7 @@ from .vision_transformer import (
     VisionLayerConfig,
     VisionLayer,
     PatchMergerConfig,
-    PatchMerger,
-    VisionSdpaAttention,
-    VisionSdpaAttentionConfig
+    PatchMerger
 )
 
 __all__ = [

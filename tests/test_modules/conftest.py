@@ -16,19 +16,7 @@ from fartsovka.model_import import REPO_TO_MODEL, import_model
 from fartsovka.model_import.model_import import download_config_file, download_weights, ModelSpec
 from fartsovka.model_import.configs import HFQwen25VLConfig
 from fartsovka.modules import (
-    Activation,
-    AttentionConfig, 
     Decoder, 
-    FullPrecisionLinearConfig,
-    MLPConfig,
-    PatchEmbedding, 
-    PatchEmbeddingConfig,
-    PatchMergerConfig,
-    RMSNormConfig,
-    VisionConfig,
-    VisionLayerConfig,
-    VisionRoPE, 
-    VisionRoPEConfig,
     VisionTransformer,
 )
 from tests.executorch_llama.source_transformation.lora import (
