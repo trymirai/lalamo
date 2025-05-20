@@ -2,6 +2,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from copy import deepcopy
 import dataclasses
+from typing import TypeVar, Type
 
 from fartsovka.common import ParameterPath
 from fartsovka.modules import (
@@ -24,24 +25,30 @@ from .common import load_parameters
 
 __all__ = ["load_huggingface", "load_vision_huggingface"]
 
+TLinear = TypeVar("TLinear", bound=LinearBase)
 
 def load_linear(
     module: FullPrecisionLinear,
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> FullPrecisionLinear:
-    if module.biases is None:
-        # The Equinox module was instantiated without a bias, but the HF
-        # checkpoint *does* contain one.  Adopt the HF bias so we preserve
-        # numerical parity.
-        loaded_bias = weights_dict.get(path / "bias")
-    else:
-        loaded_bias_path = path / "bias"
-        loaded_bias = weights_dict.get(loaded_bias_path)
+    bias_key_in_hf = "bias"
+    weight_key_in_hf = "weight"
+
+    loaded_weights = weights_dict[path / weight_key_in_hf]
+    loaded_bias: Array | None = None
+
+    if module.biases is not None:
+        loaded_bias = weights_dict.get(path / bias_key_in_hf)
+        if loaded_bias is None:
+            print(f"Warning: Module {path} (FullPrecisionLinear) expects biases, but not found in HuggingFace checkpoint.")
+    elif (path / bias_key_in_hf) in weights_dict:
+        print(f"Warning: Module {path} (FullPrecisionLinear) has no bias in Fartsovka, but HuggingFace checkpoint provides one. HF bias will be IGNORED.")
+
     return load_parameters(
         lambda m: (m.weights, m.biases),
         module,
-        (weights_dict[path / "weight"], loaded_bias),
+        (loaded_weights, loaded_bias),
     )
 
 
@@ -115,98 +122,62 @@ def load_attention(
     Handles both standard Attention and VisionSdpaAttention modules.
     """
 
-    # Handle VisionSdpaAttention
     if isinstance(module, VisionSdpaAttention):
-        if not isinstance(module.qkv, LinearBase):
-            raise TypeError(f"Expected qkv to be LinearBase, got {type(module.qkv)}")
-        if not isinstance(module.proj, LinearBase):
-            raise TypeError(f"Expected proj to be LinearBase, got {type(module.proj)}")
+        if not isinstance(module.qkv, FullPrecisionLinear):
+            raise TypeError(f"Expected VisionSdpaAttention.qkv to be FullPrecisionLinear for loader at {path / 'qkv'}, got {type(module.qkv)}")
+        if not isinstance(module.proj, FullPrecisionLinear):
+            raise TypeError(f"Expected VisionSdpaAttention.proj to be FullPrecisionLinear for loader at {path / 'proj'}, got {type(module.proj)}")
         
-        # Load output projection
         out_proj_path = path / "proj"
-        loaded_proj = load_linear(deepcopy(module.proj), weights_dict, out_proj_path)
+        loaded_proj = load_linear(module.proj, weights_dict, out_proj_path)
         
-        # Load QKV projection
         qkv_path = path / "qkv"
-        loaded_qkv = load_linear(deepcopy(module.qkv), weights_dict, qkv_path)
+        loaded_qkv = load_linear(module.qkv, weights_dict, qkv_path)
         
-        # Load both projections into the VisionSdpaAttention module
         return load_parameters(
             lambda m: (m.qkv, m.proj),
             module,
             (loaded_qkv, loaded_proj),
         )
     
-    # Original code for standard Attention
     if not isinstance(module.qkv_projection, FullPrecisionLinear):
         raise TypeError(f"Expected qkv_projection to be FullPrecisionLinear, got {type(module.qkv_projection)}")
     if not isinstance(module.out_projection, FullPrecisionLinear):
         raise TypeError(f"Expected out_projection to be FullPrecisionLinear, got {type(module.out_projection)}")
     
-    # Load out_projection
-    out_proj_path_standard = path / "o_proj"
-    out_proj_path_vision = path / "proj"
-    actual_out_proj_path = None
-    if (out_proj_path_standard / "weight") in weights_dict:
-        actual_out_proj_path = out_proj_path_standard
-    elif (out_proj_path_vision / "weight") in weights_dict:
-        actual_out_proj_path = out_proj_path_vision
+    out_proj = load_linear(module.out_projection, weights_dict, path / "o_proj")
     
-    if actual_out_proj_path is None:
-        raise KeyError(f"Output projection weight not found at {out_proj_path_standard} or {out_proj_path_vision}")
+    q_proj_weights = weights_dict[path / "q_proj" / "weight"]
+    k_proj_weights = weights_dict[path / "k_proj" / "weight"]
+    v_proj_weights = weights_dict[path / "v_proj" / "weight"]
 
-    loaded_out_projection = load_linear(deepcopy(module.out_projection), weights_dict, actual_out_proj_path)
+    qkv_proj_weights = jnp.concatenate([q_proj_weights, k_proj_weights, v_proj_weights], axis=0)
 
-    # Prepare QKV projection weights and biases
-    qkv_proj_module_instance = deepcopy(module.qkv_projection)
-    qkv_proj_weights: Array
-    qkv_bias: Array | None
-
-    qkv_combined_weight_path = path / "qkv" / "weight"
-    qkv_combined_bias_path = path / "qkv" / "bias"
-
-    if qkv_combined_weight_path in weights_dict:
-        qkv_proj_weights = weights_dict[qkv_combined_weight_path]
-        if module.qkv_projection.biases is not None:
-            if qkv_combined_bias_path in weights_dict:
-                qkv_bias = weights_dict[qkv_combined_bias_path]
-            else:
-                print(f"WARN: Combined QKV bias expected for {qkv_combined_bias_path} but not found. Module requires bias. This might error.")
-                qkv_bias = None # Will cause error if module.qkv_projection.biases is not Optional[Array]
-        else:
-            qkv_bias = None
-            if qkv_combined_bias_path in weights_dict:
-                 print(f"WARN: Combined QKV bias found at {qkv_combined_bias_path} but module QKV projection does not have biases.")
+    bias_paths = [path / p / "bias" for p in ["q_proj", "k_proj", "v_proj"]]
+    if module.qkv_projection.biases is None:
+        for bias_path in bias_paths:
+            if bias_path in weights_dict:
+                raise ValueError(f"Bias is not supported for {bias_path} as module.qkv_projection.biases is None, but bias found in checkpoint.")
+        qkv_bias = None
     else:
-        q_proj_weights = weights_dict[path / "q_proj" / "weight"]
-        k_proj_weights = weights_dict[path / "k_proj" / "weight"]
-        v_proj_weights = weights_dict[path / "v_proj" / "weight"]
-        qkv_proj_weights = jnp.concatenate([q_proj_weights, k_proj_weights, v_proj_weights], axis=0)
-
-        if module.qkv_projection.biases is not None:
-            q_bias = weights_dict[path / "q_proj" / "bias"]
-            k_bias = weights_dict[path / "k_proj" / "bias"]
-            v_bias = weights_dict[path / "v_proj" / "bias"]
-            qkv_bias = jnp.concatenate([q_bias, k_bias, v_bias], axis=0)
-        else:
-            qkv_bias = None
-            for p_name in ["q_proj", "k_proj", "v_proj"]:
-                if path / p_name / "bias" in weights_dict:
-                    print(f"WARN: Separate bias {path / p_name / 'bias'} found but module QKV projection does not support biases.")
-                    break
-    
-    # Load weights and biases into the qkv_projection module instance
+        missing_biases = [bp for bp in bias_paths if bp not in weights_dict]
+        if missing_biases:
+            raise ValueError(f"Module expects biases, but the following bias paths are missing in weights_dict: {missing_biases}")
+        loaded_biases = [weights_dict[bias_path] for bias_path in bias_paths]
+        qkv_bias = jnp.concatenate(loaded_biases, axis=0)
+ 
+    loaded_qkv_projection_instance = deepcopy(module.qkv_projection)
+ 
     loaded_qkv_projection = load_parameters(
         lambda m_qkv: (m_qkv.weights, m_qkv.biases),
-        qkv_proj_module_instance, # This is a FullPrecisionLinear instance
+        loaded_qkv_projection_instance,
         (qkv_proj_weights, qkv_bias)
     )
 
-    # Load the updated qkv_projection and out_projection into the main Attention module
     return load_parameters(
-        lambda m_attn: (m_attn.qkv_projection, m_attn.out_projection),
+        lambda m_attn: (m_attn.qkv_projection, m_attn.out_projection),  # type: ignore
         module,
-        (loaded_qkv_projection, loaded_out_projection),
+        (loaded_qkv_projection, out_proj),
     )
 
 
@@ -296,7 +267,7 @@ def load_vision_patch_embedding(
     path: ParameterPath,
 ) -> PatchEmbedding:
     hf_w = weights_dict[path / "weight"]          # (out, in, T, H, W)
-    hf_b = weights_dict.get(path / "bias")        # <- exists in Qwen-2.5-VL
+    hf_b = weights_dict.get(path / "bias")       
 
     fs_w = jnp.transpose(hf_w, (0, 2, 3, 4, 1))   # (out, T, H, W, in)
 
@@ -315,9 +286,7 @@ def load_vision_merger(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> PatchMerger:
-    """Load PatchMerger weights from Hugging Face Qwen2.5-VL structure."""
-    norm = load_rmsnorm(module.norm, weights_dict, path / "ln_q", False) # CORRECTED path
-    
+    norm = load_rmsnorm(module.norm, weights_dict, path / "ln_q", False)
 
     if not isinstance(module.hidden_proj, FullPrecisionLinear):
         raise TypeError(f"Expected hidden_proj to be FullPrecisionLinear, got {type(module.hidden_proj)}")
@@ -347,7 +316,6 @@ def load_vision_huggingface(
     
     rope = module.rope 
     
-    # Assuming a single stage for current HF ViT mapping
     if not module.stages or len(module.stages) != 1:
         raise ValueError(f"Expected VisionTransformer to have exactly one stage for current HF loading, got {len(module.stages) if module.stages else 0}")
     actual_layers_tuple = module.stages[0]
@@ -357,8 +325,8 @@ def load_vision_huggingface(
         for i, layer in enumerate(actual_layers_tuple)
     )
 
-    output_norm_primary = root_path / "norm"  # visual.norm.*
-    output_norm_alt     = root_path / "merger" / "ln_q"  # visual.merger.ln_q.*
+    output_norm_primary = root_path / "norm" 
+    output_norm_alt     = root_path / "merger" / "ln_q"
 
     if (output_norm_primary / "weight") in weights_dict:
         output_norm = load_rmsnorm(
@@ -366,13 +334,11 @@ def load_vision_huggingface(
         )
 
     elif (output_norm_alt / "weight") in weights_dict:
-        # Older checkpoints store the final norm only inside the merger.
         output_norm = load_rmsnorm(
             module.output_norm, weights_dict, output_norm_alt, False
         )
 
     else:
-        # No pretrained weights → turn the RMSNorm into an identity op
         identity_scales = jnp.ones_like(module.output_norm.scales)
         output_norm = load_parameters(
             lambda m: (m.scales,), module.output_norm, (identity_scales,)
@@ -384,7 +350,6 @@ def load_vision_huggingface(
     return load_parameters(
         lambda m: (m.patch_embed, m.rope, m.stages, m.inter_stage_mergers, m.output_norm, m.final_merger),
         module,
-        # Store the loaded layers back into a tuple representing the single stage
         (patch_embed, rope, (loaded_layers,), module.inter_stage_mergers, output_norm, merger),
     )
 

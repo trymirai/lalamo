@@ -35,18 +35,15 @@ class PatchMergerConfig:
         """Initialize a PatchMerger with random weights."""
         norm_key, hidden_proj_key, out_proj_key = jax.random.split(key, 3)
 
-        # Calculate hidden dimension size after spatial merging
-        embed_dim_before_merge = context_dim * (self.spatial_merge_size ** 2)  # Eq. to HF's "context_dim * S²"
+        embed_dim_before_merge = context_dim * (self.spatial_merge_size ** 2)
         mlp_hidden_dim = expansion_factor * embed_dim_before_merge
 
-        # Initialize normalization layer
         norm = RMSNormConfig(
             scale_precision=self.precision,
             accumulation_precision=self.precision,
             epsilon=1e-6,
         ).init(context_dim)
 
-        # Initialize linear projections
         linear_config = FullPrecisionLinearConfig(precision=self.precision)
 
         hidden_proj = linear_config.random_init(
@@ -63,7 +60,6 @@ class PatchMergerConfig:
             key=out_proj_key,
         )
 
-        # Use JAX's GELU implementation
         gelu = jax.nn.gelu
 
         return PatchMerger(
@@ -75,9 +71,7 @@ class PatchMergerConfig:
         )
 
 
-class PatchMerger(FartsovkaModule[PatchMergerConfig]):
-    """Merges spatial patches to create a more compact representation."""
-    
+class PatchMerger(FartsovkaModule[PatchMergerConfig]):    
     norm: RMSNorm
     hidden_proj: LinearBase
     gelu: Callable[[Float[Array, "..."]], Float[Array, "..."]]

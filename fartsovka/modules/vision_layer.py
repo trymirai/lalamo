@@ -10,7 +10,7 @@ from fartsovka.common import DType, ParameterDict
 
 from .common import FartsovkaModule
 from .mlp import MLP, MLPConfig
-from .attention import VisionSdpaAttention, VisionSdpaAttentionConfig
+from .vision_attention import VisionSdpaAttention, VisionSdpaAttentionConfig
 from .normalization import RMSNorm, RMSNormConfig
 
 
@@ -60,8 +60,6 @@ class VisionLayerConfig:
 
 
 class VisionLayer(FartsovkaModule[VisionLayerConfig]):
-    """Transformer layer for the vision model."""
-    
     norm1: RMSNorm
     attention: VisionSdpaAttention
     norm2: RMSNorm
@@ -91,7 +89,6 @@ class VisionLayer(FartsovkaModule[VisionLayerConfig]):
         return hidden_states
     
     def export_weights(self) -> ParameterDict:
-        """Export model weights as a ParameterDict."""
         return ParameterDict(
             norm1=self.norm1.export_weights(),
             attention=self.attention.export_weights(),

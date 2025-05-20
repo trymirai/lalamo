@@ -10,6 +10,7 @@ from safetensors.flax import load_file as load_safetensors
 
 from fartsovka.common import DType
 from fartsovka.modules import Decoder
+from fartsovka.modules.vision_transformer import VisionTransformer
 
 from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config, HFQwen25VLConfig
 
@@ -18,6 +19,7 @@ __all__ = [
     "REPO_TO_MODEL",
     "ModelSpec",
     "import_model",
+    "get_vision_encoder_from_model",
 ]
 
 
@@ -175,3 +177,17 @@ def import_model(
     result = config.load_model(context_length, precision, accumulation_precision, weights_dict)
 
     return result
+
+
+def get_vision_encoder_from_model(model: Decoder) -> VisionTransformer | None:
+    if hasattr(model, "vision_module"):
+        vision_encoder = getattr(model, "vision_module")
+        if isinstance(vision_encoder, VisionTransformer):
+            return vision_encoder
+        elif vision_encoder is not None:
+            print(
+                f"Warning: Attribute 'vision_module' found on Decoder, but it is of type "
+                f"{type(vision_encoder).__name__}, not VisionTransformer."
+            )
+            return None
+    return None 

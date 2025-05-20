@@ -90,7 +90,7 @@ class PatchEmbedding(FartsovkaModule[PatchEmbeddingConfig]):
                 nH, Ph,
                 nW, Pw,
             )
-            .reshape(-1, C, Pt, Ph, Pw)                     # (N, C, Pt, Ph, Pw)
+            .reshape(-1, C, Pt, Ph, Pw) # (N, C, Pt, Ph, Pw)
         )
 
         input_is_f32 = images.dtype == jnp.float32

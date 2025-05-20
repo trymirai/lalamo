@@ -28,7 +28,7 @@ from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, RoPEConfigBase, UnscaledRoPEConfig, YARNRoPEConfig
 from .vision_rope import VisionRoPE, VisionPositionalEmbeddings
-from .attention import VisionSdpaAttention, VisionSdpaAttentionConfig
+from .vision_attention import VisionSdpaAttention, VisionSdpaAttentionConfig
 from .vision_transformer import (
     VisionConfig, 
     VisionTransformer, 

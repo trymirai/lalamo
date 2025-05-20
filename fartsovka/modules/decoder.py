@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import NamedTuple, Optional
 
 import jax
 from jax import vmap
@@ -13,6 +13,7 @@ from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import RoPE, RoPEConfig
+from .vision_transformer import VisionTransformer
 
 __all__ = [
     "Decoder",
@@ -57,6 +58,7 @@ class DecoderConfig:
         self,
         *,
         key: PRNGKeyArray,
+        vision_module: Optional[VisionTransformer] = None,
     ) -> "Decoder":
         embedding_key, layers_key = jax.random.split(key)
         embedding = self.embedding_config.random_init(
@@ -94,6 +96,7 @@ class DecoderConfig:
             rope=rope,
             layers=layers,
             output_norm=output_norm,
+            vision_module=vision_module,
         )
 
 
@@ -102,6 +105,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
     rope: RoPE
     layers: tuple[DecoderLayer, ...]
     output_norm: RMSNorm
+    vision_module: Optional[VisionTransformer] = None
 
     def __call__(
         self,

@@ -60,14 +60,12 @@ class VisionConfig:
     fullatt_block_indexes: tuple[int, ...] = field(default_factory=lambda: (7, 15, 23, 31))
 
     def __post_init__(self) -> None:
-        """Validate configuration values."""
         num_stages = len(self.stage_hidden_dims)
         if not (len(self.stage_depths) == num_stages and
                 len(self.stage_num_heads) == num_stages and
                 len(self.stage_mlp_intermediate_dims) == num_stages):
             raise ValueError("Stage configuration arrays (dims, depths, heads, mlp_dims) must have the same length.")
 
-        # Validate individual stage configs
         for i in range(num_stages):
             if self.stage_hidden_dims[i] % self.stage_num_heads[i] != 0:
                 raise ValueError(
@@ -75,7 +73,6 @@ class VisionConfig:
                     f"number of heads {self.stage_num_heads[i]}"
                 )
 
-        # Revisit fullatt_block_indexes validation based on total layers across stages
         total_layers = sum(self.stage_depths)
         if any(idx >= total_layers for idx in self.fullatt_block_indexes):
              raise ValueError(
@@ -83,7 +80,6 @@ class VisionConfig:
                  f"the total number of layers {total_layers}"
              )
 
-        # Verify consistency between patch configs (Keep relevant checks)
         if self.patch_size != self.patch_embedding_config.patch_size:
             raise ValueError(
                 f"Patch size in VisionConfig ({self.patch_size}) does not match "
@@ -102,7 +98,6 @@ class VisionConfig:
                 f"temporal patch size in PatchEmbeddingConfig ({self.patch_embedding_config.temporal_patch_size})"
             )
         
-        # Verify consistency between patch merger configs
         if self.spatial_merge_size != self.patch_merger_config.spatial_merge_size:
             raise ValueError(
                 f"Spatial merge size in VisionConfig ({self.spatial_merge_size}) does not match "
@@ -115,7 +110,6 @@ class VisionConfig:
         key: PRNGKeyArray,
         loaded_weights: ParameterDict | None = None,
     ) -> "VisionTransformer":
-        """Initialize a VisionTransformer with random weights, adapting for stages, or from loaded_weights."""
         embedding_key, rope_key, stages_key, final_merger_key, norm_key = jax.random.split(key, 5)
 
         patch_embed_initial_weights = None
@@ -203,30 +197,12 @@ class VisionConfig:
 
 
 class VisionTransformer(FartsovkaModule[VisionConfig]):
-    """Vision Transformer model for processing images, with multi-stage architecture."""
-
     patch_embed: PatchEmbedding
     rope: VisionRoPE
     stages: tuple[tuple[VisionLayer, ...], ...]
     inter_stage_mergers: tuple[PatchMerger, ...]
     output_norm: RMSNorm
     final_merger: PatchMerger
-
-    def _apply_norm(self, norm_layer: RMSNorm, hidden_states: Float[Array, "seq_len hidden_size"]) -> Float[Array, "seq_len hidden_size"]:
-        """Apply RMSNorm, handling potential shape mismatches."""
-        if hidden_states.shape[-1] != norm_layer.input_dim:
-            print(f"WARN: Adjusting hidden_states shape ({hidden_states.shape}) for norm layer ({norm_layer.input_dim})")
-            target_dim = norm_layer.input_dim
-            current_dim = hidden_states.shape[-1]
-            if current_dim < target_dim:
-                # Pad hidden_states
-                padding_width = ((0, 0),) * (hidden_states.ndim - 1) + ((0, target_dim - current_dim),)
-                hidden_states = jnp.pad(hidden_states, padding_width, mode='constant')
-            else:
-                # Truncate hidden_states
-                hidden_states = hidden_states[..., :target_dim]
-            print(f"Adjusted hidden_states shape to: {hidden_states.shape}")
-        return vmap(norm_layer, in_axes=0)(hidden_states)
 
     def get_window_index(self, grid_thw: Int[Array, "batch_size 3"]) -> tuple[jnp.ndarray, list[int]]:
         window_index = []
