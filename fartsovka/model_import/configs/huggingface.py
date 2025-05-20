@@ -25,7 +25,7 @@ from fartsovka.modules import (
     VisionLayerConfig,
     PatchMergerConfig,
     RoPEConfigBase,
-    VisionSdpaAttentionConfig
+    VisionAttentionConfig
 )
 
 from .common import ForeignConfig
@@ -497,7 +497,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         hf_activation = vc.get("hidden_act", "silu")
         activation = Activation.SILU if hf_activation == "silu" else Activation.GELU
     
-        attention_config = VisionSdpaAttentionConfig(
+        attention_config = VisionAttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             logit_soft_cap=None,

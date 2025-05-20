@@ -10,7 +10,7 @@ from fartsovka.common import DType, ParameterDict
 
 from .common import FartsovkaModule
 from .mlp import MLP, MLPConfig
-from .vision_attention import VisionSdpaAttention, VisionSdpaAttentionConfig
+from .vision_attention import VisionAttention, VisionAttentionConfig
 from .normalization import RMSNorm, RMSNormConfig
 
 
@@ -22,7 +22,7 @@ __all__ = [
 @dataclass
 class VisionLayerConfig:
     norm_config: RMSNormConfig        
-    attention_config: VisionSdpaAttentionConfig
+    attention_config: VisionAttentionConfig
     mlp_config: MLPConfig
     
     def random_init(
@@ -61,7 +61,7 @@ class VisionLayerConfig:
 
 class VisionLayer(FartsovkaModule[VisionLayerConfig]):
     norm1: RMSNorm
-    attention: VisionSdpaAttention
+    attention: VisionAttention
     norm2: RMSNorm
     mlp: MLP
     

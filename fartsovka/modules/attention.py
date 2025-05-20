@@ -19,7 +19,7 @@ from .utils import apply_soft_capping
 __all__ = [
     "Attention",
     "AttentionConfig",
-    "VisionSdpaAttention",
+    "VisionAttention",
 ]
 
 

@@ -17,7 +17,7 @@ from fartsovka.modules import (
     VisionLayer,
     PatchMerger,
     LinearBase,
-    VisionSdpaAttention
+    VisionAttention
 )
 from fartsovka.modules.decoder import Decoder
 
@@ -112,15 +112,15 @@ def load_rmsnorm(
 
 
 def load_attention(
-    module: Attention | VisionSdpaAttention,
+    module: Attention | VisionAttention,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> Attention | VisionSdpaAttention:
-    if isinstance(module, VisionSdpaAttention):
+) -> Attention | VisionAttention:
+    if isinstance(module, VisionAttention):
         if not isinstance(module.qkv, FullPrecisionLinear):
-            raise TypeError(f"Expected VisionSdpaAttention.qkv to be FullPrecisionLinear for loader at {path / 'qkv'}, got {type(module.qkv)}")
+            raise TypeError(f"Expected VisionAttention.qkv to be FullPrecisionLinear for loader at {path / 'qkv'}, got {type(module.qkv)}")
         if not isinstance(module.proj, FullPrecisionLinear):
-            raise TypeError(f"Expected VisionSdpaAttention.proj to be FullPrecisionLinear for loader at {path / 'proj'}, got {type(module.proj)}")
+            raise TypeError(f"Expected VisionAttention.proj to be FullPrecisionLinear for loader at {path / 'proj'}, got {type(module.proj)}")
         
         out_proj_path = path / "proj"
         loaded_proj = load_linear(module.proj, weights_dict, out_proj_path)

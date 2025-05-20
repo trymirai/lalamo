@@ -12,11 +12,11 @@ from fartsovka.common import ParameterDict
 from .common import FartsovkaModule
 from .linear import LinearBase, LinearConfig
 __all__ = [
-    "VisionSdpaAttention"
+    "VisionAttention"
 ]
 
 @dataclass
-class VisionSdpaAttentionConfig:
+class VisionAttentionConfig:
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
@@ -31,7 +31,7 @@ class VisionSdpaAttentionConfig:
         num_heads: int,
         *,
         key: PRNGKeyArray,
-    ) -> "VisionSdpaAttention":
+    ) -> "VisionAttention":
         qkv = self.qkv_projection_config.random_init(
             input_dim=model_dim,
             output_dims=(model_dim * 3,),  
@@ -45,7 +45,7 @@ class VisionSdpaAttentionConfig:
             key=key,
         )
 
-        return VisionSdpaAttention(
+        return VisionAttention(
             self,
             qkv=qkv,
             proj=proj,
@@ -54,7 +54,7 @@ class VisionSdpaAttentionConfig:
         )
 
 
-class VisionSdpaAttention(FartsovkaModule[VisionSdpaAttentionConfig]):
+class VisionAttention(FartsovkaModule[VisionAttentionConfig]):
     qkv: LinearBase
     proj: LinearBase
     num_heads: int = eqx.field(static=True)
@@ -64,7 +64,6 @@ class VisionSdpaAttention(FartsovkaModule[VisionSdpaAttentionConfig]):
         self,
         hidden_states: Float[Array, "seq_length channels"],
         cu_seqlens: Int[Array, "num_segments_plus_1"] | None = None,
-        attention_mask_external: Bool[Array, "... seq_length seq_length"] | None = None,
         position_embeddings: tuple[
             Float[Array, "seq_length head_dim"], Float[Array, "seq_length head_dim"]
         ] | None = None
@@ -90,11 +89,11 @@ class VisionSdpaAttention(FartsovkaModule[VisionSdpaAttentionConfig]):
                     f"position_embeddings head_dim ({cos_emb.shape[-1]}) "
                     f"must match model head_dim ({self.head_dim})"
                 )
-            q, k = _apply_rotary_pos_emb_vision_jax(q, k, cos_emb, sin_emb)
+            q, k = apply_rotary_pos_emb_vision(q, k, cos_emb, sin_emb)
 
         final_attention_mask: Bool[Array, "... seq_length seq_length"] | None = None
         if cu_seqlens is not None:
-            final_attention_mask = _create_mask_from_cu_seqlens_jax(seq_length, cu_seqlens)
+            final_attention_mask = _create_mask_from_cu_seqlens(seq_length, cu_seqlens)
 
         attn_output = jax.nn.dot_product_attention(
             query=q,
@@ -120,12 +119,12 @@ class VisionSdpaAttention(FartsovkaModule[VisionSdpaAttentionConfig]):
         )
 
 
-def _rotate_half_jax(x: Array) -> Array:
+def rotate_half(x: Array) -> Array:
     x1 = x[..., : x.shape[-1] // 2]
     x2 = x[..., x.shape[-1] // 2 :]
     return jnp.concatenate((-x2, x1), axis=-1)
 
-def _apply_rotary_pos_emb_vision_jax(
+def apply_rotary_pos_emb_vision(
     q: Float[Array, "seq num_heads head_dim"],
     k: Float[Array, "seq num_heads head_dim"],
     cos_emb: Float[Array, "seq head_dim"],
@@ -134,11 +133,11 @@ def _apply_rotary_pos_emb_vision_jax(
     cos_emb_broadcast = rearrange(cos_emb, "s d -> s 1 d")
     sin_emb_broadcast = rearrange(sin_emb, "s d -> s 1 d")
 
-    q_embed = (q * cos_emb_broadcast) + (_rotate_half_jax(q) * sin_emb_broadcast)
-    k_embed = (k * cos_emb_broadcast) + (_rotate_half_jax(k) * sin_emb_broadcast)
+    q_embed = (q * cos_emb_broadcast) + (rotate_half(q) * sin_emb_broadcast)
+    k_embed = (k * cos_emb_broadcast) + (rotate_half(k) * sin_emb_broadcast)
     return q_embed, k_embed
 
-def _create_mask_from_cu_seqlens_jax(
+def _create_mask_from_cu_seqlens(
     seq_length: int,
     cu_seqlens: Int[Array, "num_segments_plus_1"],
     dtype: jnp.dtype = jnp.bool_
