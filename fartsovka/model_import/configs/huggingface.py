@@ -567,27 +567,23 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         accumulation_precision: DType,
         weights_dict: dict[str, Array],
     ) -> Decoder:
-        # Load the decoder config
         decoder_config = self.to_decoder_config(
             context_length=context_length,
             activation_precision=activation_precision,
             accumulation_precision=accumulation_precision,
         )
         
-        # Load the vision model first
         vision_model = self.load_vision_model(
             precision=activation_precision,
             accumulation_precision=accumulation_precision,
             weights_dict=weights_dict
         )
         
-        # Initialize the decoder with the vision model included
         text_decoder = decoder_config.random_init(
             key=jax.random.PRNGKey(0),
-            vision_module=vision_model  # Pass the vision model directly to the constructor
+            vision_module=vision_model 
         )
         
-        # Load weights for the text part
         text_decoder = self._load_weights(text_decoder, weights_dict)
         
         return text_decoder

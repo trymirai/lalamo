@@ -69,7 +69,6 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
     down_proj_biases: Array | None = None
 
     if module.config.has_biases:
-        # Check if HF checkpoint actually has these biases
         up_proj_bias_hf = weights_dict.get(path / "up_proj" / "bias")
         gate_proj_bias_hf = weights_dict.get(path / "gate_proj" / "bias")
         down_proj_bias_hf = weights_dict.get(path / "down_proj" / "bias")
@@ -77,7 +76,7 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
         if up_proj_bias_hf is not None and gate_proj_bias_hf is not None:
             fused_up_gate_biases = jnp.concatenate([up_proj_bias_hf, gate_proj_bias_hf], axis=0)
         elif up_proj_bias_hf is not None:
-            zeros_for_gate_bias = jnp.zeros_like(up_proj_bias_hf) # Assuming same shape for fusion
+            zeros_for_gate_bias = jnp.zeros_like(up_proj_bias_hf)
             fused_up_gate_biases = jnp.concatenate([up_proj_bias_hf, zeros_for_gate_bias], axis=0)
         elif gate_proj_bias_hf is not None:
             zeros_for_up_bias = jnp.zeros_like(gate_proj_bias_hf)
@@ -91,10 +90,10 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
             down_proj_biases = down_proj_bias_hf
         else:
             print(f"WARN: MLP at {path} configured with has_biases=True, but no down_proj.bias found in checkpoint.")
-            down_proj_biases = jnp.zeros((module.down_projection.weights.shape[0],), dtype=down_proj_weights.dtype) # Bias shape is (out_features,)
+            down_proj_biases = jnp.zeros((module.down_projection.weights.shape[0],), dtype=down_proj_weights.dtype) 
 
     return load_parameters(
-        lambda m: (m.up_projection.weights, m.up_projection.biases, m.down_projection.weights, m.down_projection.biases), # type: ignore
+        lambda m: (m.up_projection.weights, m.up_projection.biases, m.down_projection.weights, m.down_projection.biases),
         module,
         (fused_up_gate_weights, fused_up_gate_biases, down_proj_weights, down_proj_biases),
     )
@@ -117,11 +116,6 @@ def load_attention(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> Attention | VisionSdpaAttention:
-    """Load attention weights from HuggingFace checkpoint.
-    
-    Handles both standard Attention and VisionSdpaAttention modules.
-    """
-
     if isinstance(module, VisionSdpaAttention):
         if not isinstance(module.qkv, FullPrecisionLinear):
             raise TypeError(f"Expected VisionSdpaAttention.qkv to be FullPrecisionLinear for loader at {path / 'qkv'}, got {type(module.qkv)}")
@@ -166,18 +160,10 @@ def load_attention(
         loaded_biases = [weights_dict[bias_path] for bias_path in bias_paths]
         qkv_bias = jnp.concatenate(loaded_biases, axis=0)
  
-    loaded_qkv_projection_instance = deepcopy(module.qkv_projection)
- 
-    loaded_qkv_projection = load_parameters(
-        lambda m_qkv: (m_qkv.weights, m_qkv.biases),
-        loaded_qkv_projection_instance,
-        (qkv_proj_weights, qkv_bias)
-    )
-
     return load_parameters(
-        lambda m_attn: (m_attn.qkv_projection, m_attn.out_projection),  # type: ignore
+        lambda m: (m.qkv_projection.weights, m.qkv_projection.biases, m.out_projection),  # type: ignore
         module,
-        (loaded_qkv_projection, out_proj),
+        (qkv_proj_weights, qkv_bias, out_proj),
     )
 
 
@@ -266,17 +252,16 @@ def load_vision_patch_embedding(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> PatchEmbedding:
-    hf_w = weights_dict[path / "weight"]          # (out, in, T, H, W)
+    hf_w = weights_dict[path / "weight"] # (out, in, T, H, W)
     hf_b = weights_dict.get(path / "bias")       
 
-    fs_w = jnp.transpose(hf_w, (0, 2, 3, 4, 1))   # (out, T, H, W, in)
+    fs_w = jnp.transpose(hf_w, (0, 2, 3, 4, 1)) # (out, T, H, W, in)
 
     if hf_b is not None:
         module.config = dataclasses.replace(module.config, has_bias=True)
         fs_b: Array | None = hf_b
     else:
         fs_b = None
-    # ─────────────────────────────────────────────────────────────
 
     return load_parameters(lambda m: (m.weights, m.biases), module, (fs_w, fs_b))
 

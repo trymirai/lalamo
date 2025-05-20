@@ -57,7 +57,6 @@ class PatchEmbeddingConfig:
 
 
 class PatchEmbedding(FartsovkaModule[PatchEmbeddingConfig]):
-    # (E, Pt, Ph, Pw, C) after parameter swap during HF weight import
     weights: Float[Array, "hidden_size temporal_patch_size patch_size patch_size in_channels"]
     biases:  Float[Array, "hidden_size"] | None = None
 

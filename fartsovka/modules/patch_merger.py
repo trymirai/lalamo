@@ -32,7 +32,6 @@ class PatchMergerConfig:
         key: PRNGKeyArray,
         expansion_factor: int = 4,
     ) -> "PatchMerger":
-        """Initialize a PatchMerger with random weights."""
         norm_key, hidden_proj_key, out_proj_key = jax.random.split(key, 3)
 
         embed_dim_before_merge = context_dim * (self.spatial_merge_size ** 2)
