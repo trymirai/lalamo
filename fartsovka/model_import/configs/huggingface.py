@@ -16,16 +16,16 @@ from fartsovka.modules import (
     FullPrecisionLinearConfig,
     LlamaRoPEConfig,
     MLPConfig,
+    PatchEmbeddingConfig,
+    PatchMergerConfig,
     RMSNormConfig,
+    RoPEConfigBase,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
-    VisionConfig,
-    VisionTransformer,
-    PatchEmbeddingConfig,
+    VisionAttentionConfig,
     VisionLayerConfig,
-    PatchMergerConfig,
-    RoPEConfigBase,
-    VisionAttentionConfig
+    VisionTransformer,
+    VisionTransformerConfig,
 )
 
 from .common import ForeignConfig
@@ -383,7 +383,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
     video_token_id: int = 151656
     vision_start_token_id: int = 151652
     vision_end_token_id: int = 151653
-    
+
     def _get_sliding_window_sizes(self) -> list[int | None]:
         sliding_window_sizes = []
         for i in range(self.num_hidden_layers):
@@ -392,7 +392,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             else:
                 sliding_window_sizes.append(None)
         return sliding_window_sizes
-    
+
     def to_decoder_config(
         self,
         context_length: int,
@@ -452,14 +452,14 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             sliding_window_sizes=tuple(self._get_sliding_window_sizes()),
             context_length=context_length,
         )
-    
+
     def to_vision_config(
         self,
         precision: DType,
         accumulation_precision: DType,
-    ) -> VisionConfig:
+    ) -> VisionTransformerConfig:
         vc = self.vision_config
-        
+
         hf_main_hidden_size = vc["hidden_size"]
         hf_total_depth = vc["depth"]
         hf_main_num_heads = vc["num_heads"]
@@ -469,34 +469,34 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             precision=precision,
             patch_size=vc["patch_size"],
             temporal_patch_size=vc["temporal_patch_size"],
-            in_channels=vc.get("in_chans", vc.get("in_channels", 3)), 
+            in_channels=vc.get("in_chans", vc.get("in_channels", 3)),
         )
-        
+
         if hf_main_hidden_size % hf_main_num_heads != 0:
             raise ValueError(f"HF vision_config hidden_size {hf_main_hidden_size} not divisible by num_heads {hf_main_num_heads}")
         actual_head_dim = hf_main_hidden_size // hf_main_num_heads
 
-        if actual_head_dim % 4 != 0: 
+        if actual_head_dim % 4 != 0:
             print(f"WARNING: actual_head_dim ({actual_head_dim}) is not divisible by 4. RoPE might be incorrect or fail.")
 
         max_spatial_patches_for_rope = vc.get("image_size", vc.get("window_size", 224)) // vc["patch_size"]
         rope_config = RoPEConfigBase(
             precision=precision,
-            base=10000.0, 
+            base=10000.0,
             max_sequence_length=max_spatial_patches_for_rope,
         )
-        
+
         norm_config = RMSNormConfig(
             scale_precision=precision,
             accumulation_precision=accumulation_precision,
             epsilon=vc.get("norm_eps", vc.get("layer_norm_eps", 1e-6)),
         )
-        
+
         linear_config = FullPrecisionLinearConfig(precision=precision)
-        
+
         hf_activation = vc.get("hidden_act", "silu")
         activation = Activation.SILU if hf_activation == "silu" else Activation.GELU
-    
+
         attention_config = VisionAttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
@@ -509,36 +509,45 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             activation=activation,
             has_biases=vc.get("mlp_bias", True),
         )
-        
+
         layer_config = VisionLayerConfig(
             norm_config=norm_config,
             attention_config=attention_config,
             mlp_config=mlp_config,
         )
 
-        patch_merger_config = PatchMergerConfig(
-            precision=precision,
-            spatial_merge_size=vc["spatial_merge_size"],
-            has_biases=True, 
+        patch_merger_norm_config = RMSNormConfig(
+            scale_precision=precision,
+            accumulation_precision=accumulation_precision,
+            epsilon=vc.get("norm_eps", vc.get("layer_norm_eps", 1e-6)),
         )
-        
-        fartsovka_vision_config = VisionConfig(
+
+        patch_merger_activation = Activation.GELU
+
+        patch_merger_config = PatchMergerConfig(
+            norm_config=patch_merger_norm_config,
+            activation=patch_merger_activation,
+            spatial_merge_size=vc["spatial_merge_size"],
+            has_biases=True,
+        )
+
+        fartsovka_vision_config = VisionTransformerConfig(
             patch_embedding_config=patch_embedding_config,
             rope_config=rope_config,
             layer_config=layer_config,
-            patch_merger_config=patch_merger_config, 
+            patch_merger_config=patch_merger_config,
             output_norm_config=norm_config,
-            
+
             image_size=vc.get("image_size", vc.get("window_size", 224)),
             patch_size=vc["patch_size"],
-            
+
             stage_hidden_dims=(hf_main_hidden_size,),
             stage_depths=(hf_total_depth,),
             stage_num_heads=(hf_main_num_heads,),
             stage_mlp_intermediate_dims=(hf_main_intermediate_size,),
-            
-            attention_scale=None, 
-            
+
+            attention_scale=None,
+
             in_channels=vc.get("in_chans", vc.get("in_channels", 3)),
             temporal_patch_size=vc.get("temporal_patch_size", 2),
             temporal_pos_scale_factor=vc.get("temporal_pos_scale_factor", 1),
@@ -572,18 +581,18 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             activation_precision=activation_precision,
             accumulation_precision=accumulation_precision,
         )
-        
+
         vision_model = self.load_vision_model(
             precision=activation_precision,
             accumulation_precision=accumulation_precision,
-            weights_dict=weights_dict
+            weights_dict=weights_dict,
         )
-        
+
         text_decoder = decoder_config.random_init(
             key=jax.random.PRNGKey(0),
-            vision_module=vision_model 
+            vision_module=vision_model,
         )
-        
+
         text_decoder = self._load_weights(text_decoder, weights_dict)
-        
+
         return text_decoder

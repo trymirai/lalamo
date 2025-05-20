@@ -1,5 +1,4 @@
 import json
-import traceback
 from pathlib import Path
 
 import cattrs
@@ -8,15 +7,17 @@ import jax
 import jax.numpy as jnp
 import pytest
 import torch
-import transformers
+from jaxtyping import PRNGKeyArray
+from transformers.modeling_utils import PreTrainedModel
+from transformers.models.auto.modeling_auto import AutoModelForCausalLM
 from transformers.models.llama import LlamaForCausalLM
 from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
-from transformers.models.auto.modeling_auto import AutoModelForCausalLM
-from transformers.modeling_utils import PreTrainedModel
-from jaxtyping import PRNGKeyArray
 
+from fartsovka.common import DType
 from fartsovka.model_import import REPO_TO_MODEL, import_model
+from fartsovka.model_import.model_import import get_vision_encoder_from_model
 from fartsovka.modules import Decoder
+from fartsovka.modules.vision_transformer import VisionTransformer
 from tests.executorch_llama.source_transformation.lora import (
     transform_linear_for_lora_after_quantization,
 )
@@ -28,9 +29,6 @@ from tests.executorch_llama.source_transformation.pre_quantization import (
 )
 from tests.executorch_llama.transformer import ModelArgs as ETModelArgs
 from tests.executorch_llama.transformer import Transformer as ETTransformer
-from fartsovka.modules.vision_transformer import VisionTransformer
-from fartsovka.model_import.model_import import get_vision_encoder_from_model
-from fartsovka.common import DType
 
 RANDOM_SEED = 42
 
@@ -149,11 +147,11 @@ def huggingface_qwen25vl():
     model_id = "Qwen/Qwen2.5-VL-3B-Instruct"
     try:
         from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import Qwen2_5_VLForConditionalGeneration
-        
+
         model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
             model_id,
-            torch_dtype=torch.float32, 
-            device_map="auto" 
+            torch_dtype=torch.float32,
+            device_map="auto",
         )
         model.eval()
         print(f"Successfully loaded HuggingFace model: {model_id}")
@@ -168,15 +166,15 @@ def huggingface_qwen25vl():
 @pytest.fixture(scope="package")
 def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
     model_repo_id = "Qwen/Qwen2.5-VL-3B-Instruct"
-    
+
     model_spec = REPO_TO_MODEL.get(model_repo_id)
     if not model_spec:
         pytest.fail(f"ModelSpec not found for {model_repo_id} in REPO_TO_MODEL.")
-        return None 
+        return None
 
     fartsovka_precision: DType = jnp.float32
     fartsovka_accumulation_precision: DType = jnp.float32
-    
+
     full_decoder_model: Decoder = import_model(
         model_spec=model_spec,
         precision=fartsovka_precision,
@@ -189,10 +187,10 @@ def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
         pytest.fail(
             f"Failed to extract VisionTransformer from {model_repo_id} using get_vision_encoder_from_model. "
             f"Check if 'vision_module' attribute exists on Decoder and is a VisionTransformer, "
-            f"and ensure Decoder class in fartsovka/modules/decoder.py is updated."
+            f"and ensure Decoder class in fartsovka/modules/decoder.py is updated.",
         )
-        return None 
-        
+        return None
+
     return vision_model
 
 @pytest.fixture(scope="package")

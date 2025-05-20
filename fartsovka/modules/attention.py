@@ -6,7 +6,7 @@ import jax
 from einops import einsum, rearrange, repeat
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, Float, PRNGKeyArray, Int
+from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
 
@@ -224,7 +224,7 @@ class Attention(FartsovkaModule[AttentionConfig]):
             groups=self.num_groups,
             head_channels=self.head_dim,
         )
-    
+
         values = rearrange(
             values,
             "tokens (groups head_channels) -> tokens groups head_channels",

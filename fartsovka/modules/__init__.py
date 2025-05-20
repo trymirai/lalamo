@@ -27,18 +27,18 @@ from .linear import (
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, RoPEConfigBase, UnscaledRoPEConfig, YARNRoPEConfig
-from .vision_rope import VisionRoPE, VisionPositionalEmbeddings
 from .vision_attention import VisionAttention, VisionAttentionConfig
+from .vision_rope import VisionRoPE
 from .vision_transformer import (
-    VisionConfig, 
-    VisionTransformer, 
-    VisionOutput,
-    PatchEmbeddingConfig,
     PatchEmbedding,
-    VisionLayerConfig,
-    VisionLayer,
+    PatchEmbeddingConfig,
+    PatchMerger,
     PatchMergerConfig,
-    PatchMerger
+    VisionLayer,
+    VisionLayerConfig,
+    VisionOutput,
+    VisionTransformer,
+    VisionTransformerConfig,
 )
 
 __all__ = [
@@ -61,6 +61,10 @@ __all__ = [
     "LinearConfig",
     "LlamaRoPEConfig",
     "MLPConfig",
+    "PatchEmbedding",
+    "PatchEmbeddingConfig",
+    "PatchMerger",
+    "PatchMergerConfig",
     "QLoRALinear",
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
@@ -69,25 +73,20 @@ __all__ = [
     "RMSNormConfig",
     "RoPE",
     "RoPEConfig",
+    "RoPEConfigBase",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
-    "VisionConfig",
-    "VisionTransformer",
-    "VisionOutput",
-    "PatchEmbeddingConfig",
-    "PatchEmbedding",
-    "VisionLayerConfig",
+    "VisionAttention",
+    "VisionAttentionConfig",
     "VisionLayer",
-    "PatchMergerConfig",
-    "PatchMerger",
+    "VisionLayerConfig",
+    "VisionOutput",
     "VisionRoPE",
-    "RoPEConfigBase",
-    "VisionPositionalEmbeddings",
+    "VisionTransformer",
+    "VisionTransformerConfig",
     "YARNRoPEConfig",
     "config_converter",
-    "VisionAttention",
-    "VisionAttentionConfig"
 ]

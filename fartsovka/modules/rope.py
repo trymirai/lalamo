@@ -21,6 +21,7 @@ from dataclasses import dataclass
 import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
+from einops import einsum
 
 from fartsovka.common import DType, ParameterDict
 
@@ -84,28 +85,29 @@ class RoPEConfigBase:
     ) -> Float[Array, "num_tokens output_freq_dims"]:
         scaled_inv_freq = self._calculate_scaled_inverse_frequencies(head_dim=frequencies_config_dim)
 
-        projected_tensor = jnp.einsum(
-            "np,f->npf", positions.astype(jnp.float32), scaled_inv_freq
+        projected_tensor = einsum(
+            positions.astype(jnp.float32), scaled_inv_freq, "n p, f -> n p f",
         )
 
-        num_tokens = positions.shape[0]
-        output_freq_dims = positions.shape[1] * scaled_inv_freq.shape[0]
+        num_tokens, num_pos_dims = positions.shape
+        (scaled_inv_freq_len,) = scaled_inv_freq.shape
+        output_freq_dims = num_pos_dims * scaled_inv_freq_len
         return projected_tensor.reshape(num_tokens, output_freq_dims)
-    
+
     def init_with_positions(
         self,
         head_dim: int,
         positions: Int[Array, "num_tokens num_pos_dims"],
     ) -> "RoPE":
         projected_freqs = self.compute_projected_frequencies(
-            frequencies_config_dim=head_dim, positions=positions
+            frequencies_config_dim=head_dim, positions=positions,
         )
-        
+
         embeddings = jnp.concatenate((projected_freqs, projected_freqs), axis=-1)
-        
+
         cosines = jnp.cos(embeddings).astype(self.precision) * self._attention_scaling_factor
         sines = jnp.sin(embeddings).astype(self.precision) * self._attention_scaling_factor
-        
+
         return RoPE(config=self, cosines=cosines, sines=sines)
 
     def init(

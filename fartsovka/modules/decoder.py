@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 import jax
 from jax import vmap
@@ -58,7 +58,7 @@ class DecoderConfig:
         self,
         *,
         key: PRNGKeyArray,
-        vision_module: Optional[VisionTransformer] = None,
+        vision_module: VisionTransformer | None = None,
     ) -> "Decoder":
         embedding_key, layers_key = jax.random.split(key)
         embedding = self.embedding_config.random_init(
@@ -105,7 +105,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
     rope: RoPE
     layers: tuple[DecoderLayer, ...]
     output_norm: RMSNorm
-    vision_module: Optional[VisionTransformer] = None
+    vision_module: VisionTransformer | None = None
 
     def __call__(
         self,

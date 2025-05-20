@@ -1,30 +1,28 @@
-
 from dataclasses import dataclass
 
 import jax
-import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 
 from .common import FartsovkaModule
 from .mlp import MLP, MLPConfig
-from .vision_attention import VisionAttention, VisionAttentionConfig
 from .normalization import RMSNorm, RMSNormConfig
-
+from .vision_attention import VisionAttention, VisionAttentionConfig
+from .rope import PositionalEmbeddings
 
 __all__ = [
-    "VisionLayerConfig",
     "VisionLayer",
+    "VisionLayerConfig",
 ]
 
 @dataclass
 class VisionLayerConfig:
-    norm_config: RMSNormConfig        
+    norm_config: RMSNormConfig
     attention_config: VisionAttentionConfig
     mlp_config: MLPConfig
-    
+
     def random_init(
         self,
         model_dim: int,
@@ -33,11 +31,11 @@ class VisionLayerConfig:
         *,
         key: PRNGKeyArray,
     ) -> "VisionLayer":
-        norm1_key, attn_key, norm2_key, mlp_key = jax.random.split(key, 4)
-        
-        norm1 = self.norm_config.init(model_dim)
-        norm2 = self.norm_config.init(model_dim)
-        
+        pre_attention_norm_key, attn_key, pre_mlp_norm_key, mlp_key = jax.random.split(key, 4)
+
+        pre_attention_norm = self.norm_config.init(model_dim)
+        pre_mlp_norm = self.norm_config.init(model_dim)
+
         attention = self.attention_config.random_init(
             model_dim=model_dim,
             num_heads=num_heads,
@@ -45,54 +43,54 @@ class VisionLayerConfig:
         )
 
         mlp = self.mlp_config.random_init(
-            model_dim=model_dim, 
+            model_dim=model_dim,
             hidden_dim=hidden_dim,
             key=mlp_key,
         )
-        
+
         return VisionLayer(
             config=self,
-            norm1=norm1,
+            pre_attention_norm=pre_attention_norm,
             attention=attention,
-            norm2=norm2,
+            pre_mlp_norm=pre_mlp_norm,
             mlp=mlp,
         )
 
 
 class VisionLayer(FartsovkaModule[VisionLayerConfig]):
-    norm1: RMSNorm
+    pre_attention_norm: RMSNorm
     attention: VisionAttention
-    norm2: RMSNorm
+    pre_mlp_norm: RMSNorm
     mlp: MLP
-    
+
 
     def __call__(
         self,
         hidden_states: Float[Array, "seq_len hidden_size"],
-        position_embeddings_tuple: tuple[Float[Array, "seq_len head_dim"], Float[Array, "seq_len head_dim"]],
-        cu_seqlens: Int[Array, "n_plus_1"] | None = None,
+        position_embeddings: PositionalEmbeddings | None = None,
+        cumulative_seqlens: Int[Array, "n_plus_1"] | None = None,
     ) -> Float[Array, "seq_len hidden_size"]:
         residual = hidden_states
-        normed_hidden_states = vmap(self.norm1, in_axes=0)(hidden_states)
+        normed_hidden_states = vmap(self.pre_attention_norm, in_axes=0)(hidden_states)
         attention_output = self.attention(
             hidden_states=normed_hidden_states,
-            cu_seqlens=cu_seqlens,
-            position_embeddings=position_embeddings_tuple,
+            cumulative_seqlens=cumulative_seqlens,
+            position_embeddings=position_embeddings,
         )
         hidden_states_after_attn = residual + attention_output
 
         residual_mlp = hidden_states_after_attn
-        normed_hidden_states_mlp = vmap(self.norm2, in_axes=0)(hidden_states_after_attn)
+        normed_hidden_states_mlp = vmap(self.pre_mlp_norm, in_axes=0)(hidden_states_after_attn)
         mlp_output = vmap(self.mlp, in_axes=0)(normed_hidden_states_mlp)
 
         hidden_states = residual_mlp + mlp_output
         return hidden_states
-    
+
     def export_weights(self) -> ParameterDict:
         return ParameterDict(
-            norm1=self.norm1.export_weights(),
+            pre_attention_norm=self.pre_attention_norm.export_weights(),
             attention=self.attention.export_weights(),
-            norm2=self.norm2.export_weights(),
+            pre_mlp_norm=self.pre_mlp_norm.export_weights(),
             mlp=self.mlp.export_weights(),
         )
 

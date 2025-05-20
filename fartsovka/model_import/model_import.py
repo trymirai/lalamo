@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -18,9 +19,11 @@ __all__ = [
     "MODELS",
     "REPO_TO_MODEL",
     "ModelSpec",
-    "import_model",
     "get_vision_encoder_from_model",
+    "import_model",
 ]
+
+_logger = logging.getLogger(__name__)
 
 
 @torch.no_grad()
@@ -180,14 +183,12 @@ def import_model(
 
 
 def get_vision_encoder_from_model(model: Decoder) -> VisionTransformer | None:
-    if hasattr(model, "vision_module"):
-        vision_encoder = getattr(model, "vision_module")
-        if isinstance(vision_encoder, VisionTransformer):
-            return vision_encoder
-        elif vision_encoder is not None:
-            print(
-                f"Warning: Attribute 'vision_module' found on Decoder, but it is of type "
-                f"{type(vision_encoder).__name__}, not VisionTransformer."
-            )
-            return None
-    return None 
+    """Get the vision encoder from a model if it exists and is the right type."""
+    vision_module = model.vision_module
+    if vision_module is not None and not isinstance(vision_module, VisionTransformer):
+        _logger.warning(
+            "Attribute 'vision_module' found on Decoder, but it is of type "
+            f"{type(vision_module).__name__}, not VisionTransformer.",
+        )
+        return None
+    return vision_module
