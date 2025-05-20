@@ -1,13 +1,12 @@
-from dataclasses import dataclass
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, Int
 from einops import rearrange
+from jaxtyping import Array, Int
 
 from fartsovka.common import ParameterDict
 
 from .common import FartsovkaModule
-from .rope import RoPE, RoPEConfigBase, PositionalEmbeddings
+from .rope import PositionalEmbeddings, RoPE, RoPEConfigBase
 
 __all__ = [
     "VisionRoPE",
@@ -37,10 +36,10 @@ class VisionRoPE(FartsovkaModule[RoPEConfigBase]):
             t_i, h_i, w_i = int(t_i), int(h_i), int(w_i)
 
             h_coords_matrix = jnp.arange(h_i)[:, None].repeat(w_i, axis=1)
-            hpos = rearrange(h_coords_matrix, '(NH SH) (NW SW) -> (NH NW SH SW)', SH=s, SW=s, NH=h_i//s, NW=w_i//s)
+            hpos = rearrange(h_coords_matrix, "(NH SH) (NW SW) -> (NH NW SH SW)", SH=s, SW=s, NH=h_i//s, NW=w_i//s)
 
             w_coords_matrix = jnp.arange(w_i)[None, :].repeat(h_i, axis=0)
-            wpos = rearrange(w_coords_matrix, '(NH SH) (NW SW) -> (NH NW SH SW)', SH=s, SW=s, NH=h_i//s, NW=w_i//s)
+            wpos = rearrange(w_coords_matrix, "(NH SH) (NW SW) -> (NH NW SH SW)", SH=s, SW=s, NH=h_i//s, NW=w_i//s)
 
             ids_hw = jnp.stack([hpos, wpos], axis=-1)
             ids_thw = jnp.repeat(ids_hw, t_i, axis=0)

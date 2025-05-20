@@ -1,14 +1,13 @@
-from collections.abc import Callable
 from dataclasses import dataclass
 
 import jax
 from jax import vmap
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
+from fartsovka.modules.activations import Activation
 from fartsovka.modules.linear import FullPrecisionLinearConfig, LinearBase
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
-from fartsovka.modules.activations import Activation
 
 from .common import FartsovkaModule
 

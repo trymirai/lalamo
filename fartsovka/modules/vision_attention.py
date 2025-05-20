@@ -8,10 +8,10 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
-from .rope import PositionalEmbeddings
 
 from .common import FartsovkaModule
 from .linear import LinearBase, LinearConfig
+from .rope import PositionalEmbeddings
 
 __all__ = [
     "VisionAttention",

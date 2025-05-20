@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from einops import rearrange, einsum
+from einops import einsum, rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from fartsovka.common import DType, ParameterDict
@@ -38,7 +38,7 @@ class PatchEmbeddingConfig:
 
         weights = jax.random.normal(key, kernel_shape, dtype=self.precision) * stddev
 
-        biases: Float[Array, "hidden_size"] | None = None
+        biases: Float[Array, hidden_size] | None = None
         if self.has_biases:
             biases = jnp.zeros(hidden_size, dtype=self.precision)
 

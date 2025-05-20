@@ -9,8 +9,8 @@ from fartsovka.common import ParameterDict
 from .common import FartsovkaModule
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
-from .vision_attention import VisionAttention, VisionAttentionConfig
 from .rope import PositionalEmbeddings
+from .vision_attention import VisionAttention, VisionAttentionConfig
 
 __all__ = [
     "VisionLayer",

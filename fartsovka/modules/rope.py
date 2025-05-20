@@ -19,9 +19,9 @@ import math
 from dataclasses import dataclass
 
 import equinox as eqx
+from einops import einsum
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int
-from einops import einsum
 
 from fartsovka.common import DType, ParameterDict
 

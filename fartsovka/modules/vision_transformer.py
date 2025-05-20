@@ -3,14 +3,14 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
 from einops import rearrange
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from .common import FartsovkaModule
 from .normalization import RMSNorm, RMSNormConfig
 from .patch_embedding import PatchEmbedding, PatchEmbeddingConfig
 from .patch_merger import PatchMerger, PatchMergerConfig
-from .rope import RoPEConfigBase, PositionalEmbeddings
+from .rope import PositionalEmbeddings, RoPEConfigBase
 from .vision_layer import VisionLayer, VisionLayerConfig
 from .vision_rope import VisionRoPE
 
@@ -115,7 +115,7 @@ class VisionTransformerConfig:
 
         if first_stage_head_dim % 2 != 0:
             raise ValueError(f"head_dim ({first_stage_head_dim}) must be even for 2‑D RoPE.")
-        
+
         half_dim_for_rope = first_stage_head_dim // 2
         base_rope_for_vision = self.rope_config.init(
             head_dim=half_dim_for_rope,
@@ -126,7 +126,7 @@ class VisionTransformerConfig:
             config=self.rope_config,
             head_dim=first_stage_head_dim,
             spatial_merge_size=self.spatial_merge_size,
-            base_rope=base_rope_for_vision
+            base_rope=base_rope_for_vision,
         )
 
         all_layers = []
@@ -225,7 +225,7 @@ class VisionTransformer(FartsovkaModule[VisionTransformerConfig]):
                 constant_values=padding_value,
             )
             index_padded = rearrange(index_padded,
-                                   't (NWH VMH) (NWW VMW) -> t (NWH NWW) VMH VMW',
+                                   "t (NWH VMH) (NWW VMW) -> t (NWH NWW) VMH VMW",
                                    NWH=num_windows_h, VMH=vit_merger_window_size,
                                    NWW=num_windows_w, VMW=vit_merger_window_size)
 
@@ -283,7 +283,7 @@ class VisionTransformer(FartsovkaModule[VisionTransformerConfig]):
         permuted_sines = position_embeddings.sines.reshape(seq_len_pre_permute // spatial_merge_unit, spatial_merge_unit, head_dim_rope)
         permuted_sines = permuted_sines[window_index, :, :]
         permuted_sines = permuted_sines.reshape(seq_len_pre_permute, head_dim_rope)
-        
+
         layer_position_embeddings = PositionalEmbeddings(cosines=permuted_cosines, sines=permuted_sines)
 
         total_patches_per_item_in_grid = grid_thw[:, 0] * grid_thw[:, 1] * grid_thw[:, 2]
