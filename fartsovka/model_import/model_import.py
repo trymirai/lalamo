@@ -11,7 +11,7 @@ from safetensors.flax import load_file as load_safetensors
 from fartsovka.common import DType
 from fartsovka.modules import Decoder
 
-from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config
+from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFMistralConfig, HFQwen2Config
 
 __all__ = [
     "MODELS",
@@ -137,6 +137,24 @@ MODELS = [
         config_type=HFQwen2Config,
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
+        name="Codestral-22B-v0.1",
+        repo="mistral-community/Codestral-22B-v0.1",
+        config_type=HFMistralConfig,
+        config_file_name="config.json",
+        weights_file_names=(
+            "model-00001-of-00009.safetensors",
+            "model-00002-of-00009.safetensors",
+            "model-00003-of-00009.safetensors",
+            "model-00004-of-00009.safetensors",
+            "model-00005-of-00009.safetensors",
+            "model-00006-of-00009.safetensors",
+            "model-00007-of-00009.safetensors",
+            "model-00008-of-00009.safetensors",
+            "model-00009-of-00009.safetensors",
+        ),
         weights_type=WeightsType.SAFETENSORS,
     ),
 ]
