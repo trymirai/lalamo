@@ -176,6 +176,7 @@ class HFMistralConfig(HuggingFaceConfig):
     transformers_version: str
     use_cache: bool
     vocab_size: int
+    head_dim: int | None = None
 
     def to_decoder_config(
         self,
@@ -235,6 +236,8 @@ class HFMistralConfig(HuggingFaceConfig):
             post_mlp_norm_config=None,
         )
 
+        head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
+
         return DecoderConfig(
             embedding_config=embedding_config,
             rope_config=rope_config,
@@ -245,7 +248,7 @@ class HFMistralConfig(HuggingFaceConfig):
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.hidden_size // self.num_attention_heads,
+            head_dim=head_dim,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=tuple([self.sliding_window] * self.num_hidden_layers)
