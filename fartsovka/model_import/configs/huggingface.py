@@ -18,6 +18,7 @@ from fartsovka.modules import (
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
+    UntiedEmbeddingConfig,
 )
 
 from .common import ForeignConfig
@@ -55,7 +56,7 @@ class HFRopeScalingConfig:
 
 @dataclass
 class HFLlamaConfig(HuggingFaceConfig):
-    architectures: list[Literal["LlamaForCausalLM", "MistralForCausalLM"]]
+    architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
     bos_token_id: int | list[int]
@@ -192,11 +193,18 @@ class HFQwen2Config(HuggingFaceConfig):
         activation_precision: DType,
         accumulation_precision: DType,
     ) -> DecoderConfig:
-        embedding_config = TiedEmbeddingConfig(
-            input_scale=None,
-            logits_soft_cap=None,
-            precision=activation_precision,
-        )
+        if self.tie_word_embeddings:
+            embedding_config = TiedEmbeddingConfig(
+                input_scale=None,
+                logits_soft_cap=None,
+                precision=activation_precision,
+            )
+        else:
+            embedding_config = UntiedEmbeddingConfig(
+                input_scale=None,
+                logits_soft_cap=None,
+                precision=activation_precision,
+            )
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_theta,
