@@ -196,23 +196,23 @@ class HFMistralConfig(HuggingFaceConfig):
                 logits_soft_cap=None,
                 precision=activation_precision,
             )
-        
+
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=self.max_position_embeddings,
         )
-        
+
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
         )
-        
+
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
-        
+
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
@@ -220,12 +220,12 @@ class HFMistralConfig(HuggingFaceConfig):
             has_qkv_biases=False,
             has_out_biases=False,
         )
-        
+
         mlp_config = MLPConfig(
             linear_config=linear_config,
             activation=Activation.SILU,
         )
-        
+
         decoder_layer_config = DecoderLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
@@ -234,7 +234,7 @@ class HFMistralConfig(HuggingFaceConfig):
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
         )
-        
+
         return DecoderConfig(
             embedding_config=embedding_config,
             rope_config=rope_config,
@@ -248,7 +248,9 @@ class HFMistralConfig(HuggingFaceConfig):
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=tuple([self.sliding_window] * self.num_hidden_layers) if self.sliding_window is not None else None,
+            sliding_window_sizes=tuple([self.sliding_window] * self.num_hidden_layers)
+            if self.sliding_window is not None
+            else None,
             context_length=context_length,
         )
 

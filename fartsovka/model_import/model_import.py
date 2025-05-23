@@ -64,7 +64,7 @@ MODELS = [
     ModelSpec(
         name="Devstral-Small-2505",
         repo="mistralai/Devstral-Small-2505",
-        config_type=HFLlamaConfig,
+        config_type=HFMistralConfig,
         config_file_name="config.json",
         weights_file_names=(
             "model-00001-of-00010.safetensors",
