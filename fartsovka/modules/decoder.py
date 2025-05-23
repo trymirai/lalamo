@@ -140,7 +140,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
         )
 
     def export_samples(self, context: DecoderSamplesContext, key: PRNGKeyArray) -> ParameterDict:
-        embedding_key, rope_key, layers_all_key, decoder_key, output_norm_key = jax.random.split(key, num=5)
+        embedding_key, rope_key, layers_all_key, decoder_key, output_norm_key, readout_key = jax.random.split(key, num=6)
         layers_keys = jax.random.split(layers_all_key, len(self.layers))
 
         embedding_x = context.token_ids
@@ -167,11 +167,22 @@ class Decoder(FartsovkaModule[DecoderConfig]):
         y = self(x, context.token_positions, None, context.mask, False)
         sample = ModuleSample(inputs=(x.astype(jnp.uint64),), outputs=(y.output,))
 
+        readout_x = jax.random.uniform(
+            readout_key,
+            (context.suffix_length, self.config.model_dim),
+            minval=-5,
+            maxval=5,
+            dtype=self.config.output_norm_config.scale_precision,
+        )
+        readout_y = self.embedding.readout(readout_x.T)
+        readout_sample = ModuleSample(inputs=(readout_x,), outputs=(readout_y,))
+
         return ParameterDict(
             embedding=embedding_sample.export(),
             rope=rope_sample.export(),
             layers=layers_samples,
             output_norm=self.output_norm.export_samples(context, output_norm_key),
+            readout=readout_sample.export(),
             context=context_parameters,
             value=sample.export(),
         )
