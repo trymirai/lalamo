@@ -174,7 +174,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
             maxval=5,
             dtype=self.config.output_norm_config.scale_precision,
         )
-        readout_y = self.embedding.readout(readout_x.T)
+        readout_y = self.embedding.readout(readout_x.T).T
         readout_sample = ModuleSample(inputs=(readout_x,), outputs=(readout_y,))
 
         return ParameterDict(
