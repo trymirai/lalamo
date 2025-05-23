@@ -55,7 +55,7 @@ class HFRopeScalingConfig:
 
 @dataclass
 class HFLlamaConfig(HuggingFaceConfig):
-    architectures: list[Literal["LlamaForCausalLM"]]
+    architectures: list[Literal["LlamaForCausalLM", "MistralForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
     bos_token_id: int | list[int]
