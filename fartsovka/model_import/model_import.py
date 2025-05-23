@@ -62,6 +62,24 @@ class ModelSpec:
 
 MODELS = [
     ModelSpec(
+        name="Codestral-22B-v0.1",
+        repo="mistral-community/Codestral-22B-v0.1",
+        config_type=HFLlamaConfig,
+        config_file_name="config.json",
+        weights_file_names=(
+            "model-00001-of-00009.safetensors",
+            "model-00002-of-00009.safetensors",
+            "model-00003-of-00009.safetensors",
+            "model-00004-of-00009.safetensors",
+            "model-00005-of-00009.safetensors",
+            "model-00006-of-00009.safetensors",
+            "model-00007-of-00009.safetensors",
+            "model-00008-of-00009.safetensors",
+            "model-00009-of-00009.safetensors",
+        ),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
         name="SmolLM2-1.7B-Instruct",
         repo="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         config_type=HFLlamaConfig,
