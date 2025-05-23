@@ -2,7 +2,15 @@ import jax.numpy as jnp
 from jaxtyping import Array
 
 from fartsovka.common import ParameterPath
-from fartsovka.modules import MLP, Attention, DecoderLayer, FullPrecisionLinear, RMSNorm, TiedEmbedding
+from fartsovka.modules import (
+    MLP,
+    Attention,
+    DecoderLayer,
+    FullPrecisionLinear,
+    RMSNorm,
+    TiedEmbedding,
+    UntiedEmbedding,
+)
 from fartsovka.modules.decoder import Decoder
 
 from .common import load_parameters
@@ -146,9 +154,18 @@ def load_decoder_layer(
     )
 
 
-def load_embedding(module: TiedEmbedding, weights_dict: dict[str, Array], path: ParameterPath) -> TiedEmbedding:
-    weights = weights_dict[path / "weight"]
+def load_tied_embedding(module: TiedEmbedding, weights_dict: dict[str, Array]) -> TiedEmbedding:
+    weights = weights_dict[ParameterPath("model") / "embed_tokens" / "weight"]
     return load_parameters(lambda m: (m.weights,), module, (weights,))
+
+
+def load_untied_embedding(
+    module: UntiedEmbedding,
+    weights_dict: dict[str, Array],
+) -> UntiedEmbedding:
+    input_weights = weights_dict[ParameterPath("model") / "embed_tokens" / "weight"]
+    output_weights = weights_dict[ParameterPath("lm_head") / "weight"]
+    return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
 
 
 def load_huggingface(
@@ -157,9 +174,12 @@ def load_huggingface(
     add_one_to_rms_norm_weights: bool,
 ) -> Decoder:
     root_path: ParameterPath = ParameterPath("model")
-    if not isinstance(module.embedding, TiedEmbedding):
-        raise TypeError(f"Expected embedding to be TiedEmbedding, got {type(module.embedding)}")
-    embedding = load_embedding(module.embedding, weights_dict, root_path / "embed_tokens")
+    if isinstance(module.embedding, TiedEmbedding):
+        embedding = load_tied_embedding(module.embedding, weights_dict)
+    elif isinstance(module.embedding, UntiedEmbedding):
+        embedding = load_untied_embedding(module.embedding, weights_dict)
+    else:
+        raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
         load_decoder_layer(layer, weights_dict, root_path / "layers" / i, add_one_to_rms_norm_weights)
         for i, layer in enumerate(module.layers)
