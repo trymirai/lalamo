@@ -13,7 +13,7 @@ from fartsovka.common import DType
 from fartsovka.modules import Decoder
 from fartsovka.modules.vision_transformer import VisionTransformer
 
-from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFQwen2Config, HFQwen25VLConfig
+from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFMistralConfig, HFQwen2Config, HFQwen25VLConfig
 
 __all__ = [
     "MODELS",
@@ -66,6 +66,25 @@ class ModelSpec:
 
 
 MODELS = [
+    ModelSpec(
+        name="Devstral-Small-2505",
+        repo="mistralai/Devstral-Small-2505",
+        config_type=HFMistralConfig,
+        config_file_name="config.json",
+        weights_file_names=(
+            "model-00001-of-00010.safetensors",
+            "model-00002-of-00010.safetensors",
+            "model-00003-of-00010.safetensors",
+            "model-00004-of-00010.safetensors",
+            "model-00005-of-00010.safetensors",
+            "model-00006-of-00010.safetensors",
+            "model-00007-of-00010.safetensors",
+            "model-00008-of-00010.safetensors",
+            "model-00009-of-00010.safetensors",
+            "model-00010-of-00010.safetensors",
+        ),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
     ModelSpec(
         name="SmolLM2-1.7B-Instruct",
         repo="HuggingFaceTB/SmolLM2-1.7B-Instruct",
@@ -131,6 +150,24 @@ MODELS = [
         config_type=HFQwen2Config,
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
+        name="Codestral-22B-v0.1",
+        repo="mistral-community/Codestral-22B-v0.1",
+        config_type=HFMistralConfig,
+        config_file_name="config.json",
+        weights_file_names=(
+            "model-00001-of-00009.safetensors",
+            "model-00002-of-00009.safetensors",
+            "model-00003-of-00009.safetensors",
+            "model-00004-of-00009.safetensors",
+            "model-00005-of-00009.safetensors",
+            "model-00006-of-00009.safetensors",
+            "model-00007-of-00009.safetensors",
+            "model-00008-of-00009.safetensors",
+            "model-00009-of-00009.safetensors",
+        ),
         weights_type=WeightsType.SAFETENSORS,
     ),
 ]
