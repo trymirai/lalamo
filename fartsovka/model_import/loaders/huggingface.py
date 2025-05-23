@@ -164,7 +164,7 @@ def load_untied_embedding(
     weights_dict: dict[str, Array],
 ) -> UntiedEmbedding:
     input_weights = weights_dict[ParameterPath("model") / "embed_tokens" / "weight"]
-    output_weights = weights_dict[ParameterPath("lm_head") / "weight"]
+    output_weights = weights_dict[ParameterPath("lm_head") / "weight"].T
     return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
 
 
