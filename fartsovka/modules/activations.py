@@ -1,6 +1,7 @@
 from enum import Enum
 
 import jax
+import jax.numpy as jnp
 from jax import jit
 from jaxtyping import Array, Float
 
@@ -12,7 +13,7 @@ __all__ = [
 
 @jit
 def silu(x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
-    return x * jax.nn.sigmoid(x)
+    return x / (1 + jnp.exp(-x))
 
 
 class Activation(Enum):
