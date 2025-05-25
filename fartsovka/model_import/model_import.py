@@ -113,6 +113,19 @@ MODELS = [
         weights_type=WeightsType.TORCH,
     ),
     ModelSpec(
+        name="Llama-3.1-8B-Instruct",
+        repo="meta-llama/Llama-3.1-8B-Instruct",
+        config_type=HFLlamaConfig,
+        config_file_name="config.json",
+        weights_file_names=(
+            "model-00001-of-00004.safetensors",
+            "model-00002-of-00004.safetensors",
+            "model-00003-of-00004.safetensors",
+            "model-00004-of-00004.safetensors",
+        ),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
         name="Gemma-2-2B-Instruct",
         repo="google/gemma-2-2b-it",
         config_type=HFGemma2Config,
@@ -137,6 +150,19 @@ MODELS = [
         config_type=HFQwen2Config,
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
+        weights_type=WeightsType.SAFETENSORS,
+    ),
+    ModelSpec(
+        name="Qwen2.5-Coder-7B-Instruct",
+        repo="Qwen/Qwen2.5-Coder-7B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=(
+            "model-00001-of-00004.safetensors",
+            "model-00002-of-00004.safetensors",
+            "model-00003-of-00004.safetensors",
+            "model-00004-of-00004.safetensors",
+        ),
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
