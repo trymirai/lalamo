@@ -86,7 +86,7 @@ class RoPEConfigBase:
         scaled_inv_freq = self._calculate_scaled_inverse_frequencies(head_dim=frequencies_config_dim)
 
         projected_tensor = einsum(
-            positions.astype(jnp.float32), scaled_inv_freq, "n p, f -> n p f",
+            positions.astype(jnp.float32), scaled_inv_freq, "num_tokens num_pos_dims, frequencies -> num_tokens num_pos_dims frequencies",
         )
 
         num_tokens, num_pos_dims = positions.shape

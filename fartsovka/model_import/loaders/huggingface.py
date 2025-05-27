@@ -1,8 +1,8 @@
-import dataclasses
 import logging
 from typing import TypeVar
 
 import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array
 
 from fartsovka.common import ParameterPath
@@ -16,11 +16,10 @@ from fartsovka.modules import (
     PatchMerger,
     RMSNorm,
     TiedEmbedding,
+    UntiedEmbedding,
     VisionAttention,
     VisionLayer,
     VisionTransformer,
-    TiedEmbedding,
-    UntiedEmbedding,
 )
 from fartsovka.modules.decoder import Decoder
 
@@ -46,9 +45,11 @@ def load_linear(
     if module.biases is not None:
         loaded_bias = weights_dict.get(path / bias_key_in_hf)
         if loaded_bias is None:
-            _logger.warning(f"Module {path} (FullPrecisionLinear) expects biases, but not found in HuggingFace checkpoint.")
+            raise ValueError(f"Module {path} (FullPrecisionLinear) expects biases, but not found in HuggingFace checkpoint. "
+                           f"Please update the module configuration to not expect biases or provide bias weights in checkpoint.")
     elif (path / bias_key_in_hf) in weights_dict:
-        _logger.warning(f"Module {path} (FullPrecisionLinear) has no bias in Fartsovka, but HuggingFace checkpoint provides one. HF bias will be IGNORED.")
+        raise ValueError(f"Module {path} (FullPrecisionLinear) has no bias in Fartsovka, but HuggingFace checkpoint provides one. "
+                       f"Please update the module configuration to expect biases or remove bias weights from checkpoint.")
 
     return load_parameters(
         lambda m: (m.weights, m.biases),
@@ -62,6 +63,10 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
         raise TypeError(f"Expected up_projection to be FullPrecisionLinear, got {type(module.up_projection)}")
     if not isinstance(module.down_projection, FullPrecisionLinear):
         raise TypeError(f"Expected down_projection to be FullPrecisionLinear, got {type(module.down_projection)}")
+
+    # Type assertions to help the type checker
+    up_projection: FullPrecisionLinear = module.up_projection
+    down_projection: FullPrecisionLinear = module.down_projection
 
     # Load weights
     up_proj_weights = weights_dict[path / "up_proj" / "weight"]
@@ -87,16 +92,14 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
             zeros_for_up_bias = jnp.zeros_like(gate_proj_bias_hf)
             fused_up_gate_biases = jnp.concatenate([zeros_for_up_bias, gate_proj_bias_hf], axis=0)
         else:
-            _logger.warning(f"MLP at {path} configured with has_biases=True, but no up_proj/gate_proj biases found in checkpoint.")
-            intermediate_dim_x2 = fused_up_gate_weights.shape[0]
-            fused_up_gate_biases = jnp.zeros((intermediate_dim_x2,), dtype=fused_up_gate_weights.dtype)
+            raise ValueError(f"MLP at {path} is configured with has_biases=True, but no up_proj/gate_proj biases found in checkpoint. "
+                           f"Please update the module configuration to has_biases=False or provide bias weights in checkpoint.")
 
         if down_proj_bias_hf is not None:
             down_proj_biases = down_proj_bias_hf
         else:
-            _logger.warning(f"MLP at {path} configured with has_biases=True, but no down_proj.bias found in checkpoint.")
-            output_dim_down_proj = module.down_projection.output_dims[0]
-            down_proj_biases = jnp.zeros((output_dim_down_proj,), dtype=down_proj_weights.dtype)
+            raise ValueError(f"MLP at {path} is configured with has_biases=True, but no down_proj.bias found in checkpoint. "
+                           f"Please update the module configuration to has_biases=False or provide bias weights in checkpoint.")
 
     return load_parameters(
         lambda m: (m.up_projection.weights, m.up_projection.biases, m.down_projection.weights, m.down_projection.biases),
@@ -270,15 +273,17 @@ def load_vision_patch_embedding(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> PatchEmbedding:
-    hf_weights = weights_dict[path / "weight"] # (out, in, T, H, W)
+    hf_weights = weights_dict[path / "weight"]
     hf_biases = weights_dict.get(path / "bias")
 
-    fs_weights = jnp.transpose(hf_weights, (0, 2, 3, 4, 1)) # (out, T, H, W, in)
+    # Validate configuration against available weights
+    has_biases = hf_biases is not None
+    if module.config.has_biases != has_biases:
+        raise ValueError(f"Module at {path} is configured with has_biases={module.config.has_biases}, but no bias weights found in checkpoint. "
+                       f"Please update the module configuration to has_biases={has_biases}.")
 
-    fs_biases: Array | None = None
-    if hf_biases is not None:
-        module.config = dataclasses.replace(module.config, has_bias=True)
-        fs_biases = hf_biases
+    fs_weights = rearrange(hf_weights, "output_channels input_channels temporal height width -> output_channels temporal height width input_channels")
+    fs_biases: Array | None = hf_biases if has_biases else None
 
     return load_parameters(lambda m: (m.weights, m.biases), module, (fs_weights, fs_biases))
 
@@ -288,8 +293,6 @@ def load_vision_merger(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> PatchMerger:
-    norm = load_rmsnorm(module.norm, weights_dict, path / "ln_q", False)
-
     if not isinstance(module.hidden_proj, FullPrecisionLinear):
         raise TypeError(f"Expected hidden_proj to be FullPrecisionLinear, got {type(module.hidden_proj)}")
     if not isinstance(module.out_proj, FullPrecisionLinear):
@@ -299,9 +302,9 @@ def load_vision_merger(
     out_proj = load_linear(module.out_proj, weights_dict, path / "mlp" / "2")
 
     return load_parameters(
-        lambda m: (m.norm, m.hidden_proj, m.out_proj),
+        lambda m: (m.hidden_proj, m.out_proj),
         module,
-        (norm, hidden_proj, out_proj),
+        (hidden_proj, out_proj),
     )
 
 
@@ -346,13 +349,25 @@ def load_vision_huggingface(
             lambda m: (m.scales,), module.output_norm, (identity_scales,),
         )
 
+    # Load final merger normalization
+    final_merger_norm_path = root_path / "merger" / "ln_q"
+    if (final_merger_norm_path / "weight") in weights_dict:
+        final_merger_norm = load_rmsnorm(
+            module.final_merger_norm, weights_dict, final_merger_norm_path, False,
+        )
+    else:
+        # Use identity scales if no weights found
+        identity_scales = jnp.ones_like(module.final_merger_norm.scales)
+        final_merger_norm = load_parameters(
+            lambda m: (m.scales,), module.final_merger_norm, (identity_scales,),
+        )
 
     merger = load_vision_merger(module.final_merger, weights_dict, root_path / "merger")
 
     return load_parameters(
-        lambda m: (m.patch_embed, m.rope, m.stages, m.inter_stage_mergers, m.output_norm, m.final_merger),
+        lambda m: (m.patch_embed, m.rope, m.stages, m.inter_stage_mergers, m.inter_stage_merger_norms, m.output_norm, m.final_merger, m.final_merger_norm),
         module,
-        (patch_embed, rope, (loaded_layers,), module.inter_stage_mergers, output_norm, merger),
+        (patch_embed, rope, (loaded_layers,), module.inter_stage_mergers, module.inter_stage_merger_norms, output_norm, merger, final_merger_norm),
     )
 
 

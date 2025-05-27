@@ -68,9 +68,11 @@ class PatchEmbedding(FartsovkaModule[PatchEmbeddingConfig]):
         assert self.config.in_channels == in_channels_from_image, (
             f"expected {self.config.in_channels} channels, got {in_channels_from_image}"
         )
-        assert (
-            image_time_steps % patch_time_steps == 0 and image_height % patch_height_cfg == 0 and image_width % patch_width_cfg == 0
-        ), "image dims must be divisible by patch sizes"
+        assert all([
+            image_time_steps % patch_time_steps == 0,
+            image_height % patch_height_cfg == 0,
+            image_width % patch_width_cfg == 0,
+        ]), "image dims must be divisible by patch sizes"
 
         num_temporal_patches = image_time_steps // patch_time_steps
         num_height_patches = image_height // patch_height_cfg
@@ -87,8 +89,8 @@ class PatchEmbedding(FartsovkaModule[PatchEmbeddingConfig]):
         )
         patches_flat = _patches_intermediate.reshape(_patches_intermediate.shape[0], -1).astype(jnp.float32)
 
-        kernel_permuted = rearrange(self.weights, "h t ph pw c -> h c t ph pw")
-        kernel_flat = rearrange(kernel_permuted, "h c t ph pw -> h (c t ph pw)")
+        kernel_permuted = rearrange(self.weights, "hidden_channels temporal patch_height patch_width channels -> hidden_channels channels temporal patch_height patch_width")
+        kernel_flat = rearrange(kernel_permuted, "hidden_channels channels temporal patch_height patch_width -> hidden_channels (channels temporal patch_height patch_width)")
 
         out = einsum(patches_flat, kernel_flat, "n d, h d -> n h")
         if self.biases is not None:

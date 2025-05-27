@@ -15,7 +15,6 @@ from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM
 
 from fartsovka.common import DType
 from fartsovka.model_import import REPO_TO_MODEL, import_model
-from fartsovka.model_import.model_import import get_vision_encoder_from_model
 from fartsovka.modules import Decoder
 from fartsovka.modules.vision_transformer import VisionTransformer
 from tests.executorch_llama.source_transformation.lora import (
@@ -181,15 +180,14 @@ def fartsovka_qwen25vl_vision() -> VisionTransformer | None:
         accumulation_precision=fartsovka_accumulation_precision,
     )
 
-    vision_model = get_vision_encoder_from_model(full_decoder_model)
+    vision_model = full_decoder_model.vision_module
 
     if vision_model is None:
         pytest.fail(
-            f"Failed to extract VisionTransformer from {model_repo_id} using get_vision_encoder_from_model. "
+            f"Failed to extract VisionTransformer from {model_repo_id}. "
             f"Check if 'vision_module' attribute exists on Decoder and is a VisionTransformer, "
             f"and ensure Decoder class in fartsovka/modules/decoder.py is updated.",
         )
-        return None
 
     return vision_model
 

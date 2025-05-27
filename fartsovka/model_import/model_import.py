@@ -1,4 +1,3 @@
-import logging
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -11,19 +10,23 @@ from safetensors.flax import load_file as load_safetensors
 
 from fartsovka.common import DType
 from fartsovka.modules import Decoder
-from fartsovka.modules.vision_transformer import VisionTransformer
 
-from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFMistralConfig, HFQwen2Config, HFQwen25VLConfig
+from .configs import (
+    ETLlamaConfig,
+    ForeignConfig,
+    HFGemma2Config,
+    HFLlamaConfig,
+    HFMistralConfig,
+    HFQwen2Config,
+    HFQwen25VLConfig,
+)
 
 __all__ = [
     "MODELS",
     "REPO_TO_MODEL",
     "ModelSpec",
-    "get_vision_encoder_from_model",
     "import_model",
 ]
-
-_logger = logging.getLogger(__name__)
 
 
 @torch.no_grad()
@@ -217,15 +220,3 @@ def import_model(
     result = config.load_model(context_length, precision, accumulation_precision, weights_dict)
 
     return result
-
-
-def get_vision_encoder_from_model(model: Decoder) -> VisionTransformer | None:
-    """Get the vision encoder from a model if it exists and is the right type."""
-    vision_module = model.vision_module
-    if vision_module is not None and not isinstance(vision_module, VisionTransformer):
-        _logger.warning(
-            "Attribute 'vision_module' found on Decoder, but it is of type "
-            f"{type(vision_module).__name__}, not VisionTransformer.",
-        )
-        return None
-    return vision_module

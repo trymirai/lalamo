@@ -4,6 +4,7 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from einops import rearrange
+from jax import vmap
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from .common import FartsovkaModule
@@ -131,6 +132,7 @@ class VisionTransformerConfig:
 
         all_layers = []
         inter_stage_mergers = []
+        inter_stage_merger_norms = []
         current_dim = self.stage_hidden_dims[0]
         stages_keys = jax.random.split(stages_key, len(self.stage_hidden_dims))
 
@@ -165,11 +167,14 @@ class VisionTransformerConfig:
                     out_dim=next_stage_dim,
                     key=merger_key,
                 )
+                merger_norm = self.output_norm_config.init(stage_dim)
                 inter_stage_mergers.append(merger)
+                inter_stage_merger_norms.append(merger_norm)
 
 
         last_stage_dim = self.stage_hidden_dims[-1]
         output_norm = self.output_norm_config.init(last_stage_dim)
+        final_merger_norm = self.output_norm_config.init(last_stage_dim)
 
         final_merger_cfg = self.patch_merger_config
 
@@ -186,8 +191,10 @@ class VisionTransformerConfig:
             rope=rope,
             stages=tuple(all_layers),
             inter_stage_mergers=tuple(inter_stage_mergers),
+            inter_stage_merger_norms=tuple(inter_stage_merger_norms),
             output_norm=output_norm,
             final_merger=final_merger,
+            final_merger_norm=final_merger_norm,
         )
 
 
@@ -196,8 +203,10 @@ class VisionTransformer(FartsovkaModule[VisionTransformerConfig]):
     rope: VisionRoPE
     stages: tuple[tuple[VisionLayer, ...], ...]
     inter_stage_mergers: tuple[PatchMerger, ...]
+    inter_stage_merger_norms: tuple[RMSNorm, ...]
     output_norm: RMSNorm
     final_merger: PatchMerger
+    final_merger_norm: RMSNorm
 
     def get_window_index(self, grid_thw: Int[Array, "batch_size 3"]) -> tuple[jnp.ndarray, list[int]]:
         window_index = []
@@ -225,9 +234,9 @@ class VisionTransformer(FartsovkaModule[VisionTransformerConfig]):
                 constant_values=padding_value,
             )
             index_padded = rearrange(index_padded,
-                                   "t (NWH VMH) (NWW VMW) -> t (NWH NWW) VMH VMW",
-                                   NWH=num_windows_h, VMH=vit_merger_window_size,
-                                   NWW=num_windows_w, VMW=vit_merger_window_size)
+                                   "t (num_windows_height vit_merger_height) (num_windows_width vit_merger_width) -> t (num_windows_height num_windows_width) vit_merger_height vit_merger_width",
+                                   num_windows_height=num_windows_h, vit_merger_height=vit_merger_window_size,
+                                   num_windows_width=num_windows_w, vit_merger_width=vit_merger_window_size)
 
             seqlens = jnp.sum(index_padded != padding_value, axis=(2, 3)).reshape(-1)
             index_padded = index_padded.reshape(-1)
@@ -304,8 +313,11 @@ class VisionTransformer(FartsovkaModule[VisionTransformerConfig]):
 
             if stage_idx < len(self.inter_stage_mergers):
                 merger_instance = self.inter_stage_mergers[stage_idx]
+                merger_norm = self.inter_stage_merger_norms[stage_idx]
+                hidden_states = vmap(merger_norm, in_axes=0)(hidden_states)
                 hidden_states = merger_instance(hidden_states)
 
+        hidden_states = vmap(self.final_merger_norm, in_axes=0)(hidden_states)
         hidden_states = self.final_merger(hidden_states)
 
         inv_window_index = jnp.argsort(window_index)

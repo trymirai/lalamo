@@ -125,8 +125,8 @@ def apply_rotary_pos_emb_vision(
     keys: Float[Array, "seq num_heads head_dim"],
     pos_emb: PositionalEmbeddings,
 ) -> tuple[Float[Array, "seq num_heads head_dim"], Float[Array, "seq num_heads head_dim"]]:
-    cos_emb_broadcast = rearrange(pos_emb.cosines, "s d -> s 1 d")
-    sin_emb_broadcast = rearrange(pos_emb.sines, "s d -> s 1 d")
+    cos_emb_broadcast = rearrange(pos_emb.cosines, "sequence dimension -> sequence 1 dimension")
+    sin_emb_broadcast = rearrange(pos_emb.sines, "sequence dimension -> sequence 1 dimension")
 
     queries_rotated = pos_emb.rotate_half(queries)
     keys_rotated = pos_emb.rotate_half(keys)
@@ -151,9 +151,6 @@ def _create_mask_from_cumulative_seqlens(
 
     row_indices_flat = jnp.arange(seq_length)
     col_indices_flat = jnp.arange(seq_length)
-
-    row_indices = rearrange(row_indices_flat, "s -> 1 s 1")
-    col_indices = rearrange(col_indices_flat, "t -> 1 1 t")
 
     row_indices = repeat(row_indices_flat, "s -> 1 s t", t=seq_length)
     col_indices = repeat(col_indices_flat, "t -> 1 s t", s=seq_length)

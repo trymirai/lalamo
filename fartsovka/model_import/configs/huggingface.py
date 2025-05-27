@@ -1,3 +1,4 @@
+import logging
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
@@ -22,17 +23,18 @@ from fartsovka.modules import (
     RoPEConfigBase,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
+    UntiedEmbeddingConfig,
     VisionAttentionConfig,
     VisionLayerConfig,
     VisionTransformer,
     VisionTransformerConfig,
-    UntiedEmbeddingConfig,
 )
 
 from .common import ForeignConfig
 
 __all__ = ["HFGemma2Config", "HFLlamaConfig", "HFMistralConfig", "HFQwen2Config", "HFQwen25VLConfig"]
 
+_logger = logging.getLogger(__name__)
 
 @dataclass
 class HuggingFaceConfig(ForeignConfig):
@@ -590,7 +592,7 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         actual_head_dim = hf_main_hidden_size // hf_main_num_heads
 
         if actual_head_dim % 4 != 0:
-            print(f"WARNING: actual_head_dim ({actual_head_dim}) is not divisible by 4. RoPE might be incorrect or fail.")
+            _logger.warning(f"WARNING: actual_head_dim ({actual_head_dim}) is not divisible by 4. RoPE might be incorrect or fail.")
 
         max_spatial_patches_for_rope = vc.get("image_size", vc.get("window_size", 224)) // vc["patch_size"]
         rope_config = RoPEConfigBase(
@@ -608,7 +610,14 @@ class HFQwen25VLConfig(HuggingFaceConfig):
         linear_config = FullPrecisionLinearConfig(precision=precision)
 
         hf_activation = vc.get("hidden_act", "silu")
-        activation = Activation.SILU if hf_activation == "silu" else Activation.GELU
+        match hf_activation:
+            case "silu":
+                activation = Activation.SILU
+            case "gelu":
+                activation = Activation.GELU
+            case _:
+                raise ValueError(f"Unsupported activation function '{hf_activation}' in vision config. "
+                               f"Supported activations: {[a.value for a in Activation]}")
 
         attention_config = VisionAttentionConfig(
             qkv_projection_config=linear_config,
@@ -629,19 +638,13 @@ class HFQwen25VLConfig(HuggingFaceConfig):
             mlp_config=mlp_config,
         )
 
-        patch_merger_norm_config = RMSNormConfig(
-            scale_precision=precision,
-            accumulation_precision=accumulation_precision,
-            epsilon=vc.get("norm_eps", vc.get("layer_norm_eps", 1e-6)),
-        )
-
         patch_merger_activation = Activation.GELU
 
         patch_merger_config = PatchMergerConfig(
-            norm_config=patch_merger_norm_config,
             activation=patch_merger_activation,
             spatial_merge_size=vc["spatial_merge_size"],
             has_biases=True,
+            precision=precision,
         )
 
         fartsovka_vision_config = VisionTransformerConfig(
