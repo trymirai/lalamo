@@ -1,6 +1,8 @@
+import importlib.metadata
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import NamedTuple
 
 import huggingface_hub
 import jax.numpy as jnp
@@ -9,16 +11,20 @@ from jaxtyping import Array
 from safetensors.flax import load_file as load_safetensors
 
 from fartsovka.common import DType
-from fartsovka.modules import Decoder
+from fartsovka.modules import Decoder, DecoderConfig
 
 from .configs import ETLlamaConfig, ForeignConfig, HFGemma2Config, HFLlamaConfig, HFMistralConfig, HFQwen2Config
 
 __all__ = [
     "MODELS",
     "REPO_TO_MODEL",
+    "ModelMetadata",
     "ModelSpec",
     "import_model",
 ]
+
+
+FARTSOVKA_VERSION = importlib.metadata.version("fartsovka")
 
 
 @torch.no_grad()
@@ -51,6 +57,15 @@ class WeightsType(Enum):
 
 
 @dataclass
+class ModelMetadata:
+    fartsovka_version: str
+    vendor: str
+    name: str
+    model_config: DecoderConfig
+    tokenizer_file_names: tuple[str, ...]
+
+
+@dataclass
 class ModelSpec:
     vendor: str
     name: str
@@ -60,6 +75,10 @@ class ModelSpec:
     config_file_name: str
     weights_file_names: tuple[str, ...]
     weights_type: WeightsType
+    tokenizer_file_names: tuple[str, ...] = tuple()
+
+
+HUGGINGFACE_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json")
 
 
 MODELS = [
@@ -83,6 +102,7 @@ MODELS = [
             "model-00010-of-00010.safetensors",
         ),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="HuggingFace",
@@ -93,6 +113,7 @@ MODELS = [
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="Meta",
@@ -103,6 +124,7 @@ MODELS = [
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="PleIAs",
@@ -113,6 +135,7 @@ MODELS = [
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="Meta",
@@ -136,6 +159,7 @@ MODELS = [
             "model-00002-of-00002.safetensors",
         ),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -146,6 +170,7 @@ MODELS = [
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="DeepSeek",
@@ -156,6 +181,7 @@ MODELS = [
         config_file_name="config.json",
         weights_file_names=("model.safetensors",),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
     ModelSpec(
         vendor="Mistral",
@@ -176,6 +202,7 @@ MODELS = [
             "model-00009-of-00009.safetensors",
         ),
         weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
     ),
 ]
 
@@ -204,23 +231,49 @@ def download_config_file(model_spec: ModelSpec, output_dir: Path | str | None = 
     return Path(result)
 
 
+def download_tokenizer_files(model_spec: ModelSpec, output_dir: Path | str | None = None) -> list[Path]:
+    result = [
+        huggingface_hub.hf_hub_download(
+            repo_id=model_spec.repo,
+            local_dir=output_dir,
+            filename=metadata_filename,
+        )
+        for metadata_filename in model_spec.tokenizer_file_names
+    ]
+    return [Path(path) for path in result]
+
+
+class ImportResults(NamedTuple):
+    model: Decoder
+    metadata: ModelMetadata
+    tokenizer_file_paths: list[Path]
+
+
 def import_model(
     model_spec: ModelSpec,
     *,
     context_length: int = 8192,
     precision: DType | None = None,
     accumulation_precision: DType = jnp.float32,
-) -> Decoder:
-    config_file = download_config_file(model_spec)
-    config = model_spec.config_type.from_json(config_file)
+) -> ImportResults:
+    foreign_config_file = download_config_file(model_spec)
+    foreign_config = model_spec.config_type.from_json(foreign_config_file)
+
+    tokenizer_file_paths = download_tokenizer_files(model_spec)
     if precision is None:
-        precision = config.default_precision
+        precision = foreign_config.default_precision
 
     weights_paths = download_weights(model_spec)
     weights_dict = {}
     for weights_path in weights_paths:
         weights_dict.update(model_spec.weights_type.load(weights_path, precision))
 
-    result = config.load_model(context_length, precision, accumulation_precision, weights_dict)
-
-    return result
+    model = foreign_config.load_model(context_length, precision, accumulation_precision, weights_dict)
+    metadata = ModelMetadata(
+        fartsovka_version=FARTSOVKA_VERSION,
+        name=model_spec.name,
+        vendor=model_spec.vendor,
+        model_config=model.config,
+        tokenizer_file_names=tuple(p.name for p in tokenizer_file_paths),
+    )
+    return ImportResults(model, metadata, tokenizer_file_paths)

@@ -1,4 +1,5 @@
 import json
+import shutil
 import sys
 from enum import Enum
 from pathlib import Path
@@ -17,8 +18,8 @@ from safetensors.flax import save_file
 from typer import Argument, Exit, Option, Typer
 
 from fartsovka.common import DType
-from fartsovka.model_import import REPO_TO_MODEL, ModelSpec, import_model
-from fartsovka.modules import DecoderConfig, WeightLayout, config_converter
+from fartsovka.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
+from fartsovka.modules import WeightLayout, config_converter
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -133,35 +134,56 @@ def convert(
     else:
         weight_layout = WeightLayout.OUTPUT_INPUT
 
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
+
+    console.print(f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan].")
+    conversion_strs = [
+        f"⚙️ Using weight layout [cyan]{weight_layout}[/cyan]",
+    ]
+    if precision is not None:
+        conversion_strs.append(
+            f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
+        )
+    conversion_strs.append(".")
+    console.print("".join(conversion_strs))
+
+    if output_dir.exists():
+        answer = console.input(
+            rf"⚠️ Output directory [cyan]{output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
+        )
+        while answer.lower() not in ["y", "n", "yes", "no"]:
+            answer = console.input("Please enter 'y' or 'n': ")
+        if answer.lower() in ["y", "yes"]:
+            shutil.rmtree(output_dir)
+        else:
+            console.print("Exiting...")
+            raise Exit
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        console.print(f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan].")
-        conversion_strs = [
-            f"⚙️ Using weight layout [cyan]{weight_layout}[/cyan]",
-        ]
-        if precision is not None:
-            conversion_strs.append(
-                f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
-            )
-        conversion_strs.append(".")
-        console.print("".join(conversion_strs))
-
         progress.add_task("👨‍🍳 Cooking...")
-        model = import_model(model_repo, precision=precision_dtype, context_length=context_length)
-
-        if output_dir is None:
-            output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
-        progress.add_task(f"💾 Saving model to {output_dir}")
+        model, metadata, tokenizer_file_paths = import_model(
+            model_repo,
+            precision=precision_dtype,
+            context_length=context_length,
+        )
+        progress.add_task(f"💾 Saving the model to {output_dir}")
         output_dir.mkdir(parents=True, exist_ok=True)
-        config_json = config_converter.unstructure(model.config, DecoderConfig)
+
         weights = dict(model.export_weights(weight_layout))
         save_file(weights, output_dir / "model.safetensors")
 
+        config_json = config_converter.unstructure(metadata, ModelMetadata)
         with open(output_dir / "config.json", "w") as file:
             json.dump(config_json, file, indent=4)
+
+        for path in tokenizer_file_paths:
+            shutil.copy(path, output_dir / path.name)
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
