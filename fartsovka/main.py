@@ -161,7 +161,7 @@ def convert(
         with open(output_dir / "config.json", "w") as file:
             json.dump(config_json, file, indent=4)
 
-    console.print("🧑‍🍳 Model successfully cooked!")
+    console.print(f"🧑‍🍳 Model successfully cooked and saved to `{output_dir}`!")
 
 
 @app.command(help="List the supported models.")
