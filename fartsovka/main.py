@@ -138,12 +138,14 @@ def convert(
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        console.print(f"🚀 Converting {model_repo.name} by {model_repo.vendor}.")
+        console.print(f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan].")
         conversion_strs = [
-            f"⚙️ Using weight layout {weight_layout}",
+            f"⚙️ Using weight layout [cyan]{weight_layout}[/cyan]",
         ]
-        if precision_dtype is not None:
-            conversion_strs.append(f" and ({precision_dtype.name}) precision for floating-point weights")
+        if precision is not None:
+            conversion_strs.append(
+                f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
+            )
         conversion_strs.append(".")
         console.print("".join(conversion_strs))
 
@@ -161,7 +163,7 @@ def convert(
         with open(output_dir / "config.json", "w") as file:
             json.dump(config_json, file, indent=4)
 
-    console.print(f"🧑‍🍳 Model successfully cooked and saved to `{output_dir}`!")
+    console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
 @app.command(help="List the supported models.")
