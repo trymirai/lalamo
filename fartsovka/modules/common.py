@@ -20,6 +20,14 @@ class WeightLayout(Enum):
     INPUT_OUTPUT = "input_output"
     OUTPUT_INPUT = "output_input"
 
+    def __str__(self) -> str:
+        match self:
+            case WeightLayout.INPUT_OUTPUT:
+                return "(input, output)"
+            case WeightLayout.OUTPUT_INPUT:
+                return "(output, input)"
+        raise ValueError(f"Unknown weight layout: {self}")
+
 
 class FartsovkaModule[ConfigT](eqx.Module):
     config: ConfigT = eqx.field(static=True)

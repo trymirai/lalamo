@@ -11,6 +11,7 @@ from click import ParamType
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Exit, Option, Typer
@@ -90,7 +91,7 @@ def convert(
             click_type=ModelParser(),
             show_default=False,
             metavar="MODEL_REPO",
-            autocompletion=lambda: list(REPO_TO_MODEL.keys()),
+            autocompletion=lambda: list(REPO_TO_MODEL),
         ),
     ],
     precision: Annotated[
@@ -101,11 +102,12 @@ def convert(
         ),
     ] = None,
     weight_layout: Annotated[
-        WeightLayout,
+        WeightLayout | None,
         Option(
             help="Layout of weights for linear layers.",
+            show_default="Output, Input",
         ),
-    ] = WeightLayout.OUTPUT_INPUT,
+    ] = None,
     output_dir: Annotated[
         Path | None,
         Option(
@@ -126,16 +128,40 @@ def convert(
     else:
         precision_dtype = None
 
-    model = import_model(model_repo, precision=precision_dtype, context_length=context_length)
-    config_json = config_converter.unstructure(model.config, DecoderConfig)
-    weights = dict(model.export_weights(weight_layout))
+    if weight_layout is not None:
+        weight_layout = WeightLayout(weight_layout)
+    else:
+        weight_layout = WeightLayout.OUTPUT_INPUT
 
-    if output_dir is None:
-        output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
-    output_dir.mkdir(parents=True, exist_ok=True)
-    save_file(weights, output_dir / "model.safetensors")
-    with open(output_dir / "config.json", "w") as file:
-        json.dump(config_json, file, indent=4)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        console.print(f"🚀 Converting {model_repo.name} by {model_repo.vendor}.")
+        conversion_strs = [
+            f"⚙️ Using weight layout {weight_layout}",
+        ]
+        if precision_dtype is not None:
+            conversion_strs.append(f" and ({precision_dtype.name}) precision for floating-point weights")
+        conversion_strs.append(".")
+        console.print("".join(conversion_strs))
+
+        progress.add_task("👨‍🍳 Cooking...")
+        model = import_model(model_repo, precision=precision_dtype, context_length=context_length)
+
+        if output_dir is None:
+            output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
+        progress.add_task(f"💾 Saving model to {output_dir}")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        config_json = config_converter.unstructure(model.config, DecoderConfig)
+        weights = dict(model.export_weights(weight_layout))
+        save_file(weights, output_dir / "model.safetensors")
+
+        with open(output_dir / "config.json", "w") as file:
+            json.dump(config_json, file, indent=4)
+
+    console.print("🧑‍🍳 Model successfully cooked!")
 
 
 @app.command(help="List the supported models.")
