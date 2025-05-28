@@ -11,7 +11,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, register_config_union
+from .common import FartsovkaModule, WeightLayout, register_config_union
 
 __all__ = [
     "FullPrecisionLinear",
@@ -45,6 +45,22 @@ class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
         x: Float[Array, " in_channels"],
     ) -> tuple[Float[Array, " out_channels"], ...]:
         raise NotImplementedError
+
+    @classmethod
+    def _into_layout(
+        cls,
+        weights: Float[Array, "in_channels out_channels"],
+        layout: WeightLayout,
+    ) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
+        match layout:
+            case WeightLayout.OUTPUT_INPUT:
+                return weights
+            case WeightLayout.INPUT_OUTPUT:
+                return rearrange(
+                    weights,
+                    "total_out_channels in_channels -> in_channels total_out_channels",
+                )
+        raise ValueError(f"Unsupported weight layout: {layout}")
 
     @classmethod
     def _get_split_points(cls, output_dims: Sequence[int]) -> tuple[int, ...]:
@@ -145,12 +161,8 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
-    def export_weights(self) -> ParameterDict:
-        exported_weights = rearrange(
-            self.weights,
-            "total_out_channels in_channels -> in_channels total_out_channels",
-        )
-        result = ParameterDict(weights=exported_weights)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+        result = ParameterDict(weights=self._into_layout(self.weights, weight_layout))
         if self.biases is not None:
             result["biases"] = self.biases
         return result
@@ -292,11 +304,9 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
-    def export_weights(self) -> ParameterDict:
-        exported_weights = rearrange(
-            quantize_weights(self.weights, self.config.weight_quantization_mode),
-            "total_out_channels in_channels -> in_channels total_out_channels",
-        )
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+        quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
+        exported_weights = self._into_layout(quantized_weights, weight_layout)
         exported_weights = exported_weights.astype(self.config.weight_quantization_mode.dtype)
 
         exported_scales = rearrange(self.scales, "total_out_channels groups -> groups total_out_channels")
@@ -438,15 +448,11 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
 
         return tuple(results)
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         quantized_linear_weights = super().export_weights()
-        exported_lora_down_weights = rearrange(
-            self.lora_down_weights,
-            "total_lora_channels in_channels -> in_channels total_lora_channels",
-        )
+        exported_lora_down_weights = self._into_layout(self.lora_down_weights, weight_layout)
         exported_lora_up_weights = tuple(
-            rearrange(lora_up_weight, "out_channels lora_channels -> lora_channels out_channels")
-            for lora_up_weight in self.lora_up_weights
+            self._into_layout(lora_up_weight, weight_layout) for lora_up_weight in self.lora_up_weights
         )
         return ParameterDict(
             **quantized_linear_weights,

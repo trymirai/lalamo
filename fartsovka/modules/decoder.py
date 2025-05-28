@@ -7,7 +7,7 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
 
-from .common import FartsovkaModule
+from .common import FartsovkaModule, WeightLayout
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
@@ -129,10 +129,10 @@ class Decoder(FartsovkaModule[DecoderConfig]):
         result = vmap(self.embedding.readout, in_axes=0)(x)
         return DecoderOutput(output=result, kv_cache=updated_kv_cache or None)
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         return ParameterDict(
-            embedding=self.embedding.export_weights(),
-            rope=self.rope.export_weights(),
-            layers=[layer.export_weights() for layer in self.layers],
-            output_norm=self.output_norm.export_weights(),
+            embedding=self.embedding.export_weights(weight_layout),
+            rope=self.rope.export_weights(weight_layout),
+            layers=[layer.export_weights(weight_layout) for layer in self.layers],
+            output_norm=self.output_norm.export_weights(weight_layout),
         )

@@ -6,7 +6,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from fartsovka.common import ParameterDict
 
 from .activations import Activation
-from .common import FartsovkaModule
+from .common import FartsovkaModule, WeightLayout
 from .linear import LinearBase, LinearConfig
 
 __all__ = ["MLP", "MLPConfig"]
@@ -68,8 +68,8 @@ class MLP(FartsovkaModule):
         (result,) = self.down_projection(up_proj * gate)
         return result
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         return ParameterDict(
-            up_projection=self.up_projection.export_weights(),
-            down_projection=self.down_projection.export_weights(),
+            up_projection=self.up_projection.export_weights(weight_layout),
+            down_projection=self.down_projection.export_weights(weight_layout),
         )

@@ -6,7 +6,7 @@ from jaxtyping import Array, Float, Scalar
 
 from fartsovka.common import DType, ParameterDict
 
-from .common import FartsovkaModule
+from .common import FartsovkaModule, WeightLayout
 
 __all__ = [
     "RMSNorm",
@@ -61,5 +61,5 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
         result = x * jax.lax.rsqrt(adjusted_variance) * self.scales
         return result.astype(x.dtype)
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(scales=self.scales)

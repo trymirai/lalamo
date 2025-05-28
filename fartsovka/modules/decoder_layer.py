@@ -8,7 +8,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 from fartsovka.common import ParameterDict
 
 from .attention import Attention, AttentionConfig
-from .common import FartsovkaModule
+from .common import FartsovkaModule, WeightLayout
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
@@ -139,15 +139,15 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
 
         return DecoderLayerOutput(output=x, kv_cache=kv_cache)
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         result = ParameterDict(
-            pre_attention_norm=self.pre_attention_norm.export_weights(),
-            attention=self.attention.export_weights(),
-            pre_mlp_norm=self.pre_mlp_norm.export_weights(),
-            mlp=self.mlp.export_weights(),
+            pre_attention_norm=self.pre_attention_norm.export_weights(weight_layout),
+            attention=self.attention.export_weights(weight_layout),
+            pre_mlp_norm=self.pre_mlp_norm.export_weights(weight_layout),
+            mlp=self.mlp.export_weights(weight_layout),
         )
         if self.post_attention_norm is not None:
-            result["post_attention_norm"] = self.post_attention_norm.export_weights()
+            result["post_attention_norm"] = self.post_attention_norm.export_weights(weight_layout)
         if self.post_mlp_norm is not None:
-            result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
+            result["post_mlp_norm"] = self.post_mlp_norm.export_weights(weight_layout)
         return result

@@ -3,7 +3,8 @@ import jax.numpy as jnp
 import transformers
 from einops import rearrange
 from jaxtyping import PRNGKeyArray
-from transformers.models.llama.modeling_llama import LlamaConfig, LlamaRotaryEmbedding
+from transformers.models.llama.configuration_llama import LlamaConfig
+from transformers.models.llama.modeling_llama import LlamaRotaryEmbedding
 
 from fartsovka.modules import Decoder, LlamaRoPEConfig, UnscaledRoPEConfig
 from tests.executorch_llama.rope import apply_rotary_emb
@@ -123,13 +124,13 @@ def test_rope(
     huggingface_llama: transformers.LlamaModel,
     fartsovka_llama: Decoder,
 ) -> None:
-    hf_layer = huggingface_llama.model.rotary_emb
+    hf_layer = huggingface_llama.model.rotary_emb  # type: ignore
     fs_layer = fartsovka_llama.rope
     fs_layer_forward = checkify_forward(fs_layer)
 
     sample_input = jnp.arange(0, 8192, 17)
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
-    hf_cosines, hf_sines = hf_layer(sample_input_torch.float(), sample_input_torch)
+    hf_cosines, hf_sines = hf_layer(sample_input_torch.float(), sample_input_torch)  # type: ignore
     hf_cosines = from_torch(hf_cosines.squeeze(0))
     hf_sines = from_torch(hf_sines.squeeze(0))
     err, fs_positional_embeddings = fs_layer_forward(sample_input)

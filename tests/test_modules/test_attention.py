@@ -4,7 +4,8 @@ import torch
 import transformers
 from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
-from transformers.models.llama.modeling_llama import DynamicCache, LlamaAttention
+from transformers.cache_utils import DynamicCache
+from transformers.models.llama.modeling_llama import LlamaAttention
 
 from fartsovka.modules import Decoder, KVCacheLayerSlice
 from tests.executorch_llama.transformer import Transformer as ETTransformer
@@ -27,7 +28,7 @@ def test_attention_no_mask_no_cache(
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[layer_index].self_attn
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn  # type: ignore
     assert isinstance(hf_layer, LlamaAttention)
     fs_layer = fartsovka_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
@@ -41,7 +42,7 @@ def test_attention_no_mask_no_cache(
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)
+    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     # We create a zero mask to ensure that the attention is not affected by the mask
     torch_zero_mask = torch.zeros((1, 1, sequence_length, sequence_length))
     positional_embeddings = fartsovka_llama.rope(position_ids)
@@ -63,7 +64,7 @@ def test_qwen2_attention(
     fartsovka_qwen25: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
-    hf_layer = huggingface_qwen25.model.layers[0].self_attn
+    hf_layer = huggingface_qwen25.model.layers[0].self_attn  # type: ignore
     fs_layer = fartsovka_qwen25.layers[0].attention
     fs_layer_forward = checkify_forward(fs_layer)
 
@@ -76,7 +77,7 @@ def test_qwen2_attention(
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_qwen25.model.rotary_emb(sample_input_torch, position_ids_torch)
+    cos, sin = huggingface_qwen25.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     # We create a zero mask to ensure that the attention is not affected by the mask
     torch_zero_mask = torch.zeros((1, 1, sequence_length, sequence_length))
     positional_embeddings = fartsovka_qwen25.rope(position_ids)
@@ -100,7 +101,7 @@ def test_gemma2_attention(
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
-    hf_layer = huggingface_gemma2.model.layers[layer_index].self_attn
+    hf_layer = huggingface_gemma2.model.layers[layer_index].self_attn  # type: ignore
     fs_layer = fartsovka_gemma2.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
 
@@ -113,7 +114,7 @@ def test_gemma2_attention(
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_gemma2.model.rotary_emb(sample_input_torch, position_ids_torch)
+    cos, sin = huggingface_gemma2.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     positional_embeddings = fartsovka_gemma2.rope(position_ids)
     # Create causal mask
     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
@@ -139,7 +140,7 @@ def test_attention_with_mask(
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[layer_index].self_attn
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn  # type: ignore
     assert isinstance(hf_layer, LlamaAttention)
     fs_layer = fartsovka_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
@@ -153,7 +154,7 @@ def test_attention_with_mask(
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)
+    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     positional_embeddings = fartsovka_llama.rope(position_ids)
 
     # Create causal mask
@@ -180,7 +181,7 @@ def test_attention_with_mask_and_kv_cache(
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[layer_index].self_attn
+    hf_layer = huggingface_llama.model.layers[layer_index].self_attn  # type: ignore
     assert isinstance(hf_layer, LlamaAttention)
     fs_layer = fartsovka_llama.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
@@ -204,12 +205,12 @@ def test_attention_with_mask_and_kv_cache(
 
     torch_keys = to_torch(kv_cache.keys).permute(1, 0, 2).unsqueeze(0)
     torch_values = to_torch(kv_cache.values).permute(1, 0, 2).unsqueeze(0)
-    torch_cache = DynamicCache(len(huggingface_llama.model.layers))
+    torch_cache = DynamicCache()
     torch_cache.update(torch_keys, torch_values, layer_index, dict())
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)
+    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     positional_embeddings = fartsovka_llama.rope(position_ids)
 
     # Create causal mask
@@ -273,7 +274,7 @@ def test_qlora_attention(
     jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
 
     # Run forward passes
-    et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))
+    et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))  # type: ignore
     err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
     err.throw()
     assert_close(

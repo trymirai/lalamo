@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from types import UnionType
 
 import equinox as eqx
@@ -15,10 +16,15 @@ __all__ = [
 ]
 
 
+class WeightLayout(Enum):
+    INPUT_OUTPUT = "input_output"
+    OUTPUT_INPUT = "output_input"
+
+
 class FartsovkaModule[ConfigT](eqx.Module):
     config: ConfigT = eqx.field(static=True)
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         raise NotImplementedError
 
 

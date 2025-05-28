@@ -52,7 +52,9 @@ class WeightsType(Enum):
 
 @dataclass
 class ModelSpec:
+    vendor: str
     name: str
+    size: str
     repo: str
     config_type: type[ForeignConfig]
     config_file_name: str
@@ -62,7 +64,9 @@ class ModelSpec:
 
 MODELS = [
     ModelSpec(
+        vendor="Mistral",
         name="Devstral-Small-2505",
+        size="24B",
         repo="mistralai/Devstral-Small-2505",
         config_type=HFMistralConfig,
         config_file_name="config.json",
@@ -81,7 +85,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="HuggingFace",
         name="SmolLM2-1.7B-Instruct",
+        size="1.7B",
         repo="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         config_type=HFLlamaConfig,
         config_file_name="config.json",
@@ -89,7 +95,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="Meta",
         name="Llama-3.2-1B-Instruct",
+        size="1B",
         repo="meta-llama/Llama-3.2-1B-Instruct",
         config_type=HFLlamaConfig,
         config_file_name="config.json",
@@ -97,7 +105,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="PleIAs",
         name="Pleias-RAG-1B",
+        size="1B",
         repo="PleIAs/Pleias-RAG-1B",
         config_type=HFLlamaConfig,
         config_file_name="config.json",
@@ -105,7 +115,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="Meta",
         name="Llama-3.2-1B-Instruct-QLoRA",
+        size="1B",
         repo="meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8",
         config_type=ETLlamaConfig,
         config_file_name="params.json",
@@ -113,7 +125,9 @@ MODELS = [
         weights_type=WeightsType.TORCH,
     ),
     ModelSpec(
+        vendor="Google",
         name="Gemma-2-2B-Instruct",
+        size="2B",
         repo="google/gemma-2-2b-it",
         config_type=HFGemma2Config,
         config_file_name="config.json",
@@ -124,7 +138,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="Alibaba",
         name="Qwen2.5-1.5B-Instruct",
+        size="1.5B",
         repo="Qwen/Qwen2.5-1.5B-Instruct",
         config_type=HFQwen2Config,
         config_file_name="config.json",
@@ -132,7 +148,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="DeepSeek",
         name="R1-Distill-Qwen-1.5B",
+        size="1.5B",
         repo="deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
         config_type=HFQwen2Config,
         config_file_name="config.json",
@@ -140,7 +158,9 @@ MODELS = [
         weights_type=WeightsType.SAFETENSORS,
     ),
     ModelSpec(
+        vendor="Mistral",
         name="Codestral-22B-v0.1",
+        size="22B",
         repo="mistral-community/Codestral-22B-v0.1",
         config_type=HFMistralConfig,
         config_file_name="config.json",

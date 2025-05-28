@@ -1,36 +1,16 @@
 # Fartsovka
 
-A set of tools for adapting Large Language Models to on-device inference using Mirai Inference Engine
+A set of tools for adapting Large Language Models to on-device inference using the Uzu inference engine.
 
-To convert model run
+To convert a model run
 
 ```bash
-uv run convert_model.py
+uv run fartsovka convert MODEL_REPO
 ```
 
-Usage:
+For more options see `uv run fartsovka convert --help`
 
-```shell
-╭─ Arguments ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ *    model_repo      TEXT  [default: None] [required]                                                                                                                       │
-╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-╭─ Options ───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╮
-│ --precision             TEXT     [default: None]                                                                                                                            │
-│ --output-dir            PATH     [default: None]                                                                                                                            │
-│ --context-length        INTEGER  [default: 8192]                                                                                                                            │
-│ --help                           Show this message and exit.                                                                                                                │
-╰─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
-```
-
-Currently supported models:
-
-```shell
-meta-llama/Llama-3.2-1B-Instruct
-meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8
-google/gemma-2-2b-it
-Qwen/Qwen2.5-1.5B-Instruct
-deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B
-```
+To get a list of supported models run `uv run fartsovka list-models`
 
 To add support for a new model write the corresponding `ModelSpec` in `fartsovka.model_import.model_import.py`
 

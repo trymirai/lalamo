@@ -24,7 +24,7 @@ from jaxtyping import Array, Float, Int
 
 from fartsovka.common import DType, ParameterDict
 
-from .common import FartsovkaModule, register_config_union
+from .common import FartsovkaModule, WeightLayout, register_config_union
 
 __all__ = [
     "LlamaRoPEConfig",
@@ -117,16 +117,12 @@ class RoPE(FartsovkaModule[RoPEConfigBase]):
         return result
 
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
-        if timesteps.max() >= self.max_sequence_length or timesteps.min() < 0:
-            raise ValueError(
-                f"Positional indices are out of bounds for maximum sequence length {self.max_sequence_length}",
-            )
         return PositionalEmbeddings(
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(cosines=self.cosines, sines=self.sines)
 
 

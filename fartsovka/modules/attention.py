@@ -10,7 +10,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
 
-from .common import FartsovkaModule
+from .common import FartsovkaModule, WeightLayout
 from .kv_cache import KVCacheLayerSlice
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -276,8 +276,8 @@ class Attention(FartsovkaModule[AttentionConfig]):
             kv_cache=updated_kv_cache,
         )
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         return ParameterDict(
-            qkv_proj=self.qkv_projection.export_weights(),
-            out_proj=self.out_projection.export_weights(),
+            qkv_proj=self.qkv_projection.export_weights(weight_layout),
+            out_proj=self.out_projection.export_weights(weight_layout),
         )

@@ -1,6 +1,6 @@
 from .activations import Activation
 from .attention import Attention, AttentionConfig
-from .common import config_converter
+from .common import WeightLayout, config_converter
 from .decoder import Decoder, DecoderConfig
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
 from .embedding import (
@@ -61,6 +61,7 @@ __all__ = [
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
+    "WeightLayout",
     "YARNRoPEConfig",
     "config_converter",
 ]

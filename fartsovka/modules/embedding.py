@@ -7,7 +7,7 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 from fartsovka.common import DType, ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import FartsovkaModule, register_config_union
+from .common import FartsovkaModule, WeightLayout, register_config_union
 from .utils import apply_soft_capping
 
 __all__ = [
@@ -105,7 +105,7 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
         return self.weights
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(token_embeddings=self.weights)
 
 
@@ -172,7 +172,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
         return self.output_weights
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(
             input_weights=self.input_weights,
             output_weights=self.output_weights,
@@ -257,7 +257,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
-    def export_weights(self) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         exported_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         return ParameterDict(
             token_embeddings=exported_weights,
