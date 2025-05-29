@@ -73,15 +73,28 @@ config_converter.register_structure_hook_func(
 def register_config_union(union_type: UnionType) -> None:
     union_members = union_type.__args__
     name_to_type = {m.__name__: m for m in union_members}
+
+    def unstructure(obj: object) -> dict | None:
+        if object is None:
+            return None
+        return {
+            "type": obj.__class__.__name__,
+            **config_converter.unstructure(obj),
+        }
+
     config_converter.register_unstructure_hook(
         union_type,
-        lambda o: {
-            "type": o.__class__.__name__,
-            **config_converter.unstructure(o),
-        },
+        unstructure,
     )
 
-    def structure[T](config: dict, _: type[T]) -> T:
+    config_converter.register_unstructure_hook(
+        union_type | None,
+        unstructure,
+    )
+
+    def structure[T](config: dict | None, _: type[T]) -> T | None:
+        if config is None:
+            return None
         new_config = dict(config)
         type_name = new_config.pop("type")
         target_type = name_to_type[type_name]
@@ -89,6 +102,11 @@ def register_config_union(union_type: UnionType) -> None:
 
     config_converter.register_structure_hook(
         union_type,
+        structure,
+    )
+
+    config_converter.register_structure_hook(
+        union_type | None,
         structure,
     )
 
