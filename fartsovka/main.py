@@ -1,4 +1,5 @@
 import json
+import re
 import shutil
 import sys
 from enum import Enum
@@ -37,7 +38,6 @@ err_console = Console(stderr=True)
 app = Typer(
     rich_markup_mode="rich",
     add_completion=False,
-    no_args_is_help=True,
     pretty_exceptions_show_locals=False,
 )
 
@@ -79,7 +79,7 @@ def _error(message: str) -> None:
     raise Exit(1)
 
 
-@app.command(help="Convert the model for use with the Uzu inference engine.", no_args_is_help=True)
+@app.command(help="Convert the model for use with the Uzu inference engine.")
 def convert(
     model_repo: Annotated[
         ModelSpec,
@@ -105,8 +105,8 @@ def convert(
     weight_layout: Annotated[
         WeightLayout | None,
         Option(
-            help="Layout of weights for linear layers.",
-            show_default="Output, Input",
+            help="Order of dimensions in the weights of linear layers.",
+            show_default="output_input",
         ),
     ] = None,
     output_dir: Annotated[
@@ -188,6 +188,22 @@ def convert(
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
+def _model_size_string_to_int(
+    size_str: str,
+    _regex: re.Pattern = re.compile(r"(?P<number>(\d+)(\.\d*)?)(?P<suffix>[KMBT])"),
+) -> float:
+    match = _regex.match(size_str)
+    factors = {
+        "K": 1024**1,
+        "M": 1024**2,
+        "B": 1024**3,
+        "T": 1024**4,
+    }
+    if match:
+        return float(match.group("number")) * factors[match.group("suffix")]
+    raise ValueError(f"Invalid size string: {size_str}")
+
+
 @app.command(help="List the supported models.")
 def list_models() -> None:
     table = Table(
@@ -197,11 +213,20 @@ def list_models() -> None:
         box=box.ROUNDED,
     )
     table.add_column("Vendor", justify="left", style="magenta")
-    table.add_column("Name", justify="left", style="magenta")
+    table.add_column("Family", justify="left", style="magenta", no_wrap=True)
     table.add_column("Size", justify="right", style="magenta")
+    table.add_column("Quant", justify="left", style="magenta")
     table.add_column("Repo", justify="left", style="cyan", no_wrap=True)
-    for spec in sorted(REPO_TO_MODEL.values(), key=lambda spec: (spec.vendor.lower(), spec.name.lower())):
-        table.add_row(spec.vendor, spec.name, spec.size, spec.repo)
+    for spec in sorted(
+        REPO_TO_MODEL.values(),
+        key=lambda spec: (
+            spec.vendor.lower(),
+            spec.family.lower(),
+            _model_size_string_to_int(spec.size),
+            spec.name.lower(),
+        ),
+    ):
+        table.add_row(spec.vendor, spec.family, spec.size, str(spec.quantization), spec.repo)
     console.print(table)
 
 

@@ -118,14 +118,22 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
     def __call__(
         self,
         x: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
+        global_positional_embeddings: PositionalEmbeddings,
+        local_positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> DecoderLayerOutput:
         residual = x
         x = vmap(self.pre_attention_norm, in_axes=0)(x)
-        x, kv_cache = self.attention(x, positional_embeddings, kv_cache, mask, return_updated_kv_cache)
+        x, kv_cache = self.attention(
+            x,
+            global_positional_embeddings,
+            local_positional_embeddings,
+            kv_cache,
+            mask,
+            return_updated_kv_cache,
+        )
         if self.post_attention_norm is not None:
             x = vmap(self.post_attention_norm, in_axes=0)(x)
         x = residual + x

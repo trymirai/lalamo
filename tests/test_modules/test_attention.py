@@ -45,7 +45,7 @@ def test_attention_no_mask_no_cache(
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     # We create a zero mask to ensure that the attention is not affected by the mask
     torch_zero_mask = torch.zeros((1, 1, sequence_length, sequence_length))
-    positional_embeddings = fartsovka_llama.rope(position_ids)
+    positional_embeddings = fartsovka_llama.global_rope(position_ids)
 
     # Run forward passes
     hf_output = from_torch(
@@ -80,7 +80,7 @@ def test_qwen2_attention(
     cos, sin = huggingface_qwen25.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     # We create a zero mask to ensure that the attention is not affected by the mask
     torch_zero_mask = torch.zeros((1, 1, sequence_length, sequence_length))
-    positional_embeddings = fartsovka_qwen25.rope(position_ids)
+    positional_embeddings = fartsovka_qwen25.global_rope(position_ids)
 
     # Run forward passes
     hf_output = from_torch(
@@ -115,7 +115,7 @@ def test_gemma2_attention(
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_gemma2.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
-    positional_embeddings = fartsovka_gemma2.rope(position_ids)
+    positional_embeddings = fartsovka_gemma2.global_rope(position_ids)
     # Create causal mask
     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
     torch_mask = torch_mask.unsqueeze(0).unsqueeze(0)
@@ -155,7 +155,7 @@ def test_attention_with_mask(
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
-    positional_embeddings = fartsovka_llama.rope(position_ids)
+    positional_embeddings = fartsovka_llama.global_rope(position_ids)
 
     # Create causal mask
     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
@@ -211,7 +211,7 @@ def test_attention_with_mask_and_kv_cache(
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
-    positional_embeddings = fartsovka_llama.rope(position_ids)
+    positional_embeddings = fartsovka_llama.global_rope(position_ids)
 
     # Create causal mask
     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
@@ -262,7 +262,7 @@ def test_qlora_attention(
 
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
-    positional_embeddings = fartsovka_qlora_llama.rope(position_ids)
+    positional_embeddings = fartsovka_qlora_llama.global_rope(position_ids)
 
     et_freqs_cos, et_freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
     freqs_cos = to_torch(positional_embeddings.cosines[:, : fs_layer.head_dim // 2])

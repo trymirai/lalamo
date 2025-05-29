@@ -9,6 +9,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
+from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
 
 from .common import FartsovkaModule, WeightLayout
 from .kv_cache import KVCacheLayerSlice
@@ -92,6 +93,9 @@ class AttentionConfig:
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
+    query_norm_config: RMSNormConfig | None
+    key_norm_config: RMSNormConfig | None
+
     logit_soft_cap: float | None
     has_qkv_biases: bool
     has_out_biases: bool
@@ -124,10 +128,27 @@ class AttentionConfig:
             has_biases=self.has_out_biases,
             key=out_key,
         )
+
+        if self.query_norm_config is not None:
+            query_norm = self.query_norm_config.init(
+                channels=head_dim,
+            )
+        else:
+            query_norm = None
+
+        if self.key_norm_config is not None:
+            key_norm = self.key_norm_config.init(
+                channels=head_dim,
+            )
+        else:
+            key_norm = None
+
         return Attention(
             self,
             qkv_projection=qkv_projection,
             out_projection=out_projection,
+            query_norm=query_norm,
+            key_norm=key_norm,
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
@@ -139,6 +160,9 @@ class AttentionConfig:
 class Attention(FartsovkaModule[AttentionConfig]):
     qkv_projection: LinearBase
     out_projection: LinearBase
+
+    query_norm: RMSNorm | None
+    key_norm: RMSNorm | None
 
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
@@ -169,6 +193,16 @@ class Attention(FartsovkaModule[AttentionConfig]):
             raise ValueError(
                 f"Output projection has_biases {self.out_projection.has_biases} does not match"
                 f" the specified config has_out_biases {self.config.has_out_biases}",
+            )
+        if self.query_norm is not None and self.query_norm.input_dim != self.head_dim:
+            raise ValueError(
+                f"Query normalization input dimension must match head_dim ({self.head_dim}),"
+                f" got {self.query_norm.input_dim}",
+            )
+        if self.key_norm is not None and self.key_norm.input_dim != self.head_dim:
+            raise ValueError(
+                f"Key normalization input dimension must match head_dim ({self.head_dim}),"
+                f" got {self.key_norm.input_dim}",
             )
         if self.num_heads % self.num_groups != 0:
             raise ValueError(
@@ -204,7 +238,8 @@ class Attention(FartsovkaModule[AttentionConfig]):
     def __call__(
         self,
         x: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
+        global_positional_embeddings: PositionalEmbeddings,
+        local_positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
@@ -228,6 +263,16 @@ class Attention(FartsovkaModule[AttentionConfig]):
             groups=self.num_groups,
             head_channels=self.head_dim,
         )
+
+        if self.query_norm is not None:
+            queries = vmap(self.query_norm, in_axes=(0, 1), out_axes=(0, 1))(queries)
+        if self.key_norm is not None:
+            keys = vmap(self.key_norm, in_axes=(0, 1), out_axes=(0, 1))(keys)
+
+        if self.sliding_window_size is not None:
+            positional_embeddings = local_positional_embeddings
+        else:
+            positional_embeddings = global_positional_embeddings
 
         apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
         queries = apply_positional_embeddings(queries)
@@ -277,7 +322,12 @@ class Attention(FartsovkaModule[AttentionConfig]):
         )
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
-        return ParameterDict(
-            qkv_proj=self.qkv_projection.export_weights(weight_layout),
-            out_proj=self.out_projection.export_weights(weight_layout),
+        result = ParameterDict(
+            qkv_projection=self.qkv_projection.export_weights(weight_layout),
+            out_projection=self.out_projection.export_weights(weight_layout),
         )
+        if self.query_norm is not None:
+            result["query_norm"] = self.query_norm.export_weights(weight_layout)
+        if self.key_norm is not None:
+            result["key_norm"] = self.key_norm.export_weights(weight_layout)
+        return result

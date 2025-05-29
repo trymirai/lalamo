@@ -25,8 +25,8 @@ from .linear import (
     QLoRALinearConfig,
 )
 from .mlp import MLP, MLPConfig
-from .normalization import RMSNorm, RMSNormConfig
-from .rope import LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
+from .normalization import RMSNorm, RMSNormConfig, UpcastMode
+from .rope import LinearScalingRoPEConfig, LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 
 __all__ = [
     "MLP",
@@ -46,6 +46,7 @@ __all__ = [
     "KVCacheLayerSlice",
     "LinearBase",
     "LinearConfig",
+    "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
     "MLPConfig",
     "QLoRALinear",
@@ -61,6 +62,7 @@ __all__ = [
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
+    "UpcastMode",
     "WeightLayout",
     "YARNRoPEConfig",
     "config_converter",

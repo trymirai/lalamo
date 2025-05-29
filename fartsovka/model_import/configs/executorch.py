@@ -145,7 +145,7 @@ class ETLlamaConfig(ExecutorchConfig):
         )
         return DecoderConfig(
             embedding_config=embedding_config,
-            rope_config=rope_config,
+            global_rope_config=rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
             vocab_size=self.vocab_size,

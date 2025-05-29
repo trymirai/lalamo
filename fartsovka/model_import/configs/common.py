@@ -8,10 +8,7 @@ import jax
 from jaxtyping import Array
 
 from fartsovka.common import DType
-from fartsovka.modules import (
-    Decoder,
-    DecoderConfig,
-)
+from fartsovka.modules import Decoder, DecoderConfig
 
 __all__ = ["ForeignConfig"]
 

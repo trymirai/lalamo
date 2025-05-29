@@ -42,7 +42,7 @@ def test_decoder_layer(
     position_ids = jnp.arange(sequence_length)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)
-    positional_embeddings = fartsovka_llama.rope(position_ids)
+    positional_embeddings = fartsovka_llama.global_rope(position_ids)
 
     # Create causal mask
     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
@@ -127,7 +127,7 @@ def test_qlora_decoder_layer(
     # Get positional embeddings
     position_ids = jnp.arange(sequence_length)
     freqs_cos, freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
-    positional_embeddings = fartsovka_qlora_llama.rope(position_ids)
+    positional_embeddings = fartsovka_qlora_llama.global_rope(position_ids)
 
     # Create causal mask
     jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))

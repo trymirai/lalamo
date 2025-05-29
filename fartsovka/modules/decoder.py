@@ -29,7 +29,8 @@ class DecoderOutput(NamedTuple):
 @dataclass
 class DecoderConfig:
     embedding_config: EmbeddingConfig
-    rope_config: RoPEConfig
+    global_rope_config: RoPEConfig
+    local_rope_config: RoPEConfig | None
     layer_config: DecoderLayerConfig
     output_norm_config: RMSNormConfig
 
@@ -45,6 +46,8 @@ class DecoderConfig:
     context_length: int
 
     def __post_init__(self) -> None:
+        if self.local_rope_config is not None and self.sliding_window_sizes is None:
+            raise ValueError("Sliding window sizes must be provided when using local RoPE")
         if self.sliding_window_sizes is None:
             return
         if len(self.sliding_window_sizes) != self.num_layers:
@@ -64,10 +67,22 @@ class DecoderConfig:
             model_dim=self.model_dim,
             key=embedding_key,
         )
-        rope = self.rope_config.init(
+        global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
             num_timesteps=self.context_length,
         )
+
+        if self.local_rope_config:
+            assert self.sliding_window_sizes is not None
+            max_sliding_window_size = max(
+                window_size for window_size in self.sliding_window_sizes if window_size is not None
+            )
+            local_rope = self.local_rope_config.init(
+                head_dim=self.head_dim,
+                num_timesteps=max(max_sliding_window_size, self.context_length),
+            )
+        else:
+            local_rope = None
 
         if self.sliding_window_sizes is None:
             sliding_window_sizes = [None] * self.num_layers
@@ -91,7 +106,8 @@ class DecoderConfig:
         return Decoder(
             self,
             embedding=embedding,
-            rope=rope,
+            global_rope=global_rope,
+            local_rope=local_rope,
             layers=layers,
             output_norm=output_norm,
         )
@@ -99,7 +115,8 @@ class DecoderConfig:
 
 class Decoder(FartsovkaModule[DecoderConfig]):
     embedding: EmbeddingBase
-    rope: RoPE
+    global_rope: RoPE
+    local_rope: RoPE | None
     layers: tuple[DecoderLayer, ...]
     output_norm: RMSNorm
 
@@ -113,12 +130,17 @@ class Decoder(FartsovkaModule[DecoderConfig]):
     ) -> DecoderOutput:
         maybe_kv_cache = kv_cache or ([None] * len(self.layers))
         x = self.embedding.embed(token_ids)
-        positional_embeddings = self.rope(token_positions)
+        global_positional_embeddings = self.global_rope(token_positions)
+        if self.local_rope is not None:
+            local_positional_embeddings = self.local_rope(token_positions)
+        else:
+            local_positional_embeddings = global_positional_embeddings
         updated_kv_cache = []
         for layer, kv_cache_slice in zip(self.layers, maybe_kv_cache, strict=True):
             decoder_layer_output = layer(
                 x,
-                positional_embeddings,
+                global_positional_embeddings,
+                local_positional_embeddings,
                 kv_cache_slice,
                 mask,
                 return_updated_kv_cache,
@@ -130,9 +152,12 @@ class Decoder(FartsovkaModule[DecoderConfig]):
         return DecoderOutput(output=result, kv_cache=updated_kv_cache or None)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
-        return ParameterDict(
+        result = ParameterDict(
             embedding=self.embedding.export_weights(weight_layout),
-            rope=self.rope.export_weights(weight_layout),
+            global_rope=self.global_rope.export_weights(weight_layout),
             layers=[layer.export_weights(weight_layout) for layer in self.layers],
             output_norm=self.output_norm.export_weights(weight_layout),
         )
+        if self.local_rope:
+            result["local_rope"] = self.local_rope.export_weights(weight_layout)
+        return result

@@ -19,10 +19,13 @@ class QuantizationMode(Enum):
     @property
     def dtype(self) -> DType:
         value_to_dtype = {
-            QuantizationMode.INT4: jnp.int8,
+            QuantizationMode.INT4: jnp.int4,
             QuantizationMode.INT8: jnp.int8,
         }
         return value_to_dtype[self]
+
+    def __str__(self) -> str:
+        return self.value
 
 
 MODE_TO_RANGE = {

@@ -1,8 +1,9 @@
 from dataclasses import dataclass
+from enum import Enum
 
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Scalar
+from jaxtyping import Array, Float
 
 from fartsovka.common import DType, ParameterDict
 
@@ -11,18 +12,13 @@ from .common import FartsovkaModule, WeightLayout
 __all__ = [
     "RMSNorm",
     "RMSNormConfig",
+    "UpcastMode",
 ]
 
 
-def _inverse_rms(
-    x: Float[Array, " channels"],
-    eps: float,
-    accumulation_precision: DType,
-    result_precision: DType,
-) -> Float[Scalar, ""]:
-    upcasted_x = x.astype(accumulation_precision)
-    result = jnp.mean(jnp.square(upcasted_x)) + eps
-    return result.astype(result_precision)
+class UpcastMode(Enum):
+    ONLY_NORMALIZATION = "only_normalization"
+    FULL_LAYER = "full_layer"
 
 
 @dataclass
@@ -30,6 +26,8 @@ class RMSNormConfig:
     scale_precision: DType
     accumulation_precision: DType
     epsilon: float
+    scale_offset: float | None
+    upcast_mode: UpcastMode
 
     def init(self, channels: int) -> "RMSNorm":
         scales = jnp.ones(channels, dtype=self.scale_precision)
@@ -52,13 +50,23 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
             )
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        adjusted_variance = _inverse_rms(
-            x,
-            self.config.epsilon,
-            self.config.accumulation_precision,
-            self.scales.dtype,
-        )
-        result = x * jax.lax.rsqrt(adjusted_variance) * self.scales
+        x = x.astype(self.config.accumulation_precision)
+
+        adjusted_variance = jnp.mean(jnp.square(x)) + self.config.epsilon
+        normalized_x = x * jax.lax.rsqrt(adjusted_variance)
+
+        if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
+            normalized_x = normalized_x.astype(x.dtype)
+
+        if self.config.upcast_mode == UpcastMode.FULL_LAYER:
+            adjusted_scales = self.scales.astype(self.config.accumulation_precision)
+        else:
+            adjusted_scales = self.scales
+
+        if self.config.scale_offset is not None:
+            adjusted_scales = adjusted_scales + self.config.scale_offset
+
+        result = normalized_x * adjusted_scales
         return result.astype(x.dtype)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002

@@ -59,11 +59,8 @@ def load_rmsnorm(
     module: RMSNorm,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-    add_one: bool,
 ) -> RMSNorm:
     scales = weights_dict[path / "weight"]
-    if add_one:
-        scales = scales + 1.0
     return load_parameters(lambda m: (m.scales,), module, (scales,))
 
 
@@ -104,13 +101,11 @@ def load_decoder_layer(
     module: DecoderLayer,
     weights_dict: dict[str, Array],
     path: ParameterPath,
-    add_one_to_rms_norm_weights: bool,
 ) -> DecoderLayer:
     pre_attention_norm = load_rmsnorm(
         module.pre_attention_norm,
         weights_dict,
         path / "input_layernorm",
-        add_one_to_rms_norm_weights,
     )
     attention = load_attention(module.attention, weights_dict, path / "self_attn")
     if module.post_attention_norm is not None:
@@ -118,14 +113,12 @@ def load_decoder_layer(
             module.post_attention_norm,
             weights_dict,
             path / "post_attention_layernorm",
-            add_one_to_rms_norm_weights,
         )
 
         pre_mlp_norm = load_rmsnorm(
             module.pre_mlp_norm,
             weights_dict,
             path / "pre_feedforward_layernorm",
-            add_one_to_rms_norm_weights,
         )
     else:
         post_attention_norm = None
@@ -134,7 +127,6 @@ def load_decoder_layer(
             module.pre_mlp_norm,
             weights_dict,
             path / "post_attention_layernorm",
-            add_one_to_rms_norm_weights,
         )
 
     mlp = load_mlp(module.mlp, weights_dict, path / "mlp")
@@ -143,7 +135,6 @@ def load_decoder_layer(
             module.post_mlp_norm,
             weights_dict,
             path / "post_feedforward_layernorm",
-            add_one_to_rms_norm_weights,
         )
     else:
         post_mlp_norm = None
@@ -171,7 +162,6 @@ def load_untied_embedding(
 def load_huggingface(
     module: Decoder,
     weights_dict: dict[str, Array],
-    add_one_to_rms_norm_weights: bool,
 ) -> Decoder:
     root_path: ParameterPath = ParameterPath("model")
     if isinstance(module.embedding, TiedEmbedding):
@@ -181,10 +171,9 @@ def load_huggingface(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, root_path / "layers" / i, add_one_to_rms_norm_weights)
-        for i, layer in enumerate(module.layers)
+        load_decoder_layer(layer, weights_dict, root_path / "layers" / i) for i, layer in enumerate(module.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm", add_one_to_rms_norm_weights)
+    output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm")
     return load_parameters(
         lambda m: (m.embedding, m.layers, m.output_norm),
         module,

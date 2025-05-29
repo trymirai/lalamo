@@ -125,7 +125,7 @@ def test_rope(
     fartsovka_llama: Decoder,
 ) -> None:
     hf_layer = huggingface_llama.model.rotary_emb  # type: ignore
-    fs_layer = fartsovka_llama.rope
+    fs_layer = fartsovka_llama.global_rope
     fs_layer_forward = checkify_forward(fs_layer)
 
     sample_input = jnp.arange(0, 8192, 17)
@@ -153,11 +153,11 @@ def test_executorch_apply_rotary_emb(
     fartsovka_llama: Decoder,
     rng_key: PRNGKeyArray,
 ) -> None:
-    head_dim = fartsovka_llama.rope.head_dim
+    head_dim = fartsovka_llama.global_rope.head_dim
     sequence_length = 10
     indices = jnp.arange(sequence_length)
 
-    positional_embeddings = fartsovka_llama.rope(indices)
+    positional_embeddings = fartsovka_llama.global_rope(indices)
     cosines, sines = (
         positional_embeddings.cosines[:, : head_dim // 2],
         positional_embeddings.sines[:, : head_dim // 2],

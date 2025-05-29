@@ -27,6 +27,7 @@ from fartsovka.common import DType, ParameterDict
 from .common import FartsovkaModule, WeightLayout, register_config_union
 
 __all__ = [
+    "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
     "PositionalEmbeddings",
     "RoPE",
@@ -226,6 +227,19 @@ class YARNRoPEConfig(RoPEConfigBase):
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 
-RoPEConfig = UnscaledRoPEConfig | LlamaRoPEConfig | YARNRoPEConfig
+@dataclass
+class LinearScalingRoPEConfig(RoPEConfigBase):
+    scaling_factor: float
+
+    def _scale_inverse_frequencies(
+        self,
+        inverse_frequencies: Float[Array, " tokens"],
+        head_dim: int,  # noqa: ARG002
+        max_sequence_length: int,  # noqa: ARG002
+    ) -> Float[Array, " tokens"]:
+        return inverse_frequencies / self.scaling_factor
+
+
+RoPEConfig = UnscaledRoPEConfig | LlamaRoPEConfig | YARNRoPEConfig | LinearScalingRoPEConfig
 
 register_config_union(RoPEConfig)
