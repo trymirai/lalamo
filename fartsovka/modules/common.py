@@ -75,7 +75,7 @@ def register_config_union(union_type: UnionType) -> None:
     name_to_type = {m.__name__: m for m in union_members}
 
     def unstructure(obj: object) -> dict | None:
-        if object is None:
+        if obj is None:
             return None
         return {
             "type": obj.__class__.__name__,
