@@ -35,7 +35,7 @@ class GemmaRoPEScalingConfig:
 
 
 @dataclass
-class HFGemma3TextConfig(HuggingFaceConfig):
+class HFGemma3TextConfigRaw:
     hidden_size: int
     intermediate_size: int
     model_type: Literal["gemma3_text"]
@@ -144,6 +144,11 @@ class HFGemma3TextConfig(HuggingFaceConfig):
 
 
 @dataclass
+class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
+    pass
+
+
+@dataclass
 class HFGemma3VisionConfig:
     hidden_size: int
     image_size: int
@@ -165,7 +170,7 @@ class HFGemma3Config(HuggingFaceConfig):
     initializer_range: float
     mm_tokens_per_image: int
     model_type: Literal["gemma3"]
-    text_config: HFGemma3TextConfig
+    text_config: HFGemma3TextConfigRaw
     transformers_version: str
     vision_config: HFGemma3VisionConfig
 
