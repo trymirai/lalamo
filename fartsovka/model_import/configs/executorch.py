@@ -17,6 +17,7 @@ from fartsovka.modules import (
     QuantizedTiedEmbeddingConfig,
     RMSNormConfig,
 )
+from fartsovka.modules.normalization import UpcastMode
 from fartsovka.quantization import QuantizationMode
 
 from .common import ForeignConfig
@@ -115,6 +116,8 @@ class ETLlamaConfig(ExecutorchConfig):
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         )
         linear_config = QLoRALinearConfig(
             group_size=self.quantization_args.group_size,
@@ -127,6 +130,8 @@ class ETLlamaConfig(ExecutorchConfig):
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
+            query_norm_config=None,
+            key_norm_config=None,
             logit_soft_cap=None,
             has_qkv_biases=False,
             has_out_biases=False,
@@ -146,6 +151,7 @@ class ETLlamaConfig(ExecutorchConfig):
         return DecoderConfig(
             embedding_config=embedding_config,
             global_rope_config=rope_config,
+            local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
             vocab_size=self.vocab_size,

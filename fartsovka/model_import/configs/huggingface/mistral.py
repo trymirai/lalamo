@@ -76,7 +76,7 @@ class HFMistralConfig(HuggingFaceConfig):
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
-            scale_offset=0.0,
+            scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         )
 

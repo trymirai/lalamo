@@ -4,6 +4,7 @@ from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, WeightsType, hugging
 
 __all__ = ["QWEN_MODELS"]
 
+
 QWEN25 = [
     ModelSpec(
         vendor="Alibaba",
@@ -86,4 +87,86 @@ QWEN25 = [
 ]
 
 
-QWEN_MODELS = QWEN25
+QWEN23_CODER = [
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-0.5B-Instruct",
+        size="0.5B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-Coder-0.5B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=huggingface_weight_files(1),
+        weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-1.5B-Instruct",
+        size="1.5B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=huggingface_weight_files(1),
+        weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-3B-Instruct",
+        size="3B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-Coder-3B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=huggingface_weight_files(2),
+        weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-7B-Instruct",
+        size="7B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-Coder-7B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=huggingface_weight_files(4),
+        weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-14B-Instruct",
+        size="14B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-Coder-14B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=huggingface_weight_files(6),
+        weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen2.5-Coder",
+        name="Qwen2.5-Coder-32B-Instruct",
+        size="32B",
+        quantization=None,
+        repo="Qwen/Qwen2.5-Coder-32B-Instruct",
+        config_type=HFQwen2Config,
+        config_file_name="config.json",
+        weights_file_names=huggingface_weight_files(14),
+        weights_type=WeightsType.SAFETENSORS,
+        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+    ),
+]
+
+
+QWEN_MODELS = QWEN25 + QWEN23_CODER
