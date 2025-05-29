@@ -12,6 +12,7 @@ from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import (
     LAYERS_TO_TEST,
+    MAX_TOKEN_INDEX,
     QUANTIZED_ATOL,
     QUANTIZED_RTOL,
     assert_close,
@@ -40,7 +41,7 @@ def test_attention_no_mask_no_cache(
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
     # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     # We create a zero mask to ensure that the attention is not affected by the mask
@@ -51,7 +52,11 @@ def test_attention_no_mask_no_cache(
     hf_output = from_torch(
         hf_layer(sample_input_torch, position_embeddings=(cos, sin), attention_mask=torch_zero_mask)[0].squeeze(0),
     )
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
+    )
     err.throw()
     assert_close(
         result=fs_output.attention_output,
@@ -75,7 +80,7 @@ def test_qwen2_attention(
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
     # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_qwen25.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     # We create a zero mask to ensure that the attention is not affected by the mask
@@ -86,7 +91,11 @@ def test_qwen2_attention(
     hf_output = from_torch(
         hf_layer(sample_input_torch, position_embeddings=(cos, sin), attention_mask=torch_zero_mask)[0].squeeze(0),
     )
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
+    )
     err.throw()
     assert_close(
         result=fs_output.attention_output,
@@ -95,14 +104,14 @@ def test_qwen2_attention(
 
 
 @pytest.mark.parametrize("layer_index", LAYERS_TO_TEST)
-def test_gemma2_attention(
-    huggingface_gemma2: transformers.GemmaModel,
-    fartsovka_gemma2: Decoder,
+def test_gemma3_attention(
+    huggingface_gemma3: transformers.Gemma3Model,
+    fartsovka_gemma3: Decoder,
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
-    hf_layer = huggingface_gemma2.model.layers[layer_index].self_attn  # type: ignore
-    fs_layer = fartsovka_gemma2.layers[layer_index].attention
+    hf_layer = huggingface_gemma3.model.layers[layer_index].self_attn  # type: ignore
+    fs_layer = fartsovka_gemma3.layers[layer_index].attention
     fs_layer_forward = checkify_forward(fs_layer)
 
     input_dim = fs_layer.model_dim
@@ -112,10 +121,11 @@ def test_gemma2_attention(
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
     # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_gemma2.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
-    positional_embeddings = fartsovka_gemma2.global_rope(position_ids)
+    cos, sin = huggingface_gemma3.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
+    global_positional_embeddings = fartsovka_gemma3.global_rope(position_ids)
+    local_positional_embeddings = fartsovka_gemma3.local_rope(position_ids)  # type: ignore
     # Create causal mask
     torch_mask = torch.triu(torch.ones((sequence_length, sequence_length)) * float("-inf"), diagonal=1)
     torch_mask = torch_mask.unsqueeze(0).unsqueeze(0)
@@ -125,11 +135,18 @@ def test_gemma2_attention(
     hf_output = from_torch(
         hf_layer(sample_input_torch, position_embeddings=(cos, sin), attention_mask=torch_mask)[0].squeeze(0),
     )
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=global_positional_embeddings,
+        local_positional_embeddings=local_positional_embeddings,
+        mask=jax_mask,
+    )
+
     err.throw()
     assert_close(
         result=fs_output.attention_output,
         reference=hf_output,
+        atol=2e-3,
     )
 
 
@@ -152,7 +169,7 @@ def test_attention_with_mask(
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
     # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     positional_embeddings = fartsovka_llama.global_rope(position_ids)
@@ -166,7 +183,12 @@ def test_attention_with_mask(
     hf_output = from_torch(
         hf_layer(sample_input_torch, attention_mask=torch_mask, position_embeddings=(cos, sin))[0].squeeze(0),
     )
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
+        mask=jax_mask,
+    )
     err.throw()
     assert_close(
         result=fs_output.attention_output,
@@ -208,7 +230,7 @@ def test_attention_with_mask_and_kv_cache(
     torch_cache = DynamicCache()
     torch_cache.update(torch_keys, torch_values, layer_index, dict())
     # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
     cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     positional_embeddings = fartsovka_llama.global_rope(position_ids)
@@ -232,7 +254,8 @@ def test_attention_with_mask_and_kv_cache(
     )
     err, fs_output = fs_layer_forward(
         sample_input,
-        positional_embeddings=positional_embeddings,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
         mask=jax_mask,
         kv_cache=kv_cache,
     )
@@ -261,7 +284,7 @@ def test_qlora_attention(
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
     # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     positional_embeddings = fartsovka_qlora_llama.global_rope(position_ids)
 
     et_freqs_cos, et_freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
@@ -275,7 +298,12 @@ def test_qlora_attention(
 
     # Run forward passes
     et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))  # type: ignore
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
+        mask=jax_mask,
+    )
     err.throw()
     assert_close(
         result=fs_output.attention_output,

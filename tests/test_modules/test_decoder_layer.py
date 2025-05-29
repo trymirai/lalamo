@@ -11,6 +11,7 @@ from tests.executorch_llama.transformer import Transformer as ETTransformer
 
 from .common import (
     LAYERS_TO_TEST,
+    MAX_TOKEN_INDEX,
     QUANTIZED_ATOL,
     QUANTIZED_RTOL,
     assert_close,
@@ -27,7 +28,7 @@ def test_decoder_layer(
     rng_key: PRNGKeyArray,
     layer_index: int,
 ) -> None:
-    hf_layer = huggingface_llama.model.layers[layer_index]
+    hf_layer = huggingface_llama.model.layers[layer_index]  # type: ignore
     assert isinstance(hf_layer, LlamaDecoderLayer)
     fs_layer = fartsovka_llama.layers[layer_index]
     fs_layer_forward = checkify_forward(fs_layer)
@@ -38,10 +39,10 @@ def test_decoder_layer(
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
-    # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    rng_key = jax.random.PRNGKey(0)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
-    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)
+    cos, sin = huggingface_llama.model.rotary_emb(sample_input_torch, position_ids_torch)  # type: ignore
     positional_embeddings = fartsovka_llama.global_rope(position_ids)
 
     # Create causal mask
@@ -53,7 +54,12 @@ def test_decoder_layer(
     hf_output = from_torch(
         hf_layer(sample_input_torch, attention_mask=torch_mask, position_embeddings=(cos, sin))[0].squeeze(0),
     )
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
+        mask=jax_mask,
+    )
     err.throw()
     assert_close(
         result=fs_output.output,
@@ -124,8 +130,8 @@ def test_qlora_decoder_layer(
     sample_input = jax.random.normal(rng_key, (sequence_length, input_dim))
     sample_input_torch = to_torch(sample_input).unsqueeze(0)
 
-    # Get positional embeddings
-    position_ids = jnp.arange(sequence_length)
+    rng_key = jax.random.PRNGKey(0)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     freqs_cos, freqs_sin = executorch_llama.rope.get_freqs(None, sequence_length)
     positional_embeddings = fartsovka_qlora_llama.global_rope(position_ids)
 
@@ -134,7 +140,12 @@ def test_qlora_decoder_layer(
 
     # Run forward passes
     et_output = from_torch(et_layer(sample_input_torch, freqs_cos, freqs_sin).squeeze(0))
-    err, fs_output = fs_layer_forward(sample_input, positional_embeddings=positional_embeddings, mask=jax_mask)
+    err, fs_output = fs_layer_forward(
+        sample_input,
+        global_positional_embeddings=positional_embeddings,
+        local_positional_embeddings=positional_embeddings,
+        mask=jax_mask,
+    )
     err.throw()
     assert_close(
         result=fs_output.output,

@@ -1,6 +1,7 @@
 from copy import deepcopy
 
 import equinox as eqx
+import jax
 import pytest
 import torch
 import transformers
@@ -9,7 +10,7 @@ from jax import numpy as jnp
 from fartsovka.modules import Decoder
 from tests.executorch_llama.transformer import Transformer as ETTransformer
 
-from .common import QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
+from .common import MAX_TOKEN_INDEX, QUANTIZED_RTOL, assert_close, checkify_forward, from_torch, to_torch
 
 DECODER_ATOL = 3e-3
 DECODER_RTOL = 0.05
@@ -130,25 +131,26 @@ def test_qwen2(
     )
 
 
-def test_gemma2(
-    huggingface_gemma2: transformers.Gemma2Model,
-    fartsovka_gemma2: Decoder,
+def test_gemma3(
+    huggingface_gemma3: transformers.Gemma2Model,
+    fartsovka_gemma3: Decoder,
 ) -> None:
-    fs_decoder = fartsovka_gemma2
+    fs_decoder = fartsovka_gemma3
     fs_decoder_forward = checkify_forward(fs_decoder)
 
     sequence_length = len(TOKENS)
     token_ids = jnp.array(TOKENS)
     token_ids_torch = to_torch(token_ids).unsqueeze(0)
 
+    rng_key = jax.random.PRNGKey(0)
     # Create position IDs
-    position_ids = jnp.arange(sequence_length)
+    position_ids = jax.random.randint(rng_key, (sequence_length,), minval=0, maxval=MAX_TOKEN_INDEX)
     position_ids_torch = to_torch(position_ids).unsqueeze(0)
 
     # Create causal mask
     jax_mask = jnp.tril(jnp.ones((sequence_length, sequence_length), dtype=bool))
 
-    torch_pre_softmax = huggingface_gemma2(
+    torch_pre_softmax = huggingface_gemma3(
         token_ids_torch,
         position_ids=position_ids_torch,
     )[0]

@@ -23,6 +23,7 @@ from tests.executorch_llama.source_transformation.pre_quantization import (
 )
 from tests.executorch_llama.transformer import ModelArgs as ETModelArgs
 from tests.executorch_llama.transformer import Transformer as ETTransformer
+from tests.test_modules.common import MAX_TOKEN_INDEX
 
 RANDOM_SEED = 42
 
@@ -33,9 +34,9 @@ def rng_key() -> PRNGKeyArray:
 
 
 @pytest.fixture(scope="package")
-def huggingface_gemma2() -> transformers.Gemma2Model:
+def huggingface_gemma3() -> transformers.Gemma3Model:
     model = transformers.AutoModelForCausalLM.from_pretrained(
-        "google/gemma-2-2b-it",
+        "google/gemma-3-1b-it",
         torch_dtype=torch.float32,
     )
     model.eval()
@@ -43,9 +44,10 @@ def huggingface_gemma2() -> transformers.Gemma2Model:
 
 
 @pytest.fixture(scope="package")
-def fartsovka_gemma2() -> Decoder:
-    model = import_model(
-        REPO_TO_MODEL["google/gemma-2-2b-it"],
+def fartsovka_gemma3() -> Decoder:
+    model, *_ = import_model(
+        REPO_TO_MODEL["google/gemma-3-1b-it"],
+        context_length=MAX_TOKEN_INDEX,
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
@@ -64,8 +66,9 @@ def huggingface_llama() -> transformers.LlamaModel:
 
 @pytest.fixture(scope="package")
 def fartsovka_llama() -> Decoder:
-    model = import_model(
+    model, *_ = import_model(
         REPO_TO_MODEL["meta-llama/Llama-3.2-1B-Instruct"],
+        context_length=MAX_TOKEN_INDEX,
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
@@ -84,8 +87,9 @@ def huggingface_qwen25() -> transformers.Qwen2Model:
 
 @pytest.fixture(scope="package")
 def fartsovka_qwen25() -> Decoder:
-    model = import_model(
+    model, *_ = import_model(
         REPO_TO_MODEL["Qwen/Qwen2.5-1.5B-Instruct"],
+        context_length=MAX_TOKEN_INDEX,
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
@@ -94,8 +98,9 @@ def fartsovka_qwen25() -> Decoder:
 
 @pytest.fixture(scope="package")
 def fartsovka_qlora_llama() -> Decoder:
-    model = import_model(
+    model, *_ = import_model(
         REPO_TO_MODEL["meta-llama/Llama-3.2-1B-Instruct-QLORA_INT4_EO8"],
+        context_length=MAX_TOKEN_INDEX,
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
