@@ -265,9 +265,9 @@ class Attention(FartsovkaModule[AttentionConfig]):
         )
 
         if self.query_norm is not None:
-            queries = vmap(self.query_norm, in_axes=(0, 1), out_axes=(0, 1))(queries)
+            queries = vmap(vmap(self.query_norm))(queries)
         if self.key_norm is not None:
-            keys = vmap(self.key_norm, in_axes=(0, 1), out_axes=(0, 1))(keys)
+            keys = vmap(vmap(self.key_norm))(keys)
 
         if self.sliding_window_size is not None:
             positional_embeddings = local_positional_embeddings
