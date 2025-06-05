@@ -105,27 +105,27 @@ def export_test_data_activation(context: TestDataContext, module: Activation, sh
 
 
 def export_test_data_linear(context: TestDataContext, module: LinearBase) -> ParameterDict:
-    sample_input = context.apply_layout_to_array(jax.random.uniform(
+    sample_input = jax.random.uniform(
         context.get_rnd_key(),
         (context.sequence_length, module.input_dim),
         minval=-2,
         maxval=2,
         dtype=module.config.precision,
-    ))
-    sample_outputs = context.apply_layout_to_arrays(module(sample_input))
+    )
+    sample_outputs = context.apply_layout_to_arrays(module(context.apply_layout_to_array(sample_input)))
     sample = ModuleSample(inputs=(sample_input,), outputs=sample_outputs)
     return ParameterDict(value=sample.export())
 
 
 def export_test_data_mlp(context: TestDataContext, module: MLP) -> ParameterDict:
-    sample_input = context.apply_layout_to_array(jax.random.uniform(
+    sample_input = jax.random.uniform(
         context.get_rnd_key(),
         (context.sequence_length, module.model_dim),
         minval=-2,
         maxval=2,
         dtype=module.config.linear_config.precision,
-    ))
-    sample_output = context.apply_layout_to_array(module(sample_input))
+    )
+    sample_output = context.apply_layout_to_array(module(context.apply_layout_to_array(sample_input)))
     sample = ModuleSample(inputs=(sample_input,), outputs=(sample_output,))
     return ParameterDict(
         value=sample.export(),
@@ -201,14 +201,14 @@ def export_test_data_decoder(context: TestDataContext, module: Decoder) -> Param
         test_data_layer = export_test_data_decoder_layer(context, layer)
         test_data_layers.append(test_data_layer)
 
-    readout_sample_input = context.apply_layout_to_array(jax.random.uniform(
+    readout_sample_input = jax.random.uniform(
         context.get_rnd_key(),
         (context.sequence_length, module.config.model_dim),
         minval=-5,
         maxval=5,
         dtype=module.config.embedding_config.precision,
-    ))
-    readout_sample_output = context.apply_layout_to_array(module.embedding.readout(readout_sample_input))
+    )
+    readout_sample_output = context.apply_layout_to_array(module.embedding.readout(context.apply_layout_to_array(readout_sample_input)))
     readout_sample = ModuleSample(inputs=(readout_sample_input,), outputs=(readout_sample_output,))
 
     sample_input = context.token_ids
@@ -220,6 +220,7 @@ def export_test_data_decoder(context: TestDataContext, module: Decoder) -> Param
         embed=ParameterDict(value=embed_sample.export()),
         layers=test_data_layers,
         output_norm=export_test_data_normalization(context, module.output_norm),
+        readout=ParameterDict(value=readout_sample.export()),
     )
 
 

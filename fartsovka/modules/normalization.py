@@ -50,13 +50,14 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
             )
 
     def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
+        x_dtype = x.dtype
         x = x.astype(self.config.accumulation_precision)
 
         adjusted_variance = jnp.mean(jnp.square(x)) + self.config.epsilon
         normalized_x = x * jax.lax.rsqrt(adjusted_variance)
 
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
-            normalized_x = normalized_x.astype(x.dtype)
+            normalized_x = normalized_x.astype(x_dtype)
 
         if self.config.upcast_mode == UpcastMode.FULL_LAYER:
             adjusted_scales = self.scales.astype(self.config.accumulation_precision)
@@ -67,7 +68,7 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
             adjusted_scales = adjusted_scales + self.config.scale_offset
 
         result = normalized_x * adjusted_scales
-        return result.astype(x.dtype)
+        return result.astype(x_dtype)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(scales=self.scales)
