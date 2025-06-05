@@ -107,7 +107,7 @@ def export_test_data_activation(context: TestDataContext, module: Activation, sh
 def export_test_data_linear(context: TestDataContext, module: LinearBase) -> ParameterDict:
     sample_input = context.apply_layout_to_array(jax.random.uniform(
         context.get_rnd_key(),
-        (context.sequence_length, module.input_dim),
+        [module.input_dim],
         minval=-2,
         maxval=2,
         dtype=module.config.precision,
@@ -120,7 +120,7 @@ def export_test_data_linear(context: TestDataContext, module: LinearBase) -> Par
 def export_test_data_mlp(context: TestDataContext, module: MLP) -> ParameterDict:
     sample_input = context.apply_layout_to_array(jax.random.uniform(
         context.get_rnd_key(),
-        (context.sequence_length, module.model_dim),
+        [module.model_dim],
         minval=-2,
         maxval=2,
         dtype=module.config.linear_config.precision,
