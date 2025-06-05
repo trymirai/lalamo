@@ -107,7 +107,7 @@ def export_test_data_activation(context: TestDataContext, module: Activation, sh
 def export_test_data_linear(context: TestDataContext, module: LinearBase) -> ParameterDict:
     sample_input = context.apply_layout_to_array(jax.random.uniform(
         context.get_rnd_key(),
-        [module.input_dim],
+        (context.sequence_length, module.input_dim),
         minval=-2,
         maxval=2,
         dtype=module.config.precision,
@@ -120,7 +120,7 @@ def export_test_data_linear(context: TestDataContext, module: LinearBase) -> Par
 def export_test_data_mlp(context: TestDataContext, module: MLP) -> ParameterDict:
     sample_input = context.apply_layout_to_array(jax.random.uniform(
         context.get_rnd_key(),
-        [module.model_dim],
+        (context.sequence_length, module.model_dim),
         minval=-2,
         maxval=2,
         dtype=module.config.linear_config.precision,
@@ -200,6 +200,16 @@ def export_test_data_decoder(context: TestDataContext, module: Decoder) -> Param
     for layer in module.layers:
         test_data_layer = export_test_data_decoder_layer(context, layer)
         test_data_layers.append(test_data_layer)
+
+    readout_sample_input = context.apply_layout_to_array(jax.random.uniform(
+        context.get_rnd_key(),
+        (context.sequence_length, module.config.model_dim),
+        minval=-5,
+        maxval=5,
+        dtype=module.config.embedding_config.precision,
+    ))
+    readout_sample_output = context.apply_layout_to_array(module.embedding.readout(readout_sample_input))
+    readout_sample = ModuleSample(inputs=(readout_sample_input,), outputs=(readout_sample_output,))
 
     sample_input = context.token_ids
     sample_output = module(sample_input, context.token_positions, None, context.mask, False)
