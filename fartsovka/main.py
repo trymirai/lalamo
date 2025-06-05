@@ -21,6 +21,7 @@ from typer import Argument, Exit, Option, Typer
 from fartsovka.common import DType
 from fartsovka.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from fartsovka.modules import WeightLayout, config_converter
+from fartsovka.test_data.test_data import export_test_data
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -123,6 +124,13 @@ def convert(
             min=1,
         ),
     ] = 8192,
+    include_test_data: Annotated[
+        bool,
+        Option(
+            help="Export test data alongside the model.",
+            show_default="False",
+        )
+    ] = False,
 ) -> None:
     if precision is not None:
         precision_dtype = config_converter.structure(precision.value, DType)  # type: ignore
@@ -184,6 +192,10 @@ def convert(
 
         for path in tokenizer_file_paths:
             shutil.copy(path, output_dir / path.name)
+
+        if include_test_data:
+            test_data = dict(export_test_data(model, weight_layout))
+            save_file(test_data, output_dir / "test_data.safetensors")
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
