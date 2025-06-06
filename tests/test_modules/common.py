@@ -3,15 +3,12 @@ import torch
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, index_checks, nan_checks, user_checks
 
-__all__ = ["LAYERS_TO_TEST", "MAX_TOKEN_INDEX", "assert_close", "from_torch", "to_torch"]
+__all__ = ["MAX_TOKEN_INDEX", "assert_close", "from_torch", "to_torch"]
 
 ATOL = 1e-3
 RTOL = 0.01
 QUANTIZED_ATOL = 0.03
 QUANTIZED_RTOL = 0.1
-
-
-LAYERS_TO_TEST = list(range(10))
 
 
 MAX_TOKEN_INDEX = 64512
