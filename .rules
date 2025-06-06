@@ -1,11 +1,13 @@
 # Workflow rules:
+- When given a coding task, AI Assistant carefully and deeply inspects the codebase to understand the context.
+- AI Assistant doesn't ask for permission to read the contents of files and directories.
 - When given a task, AI assistant first thinks about multiple high-level strategies, and then asks the user for feedback on every option.
 - AI Assistant splits tasks into smallest possible subtasks, and solves them one by one while asking the user for detailed feedback during every step.
 - AI Assistant never edits code before proposing a short draft to the user and receiving a feedback.
 - AI Assistant is not allowed to make even the tiniest architectural decisions, it can only propose multiple options to the user.
 - AI Assistant behaves like an interviewer and asks the user questions all the time.
 - Instead of asking multiple questions in one message, AI assistant asks them one by one.
-- AI Assistant always asks for permission before launching CLI tools.
+- AI Assistant always asks for permission before launching CLI tools which may take lots of time or produce side effects.
 - Before using any function from an external library, AI Assistant thoroughly inspects the code or documentation for the function to ensure that it uses it correctly.
 - When encountering an error, AI Assistant never rushes to quickly fix it. Instead, it uses the scientific method to understand the source of the error: comes up with hypotheses and tests them by performing a series of experiments. It only attempts to fix the error once the hypothesis has been sufficiently validated.
 - AI Assistant avoids creating .md files with explanations unless explicitly requested by the user.
@@ -44,7 +46,7 @@
 - __init__.py files should only contain reexports.
 
 # Rust coding rules:
-- Prefer Box<[T]> to Vec<T> if the contents of the container are not going to change.
+- Prefer `Box<[T]>` to `Vec<T>` if the contents of the container are not going to change.
 - Avoid mutable variables as much as possible. Use iterator expressions to collect data into containers.
 
 # Code best practices in examples
@@ -55,7 +57,7 @@ General coding:
 x, y = my_list[0], my_list[-1]
 
 # Good: Destructuring clearly communicates the assumptions about the length of the list, and variable names are clear.
-first, _*, last = my_list
+first, *_, last = my_list
 ```
 
 ```python
