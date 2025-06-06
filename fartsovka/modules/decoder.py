@@ -7,7 +7,7 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from fartsovka.common import ParameterDict
 
-from .common import FartsovkaModule, WeightLayout
+from .common import AttentionType, FartsovkaModule, WeightLayout
 from .decoder_layer import DecoderLayer, DecoderLayerConfig
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
@@ -137,10 +137,14 @@ class Decoder(FartsovkaModule[DecoderConfig]):
             local_positional_embeddings = global_positional_embeddings
         updated_kv_cache = []
         for layer, kv_cache_slice in zip(self.layers, maybe_kv_cache, strict=True):
+            if layer.attention_type == AttentionType.SLIDING_WINDOW:
+                positional_embeddings_to_use = local_positional_embeddings
+            else:
+                positional_embeddings_to_use = global_positional_embeddings
+
             decoder_layer_output = layer(
                 x,
-                global_positional_embeddings,
-                local_positional_embeddings,
+                positional_embeddings_to_use,
                 kv_cache_slice,
                 mask,
                 return_updated_kv_cache,

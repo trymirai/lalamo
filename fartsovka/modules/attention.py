@@ -11,7 +11,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 from fartsovka.common import ParameterDict
 from fartsovka.modules.normalization import RMSNorm, RMSNormConfig
 
-from .common import FartsovkaModule, WeightLayout
+from .common import AttentionType, FartsovkaModule, WeightLayout
 from .kv_cache import KVCacheLayerSlice
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -183,6 +183,10 @@ class Attention(FartsovkaModule[AttentionConfig]):
     def use_sliding_window(self) -> bool:
         return self.sliding_window_size is not None
 
+    @property
+    def attention_type(self) -> AttentionType:
+        return AttentionType.SLIDING_WINDOW if self.sliding_window_size is not None else AttentionType.GLOBAL
+
     def __post_init__(self) -> None:
         if self.qkv_projection.has_biases != self.config.has_qkv_biases:
             raise ValueError(
@@ -238,8 +242,7 @@ class Attention(FartsovkaModule[AttentionConfig]):
     def __call__(
         self,
         x: Float[Array, "suffix_tokens channels"],
-        global_positional_embeddings: PositionalEmbeddings,
-        local_positional_embeddings: PositionalEmbeddings,
+        positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
@@ -268,11 +271,6 @@ class Attention(FartsovkaModule[AttentionConfig]):
             queries = vmap(vmap(self.query_norm))(queries)
         if self.key_norm is not None:
             keys = vmap(vmap(self.key_norm))(keys)
-
-        if self.sliding_window_size is not None:
-            positional_embeddings = local_positional_embeddings
-        else:
-            positional_embeddings = global_positional_embeddings
 
         apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
         queries = apply_positional_embeddings(queries)

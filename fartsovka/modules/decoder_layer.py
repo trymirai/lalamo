@@ -8,7 +8,7 @@ from jaxtyping import Array, Bool, Float, PRNGKeyArray
 from fartsovka.common import ParameterDict
 
 from .attention import Attention, AttentionConfig
-from .common import FartsovkaModule, WeightLayout
+from .common import AttentionType, FartsovkaModule, WeightLayout
 from .kv_cache import KVCacheLayerSlice
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
@@ -87,6 +87,10 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
     mlp: MLP
     post_mlp_norm: RMSNorm | None
 
+    @property
+    def attention_type(self) -> AttentionType:
+        return self.attention.attention_type
+
     def __post_init__(self) -> None:
         model_dim = self.pre_attention_norm.input_dim
         if self.attention.model_dim != model_dim:
@@ -118,8 +122,7 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
     def __call__(
         self,
         x: Float[Array, "suffix_tokens channels"],
-        global_positional_embeddings: PositionalEmbeddings,
-        local_positional_embeddings: PositionalEmbeddings,
+        positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
@@ -128,8 +131,7 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
         x = vmap(self.pre_attention_norm, in_axes=0)(x)
         x, kv_cache = self.attention(
             x,
-            global_positional_embeddings,
-            local_positional_embeddings,
+            positional_embeddings,
             kv_cache,
             mask,
             return_updated_kv_cache,

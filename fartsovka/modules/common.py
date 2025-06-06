@@ -9,6 +9,7 @@ from jax import numpy as jnp
 from fartsovka.common import DType, ParameterDict
 
 __all__ = [
+    "AttentionType",
     "DummyUnionMember",
     "FartsovkaModule",
     "config_converter",
@@ -27,6 +28,11 @@ class WeightLayout(Enum):
             case WeightLayout.OUTPUT_INPUT:
                 return "(output, input)"
         raise ValueError(f"Unknown weight layout: {self}")
+
+
+class AttentionType(Enum):
+    GLOBAL = "global"
+    SLIDING_WINDOW = "sliding_window"
 
 
 class FartsovkaModule[ConfigT](eqx.Module):
