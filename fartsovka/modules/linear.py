@@ -6,9 +6,9 @@ import equinox as eqx
 import jax
 from einops import rearrange
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
 from .common import FartsovkaModule, WeightLayout, register_config_union
@@ -42,7 +42,7 @@ class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
 
     def __call__(
         self,
-        x: Float[Array, " in_channels"],
+        inputs: Float[Array, " in_channels"],
     ) -> tuple[Float[Array, " out_channels"], ...]:
         raise NotImplementedError
 
@@ -72,7 +72,7 @@ class LinearBase[ConfigT: LinearConfigBase](FartsovkaModule[ConfigT]):
         return tuple(result)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LinearConfigBase:
     def random_init(
         self,
@@ -85,9 +85,9 @@ class LinearConfigBase:
         raise NotImplementedError
 
 
-@dataclass
+@dataclass(frozen=True)
 class FullPrecisionLinearConfig(LinearConfigBase):
-    precision: DType
+    precision: DTypeLike
 
     def random_init(
         self,
@@ -155,8 +155,8 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
                 f"Bias dtype ({self.biases.dtype}) is not equal to specified precision ({self.config.precision}).",
             )
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        result = self.weights @ x
+    def __call__(self, inputs: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        result = self.weights @ inputs
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
@@ -168,12 +168,12 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class GroupQuantizedLinearConfig(LinearConfigBase):
     group_size: int
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DType
+    activation_precision: DTypeLike
 
     def random_init(
         self,
@@ -293,13 +293,13 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         )
         return result
 
-    def _apply_weights(self, x: Float[Array, " in_channels"]) -> Float[Array, " total_out_channels"]:
+    def _apply_weights(self, inputs: Float[Array, " in_channels"]) -> Float[Array, " total_out_channels"]:
         if self.config.activation_quantization_mode is not None:
-            x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
-        return self._prepare_scaled_weights() @ x
+            inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
+        return self._prepare_scaled_weights() @ inputs
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        result = self._apply_weights(x)
+    def __call__(self, inputs: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        result = self._apply_weights(inputs)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
@@ -324,11 +324,11 @@ class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig])
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class QLoRALinearConfig(GroupQuantizedLinearConfig):
     lora_rank: int
     lora_scale: float
-    activation_precision: DType
+    activation_precision: DTypeLike
 
     def random_init(
         self,
@@ -428,11 +428,11 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                     f" equal to lora_rank ({self.config.lora_rank}).",
                 )
 
-    def __call__(self, x: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
-        joint_q_out = self._apply_weights(x)
+    def __call__(self, inputs: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+        joint_q_out = self._apply_weights(inputs)
         q_outs = jnp.split(joint_q_out, self._get_split_points(self.output_dims))
 
-        joint_lora_hidden = self.lora_down_weights @ x
+        joint_lora_hidden = self.lora_down_weights @ inputs
         lora_hiddens = jnp.split(joint_lora_hidden, self._get_split_points([self.config.lora_rank] * self.num_outputs))
         lora_outs = [
             lora_up_weight @ lora_hidden

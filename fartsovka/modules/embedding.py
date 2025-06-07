@@ -2,9 +2,9 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
 from .common import FartsovkaModule, WeightLayout, register_config_union
@@ -22,7 +22,7 @@ __all__ = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class EmbeddingConfigBase:
     input_scale: float | None
     logits_soft_cap: float | None
@@ -65,9 +65,9 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](FartsovkaModule[ConfigT]):
         return logits
 
 
-@dataclass
+@dataclass(frozen=True)
 class TiedEmbeddingConfig(EmbeddingConfigBase):
-    precision: DType
+    precision: DTypeLike
 
     def random_init(
         self,
@@ -109,9 +109,9 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         return ParameterDict(token_embeddings=self.weights)
 
 
-@dataclass
+@dataclass(frozen=True)
 class UntiedEmbeddingConfig(EmbeddingConfigBase):
-    precision: DType
+    precision: DTypeLike
 
     def random_init(
         self,
@@ -179,11 +179,11 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DType
+    activation_precision: DTypeLike
 
     def random_init(
         self,

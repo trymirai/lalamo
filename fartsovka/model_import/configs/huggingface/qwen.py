@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from fartsovka.common import DType
+from jaxtyping import DTypeLike
+
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
@@ -21,7 +22,7 @@ from .common import HuggingFaceConfig
 __all__ = ["HFQwen2Config"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFQwen2Config(HuggingFaceConfig):
     architectures: list[Literal["Qwen2ForCausalLM"]]
     attention_dropout: float
@@ -58,8 +59,8 @@ class HFQwen2Config(HuggingFaceConfig):
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(

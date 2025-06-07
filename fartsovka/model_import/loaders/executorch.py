@@ -13,7 +13,7 @@ from .common import load_parameters
 __all__ = ["load_executorch"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class QLoRALinearParams:
     weights: Int[Array, "out_channels in_channels"]
     scales: Float[Array, "out_channels groups"]

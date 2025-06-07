@@ -5,8 +5,9 @@ from types import UnionType
 import equinox as eqx
 from cattrs import Converter
 from jax import numpy as jnp
+from jaxtyping import DTypeLike
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 
 __all__ = [
     "AttentionType",
@@ -66,12 +67,12 @@ config_converter = Converter()
 
 
 config_converter.register_unstructure_hook_func(
-    lambda t: t in [jnp.dtype, DType],
+    lambda t: t in [jnp.dtype, DTypeLike],
     _dtype_to_str,
 )
 
 config_converter.register_structure_hook_func(
-    lambda t: t in [jnp.dtype, DType],
+    lambda t: t in [jnp.dtype, DTypeLike],
     lambda s, _: _str_to_dtype(s),
 )
 

@@ -1,21 +1,15 @@
 from collections.abc import Iterable, Mapping
-from typing import Any
 
 import jax.numpy as jnp
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 __all__ = [
     "DEFAULT_PRECISION",
-    "DType",
     "ParameterDict",
     "ParameterPath",
 ]
 
-
-type DType = jnp.dtype | Any  # This is a hack to make the typechecker happy with internals of JAX.
-
-
-DEFAULT_PRECISION: DType = jnp.bfloat16
+DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
 
 
 type NestedParameters = Mapping[str, Array | NestedParameters] | Iterable[Array | NestedParameters]

@@ -50,9 +50,6 @@ dev-dependencies = [
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
 # addopts = "--jaxtyping-packages=fartsovka,beartype.beartype"
-markers = [
-    "heavy_tests: marks tests as heavy, exercising all layers of a model",
-]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"

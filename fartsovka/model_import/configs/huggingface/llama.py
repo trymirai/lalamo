@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from fartsovka.common import DType
+from jaxtyping import DTypeLike
+
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
@@ -21,7 +22,7 @@ from .common import HuggingFaceConfig
 __all__ = ["HFLlamaConfig"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class LlamaRopeScalingConfig:
     factor: float
     high_freq_factor: float
@@ -30,7 +31,7 @@ class LlamaRopeScalingConfig:
     rope_type: Literal["llama3"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFLlamaConfig(HuggingFaceConfig):
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
@@ -60,8 +61,8 @@ class HFLlamaConfig(HuggingFaceConfig):
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         embedding_config = TiedEmbeddingConfig(
             input_scale=None,

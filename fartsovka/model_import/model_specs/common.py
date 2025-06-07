@@ -4,12 +4,12 @@ from pathlib import Path
 
 import jax.numpy as jnp
 import torch
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
-from fartsovka.common import DType
 from fartsovka.model_import.configs import ForeignConfig
 from fartsovka.quantization import QuantizationMode
+from fartsovka.utils import torch_to_jax
 
 __all__ = [
     "HUGGINGFACE_TOKENIZER_FILES",
@@ -18,36 +18,24 @@ __all__ = [
 ]
 
 
-@torch.no_grad()
-def _torch_to_jax_bfloat16(tensor: torch.Tensor) -> Array:
-    # Credit: https://github.com/jax-ml/ml_dtypes/issues/81#issuecomment-2399636232
-    if tensor.dtype != torch.bfloat16:
-        raise ValueError("Trying to convert non-bfloat16 tensor to bfloat16")
-    intermediate_tensor = tensor.view(torch.uint16)
-    return jnp.array(intermediate_tensor).view("bfloat16")
-
-
-def _convert_torch_array(array: torch.Tensor, float_dtype: DType) -> Array:
-    array = array.detach().cpu()
-    if array.dtype == torch.bfloat16:
-        jax_array = _torch_to_jax_bfloat16(array)
-    else:
-        jax_array = jnp.array(array.numpy())
-    return jax_array.astype(float_dtype)
+def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
+    if array.dtype == [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
+        return array.astype(cast_to)
+    return array
 
 
 class WeightsType(Enum):
     SAFETENSORS = "safetensors"
     TORCH = "torch"
 
-    def load(self, filename: Path | str, float_dtype: DType) -> dict[str, jnp.ndarray]:
+    def load(self, filename: Path | str, float_dtype: DTypeLike) -> dict[str, jnp.ndarray]:
         if self == WeightsType.SAFETENSORS:
             return {k: v.astype(float_dtype) for k, v in load_safetensors(filename).items()}
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-        return {k: _convert_torch_array(v, float_dtype) for k, v in torch_weights.items()}
+        return {k: torch_to_jax(v).astype(float_dtype) for k, v in torch_weights.items()}
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModelSpec:
     vendor: str
     family: str

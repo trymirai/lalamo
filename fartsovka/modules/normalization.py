@@ -3,9 +3,9 @@ from enum import Enum
 
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, Float
+from jaxtyping import Array, DTypeLike, Float
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 
 from .common import FartsovkaModule, WeightLayout
 
@@ -21,10 +21,10 @@ class UpcastMode(Enum):
     FULL_LAYER = "full_layer"
 
 
-@dataclass
+@dataclass(frozen=True)
 class RMSNormConfig:
-    scale_precision: DType
-    accumulation_precision: DType
+    scale_precision: DTypeLike
+    accumulation_precision: DTypeLike
     epsilon: float
     scale_offset: float | None
     upcast_mode: UpcastMode
@@ -49,14 +49,14 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
                 f" specified precision {self.config.scale_precision}",
             )
 
-    def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        x = x.astype(self.config.accumulation_precision)
+    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+        inputs = inputs.astype(self.config.accumulation_precision)
 
-        adjusted_variance = jnp.mean(jnp.square(x)) + self.config.epsilon
-        normalized_x = x * jax.lax.rsqrt(adjusted_variance)
+        adjusted_variance = jnp.mean(jnp.square(inputs)) + self.config.epsilon
+        normalized_x = inputs * jax.lax.rsqrt(adjusted_variance)
 
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
-            normalized_x = normalized_x.astype(x.dtype)
+            normalized_x = normalized_x.astype(inputs.dtype)
 
         if self.config.upcast_mode == UpcastMode.FULL_LAYER:
             adjusted_scales = self.scales.astype(self.config.accumulation_precision)
@@ -67,7 +67,7 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
             adjusted_scales = adjusted_scales + self.config.scale_offset
 
         result = normalized_x * adjusted_scales
-        return result.astype(x.dtype)
+        return result.astype(inputs.dtype)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(scales=self.scales)

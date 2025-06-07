@@ -5,21 +5,20 @@ from typing import ClassVar, Self
 
 import cattrs
 import jax
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
-from fartsovka.common import DType
 from fartsovka.modules import Decoder, DecoderConfig
 
 __all__ = ["ForeignConfig"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class ForeignConfig:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @property
-    def default_precision(self) -> DType:
+    def default_precision(self) -> DTypeLike:
         raise NotImplementedError
 
     @classmethod
@@ -37,8 +36,8 @@ class ForeignConfig:
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         raise NotImplementedError
 
@@ -53,8 +52,8 @@ class ForeignConfig:
     def load_model(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
         weights_dict: dict[str, Array],
     ) -> Decoder:
         config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)

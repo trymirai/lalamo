@@ -20,9 +20,9 @@ from dataclasses import dataclass
 
 import equinox as eqx
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 
 from .common import FartsovkaModule, WeightLayout, register_config_union
 
@@ -54,9 +54,9 @@ class PositionalEmbeddings(eqx.Module):
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
 
-@dataclass
+@dataclass(frozen=True)
 class RoPEConfigBase:
-    precision: DType
+    precision: DTypeLike
     base: float
     max_sequence_length: int
 
@@ -131,7 +131,7 @@ class UnscaledRoPEConfig(RoPEConfigBase):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class LlamaRoPEConfig(RoPEConfigBase):
     scaling_factor: float
     original_context_length: int
@@ -168,7 +168,7 @@ class LlamaRoPEConfig(RoPEConfigBase):
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class YARNRoPEConfig(RoPEConfigBase):
     scaling_factor: float
     beta_fast: float
@@ -227,7 +227,7 @@ class YARNRoPEConfig(RoPEConfigBase):
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class LinearScalingRoPEConfig(RoPEConfigBase):
     scaling_factor: float
 

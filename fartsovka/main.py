@@ -10,6 +10,7 @@ import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
+from jaxtyping import DTypeLike
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -18,7 +19,6 @@ from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Exit, Option, Typer
 
-from fartsovka.common import DType
 from fartsovka.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from fartsovka.modules import WeightLayout, config_converter
 
@@ -125,7 +125,7 @@ def convert(
     ] = 8192,
 ) -> None:
     if precision is not None:
-        precision_dtype = config_converter.structure(precision.value, DType)  # type: ignore
+        precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
     else:
         precision_dtype = None
 

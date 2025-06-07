@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from fartsovka.common import DType
+from jaxtyping import DTypeLike
+
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
@@ -20,7 +21,7 @@ from .common import HuggingFaceConfig
 __all__ = ["HFGemma2Config"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFGemma2Config(HuggingFaceConfig):
     architectures: list[Literal["Gemma2ForCausalLM"]]
     attention_bias: bool
@@ -53,8 +54,8 @@ class HFGemma2Config(HuggingFaceConfig):
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         sliding_window_sizes = tuple(
             self.sliding_window if not bool(i % 2) else None for i in range(self.num_hidden_layers)

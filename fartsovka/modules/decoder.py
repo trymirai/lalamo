@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
@@ -8,25 +9,41 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 from fartsovka.common import ParameterDict
 
 from .common import AttentionType, FartsovkaModule, WeightLayout
-from .decoder_layer import DecoderLayer, DecoderLayerConfig
+from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
 from .normalization import RMSNorm, RMSNormConfig
-from .rope import RoPE, RoPEConfig
+from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 
 __all__ = [
     "Decoder",
+    "DecoderActivationTrace",
     "DecoderConfig",
-    "DecoderOutput",
+    "DecoderResult",
 ]
 
 
-class DecoderOutput(NamedTuple):
-    output: Float[Array, "suffix_tokens channels"]
-    kv_cache: list[KVCacheLayerSlice] | None = None
+class DecoderActivationTrace(eqx.Module):
+    token_ids: Int[Array, " suffix_tokens"]
+    token_positions: Int[Array, " suffix_tokens"]
+    kv_cache: tuple[KVCacheLayerSlice, ...] | None
+    mask: Bool[Array, "suffix_tokens total"] | None
+
+    local_positional_embeddings: PositionalEmbeddings
+    global_positional_embeddings: PositionalEmbeddings
+
+    layer_results: tuple[DecoderLayerResult, ...]
+
+    output_norm: Float[Array, "suffix_tokens channels"]
 
 
-@dataclass
+class DecoderResult(NamedTuple):
+    logits: Float[Array, "suffix_tokens channels"]
+    updated_kv_cache: tuple[KVCacheLayerSlice, ...] | None = None
+    activation_trace: DecoderActivationTrace | None = None
+
+
+@dataclass(frozen=True)
 class DecoderConfig:
     embedding_config: EmbeddingConfig
     global_rope_config: RoPEConfig
@@ -124,36 +141,67 @@ class Decoder(FartsovkaModule[DecoderConfig]):
         self,
         token_ids: Int[Array, " suffix_tokens"],
         token_positions: Int[Array, " suffix_tokens"],
-        kv_cache: list[KVCacheLayerSlice] | None = None,
+        kv_cache: tuple[KVCacheLayerSlice, ...] | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
-    ) -> DecoderOutput:
+        return_activation_trace: bool = False,
+    ) -> DecoderResult:
         maybe_kv_cache = kv_cache or ([None] * len(self.layers))
         x = self.embedding.embed(token_ids)
+
         global_positional_embeddings = self.global_rope(token_positions)
         if self.local_rope is not None:
             local_positional_embeddings = self.local_rope(token_positions)
         else:
             local_positional_embeddings = global_positional_embeddings
-        updated_kv_cache = []
+
+        updated_kv_cache_layers = []
+        layer_results = []
         for layer, kv_cache_slice in zip(self.layers, maybe_kv_cache, strict=True):
             if layer.attention_type == AttentionType.SLIDING_WINDOW:
                 positional_embeddings_to_use = local_positional_embeddings
             else:
                 positional_embeddings_to_use = global_positional_embeddings
 
-            decoder_layer_output = layer(
+            layer_result = layer(
                 x,
                 positional_embeddings_to_use,
                 kv_cache_slice,
                 mask,
                 return_updated_kv_cache,
+                return_activation_trace,
             )
-            x = decoder_layer_output.output
-            updated_kv_cache.append(decoder_layer_output.kv_cache)
-        x = vmap(self.output_norm, in_axes=0)(x)
-        result = vmap(self.embedding.readout, in_axes=0)(x)
-        return DecoderOutput(output=result, kv_cache=updated_kv_cache or None)
+            x = layer_result.outputs
+            layer_results.append(layer_result)
+            updated_kv_cache_layers.append(layer_result.updated_kv_cache)
+
+        normalized_outputs = vmap(self.output_norm, in_axes=0)(x)
+        logits = vmap(self.embedding.readout, in_axes=0)(normalized_outputs)
+
+        if return_activation_trace:
+            activation_trace = DecoderActivationTrace(
+                token_ids=token_ids,
+                token_positions=token_positions,
+                kv_cache=kv_cache,
+                mask=mask,
+                global_positional_embeddings=global_positional_embeddings,
+                local_positional_embeddings=local_positional_embeddings,
+                layer_results=tuple(layer_results),
+                output_norm=normalized_outputs,
+            )
+        else:
+            activation_trace = None
+
+        if return_updated_kv_cache:
+            updated_kv_cache = tuple(updated_kv_cache_layers)
+        else:
+            updated_kv_cache = None
+
+        return DecoderResult(
+            logits=logits,
+            updated_kv_cache=updated_kv_cache,
+            activation_trace=activation_trace,
+        )
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         result = ParameterDict(
