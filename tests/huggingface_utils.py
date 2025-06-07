@@ -11,8 +11,7 @@ from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
 from transformers.processing_utils import Unpack
 
-from fartsovka.modules import DecoderActivationTrace
-from fartsovka.modules.decoder_layer import DecoderLayerResult
+from fartsovka.modules import DecoderActivationTrace, DecoderLayerResult, PositionalEmbeddings
 from fartsovka.utils import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 
@@ -37,7 +36,7 @@ class HFAttention(Protocol):
     def forward(
         self,
         hidden_states: Tensor,
-        position_embeddings: Tensor,
+        position_embeddings: tuple[Tensor, Tensor],
         attention_mask: Tensor | None,
         past_key_value: Cache | None = None,
         cache_position: Tensor | None = None,
@@ -138,7 +137,7 @@ class HFDecoderTracer:
         activation_trace = layer_result.activation_trace
         assert activation_trace is not None
 
-        # Gemma and Llama/Qwen have very confusing naming conventions.
+        # Gemma and Llama/Qwen сщтагыштпдн have very different naming conventions.
         if hasattr(hf_layer, "post_feedforward_layernorm"):
             hf_pre_attention_norm = hf_layer.input_layernorm
             hf_post_attention_norm = hf_layer.post_attention_layernorm
@@ -156,6 +155,15 @@ class HFDecoderTracer:
             hf_pre_attention_norm,
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
+
+        self.match_attention(
+            activation_trace.pre_attention_norm,
+            activation_trace.attention,
+            hf_layer.self_attn,
+            activation_trace.positional_embeddings,
+            f"Layer {layer_index} Attention",
+        )
+
         if hf_post_attention_norm is not None:
             assert activation_trace.post_attention_norm is not None
             self.match_rmsnorm(
@@ -179,9 +187,43 @@ class HFDecoderTracer:
                 f"Layer {layer_index} Post MLP RMSNorm",
             )
 
+        self.match_attention(
+            activation_trace.pre_attention_norm,
+            activation_trace.attention,
+            hf_layer.self_attn,
+            activation_trace.positional_embeddings,
+            f"Layer {layer_index} Attention",
+        )
+
     def match_rmsnorm(self, fs_inputs: Array, fs_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
         ref_inputs = jax_to_torch(fs_inputs)[None, :]
         torch_outputs = hf_layer.forward(ref_inputs)
+        ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
+        assert_close(
+            result=fs_outputs,
+            reference=ref_outputs,
+            operation_name=name,
+        )
+
+    def match_attention(
+        self,
+        fs_inputs: Array,
+        fs_outputs: Array,
+        hf_attention: HFAttention,
+        position_embeddings: PositionalEmbeddings,
+        name: str,
+    ) -> None:
+        ref_inputs = jax_to_torch(fs_inputs)[None, :]
+        # Convert position embeddings from JAX to PyTorch format
+        cosines = jax_to_torch(position_embeddings.cosines)[None, :]
+        sines = jax_to_torch(position_embeddings.sines)[None, :]
+
+        # Run HF attention forward pass
+        torch_outputs, _ = hf_attention.forward(
+            hidden_states=ref_inputs,
+            position_embeddings=(cosines, sines),
+            attention_mask=None,
+        )
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
             result=fs_outputs,

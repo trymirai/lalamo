@@ -25,14 +25,14 @@ def assert_close(
     absdiff = jnp.abs(result - reference)
 
     allowed_diff = atol + rtol * jnp.abs(reference)
-    err = jnp.maximum(absdiff - allowed_diff, 0)
-    err_rel = err / (jnp.abs(reference) + 1e-10)
-    max_err = jnp.max(err)
-    max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(err), err.shape))
+    violations = jnp.maximum(absdiff - allowed_diff, 0)
+    num_violations = jnp.sum(violations > 0).item()
+
+    err_rel = absdiff / (jnp.abs(reference) + 1e-10)
+    max_err = jnp.max(absdiff)
+    max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(absdiff), absdiff.shape))
     max_err_rel = err_rel[max_err_idx].item()
     max_err_reference_value = reference[max_err_idx].item()
-
-    num_violations = jnp.sum(err > 0).item()
 
     rms_diff = jnp.sqrt(jnp.mean(jnp.square(absdiff))).item()
     rms_result = jnp.sqrt(jnp.mean(jnp.square(result))).item()
@@ -53,4 +53,4 @@ def assert_close(
         f" Relative error RMS: {rel_rms_reference:.2%} of RMS of reference."
         f" Shape: {result.shape}"
     )
-    assert jnp.allclose(result, reference, atol=atol, rtol=rtol, equal_nan=True), message
+    assert num_violations == 0, message
