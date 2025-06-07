@@ -50,10 +50,10 @@ class RMSNorm(FartsovkaModule[RMSNormConfig]):
             )
 
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        inputs = inputs.astype(self.config.accumulation_precision)
+        upcasted_inputs = inputs.astype(self.config.accumulation_precision)
 
-        adjusted_variance = jnp.mean(jnp.square(inputs)) + self.config.epsilon
-        normalized_x = inputs * jax.lax.rsqrt(adjusted_variance)
+        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+        normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)

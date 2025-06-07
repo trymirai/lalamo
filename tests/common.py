@@ -22,6 +22,9 @@ def assert_close(
     rtol: float = RTOL,
     operation_name: str | None = None,
 ) -> None:
+    result = result.astype(jnp.float32)
+    reference = reference.astype(jnp.float32)
+
     absdiff = jnp.abs(result - reference)
 
     allowed_diff = atol + rtol * jnp.abs(reference)

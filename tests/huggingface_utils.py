@@ -211,15 +211,10 @@ class HFDecoderTracer:
         cosines = jax_to_torch(position_embeddings.cosines)[None, ...]
         sines = jax_to_torch(position_embeddings.sines)[None, ...]
 
-        if mask is not None:
-            torch_mask = jax_to_torch(mask)[None, ...]
-        else:
-            torch_mask = None
-
         torch_outputs, _ = hf_attention.forward(
             hidden_states=ref_inputs,
             position_embeddings=(cosines, sines),
-            attention_mask=torch_mask,
+            attention_mask=None,
         )
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
@@ -271,6 +266,6 @@ class HFDecoderTracer:
             self.match_layer(layer_result, hf_layer, i)
 
 
-def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype | None = None) -> HFDecoderTracer:
+def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
     result = AutoModelForCausalLM.from_pretrained(model_repo, torch_dtype=torch_dtype)
     return HFDecoderTracer(result)
