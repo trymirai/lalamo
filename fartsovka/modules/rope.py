@@ -83,8 +83,8 @@ class RoPEConfigBase:
         inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        cosines = jnp.cos(embeddings).astype(self.precision) * self._attention_scaling_factor
-        sines = jnp.sin(embeddings).astype(self.precision) * self._attention_scaling_factor
+        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)
+        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
         return RoPE(config=self, cosines=cosines, sines=sines)
 
 

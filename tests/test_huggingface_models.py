@@ -18,10 +18,10 @@ TOKEN_STRIDE = 512
 @pytest.mark.parametrize("model_repo", MODEL_LIST)
 def test_hf_model(model_repo: str) -> None:
     hf_tracer = load_hf_tracer(model_repo)
-    fs_model, *_ = import_model(REPO_TO_MODEL[model_repo])
+    fs_model, *_ = import_model(REPO_TO_MODEL[model_repo], context_length=NUM_TOKENS * TOKEN_STRIDE)
 
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)
-    token_positions = jnp.arange(0, NUM_TOKENS, TOKEN_STRIDE, dtype=jnp.int32)
+    token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)
     mask = jnp.tril(jnp.ones((NUM_TOKENS, NUM_TOKENS), dtype=jnp.bool))
 
     err, fs_result = checkify_forward(fs_model)(

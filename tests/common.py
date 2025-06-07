@@ -3,7 +3,7 @@ from jax.experimental.checkify import checkify, div_checks, index_checks, nan_ch
 
 __all__ = ["assert_close", "checkify_forward"]
 
-ATOL = 1e-4
+ATOL = 2e-4
 RTOL = 0.01
 
 

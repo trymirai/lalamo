@@ -119,7 +119,7 @@ class HFDecoderTracer:
         fs_results = first_layer_results.activation_trace.inputs
         hf_embedding = self.hf_model.model.embed_tokens
 
-        ref_input = jax_to_torch(activation_trace.token_ids)[None, :]
+        ref_input = jax_to_torch(activation_trace.token_ids)[None, ...]
         torch_embedding = hf_embedding.forward(ref_input)
         ref_embedding = torch_to_jax(torch_embedding).squeeze(0)
         assert_close(
@@ -161,6 +161,7 @@ class HFDecoderTracer:
             activation_trace.attention,
             hf_layer.self_attn,
             activation_trace.positional_embeddings,
+            activation_trace.mask,
             f"Layer {layer_index} Attention",
         )
 
@@ -187,16 +188,8 @@ class HFDecoderTracer:
                 f"Layer {layer_index} Post MLP RMSNorm",
             )
 
-        self.match_attention(
-            activation_trace.pre_attention_norm,
-            activation_trace.attention,
-            hf_layer.self_attn,
-            activation_trace.positional_embeddings,
-            f"Layer {layer_index} Attention",
-        )
-
     def match_rmsnorm(self, fs_inputs: Array, fs_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
-        ref_inputs = jax_to_torch(fs_inputs)[None, :]
+        ref_inputs = jax_to_torch(fs_inputs)[None, ...]
         torch_outputs = hf_layer.forward(ref_inputs)
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
@@ -211,18 +204,22 @@ class HFDecoderTracer:
         fs_outputs: Array,
         hf_attention: HFAttention,
         position_embeddings: PositionalEmbeddings,
+        mask: Array | None,
         name: str,
     ) -> None:
-        ref_inputs = jax_to_torch(fs_inputs)[None, :]
-        # Convert position embeddings from JAX to PyTorch format
-        cosines = jax_to_torch(position_embeddings.cosines)[None, :]
-        sines = jax_to_torch(position_embeddings.sines)[None, :]
+        ref_inputs = jax_to_torch(fs_inputs)[None, ...]
+        cosines = jax_to_torch(position_embeddings.cosines)[None, ...]
+        sines = jax_to_torch(position_embeddings.sines)[None, ...]
 
-        # Run HF attention forward pass
+        if mask is not None:
+            torch_mask = jax_to_torch(mask)[None, ...]
+        else:
+            torch_mask = None
+
         torch_outputs, _ = hf_attention.forward(
             hidden_states=ref_inputs,
             position_embeddings=(cosines, sines),
-            attention_mask=None,
+            attention_mask=torch_mask,
         )
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
@@ -237,7 +234,7 @@ class HFDecoderTracer:
 
         dummy_input = torch.zeros((), dtype=torch.float32)
         ref_input = jax_to_torch(activation_trace.token_positions)
-        torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input[None, :])
+        torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input[None, ...])
         ref_cosines = torch_to_jax(torch_cosines).squeeze(0)
         ref_sines = torch_to_jax(torch_sines).squeeze(0)
         assert_close(
@@ -248,12 +245,12 @@ class HFDecoderTracer:
         assert_close(result=fs_results.sines, reference=ref_sines, operation_name="Local RoPE Sines")
 
     def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
-        fs_results = activation_trace.local_positional_embeddings
+        fs_results = activation_trace.global_positional_embeddings
         hf_global_rope = self.hf_model.model.rotary_emb
 
         dummy_input = torch.zeros((), dtype=torch.float32)
         ref_input = jax_to_torch(activation_trace.token_positions)
-        torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input[None, :])
+        torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input[None, ...])
         ref_cosines = torch_to_jax(torch_cosines).squeeze(0)
         ref_sines = torch_to_jax(torch_sines).squeeze(0)
         assert_close(
