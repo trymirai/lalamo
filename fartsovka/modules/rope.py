@@ -147,7 +147,7 @@ class LlamaRoPEConfig(RoPEConfigBase):
         low_frequency_wavelength = self.original_context_length / self.low_frequency_factor
         high_frequency_wavelength = self.original_context_length / self.high_frequency_factor
 
-        wavelengths = 2 * jnp.pi / inverse_frequencies
+        wavelengths = 2 * math.pi / inverse_frequencies
 
         high_frequency_mask = wavelengths < high_frequency_wavelength
         low_frequency_mask = wavelengths > low_frequency_wavelength

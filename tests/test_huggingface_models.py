@@ -16,7 +16,7 @@ MODEL_LIST = [
 
 
 NUM_TOKENS = 512
-TOKEN_STRIDE = 512
+TOKEN_STRIDE = 64
 
 
 @pytest.mark.parametrize("model_repo", MODEL_LIST)
