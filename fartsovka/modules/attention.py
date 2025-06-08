@@ -83,12 +83,12 @@ def _soft_capped_attention_kernel(
     )
 
 
-class AttentionOutput(NamedTuple):
-    attention_output: Float[Array, "suffix_tokens channels"]
+class AttentionResult(NamedTuple):
+    outputs: Float[Array, "suffix_tokens channels"]
     kv_cache: KVCacheLayerSlice | None = None
 
 
-@dataclass
+@dataclass(frozen=True)
 class AttentionConfig:
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
@@ -241,13 +241,13 @@ class Attention(FartsovkaModule[AttentionConfig]):
 
     def __call__(
         self,
-        x: Float[Array, "suffix_tokens channels"],
+        inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
-    ) -> AttentionOutput:
-        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(x)
+    ) -> AttentionResult:
+        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         queries = rearrange(
             queries,
             "tokens (heads head_channels) -> tokens heads head_channels",
@@ -314,8 +314,8 @@ class Attention(FartsovkaModule[AttentionConfig]):
             updated_kv_cache = KVCacheLayerSlice(keys=all_keys, values=all_values)
         else:
             updated_kv_cache = None
-        return AttentionOutput(
-            attention_output=result,
+        return AttentionResult(
+            outputs=result,
             kv_cache=updated_kv_cache,
         )
 

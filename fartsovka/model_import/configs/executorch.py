@@ -1,9 +1,8 @@
 from dataclasses import dataclass
 
 import jax.numpy as jnp
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
-from fartsovka.common import DType
 from fartsovka.model_import.loaders import load_executorch
 from fartsovka.modules import (
     Activation,
@@ -38,21 +37,21 @@ ACTIVATION_QUANTIZATION_MODE = QuantizationMode.INT8
 WEIGHT_QUANTIZATION_MODE = QuantizationMode.INT4
 
 
-@dataclass
+@dataclass(frozen=True)
 class QuantizationConfig:
     group_size: int
 
 
-@dataclass
+@dataclass(frozen=True)
 class LoraConfig:
     rank: int
     scale: float
 
 
-@dataclass
+@dataclass(frozen=True)
 class ExecutorchConfig(ForeignConfig):
     @property
-    def default_precision(self) -> DType:
+    def default_precision(self) -> DTypeLike:
         return jnp.bfloat16
 
     @classmethod
@@ -64,7 +63,7 @@ class ExecutorchConfig(ForeignConfig):
         return load_executorch(model, weights_dict)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ETLlamaConfig(ExecutorchConfig):
     dim: int
     n_layers: int
@@ -87,8 +86,8 @@ class ETLlamaConfig(ExecutorchConfig):
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         if self.lora_args is None:
             raise ValueError("We only support QLoRA models for now.")

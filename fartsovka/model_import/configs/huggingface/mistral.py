@@ -1,7 +1,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
-from fartsovka.common import DType
+from jaxtyping import DTypeLike
+
 from fartsovka.modules import (
     Activation,
     AttentionConfig,
@@ -21,7 +22,7 @@ from .common import HuggingFaceConfig
 __all__ = ["HFMistralConfig"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFMistralConfig(HuggingFaceConfig):
     architectures: list[Literal["MistralForCausalLM"]]
     attention_dropout: float
@@ -49,8 +50,8 @@ class HFMistralConfig(HuggingFaceConfig):
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         # Choose embedding config based on tie_word_embeddings flag
         if self.tie_word_embeddings:

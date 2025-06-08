@@ -78,6 +78,16 @@ def load_attention(
     k_proj_weights = weights_dict[path / "k_proj" / "weight"]
     v_proj_weights = weights_dict[path / "v_proj" / "weight"]
 
+    if module.query_norm is not None:
+        query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+    else:
+        query_norm = None
+
+    if module.key_norm is not None:
+        key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+    else:
+        key_norm = None
+
     qkv_proj_weights = jnp.concatenate([q_proj_weights, k_proj_weights, v_proj_weights], axis=0)
 
     bias_paths = [path / p / "bias" for p in ["q_proj", "k_proj", "v_proj"]]
@@ -91,9 +101,9 @@ def load_attention(
         qkv_bias = jnp.concatenate(loaded_biases, axis=0)
 
     return load_parameters(
-        lambda m: (m.qkv_projection.weights, m.qkv_projection.biases, m.out_projection),  # type: ignore
+        lambda m: (m.qkv_projection.weights, m.qkv_projection.biases, m.out_projection, m.query_norm, m.key_norm),  # type: ignore
         module,
-        (qkv_proj_weights, qkv_bias, out_proj),
+        (qkv_proj_weights, qkv_bias, out_proj, query_norm, key_norm),
     )
 
 
@@ -155,7 +165,7 @@ def load_untied_embedding(
     weights_dict: dict[str, Array],
 ) -> UntiedEmbedding:
     input_weights = weights_dict[ParameterPath("model") / "embed_tokens" / "weight"]
-    output_weights = weights_dict[ParameterPath("lm_head") / "weight"].T
+    output_weights = weights_dict[ParameterPath("lm_head") / "weight"]
     return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
 
 

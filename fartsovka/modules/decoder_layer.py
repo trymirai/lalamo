@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, PRNGKeyArray
@@ -16,17 +17,34 @@ from .rope import PositionalEmbeddings
 
 __all__ = [
     "DecoderLayer",
+    "DecoderLayerActivationTrace",
     "DecoderLayerConfig",
-    "DecoderLayerOutput",
+    "DecoderLayerResult",
 ]
 
 
-class DecoderLayerOutput(NamedTuple):
-    output: Float[Array, "suffix_tokens channels"]
+class DecoderLayerActivationTrace(eqx.Module):
+    inputs: Float[Array, "suffix_tokens channels"]
+    positional_embeddings: PositionalEmbeddings
     kv_cache: KVCacheLayerSlice | None
+    mask: Bool[Array, "suffix_tokens total_tokens"] | None
+
+    mlp_inputs: Float[Array, "suffix_tokens channels"]
+    pre_attention_norm: Float[Array, "suffix_tokens channels"]
+    attention: Float[Array, "suffix_tokens channels"]
+    post_attention_norm: Float[Array, "suffix_tokens channels"] | None
+    pre_mlp_norm: Float[Array, "suffix_tokens channels"]
+    mlp: Float[Array, "suffix_tokens channels"]
+    post_mlp_norm: Float[Array, "suffix_tokens channels"] | None
 
 
-@dataclass
+class DecoderLayerResult(NamedTuple):
+    outputs: Float[Array, "suffix_tokens channels"]
+    updated_kv_cache: KVCacheLayerSlice | None
+    activation_trace: DecoderLayerActivationTrace | None
+
+
+@dataclass(frozen=True)
 class DecoderLayerConfig:
     pre_attention_norm_config: RMSNormConfig
     attention_config: AttentionConfig
@@ -121,33 +139,59 @@ class DecoderLayer(FartsovkaModule[DecoderLayerConfig]):
 
     def __call__(
         self,
-        x: Float[Array, "suffix_tokens channels"],
+        inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayerSlice | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
-    ) -> DecoderLayerOutput:
-        residual = x
-        x = vmap(self.pre_attention_norm, in_axes=0)(x)
-        x, kv_cache = self.attention(
-            x,
+        return_activation_trace: bool = False,
+    ) -> DecoderLayerResult:
+        normalized_attention_inputs = vmap(self.pre_attention_norm, in_axes=0)(inputs)
+        attention_outputs, updated_kv_cache = self.attention(
+            normalized_attention_inputs,
             positional_embeddings,
             kv_cache,
             mask,
             return_updated_kv_cache,
         )
         if self.post_attention_norm is not None:
-            x = vmap(self.post_attention_norm, in_axes=0)(x)
-        x = residual + x
+            normalized_attention_outputs = vmap(self.post_attention_norm, in_axes=0)(attention_outputs)
+            mlp_inputs = inputs + normalized_attention_outputs
+        else:
+            normalized_attention_outputs = None
+            mlp_inputs = inputs + attention_outputs
 
-        residual = x
-        x = vmap(self.pre_mlp_norm, in_axes=0)(x)
-        x = vmap(self.mlp, in_axes=0)(x)
+        normalized_mlp_inputs = vmap(self.pre_mlp_norm, in_axes=0)(mlp_inputs)
+        mlp_outputs = vmap(self.mlp, in_axes=0)(normalized_mlp_inputs)
         if self.post_mlp_norm is not None:
-            x = vmap(self.post_mlp_norm, in_axes=0)(x)
-        x = residual + x
+            normalized_mlp_outputs = vmap(self.post_mlp_norm, in_axes=0)(mlp_outputs)
+            outputs = mlp_inputs + normalized_mlp_outputs
+        else:
+            normalized_mlp_outputs = None
+            outputs = mlp_inputs + mlp_outputs
 
-        return DecoderLayerOutput(output=x, kv_cache=kv_cache)
+        if return_activation_trace:
+            activation_trace = DecoderLayerActivationTrace(
+                inputs=inputs,
+                positional_embeddings=positional_embeddings,
+                kv_cache=kv_cache,
+                mask=mask,
+                pre_attention_norm=normalized_attention_inputs,
+                attention=attention_outputs,
+                post_attention_norm=normalized_attention_outputs,
+                mlp_inputs=mlp_inputs,
+                pre_mlp_norm=normalized_mlp_inputs,
+                mlp=mlp_outputs,
+                post_mlp_norm=normalized_mlp_outputs,
+            )
+        else:
+            activation_trace = None
+
+        return DecoderLayerResult(
+            outputs=outputs,
+            updated_kv_cache=updated_kv_cache,
+            activation_trace=activation_trace,
+        )
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         result = ParameterDict(

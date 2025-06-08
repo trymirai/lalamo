@@ -12,7 +12,7 @@ from .linear import LinearBase, LinearConfig
 __all__ = ["MLP", "MLPConfig"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class MLPConfig:
     linear_config: LinearConfig
     activation: Activation
@@ -62,8 +62,8 @@ class MLP(FartsovkaModule):
                 f" the up projection output dimension {self.up_projection.input_dim}",
             )
 
-    def __call__(self, x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        up_proj, gate = self.up_projection(x)
+    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+        up_proj, gate = self.up_projection(inputs)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
         return result

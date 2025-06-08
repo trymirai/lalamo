@@ -2,9 +2,10 @@ from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from einops import rearrange
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 from fartsovka.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
 from .common import FartsovkaModule, WeightLayout, register_config_union
@@ -22,7 +23,7 @@ __all__ = [
 ]
 
 
-@dataclass
+@dataclass(frozen=True)
 class EmbeddingConfigBase:
     input_scale: float | None
     logits_soft_cap: float | None
@@ -41,7 +42,7 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](FartsovkaModule[ConfigT]):
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         raise NotImplementedError
 
-    def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
+    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         raise NotImplementedError
 
     @property
@@ -65,9 +66,9 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](FartsovkaModule[ConfigT]):
         return logits
 
 
-@dataclass
+@dataclass(frozen=True)
 class TiedEmbeddingConfig(EmbeddingConfigBase):
-    precision: DType
+    precision: DTypeLike
 
     def random_init(
         self,
@@ -102,16 +103,16 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         return self.weights
 
-    def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
+    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         return self.weights
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(token_embeddings=self.weights)
 
 
-@dataclass
+@dataclass(frozen=True)
 class UntiedEmbeddingConfig(EmbeddingConfigBase):
-    precision: DType
+    precision: DTypeLike
 
     def random_init(
         self,
@@ -122,7 +123,7 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
     ) -> "UntiedEmbedding":
         input_key, output_key = jax.random.split(key)
         input_weights = jax.random.normal(input_key, (vocab_size, model_dim), dtype=self.precision)
-        output_weights = jax.random.normal(output_key, (model_dim, vocab_size), dtype=self.precision)
+        output_weights = jax.random.normal(output_key, (vocab_size, model_dim), dtype=self.precision)
         return UntiedEmbedding(
             config=self,
             input_weights=input_weights,
@@ -132,7 +133,7 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_weights: Float[Array, "token_ids channels"]
-    output_weights: Float[Array, "channels token_ids"]
+    output_weights: Float[Array, "token_ids channels"]
 
     @property
     def model_dim(self) -> int:
@@ -156,7 +157,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
                 f" the specified precision {self.config.precision}",
             )
         input_vocab_size, input_model_dim = self.input_weights.shape
-        output_model_dim, output_vocab_size = self.output_weights.shape
+        output_vocab_size, output_model_dim = self.output_weights.shape
         if input_vocab_size != output_vocab_size:
             raise ValueError(
                 f"Input vocab size {input_vocab_size} does not match the output vocab size {output_vocab_size}",
@@ -169,21 +170,27 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         return self.input_weights
 
-    def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
+    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         return self.output_weights
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+        match weight_layout:
+            case WeightLayout.OUTPUT_INPUT:
+                output_weights = self.output_weights
+            case WeightLayout.INPUT_OUTPUT:
+                output_weights = rearrange(self.output_weights, "token_ids channels -> channels token_ids")
+
         return ParameterDict(
             input_weights=self.input_weights,
-            output_weights=self.output_weights,
+            output_weights=output_weights,
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DType
+    activation_precision: DTypeLike
 
     def random_init(
         self,
@@ -241,7 +248,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
         result = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         return result.astype(self.config.embedding_quantization_mode.dtype)
 
-    def _prepare_weights(self) -> Float[Array, "out_channels in_channels"]:
+    def _prepare_weights(self) -> Float[Array, "token_ids channels"]:
         quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         quantized_weights = quantized_weights * self.scales.reshape(-1, 1)
         return quantized_weights
@@ -249,7 +256,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
     def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
         return self._prepare_weights()
 
-    def _prepare_output_weights(self) -> Float[Array, "channels token_ids"]:
+    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         return self._prepare_weights()
 
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:

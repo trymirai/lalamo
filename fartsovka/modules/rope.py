@@ -20,9 +20,9 @@ from dataclasses import dataclass
 
 import equinox as eqx
 from jax import numpy as jnp
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from fartsovka.common import DType, ParameterDict
+from fartsovka.common import ParameterDict
 
 from .common import FartsovkaModule, WeightLayout, register_config_union
 
@@ -54,9 +54,9 @@ class PositionalEmbeddings(eqx.Module):
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
 
-@dataclass
+@dataclass(frozen=True)
 class RoPEConfigBase:
-    precision: DType
+    precision: DTypeLike
     base: float
     max_sequence_length: int
 
@@ -83,8 +83,8 @@ class RoPEConfigBase:
         inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        cosines = jnp.cos(embeddings).astype(self.precision) * self._attention_scaling_factor
-        sines = jnp.sin(embeddings).astype(self.precision) * self._attention_scaling_factor
+        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)
+        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
         return RoPE(config=self, cosines=cosines, sines=sines)
 
 
@@ -131,7 +131,7 @@ class UnscaledRoPEConfig(RoPEConfigBase):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class LlamaRoPEConfig(RoPEConfigBase):
     scaling_factor: float
     original_context_length: int
@@ -168,7 +168,7 @@ class LlamaRoPEConfig(RoPEConfigBase):
         return result
 
 
-@dataclass
+@dataclass(frozen=True)
 class YARNRoPEConfig(RoPEConfigBase):
     scaling_factor: float
     beta_fast: float
@@ -227,7 +227,7 @@ class YARNRoPEConfig(RoPEConfigBase):
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 
-@dataclass
+@dataclass(frozen=True)
 class LinearScalingRoPEConfig(RoPEConfigBase):
     scaling_factor: float
 

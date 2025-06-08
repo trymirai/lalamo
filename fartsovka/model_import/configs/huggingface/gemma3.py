@@ -2,8 +2,8 @@ from dataclasses import dataclass
 from typing import Literal
 
 import jax.numpy as jnp
+from jaxtyping import DTypeLike
 
-from fartsovka.common import DType
 from fartsovka.modules import (
     DecoderConfig,
     TiedEmbeddingConfig,
@@ -28,13 +28,13 @@ def _round_to_bfloat16(x: float) -> float:
     return jnp.asarray(x).astype(jnp.bfloat16).item()
 
 
-@dataclass
+@dataclass(frozen=True)
 class GemmaRoPEScalingConfig:
     factor: float
     rope_type: Literal["linear"]
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFGemma3TextConfigRaw:
     hidden_size: int
     intermediate_size: int
@@ -68,8 +68,8 @@ class HFGemma3TextConfigRaw:
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         input_scale = _round_to_bfloat16(self.hidden_size**0.5)
         attention_scale = self.query_pre_attn_scalar**-0.5
@@ -143,12 +143,12 @@ class HFGemma3TextConfigRaw:
         )
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
     pass
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFGemma3VisionConfig:
     hidden_size: int
     image_size: int
@@ -160,7 +160,7 @@ class HFGemma3VisionConfig:
     vision_use_head: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFGemma3Config(HuggingFaceConfig):
     architectures: list[Literal["Gemma3ForConditionalGeneration"]]
     boi_token_index: int
@@ -177,8 +177,8 @@ class HFGemma3Config(HuggingFaceConfig):
     def to_decoder_config(
         self,
         context_length: int,
-        activation_precision: DType,
-        accumulation_precision: DType,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         return self.text_config.to_decoder_config(
             context_length=context_length,

@@ -1,8 +1,8 @@
 from .activations import Activation
 from .attention import Attention, AttentionConfig
 from .common import WeightLayout, config_converter
-from .decoder import Decoder, DecoderConfig
-from .decoder_layer import DecoderLayer, DecoderLayerConfig
+from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderResult
+from .decoder_layer import DecoderLayer, DecoderLayerActivationTrace, DecoderLayerConfig, DecoderLayerResult
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -26,7 +26,15 @@ from .linear import (
 )
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig, UpcastMode
-from .rope import LinearScalingRoPEConfig, LlamaRoPEConfig, RoPE, RoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
+from .rope import (
+    LinearScalingRoPEConfig,
+    LlamaRoPEConfig,
+    PositionalEmbeddings,
+    RoPE,
+    RoPEConfig,
+    UnscaledRoPEConfig,
+    YARNRoPEConfig,
+)
 
 __all__ = [
     "MLP",
@@ -34,9 +42,13 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "Decoder",
+    "DecoderActivationTrace",
     "DecoderConfig",
     "DecoderLayer",
+    "DecoderLayerActivationTrace",
     "DecoderLayerConfig",
+    "DecoderLayerResult",
+    "DecoderResult",
     "EmbeddingBase",
     "EmbeddingConfig",
     "FullPrecisionLinear",
@@ -49,6 +61,7 @@ __all__ = [
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
     "MLPConfig",
+    "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",

@@ -1,9 +1,7 @@
 from enum import Enum
 
 from jax import numpy as jnp
-from jaxtyping import Array, Float
-
-from .common import DType
+from jaxtyping import Array, DTypeLike, Float
 
 __all__ = ["QuantizationMode", "quantize_weights"]
 
@@ -17,7 +15,7 @@ class QuantizationMode(Enum):
         return MODE_TO_RANGE[self]
 
     @property
-    def dtype(self) -> DType:
+    def dtype(self) -> DTypeLike:
         value_to_dtype = {
             QuantizationMode.INT4: jnp.int4,
             QuantizationMode.INT8: jnp.int8,

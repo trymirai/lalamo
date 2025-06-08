@@ -179,8 +179,8 @@ class Rope(torch.nn.Module):
         """
 
         assert input_pos is None, "input_pos is unused when use_kv_cache is False"
-        freqs_cos = self.freqs_cos[:seq_len]
-        freqs_sin = self.freqs_sin[:seq_len]
+        freqs_cos = self.freqs_cos[:seq_len]  # type: ignore
+        freqs_sin = self.freqs_sin[:seq_len]  # type: ignore
         return freqs_cos, freqs_sin
 
 

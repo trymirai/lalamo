@@ -32,7 +32,7 @@ class WeightOnlyInt8Linear(nn.Module):
         self.register_buffer("scales", torch.ones(out_features, dtype=torch.bfloat16))
 
     def forward(self, input: torch.Tensor) -> torch.Tensor:  # noqa: A002
-        return F.linear(input, self.weight.to(dtype=input.dtype)) * self.scales
+        return F.linear(input, self.weight.to(dtype=input.dtype)) * self.scales  # type: ignore
 
 
 def linear_forward_8da8w(
@@ -121,8 +121,8 @@ class Int8DynActInt8WeightLinear(nn.Module):
         return linear_forward_8da8w(
             input,
             self.weight,
-            self.scales,
-            self.zeros,
+            self.scales,  # type: ignore
+            self.zeros,  # type: ignore
             self.out_features,
             self.precision,
         )
@@ -205,8 +205,8 @@ class QuantizedGroupEmbedding(nn.Module):
     def forward(self, indices: torch.Tensor) -> torch.Tensor:
         if not self.packed:  # 8bit
             return embedding_byte(  # type: ignore
-                self.weight,
-                self.scales,
+                self.weight,  # type: ignore
+                self.scales,  # type: ignore
                 None,
                 0,
                 0,

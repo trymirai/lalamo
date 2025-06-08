@@ -5,8 +5,8 @@ from typing import NamedTuple
 
 import huggingface_hub
 import jax.numpy as jnp
+from jaxtyping import DTypeLike
 
-from fartsovka.common import DType
 from fartsovka.modules import Decoder, DecoderConfig
 
 from .model_specs import REPO_TO_MODEL, ModelSpec
@@ -22,7 +22,7 @@ __all__ = [
 FARTSOVKA_VERSION = importlib.metadata.version("fartsovka")
 
 
-@dataclass
+@dataclass(frozen=True)
 class ModelMetadata:
     fartsovka_version: str
     vendor: str
@@ -52,7 +52,7 @@ def download_config_file(model_spec: ModelSpec, output_dir: Path | str | None = 
     return Path(result)
 
 
-def download_tokenizer_files(model_spec: ModelSpec, output_dir: Path | str | None = None) -> list[Path]:
+def download_tokenizer_files(model_spec: ModelSpec, output_dir: Path | str | None = None) -> tuple[Path, ...]:
     result = [
         huggingface_hub.hf_hub_download(
             repo_id=model_spec.repo,
@@ -61,21 +61,21 @@ def download_tokenizer_files(model_spec: ModelSpec, output_dir: Path | str | Non
         )
         for metadata_filename in model_spec.tokenizer_file_names
     ]
-    return [Path(path) for path in result]
+    return tuple(Path(path) for path in result)
 
 
 class ImportResults(NamedTuple):
     model: Decoder
     metadata: ModelMetadata
-    tokenizer_file_paths: list[Path]
+    tokenizer_file_paths: tuple[Path, ...]
 
 
 def import_model(
     model_spec: ModelSpec,
     *,
     context_length: int = 8192,
-    precision: DType | None = None,
-    accumulation_precision: DType = jnp.float32,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
 ) -> ImportResults:
     foreign_config_file = download_config_file(model_spec)
     foreign_config = model_spec.config_type.from_json(foreign_config_file)
