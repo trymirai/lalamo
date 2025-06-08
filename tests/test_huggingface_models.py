@@ -37,6 +37,5 @@ def test_hf_model(model_repo: str) -> None:
         return_activation_trace=True,
     )
     err.throw()
-    assert fs_result.activation_trace is not None
 
-    hf_tracer.match_activation_trace(fs_result.activation_trace)
+    hf_tracer.match_activations(fs_result)

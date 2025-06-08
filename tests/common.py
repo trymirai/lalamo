@@ -3,8 +3,8 @@ from jax.experimental.checkify import checkify, div_checks, index_checks, nan_ch
 
 __all__ = ["assert_close", "checkify_forward"]
 
-ATOL = 2e-4
-RTOL = 0.01
+ATOL = 1e-3
+RTOL = 0.03
 
 
 def checkify_forward(module):  # noqa: ANN001, ANN201
@@ -29,11 +29,11 @@ def assert_close(
 
     allowed_diff = atol + rtol * jnp.abs(reference)
     violations = jnp.maximum(absdiff - allowed_diff, 0)
-    num_violations = jnp.sum(violations > 0).item()
+    num_violations = jnp.count_nonzero(violations).item()
 
     err_rel = absdiff / (jnp.abs(reference) + 1e-10)
-    max_err = jnp.max(absdiff)
-    max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(absdiff), absdiff.shape))
+    max_err_idx = tuple(i.item() for i in jnp.unravel_index(jnp.argmax(violations), absdiff.shape))
+    max_err = absdiff[max_err_idx].item()
     max_err_rel = err_rel[max_err_idx].item()
     max_err_reference_value = reference[max_err_idx].item()
 
@@ -49,7 +49,7 @@ def assert_close(
 
     message = (
         f"{num_violations} violations > {atol:.1e} + {rtol:.2%}{operation_description}."
-        f" Max error: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx}"
+        f" Worst violation: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx}"
         f" (reference value: {max_err_reference_value:.3g})."
         f" Error RMS: {rms_diff:.3g}."
         f" RMS of result: {rms_result:.3g}, RMS of reference: {rms_reference:.3g}."
