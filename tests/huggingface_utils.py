@@ -335,5 +335,5 @@ class HFDecoderTracer:
 
 
 def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
-    result = AutoModelForCausalLM.from_pretrained(model_repo, torch_dtype=torch_dtype)
+    result = AutoModelForCausalLM.from_pretrained(model_repo, torch_dtype=torch_dtype, device="cpu")
     return HFDecoderTracer(result)

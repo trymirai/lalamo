@@ -39,17 +39,17 @@ def _replace_linear_with_linear_8da4w_for_pre_quantization(
         new_linear = Int8DynActInt4WeightLinear(
             # pyre-fixme[6]: For 1st argument expected `int` but got `Union[Module,
             #  Tensor]`.
-            child.in_features,
+            child.in_features,  # type: ignore
             # pyre-fixme[6]: For 2nd argument expected `int` but got `Union[Module,
             #  Tensor]`.
-            child.out_features,
+            child.out_features,  # type: ignore
             bias=False,
             device=child.weight.device,
             groupsize=group_size,
             precision=precision,
             scales_precision=scales_precision,
         )
-        new_linear.zeros = torch.zeros_like(new_linear.zeros)
+        new_linear.zeros = torch.zeros_like(new_linear.zeros)  # type: ignore
         return new_linear
 
     _replace_with_custom_fn_if_matches_filter(module, replacement_fn, filter_fn)
@@ -94,13 +94,13 @@ def _replace_output_linear_with_linear_int8_for_pre_quantization(
 
     def replacement_fn(child: torch.nn.Module) -> torch.nn.Module:
         new_linear = Int8DynActInt8WeightLinear(
-            device=child.weight.device,
+            device=child.weight.device,  # type: ignore
             # pyre-fixme[6]: For 2nd argument expected `int` but got `Union[Module,
             #  Tensor]`.
-            in_features=child.in_features,
+            in_features=child.in_features,  # type: ignore
             # pyre-fixme[6]: For 3rd argument expected `int` but got `Union[Module,
             #  Tensor]`.
-            out_features=child.out_features,
+            out_features=child.out_features,  # type: ignore
             precision=dtype,
             bias=False,
         )
@@ -144,9 +144,9 @@ def _replace_embedding_with_quantized_group_embedding_for_pre_quantization(
 
     def replacement_fn(child: torch.nn.Module) -> torch.nn.Module:
         new_embedding = QuantizedGroupEmbedding(
-            device=child.weight.device,
-            vocab_size=child.weight.shape[0],
-            embedding_dim=child.weight.shape[1],
+            device=child.weight.device,  # type: ignore
+            vocab_size=child.weight.shape[0],  # type: ignore
+            embedding_dim=child.weight.shape[1],  # type: ignore
             group_size=group_size,
             dtype=dtype,
             packed=False,

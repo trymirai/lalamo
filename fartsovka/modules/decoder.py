@@ -27,7 +27,7 @@ class DecoderActivationTrace(eqx.Module):
     token_ids: Int[Array, " suffix_tokens"]
     token_positions: Int[Array, " suffix_tokens"]
     kv_cache: tuple[KVCacheLayerSlice, ...] | None
-    mask: Bool[Array, "suffix_tokens total"] | None
+    mask: Bool[Array, "suffix_tokens all_tokens"] | None
 
     local_positional_embeddings: PositionalEmbeddings
     global_positional_embeddings: PositionalEmbeddings
@@ -147,7 +147,7 @@ class Decoder(FartsovkaModule[DecoderConfig]):
         return_activation_trace: bool = False,
     ) -> DecoderResult:
         maybe_kv_cache = kv_cache or ([None] * len(self.layers))
-        x = self.embedding.embed(token_ids)
+        inner_features = self.embedding.embed(token_ids)
 
         global_positional_embeddings = self.global_rope(token_positions)
         if self.local_rope is not None:
@@ -164,18 +164,18 @@ class Decoder(FartsovkaModule[DecoderConfig]):
                 positional_embeddings_to_use = global_positional_embeddings
 
             layer_result = layer(
-                x,
+                inner_features,
                 positional_embeddings_to_use,
                 kv_cache_slice,
                 mask,
                 return_updated_kv_cache,
                 return_activation_trace,
             )
-            x = layer_result.outputs
+            inner_features = layer_result.outputs
             layer_results.append(layer_result)
             updated_kv_cache_layers.append(layer_result.updated_kv_cache)
 
-        normalized_outputs = vmap(self.output_norm, in_axes=0)(x)
+        normalized_outputs = vmap(self.output_norm, in_axes=0)(inner_features)
         logits = vmap(self.embedding.readout, in_axes=0)(normalized_outputs)
 
         if return_activation_trace:
