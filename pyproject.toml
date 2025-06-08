@@ -45,6 +45,7 @@ dev-dependencies = [
     "pytest>=8.3.4",
     "torchao>=0.7.0",
     "transformers>=4.48.0",
+    "accelerate>=1.7.0",
 ]
 
 [tool.pytest.ini_options]

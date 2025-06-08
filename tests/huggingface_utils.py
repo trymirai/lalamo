@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+import jax
 import torch
 from jaxtyping import Array
 from torch import Tensor, nn
@@ -333,7 +334,18 @@ class HFDecoderTracer:
 
         self.match_readout(result)
 
+        hf_input_ids = jax_to_torch(result.activation_trace.token_ids)[None, ...]
+        hf_token_positions = jax_to_torch(result.activation_trace.token_positions)[None, ...]
+        hf_outputs = self.hf_model.forward(input_ids=hf_input_ids, position_ids=hf_token_positions)
+
+        assert hf_outputs.logits is not None
+        ref_logits = torch_to_jax(hf_outputs.logits).squeeze(0)
+        ref_probas = jax.nn.softmax(ref_logits, axis=-1)
+
+        fs_probas = jax.nn.softmax(result.logits, axis=-1)
+        assert_close(result=fs_probas, reference=ref_probas, operation_name="Token Probabilities")
+
 
 def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
-    result = AutoModelForCausalLM.from_pretrained(model_repo, torch_dtype=torch_dtype, device="cpu")
+    result = AutoModelForCausalLM.from_pretrained(model_repo, torch_dtype=torch_dtype, device_map="cpu")
     return HFDecoderTracer(result)
