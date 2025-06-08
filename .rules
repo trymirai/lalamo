@@ -1,3 +1,5 @@
+The rules below are CRITICAL. Each rule should be respected. Rules can only be overriden by the user.
+
 # Workflow rules:
 - When given a coding task, AI Assistant carefully and deeply inspects the codebase to understand the context.
 - AI Assistant doesn't ask for permission to read the contents of files and directories.
