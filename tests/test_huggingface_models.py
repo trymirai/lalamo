@@ -7,7 +7,7 @@ from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
 
 MODEL_LIST = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen2.5-?0.5B-Instruct",
     "google/gemma-3-1b-it",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     "meta-llama/Llama-3.2-1B-Instruct",
@@ -16,7 +16,7 @@ MODEL_LIST = [
 
 
 NUM_TOKENS = 512
-TOKEN_STRIDE = 512
+TOKEN_STRIDE = 64
 
 
 @pytest.mark.parametrize("model_repo", MODEL_LIST)
