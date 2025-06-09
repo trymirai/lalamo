@@ -18,6 +18,8 @@ from fartsovka.modules.decoder import DecoderResult
 from fartsovka.utils import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 
+END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS = 0.01
+
 
 class HFRotaryEmbedding(Protocol):
     def forward(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]: ...
@@ -336,14 +338,44 @@ class HFDecoderTracer:
 
         hf_input_ids = jax_to_torch(result.activation_trace.token_ids)[None, ...]
         hf_token_positions = jax_to_torch(result.activation_trace.token_positions)[None, ...]
-        hf_outputs = self.hf_model.forward(input_ids=hf_input_ids, position_ids=hf_token_positions)
+        hf_outputs = self.hf_model.forward(
+            input_ids=hf_input_ids,
+            position_ids=hf_token_positions,
+            output_hidden_states=True,
+        )
+        assert hf_outputs.hidden_states is not None
+        *hf_hidden_states, hf_last_norm_output = hf_outputs.hidden_states
+
+        for i, (hf_layer_inputs, layer_result) in enumerate(
+            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
+        ):
+            layer_activation_trace = layer_result.activation_trace
+            assert layer_activation_trace is not None
+            ref_layer_inputs = torch_to_jax(hf_layer_inputs).squeeze(0)
+            assert_close(
+                result=layer_activation_trace.inputs,
+                reference=ref_layer_inputs,
+                fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
+                operation_name=f"End2End Layer {i} inputs",
+            )
+
+        ref_last_norm_output = torch_to_jax(hf_last_norm_output).squeeze(0)
+        assert_close(
+            result=result.activation_trace.output_norm,
+            reference=ref_last_norm_output,
+            fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
+            operation_name="End2End Output RMSNorm",
+        )
 
         assert hf_outputs.logits is not None
-        ref_logits = torch_to_jax(hf_outputs.logits).squeeze(0)
-        ref_probas = jax.nn.softmax(ref_logits, axis=-1)
-
+        ref_probas = jax.nn.softmax(torch_to_jax(hf_outputs.logits).squeeze(0), axis=-1)
         fs_probas = jax.nn.softmax(result.logits, axis=-1)
-        assert_close(result=fs_probas, reference=ref_probas, operation_name="Token Probabilities")
+        assert_close(
+            result=fs_probas,
+            reference=ref_probas,
+            fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
+            operation_name="End2End Token Probabilities",
+        )
 
 
 def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
