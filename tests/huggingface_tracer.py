@@ -379,5 +379,17 @@ class HFDecoderTracer:
 
 
 def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
-    result = AutoModelForCausalLM.from_pretrained(model_repo, torch_dtype=torch_dtype, device_map="cpu")
-    return HFDecoderTracer(result)
+    hf_model = AutoModelForCausalLM.from_pretrained(
+        model_repo,
+        torch_dtype=torch_dtype,
+        device_map="cpu",
+    )
+
+    # Correct the bug in the HF Gemma implementation
+    # See https://github.com/huggingface/transformers/issues/38702
+    if hasattr(hf_model.model.embed_tokens, "embed_scale"):
+        wrong_scale = hf_model.model.embed_tokens.embed_scale
+        correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
+        hf_model.model.embed_tokens.embed_scale = correct_scale
+
+    return HFDecoderTracer(hf_model)
