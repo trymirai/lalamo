@@ -209,8 +209,7 @@ def list_models(
     quiet: Annotated[
         bool,
         Option(
-            "--quiet",
-            "-q",
+            "--plain",
             help="Only show repository names, one per line.",
         ),
     ] = False,
