@@ -205,7 +205,31 @@ def _model_size_string_to_int(
 
 
 @app.command(help="List the supported models.")
-def list_models() -> None:
+def list_models(
+    quiet: Annotated[
+        bool,
+        Option(
+            "--quiet",
+            "-q",
+            help="Only show repository names, one per line.",
+        ),
+    ] = False,
+) -> None:
+    sorted_specs = sorted(
+        REPO_TO_MODEL.values(),
+        key=lambda spec: (
+            spec.vendor.lower(),
+            spec.family.lower(),
+            _model_size_string_to_int(spec.size),
+            spec.name.lower(),
+        ),
+    )
+
+    if quiet:
+        for spec in sorted_specs:
+            console.print(spec.repo)
+        return
+
     table = Table(
         show_header=True,
         header_style="bold",
@@ -217,16 +241,14 @@ def list_models() -> None:
     table.add_column("Size", justify="right", style="magenta")
     table.add_column("Quant", justify="left", style="magenta")
     table.add_column("Repo", justify="left", style="cyan", no_wrap=True)
-    for spec in sorted(
-        REPO_TO_MODEL.values(),
-        key=lambda spec: (
-            spec.vendor.lower(),
-            spec.family.lower(),
-            _model_size_string_to_int(spec.size),
-            spec.name.lower(),
-        ),
-    ):
-        table.add_row(spec.vendor, spec.family, spec.size, str(spec.quantization), spec.repo)
+    for spec in sorted_specs:
+        table.add_row(
+            spec.vendor,
+            spec.family,
+            spec.size,
+            str(spec.quantization),
+            spec.repo,
+        )
     console.print(table)
 
 
