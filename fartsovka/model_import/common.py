@@ -24,7 +24,7 @@ FARTSOVKA_VERSION = importlib.metadata.version("fartsovka")
 
 @dataclass(frozen=True)
 class ModelMetadata:
-    fartsovka_version: str
+    toolchain_version: str
     vendor: str
     name: str
     model_config: DecoderConfig
@@ -91,7 +91,7 @@ def import_model(
 
     model = foreign_config.load_model(context_length, precision, accumulation_precision, weights_dict)
     metadata = ModelMetadata(
-        fartsovka_version=FARTSOVKA_VERSION,
+        toolchain_version=FARTSOVKA_VERSION,
         name=model_spec.name,
         vendor=model_spec.vendor,
         model_config=model.config,
