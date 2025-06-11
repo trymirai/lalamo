@@ -206,11 +206,10 @@ def _model_size_string_to_int(
 
 @app.command(help="List the supported models.")
 def list_models(
-    quiet: Annotated[
+    plain: Annotated[
         bool,
         Option(
-            "--plain",
-            help="Only show repository names, one per line.",
+            help="Only list repo names without fancy formatting.",
         ),
     ] = False,
 ) -> None:
@@ -224,7 +223,7 @@ def list_models(
         ),
     )
 
-    if quiet:
+    if plain:
         for spec in sorted_specs:
             console.print(spec.repo)
         return
