@@ -155,17 +155,23 @@ def load_decoder_layer(
     )
 
 
-def load_tied_embedding(module: TiedEmbedding, weights_dict: dict[str, Array]) -> TiedEmbedding:
-    weights = weights_dict[ParameterPath("model") / "embed_tokens" / "weight"]
+def load_tied_embedding(
+    module: TiedEmbedding,
+    weights_dict: dict[str, Array],
+    decoder_path: ParameterPath,
+) -> TiedEmbedding:
+    weights = weights_dict[decoder_path / "embed_tokens" / "weight"]
     return load_parameters(lambda m: (m.weights,), module, (weights,))
 
 
 def load_untied_embedding(
     module: UntiedEmbedding,
     weights_dict: dict[str, Array],
+    decoder_path: ParameterPath,
+    lm_head_path: ParameterPath,
 ) -> UntiedEmbedding:
-    input_weights = weights_dict[ParameterPath("model") / "embed_tokens" / "weight"]
-    output_weights = weights_dict[ParameterPath("lm_head") / "weight"]
+    input_weights = weights_dict[decoder_path / "embed_tokens" / "weight"]
+    output_weights = weights_dict[lm_head_path / "weight"]
     return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
 
 
@@ -173,17 +179,24 @@ def load_huggingface(
     module: Decoder,
     weights_dict: dict[str, Array],
 ) -> Decoder:
-    root_path: ParameterPath = ParameterPath("model")
+    if any(key.startswith("language_model.") for key in weights_dict):
+        base_path = ParameterPath("language_model")
+    else:
+        base_path = ParameterPath()
+
+    decoder_path = base_path / "model"
+    lm_head_path = base_path / "lm_head"
+
     if isinstance(module.embedding, TiedEmbedding):
-        embedding = load_tied_embedding(module.embedding, weights_dict)
+        embedding = load_tied_embedding(module.embedding, weights_dict, decoder_path)
     elif isinstance(module.embedding, UntiedEmbedding):
-        embedding = load_untied_embedding(module.embedding, weights_dict)
+        embedding = load_untied_embedding(module.embedding, weights_dict, decoder_path, lm_head_path)
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, root_path / "layers" / i) for i, layer in enumerate(module.layers)
+        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm")
+    output_norm = load_rmsnorm(module.output_norm, weights_dict, decoder_path / "norm")
     return load_parameters(
         lambda m: (m.embedding, m.layers, m.output_norm),
         module,
