@@ -1,5 +1,5 @@
 [project]
-name = "fartsovka"
+name = "lalamo"
 description = "Add your description here"
 requires-python = "~=3.12"
 dependencies = [
@@ -23,17 +23,17 @@ dependencies = [
 dynamic = ["version", "readme"]
 
 [project.scripts]
-fartsovka = "fartsovka.main:app"
+lalamo = "lalamo.main:app"
 
 [build-system]
 requires = ["setuptools>=65.5.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
-packages = ["fartsovka"]
+packages = ["lalamo"]
 
 [tool.setuptools.dynamic]
-version = { attr = "fartsovka.__version__" }
+version = { attr = "lalamo.__version__" }
 readme = { file = ["README.md"] }
 
 [tool.uv]
@@ -51,7 +51,7 @@ dev-dependencies = [
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
-# addopts = "--jaxtyping-packages=fartsovka,beartype.beartype"
+# addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"

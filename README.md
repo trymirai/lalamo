@@ -1,18 +1,18 @@
-# Fartsovka
+# Lalamo
 
 A set of tools for adapting Large Language Models to on-device inference using the Uzu inference engine.
 
 To convert a model run
 
 ```bash
-uv run fartsovka convert MODEL_REPO
+uv run lalamo convert MODEL_REPO
 ```
 
-For more options see `uv run fartsovka convert --help`
+For more options see `uv run lalamo convert --help`
 
-To get a list of supported models run `uv run fartsovka list-models`
+To get a list of supported models run `uv run lalamo list-models`
 
-To add support for a new model write the corresponding `ModelSpec` in `fartsovka.model_import.model_import.py`
+To add support for a new model write the corresponding `ModelSpec` in `lalamo.model_import.model_import.py`
 
 Example:
 

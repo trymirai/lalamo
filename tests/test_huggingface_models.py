@@ -2,7 +2,7 @@ import jax.numpy as jnp
 import pytest
 import torch
 
-from fartsovka import REPO_TO_MODEL, import_model
+from lalamo import REPO_TO_MODEL, import_model
 from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
 
@@ -23,7 +23,7 @@ TOKEN_STRIDE = 64
 @pytest.mark.parametrize("model_repo", MODEL_LIST)
 def test_hf_model(model_repo: str) -> None:
     hf_tracer = load_hf_tracer(model_repo, torch_dtype=torch.float32)
-    fs_model, *_ = import_model(
+    llm_model, *_ = import_model(
         REPO_TO_MODEL[model_repo],
         context_length=NUM_TOKENS * TOKEN_STRIDE,
         precision=jnp.float32,
@@ -33,7 +33,7 @@ def test_hf_model(model_repo: str) -> None:
     token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)
     mask = jnp.tril(jnp.ones((NUM_TOKENS, NUM_TOKENS), dtype=jnp.bool))
 
-    err, fs_result = checkify_forward(fs_model)(
+    err, llm_result = checkify_forward(llm_model)(
         token_ids=token_ids,
         token_positions=token_positions,
         mask=mask,
@@ -42,4 +42,4 @@ def test_hf_model(model_repo: str) -> None:
     )
     err.throw()
 
-    hf_tracer.match_activations(fs_result)
+    hf_tracer.match_activations(llm_result)

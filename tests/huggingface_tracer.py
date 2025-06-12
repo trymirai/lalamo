@@ -13,9 +13,9 @@ from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutpu
 from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
 from transformers.processing_utils import Unpack
 
-from fartsovka.modules import DecoderActivationTrace, DecoderLayerResult, PositionalEmbeddings
-from fartsovka.modules.decoder import DecoderResult
-from fartsovka.utils import jax_to_torch, torch_to_jax
+from lalamo.modules import DecoderActivationTrace, DecoderLayerResult, PositionalEmbeddings
+from lalamo.modules.decoder import DecoderResult
+from lalamo.utils import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 
 END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS = 0.01
@@ -120,14 +120,14 @@ class HFDecoderTracer:
     def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
         assert first_layer_results.activation_trace is not None
-        fs_results = first_layer_results.activation_trace.inputs
+        llm_results = first_layer_results.activation_trace.inputs
         hf_embedding = self.hf_model.model.embed_tokens
 
         ref_input = jax_to_torch(activation_trace.token_ids)[None, ...]
         torch_embedding = hf_embedding.forward(ref_input)
         ref_embedding = torch_to_jax(torch_embedding).squeeze(0)
         assert_close(
-            result=fs_results,
+            result=llm_results,
             reference=ref_embedding,
             operation_name="Embedding",
         )
@@ -135,7 +135,7 @@ class HFDecoderTracer:
     def match_readout(self, result: DecoderResult) -> None:
         assert result.activation_trace is not None
 
-        fs_logits = result.logits
+        llm_logits = result.logits
 
         ref_normalized_outputs = jax_to_torch(result.activation_trace.output_norm)[None, ...]
         hf_logits = self.hf_model.lm_head(ref_normalized_outputs)
@@ -143,7 +143,7 @@ class HFDecoderTracer:
         ref_logits = torch_to_jax(hf_logits).squeeze(0)
 
         assert_close(
-            result=fs_logits,
+            result=llm_logits,
             reference=ref_logits,
             operation_name="Readout (lm_head)",
         )
@@ -239,25 +239,25 @@ class HFDecoderTracer:
             operation_name=f"Layer {layer_index} Full Output",
         )
 
-    def match_rmsnorm(self, fs_inputs: Array, fs_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
-        ref_inputs = jax_to_torch(fs_inputs)[None, ...]
+    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
+        ref_inputs = jax_to_torch(llm_inputs)[None, ...]
         torch_outputs = hf_layer.forward(ref_inputs)
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
-            result=fs_outputs,
+            result=llm_outputs,
             reference=ref_outputs,
             operation_name=name,
         )
 
     def match_attention(
         self,
-        fs_inputs: Array,
-        fs_outputs: Array,
+        llm_inputs: Array,
+        llm_outputs: Array,
         hf_attention: HFAttention,
         position_embeddings: PositionalEmbeddings,
         name: str,
     ) -> None:
-        ref_inputs = jax_to_torch(fs_inputs)[None, ...]
+        ref_inputs = jax_to_torch(llm_inputs)[None, ...]
         cosines = jax_to_torch(position_embeddings.cosines)[None, ...]
         sines = jax_to_torch(position_embeddings.sines)[None, ...]
 
@@ -268,23 +268,23 @@ class HFDecoderTracer:
         )
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
-            result=fs_outputs,
+            result=llm_outputs,
             reference=ref_outputs,
             operation_name=name,
         )
 
-    def match_mlp(self, fs_inputs: Array, fs_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
-        ref_inputs = jax_to_torch(fs_inputs)[None, ...]
+    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
+        ref_inputs = jax_to_torch(llm_inputs)[None, ...]
         torch_outputs = hf_mlp.forward(ref_inputs)
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
-            result=fs_outputs,
+            result=llm_outputs,
             reference=ref_outputs,
             operation_name=name,
         )
 
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
-        fs_results = activation_trace.local_positional_embeddings
+        llm_results = activation_trace.local_positional_embeddings
         hf_global_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
 
         dummy_input = torch.zeros((), dtype=torch.float32)
@@ -293,14 +293,14 @@ class HFDecoderTracer:
         ref_cosines = torch_to_jax(torch_cosines).squeeze(0)
         ref_sines = torch_to_jax(torch_sines).squeeze(0)
         assert_close(
-            result=fs_results.cosines,
+            result=llm_results.cosines,
             reference=ref_cosines,
             operation_name="Local RoPE Cosines",
         )
-        assert_close(result=fs_results.sines, reference=ref_sines, operation_name="Local RoPE Sines")
+        assert_close(result=llm_results.sines, reference=ref_sines, operation_name="Local RoPE Sines")
 
     def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
-        fs_results = activation_trace.global_positional_embeddings
+        llm_results = activation_trace.global_positional_embeddings
         hf_global_rope = self.hf_model.model.rotary_emb
 
         dummy_input = torch.zeros((), dtype=torch.float32)
@@ -309,11 +309,11 @@ class HFDecoderTracer:
         ref_cosines = torch_to_jax(torch_cosines).squeeze(0)
         ref_sines = torch_to_jax(torch_sines).squeeze(0)
         assert_close(
-            result=fs_results.cosines,
+            result=llm_results.cosines,
             reference=ref_cosines,
             operation_name="Global RoPE Cosines",
         )
-        assert_close(result=fs_results.sines, reference=ref_sines, operation_name="Global RoPE Sines")
+        assert_close(result=llm_results.sines, reference=ref_sines, operation_name="Global RoPE Sines")
 
     @torch.no_grad()
     def match_activations(self, result: DecoderResult) -> None:
@@ -369,9 +369,9 @@ class HFDecoderTracer:
 
         assert hf_outputs.logits is not None
         ref_probas = jax.nn.softmax(torch_to_jax(hf_outputs.logits).squeeze(0), axis=-1)
-        fs_probas = jax.nn.softmax(result.logits, axis=-1)
+        llm_probas = jax.nn.softmax(result.logits, axis=-1)
         assert_close(
-            result=fs_probas,
+            result=llm_probas,
             reference=ref_probas,
             fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
             operation_name="End2End Token Probabilities",
