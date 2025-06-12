@@ -196,7 +196,7 @@ def convert(
             progress.add_task("🚁 Generating traces...")
 
             num_tokens = 512
-            token_stride = 64
+            token_stride = 8
             token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)
             token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)
             mask = jnp.tril(jnp.ones((num_tokens, num_tokens), dtype=jnp.bool))
