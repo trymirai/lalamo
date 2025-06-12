@@ -73,7 +73,7 @@ class HFGemma2Config(HuggingFaceConfig):
             max_sequence_length=self.max_position_embeddings,
         )
         rmsnorm_config = RMSNormConfig(
-            scale_precision=accumulation_precision,
+            scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
