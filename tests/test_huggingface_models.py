@@ -12,6 +12,7 @@ MODEL_LIST = [
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     "meta-llama/Llama-3.2-1B-Instruct",
     "PleIAs/Pleias-RAG-1B",
+    "Qwen/Qwen3-0.6B",
 ]
 
 

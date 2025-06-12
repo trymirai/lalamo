@@ -4,6 +4,7 @@ from .gemma3 import HFGemma3Config, HFGemma3TextConfig
 from .llama import HFLlamaConfig
 from .mistral import HFMistralConfig
 from .qwen import HFQwen2Config
+from .qwen3 import HFQwen3Config
 
 __all__ = [
     "HFGemma2Config",
@@ -12,5 +13,6 @@ __all__ = [
     "HFLlamaConfig",
     "HFMistralConfig",
     "HFQwen2Config",
+    "HFQwen3Config",
     "HuggingFaceConfig",
 ]
