@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
+
 from lalamo.model_import.loaders import load_executorch
 from lalamo.modules import (
     Activation,
@@ -84,7 +85,7 @@ class ETLlamaConfig(ExecutorchConfig):
 
     def to_decoder_config(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
@@ -161,5 +162,5 @@ class ETLlamaConfig(ExecutorchConfig):
             attention_scale=None,
             num_layers=self.n_layers,
             sliding_window_sizes=None,
-            context_length=context_length,
+            context_length=context_length or MAX_SEQUENCE_LENGTH,
         )

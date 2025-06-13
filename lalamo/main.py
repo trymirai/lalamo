@@ -11,8 +11,6 @@ from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
 from jaxtyping import DTypeLike
-from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
-from lalamo.modules import WeightLayout, config_converter
 from rich import box
 from rich.console import Console
 from rich.panel import Panel
@@ -20,6 +18,9 @@ from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Exit, Option, Typer
+
+from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
+from lalamo.modules import WeightLayout, config_converter
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -116,12 +117,12 @@ def convert(
         ),
     ] = None,
     context_length: Annotated[
-        int,
+        int | None,
         Option(
             help="Maximum supported context length. Used to precompute positional embeddings.",
-            min=1,
+            show_default="Model's native maximum context length.",
         ),
-    ] = 8192,
+    ] = None,
 ) -> None:
     if precision is not None:
         precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore

@@ -6,6 +6,7 @@ from typing import ClassVar, Self
 import cattrs
 import jax
 from jaxtyping import Array, DTypeLike
+
 from lalamo.modules import Decoder, DecoderConfig
 
 __all__ = ["ForeignConfig"]
@@ -34,7 +35,7 @@ class ForeignConfig:
 
     def to_decoder_config(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
@@ -50,7 +51,7 @@ class ForeignConfig:
 
     def load_model(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         weights_dict: dict[str, Array],

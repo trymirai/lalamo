@@ -73,7 +73,7 @@ class ImportResults(NamedTuple):
 def import_model(
     model_spec: ModelSpec,
     *,
-    context_length: int = 8192,
+    context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
 ) -> ImportResults:

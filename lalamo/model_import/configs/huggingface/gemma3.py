@@ -3,6 +3,7 @@ from typing import Literal
 
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
+
 from lalamo.modules import (
     DecoderConfig,
     TiedEmbeddingConfig,
@@ -66,7 +67,7 @@ class HFGemma3TextConfigRaw:
 
     def to_decoder_config(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
@@ -138,7 +139,7 @@ class HFGemma3TextConfigRaw:
             attention_scale=attention_scale,
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=tuple(self.sliding_window_sizes),
-            context_length=context_length,
+            context_length=context_length or self.max_position_embeddings,
         )
 
 
@@ -175,7 +176,7 @@ class HFGemma3Config(HuggingFaceConfig):
 
     def to_decoder_config(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:

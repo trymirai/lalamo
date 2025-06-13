@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from jaxtyping import DTypeLike
+
 from lalamo.modules import (
     Activation,
     AttentionConfig,
@@ -52,7 +53,7 @@ class HFGemma2Config(HuggingFaceConfig):
 
     def to_decoder_config(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
@@ -117,5 +118,5 @@ class HFGemma2Config(HuggingFaceConfig):
             attention_scale=attention_scale,
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=sliding_window_sizes,
-            context_length=context_length,
+            context_length=context_length or self.max_position_embeddings,
         )

@@ -5,10 +5,11 @@ from pathlib import Path
 import jax.numpy as jnp
 import torch
 from jaxtyping import Array, DTypeLike
+from safetensors.flax import load_file as load_safetensors
+
 from lalamo.model_import.configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import torch_to_jax
-from safetensors.flax import load_file as load_safetensors
 
 __all__ = [
     "HUGGINGFACE_TOKENIZER_FILES",

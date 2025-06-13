@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 from jaxtyping import Array
+
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     MLP,

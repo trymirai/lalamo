@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from jaxtyping import DTypeLike
+
 from lalamo.modules import (
     Activation,
     AttentionConfig,
@@ -59,7 +60,7 @@ class HFLlamaConfig(HuggingFaceConfig):
 
     def to_decoder_config(
         self,
-        context_length: int,
+        context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
@@ -130,5 +131,5 @@ class HFLlamaConfig(HuggingFaceConfig):
             attention_scale=None,
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=None,
-            context_length=context_length,
+            context_length=context_length or self.max_position_embeddings,
         )

@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, Float, Int
+
 from lalamo.common import ParameterPath
 from lalamo.modules import MLP, Attention, Decoder, DecoderLayer, QLoRALinear, QuantizedTiedEmbedding, RMSNorm
 

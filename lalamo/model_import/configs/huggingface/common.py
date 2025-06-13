@@ -3,6 +3,7 @@ from typing import Literal
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
+
 from lalamo.model_import.configs import ForeignConfig
 from lalamo.model_import.loaders import load_huggingface
 from lalamo.modules import Decoder
