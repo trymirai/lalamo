@@ -6,6 +6,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
+import jax.numpy as jnp
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -123,6 +124,12 @@ def convert(
             show_default="Model's native maximum context length.",
         ),
     ] = None,
+    include_traces: Annotated[
+        bool,
+        Option(
+            help="Export activation traces traces for debugging purposes.",
+        ),
+    ] = False,
 ) -> None:
     if precision is not None:
         precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
@@ -184,6 +191,24 @@ def convert(
 
         for path in tokenizer_file_paths:
             shutil.copy(path, output_dir / path.name)
+
+        if include_traces:
+            progress.add_task("🚁 Generating traces...")
+
+            num_tokens = 512
+            token_stride = 8
+            token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)
+            token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)
+            mask = jnp.tril(jnp.ones((num_tokens, num_tokens), dtype=jnp.bool))
+            result = model(
+                token_ids,
+                token_positions,
+                mask=mask,
+                return_updated_kv_cache=True,
+                return_activation_trace=True,
+            )
+            traces = dict(result.export_weights(weight_layout))
+            save_file(traces, output_dir / "traces.safetensors")
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 

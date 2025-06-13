@@ -18,13 +18,12 @@
 import math
 from dataclasses import dataclass
 
-import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterDict
 
-from .common import LalamoModule, WeightLayout, register_config_union
+from .common import ExportableModule, LalamoModule, WeightLayout, register_config_union
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -37,7 +36,7 @@ __all__ = [
 ]
 
 
-class PositionalEmbeddings(eqx.Module):
+class PositionalEmbeddings(ExportableModule):
     cosines: Float[Array, "tokens head_channels"]
     sines: Float[Array, "tokens head_channels"]
 
@@ -52,6 +51,12 @@ class PositionalEmbeddings(eqx.Module):
 
     def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
+
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
+        return ParameterDict(
+            cosines=self.cosines,
+            sines=self.sines,
+        )
 
 
 @dataclass(frozen=True)

@@ -1,14 +1,12 @@
 from dataclasses import dataclass
-from typing import NamedTuple
 
-import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 
-from .common import AttentionType, LalamoModule, WeightLayout
+from .common import AttentionType, ExportableModule, LalamoModule, WeightLayout
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCacheLayerSlice
@@ -23,7 +21,7 @@ __all__ = [
 ]
 
 
-class DecoderActivationTrace(eqx.Module):
+class DecoderActivationTrace(ExportableModule):
     token_ids: Int[Array, " suffix_tokens"]
     token_positions: Int[Array, " suffix_tokens"]
     kv_cache: tuple[KVCacheLayerSlice, ...] | None
@@ -36,11 +34,40 @@ class DecoderActivationTrace(eqx.Module):
 
     output_norm: Float[Array, "suffix_tokens channels"]
 
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+        result = ParameterDict(
+            token_ids=self.token_ids,
+            token_positions=self.token_positions,
+            local_positional_embeddings=self.local_positional_embeddings.export_weights(weight_layout),
+            global_positional_embeddings=self.global_positional_embeddings.export_weights(weight_layout),
+            layer_results=[layer_result.export_weights(weight_layout) for layer_result in self.layer_results],
+            output_norm=self.output_norm,
+        )
+        if self.kv_cache is not None:
+            result["kv_cache"] = [
+                kv_cache_layer_slice.export_weights(weight_layout) for kv_cache_layer_slice in self.kv_cache
+            ]
+        if self.mask is not None:
+            result["mask"] = self.mask
+        return result
 
-class DecoderResult(NamedTuple):
+
+class DecoderResult(ExportableModule):
     logits: Float[Array, "suffix_tokens channels"]
     updated_kv_cache: tuple[KVCacheLayerSlice, ...] | None = None
     activation_trace: DecoderActivationTrace | None = None
+
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+        result = ParameterDict(
+            logits=self.logits,
+        )
+        if self.updated_kv_cache is not None:
+            result["updated_kv_cache"] = [
+                kv_cache_layer_slice.export_weights(weight_layout) for kv_cache_layer_slice in self.updated_kv_cache
+            ]
+        if self.activation_trace is not None:
+            result["activation_trace"] = self.activation_trace.export_weights(weight_layout)
+        return result
 
 
 @dataclass(frozen=True)

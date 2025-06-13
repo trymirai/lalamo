@@ -12,6 +12,7 @@ from lalamo.common import ParameterDict
 __all__ = [
     "AttentionType",
     "DummyUnionMember",
+    "ExportableModule",
     "LalamoModule",
     "config_converter",
     "register_config_union",
@@ -28,7 +29,6 @@ class WeightLayout(Enum):
                 return "(input, output)"
             case WeightLayout.OUTPUT_INPUT:
                 return "(output, input)"
-        raise ValueError(f"Unknown weight layout: {self}")
 
 
 class AttentionType(Enum):
@@ -36,11 +36,13 @@ class AttentionType(Enum):
     SLIDING_WINDOW = "sliding_window"
 
 
-class LalamoModule[ConfigT](eqx.Module):
-    config: ConfigT = eqx.field(static=True)
-
+class ExportableModule(eqx.Module):
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
         raise NotImplementedError
+
+
+class LalamoModule[ConfigT](ExportableModule):
+    config: ConfigT = eqx.field(static=True)
 
 
 def _dtype_to_str(dtype: jnp.dtype) -> str:

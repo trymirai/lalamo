@@ -27,3 +27,6 @@ downloads/
 
 # Converted models
 models/
+
+# IDE
+.idea/
