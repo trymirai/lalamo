@@ -1,15 +1,17 @@
-from .common import ModelSpec
+from .common import UseCase, ModelSpec
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .huggingface import HUGGINGFACE_MODELS
 from .llama import LLAMA_MODELS
 from .mistral import MISTRAL_MODELS
 from .pleias import PLEIAS_MODELS
+from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
 
 __all__ = [
     "ALL_MODELS",
     "REPO_TO_MODEL",
+    "UseCase",
     "ModelSpec",
 ]
 
@@ -21,6 +23,7 @@ ALL_MODEL_LISTS = [
     HUGGINGFACE_MODELS,
     MISTRAL_MODELS,
     PLEIAS_MODELS,
+    POLARIS_MODELS,
     QWEN_MODELS,
 ]
 

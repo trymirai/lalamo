@@ -1,7 +1,7 @@
 from lalamo.model_import.configs import HFQwen2Config, HFQwen3Config
 from lalamo.quantization import QuantizationMode
 
-from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, WeightsType, huggingface_weight_files
+from .common import HUGGINGFACE_TOKENIZER_FILES, UseCase, ModelSpec, WeightsType, huggingface_weight_files
 
 __all__ = ["QWEN_MODELS"]
 
@@ -19,6 +19,7 @@ QWEN25 = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -32,6 +33,7 @@ QWEN25 = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -45,6 +47,7 @@ QWEN25 = [
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -58,6 +61,7 @@ QWEN25 = [
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -71,6 +75,7 @@ QWEN25 = [
         weights_file_names=huggingface_weight_files(8),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -84,6 +89,7 @@ QWEN25 = [
         weights_file_names=huggingface_weight_files(17),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
 ]
 
@@ -101,6 +107,7 @@ QWEN25_CODER = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -114,6 +121,7 @@ QWEN25_CODER = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -127,6 +135,7 @@ QWEN25_CODER = [
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -140,6 +149,7 @@ QWEN25_CODER = [
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -153,6 +163,7 @@ QWEN25_CODER = [
         weights_file_names=huggingface_weight_files(6),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -166,6 +177,7 @@ QWEN25_CODER = [
         weights_file_names=huggingface_weight_files(14),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
 ]
 
@@ -183,6 +195,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -196,6 +209,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -209,6 +223,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(3),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -222,6 +237,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -235,6 +251,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(5),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -248,6 +265,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -261,6 +279,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(8),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -274,6 +293,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -287,6 +307,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(17),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -300,6 +321,7 @@ QWEN3 = [
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
 ]
 

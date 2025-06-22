@@ -1,6 +1,6 @@
 from lalamo.model_import.configs import HFMistralConfig
 
-from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, WeightsType, huggingface_weight_files
+from .common import HUGGINGFACE_TOKENIZER_FILES, UseCase, ModelSpec, WeightsType, huggingface_weight_files
 
 __all__ = ["MISTRAL_MODELS"]
 
@@ -17,6 +17,7 @@ CODESTRAL = [
         weights_file_names=huggingface_weight_files(9),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=(UseCase.CODE,),
     ),
 ]
 
@@ -33,6 +34,7 @@ DEVSTRAL = [
         weights_file_names=huggingface_weight_files(10),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=tuple(),
+        use_cases=(UseCase.CODE,),
     ),
 ]
 

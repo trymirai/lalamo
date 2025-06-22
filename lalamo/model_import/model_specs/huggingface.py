@@ -17,5 +17,6 @@ HUGGINGFACE_MODELS = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
 ]

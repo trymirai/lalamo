@@ -18,6 +18,7 @@ LLAMA31 = [
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
 ]
 
@@ -35,6 +36,7 @@ LLAMA32 = [
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -47,6 +49,7 @@ LLAMA32 = [
         config_file_name="params.json",
         weights_file_names=("consolidated.00.pth",),
         weights_type=WeightsType.TORCH,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -60,6 +63,7 @@ LLAMA32 = [
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
         tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        use_cases=tuple(),
     ),
     ModelSpec(
         vendor="Meta",
@@ -72,6 +76,7 @@ LLAMA32 = [
         config_file_name="params.json",
         weights_file_names=("consolidated.00.pth",),
         weights_type=WeightsType.TORCH,
+        use_cases=tuple(),
     ),
 ]
 
