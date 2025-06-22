@@ -13,6 +13,8 @@ MODEL_LIST = [
     "meta-llama/Llama-3.2-1B-Instruct",
     "PleIAs/Pleias-RAG-1B",
     "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-0.6B-GPTQ-Int8",
+    "Qwen/Qwen3-4B-AWQ",
 ]
 
 

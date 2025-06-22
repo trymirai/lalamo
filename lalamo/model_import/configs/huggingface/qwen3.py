@@ -9,6 +9,7 @@ from lalamo.modules import (
     DecoderConfig,
     DecoderLayerConfig,
     FullPrecisionLinearConfig,
+    GroupQuantizedLinearConfig,
     MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
@@ -16,10 +17,50 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
+from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceConfig
 
 __all__ = ["HFQwen3Config"]
+
+
+@dataclass(frozen=True)
+class AWQQuantizationConfig:
+    backend: Literal["autoawq"]
+    bits: Literal[4, 8]
+    do_fuse: Literal[False]
+    exllama_config: None
+    fuse_max_seq_len: None
+    group_size: int
+    modules_to_fuse: None
+    modules_to_not_convert: None
+    quant_method: Literal["awq"]
+    version: Literal["gemm"]
+    zero_point: bool
+
+
+@dataclass(frozen=True)
+class GPTQMetaConfig:
+    damp_auto_increment: float
+    damp_percent: float
+    mse: float
+    quantizer: list[str]
+    static_groups: bool
+    true_sequential: bool
+    uri: str
+
+
+@dataclass(frozen=True)
+class GPTQQuantizationConfig:
+    bits: int
+    checkpoint_format: str
+    desc_act: bool
+    group_size: int
+    lm_head: bool
+    meta: GPTQMetaConfig
+    pack_dtype: str
+    quant_method: Literal["gptq"]
+    sym: bool
 
 
 @dataclass(frozen=True)
@@ -41,6 +82,8 @@ class HFQwen3Config(HuggingFaceConfig):
     use_sliding_window: bool
     vocab_size: int
     head_dim: int
+
+    quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
 
     def _get_sliding_window_sizes(self) -> tuple[int | None, ...]:
         if not self.use_sliding_window:
@@ -87,9 +130,30 @@ class HFQwen3Config(HuggingFaceConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         )
-        linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        if self.quantization_config is None:
+            linear_config = FullPrecisionLinearConfig(
+                precision=activation_precision,
+            )
+        else:
+            bits_to_mode = {
+                4: QuantizationMode.INT4,
+                8: QuantizationMode.INT8,
+            }
+            if isinstance(self.quantization_config, AWQQuantizationConfig):
+                use_zero_point = self.quantization_config.zero_point
+            elif isinstance(self.quantization_config, GPTQQuantizationConfig):
+                use_zero_point = not self.quantization_config.sym
+            else:
+                # This should be unreachable with proper type checking
+                raise TypeError(f"Unsupported quantization config type: {type(self.quantization_config)}")
+
+            linear_config = GroupQuantizedLinearConfig(
+                use_zero_point=use_zero_point,
+                group_size=self.quantization_config.group_size,
+                weight_quantization_mode=bits_to_mode[self.quantization_config.bits],
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,

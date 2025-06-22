@@ -171,6 +171,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
 @dataclass(frozen=True)
 class GroupQuantizedLinearConfig(LinearConfigBase):
     group_size: int
+    use_zero_point: bool
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
     activation_precision: DTypeLike
@@ -201,11 +202,17 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
         else:
             biases = None
 
+        if self.use_zero_point:
+            zero_points = jnp.zeros((sum(output_dims), num_groups), dtype=self.activation_precision)
+        else:
+            zero_points = None
+
         return GroupQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
             scales=scales,
+            zero_points=zero_points,
             biases=biases,
         )
 
@@ -213,6 +220,7 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
 class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[ConfigT]):
     weights: Float[Array, "total_out_channels in_channels"]
     scales: Float[Array, "total_out_channels groups"]
+    zero_points: Float[Array, "total_out_channels groups"] | None
     biases: Float[Array, " total_out_channels"] | None
 
     @property
@@ -233,6 +241,13 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         result = quantize_weights(self.weights, self.config.weight_quantization_mode)
         return result.astype(self.config.weight_quantization_mode.dtype)
 
+    @property
+    def int_zero_points(self) -> Int[Array, "out_channels (groups in_channels)"] | None:
+        if self.zero_points is not None:
+            result = quantize_weights(self.zero_points, self.config.weight_quantization_mode)
+            return result.astype(self.config.weight_quantization_mode.dtype)
+        return None
+
     def __post_init__(self) -> None:
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
@@ -246,6 +261,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
                 f"Number of output channels in weights ({w_output_dim}) is not"
                 f" equal to sum of output dims ({sum(self.output_dims)}).",
             )
+
         if self.scales.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Scale dtype ({self.scales.dtype}) is not equal to specified activation precision"
@@ -263,20 +279,39 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
                 f"Number of groups in scales ({s_num_groups}) is incompatible with"
                 f" the specified group size ({self.config.group_size}).",
             )
-        if self.biases is None:
-            return
-        if self.biases.dtype != self.config.activation_precision:
-            raise ValueError(
-                f"Bias dtype ({self.biases.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
-                " Quantized layers require parameter dtypes to be equal to the activation precision.",
-            )
-        (b_output_dim,) = self.biases.shape
-        if w_output_dim != b_output_dim:
-            raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to number of output channels in biases ({b_output_dim}).",
-            )
+
+        if self.zero_points is not None:
+            if self.zero_points.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"Zero point dtype ({self.zero_points.dtype}) is not equal to specified activation precision"
+                    f" ({self.config.activation_precision}).",
+                    " Quantized layers require parameter dtypes to be equal to the activation precision.",
+                )
+            (zp_output_dim, zp_num_groups) = self.zero_points.shape
+            if w_output_dim != zp_output_dim:
+                raise ValueError(
+                    f"Number of output channels in weights ({w_output_dim}) is not"
+                    f" equal to number of output channels in zero points ({zp_output_dim}).",
+                )
+            if self.num_groups != zp_num_groups:
+                raise ValueError(
+                    f"Number of groups in zero points ({zp_num_groups}) is incompatible with"
+                    f" the specified group size ({self.config.group_size}).",
+                )
+
+        if self.biases is not None:
+            if self.biases.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"Bias dtype ({self.biases.dtype}) is not equal to specified activation precision"
+                    f" ({self.config.activation_precision}).",
+                    " Quantized layers require parameter dtypes to be equal to the activation precision.",
+                )
+            (b_output_dim,) = self.biases.shape
+            if w_output_dim != b_output_dim:
+                raise ValueError(
+                    f"Number of output channels in weights ({w_output_dim}) is not"
+                    f" equal to number of output channels in biases ({b_output_dim}).",
+                )
 
     def _prepare_scaled_weights(self) -> Float[Array, "total_out_channels in_channels"]:
         quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
@@ -285,6 +320,11 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
             "total_out_channels (groups group_channels) -> total_out_channels groups group_channels",
             groups=self.num_groups,
         )
+
+        if self.zero_points:
+            zero_points = rearrange(self.zero_points, "total_out_channels groups -> total_out_channels groups 1")
+            grouped_weights = grouped_weights - zero_points
+
         scales = rearrange(self.scales, "total_out_channels groups -> total_out_channels groups 1")
         scaled_grouped_weights = grouped_weights * scales
         result = rearrange(
@@ -305,11 +345,15 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
-        quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
-        exported_weights = self._into_layout(quantized_weights, weight_layout)
-        exported_weights = exported_weights.astype(self.config.weight_quantization_mode.dtype)
+        exported_weights = self._into_layout(self.int_weights, weight_layout)
 
-        exported_scales = rearrange(self.scales, "total_out_channels groups -> groups total_out_channels")
+        int_zero_points = self.int_zero_points
+        if int_zero_points is not None:
+            exported_zero_points = self._into_layout(int_zero_points, weight_layout)
+        else:
+            exported_zero_points = None
+
+        exported_scales = self._into_layout(self.scales, weight_layout)
 
         result = ParameterDict(
             weights=exported_weights,
@@ -317,6 +361,8 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         )
         if self.biases is not None:
             result["biases"] = self.biases
+        if exported_zero_points is not None:
+            result["zero_points"] = exported_zero_points
         return result
 
 
@@ -372,6 +418,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             weights=group_quantized_linear.weights,
             scales=group_quantized_linear.scales,
             biases=group_quantized_linear.biases,
+            zero_points=group_quantized_linear.zero_points,
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
         )

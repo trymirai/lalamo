@@ -22,6 +22,7 @@ from typer import Argument, Exit, Option, Typer
 
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from lalamo.modules import WeightLayout, config_converter
+from lalamo.utils import jax_int4_to_packed_uint8
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -78,6 +79,16 @@ def _error(message: str) -> None:
     panel = Panel(message, box=box.ROUNDED, title="Error", title_align="left", border_style="red")
     err_console.print(panel)
     raise Exit(1)
+
+
+def _pack_int4_weights(weights: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
+    packed_weights = {}
+    for key, value in weights.items():
+        if value.dtype == jnp.int4:
+            packed_weights[key] = jax_int4_to_packed_uint8(value)
+        else:
+            packed_weights[key] = value
+    return packed_weights
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
@@ -183,7 +194,8 @@ def convert(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         weights = dict(model.export_weights(weight_layout))
-        save_file(weights, output_dir / "model.safetensors")
+        packed_weights = _pack_int4_weights(weights)
+        save_file(packed_weights, output_dir / "model.safetensors")
 
         config_json = config_converter.unstructure(metadata, ModelMetadata)
         with open(output_dir / "config.json", "w") as file:

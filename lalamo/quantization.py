@@ -22,6 +22,14 @@ class QuantizationMode(Enum):
         }
         return value_to_dtype[self]
 
+    @property
+    def bits(self) -> int:
+        value_to_bits = {
+            QuantizationMode.INT4: 4,
+            QuantizationMode.INT8: 8,
+        }
+        return value_to_bits[self]
+
     def __str__(self) -> str:
         return self.value
 

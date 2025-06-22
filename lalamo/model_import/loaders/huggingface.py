@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array
 
 from lalamo.common import ParameterPath
@@ -12,47 +13,141 @@ from lalamo.modules import (
     UntiedEmbedding,
 )
 from lalamo.modules.decoder import Decoder
+from lalamo.modules.linear import GroupQuantizedLinear, LinearBase
+from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
 
 __all__ = ["load_huggingface"]
 
 
-def load_linear(
-    module: FullPrecisionLinear,
+def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
+    assert packed_weights.dtype == jnp.int32
+    assert 32 % mode.bits == 0
+
+    shifts = jnp.arange(0, 32, mode.bits)
+    mask = (2**mode.bits) - 1
+    unpacked = jnp.bitwise_and(jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask)
+    unpacked = rearrange(
+        unpacked,
+        "out_channels packed_groups packed_values -> out_channels (packed_groups packed_values)",
+    )
+    return unpacked
+
+
+def recenter_unpacked_zero_points(unpacked_zero_points: Array, mode: QuantizationMode) -> Array:
+    shift = 2 ** (mode.bits - 1)
+    return unpacked_zero_points - shift
+
+
+def _process_quantized_tensors(
+    qweight: Array,
+    qzeros: Array,
+    scales: Array,
+    module: GroupQuantizedLinear,
+) -> tuple[Array, Array, Array]:
+    """Unpacks, recenters, and casts quantized tensors to the correct dtype."""
+    mode = module.config.weight_quantization_mode
+    unpacked_weights = unpack_int32(qweight, mode)
+    unpacked_zero_points = unpack_int32(qzeros, mode)
+
+    recentered_zero_points = recenter_unpacked_zero_points(
+        unpacked_zero_points,
+        mode,
+    )
+
+    weights = unpacked_weights.astype(module.config.activation_precision)
+    zero_points = recentered_zero_points.astype(module.config.activation_precision)
+    processed_scales = scales.astype(module.config.activation_precision)
+
+    return weights, zero_points, processed_scales
+
+
+def _fuse_full_precision_weights(
     weights_dict: dict[str, Array],
     path: ParameterPath,
-) -> FullPrecisionLinear:
-    if module.biases is None:
-        if path / "bias" in weights_dict:
-            raise ValueError(f"Bias is not supported for {path}")
-        loaded_bias = None
+    sublayers_to_fuse: list[str] | None,
+) -> Array:
+    if sublayers_to_fuse is None:
+        return weights_dict[path / "weight"]
+
+    weights = [weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse]
+    return jnp.concatenate(weights, axis=0)
+
+
+def _fuse_quantized_weights(
+    weights_dict: dict[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+) -> tuple[Array, Array, Array]:
+    if sublayers_to_fuse is None:
+        qweight = weights_dict[path / "qweight"]
+        qzeros = weights_dict[path / "qzeros"]
+        scales = weights_dict[path / "scales"]
+        return qweight, qzeros, scales
+
+    qweights = [weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse]
+    qzeros = [weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse]
+    scales = [weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse]
+
+    fused_qweights = jnp.concatenate(qweights, axis=0)
+    fused_qzeros = jnp.concatenate(qzeros, axis=0)
+    fused_scales = jnp.concatenate(scales, axis=0)
+
+    return fused_qweights, fused_qzeros, fused_scales
+
+
+def load_linear(
+    module: LinearBase,
+    weights_dict: dict[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None = None,
+) -> LinearBase:
+    """Loads a linear layer, optionally fusing weights from sublayers."""
+    if not module.has_biases:
+        if sublayers_to_fuse:
+            paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
+        else:
+            paths_to_check = path / "bias"
+        for p in paths_to_check:
+            if p in weights_dict:
+                raise ValueError(f"Bias tensor found at {p} but module does not support it.")
+        bias = None
+    elif sublayers_to_fuse is None:
+        bias = weights_dict[path / "bias"]
     else:
-        loaded_bias = weights_dict[path / "bias"]
-    return load_parameters(
-        lambda m: (m.weights, m.biases),
-        module,
-        (weights_dict[path / "weight"], loaded_bias),
-    )
+        bias = jnp.concatenate(
+            [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
+            axis=0,
+        )
+
+    if isinstance(module, FullPrecisionLinear):
+        weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
+        return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
+
+    if isinstance(module, GroupQuantizedLinear):
+        qweight, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
+
+        weights, zero_points, scales = _process_quantized_tensors(
+            qweight,
+            qzeros,
+            scales,
+            module,
+        )
+
+        return load_parameters(
+            lambda m: (m.weights, m.scales, m.zero_points, m.biases),
+            module,
+            (weights, scales, zero_points, bias),
+        )
+
+    raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
 def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -> MLP:
-    if not isinstance(module.up_projection, FullPrecisionLinear):
-        raise TypeError(f"Expected up_projection to be FullPrecisionLinear, got {type(module.up_projection)}")
-    if not isinstance(module.down_projection, FullPrecisionLinear):
-        raise TypeError(f"Expected down_projection to be FullPrecisionLinear, got {type(module.down_projection)}")
-
-    up_proj_weights = weights_dict[path / "up_proj" / "weight"]
-    gate_proj_weights = weights_dict[path / "gate_proj" / "weight"]
-    fused_up_gate_weights = jnp.concatenate([up_proj_weights, gate_proj_weights], axis=0)
-
-    down_proj_weights = weights_dict[path / "down_proj" / "weight"]
-
-    return load_parameters(
-        lambda m: (m.up_projection.weights, m.down_projection.weights),  # type: ignore
-        module,
-        (fused_up_gate_weights, down_proj_weights),
-    )
+    up_projection = load_linear(module.up_projection, weights_dict, path, sublayers_to_fuse=["up_proj", "gate_proj"])
+    down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
+    return load_parameters(lambda m: (m.up_projection, m.down_projection), module, (up_projection, down_projection))
 
 
 def load_rmsnorm(
@@ -69,14 +164,13 @@ def load_attention(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> Attention:
-    if not isinstance(module.qkv_projection, FullPrecisionLinear):
-        raise TypeError(f"Expected qkv_projection to be FullPrecisionLinear, got {type(module.qkv_projection)}")
-    if not isinstance(module.out_projection, FullPrecisionLinear):
-        raise TypeError(f"Expected out_projection to be FullPrecisionLinear, got {type(module.out_projection)}")
-    out_proj = load_linear(module.out_projection, weights_dict, path / "o_proj")
-    q_proj_weights = weights_dict[path / "q_proj" / "weight"]
-    k_proj_weights = weights_dict[path / "k_proj" / "weight"]
-    v_proj_weights = weights_dict[path / "v_proj" / "weight"]
+    qkv_projection = load_linear(
+        module.qkv_projection,
+        weights_dict,
+        path,
+        sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+    )
+    out_projection = load_linear(module.out_projection, weights_dict, path / "o_proj")
 
     if module.query_norm is not None:
         query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
@@ -88,22 +182,10 @@ def load_attention(
     else:
         key_norm = None
 
-    qkv_proj_weights = jnp.concatenate([q_proj_weights, k_proj_weights, v_proj_weights], axis=0)
-
-    bias_paths = [path / p / "bias" for p in ["q_proj", "k_proj", "v_proj"]]
-    if module.qkv_projection.biases is None:
-        for bias_path in bias_paths:
-            if bias_path in weights_dict:
-                raise ValueError(f"Bias is not supported for {bias_path}")
-        qkv_bias = None
-    else:
-        loaded_biases = [weights_dict[bias_path] for bias_path in bias_paths]
-        qkv_bias = jnp.concatenate(loaded_biases, axis=0)
-
     return load_parameters(
-        lambda m: (m.qkv_projection.weights, m.qkv_projection.biases, m.out_projection, m.query_norm, m.key_norm),  # type: ignore
+        lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
         module,
-        (qkv_proj_weights, qkv_bias, out_proj, query_norm, key_norm),
+        (qkv_projection, out_projection, query_norm, key_norm),
     )
 
 
