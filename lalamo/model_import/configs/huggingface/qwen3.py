@@ -26,17 +26,17 @@ __all__ = ["HFQwen3Config"]
 
 @dataclass(frozen=True)
 class AWQQuantizationConfig:
-    backend: Literal["autoawq"]
-    bits: Literal[4, 8]
-    do_fuse: Literal[False]
-    exllama_config: None
-    fuse_max_seq_len: None
-    group_size: int
-    modules_to_fuse: None
-    modules_to_not_convert: None
-    quant_method: Literal["awq"]
-    version: Literal["gemm"]
-    zero_point: bool
+    backend: Literal["autoawq"] = "autoawq"
+    bits: Literal[4, 8] = 4
+    do_fuse: Literal[False] = False
+    exllama_config: None = None
+    fuse_max_seq_len: None = None
+    group_size: int = 128
+    modules_to_fuse: None = None
+    modules_to_not_convert: None = None
+    quant_method: Literal["awq"] = "awq"
+    version: Literal["gemm"] = "gemm"
+    zero_point: bool = True
 
 
 @dataclass(frozen=True)

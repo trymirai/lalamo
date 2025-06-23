@@ -30,3 +30,7 @@ models/
 
 # IDE
 .idea/
+
+sync.bb
+.clj-kondo
+.lsp
