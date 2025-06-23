@@ -10,7 +10,7 @@ from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
 
 
-class TestDType(Enum):
+class DType(Enum):
     FLOAT16 = "float16"
     BFLOAT16 = "bfloat16"
     FLOAT32 = "float32"
@@ -25,19 +25,20 @@ class TestDType(Enum):
 
 
 @dataclass
-class TestSpec:
+class Spec:
     model_repo: str
-    dtype: TestDType
+    dtype: DType
+    requires_gpu: bool = False
 
 
 MODEL_LIST = [
-    TestSpec("Qwen/Qwen2.5-0.5B-Instruct", TestDType.FLOAT32),
-    TestSpec("google/gemma-3-1b-it", TestDType.FLOAT32),
-    TestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", TestDType.FLOAT32),
-    TestSpec("meta-llama/Llama-3.2-1B-Instruct", TestDType.FLOAT32),
-    TestSpec("PleIAs/Pleias-RAG-1B", TestDType.FLOAT32),
-    TestSpec("Qwen/Qwen3-0.6B", TestDType.FLOAT32),
-    TestSpec("Qwen/Qwen3-4B-AWQ", TestDType.FLOAT16),
+    Spec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
+    Spec("google/gemma-3-1b-it", DType.FLOAT32),
+    Spec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
+    Spec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
+    Spec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
+    Spec("Qwen/Qwen3-0.6B", DType.FLOAT32),
+    Spec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16, requires_gpu=True),
 ]
 
 
@@ -46,13 +47,16 @@ TOKEN_STRIDE = 64
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST)
-def test_hf_model(test_spec: TestSpec) -> None:
-    hf_tracer = load_hf_tracer(test_spec.model_repo, torch_dtype=test_spec.dtype.torch_dtype)
+def test_hf_model(test_spec: Spec) -> None:
+    if test_spec.requires_gpu and not torch.cuda.is_available():
+        pytest.skip("GPU is required for this test")
+
     llm_model, *_ = import_model(
         REPO_TO_MODEL[test_spec.model_repo],
         context_length=NUM_TOKENS * TOKEN_STRIDE,
         precision=test_spec.dtype.jax_dtype,
     )
+    hf_tracer = load_hf_tracer(test_spec.model_repo, torch_dtype=test_spec.dtype.torch_dtype)
 
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)
     token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)

@@ -18,7 +18,7 @@ from lalamo.modules.decoder import DecoderResult
 from lalamo.utils import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 
-END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS = 0.01
+FRACTION_OF_ALLOWED_VIOLATIONS = 0.01
 
 
 class HFRotaryEmbedding(Protocol):
@@ -116,6 +116,7 @@ class HFModelForCausalLM(Protocol):
 @dataclass
 class HFDecoderTracer:
     hf_model: HFModelForCausalLM
+    device: torch.device
 
     def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
@@ -123,13 +124,14 @@ class HFDecoderTracer:
         llm_results = first_layer_results.activation_trace.inputs
         hf_embedding = self.hf_model.model.embed_tokens
 
-        ref_input = jax_to_torch(activation_trace.token_ids)[None, ...]
+        ref_input = jax_to_torch(activation_trace.token_ids)[None, ...].to(self.device)
         torch_embedding = hf_embedding.forward(ref_input)
         ref_embedding = torch_to_jax(torch_embedding).squeeze(0)
         assert_close(
             result=llm_results,
             reference=ref_embedding,
             operation_name="Embedding",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_readout(self, result: DecoderResult) -> None:
@@ -137,7 +139,7 @@ class HFDecoderTracer:
 
         llm_logits = result.logits
 
-        ref_normalized_outputs = jax_to_torch(result.activation_trace.output_norm)[None, ...]
+        ref_normalized_outputs = jax_to_torch(result.activation_trace.output_norm)[None, ...].to(self.device)
         hf_logits = self.hf_model.lm_head(ref_normalized_outputs)
 
         ref_logits = torch_to_jax(hf_logits).squeeze(0)
@@ -146,6 +148,7 @@ class HFDecoderTracer:
             result=llm_logits,
             reference=ref_logits,
             operation_name="Readout (lm_head)",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_layer(
@@ -216,9 +219,9 @@ class HFDecoderTracer:
             )
 
         # Test full decoder layer
-        ref_inputs = jax_to_torch(activation_trace.inputs)[None, ...]
-        cosines = jax_to_torch(activation_trace.positional_embeddings.cosines)[None, ...]
-        sines = jax_to_torch(activation_trace.positional_embeddings.sines)[None, ...]
+        ref_inputs = jax_to_torch(activation_trace.inputs)[None, ...].to(self.device)
+        cosines = jax_to_torch(activation_trace.positional_embeddings.cosines)[None, ...].to(self.device)
+        sines = jax_to_torch(activation_trace.positional_embeddings.sines)[None, ...].to(self.device)
 
         if isinstance(hf_layer, Gemma3DecoderLayer):
             torch_outputs, *_ = hf_layer.forward(
@@ -237,16 +240,18 @@ class HFDecoderTracer:
             result=layer_result.outputs,
             reference=ref_outputs,
             operation_name=f"Layer {layer_index} Full Output",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
-        ref_inputs = jax_to_torch(llm_inputs)[None, ...]
+        ref_inputs = jax_to_torch(llm_inputs)[None, ...].to(self.device)
         torch_outputs = hf_layer.forward(ref_inputs)
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
             result=llm_outputs,
             reference=ref_outputs,
             operation_name=name,
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_attention(
@@ -257,9 +262,9 @@ class HFDecoderTracer:
         position_embeddings: PositionalEmbeddings,
         name: str,
     ) -> None:
-        ref_inputs = jax_to_torch(llm_inputs)[None, ...]
-        cosines = jax_to_torch(position_embeddings.cosines)[None, ...]
-        sines = jax_to_torch(position_embeddings.sines)[None, ...]
+        ref_inputs = jax_to_torch(llm_inputs)[None, ...].to(self.device)
+        cosines = jax_to_torch(position_embeddings.cosines)[None, ...].to(self.device)
+        sines = jax_to_torch(position_embeddings.sines)[None, ...].to(self.device)
 
         torch_outputs, _ = hf_attention.forward(
             hidden_states=ref_inputs,
@@ -271,24 +276,26 @@ class HFDecoderTracer:
             result=llm_outputs,
             reference=ref_outputs,
             operation_name=name,
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_mlp(self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
-        ref_inputs = jax_to_torch(llm_inputs)[None, ...]
+        ref_inputs = jax_to_torch(llm_inputs)[None, ...].to(self.device)
         torch_outputs = hf_mlp.forward(ref_inputs)
         ref_outputs = torch_to_jax(torch_outputs).squeeze(0)
         assert_close(
             result=llm_outputs,
             reference=ref_outputs,
             operation_name=name,
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.local_positional_embeddings
         hf_global_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
 
-        dummy_input = torch.zeros((), dtype=torch.float32)
-        ref_input = jax_to_torch(activation_trace.token_positions)
+        dummy_input = torch.zeros((), dtype=torch.float32).to(self.device)
+        ref_input = jax_to_torch(activation_trace.token_positions).to(self.device)
         torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input[None, ...])
         ref_cosines = torch_to_jax(torch_cosines).squeeze(0)
         ref_sines = torch_to_jax(torch_sines).squeeze(0)
@@ -296,6 +303,7 @@ class HFDecoderTracer:
             result=llm_results.cosines,
             reference=ref_cosines,
             operation_name="Local RoPE Cosines",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
         assert_close(result=llm_results.sines, reference=ref_sines, operation_name="Local RoPE Sines")
 
@@ -303,8 +311,8 @@ class HFDecoderTracer:
         llm_results = activation_trace.global_positional_embeddings
         hf_global_rope = self.hf_model.model.rotary_emb
 
-        dummy_input = torch.zeros((), dtype=torch.float32)
-        ref_input = jax_to_torch(activation_trace.token_positions)
+        dummy_input = torch.zeros((), dtype=torch.float32).to(self.device)
+        ref_input = jax_to_torch(activation_trace.token_positions).to(self.device)
         torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input[None, ...])
         ref_cosines = torch_to_jax(torch_cosines).squeeze(0)
         ref_sines = torch_to_jax(torch_sines).squeeze(0)
@@ -312,6 +320,7 @@ class HFDecoderTracer:
             result=llm_results.cosines,
             reference=ref_cosines,
             operation_name="Global RoPE Cosines",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
         assert_close(result=llm_results.sines, reference=ref_sines, operation_name="Global RoPE Sines")
 
@@ -336,8 +345,8 @@ class HFDecoderTracer:
 
         self.match_readout(result)
 
-        hf_input_ids = jax_to_torch(result.activation_trace.token_ids)[None, ...]
-        hf_token_positions = jax_to_torch(result.activation_trace.token_positions)[None, ...]
+        hf_input_ids = jax_to_torch(result.activation_trace.token_ids)[None, ...].to(self.device)
+        hf_token_positions = jax_to_torch(result.activation_trace.token_positions)[None, ...].to(self.device)
         hf_outputs = self.hf_model.forward(
             input_ids=hf_input_ids,
             position_ids=hf_token_positions,
@@ -355,7 +364,7 @@ class HFDecoderTracer:
             assert_close(
                 result=layer_activation_trace.inputs,
                 reference=ref_layer_inputs,
-                fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
+                fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
                 operation_name=f"End2End Layer {i} inputs",
             )
 
@@ -363,7 +372,7 @@ class HFDecoderTracer:
         assert_close(
             result=result.activation_trace.output_norm,
             reference=ref_last_norm_output,
-            fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
             operation_name="End2End Output RMSNorm",
         )
 
@@ -373,16 +382,21 @@ class HFDecoderTracer:
         assert_close(
             result=llm_probas,
             reference=ref_probas,
-            fraction_of_allowed_violations=END_TO_END_FRACTION_OF_ALLOWED_VIOLATIONS,
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
             operation_name="End2End Token Probabilities",
         )
 
 
 def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_repo,
         torch_dtype=torch_dtype,
-        device_map="cpu",
+        device_map=device,
     )
 
     # Correct the bug in the HF Gemma implementation
@@ -392,4 +406,4 @@ def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer
         correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
         hf_model.model.embed_tokens.embed_scale = correct_scale
 
-    return HFDecoderTracer(hf_model)
+    return HFDecoderTracer(hf_model, device)

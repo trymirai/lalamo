@@ -1,6 +1,6 @@
 import einops
 import jax.numpy as jnp
-import torch
+import torch.utils.dlpack
 from jaxtyping import Array
 
 __all__ = [
@@ -29,8 +29,8 @@ def torch_to_jax(array: torch.Tensor) -> Array:
 def jax_to_torch(array: Array) -> torch.Tensor:
     if array.dtype == jnp.bfloat16:
         intermediate_array = array.view(jnp.uint16)
-        return torch.tensor(intermediate_array).view(torch.bfloat16)
-    return torch.tensor(array)
+        return torch.utils.dlpack.from_dlpack(intermediate_array).view(torch.bfloat16)
+    return torch.utils.dlpack.from_dlpack(array)
 
 
 def jax_int4_to_packed_uint8(array: Array) -> Array:

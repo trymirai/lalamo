@@ -21,6 +21,21 @@ from .common import load_parameters
 __all__ = ["load_huggingface"]
 
 
+AWQ_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
+
+
+def _reverse_int4_awq_order(array: Array) -> Array:
+    """Reverses the AWQ packing order to get the logical order of channels for INT4."""
+    pack_factor = 32 // 4
+    *_, last_dim = array.shape
+    if last_dim % pack_factor != 0:
+        return array
+
+    array_reshaped = rearrange(array, "... (group pack_factor) -> ... group pack_factor", pack_factor=pack_factor)
+    array_reordered = array_reshaped[..., AWQ_REVERSE_ORDER]
+    return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
+
+
 def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
     assert packed_weights.dtype == jnp.int32, (
         f"Expected packed_weights to be of dtype jnp.int32, got {packed_weights.dtype}"
@@ -34,12 +49,9 @@ def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
         unpacked,
         "out_channels packed_groups packed_values -> out_channels (packed_groups packed_values)",
     )
-    return unpacked
 
-
-def recenter_unpacked_zero_points(unpacked_zero_points: Array, mode: QuantizationMode) -> Array:
     shift = 2 ** (mode.bits - 1)
-    return unpacked_zero_points - shift
+    return unpacked - shift
 
 
 def _process_quantized_tensors(
@@ -52,16 +64,16 @@ def _process_quantized_tensors(
     mode = module.config.weight_quantization_mode
     assert qweights.dtype == jnp.int32
     unpacked_weights = unpack_int32(qweights, mode)
+    if mode == QuantizationMode.INT4:
+        unpacked_weights = _reverse_int4_awq_order(unpacked_weights)
+
     assert qzeros.dtype == jnp.int32
     unpacked_zero_points = unpack_int32(qzeros, mode)
-
-    recentered_zero_points = recenter_unpacked_zero_points(
-        unpacked_zero_points,
-        mode,
-    )
+    if mode == QuantizationMode.INT4:
+        unpacked_zero_points = _reverse_int4_awq_order(unpacked_zero_points)
 
     weights = unpacked_weights.astype(module.config.activation_precision)
-    zero_points = recentered_zero_points.astype(module.config.activation_precision)
+    zero_points = unpacked_zero_points.astype(module.config.activation_precision)
     processed_scales = scales.astype(module.config.activation_precision)
 
     return weights.transpose(), zero_points.transpose(), processed_scales.transpose()

@@ -8,16 +8,16 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub[hf-transfer]>=0.27.1",
-    # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
-    "jax>=0.4.38",
+    "jax>=0.4.38; sys_platform == 'darwin'",
+    "jax[cuda]>=0.4.38; sys_platform == 'linux'",
     "jaxtyping>=0.2.36",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
     "rich>=14.0.0",
     "thefuzz>=0.22.1",
-    "torch>=2.5.1",
     "transformers>=4.52.4",
     "typer>=0.15.1",
+    # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]
 dynamic = ["version", "readme"]
 
@@ -38,14 +38,32 @@ readme = { file = ["README.md"] }
 [tool.uv]
 package = true
 dev-dependencies = [
+    "accelerate>=1.7.0",
+    "autoawq>=0.2.9; sys_platform == 'linux'",
     "beartype>=0.19.0",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
     "pytest-env>=1.1.5",
     "pytest>=8.3.4",
+    "torch>=2.7.1",
     "torchao>=0.7.0",
     "transformers>=4.48.0",
-    "accelerate>=1.7.0",
+]
+
+[[tool.uv.index]]
+name = "torch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "torch-gpu"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+    { index = "torch-cpu", marker = "platform_system == 'Darwin'" },
+    { index = "torch-gpu", marker = "platform_system == 'Linux'" },
 ]
 
 [tool.pytest.ini_options]

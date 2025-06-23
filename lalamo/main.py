@@ -138,7 +138,7 @@ def convert(
     include_traces: Annotated[
         bool,
         Option(
-            help="Export activation traces traces for debugging purposes.",
+            help="Export activation traces for debugging purposes.",
         ),
     ] = False,
 ) -> None:
