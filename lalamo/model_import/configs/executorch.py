@@ -120,6 +120,7 @@ class ETLlamaConfig(ExecutorchConfig):
         )
         linear_config = QLoRALinearConfig(
             group_size=self.quantization_args.group_size,
+            use_zero_point=False,
             weight_quantization_mode=WEIGHT_QUANTIZATION_MODE,
             activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
             activation_precision=activation_precision,

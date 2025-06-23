@@ -48,10 +48,6 @@ dev-dependencies = [
     "accelerate>=1.7.0",
 ]
 
-[tool.uv.sources.triton]
-git = "https://github.com/triton-lang/triton-cpu"
-subdirectory = "python"
-
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
 # addopts = "--jaxtyping-packages=lalamo,beartype.beartype"

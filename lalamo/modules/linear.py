@@ -321,7 +321,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
             groups=self.num_groups,
         )
 
-        if self.zero_points:
+        if self.zero_points is not None:
             zero_points = rearrange(self.zero_points, "total_out_channels groups -> total_out_channels groups 1")
             grouped_weights = grouped_weights - zero_points
 
