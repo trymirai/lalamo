@@ -13,14 +13,14 @@ from lalamo.utils import torch_to_jax
 
 __all__ = [
     "HUGGINGFACE_TOKENIZER_FILES",
-    "UseCase",
     "ModelSpec",
+    "UseCase",
     "huggingface_weight_files",
 ]
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
-    if array.dtype == [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
+    if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
         return array.astype(cast_to)
     return array
 
@@ -31,9 +31,9 @@ class WeightsType(Enum):
 
     def load(self, filename: Path | str, float_dtype: DTypeLike) -> dict[str, jnp.ndarray]:
         if self == WeightsType.SAFETENSORS:
-            return {k: v.astype(float_dtype) for k, v in load_safetensors(filename).items()}
+            return {k: cast_if_float(v, float_dtype) for k, v in load_safetensors(filename).items()}
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-        return {k: torch_to_jax(v).astype(float_dtype) for k, v in torch_weights.items()}
+        return {k: cast_if_float(torch_to_jax(v), float_dtype) for k, v in torch_weights.items()}
 
 
 class UseCase(Enum):

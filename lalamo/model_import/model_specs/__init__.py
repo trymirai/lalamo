@@ -1,4 +1,4 @@
-from .common import UseCase, ModelSpec
+from .common import ModelSpec, UseCase
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .huggingface import HUGGINGFACE_MODELS
@@ -11,8 +11,8 @@ from .qwen import QWEN_MODELS
 __all__ = [
     "ALL_MODELS",
     "REPO_TO_MODEL",
-    "UseCase",
     "ModelSpec",
+    "UseCase",
 ]
 
 

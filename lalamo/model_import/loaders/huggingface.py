@@ -22,7 +22,9 @@ __all__ = ["load_huggingface"]
 
 
 def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
-    assert packed_weights.dtype == jnp.int32
+    assert packed_weights.dtype == jnp.int32, (
+        f"Expected packed_weights to be of dtype jnp.int32, got {packed_weights.dtype}"
+    )
     assert 32 % mode.bits == 0
 
     shifts = jnp.arange(0, 32, mode.bits)
@@ -41,14 +43,16 @@ def recenter_unpacked_zero_points(unpacked_zero_points: Array, mode: Quantizatio
 
 
 def _process_quantized_tensors(
-    qweight: Array,
+    qweights: Array,
     qzeros: Array,
     scales: Array,
     module: GroupQuantizedLinear,
 ) -> tuple[Array, Array, Array]:
-    """Unpacks, recenters, and casts quantized tensors to the correct dtype."""
+    """Unpacks, recenters, transposes, and casts quantized tensors to the correct dtype."""
     mode = module.config.weight_quantization_mode
-    unpacked_weights = unpack_int32(qweight, mode)
+    assert qweights.dtype == jnp.int32
+    unpacked_weights = unpack_int32(qweights, mode)
+    assert qzeros.dtype == jnp.int32
     unpacked_zero_points = unpack_int32(qzeros, mode)
 
     recentered_zero_points = recenter_unpacked_zero_points(
@@ -60,7 +64,7 @@ def _process_quantized_tensors(
     zero_points = recentered_zero_points.astype(module.config.activation_precision)
     processed_scales = scales.astype(module.config.activation_precision)
 
-    return weights, zero_points, processed_scales
+    return weights.transpose(), zero_points.transpose(), processed_scales.transpose()
 
 
 def _fuse_full_precision_weights(
@@ -80,19 +84,21 @@ def _fuse_quantized_weights(
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
 ) -> tuple[Array, Array, Array]:
+    # Note that AWQ quantized weights are stored transposed relative to full-precision weights
+
     if sublayers_to_fuse is None:
-        qweight = weights_dict[path / "qweight"]
+        qweights = weights_dict[path / "qweight"]
         qzeros = weights_dict[path / "qzeros"]
         scales = weights_dict[path / "scales"]
-        return qweight, qzeros, scales
+        return qweights, qzeros, scales
 
     qweights = [weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse]
     qzeros = [weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse]
     scales = [weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse]
 
-    fused_qweights = jnp.concatenate(qweights, axis=0)
-    fused_qzeros = jnp.concatenate(qzeros, axis=0)
-    fused_scales = jnp.concatenate(scales, axis=0)
+    fused_qweights = jnp.concatenate(qweights, axis=1)
+    fused_qzeros = jnp.concatenate(qzeros, axis=1)
+    fused_scales = jnp.concatenate(scales, axis=1)
 
     return fused_qweights, fused_qzeros, fused_scales
 
@@ -126,10 +132,10 @@ def load_linear(
         return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
     if isinstance(module, GroupQuantizedLinear):
-        qweight, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
+        qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
 
         weights, zero_points, scales = _process_quantized_tensors(
-            qweight,
+            qweights,
             qzeros,
             scales,
             module,

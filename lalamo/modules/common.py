@@ -45,10 +45,13 @@ class LalamoModule[ConfigT](ExportableModule):
     config: ConfigT = eqx.field(static=True)
 
 
-def _dtype_to_str(dtype: jnp.dtype) -> str:
+def _dtype_to_str(dtype: DTypeLike) -> str:
     if dtype == jnp.bfloat16:
         return "bfloat16"
-    return str(dtype.dtype)  # type: ignore
+    try:
+        return str(dtype.dtype)  # type: ignore
+    except AttributeError:
+        return str(dtype)
 
 
 def _str_to_dtype(dtype_str: str) -> jnp.dtype:

@@ -10,7 +10,7 @@ from jaxtyping import DTypeLike
 from lalamo.modules import Decoder, DecoderConfig
 from lalamo.quantization import QuantizationMode
 
-from .model_specs import REPO_TO_MODEL, UseCase, ModelSpec
+from .model_specs import REPO_TO_MODEL, ModelSpec, UseCase
 
 __all__ = [
     "REPO_TO_MODEL",

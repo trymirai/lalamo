@@ -1,7 +1,7 @@
 from lalamo.model_import.configs import HFQwen2Config, HFQwen3Config
 from lalamo.quantization import QuantizationMode
 
-from .common import HUGGINGFACE_TOKENIZER_FILES, UseCase, ModelSpec, WeightsType, huggingface_weight_files
+from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, UseCase, WeightsType, huggingface_weight_files
 
 __all__ = ["QWEN_MODELS"]
 
