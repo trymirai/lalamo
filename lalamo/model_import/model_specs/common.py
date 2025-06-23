@@ -13,6 +13,7 @@ from lalamo.utils import torch_to_jax
 
 __all__ = [
     "HUGGINGFACE_TOKENIZER_FILES",
+    "UseCase",
     "ModelSpec",
     "huggingface_weight_files",
 ]
@@ -35,6 +36,10 @@ class WeightsType(Enum):
         return {k: torch_to_jax(v).astype(float_dtype) for k, v in torch_weights.items()}
 
 
+class UseCase(Enum):
+    CODE = "code"
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     vendor: str
@@ -48,6 +53,7 @@ class ModelSpec:
     weights_file_names: tuple[str, ...]
     weights_type: WeightsType
     tokenizer_file_names: tuple[str, ...] = tuple()
+    use_cases: tuple[UseCase, ...] = tuple()
 
 
 def huggingface_weight_files(num_shards: int) -> tuple[str, ...]:

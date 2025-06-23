@@ -8,8 +8,9 @@ import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
 from lalamo.modules import Decoder, DecoderConfig
+from lalamo.quantization import QuantizationMode
 
-from .model_specs import REPO_TO_MODEL, ModelSpec
+from .model_specs import REPO_TO_MODEL, UseCase, ModelSpec
 
 __all__ = [
     "REPO_TO_MODEL",
@@ -26,7 +27,12 @@ LALAMO_VERSION = importlib.metadata.version("lalamo")
 class ModelMetadata:
     toolchain_version: str
     vendor: str
+    family: str
     name: str
+    size: str
+    quantization: QuantizationMode | None
+    repo: str
+    use_cases: tuple[UseCase, ...]
     model_config: DecoderConfig
     tokenizer_file_names: tuple[str, ...]
 
@@ -92,8 +98,13 @@ def import_model(
     model = foreign_config.load_model(context_length, precision, accumulation_precision, weights_dict)
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,
-        name=model_spec.name,
         vendor=model_spec.vendor,
+        family=model_spec.family,
+        name=model_spec.name,
+        size=model_spec.size,
+        quantization=model_spec.quantization,
+        repo=model_spec.repo,
+        use_cases=model_spec.use_cases,
         model_config=model.config,
         tokenizer_file_names=tuple(p.name for p in tokenizer_file_paths),
     )
