@@ -39,8 +39,12 @@ def params_selector(module: QLoRALinear) -> tuple:
     )
 
 
-def get_qlora_linear_params(weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALinearParams:
-    weights = weights_dict[path / "weight"]
+def get_qlora_linear_params(
+    weights_dict: dict[str, Array],
+    path: ParameterPath,
+    weights_dtype: jnp.dtype,
+) -> QLoRALinearParams:
+    weights = weights_dict[path / "weight"].astype(weights_dtype)
     scales = weights_dict[path / "scales"]
     lora_down_weights = weights_dict[path / "adaptor" / "A" / "weight"]
     lora_up_weights = (weights_dict[path / "adaptor" / "B" / "weight"],)
@@ -57,7 +61,7 @@ def merge_linear_params(params_list: Iterable[QLoRALinearParams]) -> QLoRALinear
 
 
 def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALinear:
-    params = get_qlora_linear_params(weights_dict, path)
+    params = get_qlora_linear_params(weights_dict, path, module.weights.dtype)
     return load_parameters(params_selector, module, params)
 
 
@@ -67,9 +71,9 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
     if not isinstance(module.down_projection, QLoRALinear):
         raise TypeError(f"Expected down_projection to be QLoRALinear, got {type(module.down_projection)}")
 
-    up_proj_params = get_qlora_linear_params(weights_dict, path / "w3")
-    gate_proj_params = get_qlora_linear_params(weights_dict, path / "w1")
-    down_proj_params = get_qlora_linear_params(weights_dict, path / "w2")
+    up_proj_params = get_qlora_linear_params(weights_dict, path / "w3", module.up_projection.weights.dtype)
+    gate_proj_params = get_qlora_linear_params(weights_dict, path / "w1", module.down_projection.weights.dtype)
+    down_proj_params = get_qlora_linear_params(weights_dict, path / "w2", module.down_projection.weights.dtype)
 
     fused_up_gate_params = merge_linear_params([up_proj_params, gate_proj_params])
 
@@ -128,7 +132,7 @@ def load_attention(
     head_dim = module.head_dim
     lora_rank = module.qkv_projection.config.lora_rank
 
-    q_params = get_qlora_linear_params(weights_dict, path / "wq")
+    q_params = get_qlora_linear_params(weights_dict, path / "wq", module.qkv_projection.weights.dtype)
     q_params = permute_qk_params(
         params=q_params,
         model_dim=model_dim,
@@ -138,7 +142,7 @@ def load_attention(
         lora_rank=lora_rank,
     )
 
-    k_params = get_qlora_linear_params(weights_dict, path / "wk")
+    k_params = get_qlora_linear_params(weights_dict, path / "wk", module.qkv_projection.weights.dtype)
     k_params = permute_qk_params(
         params=k_params,
         model_dim=model_dim,
@@ -148,9 +152,9 @@ def load_attention(
         lora_rank=lora_rank,
     )
 
-    v_params = get_qlora_linear_params(weights_dict, path / "wv")
+    v_params = get_qlora_linear_params(weights_dict, path / "wv", module.qkv_projection.weights.dtype)
 
-    out_params = get_qlora_linear_params(weights_dict, path / "wo")
+    out_params = get_qlora_linear_params(weights_dict, path / "wo", module.qkv_projection.weights.dtype)
 
     qkv_params = merge_linear_params([q_params, k_params, v_params])
     return load_parameters(
@@ -185,8 +189,9 @@ def load_embedding(
     weights_dict: dict[str, Array],
     path: ParameterPath,
 ) -> QuantizedTiedEmbedding:
-    weights = weights_dict[path / "weight"]
+    weights = weights_dict[path / "weight"].astype(module.weights.dtype)
     scales = weights_dict[path / "scales"].squeeze(1)
+
     return load_parameters(lambda m: (m.weights, m.scales), module, (weights, scales))
 
 
