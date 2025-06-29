@@ -7,8 +7,9 @@ __all__ = ["QuantizationMode", "quantize_weights"]
 
 
 class QuantizationMode(Enum):
-    INT4 = "int4"
+    UINT4 = "uint4"
     INT8 = "int8"
+    UINT8 = "uint8"
 
     @property
     def range(self) -> tuple[int, int]:
@@ -17,16 +18,18 @@ class QuantizationMode(Enum):
     @property
     def dtype(self) -> DTypeLike:
         value_to_dtype = {
-            QuantizationMode.INT4: jnp.int4,
+            QuantizationMode.UINT4: jnp.uint4,
             QuantizationMode.INT8: jnp.int8,
+            QuantizationMode.UINT8: jnp.uint8,
         }
         return value_to_dtype[self]
 
     @property
     def bits(self) -> int:
         value_to_bits = {
-            QuantizationMode.INT4: 4,
+            QuantizationMode.UINT4: 4,
             QuantizationMode.INT8: 8,
+            QuantizationMode.UINT8: 8,
         }
         return value_to_bits[self]
 
@@ -35,8 +38,9 @@ class QuantizationMode(Enum):
 
 
 MODE_TO_RANGE = {
-    QuantizationMode.INT4: (-8, 7),
+    QuantizationMode.UINT4: (0, 15),
     QuantizationMode.INT8: (-128, 127),
+    QuantizationMode.UINT8: (0, 255),
 }
 
 

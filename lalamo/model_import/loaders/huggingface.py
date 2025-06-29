@@ -24,7 +24,7 @@ __all__ = ["load_huggingface"]
 AWQ_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
 
-def _reverse_int4_awq_order(array: Array) -> Array:
+def _reverse_uint4_awq_order(array: Array) -> Array:
     """Reverses the AWQ packing order to get the logical order of channels for INT4."""
     pack_factor = 32 // 4
     *_, last_dim = array.shape
@@ -50,8 +50,7 @@ def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
         "out_channels packed_groups packed_values -> out_channels (packed_groups packed_values)",
     )
 
-    shift = 2 ** (mode.bits - 1)
-    return unpacked - shift
+    return unpacked
 
 
 def _process_quantized_tensors(
@@ -64,13 +63,13 @@ def _process_quantized_tensors(
     mode = module.config.weight_quantization_mode
     assert qweights.dtype == jnp.int32
     unpacked_weights = unpack_int32(qweights, mode)
-    if mode == QuantizationMode.INT4:
-        unpacked_weights = _reverse_int4_awq_order(unpacked_weights)
+    if mode == QuantizationMode.UINT4:
+        unpacked_weights = _reverse_uint4_awq_order(unpacked_weights)
 
     assert qzeros.dtype == jnp.int32
     unpacked_zero_points = unpack_int32(qzeros, mode)
-    if mode == QuantizationMode.INT4:
-        unpacked_zero_points = _reverse_int4_awq_order(unpacked_zero_points)
+    if mode == QuantizationMode.UINT4:
+        unpacked_zero_points = _reverse_uint4_awq_order(unpacked_zero_points)
 
     weights = unpacked_weights.astype(module.config.activation_precision)
     zero_points = unpacked_zero_points.astype(module.config.activation_precision)

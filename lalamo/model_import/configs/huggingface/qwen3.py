@@ -136,19 +136,11 @@ class HFQwen3Config(HuggingFaceConfig):
             )
         else:
             bits_to_mode = {
-                4: QuantizationMode.INT4,
-                8: QuantizationMode.INT8,
+                4: QuantizationMode.UINT4,
+                8: QuantizationMode.UINT8,
             }
-            if isinstance(self.quantization_config, AWQQuantizationConfig):
-                use_zero_point = self.quantization_config.zero_point
-            elif isinstance(self.quantization_config, GPTQQuantizationConfig):
-                use_zero_point = not self.quantization_config.sym
-            else:
-                # This should be unreachable with proper type checking
-                raise TypeError(f"Unsupported quantization config type: {type(self.quantization_config)}")
 
             linear_config = GroupQuantizedLinearConfig(
-                use_zero_point=use_zero_point,
                 group_size=self.quantization_config.group_size,
                 weight_quantization_mode=bits_to_mode[self.quantization_config.bits],
                 activation_quantization_mode=None,

@@ -34,7 +34,7 @@ ROPE_SCALING_FACTOR = 32.0
 
 EMBEDDING_QUANTIZATION_MODE = QuantizationMode.INT8
 ACTIVATION_QUANTIZATION_MODE = QuantizationMode.INT8
-WEIGHT_QUANTIZATION_MODE = QuantizationMode.INT4
+WEIGHT_QUANTIZATION_MODE = QuantizationMode.UINT4
 
 
 @dataclass(frozen=True)
@@ -120,7 +120,6 @@ class ETLlamaConfig(ExecutorchConfig):
         )
         linear_config = QLoRALinearConfig(
             group_size=self.quantization_args.group_size,
-            use_zero_point=False,
             weight_quantization_mode=WEIGHT_QUANTIZATION_MODE,
             activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
             activation_precision=activation_precision,

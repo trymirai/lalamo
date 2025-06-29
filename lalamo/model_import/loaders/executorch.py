@@ -16,12 +16,14 @@ __all__ = ["load_executorch"]
 @dataclass(frozen=True)
 class QLoRALinearParams:
     weights: Int[Array, "out_channels in_channels"]
+    zero_points: Int[Array, "out_channels groups"]
     scales: Float[Array, "out_channels groups"]
     lora_down_weights: Float[Array, "total_lora_channels in_channels"]
     lora_up_weights: tuple[Float[Array, "..."], ...]
 
     def __iter__(self) -> Iterator[Array]:
         yield self.weights
+        yield self.zero_points
         yield self.scales
         yield self.lora_down_weights
         yield from self.lora_up_weights
@@ -33,6 +35,7 @@ class QLoRALinearParams:
 def params_selector(module: QLoRALinear) -> tuple:
     return (
         module.weights,
+        module.zero_points,
         module.scales,
         module.lora_down_weights,
         *module.lora_up_weights,
@@ -44,20 +47,28 @@ def get_qlora_linear_params(
     path: ParameterPath,
     weights_dtype: jnp.dtype,
 ) -> QLoRALinearParams:
+    shift_to_unsigned = 8
+
     weights = weights_dict[path / "weight"].astype(weights_dtype)
     scales = weights_dict[path / "scales"]
+
+    # We don't support signed int4 on the inference side, so we map int4 to uint4 and add zero-points.
+    weights = weights + shift_to_unsigned
+    zero_points = jnp.ones_like(scales) * shift_to_unsigned
+
     lora_down_weights = weights_dict[path / "adaptor" / "A" / "weight"]
     lora_up_weights = (weights_dict[path / "adaptor" / "B" / "weight"],)
-    return QLoRALinearParams(weights, scales, lora_down_weights, lora_up_weights)
+    return QLoRALinearParams(weights, scales, zero_points, lora_down_weights, lora_up_weights)
 
 
 def merge_linear_params(params_list: Iterable[QLoRALinearParams]) -> QLoRALinearParams:
     params_list = list(params_list)
     weights = jnp.concatenate([p.weights for p in params_list], axis=0)
     scales = jnp.concatenate([p.scales for p in params_list], axis=0)
+    zero_points = jnp.concatenate([p.zero_points for p in params_list], axis=0)
     lora_down_weights = jnp.concatenate([p.lora_down_weights for p in params_list], axis=0)
     lora_up_weights = tuple(w for p in params_list for w in p.lora_up_weights)
-    return QLoRALinearParams(weights, scales, lora_down_weights, lora_up_weights)
+    return QLoRALinearParams(weights, scales, zero_points, lora_down_weights, lora_up_weights)
 
 
 def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALinear:

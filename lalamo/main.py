@@ -22,7 +22,7 @@ from typer import Argument, Exit, Option, Typer
 
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from lalamo.modules import WeightLayout, config_converter
-from lalamo.utils import jax_int4_to_packed_uint8
+from lalamo.utils import jax_uint4_to_packed_uint8
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -81,11 +81,11 @@ def _error(message: str) -> None:
     raise Exit(1)
 
 
-def _pack_int4_weights(weights: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
+def _pack_uint4_weights(weights: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
     packed_weights = {}
     for key, value in weights.items():
-        if value.dtype == jnp.int4:
-            packed_weights[key] = jax_int4_to_packed_uint8(value)
+        if value.dtype == jnp.uint4:
+            packed_weights[key] = jax_uint4_to_packed_uint8(value)
         else:
             packed_weights[key] = value
     return packed_weights
@@ -194,7 +194,7 @@ def convert(
         output_dir.mkdir(parents=True, exist_ok=True)
 
         weights = dict(model.export_weights(weight_layout))
-        packed_weights = _pack_int4_weights(weights)
+        packed_weights = _pack_uint4_weights(weights)
         save_file(packed_weights, output_dir / "model.safetensors")
 
         config_json = config_converter.unstructure(metadata, ModelMetadata)
