@@ -118,7 +118,7 @@ def convert(
         WeightLayout | None,
         Option(
             help="Order of dimensions in the weights of linear layers.",
-            show_default="output_input",
+            show_default="input_output",
         ),
     ] = None,
     output_dir: Annotated[
@@ -150,7 +150,7 @@ def convert(
     if weight_layout is not None:
         weight_layout = WeightLayout(weight_layout)
     else:
-        weight_layout = WeightLayout.OUTPUT_INPUT
+        weight_layout = WeightLayout.INPUT_OUTPUT
 
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
