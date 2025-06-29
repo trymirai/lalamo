@@ -345,12 +345,11 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
 
         result = ParameterDict(
             weights=exported_weights,
+            zero_points=exported_zero_points,
             scales=exported_scales,
         )
         if self.biases is not None:
             result["biases"] = self.biases
-        if exported_zero_points is not None:
-            result["zero_points"] = exported_zero_points
         return result
 
 
