@@ -56,7 +56,7 @@ def configure_precision_for_tests() -> None:
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST)
-def test_hf_model(test_spec: Spec, configure_precision: None) -> None:  # noqa: ARG001
+def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:  # noqa: ARG001
     if test_spec.requires_gpu and not torch.cuda.is_available():
         pytest.skip("GPU is required for this test")
 
