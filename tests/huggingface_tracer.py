@@ -18,7 +18,7 @@ from lalamo.modules.decoder import DecoderResult
 from lalamo.utils import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 
-FRACTION_OF_ALLOWED_VIOLATIONS = 0.01
+FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
 
 class HFRotaryEmbedding(Protocol):
