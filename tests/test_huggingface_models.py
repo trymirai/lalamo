@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from enum import Enum
 
+import jax
 import jax.numpy as jnp
 import pytest
 import torch
@@ -46,8 +47,16 @@ NUM_TOKENS = 512
 TOKEN_STRIDE = 64
 
 
+@pytest.fixture
+def configure_precision_for_tests() -> None:
+    jax.config.update("jax_default_matmul_precision", "highest")
+    torch.backends.cudnn.allow_tf32 = False
+    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+
+
 @pytest.mark.parametrize("test_spec", MODEL_LIST)
-def test_hf_model(test_spec: Spec) -> None:
+def test_hf_model(test_spec: Spec, configure_precision: None) -> None:  # noqa: ARG001
     if test_spec.requires_gpu and not torch.cuda.is_available():
         pytest.skip("GPU is required for this test")
 
