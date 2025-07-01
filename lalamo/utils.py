@@ -44,7 +44,7 @@ def jax_uint4_to_packed_uint8(array: Array) -> Array:
     if last_dim % 2 != 0:
         raise ValueError(f"The last dimension of the input array must be even, but got shape {array.shape}")
 
-    high_nibbles, low_nibbles = einops.rearrange(
+    low_nibbles, high_nibbles = einops.rearrange(
         array.astype(jnp.uint8),
         "... (dim_half two) -> two ... dim_half",
         two=2,
