@@ -48,6 +48,9 @@ class HFQwen2Config(HuggingFaceConfig):
     vocab_size: int
 
     def _get_sliding_window_sizes(self) -> list[int | None]:
+        if not self.use_sliding_window:
+            return [None] * self.num_hidden_layers
+
         sliding_window_sizes = []
         for i in range(self.num_hidden_layers):
             if i < self.max_window_layers:
