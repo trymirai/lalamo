@@ -47,11 +47,17 @@ class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
         raise NotImplementedError
 
     @classmethod
+    def _default_weight_layout(cls) -> WeightLayout:
+        return WeightLayout.INPUT_OUTPUT
+
+    @classmethod
     def _into_layout(
         cls,
         weights: Float[Array, "in_channels out_channels"],
         layout: WeightLayout,
     ) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
+        if layout == WeightLayout.AUTO:
+            layout = cls._default_weight_layout()
         match layout:
             case WeightLayout.OUTPUT_INPUT:
                 return weights
@@ -218,6 +224,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
     scales: Float[Array, "total_out_channels groups"]
     zero_points: Float[Array, "total_out_channels groups"]
     biases: Float[Array, " total_out_channels"] | None
+
+    @classmethod
+    def _default_weight_layout(cls) -> WeightLayout:
+        return WeightLayout.OUTPUT_INPUT
 
     @property
     def input_dim(self) -> int:

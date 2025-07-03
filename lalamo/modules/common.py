@@ -20,11 +20,14 @@ __all__ = [
 
 
 class WeightLayout(Enum):
+    AUTO = "auto"
     INPUT_OUTPUT = "input_output"
     OUTPUT_INPUT = "output_input"
 
     def __str__(self) -> str:
         match self:
+            case WeightLayout.AUTO:
+                return "auto"
             case WeightLayout.INPUT_OUTPUT:
                 return "(input, output)"
             case WeightLayout.OUTPUT_INPUT:

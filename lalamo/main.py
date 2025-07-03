@@ -117,8 +117,12 @@ def convert(
     weight_layout: Annotated[
         WeightLayout | None,
         Option(
-            help="Order of dimensions in the weights of linear layers.",
-            show_default="input_output",
+            help=(
+                "Order of dimensions in the weights of linear layers."
+                "\n\n\n\n"
+                "If set to AUTO, the layout will depend on the model."
+            ),
+            show_default="auto",
         ),
     ] = None,
     output_dir: Annotated[
@@ -150,7 +154,7 @@ def convert(
     if weight_layout is not None:
         weight_layout = WeightLayout(weight_layout)
     else:
-        weight_layout = WeightLayout.INPUT_OUTPUT
+        weight_layout = WeightLayout.AUTO
 
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name

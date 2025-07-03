@@ -45,6 +45,10 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         raise NotImplementedError
 
+    @classmethod
+    def _default_weight_layout(cls) -> WeightLayout:
+        return WeightLayout.INPUT_OUTPUT
+
     @property
     def vocab_size(self) -> int:
         raise NotImplementedError
@@ -174,11 +178,16 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         return self.output_weights
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+        if weight_layout == WeightLayout.AUTO:
+            weight_layout = self._default_weight_layout()
+
         match weight_layout:
             case WeightLayout.OUTPUT_INPUT:
                 output_weights = self.output_weights
             case WeightLayout.INPUT_OUTPUT:
                 output_weights = rearrange(self.output_weights, "token_ids channels -> channels token_ids")
+            case _:
+                raise ValueError(f"Unsupported weight layout: {weight_layout}")
 
         return ParameterDict(
             input_weights=self.input_weights,
