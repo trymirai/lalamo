@@ -61,11 +61,11 @@ def download_config_file(model_spec: ModelSpec, output_dir: Path | str | None = 
 def download_tokenizer_files(model_spec: ModelSpec, output_dir: Path | str | None = None) -> tuple[Path, ...]:
     result = [
         huggingface_hub.hf_hub_download(
-            repo_id=model_spec.repo,
+            repo_id=tokenizer_file_spec.repo or model_spec.repo,
             local_dir=output_dir,
-            filename=metadata_filename,
+            filename=tokenizer_file_spec.filename,
         )
-        for metadata_filename in model_spec.tokenizer_file_names
+        for tokenizer_file_spec in model_spec.tokenizer_files
     ]
     return tuple(Path(path) for path in result)
 

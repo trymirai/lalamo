@@ -1,6 +1,6 @@
 from lalamo.model_import.configs import HFQwen3Config
 
-from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, WeightsType, huggingface_weight_files
+from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, TokenizerFileSpec, WeightsType, huggingface_weight_files
 
 __all__ = ["POLARIS_MODELS"]
 
@@ -16,7 +16,7 @@ POLARIS_MODELS = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES + ("chat_template.jinja",),
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, TokenizerFileSpec(repo=None, filename="chat_template.jinja")),
         use_cases=tuple(),
     ),
 ]

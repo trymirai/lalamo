@@ -14,6 +14,7 @@ from lalamo.utils import torch_to_jax
 __all__ = [
     "HUGGINGFACE_TOKENIZER_FILES",
     "ModelSpec",
+    "TokenizerFileSpec",
     "UseCase",
     "huggingface_weight_files",
 ]
@@ -41,6 +42,12 @@ class UseCase(Enum):
 
 
 @dataclass(frozen=True)
+class TokenizerFileSpec:
+    repo: str | None
+    filename: str
+
+
+@dataclass(frozen=True)
 class ModelSpec:
     vendor: str
     family: str
@@ -52,7 +59,7 @@ class ModelSpec:
     config_file_name: str
     weights_file_names: tuple[str, ...]
     weights_type: WeightsType
-    tokenizer_file_names: tuple[str, ...] = tuple()
+    tokenizer_files: tuple[TokenizerFileSpec, ...] = tuple()
     use_cases: tuple[UseCase, ...] = tuple()
 
 
@@ -62,4 +69,7 @@ def huggingface_weight_files(num_shards: int) -> tuple[str, ...]:
     return tuple(f"model-{i:05d}-of-{num_shards:05d}.safetensors" for i in range(1, num_shards + 1))
 
 
-HUGGINGFACE_TOKENIZER_FILES = ("tokenizer.json", "tokenizer_config.json")
+HUGGINGFACE_TOKENIZER_FILES = (
+    TokenizerFileSpec(repo=None, filename="tokenizer.json"),
+    TokenizerFileSpec(repo=None, filename="tokenizer_config.json"),
+)

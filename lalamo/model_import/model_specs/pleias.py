@@ -16,7 +16,7 @@ PLEIAS_MODELS = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
 ]

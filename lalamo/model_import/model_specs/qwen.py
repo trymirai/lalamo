@@ -18,7 +18,7 @@ QWEN25 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -32,7 +32,7 @@ QWEN25 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -46,7 +46,7 @@ QWEN25 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -60,7 +60,7 @@ QWEN25 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -74,7 +74,7 @@ QWEN25 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(8),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -88,7 +88,7 @@ QWEN25 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(17),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
 ]
@@ -106,7 +106,7 @@ QWEN25_CODER = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
@@ -120,7 +120,7 @@ QWEN25_CODER = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
@@ -134,7 +134,7 @@ QWEN25_CODER = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
@@ -148,7 +148,7 @@ QWEN25_CODER = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
@@ -162,7 +162,7 @@ QWEN25_CODER = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(6),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=(UseCase.CODE,),
     ),
     ModelSpec(
@@ -176,7 +176,7 @@ QWEN25_CODER = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(14),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=(UseCase.CODE,),
     ),
 ]
@@ -194,7 +194,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -208,7 +208,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -222,7 +222,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(3),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -236,7 +236,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -250,7 +250,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(5),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -264,7 +264,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -278,7 +278,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(8),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -292,7 +292,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -306,7 +306,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(17),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -320,7 +320,7 @@ QWEN3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_file_names=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
         use_cases=tuple(),
     ),
 ]
