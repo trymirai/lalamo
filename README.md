@@ -7,6 +7,7 @@
 <a href="https://notebooklm.google.com/notebook/5851ef05-463e-4d30-bd9b-01f7668e8f8f/audio"><img src="https://img.shields.io/badge/Listen-Podcast-red" alt="Listen to our Podcast"></a>
 <a href="https://docsend.com/view/x87pcxrnqutb9k2q"><img src="https://img.shields.io/badge/View-Our%20Deck-green" alt="View our Deck"></a>
 <a href="mailto:alexey@getmirai.co,dima@getmirai.co,aleksei@getmirai.co?subject=Interested%20in%20Mirai"><img src="https://img.shields.io/badge/Contact%20Us-Email-blue" alt="Contact Us"></a>
+<a href="https://docs.trymirai.com/components/models"><img src="https://img.shields.io/badge/Read-Docs-yellow" alt="Docs"></a>
 [![License](https://img.shields.io/badge/License-MIT-blue)](LICENSE)
 
 # lalamo
@@ -15,30 +16,37 @@ A set of tools for adapting Large Language Models to on-device inference using t
 
 ## Quick Start
 
-To convert a model run
+To get the list of [supported models](https://trymirai.com/models), run:
 
 ```bash
-uv run lalamo convert MODEL_REPO
+uv run lalamo list-models
 ```
 
-For more options see `uv run lalamo convert --help`
+To convert a model, run:
 
-To get a list of supported models run `uv run lalamo list-models`
+```bash
+uv run lalamo convert MODEL_REPO --precision float16
+```
 
-To add support for a new model write the corresponding `ModelSpec` in `lalamo.model_import.model_import.py`
+After that, you can find the converted model in the `models` folder. For more options see `uv run lalamo convert --help`.
 
-Example:
+## Model Support
+
+To add support for a new model, write the corresponding [ModelSpec](lalamo/model_import/model_specs), as shown in the example below:
 
 ```python
 ModelSpec(
-    name="Gemma-2-2B-Instruct",
-    repo="google/gemma-2-2b-it",
-    config_type=HFGemma2Config,
+    vendor="Google",
+    family="Gemma-3",
+    name="Gemma-3-1B-Instruct",
+    size="1B",
+    quantization=None,
+    repo="google/gemma-3-1b-it",
+    config_type=HFGemma3TextConfig,
     config_file_name="config.json",
-    weights_file_names=(
-        "model-00001-of-00002.safetensors",
-        "model-00002-of-00002.safetensors",
-    ),
+    weights_file_names=huggingface_weight_files(1),
     weights_type=WeightsType.SAFETENSORS,
+    tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+    use_cases=tuple(),
 )
 ```
