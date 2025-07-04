@@ -3,7 +3,14 @@ from dataclasses import replace
 from lalamo.model_import.configs import ETLlamaConfig, HFLlamaConfig
 from lalamo.quantization import QuantizationMode
 
-from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, WeightsType, huggingface_weight_files
+from .common import (
+    HUGGINFACE_GENERATION_CONFIG_FILE,
+    HUGGINGFACE_TOKENIZER_FILES,
+    ModelSpec,
+    TokenizerFileSpec,
+    WeightsType,
+    huggingface_weight_files,
+)
 
 __all__ = ["LLAMA_MODELS"]
 
@@ -19,14 +26,16 @@ LLAMA31 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(4),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
 ]
 
 
-def _tokenizer_files_from_another_repo(repo: str):
-    return tuple(replace(spec, repo=repo) for spec in HUGGINGFACE_TOKENIZER_FILES)
+def _tokenizer_files_from_another_repo(repo: str) -> tuple[TokenizerFileSpec, ...]:
+    return tuple(
+        replace(spec, repo=repo) for spec in (*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE)
+    )
 
 
 LLAMA32 = [
@@ -42,7 +51,7 @@ LLAMA32 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -70,7 +79,7 @@ LLAMA32 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
     ModelSpec(

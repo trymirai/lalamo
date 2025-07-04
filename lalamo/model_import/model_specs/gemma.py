@@ -1,6 +1,12 @@
 from lalamo.model_import.configs import HFGemma2Config, HFGemma3Config, HFGemma3TextConfig
 
-from .common import HUGGINGFACE_TOKENIZER_FILES, ModelSpec, WeightsType, huggingface_weight_files
+from .common import (
+    HUGGINFACE_GENERATION_CONFIG_FILE,
+    HUGGINGFACE_TOKENIZER_FILES,
+    ModelSpec,
+    WeightsType,
+    huggingface_weight_files,
+)
 
 __all__ = ["GEMMA_MODELS"]
 
@@ -16,7 +22,7 @@ GEMMA2 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
 ]
@@ -33,7 +39,7 @@ GEMMA3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(1),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -47,7 +53,7 @@ GEMMA3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(2),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -61,7 +67,7 @@ GEMMA3 = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(12),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=HUGGINGFACE_TOKENIZER_FILES,
+        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=tuple(),
     ),
 ]

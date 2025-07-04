@@ -12,6 +12,7 @@ from lalamo.quantization import QuantizationMode
 from lalamo.utils import torch_to_jax
 
 __all__ = [
+    "HUGGINFACE_GENERATION_CONFIG_FILE",
     "HUGGINGFACE_TOKENIZER_FILES",
     "ModelSpec",
     "TokenizerFileSpec",
@@ -73,3 +74,5 @@ HUGGINGFACE_TOKENIZER_FILES = (
     TokenizerFileSpec(repo=None, filename="tokenizer.json"),
     TokenizerFileSpec(repo=None, filename="tokenizer_config.json"),
 )
+
+HUGGINFACE_GENERATION_CONFIG_FILE = TokenizerFileSpec(repo=None, filename="generation_config.json")
