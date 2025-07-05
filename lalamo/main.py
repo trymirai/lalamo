@@ -145,6 +145,12 @@ def convert(
             help="Export activation traces for debugging purposes.",
         ),
     ] = False,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing model files.",
+        ),
+    ] = False,
 ) -> None:
     if precision is not None:
         precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
@@ -170,7 +176,7 @@ def convert(
     conversion_strs.append(".")
     console.print("".join(conversion_strs))
 
-    if output_dir.exists():
+    if output_dir.exists() and not overwrite:
         answer = console.input(
             rf"⚠️ Output directory [cyan]{output_dir}[/cyan] already exists."
             r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
