@@ -110,8 +110,8 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         return self.weights
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(token_embeddings=self.weights)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
+        return ParameterDict(weights=self.weights)
 
 
 @dataclass(frozen=True)
@@ -177,7 +177,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
         return self.output_weights
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         if weight_layout == WeightLayout.AUTO:
             weight_layout = self._default_weight_layout()
 
@@ -273,10 +273,9 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
-        exported_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(
-            token_embeddings=exported_weights,
+            weights=self.int_weights,
             scales=self.scales,
         )
 

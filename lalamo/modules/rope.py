@@ -52,7 +52,7 @@ class PositionalEmbeddings(ExportableModule):
     def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(
             cosines=self.cosines,
             sines=self.sines,
@@ -128,7 +128,7 @@ class RoPE(LalamoModule[RoPEConfigBase]):
             sines=self.sines[timesteps],
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(cosines=self.cosines, sines=self.sines)
 
 

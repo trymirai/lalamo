@@ -69,5 +69,5 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         result = normalized_x * adjusted_scales
         return result.astype(inputs.dtype)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:  # noqa: ARG002
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
         return ParameterDict(scales=self.scales)

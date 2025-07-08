@@ -319,7 +319,7 @@ class Attention(LalamoModule[AttentionConfig]):
             kv_cache=updated_kv_cache,
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(
             qkv_projection=self.qkv_projection.export_weights(weight_layout),
             out_projection=self.out_projection.export_weights(weight_layout),

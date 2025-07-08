@@ -40,7 +40,7 @@ class AttentionType(Enum):
 
 
 class ExportableModule(eqx.Module):
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         raise NotImplementedError
 
 

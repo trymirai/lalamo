@@ -61,7 +61,7 @@ class DecoderLayerResult(ExportableModule):
     updated_kv_cache: KVCacheLayerSlice | None
     activation_trace: DecoderLayerActivationTrace | None
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(
             outputs=self.outputs,
         )
@@ -221,7 +221,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             activation_trace=activation_trace,
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(
             pre_attention_norm=self.pre_attention_norm.export_weights(weight_layout),
             attention=self.attention.export_weights(weight_layout),

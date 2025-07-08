@@ -34,7 +34,7 @@ class DecoderActivationTrace(ExportableModule):
 
     output_norm: Float[Array, "suffix_tokens channels"]
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
@@ -230,7 +230,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             activation_trace=activation_trace,
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(
             embedding=self.embedding.export_weights(weight_layout),
             global_rope=self.global_rope.export_weights(weight_layout),

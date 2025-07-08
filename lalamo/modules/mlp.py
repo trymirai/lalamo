@@ -68,7 +68,7 @@ class MLP(LalamoModule):
         (result,) = self.down_projection(up_proj * gate)
         return result
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.INPUT_OUTPUT) -> ParameterDict:
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         return ParameterDict(
             up_projection=self.up_projection.export_weights(weight_layout),
             down_projection=self.down_projection.export_weights(weight_layout),
