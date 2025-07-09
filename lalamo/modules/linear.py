@@ -373,7 +373,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
 
         # New group sizes
         new_group_size_0 = 1  # 2560 // 2560 = 1
-        new_group_size_1 = 128  # 6144 // 48 = 128
+        new_group_size_1 = self.config.group_size  # 6144 // 48 = 128
 
         # Step 1: Dequantize with original parameters
         # Expand zero_points and scales to match weights shape
