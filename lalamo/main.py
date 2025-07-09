@@ -229,7 +229,7 @@ def convert(
                 return_updated_kv_cache=True,
                 return_activation_trace=True,
             )
-            traces = dict(result.export_weights(weight_layout))
+            traces = dict(result.export())
             save_file(traces, output_dir / "traces.safetensors")
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")

@@ -12,7 +12,6 @@ from lalamo.common import ParameterDict
 __all__ = [
     "AttentionType",
     "DummyUnionMember",
-    "ExportableModule",
     "LalamoModule",
     "config_converter",
     "register_config_union",
@@ -39,13 +38,11 @@ class AttentionType(Enum):
     SLIDING_WINDOW = "sliding_window"
 
 
-class ExportableModule(eqx.Module):
+class LalamoModule[ConfigT](eqx.Module):
+    config: ConfigT = eqx.field(static=True)
+
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         raise NotImplementedError
-
-
-class LalamoModule[ConfigT](ExportableModule):
-    config: ConfigT = eqx.field(static=True)
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:

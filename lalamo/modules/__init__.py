@@ -13,7 +13,7 @@ from .embedding import (
     UntiedEmbedding,
     UntiedEmbeddingConfig,
 )
-from .kv_cache import KVCacheLayerSlice
+from .kv_cache import KVCacheLayer
 from .linear import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -55,7 +55,7 @@ __all__ = [
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "KVCacheLayerSlice",
+    "KVCacheLayer",
     "LinearBase",
     "LinearConfig",
     "LinearScalingRoPEConfig",

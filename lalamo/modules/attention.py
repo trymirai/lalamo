@@ -12,7 +12,7 @@ from lalamo.common import ParameterDict
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 
 from .common import AttentionType, LalamoModule, WeightLayout
-from .kv_cache import KVCacheLayerSlice
+from .kv_cache import KVCacheLayer
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
 from .utils import apply_soft_capping
@@ -85,7 +85,7 @@ def _soft_capped_attention_kernel(
 
 class AttentionResult(NamedTuple):
     outputs: Float[Array, "suffix_tokens channels"]
-    kv_cache: KVCacheLayerSlice | None = None
+    kv_cache: KVCacheLayer | None = None
 
 
 @dataclass(frozen=True)
@@ -243,7 +243,7 @@ class Attention(LalamoModule[AttentionConfig]):
         self,
         inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
-        kv_cache: KVCacheLayerSlice | None = None,
+        kv_cache: KVCacheLayer | None = None,
         mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> AttentionResult:
@@ -276,18 +276,16 @@ class Attention(LalamoModule[AttentionConfig]):
         queries = apply_positional_embeddings(queries)
         keys = apply_positional_embeddings(keys)
 
-        if kv_cache is not None:
-            all_keys = jnp.concatenate([kv_cache.keys, keys], axis=0)
-            all_values = jnp.concatenate([kv_cache.values, values], axis=0)
-        else:
-            all_keys = keys
-            all_values = values
+        if kv_cache is None:
+            kv_cache = KVCacheLayer.empty(num_groups=self.num_groups, head_dim=self.head_dim, dtype=queries.dtype)
+
+        updated_kv_cache = kv_cache.extend(keys, values)
 
         if self.config.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
                 queries,
-                all_keys,
-                all_values,
+                updated_kv_cache.keys,
+                updated_kv_cache.values,
                 mask=mask,
                 scale=self.scale,
                 logit_soft_cap=self.config.logit_soft_cap,
@@ -296,8 +294,8 @@ class Attention(LalamoModule[AttentionConfig]):
         else:
             attention_output = jax.nn.dot_product_attention(
                 queries,
-                all_keys,
-                all_values,
+                updated_kv_cache.keys,
+                updated_kv_cache.values,
                 mask=mask,
                 scale=self.scale,
                 local_window_size=self.sliding_window_size,
@@ -310,10 +308,9 @@ class Attention(LalamoModule[AttentionConfig]):
         )
         (result,) = vmap(self.out_projection, in_axes=0)(attention_output)
 
-        if return_updated_kv_cache:
-            updated_kv_cache = KVCacheLayerSlice(keys=all_keys, values=all_values)
-        else:
+        if not return_updated_kv_cache:
             updated_kv_cache = None
+
         return AttentionResult(
             outputs=result,
             kv_cache=updated_kv_cache,
