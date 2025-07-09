@@ -1,9 +1,12 @@
+from dataclasses import replace
+
 from lalamo.model_import.configs import HFMistralConfig
 
 from .common import (
     HUGGINFACE_GENERATION_CONFIG_FILE,
     HUGGINGFACE_TOKENIZER_FILES,
     ModelSpec,
+    TokenizerFileSpec,
     UseCase,
     WeightsType,
     huggingface_weight_files,
@@ -28,6 +31,13 @@ CODESTRAL = [
     ),
 ]
 
+
+def _tokenizer_files_from_another_repo(repo: str) -> tuple[TokenizerFileSpec, ...]:
+    return tuple(
+        replace(spec, repo=repo) for spec in (*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE)
+    )
+
+
 DEVSTRAL = [
     ModelSpec(
         vendor="Mistral",
@@ -40,7 +50,7 @@ DEVSTRAL = [
         config_file_name="config.json",
         weights_file_names=huggingface_weight_files(10),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=tuple(),
+        tokenizer_files=_tokenizer_files_from_another_repo("mistralai/Mistral-Small-3.1-24B-Base-2503"),
         use_cases=(UseCase.CODE,),
     ),
 ]
