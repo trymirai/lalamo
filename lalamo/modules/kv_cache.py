@@ -12,13 +12,8 @@ __all__ = ["KVCacheLayer"]
 
 
 class KVCacheLayer(Protocol):
-    @property
-    @abstractmethod
-    def keys(self) -> Float[Array, "tokens groups head_channels"]: ...
-
-    @property
-    @abstractmethod
-    def values(self) -> Float[Array, "tokens groups head_channels"]: ...
+    keys: Float[Array, "tokens groups head_channels"]
+    values: Float[Array, "tokens groups head_channels"]
 
     @abstractmethod
     def extend(
@@ -129,7 +124,7 @@ class StaticKVCacheLayer(eqx.Module, KVCacheLayer):
         return KVCacheLayer(new_sequence_length, new_keys_buffer, new_values_buffer)
 
     @classmethod
-    def empty(cls, num_groups: int, head_dim: int, dtype: DTypeLike, capacity: int = 0) -> "KVCacheLayer":
+    def empty(cls, num_groups: int, head_dim: int, dtype: DTypeLike, capacity: int = 0) -> Self:
         return cls(
             sequence_length=0,
             keys_buffer=jnp.empty((capacity, num_groups, head_dim), dtype=dtype),
