@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
@@ -41,8 +42,12 @@ class AttentionType(Enum):
 class LalamoModule[ConfigT](eqx.Module):
     config: ConfigT = eqx.field(static=True)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        raise NotImplementedError
+    @property
+    @abstractmethod
+    def activation_precision(self) -> DTypeLike: ...
+
+    @abstractmethod
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict: ...
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:

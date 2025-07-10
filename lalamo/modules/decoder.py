@@ -3,14 +3,14 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 from jax import vmap
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 
 from .common import AttentionType, LalamoModule, WeightLayout
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
-from .kv_cache import KVCacheLayer
+from .kv_cache import KVCacheLayer, StaticKVCacheLayer
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 
@@ -26,7 +26,6 @@ class DecoderActivationTrace(eqx.Module):
     token_ids: Int[Array, " suffix_tokens"]
     token_positions: Int[Array, " suffix_tokens"]
     kv_cache: tuple[KVCacheLayer, ...] | None
-    mask: Bool[Array, "suffix_tokens all_tokens"] | None
 
     local_positional_embeddings: PositionalEmbeddings
     global_positional_embeddings: PositionalEmbeddings
@@ -46,8 +45,6 @@ class DecoderActivationTrace(eqx.Module):
         )
         if self.kv_cache is not None:
             result["kv_cache"] = [kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache]
-        if self.mask is not None:
-            result["mask"] = self.mask
         return result
 
 
@@ -163,12 +160,15 @@ class Decoder(LalamoModule[DecoderConfig]):
     layers: tuple[DecoderLayer, ...]
     output_norm: RMSNorm
 
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.embedding.activation_precision
+
     def __call__(
         self,
         token_ids: Int[Array, " suffix_tokens"],
         token_positions: Int[Array, " suffix_tokens"],
         kv_cache: tuple[KVCacheLayer, ...] | None = None,
-        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
     ) -> DecoderResult:
@@ -193,7 +193,6 @@ class Decoder(LalamoModule[DecoderConfig]):
                 inner_features,
                 positional_embeddings_to_use,
                 kv_cache_slice,
-                mask,
                 return_updated_kv_cache,
                 return_activation_trace,
             )
@@ -209,7 +208,6 @@ class Decoder(LalamoModule[DecoderConfig]):
                 token_ids=token_ids,
                 token_positions=token_positions,
                 kv_cache=kv_cache,
-                mask=mask,
                 global_positional_embeddings=global_positional_embeddings,
                 local_positional_embeddings=local_positional_embeddings,
                 layer_results=tuple(layer_results),
@@ -228,6 +226,9 @@ class Decoder(LalamoModule[DecoderConfig]):
             updated_kv_cache=updated_kv_cache,
             activation_trace=activation_trace,
         )
+
+    def init_static_kv_cache(self, capacity: int) -> tuple[StaticKVCacheLayer, ...]:
+        return tuple(layer.init_static_kv_cache(capacity) for layer in self.layers)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(

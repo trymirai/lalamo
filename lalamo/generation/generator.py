@@ -6,19 +6,18 @@ from jaxtyping import PRNGKeyArray
 from lalamo.modules import Decoder
 
 
-def generate(decoder: Decoder, tokens: list[int], num_steps: int = 15, key: PRNGKeyArray | None = None) -> list[int]:
+def generate(decoder: Decoder, tokens: list[int], num_steps: int = 512, key: PRNGKeyArray | None = None) -> list[int]:
     if key is None:
         key = jax.random.PRNGKey(0)
     # decoder = jit(decoder)
+    kv_cache = decoder.init_static_kv_cache(32000)
     num_tokens = len(tokens)
     token_ids = jnp.array(tokens, dtype=jnp.int32)
     token_positions = jnp.arange(num_tokens, dtype=jnp.int32)
-    mask = jnp.tril(jnp.ones((num_tokens, num_tokens), dtype=jnp.bool))
     err, decoder_outputs = checkify(decoder)(
         token_ids=token_ids,
         token_positions=token_positions,
-        kv_cache=None,
-        mask=mask,
+        kv_cache=kv_cache,
         return_updated_kv_cache=True,
     )
     err.throw()
@@ -30,13 +29,11 @@ def generate(decoder: Decoder, tokens: list[int], num_steps: int = 15, key: PRNG
         result.append(next_token.item())
         token_ids = next_token[None]
         token_positions = jnp.array([num_tokens + i])
-        mask = None
 
         err, decoder_outputs = checkify(decoder)(
             token_ids=token_ids,
             token_positions=token_positions,
             kv_cache=decoder_outputs.updated_kv_cache,
-            mask=mask,
             return_updated_kv_cache=True,
         )
         err.throw()

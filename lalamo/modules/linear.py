@@ -1,4 +1,5 @@
 import math
+from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -30,22 +31,22 @@ class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
 
     @property
-    def input_dim(self) -> int:
-        raise NotImplementedError
+    @abstractmethod
+    def input_dim(self) -> int: ...
 
     @property
     def num_outputs(self) -> int:
         return len(self.output_dims)
 
     @property
-    def has_biases(self) -> bool:
-        raise NotImplementedError
+    @abstractmethod
+    def has_biases(self) -> bool: ...
 
+    @abstractmethod
     def __call__(
         self,
         inputs: Float[Array, " in_channels"],
-    ) -> tuple[Float[Array, " out_channels"], ...]:
-        raise NotImplementedError
+    ) -> tuple[Float[Array, " out_channels"], ...]: ...
 
     @classmethod
     def _default_weight_layout(cls) -> WeightLayout:
@@ -81,6 +82,7 @@ class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
 
 @dataclass(frozen=True)
 class LinearConfigBase:
+    @abstractmethod
     def random_init(
         self,
         input_dim: int,
@@ -88,8 +90,7 @@ class LinearConfigBase:
         has_biases: bool,
         *,
         key: PRNGKeyArray,
-    ) -> LinearBase:
-        raise NotImplementedError
+    ) -> LinearBase: ...
 
 
 @dataclass(frozen=True)
@@ -128,6 +129,10 @@ class FullPrecisionLinearConfig(LinearConfigBase):
 class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
     weights: Float[Array, "total_out_channels in_channels"]
     biases: Float[Array, " total_out_channels"] | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
 
     @property
     def input_dim(self) -> int:
@@ -231,6 +236,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
     scales: Float[Array, "total_out_channels groups"]
     zero_points: Float[Array, "total_out_channels groups"]
     biases: Float[Array, " total_out_channels"] | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.activation_precision
 
     @property
     def input_dim(self) -> int:

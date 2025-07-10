@@ -1,132 +1,144 @@
 from abc import abstractmethod
-from typing import Protocol, Self
+from typing import Self
 
 import equinox as eqx
 import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.common import ParameterDict
 
-__all__ = ["KVCacheLayer"]
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
 
-class KVCacheLayer(Protocol):
+class KVCacheLayer(eqx.Module):
     keys: Float[Array, "tokens groups head_channels"]
     values: Float[Array, "tokens groups head_channels"]
-
-    @abstractmethod
-    def extend(
-        self,
-        new_keys: Float[Array, "new_tokens groups head_channels"],
-        new_values: Float[Array, "new_tokens groups head_channels"],
-    ) -> "KVCacheLayer": ...
-
-    @classmethod
-    @abstractmethod
-    def empty(cls, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self: ...
-
-    def export(self) -> ParameterDict:
-        return ParameterDict(
-            keys=self.keys,
-            values=self.values,
-        )
-
-
-class DynamicKVCacheLayer(eqx.Module, KVCacheLayer):
-    keys: Float[Array, "tokens groups head_channels"]
-    values: Float[Array, "tokens groups head_channels"]
-
-    def extend(
-        self,
-        new_keys: Float[Array, "new_tokens groups head_channels"],
-        new_values: Float[Array, "new_tokens groups head_channels"],
-    ) -> "KVCacheLayer":
-        raise NotImplementedError
-
-    @classmethod
-    def empty(cls, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
-        raise NotImplementedError
-
-    def export(self) -> ParameterDict:
-        return ParameterDict(
-            keys=self.keys,
-            values=self.values,
-        )
-
-
-class StaticKVCacheLayer(eqx.Module, KVCacheLayer):
-    sequence_length: Int[Array, ""]
-    keys_buffer: Float[Array, "capacity groups head_channels"]
-    values_buffer: Float[Array, "capacity groups head_channels"]
 
     def __post_init__(self) -> None:
-        if self.keys_buffer.ndim != 3:
-            raise ValueError("Key and value buffers must have 3 dimensions: capacity, groups, head_channels")
-        if self.keys_buffer.shape != self.values_buffer.shape:
+        if self.keys.ndim != 3:
+            raise ValueError(
+                f"Key and value buffers must have 3 dimensions: capacity, groups, head_channels,"
+                f" got shape {self.keys.shape}",
+            )
+        if self.keys.shape != self.values.shape:
             raise ValueError("Keys and values buffers must have the same shape")
-        if self.keys_buffer.dtype != self.values_buffer.dtype:
+        if self.keys.dtype != self.values.dtype:
             raise ValueError("Keys and values buffers must have the same dtype")
 
-    @property
-    def keys(self) -> Float[Array, "tokens groups head_channels"]:
-        return self.keys_buffer[: self.sequence_length]
+    @abstractmethod
+    def attention_mask(
+        self,
+        suffix_length: int,
+        is_causal: bool,
+        sliding_window_size: int | None = None,
+    ) -> Bool[Array, ""]: ...
+
+    @abstractmethod
+    def extend(
+        self,
+        new_keys: Float[Array, "new_tokens groups head_channels"],
+        new_values: Float[Array, "new_tokens groups head_channels"],
+    ) -> Self: ...
+
+    def export(self) -> ParameterDict:
+        return ParameterDict(
+            keys=self.keys,
+            values=self.values,
+        )
+
+
+class DynamicKVCacheLayer(KVCacheLayer):
+    def attention_mask(
+        self,
+        suffix_length: int,
+        is_causal: bool,
+        sliding_window_size: int | None = None,
+    ) -> Bool[Array, ""]:
+        total_num_tokens, _, _ = self.keys.shape
+        result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
+        if is_causal:
+            result = jnp.tril(result, k=total_num_tokens - suffix_length)
+        if sliding_window_size is not None:
+            result = jnp.triu(result, k=1 - sliding_window_size)
+        return result
+
+    def extend(
+        self,
+        new_keys: Float[Array, "new_tokens groups head_channels"],
+        new_values: Float[Array, "new_tokens groups head_channels"],
+    ) -> "DynamicKVCacheLayer":
+        updated_keys = jnp.concatenate([self.keys, new_keys], axis=0)
+        updated_values = jnp.concatenate([self.values, new_values], axis=0)
+        return DynamicKVCacheLayer(updated_keys, updated_values)
+
+
+class StaticKVCacheLayer(KVCacheLayer):
+    current_length: Int[Array, ""]
+
+    def attention_mask(
+        self,
+        suffix_length: int,
+        is_causal: bool,
+        sliding_window_size: int | None = None,
+    ) -> Bool[Array, ""]:
+        if is_causal:
+            query_offsets = jnp.arange(-suffix_length, 0, dtype=jnp.int32)
+        else:
+            query_offsets = jnp.zeros(suffix_length, dtype=jnp.int32)
+
+        query_indices = self.current_length + query_offsets
+        key_indices = jnp.arange(self.capacity, dtype=jnp.int32)
+
+        result = query_indices[:, None] >= key_indices[None, :]
+        if sliding_window_size is not None:
+            swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
+            result = result & swa_mask
+
+        return result
 
     @property
-    def values(self) -> Float[Array, "tokens groups head_channels"]:
-        return self.values_buffer[: self.sequence_length]
+    def padding_mask(self) -> Bool[Array, ""] | None:
+        return jnp.arange(self.capacity, dtype=jnp.int32) < self.current_length
 
     @property
     def capacity(self) -> int:
-        result, _, _ = self.keys_buffer.shape
+        result, _, _ = self.keys.shape
         return result
 
     def extend(
         self,
         new_keys: Float[Array, "tokens groups head_channels"],
         new_values: Float[Array, "tokens groups head_channels"],
-    ) -> "KVCacheLayer":
+    ) -> "StaticKVCacheLayer":
         if new_keys.shape != new_values.shape:
             raise ValueError("Keys and values must have the same shape")
         num_new_tokens, new_num_groups, new_head_dim = new_keys.shape
-        old_capacity, old_num_groups, old_head_dim = self.keys_buffer.shape
+        _, old_num_groups, old_head_dim = self.keys.shape
         if new_num_groups != old_num_groups or new_head_dim != old_head_dim:
             raise ValueError("New keys and values must have the same number of groups and head dimensions")
 
-        if old_capacity == 0:
-            return KVCacheLayer(
-                sequence_length=jnp.array(num_new_tokens),
-                keys_buffer=new_keys,
-                values_buffer=new_values,
-            )
-
-        old_sequence_length = self.sequence_length
-        new_sequence_length = old_sequence_length + num_new_tokens
-
-        if new_sequence_length > old_capacity:
-            new_capacity = max(old_capacity * 2, new_sequence_length)
-            _, num_groups, head_dim = self.keys_buffer.shape
-            old_keys_buffer = jnp.empty((new_capacity, num_groups, head_dim), dtype=self.keys_buffer.dtype)
-            old_keys_buffer = old_keys_buffer.at[:old_capacity].set(self.keys_buffer)
-            old_values_buffer = jnp.empty((new_capacity, num_groups, head_dim), dtype=self.values_buffer.dtype)
-            old_values_buffer = old_values_buffer.at[:old_capacity].set(self.values_buffer)
-        else:
-            old_keys_buffer = self.keys_buffer
-            old_values_buffer = self.values_buffer
-
-        dynamic_update_slice_in_dim()
-        keys_slice = self.keys_buffer.at[old_sequence_length:new_sequence_length]
-        new_keys_buffer = keys_slice.set(new_keys)
-
-        values_slice = self.values_buffer.at[old_sequence_length:new_sequence_length]
-        new_values_buffer = values_slice.set(new_values)
-
-        return KVCacheLayer(new_sequence_length, new_keys_buffer, new_values_buffer)
+        updated_keys = dynamic_update_slice_in_dim(
+            self.keys,
+            new_keys,
+            self.current_length,
+            0,
+            allow_negative_indices=False,
+        )
+        updated_values = dynamic_update_slice_in_dim(
+            self.values,
+            new_values,
+            self.current_length,
+            0,
+            allow_negative_indices=False,
+        )
+        updated_sequence_length = self.current_length + num_new_tokens
+        return StaticKVCacheLayer(keys=updated_keys, values=updated_values, current_length=updated_sequence_length)
 
     @classmethod
-    def empty(cls, num_groups: int, head_dim: int, dtype: DTypeLike, capacity: int = 0) -> Self:
+    def empty(cls, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
         return cls(
-            sequence_length=0,
-            keys_buffer=jnp.empty((capacity, num_groups, head_dim), dtype=dtype),
-            values_buffer=jnp.empty((capacity, num_groups, head_dim), dtype=dtype),
+            keys=jnp.empty((capacity, num_groups, head_dim), dtype=dtype),
+            values=jnp.empty((capacity, num_groups, head_dim), dtype=dtype),
+            current_length=jnp.array(0, dtype=jnp.int32),
         )

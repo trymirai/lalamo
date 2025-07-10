@@ -6,13 +6,13 @@ import jax
 from einops import einsum, rearrange, repeat
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 
 from .common import AttentionType, LalamoModule, WeightLayout
-from .kv_cache import KVCacheLayer
+from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
 from .utils import apply_soft_capping
@@ -34,22 +34,11 @@ def _repeat_kv(
     )
 
 
-def _apply_sliding_window(
-    mask: Bool[Array, "dst_tokens src_tokens"],
-    local_window_size: int,
-) -> Bool[Array, "dst_tokens src_tokens"]:
-    dst_length, src_length = mask.shape
-    dst_indices = jnp.arange(dst_length)[:, None]
-    src_indices = jnp.arange(src_length)[None, :]
-    return mask & (dst_indices - src_indices < local_window_size)
-
-
 def _soft_capped_attention_kernel(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
     values: Float[Array, "src_tokens groups head_channels"],
     mask: Bool[Array, "dst_tokens src_tokens"] | None,
-    local_window_size: int | None,
     scale: float | None,
     logit_soft_cap: float,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
@@ -57,10 +46,6 @@ def _soft_capped_attention_kernel(
     src_length, num_groups, _ = keys.shape
     if scale is None:
         scale = head_dim**-0.5
-    if local_window_size is not None:
-        if mask is None:
-            mask = jnp.ones((dst_length, src_length), dtype=jnp.bool_)
-        mask = _apply_sliding_window(mask, local_window_size)
     group_size = num_heads // num_groups
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
@@ -73,6 +58,7 @@ def _soft_capped_attention_kernel(
     )
     if mask is not None:
         attention_logits = jnp.where(mask, attention_logits, jnp.array(float("-inf"), dtype=attention_logits.dtype))
+
     attention_logits = attention_logits * scale
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     attention_weights = jax.nn.softmax(attention_logits, axis=-1)
@@ -106,6 +92,7 @@ class AttentionConfig:
         num_heads: int,
         num_groups: int,
         head_dim: int,
+        is_causal: bool,
         scale: float | None,
         sliding_window_size: int | None,
         *,
@@ -152,6 +139,7 @@ class AttentionConfig:
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            is_causal=is_causal,
             scale=scale,
             sliding_window_size=sliding_window_size,
         )
@@ -168,8 +156,14 @@ class Attention(LalamoModule[AttentionConfig]):
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
 
+    is_causal: bool = eqx.field(static=True)
+
     scale: float | None = eqx.field(static=True)
     sliding_window_size: int | None = eqx.field(static=True)
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.qkv_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -244,7 +238,6 @@ class Attention(LalamoModule[AttentionConfig]):
         inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayer | None = None,
-        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
@@ -277,9 +270,12 @@ class Attention(LalamoModule[AttentionConfig]):
         keys = apply_positional_embeddings(keys)
 
         if kv_cache is None:
-            kv_cache = KVCacheLayer.empty(num_groups=self.num_groups, head_dim=self.head_dim, dtype=queries.dtype)
+            updated_kv_cache = DynamicKVCacheLayer(keys, values)
+        else:
+            updated_kv_cache = kv_cache.extend(keys, values)
 
-        updated_kv_cache = kv_cache.extend(keys, values)
+        num_suffix_tokens, _, _ = queries.shape
+        mask = updated_kv_cache.attention_mask(num_suffix_tokens, self.is_causal, self.sliding_window_size)
 
         if self.config.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
@@ -289,7 +285,6 @@ class Attention(LalamoModule[AttentionConfig]):
                 mask=mask,
                 scale=self.scale,
                 logit_soft_cap=self.config.logit_soft_cap,
-                local_window_size=self.sliding_window_size,
             )
         else:
             attention_output = jax.nn.dot_product_attention(
@@ -298,7 +293,6 @@ class Attention(LalamoModule[AttentionConfig]):
                 updated_kv_cache.values,
                 mask=mask,
                 scale=self.scale,
-                local_window_size=self.sliding_window_size,
             )
         attention_output = rearrange(
             attention_output,
@@ -315,6 +309,9 @@ class Attention(LalamoModule[AttentionConfig]):
             outputs=result,
             kv_cache=updated_kv_cache,
         )
+
+    def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
+        return StaticKVCacheLayer.empty(capacity, self.num_groups, self.head_dim, self.activation_precision)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(

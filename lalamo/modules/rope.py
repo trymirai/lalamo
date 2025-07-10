@@ -98,6 +98,10 @@ class RoPE(LalamoModule[RoPEConfigBase]):
     sines: Float[Array, "tokens head_channels"]
     cosines: Float[Array, "tokens head_channels"]
 
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
     def __post_init__(self) -> None:
         if self.cosines.dtype != self.config.precision:
             raise ValueError(

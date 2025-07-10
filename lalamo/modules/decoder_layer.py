@@ -3,13 +3,13 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 from jax import vmap
-from jaxtyping import Array, Bool, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 
 from .attention import Attention, AttentionConfig
 from .common import AttentionType, LalamoModule, WeightLayout
-from .kv_cache import KVCacheLayer
+from .kv_cache import KVCacheLayer, StaticKVCacheLayer
 from .mlp import MLP, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import PositionalEmbeddings
@@ -26,7 +26,6 @@ class DecoderLayerActivationTrace(eqx.Module):
     inputs: Float[Array, "suffix_tokens channels"]
     positional_embeddings: PositionalEmbeddings
     kv_cache: KVCacheLayer | None
-    mask: Bool[Array, "suffix_tokens total_tokens"] | None
 
     mlp_inputs: Float[Array, "suffix_tokens channels"]
     pre_attention_norm: Float[Array, "suffix_tokens channels"]
@@ -48,8 +47,6 @@ class DecoderLayerActivationTrace(eqx.Module):
         )
         if self.kv_cache is not None:
             result["kv_cache"] = self.kv_cache.export()
-        if self.mask is not None:
-            result["mask"] = self.mask
         if self.post_attention_norm is not None:
             result["post_attention_norm"] = self.post_attention_norm
         if self.post_mlp_norm is not None:
@@ -101,6 +98,7 @@ class DecoderLayerConfig:
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
+            is_causal=True,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
             key=attention_key,
@@ -133,6 +131,10 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
     pre_mlp_norm: RMSNorm
     mlp: MLP
     post_mlp_norm: RMSNorm | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.attention.activation_precision
 
     @property
     def attention_type(self) -> AttentionType:
@@ -171,7 +173,6 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayer | None = None,
-        mask: Bool[Array, "suffix_tokens total_tokens"] | None = None,
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
     ) -> DecoderLayerResult:
@@ -180,7 +181,6 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             normalized_attention_inputs,
             positional_embeddings,
             kv_cache,
-            mask,
             return_updated_kv_cache,
         )
         if self.post_attention_norm is not None:
@@ -204,7 +204,6 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
                 inputs=inputs,
                 positional_embeddings=positional_embeddings,
                 kv_cache=kv_cache,
-                mask=mask,
                 pre_attention_norm=normalized_attention_inputs,
                 attention=attention_outputs,
                 post_attention_norm=normalized_attention_outputs,
@@ -221,6 +220,9 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             updated_kv_cache=updated_kv_cache,
             activation_trace=activation_trace,
         )
+
+    def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
+        return self.attention.init_static_kv_cache(capacity)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
         result = ParameterDict(
