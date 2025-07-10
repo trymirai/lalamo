@@ -18,6 +18,7 @@ __all__ = [
     "TokenizerFileSpec",
     "UseCase",
     "huggingface_weight_files",
+    "awq_model_spec",
 ]
 
 
@@ -68,6 +69,23 @@ def huggingface_weight_files(num_shards: int) -> tuple[str, ...]:
     if num_shards == 1:
         return ("model.safetensors",)
     return tuple(f"model-{i:05d}-of-{num_shards:05d}.safetensors" for i in range(1, num_shards + 1))
+
+
+def awq_model_spec(model_spec: ModelSpec, repo: str, quantization: QuantizationMode = QuantizationMode.UINT4) -> ModelSpec:
+    return ModelSpec(
+        vendor=model_spec.vendor,
+        family=model_spec.family,
+        name="{}-AWQ".format(model_spec.name),
+        size=model_spec.size,
+        quantization=quantization,
+        repo=repo,
+        config_type=model_spec.config_type,
+        config_file_name=model_spec.config_file_name,
+        weights_file_names=huggingface_weight_files(1),
+        weights_type=model_spec.weights_type,
+        tokenizer_files=model_spec.tokenizer_files,
+        use_cases=model_spec.use_cases,
+    )
 
 
 HUGGINGFACE_TOKENIZER_FILES = (
