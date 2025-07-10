@@ -38,7 +38,6 @@ def build_quantized_models(model_specs: list[ModelSpec]):
         "Qwen/Qwen2.5-Coder-7B-Instruct",
         "Qwen/Qwen3-1.7B",
         "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-        "google/gemma-3-4b-it",
         "HuggingFaceTB/SmolLM2-1.7B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
     ]
