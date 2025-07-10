@@ -11,6 +11,16 @@ class QuantizationMode(Enum):
     INT8 = "int8"
     UINT8 = "uint8"
 
+    @classmethod
+    def from_num_bits(cls, num_bits: int) -> "QuantizationMode":
+        bit_to_mode = {
+            4: cls.UINT4,
+            8: cls.UINT8,
+        }
+        if num_bits not in bit_to_mode:
+            raise ValueError(f"No quantization mode defined for {num_bits} bits")
+        return bit_to_mode[num_bits]
+
     @property
     def range(self) -> tuple[int, int]:
         return MODE_TO_RANGE[self]

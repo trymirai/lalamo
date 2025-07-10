@@ -9,6 +9,7 @@ from lalamo.modules import (
     DecoderConfig,
     DecoderLayerConfig,
     FullPrecisionLinearConfig,
+    GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
     MLPConfig,
     RMSNormConfig,
@@ -16,8 +17,9 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UpcastMode,
 )
+from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
 __all__ = ["HFLlamaConfig"]
 
@@ -58,6 +60,8 @@ class HFLlamaConfig(HuggingFaceConfig):
     vocab_size: int
     head_dim: int | None = None
 
+    quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
+
     def to_decoder_config(
         self,
         context_length: int | None,
@@ -92,9 +96,17 @@ class HFLlamaConfig(HuggingFaceConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         )
-        linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        if self.quantization_config is None:
+            linear_config = FullPrecisionLinearConfig(
+                precision=activation_precision,
+            )
+        else:
+            linear_config = GroupQuantizedLinearConfig(
+                group_size=self.quantization_config.group_size,
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,

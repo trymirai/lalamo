@@ -1,4 +1,4 @@
-from .common import ModelSpec, UseCase
+from .common import awq_model_spec, build_quantized_models, ModelSpec, UseCase
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .huggingface import HUGGINGFACE_MODELS
@@ -31,4 +31,6 @@ ALL_MODEL_LISTS = [
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
 
 
+QUANTIZED_MODELS = build_quantized_models(ALL_MODELS)
+ALL_MODELS = ALL_MODELS + QUANTIZED_MODELS
 REPO_TO_MODEL = {model.repo: model for model in ALL_MODELS}

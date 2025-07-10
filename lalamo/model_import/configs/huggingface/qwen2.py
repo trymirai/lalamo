@@ -9,6 +9,7 @@ from lalamo.modules import (
     DecoderConfig,
     DecoderLayerConfig,
     FullPrecisionLinearConfig,
+    GroupQuantizedLinearConfig,
     MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
@@ -16,8 +17,9 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
+from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
 __all__ = ["HFQwen2Config"]
 
@@ -46,6 +48,8 @@ class HFQwen2Config(HuggingFaceConfig):
     use_cache: bool
     use_sliding_window: bool
     vocab_size: int
+
+    quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
 
     def _get_sliding_window_sizes(self) -> list[int | None]:
         if not self.use_sliding_window:
@@ -89,9 +93,17 @@ class HFQwen2Config(HuggingFaceConfig):
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         )
-        linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        if self.quantization_config is None:
+            linear_config = FullPrecisionLinearConfig(
+                precision=activation_precision,
+            )
+        else:
+            linear_config = GroupQuantizedLinearConfig(
+                group_size=self.quantization_config.group_size,
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
