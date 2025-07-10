@@ -19,48 +19,9 @@ from lalamo.modules import (
 )
 from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
 __all__ = ["HFQwen3Config"]
-
-
-@dataclass(frozen=True)
-class AWQQuantizationConfig:
-    backend: Literal["autoawq"] = "autoawq"
-    bits: Literal[4, 8] = 4
-    do_fuse: Literal[False] = False
-    exllama_config: None = None
-    fuse_max_seq_len: None = None
-    group_size: int = 128
-    modules_to_fuse: None = None
-    modules_to_not_convert: None = None
-    quant_method: Literal["awq"] = "awq"
-    version: Literal["gemm"] = "gemm"
-    zero_point: bool = True
-
-
-@dataclass(frozen=True)
-class GPTQMetaConfig:
-    damp_auto_increment: float
-    damp_percent: float
-    mse: float
-    quantizer: list[str]
-    static_groups: bool
-    true_sequential: bool
-    uri: str
-
-
-@dataclass(frozen=True)
-class GPTQQuantizationConfig:
-    bits: int
-    checkpoint_format: str
-    desc_act: bool
-    group_size: int
-    lm_head: bool
-    meta: GPTQMetaConfig
-    pack_dtype: str
-    quant_method: Literal["gptq"]
-    sym: bool
 
 
 @dataclass(frozen=True)
