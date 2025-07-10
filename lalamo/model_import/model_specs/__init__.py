@@ -32,24 +32,15 @@ ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
 
 def build_quantized_models(model_specs: list[ModelSpec]):
     quantization_compatible_repos: list[str] = [
-        "Qwen/Qwen2.5-0.5B-Instruct",
-        "Qwen/Qwen2.5-1.5B-Instruct",
         "Qwen/Qwen2.5-3B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",
-        "Qwen/Qwen2.5-Coder-0.5B-Instruct",
-        "Qwen/Qwen2.5-Coder-1.5B-Instruct",
         "Qwen/Qwen2.5-Coder-3B-Instruct",
         "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "Qwen/Qwen3-0.6B",
         "Qwen/Qwen3-1.7B",
         "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-        "google/gemma-3-1b-it",
         "google/gemma-3-4b-it",
         "HuggingFaceTB/SmolLM2-1.7B-Instruct",
-        "meta-llama/Llama-3.1-8B-Instruct",
-        "meta-llama/Llama-3.2-1B-Instruct",
         "meta-llama/Llama-3.2-3B-Instruct",
-        "PleIAs/Pleias-RAG-1B",
     ]
 
     quantized_model_specs: list[ModelSpec] = []
