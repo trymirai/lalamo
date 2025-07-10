@@ -1,4 +1,4 @@
-from .common import awq_model_spec, ModelSpec, UseCase
+from .common import awq_model_spec, build_quantized_models, ModelSpec, UseCase
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .huggingface import HUGGINGFACE_MODELS
@@ -29,26 +29,6 @@ ALL_MODEL_LISTS = [
 
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
-
-def build_quantized_models(model_specs: list[ModelSpec]):
-    quantization_compatible_repos: list[str] = [
-        "Qwen/Qwen2.5-3B-Instruct",
-        "Qwen/Qwen2.5-7B-Instruct",
-        "Qwen/Qwen2.5-Coder-3B-Instruct",
-        "Qwen/Qwen2.5-Coder-7B-Instruct",
-        "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-        "HuggingFaceTB/SmolLM2-1.7B-Instruct",
-        "meta-llama/Llama-3.2-3B-Instruct",
-    ]
-
-    quantized_model_specs: list[ModelSpec] = []
-    for model_spec in model_specs:
-        if model_spec.repo not in quantization_compatible_repos:
-            continue
-        quantized_repo = "trymirai/{}-AWQ".format(model_spec.repo.split("/")[-1])
-        quantized_model_spec = awq_model_spec(model_spec, quantized_repo)
-        quantized_model_specs.append(quantized_model_spec)
-    return quantized_model_specs
 
 
 QUANTIZED_MODELS = build_quantized_models(ALL_MODELS)
