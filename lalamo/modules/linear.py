@@ -404,7 +404,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
 
         # Compute scales (with small epsilon to avoid division by zero)
         eps = 1e-6
-        new_scales = ((group_max - group_min) / 15.0 + eps).astype(jnp.float16)
+        new_scales = ((group_max - group_min) / 15.0 + eps).astype(scales.dtype)
         new_scales = new_scales.squeeze(axis=(2, 3))  # [2560, 48]
 
         # Compute zero points (quantize to uint4 range 0-15)
