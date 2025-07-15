@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 
@@ -175,13 +175,15 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         kv_cache: KVCacheLayer | None = None,
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
+        length_without_padding: Int[Array, ""] | int | None = None,
     ) -> DecoderLayerResult:
         normalized_attention_inputs = vmap(self.pre_attention_norm, in_axes=0)(inputs)
         attention_outputs, updated_kv_cache = self.attention(
             normalized_attention_inputs,
             positional_embeddings,
-            kv_cache,
-            return_updated_kv_cache,
+            kv_cache=kv_cache,
+            return_updated_kv_cache=return_updated_kv_cache,
+            length_without_padding=length_without_padding,
         )
         if self.post_attention_norm is not None:
             normalized_attention_outputs = vmap(self.post_attention_norm, in_axes=0)(attention_outputs)

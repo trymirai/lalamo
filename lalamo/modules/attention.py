@@ -6,7 +6,7 @@ import jax
 from einops import einsum, rearrange, repeat
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
@@ -239,6 +239,7 @@ class Attention(LalamoModule[AttentionConfig]):
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayer | None = None,
         return_updated_kv_cache: bool = False,
+        length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         queries = rearrange(
@@ -270,9 +271,9 @@ class Attention(LalamoModule[AttentionConfig]):
         keys = apply_positional_embeddings(keys)
 
         if kv_cache is None:
-            updated_kv_cache = DynamicKVCacheLayer(keys, values)
+            updated_kv_cache = DynamicKVCacheLayer.init(keys, values, length=length_without_padding)
         else:
-            updated_kv_cache = kv_cache.extend(keys, values)
+            updated_kv_cache = kv_cache.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
         mask = updated_kv_cache.attention_mask(num_suffix_tokens, self.is_causal, self.sliding_window_size)
