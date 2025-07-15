@@ -146,7 +146,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         return result
 
     @property
-    def padding_mask(self) -> Bool[Array, ""] | None:
+    def padding_mask(self) -> Bool[Array, " tokens"] | None:
         return jnp.arange(self.capacity, dtype=jnp.int32) < self.current_length
 
     @property
