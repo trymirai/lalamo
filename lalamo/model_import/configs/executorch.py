@@ -15,8 +15,8 @@ from lalamo.modules import (
     QLoRALinearConfig,
     QuantizedTiedEmbeddingConfig,
     RMSNormConfig,
+    UpcastMode,
 )
-from lalamo.modules.normalization import UpcastMode
 from lalamo.quantization import QuantizationMode
 
 from .common import ForeignConfig

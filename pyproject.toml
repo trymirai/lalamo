@@ -1,7 +1,7 @@
 [project]
 name = "lalamo"
 description = "Add your description here"
-requires-python = "~=3.12"
+requires-python = ">=3.12, <4"
 dependencies = [
     "cattrs>=24.1.2",
     "click>=8.1.8",
@@ -15,7 +15,6 @@ dependencies = [
     "optax>=0.2.4",
     "rich>=14.0.0",
     "thefuzz>=0.22.1",
-    "transformers>=4.52.4",
     "typer>=0.15.1",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]

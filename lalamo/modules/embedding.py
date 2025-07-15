@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from dataclasses import dataclass
 
 import jax
@@ -28,42 +29,42 @@ class EmbeddingConfigBase:
     input_scale: float | None
     logits_soft_cap: float | None
 
+    @abstractmethod
     def random_init(
         self,
         vocab_size: int,
         model_dim: int,
         *,
         key: PRNGKeyArray,
-    ) -> "EmbeddingBase":
-        raise NotImplementedError
+    ) -> "EmbeddingBase": ...
 
 
 class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
-    def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
-        raise NotImplementedError
+    @abstractmethod
+    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]: ...
 
-    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
-        raise NotImplementedError
+    @abstractmethod
+    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]: ...
+
+    @property
+    @abstractmethod
+    def vocab_size(self) -> int: ...
+
+    @property
+    @abstractmethod
+    def model_dim(self) -> int: ...
 
     @classmethod
     def _default_weight_layout(cls) -> WeightLayout:
         return WeightLayout.INPUT_OUTPUT
 
-    @property
-    def vocab_size(self) -> int:
-        raise NotImplementedError
-
-    @property
-    def model_dim(self) -> int:
-        raise NotImplementedError
-
-    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens model_dim"]:
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
         result = self._prepare_input_weights()[x]
         if self.config.input_scale is not None:
             result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
         return result
 
-    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         logits = self._prepare_output_weights() @ x
         if self.config.logits_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logits_soft_cap)
@@ -86,7 +87,11 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
-    weights: Float[Array, "token_ids channels"]
+    weights: Float[Array, "vocabulary channels"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
 
     def __post_init__(self) -> None:
         if self.config.precision != self.weights.dtype:
@@ -104,10 +109,10 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         vocab_size, _ = self.weights.shape
         return vocab_size
 
-    def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
 
-    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
@@ -136,8 +141,12 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
-    input_weights: Float[Array, "token_ids channels"]
-    output_weights: Float[Array, "token_ids channels"]
+    input_weights: Float[Array, "vocabulary channels"]
+    output_weights: Float[Array, "vocabulary channels"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
 
     @property
     def model_dim(self) -> int:
@@ -171,10 +180,10 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
                 f"Input model dim {input_model_dim} does not match the output model dim {output_model_dim}",
             )
 
-    def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.input_weights
 
-    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.output_weights
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
@@ -218,8 +227,12 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
-    weights: Float[Array, "token_ids channels"]
-    scales: Float[Array, " token_ids"]
+    weights: Float[Array, "vocabulary channels"]
+    scales: Float[Array, " vocabulary"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -253,22 +266,22 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
             )
 
     @property
-    def int_weights(self) -> Int[Array, "token_ids channels"]:
+    def int_weights(self) -> Int[Array, "vocabulary channels"]:
         result = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         return result.astype(self.config.embedding_quantization_mode.dtype)
 
-    def _prepare_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_weights(self) -> Float[Array, "vocabulary channels"]:
         quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         quantized_weights = quantized_weights * self.scales.reshape(-1, 1)
         return quantized_weights
 
-    def _prepare_input_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
         return self._prepare_weights()
 
-    def _prepare_output_weights(self) -> Float[Array, "token_ids channels"]:
+    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self._prepare_weights()
 
-    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " token_ids"]:
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)

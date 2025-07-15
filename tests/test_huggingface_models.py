@@ -69,12 +69,10 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
 
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)
     token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)
-    mask = jnp.tril(jnp.ones((NUM_TOKENS, NUM_TOKENS), dtype=jnp.bool))
 
     err, llm_result = checkify_forward(llm_model)(
         token_ids=token_ids,
         token_positions=token_positions,
-        mask=mask,
         return_updated_kv_cache=True,
         return_activation_trace=True,
     )

@@ -1,4 +1,5 @@
 import json
+from abc import abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
@@ -18,8 +19,8 @@ class ForeignConfig:
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @property
-    def default_precision(self) -> DTypeLike:
-        raise NotImplementedError
+    @abstractmethod
+    def default_precision(self) -> DTypeLike: ...
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:

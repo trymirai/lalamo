@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import jax
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterDict
 
@@ -39,6 +39,10 @@ class MLPConfig:
 class MLP(LalamoModule):
     up_projection: LinearBase
     down_projection: LinearBase
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.up_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
