@@ -13,7 +13,7 @@ from .embedding import (
     UntiedEmbedding,
     UntiedEmbeddingConfig,
 )
-from .kv_cache import KVCacheLayerSlice
+from .kv_cache import DynamicKVCacheLayer, KVCache, KVCacheLayer, StaticKVCacheLayer
 from .linear import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -49,13 +49,15 @@ __all__ = [
     "DecoderLayerConfig",
     "DecoderLayerResult",
     "DecoderResult",
+    "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
     "FullPrecisionLinear",
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "KVCacheLayerSlice",
+    "KVCache",
+    "KVCacheLayer",
     "LinearBase",
     "LinearConfig",
     "LinearScalingRoPEConfig",
@@ -70,6 +72,7 @@ __all__ = [
     "RMSNormConfig",
     "RoPE",
     "RoPEConfig",
+    "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "UnscaledRoPEConfig",

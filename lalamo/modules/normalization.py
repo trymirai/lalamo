@@ -38,6 +38,10 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
     scales: Float[Array, " channels"]
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.scale_precision
+
+    @property
     def input_dim(self) -> int:
         (result,) = self.scales.shape
         return result

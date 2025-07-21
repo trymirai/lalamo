@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
@@ -12,7 +13,6 @@ from lalamo.common import ParameterDict
 __all__ = [
     "AttentionType",
     "DummyUnionMember",
-    "ExportableModule",
     "LalamoModule",
     "config_converter",
     "register_config_union",
@@ -39,13 +39,15 @@ class AttentionType(Enum):
     SLIDING_WINDOW = "sliding_window"
 
 
-class ExportableModule(eqx.Module):
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        raise NotImplementedError
-
-
-class LalamoModule[ConfigT](ExportableModule):
+class LalamoModule[ConfigT](eqx.Module):
     config: ConfigT = eqx.field(static=True)
+
+    @property
+    @abstractmethod
+    def activation_precision(self) -> DTypeLike: ...
+
+    @abstractmethod
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict: ...
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:

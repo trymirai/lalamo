@@ -221,15 +221,13 @@ def convert(
             token_stride = 8
             token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)
             token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)
-            mask = jnp.tril(jnp.ones((num_tokens, num_tokens), dtype=jnp.bool))
             result = model(
                 token_ids,
                 token_positions,
-                mask=mask,
                 return_updated_kv_cache=True,
                 return_activation_trace=True,
             )
-            traces = dict(result.export_weights(weight_layout))
+            traces = dict(result.export())
             save_file(traces, output_dir / "traces.safetensors")
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")

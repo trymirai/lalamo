@@ -6,14 +6,15 @@ from lalamo.common import ParameterPath
 from lalamo.modules import (
     MLP,
     Attention,
+    Decoder,
     DecoderLayer,
     FullPrecisionLinear,
+    GroupQuantizedLinear,
+    LinearBase,
     RMSNorm,
     TiedEmbedding,
     UntiedEmbedding,
 )
-from lalamo.modules.decoder import Decoder
-from lalamo.modules.linear import GroupQuantizedLinear, LinearBase
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
