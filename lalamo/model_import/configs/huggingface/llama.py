@@ -17,6 +17,7 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UpcastMode,
 )
+from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
@@ -68,11 +69,18 @@ class HFLlamaConfig(HuggingFaceConfig):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
-        embedding_config = TiedEmbeddingConfig(
-            input_scale=None,
-            logits_soft_cap=None,
-            precision=activation_precision,
-        )
+        if self.tie_word_embeddings:
+            embedding_config = TiedEmbeddingConfig(
+                input_scale=None,
+                logits_soft_cap=None,
+                precision=activation_precision,
+            )
+        else:
+            embedding_config = UntiedEmbeddingConfig(
+                input_scale=None,
+                logits_soft_cap=None,
+                precision=activation_precision,
+            )
         if self.rope_scaling is None:
             rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
