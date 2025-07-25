@@ -7,6 +7,7 @@ from .mistral import MISTRAL_MODELS
 from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
+from .reka import REKA_MODELS
 
 __all__ = [
     "ALL_MODELS",
@@ -25,6 +26,7 @@ ALL_MODEL_LISTS = [
     PLEIAS_MODELS,
     POLARIS_MODELS,
     QWEN_MODELS,
+    REKA_MODELS,
 ]
 
 
