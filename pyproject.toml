@@ -11,10 +11,12 @@ dependencies = [
     "jax>=0.4.38; sys_platform == 'darwin'",
     "jax[cuda]>=0.4.38; sys_platform == 'linux'",
     "jaxtyping>=0.2.36",
+    "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
     "rich>=14.0.0",
     "thefuzz>=0.22.1",
+    "tokenizers>=0.21.2",
     "typer>=0.15.1",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]

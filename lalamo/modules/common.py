@@ -2,13 +2,14 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
+from typing import Self
 
 import equinox as eqx
 from cattrs import Converter
 from jax import numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 __all__ = [
     "AttentionType",
@@ -46,8 +47,17 @@ class LalamoModule[ConfigT](eqx.Module):
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
 
+    @classmethod
     @abstractmethod
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict: ...
+    def load_weights(
+        cls,
+        config: ConfigT,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self: ...
+
+    @abstractmethod
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree: ...
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:

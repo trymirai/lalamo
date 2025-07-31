@@ -19,6 +19,10 @@ class ForeignConfig:
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @property
+    def eos_token_ids(self) -> list[int]:
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+
+    @property
     @abstractmethod
     def default_precision(self) -> DTypeLike: ...
 
@@ -28,11 +32,6 @@ class ForeignConfig:
         with open(json_path) as f:
             config = json.load(f)
         return cls._converter.structure(config, cls)
-
-    def to_json(self, json_path: Path | str) -> None:
-        json_path = Path(json_path)
-        with open(json_path, "w") as f:
-            json.dump(self._converter.unstructure(self), f, indent=2)
 
     def to_decoder_config(
         self,
@@ -50,7 +49,7 @@ class ForeignConfig:
     ) -> Decoder:
         raise NotImplementedError
 
-    def load_model(
+    def load_decoder(
         self,
         context_length: int | None,
         activation_precision: DTypeLike,

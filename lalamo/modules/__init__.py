@@ -1,6 +1,6 @@
 from .activations import Activation
 from .attention import Attention, AttentionConfig
-from .common import WeightLayout, config_converter
+from .common import LalamoModule, WeightLayout, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderResult
 from .decoder_layer import DecoderLayer, DecoderLayerActivationTrace, DecoderLayerConfig, DecoderLayerResult
 from .embedding import (
@@ -58,6 +58,7 @@ __all__ = [
     "GroupQuantizedLinearConfig",
     "KVCache",
     "KVCacheLayer",
+    "LalamoModule",
     "LinearBase",
     "LinearConfig",
     "LinearScalingRoPEConfig",

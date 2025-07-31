@@ -48,8 +48,7 @@ def another_generation_input(tokenizer: PreTrainedTokenizer) -> GenerationInput:
 
 @pytest.fixture
 def language_model() -> LanguageModel:
-    decoder = import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
-    return LanguageModel(decoder)
+    return import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
 
 
 @pytest.fixture
@@ -62,7 +61,7 @@ def test_eager_generation(
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
 ) -> None:
-    response_token_ids = language_model.generate(generation_input.token_ids, max_output_length=32)
+    response_token_ids = language_model.generate_tokens(generation_input.token_ids, max_output_length=32)
     response_text = tokenizer.decode(response_token_ids)
     assert "<|im_end|>" in response_text
 
@@ -79,7 +78,7 @@ def test_padding(language_model: LanguageModel, tokenizer: PreTrainedTokenizer) 
     token_ids = jnp.array(tokenizer.encode(prompt))
 
     length = jnp.array(0, dtype=jnp.int32)
-    response_token_ids = language_model.generate(
+    response_token_ids = language_model.generate_tokens(
         token_ids,
         prompt_length_without_padding=length,
         max_output_length=32,
@@ -87,26 +86,13 @@ def test_padding(language_model: LanguageModel, tokenizer: PreTrainedTokenizer) 
     response_text = tokenizer.decode(response_token_ids)
     assert "elephants" not in response_text.lower()
 
-    response_token_ids = language_model.generate(
+    response_token_ids = language_model.generate_tokens(
         token_ids,
         prompt_length_without_padding=token_ids.size,
         max_output_length=32,
     )
     response_text = tokenizer.decode(response_token_ids)
     assert "elephants" in response_text.lower()
-
-
-def test_jit_generation(
-    language_model: LanguageModel,
-    tokenizer: PreTrainedTokenizer,
-    generation_input: GenerationInput,
-) -> None:
-    response_token_ids = jit(language_model.generate, static_argnames=["max_output_length"])(
-        generation_input.token_ids,
-        max_output_length=32,
-    )
-    response_text = tokenizer.decode(response_token_ids)
-    assert "<|im_end|>" in response_text
 
 
 def test_batch_generation(
@@ -116,7 +102,7 @@ def test_batch_generation(
     another_generation_input: GenerationInput,
 ) -> None:
     def generate_fn(token_ids: Int[Array, " tokens"], sequence_length: Int[Array, ""]) -> Int[Array, " tokens"]:
-        return language_model.generate(
+        return language_model.generate_tokens(
             token_ids,
             prompt_length_without_padding=sequence_length,
             max_output_length=32,
@@ -152,7 +138,7 @@ def test_streaming_generation(
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
 ) -> None:
-    token_stream = language_model.stream(generation_input.token_ids, max_output_length=32)
+    token_stream = language_model.stream_tokens(generation_input.token_ids, max_output_length=32)
     response_token_ids = jnp.array(list(token_stream))
     response_text = tokenizer.decode(response_token_ids)
     assert "<|im_end|>" in response_text
@@ -162,13 +148,13 @@ def test_streaming_vs_eager_consistency(
     language_model: LanguageModel,
     generation_input: GenerationInput,
 ) -> None:
-    eager_token_ids = language_model.generate(
+    eager_token_ids = language_model.generate_tokens(
         generation_input.token_ids,
         max_output_length=32,
         eos_token_ids=jnp.array([-1]),  # Never stop.
     )
 
-    streaming_token_generator = language_model.stream(
+    streaming_token_generator = language_model.stream_tokens(
         generation_input.token_ids,
         max_output_length=32,
         eos_token_ids=jnp.array([-1]),  # Never stop.

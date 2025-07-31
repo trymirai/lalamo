@@ -1,9 +1,10 @@
 from dataclasses import dataclass
 
+import equinox as eqx
 import jax
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .activations import Activation
 from .common import LalamoModule, WeightLayout
@@ -35,8 +36,15 @@ class MLPConfig:
             ),
         )
 
+    def from_weights(
+        self,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "MLP":
+        return MLP.load_weights(self, weights, weight_layout)
 
-class MLP(LalamoModule):
+
+class MLP(LalamoModule[MLPConfig]):
     up_projection: LinearBase
     down_projection: LinearBase
 
@@ -66,14 +74,34 @@ class MLP(LalamoModule):
                 f" the up projection output dimension {self.up_projection.input_dim}",
             )
 
+    @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         up_proj, gate = self.up_projection(inputs)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
         return result
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        return ParameterDict(
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        return dict(
             up_projection=self.up_projection.export_weights(weight_layout),
             down_projection=self.down_projection.export_weights(weight_layout),
+        )
+
+    @classmethod
+    def load_weights(
+        cls,
+        config: MLPConfig,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "MLP":
+        assert isinstance(weights, dict)
+        up_weights = weights["up_projection"]
+        down_weights = weights["down_projection"]
+        assert isinstance(up_weights, dict)
+        assert isinstance(down_weights, dict)
+
+        return cls(
+            config=config,
+            up_projection=config.linear_config.from_weights(up_weights, weight_layout),
+            down_projection=config.linear_config.from_weights(down_weights, weight_layout),
         )

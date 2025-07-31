@@ -22,7 +22,7 @@ import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .common import LalamoModule, WeightLayout, register_config_union
 
@@ -53,8 +53,8 @@ class PositionalEmbeddings(eqx.Module):
     def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
-    def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(
+    def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+        return dict(
             cosines=self.cosines,
             sines=self.sines,
         )
@@ -93,6 +93,13 @@ class RoPEConfigBase:
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
         return RoPE(config=self, cosines=cosines, sines=sines)
 
+    def from_weights(
+        self,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "RoPE":
+        return RoPE.load_weights(self, weights, weight_layout)
+
 
 class RoPE(LalamoModule[RoPEConfigBase]):
     sines: Float[Array, "tokens head_channels"]
@@ -127,14 +134,33 @@ class RoPE(LalamoModule[RoPEConfigBase]):
         result, _ = self.sines.shape
         return result
 
+    @eqx.filter_jit
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(cosines=self.cosines, sines=self.sines)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+        return dict(cosines=self.cosines, sines=self.sines)
+
+    @classmethod
+    def load_weights(
+        cls,
+        config: RoPEConfigBase,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "RoPE":
+        assert isinstance(weights, dict)
+        cosines = weights["cosines"]
+        sines = weights["sines"]
+        assert isinstance(cosines, Array)
+        assert isinstance(sines, Array)
+        return cls(
+            config=config,
+            cosines=cosines,
+            sines=sines,
+        )
 
 
 class UnscaledRoPEConfig(RoPEConfigBase):

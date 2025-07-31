@@ -118,7 +118,7 @@ def convert(
         WeightLayout | None,
         Option(
             help=(
-                "Order of dimensions in the weights of linear layers."
+                "(EXPERIMENTAL) Order of dimensions in the weights of linear layers."
                 "\n\n\n\n"
                 "If set to AUTO, the layout will depend on the model."
             ),
@@ -195,7 +195,7 @@ def convert(
         transient=True,
     ) as progress:
         progress.add_task("👨‍🍳 Cooking...")
-        model, metadata, tokenizer_file_paths = import_model(
+        model, metadata = import_model(
             model_repo,
             precision=precision_dtype,
             context_length=context_length,
@@ -211,8 +211,7 @@ def convert(
         with open(output_dir / "config.json", "w") as file:
             json.dump(config_json, file, indent=4)
 
-        for path in tokenizer_file_paths:
-            shutil.copy(path, output_dir / path.name)
+        model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
 
         if include_traces:
             progress.add_task("🚁 Generating traces...")
@@ -221,7 +220,7 @@ def convert(
             token_stride = 8
             token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)
             token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)
-            result = model(
+            result = model.decoder(
                 token_ids,
                 token_positions,
                 return_updated_kv_cache=True,

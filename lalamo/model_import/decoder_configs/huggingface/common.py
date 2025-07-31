@@ -4,15 +4,15 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.configs import ForeignConfig
+from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.model_import.loaders import load_huggingface
 from lalamo.modules import Decoder
 
 __all__ = [
-    "HuggingFaceConfig",
     "AWQQuantizationConfig",
     "GPTQMetaConfig",
-    "GPTQQuantizationConfig"
+    "GPTQQuantizationConfig",
+    "HuggingFaceConfig",
 ]
 
 
@@ -58,6 +58,11 @@ class GPTQQuantizationConfig:
 @dataclass(frozen=True)
 class HuggingFaceConfig(ForeignConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
+    eos_token_id: int | list[int]
+
+    @property
+    def eos_token_ids(self) -> list[int]:
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
 
     @property
     def default_precision(self) -> DTypeLike:

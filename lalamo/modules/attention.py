@@ -8,10 +8,9 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterDict
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 
-from .common import AttentionType, LalamoModule, WeightLayout
+from .common import AttentionType, LalamoModule, ParameterTree, WeightLayout
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -144,6 +143,13 @@ class AttentionConfig:
             sliding_window_size=sliding_window_size,
         )
 
+    def from_weights(
+        self,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "Attention":
+        return Attention.load_weights(self, weights, weight_layout)
+
 
 class Attention(LalamoModule[AttentionConfig]):
     qkv_projection: LinearBase
@@ -233,6 +239,7 @@ class Attention(LalamoModule[AttentionConfig]):
                 f" got {v_output_dim}",
             )
 
+    @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -314,8 +321,8 @@ class Attention(LalamoModule[AttentionConfig]):
     def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.empty(capacity, self.num_groups, self.head_dim, self.activation_precision)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        result = ParameterDict(
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        result = dict(
             qkv_projection=self.qkv_projection.export_weights(weight_layout),
             out_projection=self.out_projection.export_weights(weight_layout),
         )
@@ -324,3 +331,45 @@ class Attention(LalamoModule[AttentionConfig]):
         if self.key_norm is not None:
             result["key_norm"] = self.key_norm.export_weights(weight_layout)
         return result
+
+    @classmethod
+    def load_weights(
+        cls,
+        config: AttentionConfig,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "Attention":
+        assert isinstance(weights, dict)
+        qkv_weights = weights["qkv_projection"]
+        out_weights = weights["out_projection"]
+        assert isinstance(qkv_weights, dict)
+        assert isinstance(out_weights, dict)
+
+        qkv_projection = config.qkv_projection_config.from_weights(qkv_weights, weight_layout)
+        out_projection = config.out_projection_config.from_weights(out_weights, weight_layout)
+
+        query_norm = None
+        if query_norm_weights := weights.get("query_norm"):
+            assert isinstance(query_norm_weights, dict)
+            assert config.query_norm_config is not None
+            query_norm = config.query_norm_config.from_weights(query_norm_weights, weight_layout)
+
+        key_norm = None
+        if key_norm_weights := weights.get("key_norm"):
+            assert isinstance(key_norm_weights, dict)
+            assert config.key_norm_config is not None
+            key_norm = config.key_norm_config.from_weights(key_norm_weights, weight_layout)
+
+        return cls(
+            config=config,
+            qkv_projection=qkv_projection,
+            out_projection=out_projection,
+            query_norm=query_norm,
+            key_norm=key_norm,
+            num_heads=qkv_projection.output_dims[0] // qkv_projection.output_dims[1],
+            num_groups=qkv_projection.output_dims[1] // qkv_projection.output_dims[2],
+            head_dim=qkv_projection.output_dims[2],
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+        )

@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -7,17 +7,16 @@ import torch
 from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
-from lalamo.model_import.configs import ForeignConfig
+from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import torch_to_jax
 
 __all__ = [
-    "HUGGINFACE_GENERATION_CONFIG_FILE",
-    "HUGGINGFACE_TOKENIZER_FILES",
+    "ConfigMap",
+    "FileSpec",
     "ModelSpec",
-    "TokenizerFileSpec",
     "UseCase",
-    "huggingface_weight_files",
+    "WeightsType",
     "awq_model_spec",
     "build_quantized_models",
 ]
@@ -45,9 +44,18 @@ class UseCase(Enum):
 
 
 @dataclass(frozen=True)
-class TokenizerFileSpec:
-    repo: str | None
+class FileSpec:
     filename: str
+    repo: str | None = None
+
+
+@dataclass(frozen=True)
+class ConfigMap:
+    model_config: FileSpec = field(default=FileSpec("config.json"))
+    tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
+    tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
+    generation_config: FileSpec | None = field(default=FileSpec("generation_config.json"))
+    chat_template: FileSpec | None = None
 
 
 @dataclass(frozen=True)
@@ -59,32 +67,31 @@ class ModelSpec:
     quantization: QuantizationMode | None
     repo: str
     config_type: type[ForeignConfig]
-    config_file_name: str
-    weights_file_names: tuple[str, ...]
-    weights_type: WeightsType
-    tokenizer_files: tuple[TokenizerFileSpec, ...] = tuple()
+    output_parser_regex: str | None = None
+    system_role_name: str = "system"
+    user_role_name: str = "user"
+    assistant_role_name: str = "assistant"
+    tool_role_name: str = "tool"
+    weights_type: WeightsType = WeightsType.SAFETENSORS
+    configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
 
 
-def huggingface_weight_files(num_shards: int) -> tuple[str, ...]:
-    if num_shards == 1:
-        return ("model.safetensors",)
-    return tuple(f"model-{i:05d}-of-{num_shards:05d}.safetensors" for i in range(1, num_shards + 1))
-
-
-def awq_model_spec(model_spec: ModelSpec, repo: str, quantization: QuantizationMode = QuantizationMode.UINT4) -> ModelSpec:
+def awq_model_spec(
+    model_spec: ModelSpec,
+    repo: str,
+    quantization: QuantizationMode = QuantizationMode.UINT4,
+) -> ModelSpec:
     return ModelSpec(
         vendor=model_spec.vendor,
         family=model_spec.family,
-        name="{}-AWQ".format(model_spec.name),
+        name=f"{model_spec.name}-AWQ",
         size=model_spec.size,
         quantization=quantization,
         repo=repo,
         config_type=model_spec.config_type,
-        config_file_name=model_spec.config_file_name,
-        weights_file_names=huggingface_weight_files(1),
+        configs=model_spec.configs,
         weights_type=model_spec.weights_type,
-        tokenizer_files=model_spec.tokenizer_files,
         use_cases=model_spec.use_cases,
     )
 
@@ -108,11 +115,3 @@ def build_quantized_models(model_specs: list[ModelSpec]):
         quantized_model_spec = awq_model_spec(model_spec, quantized_repo)
         quantized_model_specs.append(quantized_model_spec)
     return quantized_model_specs
-
-
-HUGGINGFACE_TOKENIZER_FILES = (
-    TokenizerFileSpec(repo=None, filename="tokenizer.json"),
-    TokenizerFileSpec(repo=None, filename="tokenizer_config.json"),
-)
-
-HUGGINFACE_GENERATION_CONFIG_FILE = TokenizerFileSpec(repo=None, filename="generation_config.json")

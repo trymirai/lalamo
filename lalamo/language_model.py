@@ -1,4 +1,3 @@
-from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import NamedTuple
@@ -8,80 +7,16 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from lalamo.modules import Decoder, KVCache
+from lalamo.common import DTypeLike, ParameterTree
+from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
+from lalamo.modules import Decoder, DecoderConfig, KVCache, LalamoModule, WeightLayout
+from lalamo.sampling import SamplingPolicy, make_policy
 
 __all__ = [
-    "BanTokensPolicy",
-    "CompositePolicy",
-    "GreedyPolicy",
+    "GenerationConfig",
     "LanguageModel",
-    "SamplingPolicy",
-    "TemperaturePolicy",
-    "TopKPolicy",
-    "TopPPolicy",
+    "LanguageModelConfig",
 ]
-
-
-class SamplingPolicy(eqx.Module):
-    @abstractmethod
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]: ...
-
-    def __call__(self, logits: Float[Array, " vocabulary"], *, key: PRNGKeyArray) -> Int[Array, ""]:
-        return jax.random.categorical(key, self.process_logits(logits))
-
-
-class GreedyPolicy(SamplingPolicy):
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        max_logit_value = jnp.max(logits)
-        return jnp.where(logits == max_logit_value, 1.0, -jnp.inf)
-
-
-class TemperaturePolicy(SamplingPolicy):
-    temperature: float = eqx.field(static=True)
-
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        return logits / self.temperature
-
-
-class TopKPolicy(SamplingPolicy):
-    k: int = eqx.field(static=True)
-
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        top_k_logits, _ = jax.lax.top_k(logits, self.k)
-        min_logit_val = jnp.min(top_k_logits)
-        return jnp.where(logits >= min_logit_val, logits, -jnp.inf)
-
-
-class TopPPolicy(SamplingPolicy):
-    p: float = eqx.field(static=True)
-
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        sorted_indices = jnp.argsort(logits, descending=True)
-        sorted_logits = logits[sorted_indices]
-        cumulative_probs = jnp.cumsum(jax.nn.softmax(sorted_logits))
-
-        to_remove = cumulative_probs > self.p
-        to_remove = jnp.roll(to_remove, 1)
-        to_remove = to_remove.at[0].set(False)
-
-        return jnp.where(to_remove, -jnp.inf, logits)
-
-
-class BanTokensPolicy(SamplingPolicy):
-    banned_tokens: list[int] = eqx.field(static=True)
-
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        banned_tokens_indices = jnp.asarray(self.banned_tokens, dtype=jnp.int32)
-        return logits.at[banned_tokens_indices].set(-jnp.inf)
-
-
-class CompositePolicy(SamplingPolicy):
-    policies: list[SamplingPolicy] = eqx.field(static=True)
-
-    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        for policy in self.policies:
-            logits = policy.process_logits(logits)
-        return logits
 
 
 class PrefillResults(NamedTuple):
@@ -98,9 +33,43 @@ class DecodingState(NamedTuple):
 
 
 @dataclass(frozen=True)
-class LanguageModel:
-    decoder: Decoder
+class GenerationConfig:
+    stop_token_ids: tuple[int, ...]
+    temperature: float | None
+    top_k: int | None
+    top_p: float | None
+    banned_tokens: tuple[int, ...] | None
 
+    def default_policy(self) -> SamplingPolicy:
+        return make_policy(self.temperature, self.top_k, self.top_p, self.banned_tokens)
+
+
+@dataclass(frozen=True)
+class LanguageModelConfig:
+    decoder_config: DecoderConfig
+    message_processor_config: MessageProcessorConfig
+    generation_config: GenerationConfig
+
+
+class LanguageModel(LalamoModule[LanguageModelConfig]):
+    decoder: Decoder
+    message_processor: MessageProcessor = eqx.field(static=True)
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.decoder.activation_precision
+
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        return self.decoder.export_weights(weight_layout)
+
+    @property
+    def stop_token_ids(self) -> tuple[int, ...]:
+        return self.config.generation_config.stop_token_ids
+
+    def default_sampling_policy(self) -> SamplingPolicy:
+        return self.config.generation_config.default_policy()
+
+    @eqx.filter_jit
     def _prefill(
         self,
         token_ids: Int[Array, " tokens"],
@@ -137,7 +106,8 @@ class LanguageModel:
             kv_cache=decoder_outputs.updated_kv_cache,
         )
 
-    def generate(
+    @eqx.filter_jit
+    def generate_tokens(
         self,
         prompt_token_ids: Int[Array, " prompt_tokens"],
         sampling_policy: SamplingPolicy | None = None,
@@ -148,7 +118,9 @@ class LanguageModel:
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, " response_tokens"]:
         if sampling_policy is None:
-            sampling_policy = TemperaturePolicy(temperature=1.0)
+            sampling_policy = self.default_sampling_policy()
+        if eos_token_ids is None:
+            eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
 
         (input_length,) = prompt_token_ids.shape
         prefill_results = self._prefill(
@@ -177,10 +149,7 @@ class LanguageModel:
                 next_token_id = jax.random.categorical(key, processed_logits)
                 next_token_position = state.last_token_position + 1
 
-                if eos_token_ids is not None:
-                    stop_flag = state.stop_flag | jnp.any(next_token_id == eos_token_ids)
-                else:
-                    stop_flag = state.stop_flag
+                stop_flag = state.stop_flag | jnp.any(next_token_id == eos_token_ids)
 
                 decoder_outputs = self.decoder(
                     next_token_id.reshape(1),
@@ -207,7 +176,32 @@ class LanguageModel:
 
         return tokens
 
-    def stream(
+    def reply(
+        self,
+        messages: Iterable[Message],
+        sampling_policy: SamplingPolicy | None = None,
+        *,
+        key: PRNGKeyArray | None = None,
+    ) -> AssistantMessage:
+        formatted_messages = self.message_processor.render_request(messages)
+        token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)
+        response_ids = self.generate_tokens(token_ids, sampling_policy, key=key)
+        response_text = self.message_processor.detokenize(response_ids.tolist())
+        return self.message_processor.parse_response(response_text)
+
+    def stream_reply_text(
+        self,
+        messages: Iterable[Message],
+        sampling_policy: SamplingPolicy | None = None,
+        *,
+        key: PRNGKeyArray | None = None,
+    ) -> Iterable[str]:
+        formatted_messages = self.message_processor.render_request(messages)
+        token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)
+        for token_id in self.stream_tokens(token_ids, sampling_policy, key=key):
+            yield self.message_processor.detokenize([token_id.item()])
+
+    def stream_tokens(
         self,
         prompt_token_ids: Int[Array, " prompt_tokens"],
         sampling_policy: SamplingPolicy | None = None,
@@ -218,7 +212,9 @@ class LanguageModel:
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
         if sampling_policy is None:
-            sampling_policy = TemperaturePolicy(temperature=1.0)
+            sampling_policy = self.default_sampling_policy()
+        if eos_token_ids is None:
+            eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
 
         (input_length,) = prompt_token_ids.shape
         prefill_results = self._prefill(
@@ -244,7 +240,7 @@ class LanguageModel:
 
             yield next_token_id
 
-            if eos_token_ids is not None and jnp.any(next_token_id == eos_token_ids):
+            if jnp.any(next_token_id == eos_token_ids):
                 return
 
             next_token_position = state.last_token_position + 1

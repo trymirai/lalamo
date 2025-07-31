@@ -1,11 +1,12 @@
 from dataclasses import dataclass
 from enum import Enum
 
+import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .common import LalamoModule, WeightLayout
 
@@ -33,6 +34,13 @@ class RMSNormConfig:
         scales = jnp.ones(channels, dtype=self.scale_precision)
         return RMSNorm(self, scales=scales)
 
+    def from_weights(
+        self,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "RMSNorm":
+        return RMSNorm.load_weights(self, weights, weight_layout)
+
 
 class RMSNorm(LalamoModule[RMSNormConfig]):
     scales: Float[Array, " channels"]
@@ -53,6 +61,7 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
                 f" specified precision {self.config.scale_precision}",
             )
 
+    @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(self.config.accumulation_precision)
 
@@ -73,5 +82,20 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         result = normalized_x * adjusted_scales
         return result.astype(inputs.dtype)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(scales=self.scales)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+        return dict(scales=self.scales)
+
+    @classmethod
+    def load_weights(
+        cls,
+        config: RMSNormConfig,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "RMSNorm":
+        assert isinstance(weights, dict)
+        scales = weights["scales"]
+        assert isinstance(scales, Array)
+        return cls(
+            config=config,
+            scales=scales,
+        )

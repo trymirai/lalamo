@@ -5,7 +5,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .common import AttentionType, LalamoModule, WeightLayout
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
@@ -34,8 +34,8 @@ class DecoderActivationTrace(eqx.Module):
 
     output_norm: Float[Array, "suffix_tokens channels"]
 
-    def export(self) -> ParameterDict:
-        result = ParameterDict(
+    def export(self) -> ParameterTree:
+        result = dict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
             local_positional_embeddings=self.local_positional_embeddings.export(),
@@ -53,8 +53,8 @@ class DecoderResult(eqx.Module):
     updated_kv_cache: KVCache | None = None
     activation_trace: DecoderActivationTrace | None = None
 
-    def export(self) -> ParameterDict:
-        result = ParameterDict(
+    def export(self) -> ParameterTree:
+        result = dict(
             logits=self.logits,
         )
         if self.updated_kv_cache is not None:
@@ -95,6 +95,13 @@ class DecoderConfig:
                 f"Number of sliding window sizes {len(self.sliding_window_sizes)} does not match"
                 f" the number of layers {self.num_layers}",
             )
+
+    def from_weights(
+        self,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "Decoder":
+        return Decoder.load_weights(self, weights, weight_layout)
 
     def random_init(
         self,
@@ -164,6 +171,7 @@ class Decoder(LalamoModule[DecoderConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
 
+    @eqx.filter_jit
     def __call__(
         self,
         token_ids: Int[Array, " suffix_tokens"],
@@ -232,8 +240,8 @@ class Decoder(LalamoModule[DecoderConfig]):
     def init_static_kv_cache(self, capacity: int) -> KVCache:
         return KVCache(layer.init_static_kv_cache(capacity) for layer in self.layers)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        result = ParameterDict(
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        result = dict(
             embedding=self.embedding.export_weights(weight_layout),
             global_rope=self.global_rope.export_weights(weight_layout),
             layers=[layer.export_weights(weight_layout) for layer in self.layers],
@@ -242,3 +250,63 @@ class Decoder(LalamoModule[DecoderConfig]):
         if self.local_rope:
             result["local_rope"] = self.local_rope.export_weights(weight_layout)
         return result
+
+    @classmethod
+    def load_weights(
+        cls,
+        config: DecoderConfig,
+        weights: ParameterTree,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> "Decoder":
+        assert isinstance(weights, dict)
+        embedding_weights = weights["embedding"]
+        global_rope_weights = weights["global_rope"]
+        layers_weights = weights["layers"]
+        output_norm_weights = weights["output_norm"]
+
+        assert isinstance(embedding_weights, dict)
+        assert isinstance(global_rope_weights, dict)
+        assert isinstance(layers_weights, list)
+        assert isinstance(output_norm_weights, dict)
+        assert all(isinstance(w, dict) for w in layers_weights)
+
+        embedding = config.embedding_config.from_weights(
+            embedding_weights,
+            weight_layout,
+        )
+
+        global_rope = config.global_rope_config.from_weights(
+            global_rope_weights,
+            weight_layout,
+        )
+
+        local_rope = None
+        if config.local_rope_config is not None:
+            local_rope_weights = weights["local_rope"]
+            assert isinstance(local_rope_weights, dict)
+            local_rope = config.local_rope_config.from_weights(
+                local_rope_weights,
+                weight_layout,
+            )
+
+        layers = tuple(
+            config.layer_config.from_weights(
+                layer_weights,
+                weight_layout,
+            )
+            for layer_weights in layers_weights
+        )
+
+        output_norm = config.output_norm_config.from_weights(
+            output_norm_weights,
+            weight_layout,
+        )
+
+        return cls(
+            config=config,
+            embedding=embedding,
+            global_rope=global_rope,
+            local_rope=local_rope,
+            layers=layers,
+            output_norm=output_norm,
+        )
