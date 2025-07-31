@@ -165,7 +165,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        result = dict(weights=self._into_layout(self.weights, weight_layout))
+        result = dict(weights=into_layout(self.weights, weight_layout))
         if self.biases is not None:
             result["biases"] = self.biases
         return result
@@ -429,11 +429,11 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         return new_weights, new_zero_points, new_scales
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        exported_weights = self._into_layout(self.int_weights, weight_layout)
+        exported_weights = into_layout(self.int_weights, weight_layout)
 
-        exported_zero_points = self._into_layout(self.int_zero_points, weight_layout)
+        exported_zero_points = into_layout(self.int_zero_points, weight_layout)
 
-        exported_scales = self._into_layout(self.scales, weight_layout)
+        exported_scales = into_layout(self.scales, weight_layout)
 
         # CRIMINAL HACK!!!
         exported_weights, exported_zero_points, exported_scales = self.requantize_weights(
@@ -584,9 +584,9 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
         quantized_linear_weights: dict[str, ParameterTree] = super().export_weights()  # type: ignore
-        exported_lora_down_weights = self._into_layout(self.lora_down_weights, weight_layout)
+        exported_lora_down_weights = into_layout(self.lora_down_weights, weight_layout)
         exported_lora_up_weights = [
-            self._into_layout(lora_up_weight, weight_layout) for lora_up_weight in self.lora_up_weights
+            into_layout(lora_up_weight, weight_layout) for lora_up_weight in self.lora_up_weights
         ]
         return dict(
             down_weights=into_layout(exported_lora_down_weights, weight_layout),
