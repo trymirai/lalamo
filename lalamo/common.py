@@ -1,13 +1,17 @@
 from collections import defaultdict
 from collections.abc import Mapping
+from typing import cast
 
 import jax.numpy as jnp
+from jax._src.api import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
 
 __all__ = [
     "DEFAULT_PRECISION",
+    "ArrayLike",
     "ParameterPath",
     "ParameterTree",
+    "dummy_array",
     "flatten_parameters",
     "unflatten_parameters",
 ]
@@ -15,34 +19,50 @@ __all__ = [
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
 
 
-type ParameterTree = Mapping[str, Array | ParameterTree] | list[Array | ParameterTree]
+type ArrayLike = Array | ShapeDtypeStruct
 
 
-def flatten_parameters(nested_parameters: ParameterTree) -> dict[str, Array]:
-    result: dict[str, Array] = {}
+type ParameterTree[ArrayType: ArrayLike] = (
+    Mapping[str, ArrayType | ParameterTree[ArrayType]] | list[ArrayType | ParameterTree[ArrayType]]
+)
+
+
+def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
+    if isinstance(shape, int):
+        shape = (shape,)
+    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype))
+
+
+def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[ArrayType]) -> dict[str, ArrayType]:
+    result: dict[str, ArrayType] = {}
     if not isinstance(nested_parameters, Mapping):
         nested_parameters = {str(i): value for i, value in enumerate(nested_parameters)}
     for key, value in nested_parameters.items():
         key_path = ParameterPath(key)
-        if isinstance(value, Array):
+        if isinstance(value, (Array, ShapeDtypeStruct)):
             result[key_path] = value
         else:
-            result.update({key_path / subkey: subvalue for subkey, subvalue in flatten_parameters(value).items()})
+            update: dict[str, ArrayType] = {
+                str(key_path / subkey): subvalue for subkey, subvalue in flatten_parameters(value).items()
+            }
+            result.update(update)
     return result
 
 
-def unflatten_parameters(flat_parameters: dict[str, Array]) -> ParameterTree:
-    groups: dict[str, dict[str, Array] | Array] = defaultdict(dict)
+def unflatten_parameters[ArrayType: ArrayLike](flat_parameters: dict[str, ArrayType]) -> ParameterTree[ArrayType]:
+    groups: dict[str, dict[str, ArrayType] | ArrayType] = defaultdict(dict)
     for key, value in flat_parameters.items():
         match key.split(".", maxsplit=1):
             case [head]:
                 groups[head] = value
             case [head, tail]:
-                groups[head][tail] = value
+                group = groups[head]
+                assert isinstance(group, dict)
+                group[tail] = value
 
-    unflattened_groups = {}
+    unflattened_groups: dict[str, ParameterTree[ArrayType] | ArrayType] = {}
     for key, value in groups.items():
-        if isinstance(value, Array):
+        if isinstance(value, (Array, ShapeDtypeStruct)):
             unflattened_groups[key] = value
         else:
             unflattened_groups[key] = unflatten_parameters(value)

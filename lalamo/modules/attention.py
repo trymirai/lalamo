@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import NamedTuple
+from dataclasses import dataclass, replace
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -117,14 +117,67 @@ class AttentionConfig:
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.init(
-                channels=head_dim,
+                input_dim=head_dim,
             )
         else:
             query_norm = None
 
         if self.key_norm_config is not None:
             key_norm = self.key_norm_config.init(
-                channels=head_dim,
+                input_dim=head_dim,
+            )
+        else:
+            key_norm = None
+
+        return Attention(
+            self,
+            qkv_projection=qkv_projection,
+            out_projection=out_projection,
+            query_norm=query_norm,
+            key_norm=key_norm,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            is_causal=is_causal,
+            scale=scale,
+            sliding_window_size=sliding_window_size,
+        )
+
+    def empty(
+        self,
+        model_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        is_causal: bool,
+        scale: float | None,
+        sliding_window_size: int | None,
+    ) -> "Attention":
+        qkv_projection = self.qkv_projection_config.empty(
+            input_dim=model_dim,
+            output_dims=(
+                num_heads * head_dim,
+                num_groups * head_dim,
+                num_groups * head_dim,
+            ),
+            has_biases=self.has_qkv_biases,
+        )
+        out_projection = self.out_projection_config.empty(
+            num_heads * head_dim,
+            (model_dim,),
+            has_biases=self.has_out_biases,
+        )
+
+        if self.query_norm_config is not None:
+            query_norm = self.query_norm_config.empty(
+                input_dim=head_dim,
+            )
+        else:
+            query_norm = None
+
+        if self.key_norm_config is not None:
+            key_norm = self.key_norm_config.empty(
+                input_dim=head_dim,
             )
         else:
             key_norm = None
@@ -324,3 +377,29 @@ class Attention(LalamoModule[AttentionConfig]):
         if self.key_norm is not None:
             result["key_norm"] = self.key_norm.export_weights(weight_layout)
         return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, dict)
+        assert isinstance(weights["qkv_projection"], dict)
+        assert isinstance(weights["out_projection"], dict)
+        if self.query_norm is not None:
+            assert isinstance(weights["query_norm"], dict)
+            query_norm = self.query_norm.import_weights(weights["query_norm"], weight_layout)
+        else:
+            query_norm = None
+        if self.key_norm is not None:
+            assert isinstance(weights["key_norm"], dict)
+            key_norm = self.key_norm.import_weights(weights["key_norm"], weight_layout)
+        else:
+            key_norm = None
+        return replace(
+            self,
+            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"], weight_layout),
+            out_projection=self.out_projection.import_weights(weights["out_projection"], weight_layout),
+            query_norm=query_norm,
+            key_norm=key_norm,
+        )

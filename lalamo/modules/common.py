@@ -2,6 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
+from typing import Self
 
 import equinox as eqx
 from cattrs import Converter
@@ -86,7 +87,14 @@ class LalamoModule[ConfigT](eqx.Module):
     def activation_precision(self) -> DTypeLike: ...
 
     @abstractmethod
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree: ...
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]: ...
+
+    @abstractmethod
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self: ...
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:

@@ -58,7 +58,6 @@ class GPTQQuantizationConfig:
 @dataclass(frozen=True)
 class HuggingFaceConfig(ForeignConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
-    eos_token_id: int | list[int]
 
     @property
     def eos_token_ids(self) -> list[int]:

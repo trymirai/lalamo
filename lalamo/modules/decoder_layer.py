@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -111,6 +112,46 @@ class DecoderLayerConfig:
         mlp = self.mlp_config.random_init(model_dim, hidden_dim, key=mlp_key)
         if self.post_mlp_norm_config is not None:
             post_mlp_norm = self.post_mlp_norm_config.init(model_dim)
+        else:
+            post_mlp_norm = None
+        return DecoderLayer(
+            config=self,
+            pre_attention_norm=pre_attention_norm,
+            attention=attention,
+            post_attention_norm=post_attention_norm,
+            pre_mlp_norm=pre_mlp_norm,
+            mlp=mlp,
+            post_mlp_norm=post_mlp_norm,
+        )
+
+    def empty(
+        self,
+        model_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        attention_scale: float | None,
+        sliding_window_size: int | None,
+    ) -> "DecoderLayer":
+        pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
+        attention = self.attention_config.empty(
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            is_causal=True,
+            scale=attention_scale,
+            sliding_window_size=sliding_window_size,
+        )
+        if self.post_attention_norm_config is not None:
+            post_attention_norm = self.post_attention_norm_config.empty(model_dim)
+        else:
+            post_attention_norm = None
+        pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
+        mlp = self.mlp_config.empty(model_dim, hidden_dim)
+        if self.post_mlp_norm_config is not None:
+            post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
         else:
             post_mlp_norm = None
         return DecoderLayer(
@@ -239,3 +280,37 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         if self.post_mlp_norm is not None:
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights(weight_layout)
         return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, dict)
+        assert isinstance(weights["pre_attention_norm"], dict)
+        assert isinstance(weights["attention"], dict)
+        assert isinstance(weights["mlp"], dict)
+        assert isinstance(weights["pre_mlp_norm"], dict)
+
+        if self.post_attention_norm is not None:
+            assert isinstance(weights["post_attention_norm"], dict)
+            post_attention_norm = self.post_attention_norm.import_weights(
+                weights["post_attention_norm"],
+                weight_layout,
+            )
+        else:
+            post_attention_norm = None
+        if self.post_mlp_norm is not None:
+            assert isinstance(weights["post_mlp_norm"], dict)
+            post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"], weight_layout)
+        else:
+            post_mlp_norm = None
+        return replace(
+            self,
+            pre_attention_norm=self.pre_attention_norm.import_weights(weights["pre_attention_norm"], weight_layout),
+            attention=self.attention.import_weights(weights["attention"], weight_layout),
+            post_attention_norm=post_attention_norm,
+            pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"], weight_layout),
+            mlp=self.mlp.import_weights(weights["mlp"], weight_layout),
+            post_mlp_norm=post_mlp_norm,
+        )

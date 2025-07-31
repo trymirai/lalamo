@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterable
 
 import equinox as eqx
+from jax._src.api import ShapeDtypeStruct
 from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
@@ -18,7 +19,7 @@ def _get_name(leaf: PyTree, tree: PyTree) -> str:
 
 
 def _check_compatible(old_value: PyTree, new_value: PyTree, module: eqx.Module) -> None:
-    if isinstance(old_value, Array) and isinstance(new_value, Array):
+    if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
         name = _get_name(old_value, module)
         if old_value.shape != new_value.shape:
             raise ValueError(f"Expected parameter {name} to have shape {old_value.shape}, got {new_value.shape}")

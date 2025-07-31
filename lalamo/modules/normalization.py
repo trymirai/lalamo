@@ -1,12 +1,13 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
+from typing import Self
 
 import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, dummy_array
 
 from .common import LalamoModule, WeightLayout
 
@@ -30,9 +31,15 @@ class RMSNormConfig:
     scale_offset: float | None
     upcast_mode: UpcastMode
 
-    def init(self, channels: int) -> "RMSNorm":
-        scales = jnp.ones(channels, dtype=self.scale_precision)
+    def init(self, input_dim: int) -> "RMSNorm":
+        scales = jnp.ones(input_dim, dtype=self.scale_precision)
         return RMSNorm(self, scales=scales)
+
+    def empty(self, input_dim: int) -> "RMSNorm":
+        return RMSNorm(
+            config=self,
+            scales=dummy_array(input_dim, dtype=self.scale_precision),
+        )
 
 
 class RMSNorm(LalamoModule[RMSNormConfig]):
@@ -76,4 +83,12 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         return result.astype(inputs.dtype)
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
-        return dict(scales=self.scales)
+        return {"scales": self.scales}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
+    ) -> Self:
+        assert isinstance(weights, dict)
+        return replace(self, scales=weights["scales"])

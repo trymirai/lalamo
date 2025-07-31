@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
-import jax
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import Decoder, DecoderConfig
@@ -17,6 +16,8 @@ __all__ = ["ForeignConfig"]
 class ForeignConfig:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
+
+    eos_token_id: int | list[int]
 
     @property
     def eos_token_ids(self) -> list[int]:
@@ -57,5 +58,5 @@ class ForeignConfig:
         weights_dict: dict[str, Array],
     ) -> Decoder:
         config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
-        model = config.random_init(key=jax.random.PRNGKey(0))
+        model = config.empty()
         return self._load_weights(model, weights_dict)

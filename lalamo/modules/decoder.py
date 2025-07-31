@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -152,6 +153,56 @@ class DecoderConfig:
             output_norm=output_norm,
         )
 
+    def empty(
+        self,
+    ) -> "Decoder":
+        embedding = self.embedding_config.empty(
+            vocab_size=self.vocab_size,
+            model_dim=self.model_dim,
+        )
+        global_rope = self.global_rope_config.init(
+            head_dim=self.head_dim,
+            num_timesteps=self.context_length,
+        )
+
+        if self.local_rope_config:
+            assert self.sliding_window_sizes is not None
+            max_sliding_window_size = max(
+                window_size for window_size in self.sliding_window_sizes if window_size is not None
+            )
+            local_rope = self.local_rope_config.init(
+                head_dim=self.head_dim,
+                num_timesteps=max(max_sliding_window_size, self.context_length),
+            )
+        else:
+            local_rope = None
+
+        if self.sliding_window_sizes is None:
+            sliding_window_sizes = [None] * self.num_layers
+        else:
+            sliding_window_sizes = self.sliding_window_sizes
+        layers = tuple(
+            self.layer_config.empty(
+                model_dim=self.model_dim,
+                hidden_dim=self.hidden_dim,
+                num_heads=self.num_heads,
+                num_groups=self.num_groups,
+                head_dim=self.head_dim,
+                attention_scale=self.attention_scale,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size in sliding_window_sizes
+        )
+        output_norm = self.output_norm_config.empty(self.model_dim)
+        return Decoder(
+            self,
+            embedding=embedding,
+            global_rope=global_rope,
+            local_rope=local_rope,
+            layers=layers,
+            output_norm=output_norm,
+        )
+
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
@@ -243,3 +294,32 @@ class Decoder(LalamoModule[DecoderConfig]):
         if self.local_rope:
             result["local_rope"] = self.local_rope.export_weights(weight_layout)
         return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, dict)
+        assert isinstance(weights["embedding"], dict)
+        assert isinstance(weights["global_rope"], dict)
+        assert isinstance(weights["layers"], list)
+        assert isinstance(weights["output_norm"], dict)
+        if self.local_rope:
+            assert isinstance(weights["local_rope"], dict)
+            local_rope = self.local_rope.import_weights(weights["local_rope"], weight_layout)
+        else:
+            local_rope = None
+
+        layers = []
+        for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
+            assert isinstance(layer_weights, dict)
+            layers.append(layer.import_weights(layer_weights, weight_layout))
+        return replace(
+            self,
+            embedding=self.embedding.import_weights(weights["embedding"], weight_layout),
+            global_rope=self.global_rope.import_weights(weights["global_rope"], weight_layout),
+            layers=tuple(layers),
+            output_norm=self.output_norm.import_weights(weights["output_norm"], weight_layout),
+            local_rope=local_rope,
+        )

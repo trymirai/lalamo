@@ -1,12 +1,13 @@
 from abc import abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Self
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
 from .common import (
@@ -42,6 +43,13 @@ class EmbeddingConfigBase:
         model_dim: int,
         *,
         key: PRNGKeyArray,
+    ) -> "EmbeddingBase": ...
+
+    @abstractmethod
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
     ) -> "EmbeddingBase": ...
 
 
@@ -89,6 +97,14 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
         weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.precision)
         return TiedEmbedding(config=self, weights=weights)
 
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "TiedEmbedding":
+        weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
+        return TiedEmbedding(config=self, weights=weights)
+
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     weights: Float[Array, "vocabulary channels"]
@@ -120,7 +136,15 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         return self.weights
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
-        return dict(weights=self.weights)
+        return {"weights": self.weights}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
+    ) -> Self:
+        assert isinstance(weights, dict)
+        return replace(self, weights=weights["weights"])
 
 
 @dataclass(frozen=True)
@@ -143,19 +167,13 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
             output_weights=output_weights,
         )
 
-    def from_weights(
+    def empty(
         self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
+        vocab_size: int,
+        model_dim: int,
     ) -> "UntiedEmbedding":
-        assert isinstance(weights, dict)
-        input_weights = weights["input_weights"]
-        output_weights = weights["output_weights"]
-        assert isinstance(input_weights, Array)
-        assert isinstance(output_weights, Array)
-
-        output_weights = from_layout(output_weights, weight_layout)
-
+        input_weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
+        output_weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
         return UntiedEmbedding(
             config=self,
             input_weights=input_weights,
@@ -210,9 +228,21 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         return self.output_weights
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        return dict(
-            input_weights=self.input_weights,
-            output_weights=into_layout(self.output_weights, weight_layout),
+        return {
+            "input_weights": self.input_weights,
+            "output_weights": into_layout(self.output_weights, weight_layout),
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, dict)
+        return replace(
+            self,
+            input_weights=weights["input_weights"],
+            output_weights=from_layout(weights["output_weights"], weight_layout),
         )
 
 
@@ -235,6 +265,15 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
         scales = scale * jnp.ones(vocab_size, dtype=self.activation_precision)
         weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.activation_precision)
         weights = quantize_weights(weights * min_abs_val, self.embedding_quantization_mode)
+        return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
+
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "QuantizedTiedEmbedding":
+        scales = dummy_array(vocab_size, dtype=self.activation_precision)
+        weights = dummy_array((vocab_size, model_dim), dtype=self.activation_precision)
         return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
 
 
@@ -269,7 +308,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
                 f" {self.config.activation_precision}"
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        weights_vocab_size, weights_model_dim = self.weights.shape
+        weights_vocab_size, _ = self.weights.shape
         (scales_vocab_size,) = self.scales.shape
         if weights_vocab_size != scales_vocab_size:
             raise ValueError(
@@ -299,10 +338,23 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
-        return dict(
-            weights=self.int_weights,
-            scales=self.scales,
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        return {
+            "weights": into_layout(self.int_weights, weight_layout),
+            "scales": into_layout(self.scales, weight_layout),
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, dict)
+        assert isinstance(weights["weights"], Array)
+        return replace(
+            self,
+            weights=from_layout(weights["weights"].astype(self.weights.dtype), weight_layout),
+            scales=from_layout(weights["scales"], weight_layout),
         )
 
 

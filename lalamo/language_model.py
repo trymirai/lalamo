@@ -1,6 +1,6 @@
 from collections.abc import Iterable
-from dataclasses import dataclass
-from typing import NamedTuple
+from dataclasses import dataclass, replace
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -61,6 +61,16 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
         return self.decoder.export_weights(weight_layout)
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        return replace(
+            self,
+            decoder=self.decoder.import_weights(weights, weight_layout),
+        )
 
     @property
     def stop_token_ids(self) -> tuple[int, ...]:

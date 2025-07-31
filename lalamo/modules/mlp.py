@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -33,6 +34,21 @@ class MLPConfig:
                 (model_dim,),
                 has_biases=False,
                 key=down_key,
+            ),
+        )
+
+    def empty(self, model_dim: int, hidden_dim: int) -> "MLP":
+        return MLP(
+            self,
+            up_projection=self.linear_config.empty(
+                model_dim,
+                (hidden_dim, hidden_dim),
+                has_biases=False,
+            ),
+            down_projection=self.linear_config.empty(
+                hidden_dim,
+                (model_dim,),
+                has_biases=False,
             ),
         )
 
@@ -75,7 +91,21 @@ class MLP(LalamoModule[MLPConfig]):
         return result
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        return dict(
-            up_projection=self.up_projection.export_weights(weight_layout),
-            down_projection=self.down_projection.export_weights(weight_layout),
+        return {
+            "up_projection": self.up_projection.export_weights(weight_layout),
+            "down_projection": self.down_projection.export_weights(weight_layout),
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, dict)
+        assert isinstance(weights["up_projection"], dict)
+        assert isinstance(weights["down_projection"], dict)
+        return replace(
+            self,
+            up_projection=self.up_projection.import_weights(weights["up_projection"], weight_layout),
+            down_projection=self.down_projection.import_weights(weights["down_projection"], weight_layout),
         )
