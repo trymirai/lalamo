@@ -6,14 +6,19 @@ from typing import NamedTuple
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from einops import rearrange
-from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import LalamoModule, WeightLayout, register_config_union
+from .common import (
+    LalamoModule,
+    WeightLayout,
+    into_layout,
+    register_config_union,
+)
 
 __all__ = [
     "FullPrecisionLinear",
@@ -52,48 +57,11 @@ class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
     def _default_weight_layout(cls) -> WeightLayout:
         return WeightLayout.INPUT_OUTPUT
 
-    @classmethod
-    def _into_layout(
-        cls,
-        weights: Float[Array, "in_channels out_channels"],
-        layout: WeightLayout,
-    ) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
-        if layout == WeightLayout.AUTO:
-            layout = cls._default_weight_layout()
-        match layout:
-            case WeightLayout.OUTPUT_INPUT:
-                return weights
-            case WeightLayout.INPUT_OUTPUT:
-                return rearrange(
-                    weights,
-                    "total_out_channels in_channels -> in_channels total_out_channels",
-                )
-        raise ValueError(f"Unsupported weight layout: {layout}")
-
     def __post_init__(self) -> None:
         assert isinstance(self.output_dims, tuple)
 
-    @classmethod
-    def _from_layout(
-        cls,
-        weights: ParameterTree | Array,
-        layout: WeightLayout,
-    ) -> Array:
-        assert isinstance(weights, Array)
-        if layout == WeightLayout.AUTO:
-            layout = cls._default_weight_layout()
-        match layout:
-            case WeightLayout.OUTPUT_INPUT:
-                return weights
-            case WeightLayout.INPUT_OUTPUT:
-                return rearrange(
-                    weights,
-                    "in_channels total_out_channels -> total_out_channels in_channels",
-                )
-        raise ValueError(f"Unsupported weight layout: {layout}")
-
-    @classmethod
-    def _get_split_points(cls, output_dims: Sequence[int]) -> tuple[int, ...]:
+    @staticmethod
+    def _get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:
         result = []
         last_split_point = 0
         for dim in output_dims[:-1]:
@@ -147,23 +115,6 @@ class FullPrecisionLinearConfig(LinearConfigBase):
             biases=biases,
         )
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> LinearBase:
-        assert isinstance(weights, dict)
-        matrix = self._from_layout(weights["weights"], weight_layout)
-        biases = weights.get("biases")
-        if biases is not None:
-            assert isinstance(biases, Array)
-        return FullPrecisionLinear(
-            config=self,
-            output_dims=tuple(d for d in matrix.shape[:1]),
-            weights=matrix,
-            biases=biases,
-        )
-
 
 class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
     weights: Float[Array, "total_out_channels in_channels"]
@@ -187,7 +138,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified precision ({self.config.precision}).",
             )
-        w_output_dim, w_input_dim = self.weights.shape
+        w_output_dim, _ = self.weights.shape
         if w_output_dim != sum(self.output_dims):
             raise ValueError(
                 f"Number of output channels in weights ({w_output_dim}) is not"
@@ -218,22 +169,6 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         if self.biases is not None:
             result["biases"] = self.biases
         return result
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: FullPrecisionLinearConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> LinearBase:
-        assert isinstance(weights, dict)
-        matrix = cls._from_layout(weights["weights"], weight_layout)
-        return cls(
-            config=config,
-            output_dims=tuple(d for d in matrix.shape[:1]),
-            weights=matrix,
-            biases=weights.get("biases"),  # type: ignore
-        )
 
 
 @dataclass(frozen=True)
@@ -277,30 +212,6 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
             weights=weights,
             scales=scales,
             zero_points=zero_points,
-            biases=biases,
-        )
-
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> LinearBase:
-        assert isinstance(weights, dict)
-        matrix = self._from_layout(weights["weights"], weight_layout)
-        zero_points = self._from_layout(weights["zero_points"], weight_layout)
-        scales = self._from_layout(weights["scales"], weight_layout)
-        assert isinstance(matrix, Array)
-        assert isinstance(zero_points, Array)
-        assert isinstance(scales, Array)
-        biases = weights.get("biases")
-        if biases is not None:
-            assert isinstance(biases, Array)
-        return GroupQuantizedLinear(
-            config=self,
-            output_dims=tuple(d for d in matrix.shape[:1]),
-            weights=matrix,
-            zero_points=zero_points,
-            scales=scales,
             biases=biases,
         )
 
@@ -351,7 +262,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
                 f" ({self.config.activation_precision}).",
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        w_output_dim, w_input_dim = self.weights.shape
+        w_output_dim, _ = self.weights.shape
         if w_output_dim != sum(self.output_dims):
             raise ValueError(
                 f"Number of output channels in weights ({w_output_dim}) is not"
@@ -598,41 +509,6 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             lora_up_weights=lora_up_weights,
         )
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> LinearBase:
-        assert isinstance(weights, dict)
-        matrix = self._from_layout(weights["weights"], weight_layout)
-        zero_points = self._from_layout(weights["zero_points"], weight_layout)
-        scales = self._from_layout(weights["scales"], weight_layout)
-        down_weights = self._from_layout(weights["down_weights"], weight_layout)
-        up_weights_list = weights["up_weights"]
-        assert isinstance(up_weights_list, (list, tuple))
-        up_weights = tuple(self._from_layout(w, weight_layout) for w in up_weights_list)
-
-        assert isinstance(matrix, Array)
-        assert isinstance(zero_points, Array)
-        assert isinstance(scales, Array)
-        assert isinstance(down_weights, Array)
-        assert all(isinstance(w, Array) for w in up_weights)
-
-        biases = weights.get("biases")
-        if biases is not None:
-            assert isinstance(biases, Array)
-
-        return QLoRALinear(
-            config=self,
-            output_dims=tuple(d for d in matrix.shape[:1]),
-            weights=matrix,
-            zero_points=zero_points,
-            scales=scales,
-            biases=biases,
-            lora_down_weights=down_weights,
-            lora_up_weights=up_weights,
-        )
-
 
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     lora_down_weights: Float[Array, "total_lora_channels in_channels"]
@@ -713,8 +589,8 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
             self._into_layout(lora_up_weight, weight_layout) for lora_up_weight in self.lora_up_weights
         ]
         return dict(
-            down_weights=exported_lora_down_weights,
-            up_weights=exported_lora_up_weights,
+            down_weights=into_layout(exported_lora_down_weights, weight_layout),
+            up_weights=[into_layout(w, weight_layout) for w in exported_lora_up_weights],
             **quantized_linear_weights,
         )
 

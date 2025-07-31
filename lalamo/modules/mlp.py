@@ -36,23 +36,6 @@ class MLPConfig:
             ),
         )
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "MLP":
-        assert isinstance(weights, dict)
-        up_weights = weights["up_projection"]
-        down_weights = weights["down_projection"]
-        assert isinstance(up_weights, dict)
-        assert isinstance(down_weights, dict)
-
-        return MLP(
-            config=self,
-            up_projection=self.linear_config.from_weights(up_weights, weight_layout),
-            down_projection=self.linear_config.from_weights(down_weights, weight_layout),
-        )
-
 
 class MLP(LalamoModule[MLPConfig]):
     up_projection: LinearBase

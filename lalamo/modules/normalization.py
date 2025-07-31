@@ -34,16 +34,6 @@ class RMSNormConfig:
         scales = jnp.ones(channels, dtype=self.scale_precision)
         return RMSNorm(self, scales=scales)
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "RMSNorm":
-        assert isinstance(weights, dict)
-        scales = weights["scales"]
-        assert isinstance(scales, Array)
-        return RMSNorm(self, scales=scales)
-
 
 class RMSNorm(LalamoModule[RMSNormConfig]):
     scales: Float[Array, " channels"]

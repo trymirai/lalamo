@@ -54,7 +54,7 @@ class DecoderResult(eqx.Module):
     activation_trace: DecoderActivationTrace | None = None
 
     def export(self) -> ParameterTree:
-        result = dict(
+        result: dict[str, ParameterTree | Array] = dict(
             logits=self.logits,
         )
         if self.updated_kv_cache is not None:
@@ -95,64 +95,6 @@ class DecoderConfig:
                 f"Number of sliding window sizes {len(self.sliding_window_sizes)} does not match"
                 f" the number of layers {self.num_layers}",
             )
-
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "Decoder":
-        assert isinstance(weights, dict)
-        embedding_weights = weights["embedding"]
-        global_rope_weights = weights["global_rope"]
-        layers_weights = weights["layers"]
-        output_norm_weights = weights["output_norm"]
-
-        assert isinstance(embedding_weights, dict)
-        assert isinstance(global_rope_weights, dict)
-        assert isinstance(layers_weights, list)
-        assert isinstance(output_norm_weights, dict)
-        assert all(isinstance(w, dict) for w in layers_weights)
-
-        embedding = self.embedding_config.from_weights(
-            embedding_weights,
-            weight_layout,
-        )
-
-        global_rope = self.global_rope_config.from_weights(
-            global_rope_weights,
-            weight_layout,
-        )
-
-        local_rope = None
-        if self.local_rope_config is not None:
-            local_rope_weights = weights["local_rope"]
-            assert isinstance(local_rope_weights, dict)
-            local_rope = self.local_rope_config.from_weights(
-                local_rope_weights,
-                weight_layout,
-            )
-
-        layers = tuple(
-            self.layer_config.from_weights(
-                layer_weights,
-                weight_layout,
-            )
-            for layer_weights in layers_weights
-        )
-
-        output_norm = self.output_norm_config.from_weights(
-            output_norm_weights,
-            weight_layout,
-        )
-
-        return Decoder(
-            config=self,
-            embedding=embedding,
-            global_rope=global_rope,
-            local_rope=local_rope,
-            layers=layers,
-            output_norm=output_norm,
-        )
 
     def random_init(
         self,

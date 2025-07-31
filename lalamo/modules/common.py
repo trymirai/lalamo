@@ -5,8 +5,9 @@ from types import UnionType
 
 import equinox as eqx
 from cattrs import Converter
+from einops import rearrange
 from jax import numpy as jnp
-from jaxtyping import DTypeLike
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.common import ParameterTree
 
@@ -15,6 +16,8 @@ __all__ = [
     "DummyUnionMember",
     "LalamoModule",
     "config_converter",
+    "from_layout",
+    "into_layout",
     "register_config_union",
 ]
 
@@ -32,6 +35,42 @@ class WeightLayout(Enum):
                 return "(input, output)"
             case WeightLayout.OUTPUT_INPUT:
                 return "(output, input)"
+
+
+_DEFAULT_WEIGHT_LAYOUT = WeightLayout.INPUT_OUTPUT
+
+
+def into_layout(
+    weights: Float[Array, "in_channels out_channels"],
+    layout: WeightLayout,
+) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
+    if layout == WeightLayout.AUTO:
+        layout = _DEFAULT_WEIGHT_LAYOUT
+    match layout:
+        case WeightLayout.OUTPUT_INPUT:
+            return weights
+        case WeightLayout.INPUT_OUTPUT:
+            return rearrange(
+                weights,
+                "total_out_channels in_channels -> in_channels total_out_channels",
+            )
+
+
+def from_layout(
+    weights: ParameterTree | Array,
+    layout: WeightLayout,
+) -> Array:
+    assert isinstance(weights, Array)
+    if layout == WeightLayout.AUTO:
+        layout = _DEFAULT_WEIGHT_LAYOUT
+    match layout:
+        case WeightLayout.OUTPUT_INPUT:
+            return weights
+        case WeightLayout.INPUT_OUTPUT:
+            return rearrange(
+                weights,
+                "in_channels total_out_channels -> total_out_channels in_channels",
+            )
 
 
 class AttentionType(Enum):

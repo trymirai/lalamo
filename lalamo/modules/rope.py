@@ -93,22 +93,6 @@ class RoPEConfigBase:
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
         return RoPE(config=self, cosines=cosines, sines=sines)
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "RoPE":
-        assert isinstance(weights, dict)
-        cosines = weights["cosines"]
-        sines = weights["sines"]
-        assert isinstance(cosines, Array)
-        assert isinstance(sines, Array)
-        return RoPE(
-            config=self,
-            cosines=cosines,
-            sines=sines,
-        )
-
 
 class RoPE(LalamoModule[RoPEConfigBase]):
     sines: Float[Array, "tokens head_channels"]

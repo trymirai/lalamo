@@ -143,46 +143,6 @@ class AttentionConfig:
             sliding_window_size=sliding_window_size,
         )
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "Attention":
-        assert isinstance(weights, dict)
-        qkv_weights = weights["qkv_projection"]
-        out_weights = weights["out_projection"]
-        assert isinstance(qkv_weights, dict)
-        assert isinstance(out_weights, dict)
-
-        qkv_projection = self.qkv_projection_config.from_weights(qkv_weights, weight_layout)
-        out_projection = self.out_projection_config.from_weights(out_weights, weight_layout)
-
-        query_norm = None
-        if query_norm_weights := weights.get("query_norm"):
-            assert isinstance(query_norm_weights, dict)
-            assert self.query_norm_config is not None
-            query_norm = self.query_norm_config.from_weights(query_norm_weights, weight_layout)
-
-        key_norm = None
-        if key_norm_weights := weights.get("key_norm"):
-            assert isinstance(key_norm_weights, dict)
-            assert self.key_norm_config is not None
-            key_norm = self.key_norm_config.from_weights(key_norm_weights, weight_layout)
-
-        return Attention(
-            config=self,
-            qkv_projection=qkv_projection,
-            out_projection=out_projection,
-            query_norm=query_norm,
-            key_norm=key_norm,
-            num_heads=qkv_projection.output_dims[0] // qkv_projection.output_dims[1],
-            num_groups=qkv_projection.output_dims[1] // qkv_projection.output_dims[2],
-            head_dim=qkv_projection.output_dims[2],
-            is_causal=True,
-            scale=None,
-            sliding_window_size=None,
-        )
-
 
 class Attention(LalamoModule[AttentionConfig]):
     qkv_projection: LinearBase
