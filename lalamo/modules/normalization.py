@@ -39,7 +39,10 @@ class RMSNormConfig:
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "RMSNorm":
-        return RMSNorm.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        scales = weights["scales"]
+        assert isinstance(scales, Array)
+        return RMSNorm(self, scales=scales)
 
 
 class RMSNorm(LalamoModule[RMSNormConfig]):
@@ -84,18 +87,3 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
         return dict(scales=self.scales)
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: RMSNormConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "RMSNorm":
-        assert isinstance(weights, dict)
-        scales = weights["scales"]
-        assert isinstance(scales, Array)
-        return cls(
-            config=config,
-            scales=scales,
-        )

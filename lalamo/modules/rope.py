@@ -98,7 +98,16 @@ class RoPEConfigBase:
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "RoPE":
-        return RoPE.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        cosines = weights["cosines"]
+        sines = weights["sines"]
+        assert isinstance(cosines, Array)
+        assert isinstance(sines, Array)
+        return RoPE(
+            config=self,
+            cosines=cosines,
+            sines=sines,
+        )
 
 
 class RoPE(LalamoModule[RoPEConfigBase]):
@@ -143,24 +152,6 @@ class RoPE(LalamoModule[RoPEConfigBase]):
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
         return dict(cosines=self.cosines, sines=self.sines)
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: RoPEConfigBase,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "RoPE":
-        assert isinstance(weights, dict)
-        cosines = weights["cosines"]
-        sines = weights["sines"]
-        assert isinstance(cosines, Array)
-        assert isinstance(sines, Array)
-        return cls(
-            config=config,
-            cosines=cosines,
-            sines=sines,
-        )
 
 
 class UnscaledRoPEConfig(RoPEConfigBase):

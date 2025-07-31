@@ -20,6 +20,7 @@ from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Exit, Option, Typer
 
+from lalamo.common import flatten_parameters
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from lalamo.modules import WeightLayout, config_converter
 from lalamo.utils import jax_uint4_to_packed_uint8
@@ -203,7 +204,7 @@ def convert(
         progress.add_task(f"💾 Saving the model to {output_dir}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        weights = dict(model.export_weights(weight_layout))
+        weights = flatten_parameters(model.export_weights(weight_layout))
         packed_weights = _pack_uint4_weights(weights)
         save_file(packed_weights, output_dir / "model.safetensors")
 
@@ -226,7 +227,7 @@ def convert(
                 return_updated_kv_cache=True,
                 return_activation_trace=True,
             )
-            traces = dict(result.export())
+            traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")

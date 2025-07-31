@@ -2,7 +2,7 @@ import math
 from abc import abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -114,12 +114,6 @@ class LinearConfigBase:
         key: PRNGKeyArray,
     ) -> LinearBase: ...
 
-    def from_weights(
-        self,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> LinearBase: ...
-
 
 @dataclass(frozen=True)
 class FullPrecisionLinearConfig(LinearConfigBase):
@@ -158,7 +152,17 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> LinearBase:
-        return FullPrecisionLinear.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        matrix = self._from_layout(weights["weights"], weight_layout)
+        biases = weights.get("biases")
+        if biases is not None:
+            assert isinstance(biases, Array)
+        return FullPrecisionLinear(
+            config=self,
+            output_dims=tuple(d for d in matrix.shape[:1]),
+            weights=matrix,
+            biases=biases,
+        )
 
 
 class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
@@ -281,7 +285,24 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> LinearBase:
-        return GroupQuantizedLinear.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        matrix = self._from_layout(weights["weights"], weight_layout)
+        zero_points = self._from_layout(weights["zero_points"], weight_layout)
+        scales = self._from_layout(weights["scales"], weight_layout)
+        assert isinstance(matrix, Array)
+        assert isinstance(zero_points, Array)
+        assert isinstance(scales, Array)
+        biases = weights.get("biases")
+        if biases is not None:
+            assert isinstance(biases, Array)
+        return GroupQuantizedLinear(
+            config=self,
+            output_dims=tuple(d for d in matrix.shape[:1]),
+            weights=matrix,
+            zero_points=zero_points,
+            scales=scales,
+            biases=biases,
+        )
 
 
 class RequantizedWeights(NamedTuple):
@@ -519,33 +540,6 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
             result["biases"] = self.biases
         return result
 
-    @classmethod
-    def load_weights(
-        cls,
-        config: GroupQuantizedLinearConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> Self:
-        assert isinstance(weights, dict)
-        matrix = cls._from_layout(weights["weights"], weight_layout)
-        zero_points = cls._from_layout(weights["zero_points"], weight_layout)
-        scales = cls._from_layout(weights["scales"], weight_layout)
-        assert isinstance(matrix, Array)
-        assert isinstance(zero_points, Array)
-        assert isinstance(scales, Array)
-        biases = weights.get("biases")
-        if biases is not None:
-            assert isinstance(biases, Array)
-
-        return cls(
-            config=config,  # type: ignore
-            output_dims=tuple(d for d in matrix.shape[:1]),
-            weights=matrix,
-            zero_points=zero_points,
-            scales=scales,
-            biases=biases,
-        )
-
 
 class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
     pass
@@ -609,7 +603,35 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> LinearBase:
-        return QLoRALinear.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        matrix = self._from_layout(weights["weights"], weight_layout)
+        zero_points = self._from_layout(weights["zero_points"], weight_layout)
+        scales = self._from_layout(weights["scales"], weight_layout)
+        down_weights = self._from_layout(weights["down_weights"], weight_layout)
+        up_weights_list = weights["up_weights"]
+        assert isinstance(up_weights_list, (list, tuple))
+        up_weights = tuple(self._from_layout(w, weight_layout) for w in up_weights_list)
+
+        assert isinstance(matrix, Array)
+        assert isinstance(zero_points, Array)
+        assert isinstance(scales, Array)
+        assert isinstance(down_weights, Array)
+        assert all(isinstance(w, Array) for w in up_weights)
+
+        biases = weights.get("biases")
+        if biases is not None:
+            assert isinstance(biases, Array)
+
+        return QLoRALinear(
+            config=self,
+            output_dims=tuple(d for d in matrix.shape[:1]),
+            weights=matrix,
+            zero_points=zero_points,
+            scales=scales,
+            biases=biases,
+            lora_down_weights=down_weights,
+            lora_up_weights=up_weights,
+        )
 
 
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
@@ -694,43 +716,6 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
             down_weights=exported_lora_down_weights,
             up_weights=exported_lora_up_weights,
             **quantized_linear_weights,
-        )
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: QLoRALinearConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> Self:
-        assert isinstance(weights, dict)
-        matrix = cls._from_layout(weights["weights"], weight_layout)
-        zero_points = cls._from_layout(weights["zero_points"], weight_layout)
-        scales = cls._from_layout(weights["scales"], weight_layout)
-        down_weights = cls._from_layout(weights["down_weights"], weight_layout)
-        up_weights_list = weights["up_weights"]
-        assert isinstance(up_weights_list, (list, tuple))
-        up_weights = tuple(cls._from_layout(w, weight_layout) for w in up_weights_list)
-
-        assert isinstance(matrix, Array)
-        assert isinstance(zero_points, Array)
-        assert isinstance(scales, Array)
-        assert isinstance(down_weights, Array)
-        assert all(isinstance(w, Array) for w in up_weights)
-
-        biases = weights.get("biases")
-        if biases is not None:
-            assert isinstance(biases, Array), "biases must be a jax Array"
-
-        return cls(
-            config=config,
-            output_dims=tuple(d for d in matrix.shape[:1]),
-            weights=matrix,
-            zero_points=zero_points,
-            scales=scales,
-            biases=biases,
-            lora_down_weights=down_weights,
-            lora_up_weights=up_weights,
         )
 
 

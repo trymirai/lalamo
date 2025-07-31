@@ -101,7 +101,58 @@ class DecoderConfig:
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "Decoder":
-        return Decoder.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        embedding_weights = weights["embedding"]
+        global_rope_weights = weights["global_rope"]
+        layers_weights = weights["layers"]
+        output_norm_weights = weights["output_norm"]
+
+        assert isinstance(embedding_weights, dict)
+        assert isinstance(global_rope_weights, dict)
+        assert isinstance(layers_weights, list)
+        assert isinstance(output_norm_weights, dict)
+        assert all(isinstance(w, dict) for w in layers_weights)
+
+        embedding = self.embedding_config.from_weights(
+            embedding_weights,
+            weight_layout,
+        )
+
+        global_rope = self.global_rope_config.from_weights(
+            global_rope_weights,
+            weight_layout,
+        )
+
+        local_rope = None
+        if self.local_rope_config is not None:
+            local_rope_weights = weights["local_rope"]
+            assert isinstance(local_rope_weights, dict)
+            local_rope = self.local_rope_config.from_weights(
+                local_rope_weights,
+                weight_layout,
+            )
+
+        layers = tuple(
+            self.layer_config.from_weights(
+                layer_weights,
+                weight_layout,
+            )
+            for layer_weights in layers_weights
+        )
+
+        output_norm = self.output_norm_config.from_weights(
+            output_norm_weights,
+            weight_layout,
+        )
+
+        return Decoder(
+            config=self,
+            embedding=embedding,
+            global_rope=global_rope,
+            local_rope=local_rope,
+            layers=layers,
+            output_norm=output_norm,
+        )
 
     def random_init(
         self,
@@ -250,63 +301,3 @@ class Decoder(LalamoModule[DecoderConfig]):
         if self.local_rope:
             result["local_rope"] = self.local_rope.export_weights(weight_layout)
         return result
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: DecoderConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "Decoder":
-        assert isinstance(weights, dict)
-        embedding_weights = weights["embedding"]
-        global_rope_weights = weights["global_rope"]
-        layers_weights = weights["layers"]
-        output_norm_weights = weights["output_norm"]
-
-        assert isinstance(embedding_weights, dict)
-        assert isinstance(global_rope_weights, dict)
-        assert isinstance(layers_weights, list)
-        assert isinstance(output_norm_weights, dict)
-        assert all(isinstance(w, dict) for w in layers_weights)
-
-        embedding = config.embedding_config.from_weights(
-            embedding_weights,
-            weight_layout,
-        )
-
-        global_rope = config.global_rope_config.from_weights(
-            global_rope_weights,
-            weight_layout,
-        )
-
-        local_rope = None
-        if config.local_rope_config is not None:
-            local_rope_weights = weights["local_rope"]
-            assert isinstance(local_rope_weights, dict)
-            local_rope = config.local_rope_config.from_weights(
-                local_rope_weights,
-                weight_layout,
-            )
-
-        layers = tuple(
-            config.layer_config.from_weights(
-                layer_weights,
-                weight_layout,
-            )
-            for layer_weights in layers_weights
-        )
-
-        output_norm = config.output_norm_config.from_weights(
-            output_norm_weights,
-            weight_layout,
-        )
-
-        return cls(
-            config=config,
-            embedding=embedding,
-            global_rope=global_rope,
-            local_rope=local_rope,
-            layers=layers,
-            output_norm=output_norm,
-        )

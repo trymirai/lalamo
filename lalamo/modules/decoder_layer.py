@@ -128,7 +128,65 @@ class DecoderLayerConfig:
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "DecoderLayer":
-        return DecoderLayer.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+
+        pre_attention_norm_weights = weights["pre_attention_norm"]
+        attention_weights = weights["attention"]
+        pre_mlp_norm_weights = weights["pre_mlp_norm"]
+        mlp_weights = weights["mlp"]
+
+        assert isinstance(pre_attention_norm_weights, dict)
+        assert isinstance(attention_weights, dict)
+        assert isinstance(pre_mlp_norm_weights, dict)
+        assert isinstance(mlp_weights, dict)
+
+        pre_attention_norm = self.pre_attention_norm_config.from_weights(
+            pre_attention_norm_weights,
+            weight_layout,
+        )
+
+        attention = self.attention_config.from_weights(
+            attention_weights,
+            weight_layout,
+        )
+
+        post_attention_norm = None
+        if self.post_attention_norm_config is not None:
+            post_attention_norm_weights = weights["post_attention_norm"]
+            assert isinstance(post_attention_norm_weights, dict)
+            post_attention_norm = self.post_attention_norm_config.from_weights(
+                post_attention_norm_weights,
+                weight_layout,
+            )
+
+        pre_mlp_norm = self.pre_mlp_norm_config.from_weights(
+            pre_mlp_norm_weights,
+            weight_layout,
+        )
+
+        mlp = self.mlp_config.from_weights(
+            mlp_weights,
+            weight_layout,
+        )
+
+        post_mlp_norm = None
+        if self.post_mlp_norm_config is not None:
+            post_mlp_norm_weights = weights["post_mlp_norm"]
+            assert isinstance(post_mlp_norm_weights, dict)
+            post_mlp_norm = self.post_mlp_norm_config.from_weights(
+                post_mlp_norm_weights,
+                weight_layout,
+            )
+
+        return DecoderLayer(
+            config=self,
+            pre_attention_norm=pre_attention_norm,
+            attention=attention,
+            post_attention_norm=post_attention_norm,
+            pre_mlp_norm=pre_mlp_norm,
+            mlp=mlp,
+            post_mlp_norm=post_mlp_norm,
+        )
 
 
 class DecoderLayer(LalamoModule[DecoderLayerConfig]):
@@ -246,70 +304,3 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         if self.post_mlp_norm is not None:
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights(weight_layout)
         return result
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: DecoderLayerConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "DecoderLayer":
-        assert isinstance(weights, dict)
-
-        pre_attention_norm_weights = weights["pre_attention_norm"]
-        attention_weights = weights["attention"]
-        pre_mlp_norm_weights = weights["pre_mlp_norm"]
-        mlp_weights = weights["mlp"]
-
-        assert isinstance(pre_attention_norm_weights, dict)
-        assert isinstance(attention_weights, dict)
-        assert isinstance(pre_mlp_norm_weights, dict)
-        assert isinstance(mlp_weights, dict)
-
-        pre_attention_norm = config.pre_attention_norm_config.from_weights(
-            pre_attention_norm_weights,
-            weight_layout,
-        )
-
-        attention = config.attention_config.from_weights(
-            attention_weights,
-            weight_layout,
-        )
-
-        post_attention_norm = None
-        if config.post_attention_norm_config is not None:
-            post_attention_norm_weights = weights["post_attention_norm"]
-            assert isinstance(post_attention_norm_weights, dict)
-            post_attention_norm = config.post_attention_norm_config.from_weights(
-                post_attention_norm_weights,
-                weight_layout,
-            )
-
-        pre_mlp_norm = config.pre_mlp_norm_config.from_weights(
-            pre_mlp_norm_weights,
-            weight_layout,
-        )
-
-        mlp = config.mlp_config.from_weights(
-            mlp_weights,
-            weight_layout,
-        )
-
-        post_mlp_norm = None
-        if config.post_mlp_norm_config is not None:
-            post_mlp_norm_weights = weights["post_mlp_norm"]
-            assert isinstance(post_mlp_norm_weights, dict)
-            post_mlp_norm = config.post_mlp_norm_config.from_weights(
-                post_mlp_norm_weights,
-                weight_layout,
-            )
-
-        return cls(
-            config=config,
-            pre_attention_norm=pre_attention_norm,
-            attention=attention,
-            post_attention_norm=post_attention_norm,
-            pre_mlp_norm=pre_mlp_norm,
-            mlp=mlp,
-            post_mlp_norm=post_mlp_norm,
-        )

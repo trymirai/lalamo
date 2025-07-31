@@ -100,7 +100,13 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "TiedEmbedding":
-        return TiedEmbedding.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        weights_array = weights["weights"]
+        assert isinstance(weights_array, Array)
+        return TiedEmbedding(
+            config=self,
+            weights=weights_array,
+        )
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
@@ -135,21 +141,6 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
         return dict(weights=self.weights)
 
-    @classmethod
-    def load_weights(
-        cls,
-        config: TiedEmbeddingConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "TiedEmbedding":
-        assert isinstance(weights, dict)
-        weights_array = weights["weights"]
-        assert isinstance(weights_array, Array)
-        return cls(
-            config=config,
-            weights=weights_array,
-        )
-
 
 @dataclass(frozen=True)
 class UntiedEmbeddingConfig(EmbeddingConfigBase):
@@ -176,7 +167,23 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "UntiedEmbedding":
-        return UntiedEmbedding.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        if weight_layout == WeightLayout.AUTO:
+            weight_layout = self._default_weight_layout()
+
+        input_weights = weights["input_weights"]
+        output_weights = weights["output_weights"]
+        assert isinstance(input_weights, Array)
+        assert isinstance(output_weights, Array)
+
+        if weight_layout == WeightLayout.INPUT_OUTPUT:
+            output_weights = rearrange(output_weights, "channels token_ids -> token_ids channels")
+
+        return UntiedEmbedding(
+            config=self,
+            input_weights=input_weights,
+            output_weights=output_weights,
+        )
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
@@ -242,31 +249,6 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
             output_weights=output_weights,
         )
 
-    @classmethod
-    def load_weights(
-        cls,
-        config: UntiedEmbeddingConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "UntiedEmbedding":
-        assert isinstance(weights, dict)
-        if weight_layout == WeightLayout.AUTO:
-            weight_layout = cls._default_weight_layout()
-
-        input_weights = weights["input_weights"]
-        output_weights = weights["output_weights"]
-        assert isinstance(input_weights, Array)
-        assert isinstance(output_weights, Array)
-
-        if weight_layout == WeightLayout.INPUT_OUTPUT:
-            output_weights = rearrange(output_weights, "channels token_ids -> token_ids channels")
-
-        return cls(
-            config=config,
-            input_weights=input_weights,
-            output_weights=output_weights,
-        )
-
 
 @dataclass(frozen=True)
 class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
@@ -294,7 +276,16 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
         weights: ParameterTree,
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> "QuantizedTiedEmbedding":
-        return QuantizedTiedEmbedding.load_weights(self, weights, weight_layout)
+        assert isinstance(weights, dict)
+        weights_array = weights["weights"]
+        scales = weights["scales"]
+        assert isinstance(weights_array, Array)
+        assert isinstance(scales, Array)
+        return QuantizedTiedEmbedding(
+            config=self,
+            weights=weights_array,
+            scales=scales,
+        )
 
 
 class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
@@ -362,24 +353,6 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
         return dict(
             weights=self.int_weights,
             scales=self.scales,
-        )
-
-    @classmethod
-    def load_weights(
-        cls,
-        config: QuantizedTiedEmbeddingConfig,
-        weights: ParameterTree,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
-    ) -> "QuantizedTiedEmbedding":
-        assert isinstance(weights, dict)
-        weights_array = weights["weights"]
-        scales = weights["scales"]
-        assert isinstance(weights_array, Array)
-        assert isinstance(scales, Array)
-        return cls(
-            config=config,
-            weights=weights_array,
-            scales=scales,
         )
 
 
