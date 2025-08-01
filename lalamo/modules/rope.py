@@ -16,6 +16,7 @@
 # limitations under the License.
 
 import math
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 import equinox as eqx
@@ -150,7 +151,7 @@ class RoPE(LalamoModule[RoPEConfigBase]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
     ) -> "RoPE":
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         return replace(self, cosines=weights["cosines"], sines=weights["sines"])
 
 

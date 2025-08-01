@@ -1,5 +1,6 @@
 import importlib.metadata
 from collections import ChainMap
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -20,13 +21,38 @@ from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, UseCase
 
 __all__ = [
     "REPO_TO_MODEL",
+    "DownloadingFileEvent",
+    "FinishedDownloadingFileEvent",
+    "InitializingModelEvent",
     "ModelMetadata",
     "ModelSpec",
+    "StatusEvent",
     "import_model",
 ]
 
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")
+
+
+class DownloadingFileEvent(NamedTuple):
+    file: FileSpec
+
+
+class FinishedDownloadingFileEvent(NamedTuple):
+    file: FileSpec
+
+
+class InitializingModelEvent(NamedTuple):
+    pass
+
+
+class FinishedInitializingModelEvent(NamedTuple):
+    pass
+
+
+type StatusEvent = (
+    DownloadingFileEvent | FinishedDownloadingFileEvent | InitializingModelEvent | FinishedInitializingModelEvent
+)
 
 
 @dataclass(frozen=True)
@@ -42,12 +68,21 @@ class ModelMetadata:
     model_config: LanguageModelConfig
 
 
-def download_file(file_spec: FileSpec, model_repo: str, output_dir: Path | str | None = None) -> Path:
+def download_file(
+    file_spec: FileSpec,
+    model_repo: str,
+    output_dir: Path | str | None = None,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> Path:
+    if progress_callback is not None:
+        progress_callback(DownloadingFileEvent(file_spec))
     result = huggingface_hub.hf_hub_download(
         repo_id=file_spec.repo or model_repo,
         local_dir=output_dir,
         filename=file_spec.filename,
     )
+    if progress_callback is not None:
+        progress_callback(FinishedDownloadingFileEvent(file_spec))
     return Path(result)
 
 
@@ -56,12 +91,23 @@ def list_weight_files(model_repo: str) -> list[FileSpec]:
     return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
 
 
-def download_weights(model_spec: ModelSpec, output_dir: Path | str | None = None) -> list[Path]:
-    return [download_file(file_spec, model_spec.repo, output_dir) for file_spec in list_weight_files(model_spec.repo)]
+def download_weights(
+    model_spec: ModelSpec,
+    output_dir: Path | str | None = None,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> list[Path]:
+    return [
+        download_file(file_spec, model_spec.repo, output_dir, progress_callback)
+        for file_spec in list_weight_files(model_spec.repo)
+    ]
 
 
-def download_config_file(model_spec: ModelSpec, output_dir: Path | str | None = None) -> Path:
-    return download_file(model_spec.configs.model_config, model_spec.repo, output_dir)
+def download_config_file(
+    model_spec: ModelSpec,
+    output_dir: Path | str | None = None,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> Path:
+    return download_file(model_spec.configs.model_config, model_spec.repo, output_dir, progress_callback)
 
 
 class ImportResults(NamedTuple):
@@ -69,9 +115,18 @@ class ImportResults(NamedTuple):
     metadata: ModelMetadata
 
 
-def import_message_processor(model_spec: ModelSpec, output_dir: Path | str | None = None) -> MessageProcessor:
-    tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir)
-    tokenizer_config_file = download_file(model_spec.configs.tokenizer_config, model_spec.repo, output_dir)
+def import_message_processor(
+    model_spec: ModelSpec,
+    output_dir: Path | str | None = None,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> MessageProcessor:
+    tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback)
+    tokenizer_config_file = download_file(
+        model_spec.configs.tokenizer_config,
+        model_spec.repo,
+        output_dir,
+        progress_callback,
+    )
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
     if tokenizer_config.chat_template is None:
         if model_spec.configs.chat_template is None:
@@ -96,24 +151,38 @@ def import_message_processor(model_spec: ModelSpec, output_dir: Path | str | Non
 
 
 def import_model(
-    model_spec: ModelSpec,
+    model_spec: ModelSpec | str,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> ImportResults:
+    if isinstance(model_spec, str):
+        try:
+            model_spec = REPO_TO_MODEL[model_spec]
+        except KeyError as e:
+            raise ValueError(f"Unknown model: {model_spec}") from e
+
     foreign_decoder_config_file = download_config_file(model_spec)
     foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
 
     if precision is None:
         precision = foreign_decoder_config.default_precision
 
-    weights_paths = download_weights(model_spec)
+    weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     weights_dict: ChainMap[str, Array] = ChainMap(
         *[model_spec.weights_type.load(weights_path, precision) for weights_path in weights_paths],  # type: ignore
     )
 
+    if progress_callback is not None:
+        progress_callback(InitializingModelEvent())
+
     decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
+
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
     message_processor = import_message_processor(model_spec)
 
     stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)

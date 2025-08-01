@@ -162,7 +162,7 @@ def register_config_union(union_type: UnionType) -> None:
         new_config = dict(config)
         type_name = new_config.pop("type")
         target_type = name_to_type[type_name]
-        return name_to_type[type_name](**config_converter.structure(new_config, target_type))
+        return config_converter.structure(new_config, target_type)
 
     config_converter.register_structure_hook(
         union_type,

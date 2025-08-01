@@ -12,7 +12,7 @@ from safetensors.flax import load_file as load_safetensors
 
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import MapDict, torch_to_jax
+from lalamo.utils import MapDictValues, torch_to_jax
 
 __all__ = [
     "ConfigMap",
@@ -37,9 +37,9 @@ class WeightsType(Enum):
 
     def load(self, filename: Path | str, float_dtype: DTypeLike) -> Mapping[str, jnp.ndarray]:
         if self == WeightsType.SAFETENSORS:
-            return MapDict(lambda v: cast_if_float(v, float_dtype), load_safetensors(filename))
+            return MapDictValues(lambda v: cast_if_float(v, float_dtype), load_safetensors(filename))
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-        return MapDict(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
+        return MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
 
 
 class UseCase(Enum):
@@ -99,7 +99,7 @@ def awq_model_spec(
     )
 
 
-def build_quantized_models(model_specs: list[ModelSpec]):
+def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
     quantization_compatible_repos: list[str] = [
         "Qwen/Qwen2.5-3B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",

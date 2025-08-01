@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -101,9 +102,9 @@ class MLP(LalamoModule[MLPConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
-        assert isinstance(weights["up_projection"], dict)
-        assert isinstance(weights["down_projection"], dict)
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["up_projection"], Mapping)
+        assert isinstance(weights["down_projection"], Mapping)
         return replace(
             self,
             up_projection=self.up_projection.import_weights(weights["up_projection"], weight_layout),

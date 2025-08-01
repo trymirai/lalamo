@@ -1,4 +1,5 @@
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -143,7 +144,7 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
     ) -> Self:
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         return replace(self, weights=weights["weights"])
 
 
@@ -238,7 +239,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         return replace(
             self,
             input_weights=weights["input_weights"],
@@ -349,7 +350,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         assert isinstance(weights["weights"], Array)
         return replace(
             self,

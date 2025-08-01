@@ -1,6 +1,6 @@
 [project]
 name = "lalamo"
-description = "Add your description here"
+description = "JAX library for LLM optimisation and export"
 requires-python = ">=3.12, <4"
 dependencies = [
     "cattrs>=24.1.2",
@@ -44,6 +44,7 @@ dev-dependencies = [
     "beartype>=0.19.0",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
+    "memray>=1.17.2",
     "pytest-env>=1.1.5",
     "pytest>=8.3.4",
     "torch>=2.7.1",
@@ -101,9 +102,11 @@ ignore = [
     "PD008",
     "PGH003",
     "PLR0913",
+    "PLR0915",
     "PLR2004",
     "PT",
     "PTH123",
+    "RET503",
     "RET504",
     "S",
     "SIM108",

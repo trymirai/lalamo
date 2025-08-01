@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Self
@@ -90,5 +91,5 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
     ) -> Self:
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         return replace(self, scales=weights["scales"])

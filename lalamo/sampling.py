@@ -55,11 +55,13 @@ class TopPPolicy(SamplingPolicy):
         sorted_logits = logits[sorted_indices]
         cumulative_probs = jnp.cumsum(jax.nn.softmax(sorted_logits))
 
-        to_remove = cumulative_probs > self.p
-        to_remove = jnp.roll(to_remove, 1)
-        to_remove = to_remove.at[0].set(False)
+        to_remove_sorted = cumulative_probs > self.p
+        to_remove_sorted = jnp.roll(to_remove_sorted, 1)
+        to_remove_sorted = to_remove_sorted.at[0].set(False)
 
-        return jnp.where(to_remove, -jnp.inf, logits)
+        to_remove_unsorted = jnp.empty_like(to_remove_sorted).at[sorted_indices].set(to_remove_sorted)
+
+        return jnp.where(to_remove_unsorted, -jnp.inf, logits)
 
 
 class BanTokensPolicy(SamplingPolicy):

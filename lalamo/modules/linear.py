@@ -1,6 +1,6 @@
 import math
 from abc import abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import NamedTuple, Self
 
@@ -202,7 +202,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         return replace(
             self,
             weights=from_layout(weights["weights"], weight_layout),
@@ -523,7 +523,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
+        assert isinstance(weights, Mapping)
         assert isinstance(weights["weights"], Array)
         return replace(
             self,
@@ -714,8 +714,8 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         base = super().import_weights(weights, weight_layout)
-        assert isinstance(weights, dict)
-        assert isinstance(weights["up_weights"], list)
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["up_weights"], Sequence)
         return replace(
             base,
             lora_down_weights=from_layout(weights["down_weights"], weight_layout),

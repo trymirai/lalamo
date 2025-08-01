@@ -19,7 +19,7 @@ import torch.utils.dlpack
 from jaxtyping import Array
 
 __all__ = [
-    "MapDict",
+    "MapDictValues",
     "MapSequence",
     "jax_to_torch",
     "jax_uint4_to_packed_uint8",
@@ -74,7 +74,7 @@ class MapValuesView[OldT, NewT](MapCollection[OldT, NewT], ValuesView):
 
 
 @dataclass(frozen=True)
-class MapDict[K, OldV, NewV](Mapping[K, NewV]):
+class MapDictValues[K, OldV, NewV](Mapping[K, NewV]):
     value_map: Callable[[OldV], NewV]
     collection: Mapping[K, OldV]
 

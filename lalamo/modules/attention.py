@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import NamedTuple, Self
 
@@ -41,8 +42,8 @@ def _soft_capped_attention_kernel(
     scale: float | None,
     logit_soft_cap: float,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
-    dst_length, num_heads, head_dim = queries.shape
-    src_length, num_groups, _ = keys.shape
+    _, num_heads, head_dim = queries.shape
+    _, num_groups, _ = keys.shape
     if scale is None:
         scale = head_dim**-0.5
     group_size = num_heads // num_groups
@@ -383,16 +384,16 @@ class Attention(LalamoModule[AttentionConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
-        assert isinstance(weights["qkv_projection"], dict)
-        assert isinstance(weights["out_projection"], dict)
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["qkv_projection"], Mapping)
+        assert isinstance(weights["out_projection"], Mapping)
         if self.query_norm is not None:
-            assert isinstance(weights["query_norm"], dict)
+            assert isinstance(weights["query_norm"], Mapping)
             query_norm = self.query_norm.import_weights(weights["query_norm"], weight_layout)
         else:
             query_norm = None
         if self.key_norm is not None:
-            assert isinstance(weights["key_norm"], dict)
+            assert isinstance(weights["key_norm"], Mapping)
             key_norm = self.key_norm.import_weights(weights["key_norm"], weight_layout)
         else:
             key_norm = None

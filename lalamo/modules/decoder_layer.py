@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -286,14 +287,14 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
-        assert isinstance(weights["pre_attention_norm"], dict)
-        assert isinstance(weights["attention"], dict)
-        assert isinstance(weights["mlp"], dict)
-        assert isinstance(weights["pre_mlp_norm"], dict)
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["pre_attention_norm"], Mapping)
+        assert isinstance(weights["attention"], Mapping)
+        assert isinstance(weights["mlp"], Mapping)
+        assert isinstance(weights["pre_mlp_norm"], Mapping)
 
         if self.post_attention_norm is not None:
-            assert isinstance(weights["post_attention_norm"], dict)
+            assert isinstance(weights["post_attention_norm"], Mapping)
             post_attention_norm = self.post_attention_norm.import_weights(
                 weights["post_attention_norm"],
                 weight_layout,
@@ -301,7 +302,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         else:
             post_attention_norm = None
         if self.post_mlp_norm is not None:
-            assert isinstance(weights["post_mlp_norm"], dict)
+            assert isinstance(weights["post_mlp_norm"], Mapping)
             post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"], weight_layout)
         else:
             post_mlp_norm = None

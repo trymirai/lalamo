@@ -21,7 +21,16 @@ from safetensors.flax import save_file
 from typer import Argument, Exit, Option, Typer
 
 from lalamo.common import flatten_parameters
+from lalamo.language_model import LanguageModel
+from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
+from lalamo.model_import.common import (
+    DownloadingFileEvent,
+    FinishedDownloadingFileEvent,
+    FinishedInitializingModelEvent,
+    InitializingModelEvent,
+    StatusEvent,
+)
 from lalamo.modules import WeightLayout, config_converter
 from lalamo.utils import jax_uint4_to_packed_uint8
 
@@ -90,6 +99,52 @@ def _pack_uint4_weights(weights: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarra
         else:
             packed_weights[key] = value
     return packed_weights
+
+
+@app.command(help="Convert the model for use with the Uzu inference engine.")
+def chat(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    weight_layout: Annotated[
+        WeightLayout | None,
+        Option(
+            help=(
+                "(EXPERIMENTAL) Order of dimensions in the weights of linear layers."
+                "\n\n\n\n"
+                "If set to AUTO, the layout will depend on the model."
+            ),
+            show_default="auto",
+        ),
+    ] = None,
+) -> None:
+    if weight_layout is None:
+        weight_layout = WeightLayout.AUTO
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+        model = LanguageModel.load(model_path, weight_layout)
+    messages = []
+    while True:
+        user_text = console.input("[cyan]user> [/cyan]")
+        user_message = UserMessage(user_text)
+        messages.append(user_message)
+
+        console.print("[red]assistant> [/red]", end="")
+        model_response_tokens = []
+        for token in model.stream_reply_text(messages):
+            console.print(token, end="")
+            model_response_tokens.append(token)
+        console.print()
+        model_response_text = "".join(model_response_tokens)
+        messages.append(model.message_processor.parse_response(model_response_text))
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
@@ -195,27 +250,31 @@ def convert(
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        progress.add_task("👨‍🍳 Cooking...")
+        event_to_task = {}
+
+        def progress_callback(event: StatusEvent) -> None:
+            match event:
+                case DownloadingFileEvent(file_spec):
+                    event_to_task[event] = progress.add_task(f"Retrieving {file_spec.filename}...")
+                case FinishedDownloadingFileEvent(file_spec):
+                    progress.remove_task(event_to_task[event])
+                case InitializingModelEvent():
+                    event_to_task[event] = progress.add_task("Initializing model...")
+                case FinishedInitializingModelEvent():
+                    progress.remove_task(event_to_task[event])
+
+        main_task = progress.add_task("👨‍🍳 Cooking...")
         model, metadata = import_model(
             model_repo,
             precision=precision_dtype,
             context_length=context_length,
+            progress_callback=progress_callback,
         )
-        progress.add_task(f"💾 Saving the model to {output_dir}")
+        save_task = progress.add_task(f"💾 Saving the model to {output_dir}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        weights = flatten_parameters(model.export_weights(weight_layout))
-        packed_weights = _pack_uint4_weights(weights)
-        save_file(packed_weights, output_dir / "model.safetensors")
-
-        config_json = config_converter.unstructure(metadata, ModelMetadata)
-        with open(output_dir / "config.json", "w") as file:
-            json.dump(config_json, file, indent=4)
-
-        model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-
         if include_traces:
-            progress.add_task("🚁 Generating traces...")
+            trace_task = progress.add_task("🚁 Generating traces...")
 
             num_tokens = 512
             token_stride = 8
@@ -229,6 +288,20 @@ def convert(
             )
             traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
+            progress.remove_task(trace_task)
+        progress.remove_task(main_task)
+
+        model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
+        weights = flatten_parameters(model.export_weights(weight_layout))
+        del model
+
+        packed_weights = _pack_uint4_weights(weights)
+        save_file(packed_weights, output_dir / "model.safetensors")
+
+        config_json = config_converter.unstructure(metadata, ModelMetadata)
+        with open(output_dir / "config.json", "w") as file:
+            json.dump(config_json, file, indent=4)
+        progress.remove_task(save_task)
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 

@@ -49,12 +49,12 @@ type ContentBlock = str | Image
 
 @dataclass(frozen=True)
 class UserMessage(Message):
-    content: tuple[ContentBlock, ...]
+    content: tuple[ContentBlock, ...] | ContentBlock
 
 
 @dataclass(frozen=True)
 class SystemMessage(UserMessage):
-    content: tuple[ContentBlock, ...]
+    content: tuple[ContentBlock, ...] | ContentBlock
 
 
 @dataclass(frozen=True)
@@ -152,7 +152,7 @@ class MessageProcessor:
         return AssistantMessage(**match.groupdict())
 
     def tokenize(self, text: str) -> list[int]:
-        return self.tokenizer.encode(text)
+        return self.tokenizer.encode(text).ids
 
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens)

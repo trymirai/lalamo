@@ -1,3 +1,4 @@
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -300,20 +301,20 @@ class Decoder(LalamoModule[DecoderConfig]):
         weights: ParameterTree[Array],
         weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        assert isinstance(weights, dict)
-        assert isinstance(weights["embedding"], dict)
-        assert isinstance(weights["global_rope"], dict)
-        assert isinstance(weights["layers"], list)
-        assert isinstance(weights["output_norm"], dict)
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["embedding"], Mapping)
+        assert isinstance(weights["global_rope"], Mapping)
+        assert isinstance(weights["layers"], Sequence)
+        assert isinstance(weights["output_norm"], Mapping)
         if self.local_rope:
-            assert isinstance(weights["local_rope"], dict)
+            assert isinstance(weights["local_rope"], Mapping)
             local_rope = self.local_rope.import_weights(weights["local_rope"], weight_layout)
         else:
             local_rope = None
 
         layers = []
         for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
-            assert isinstance(layer_weights, dict)
+            assert isinstance(layer_weights, Mapping)
             layers.append(layer.import_weights(layer_weights, weight_layout))
         return replace(
             self,

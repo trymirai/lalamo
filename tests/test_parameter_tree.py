@@ -4,12 +4,13 @@ import jax.numpy as jnp
 import pytest
 
 from lalamo.common import unflatten_parameters
+from lalamo.utils import MapDictValues, MapSequence
 
 
 def test_unflatten_simple_dict() -> None:
     flat = {"a": jnp.array([1]), "b": jnp.array([2])}
     result = unflatten_parameters(flat)
-    assert isinstance(result, dict)
+    assert isinstance(result, MapDictValues)
     assert "a" in result and "b" in result
     assert jnp.array_equal(result["a"], jnp.array([1]))  # type: ignore
     assert jnp.array_equal(result["b"], jnp.array([2]))  # type: ignore
@@ -21,8 +22,8 @@ def test_unflatten_nested_dict() -> None:
         "layer.bias": jnp.array([2]),
     }
     result = unflatten_parameters(flat)
-    assert isinstance(result, dict)
-    assert isinstance(result["layer"], dict)  # type: ignore
+    assert isinstance(result, MapDictValues)
+    assert isinstance(result["layer"], MapDictValues)  # type: ignore
     assert jnp.array_equal(result["layer"]["weight"], jnp.array([1]))  # type: ignore
     assert jnp.array_equal(result["layer"]["bias"], jnp.array([2]))  # type: ignore
 
@@ -30,7 +31,7 @@ def test_unflatten_nested_dict() -> None:
 def test_unflatten_to_list() -> None:
     flat = {"0": jnp.array([1]), "1": jnp.array([2])}
     result = unflatten_parameters(flat)
-    assert isinstance(result, list)
+    assert isinstance(result, MapSequence)
     assert len(result) == 2
     assert jnp.array_equal(result[0], jnp.array([1]))  # type: ignore
     assert jnp.array_equal(result[1], jnp.array([2]))  # type: ignore
@@ -44,11 +45,11 @@ def test_unflatten_mixed_nested() -> None:
         "layers.1.bias": jnp.array([4]),
     }
     result = unflatten_parameters(flat)
-    assert isinstance(result, dict)
-    assert isinstance(result["layers"], list)  # type: ignore
+    assert isinstance(result, MapDictValues)
+    assert isinstance(result["layers"], MapSequence)  # type: ignore
     assert len(result["layers"]) == 2  # type: ignore
-    assert isinstance(result["layers"][0], dict)  # type: ignore
-    assert isinstance(result["layers"][1], dict)  # type: ignore
+    assert isinstance(result["layers"][0], MapDictValues)  # type: ignore
+    assert isinstance(result["layers"][1], MapDictValues)  # type: ignore
     assert jnp.array_equal(result["layers"][0]["weight"], jnp.array([1]))  # type: ignore
     assert jnp.array_equal(result["layers"][0]["bias"], jnp.array([2]))  # type: ignore
     assert jnp.array_equal(result["layers"][1]["weight"], jnp.array([3]))  # type: ignore
@@ -58,7 +59,7 @@ def test_unflatten_mixed_nested() -> None:
 def test_unflatten_empty_dict() -> None:
     flat: dict[str, Any] = {}
     result = unflatten_parameters(flat)
-    assert isinstance(result, dict)
+    assert isinstance(result, MapDictValues)
     assert len(result) == 0
 
 
@@ -68,10 +69,10 @@ def test_unflatten_single_level_numeric() -> None:
         "1.weight": jnp.array([2]),
     }
     result = unflatten_parameters(flat)
-    assert isinstance(result, list)
+    assert isinstance(result, MapSequence)
     assert len(result) == 2
-    assert isinstance(result[0], dict)
-    assert isinstance(result[1], dict)
+    assert isinstance(result[0], MapDictValues)
+    assert isinstance(result[1], MapDictValues)
     assert jnp.array_equal(result[0]["weight"], jnp.array([1]))  # type: ignore
     assert jnp.array_equal(result[1]["weight"], jnp.array([2]))  # type: ignore
 
@@ -84,12 +85,12 @@ def test_unflatten_deep_nesting() -> None:
         "model.layers.1.attention.bias": jnp.array([4]),
     }
     result = unflatten_parameters(flat)
-    assert isinstance(result, dict)
-    assert isinstance(result["model"], dict)  # type: ignore
-    assert isinstance(result["model"]["layers"], list)  # type: ignore
+    assert isinstance(result, MapDictValues)
+    assert isinstance(result["model"], MapDictValues)  # type: ignore
+    assert isinstance(result["model"]["layers"], MapDictValues)  # type: ignore
     assert len(result["model"]["layers"]) == 2  # type: ignore
-    assert isinstance(result["model"]["layers"][0]["attention"], dict)  # type: ignore
-    assert isinstance(result["model"]["layers"][1]["attention"], dict)  # type: ignore
+    assert isinstance(result["model"]["layers"][0]["attention"], MapDictValues)  # type: ignore
+    assert isinstance(result["model"]["layers"][1]["attention"], MapDictValues)  # type: ignore
     assert jnp.array_equal(result["model"]["layers"][0]["attention"]["weight"], jnp.array([1]))  # type: ignore
     assert jnp.array_equal(result["model"]["layers"][0]["attention"]["bias"], jnp.array([2]))  # type: ignore
     assert jnp.array_equal(result["model"]["layers"][1]["attention"]["weight"], jnp.array([3]))  # type: ignore

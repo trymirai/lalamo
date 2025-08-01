@@ -56,6 +56,12 @@ def tokenizer() -> PreTrainedTokenizer:
     return AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
 
+def test_tokenizer(language_model: LanguageModel, generation_input: GenerationInput) -> None:
+    token_ids = language_model.message_processor.tokenize(generation_input.prompt)
+    ref_token_ids = generation_input.token_ids.tolist()
+    assert token_ids == ref_token_ids
+
+
 def test_eager_generation(
     language_model: LanguageModel,
     tokenizer: PreTrainedTokenizer,
