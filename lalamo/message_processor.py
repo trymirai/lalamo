@@ -152,10 +152,10 @@ class MessageProcessor:
         return AssistantMessage(**match.groupdict())
 
     def tokenize(self, text: str) -> list[int]:
-        return self.tokenizer.encode(text).ids
+        return self.tokenizer.encode(text, add_special_tokens=False).ids
 
     def detokenize(self, tokens: list[int]) -> str:
-        return self.tokenizer.decode(tokens)
+        return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:
