@@ -12,7 +12,7 @@ from lalamo.language_model import LanguageModel
 from lalamo.model_import import REPO_TO_MODEL, import_model
 
 
-@dataclass
+@dataclass(frozen=True)
 class GenerationInput:
     prompt: str
     token_ids: Int[Array, " tokens"]

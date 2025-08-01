@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -71,6 +72,6 @@ class HuggingFaceConfig(ForeignConfig):
     def _load_weights(
         cls,
         model: Decoder,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         return load_huggingface(model, weights_dict)

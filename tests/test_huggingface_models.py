@@ -25,7 +25,7 @@ class DType(Enum):
         return jnp.dtype(self.value)
 
 
-@dataclass
+@dataclass(frozen=True)
 class Spec:
     model_repo: str
     dtype: DType

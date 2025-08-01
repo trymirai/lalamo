@@ -1,10 +1,12 @@
 import importlib.metadata
+from collections import ChainMap
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
 
 import huggingface_hub
 import jax.numpy as jnp
+from jax import Array
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
@@ -107,9 +109,9 @@ def import_model(
         precision = foreign_decoder_config.default_precision
 
     weights_paths = download_weights(model_spec)
-    weights_dict = {}
-    for weights_path in weights_paths:
-        weights_dict.update(model_spec.weights_type.load(weights_path, precision))
+    weights_dict: ChainMap[str, Array] = ChainMap(
+        *[model_spec.weights_type.load(weights_path, precision) for weights_path in weights_paths],  # type: ignore
+    )
 
     decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
     message_processor = import_message_processor(model_spec)

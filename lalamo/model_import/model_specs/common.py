@@ -1,3 +1,6 @@
+from collections.abc import (
+    Mapping,
+)
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -9,7 +12,7 @@ from safetensors.flax import load_file as load_safetensors
 
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import torch_to_jax
+from lalamo.utils import MapDict, torch_to_jax
 
 __all__ = [
     "ConfigMap",
@@ -32,11 +35,11 @@ class WeightsType(Enum):
     SAFETENSORS = "safetensors"
     TORCH = "torch"
 
-    def load(self, filename: Path | str, float_dtype: DTypeLike) -> dict[str, jnp.ndarray]:
+    def load(self, filename: Path | str, float_dtype: DTypeLike) -> Mapping[str, jnp.ndarray]:
         if self == WeightsType.SAFETENSORS:
-            return {k: cast_if_float(v, float_dtype) for k, v in load_safetensors(filename).items()}
+            return MapDict(lambda v: cast_if_float(v, float_dtype), load_safetensors(filename))
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-        return {k: cast_if_float(torch_to_jax(v), float_dtype) for k, v in torch_weights.items()}
+        return MapDict(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
 
 
 class UseCase(Enum):

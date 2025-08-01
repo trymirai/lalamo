@@ -1,5 +1,6 @@
 import json
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
@@ -46,7 +47,7 @@ class ForeignConfig:
     def _load_weights(
         cls,
         model: Decoder,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         raise NotImplementedError
 
@@ -55,7 +56,7 @@ class ForeignConfig:
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
         model = config.empty()
