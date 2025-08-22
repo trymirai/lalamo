@@ -85,13 +85,13 @@ class HFLlamaConfig(HuggingFaceConfig):
             rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
-                max_sequence_length=self.max_position_embeddings,
+                max_sequence_length=context_length or self.max_position_embeddings,
             )
         else:
             rope_config = LlamaRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
-                max_sequence_length=self.max_position_embeddings,
+                max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
                 original_context_length=self.rope_scaling.original_max_position_embeddings,
                 low_frequency_factor=self.rope_scaling.low_freq_factor,

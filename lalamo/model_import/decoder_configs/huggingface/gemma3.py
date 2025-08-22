@@ -97,12 +97,12 @@ class HFGemma3TextConfigRaw:
             global_rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
-                max_sequence_length=self.max_position_embeddings,
+                max_sequence_length=context_length or self.max_position_embeddings,
             )
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_local_base_freq,
-            max_sequence_length=self.max_position_embeddings,
+            max_sequence_length=context_length or self.max_position_embeddings,
         )
 
         linear_config = FullPrecisionLinearConfig(precision=activation_precision)

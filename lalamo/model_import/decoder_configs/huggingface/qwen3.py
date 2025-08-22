@@ -82,7 +82,7 @@ class HFQwen3Config(HuggingFaceConfig):
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_theta,
-            max_sequence_length=self.max_position_embeddings,
+            max_sequence_length=context_length or self.max_position_embeddings,
         )
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,

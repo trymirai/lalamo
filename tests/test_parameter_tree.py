@@ -87,7 +87,7 @@ def test_unflatten_deep_nesting() -> None:
     result = unflatten_parameters(flat)
     assert isinstance(result, MapDictValues)
     assert isinstance(result["model"], MapDictValues)  # type: ignore
-    assert isinstance(result["model"]["layers"], MapDictValues)  # type: ignore
+    assert isinstance(result["model"]["layers"], MapSequence)  # type: ignore
     assert len(result["model"]["layers"]) == 2  # type: ignore
     assert isinstance(result["model"]["layers"][0]["attention"], MapDictValues)  # type: ignore
     assert isinstance(result["model"]["layers"][1]["attention"], MapDictValues)  # type: ignore
