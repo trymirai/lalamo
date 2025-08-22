@@ -13,6 +13,7 @@ REKA_MODELS = [
         quantization=None,
         repo="RekaAI/reka-flash-3.1",
         config_type=HFLlamaConfig,
+        user_role_name="human",
         use_cases=tuple(),
     ),
 ]
