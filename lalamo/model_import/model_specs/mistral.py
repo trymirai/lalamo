@@ -1,15 +1,11 @@
-from dataclasses import replace
-
-from lalamo.model_import.configs import HFMistralConfig
+from lalamo.model_import.decoder_configs import HFMistralConfig
 
 from .common import (
-    HUGGINFACE_GENERATION_CONFIG_FILE,
-    HUGGINGFACE_TOKENIZER_FILES,
+    ConfigMap,
+    FileSpec,
     ModelSpec,
-    TokenizerFileSpec,
     UseCase,
     WeightsType,
-    huggingface_weight_files,
 )
 
 __all__ = ["MISTRAL_MODELS"]
@@ -23,20 +19,13 @@ CODESTRAL = [
         quantization=None,
         repo="mistral-community/Codestral-22B-v0.1",
         config_type=HFMistralConfig,
-        config_file_name="config.json",
-        weights_file_names=huggingface_weight_files(9),
         weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
         use_cases=(UseCase.CODE,),
     ),
 ]
 
 
-def _tokenizer_files_from_another_repo(repo: str) -> tuple[TokenizerFileSpec, ...]:
-    return tuple(
-        replace(spec, repo=repo) for spec in (*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE)
-    )
-
+DEVSTRAL_TOKENIZER_REPO = "mistralai/Mistral-Small-3.1-24B-Base-2503"
 
 DEVSTRAL = [
     ModelSpec(
@@ -47,10 +36,11 @@ DEVSTRAL = [
         quantization=None,
         repo="mistralai/Devstral-Small-2505",
         config_type=HFMistralConfig,
-        config_file_name="config.json",
-        weights_file_names=huggingface_weight_files(10),
-        weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=_tokenizer_files_from_another_repo("mistralai/Mistral-Small-3.1-24B-Base-2503"),
+        configs=ConfigMap(
+            tokenizer=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer.json"),
+            tokenizer_config=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"),
+            generation_config=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="generation_config.json"),
+        ),
         use_cases=(UseCase.CODE,),
     ),
 ]

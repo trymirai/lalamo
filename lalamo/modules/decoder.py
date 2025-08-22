@@ -1,11 +1,13 @@
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, replace
+from typing import Self
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .common import AttentionType, LalamoModule, WeightLayout
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
@@ -34,8 +36,8 @@ class DecoderActivationTrace(eqx.Module):
 
     output_norm: Float[Array, "suffix_tokens channels"]
 
-    def export(self) -> ParameterDict:
-        result = ParameterDict(
+    def export(self) -> ParameterTree:
+        result = dict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
             local_positional_embeddings=self.local_positional_embeddings.export(),
@@ -53,8 +55,8 @@ class DecoderResult(eqx.Module):
     updated_kv_cache: KVCache | None = None
     activation_trace: DecoderActivationTrace | None = None
 
-    def export(self) -> ParameterDict:
-        result = ParameterDict(
+    def export(self) -> ParameterTree:
+        result: dict[str, ParameterTree | Array] = dict(
             logits=self.logits,
         )
         if self.updated_kv_cache is not None:
@@ -152,6 +154,56 @@ class DecoderConfig:
             output_norm=output_norm,
         )
 
+    def empty(
+        self,
+    ) -> "Decoder":
+        embedding = self.embedding_config.empty(
+            vocab_size=self.vocab_size,
+            model_dim=self.model_dim,
+        )
+        global_rope = self.global_rope_config.init(
+            head_dim=self.head_dim,
+            num_timesteps=self.context_length,
+        )
+
+        if self.local_rope_config:
+            assert self.sliding_window_sizes is not None
+            max_sliding_window_size = max(
+                window_size for window_size in self.sliding_window_sizes if window_size is not None
+            )
+            local_rope = self.local_rope_config.init(
+                head_dim=self.head_dim,
+                num_timesteps=max(max_sliding_window_size, self.context_length),
+            )
+        else:
+            local_rope = None
+
+        if self.sliding_window_sizes is None:
+            sliding_window_sizes = [None] * self.num_layers
+        else:
+            sliding_window_sizes = self.sliding_window_sizes
+        layers = tuple(
+            self.layer_config.empty(
+                model_dim=self.model_dim,
+                hidden_dim=self.hidden_dim,
+                num_heads=self.num_heads,
+                num_groups=self.num_groups,
+                head_dim=self.head_dim,
+                attention_scale=self.attention_scale,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size in sliding_window_sizes
+        )
+        output_norm = self.output_norm_config.empty(self.model_dim)
+        return Decoder(
+            self,
+            embedding=embedding,
+            global_rope=global_rope,
+            local_rope=local_rope,
+            layers=layers,
+            output_norm=output_norm,
+        )
+
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
@@ -164,6 +216,7 @@ class Decoder(LalamoModule[DecoderConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
 
+    @eqx.filter_jit
     def __call__(
         self,
         token_ids: Int[Array, " suffix_tokens"],
@@ -232,8 +285,8 @@ class Decoder(LalamoModule[DecoderConfig]):
     def init_static_kv_cache(self, capacity: int) -> KVCache:
         return KVCache(layer.init_static_kv_cache(capacity) for layer in self.layers)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        result = ParameterDict(
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        result = dict(
             embedding=self.embedding.export_weights(weight_layout),
             global_rope=self.global_rope.export_weights(weight_layout),
             layers=[layer.export_weights(weight_layout) for layer in self.layers],
@@ -242,3 +295,32 @@ class Decoder(LalamoModule[DecoderConfig]):
         if self.local_rope:
             result["local_rope"] = self.local_rope.export_weights(weight_layout)
         return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["embedding"], Mapping)
+        assert isinstance(weights["global_rope"], Mapping)
+        assert isinstance(weights["layers"], Sequence)
+        assert isinstance(weights["output_norm"], Mapping)
+        if self.local_rope:
+            assert isinstance(weights["local_rope"], Mapping)
+            local_rope = self.local_rope.import_weights(weights["local_rope"], weight_layout)
+        else:
+            local_rope = None
+
+        layers = []
+        for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
+            assert isinstance(layer_weights, Mapping)
+            layers.append(layer.import_weights(layer_weights, weight_layout))
+        return replace(
+            self,
+            embedding=self.embedding.import_weights(weights["embedding"], weight_layout),
+            global_rope=self.global_rope.import_weights(weights["global_rope"], weight_layout),
+            layers=tuple(layers),
+            output_norm=self.output_norm.import_weights(weights["output_norm"], weight_layout),
+            local_rope=local_rope,
+        )

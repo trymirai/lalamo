@@ -7,7 +7,7 @@ from jax.lax import dynamic_update_slice_in_dim
 from jax.tree_util import register_pytree_node_class
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 __all__ = ["DynamicKVCacheLayer", "KVCache", "KVCacheLayer", "StaticKVCacheLayer"]
 
@@ -43,8 +43,8 @@ class KVCacheLayer(eqx.Module):
         added_length: Int[Array, ""] | int | None = None,
     ) -> Self: ...
 
-    def export(self) -> ParameterDict:
-        return ParameterDict(
+    def export(self) -> ParameterTree:
+        return dict(
             keys=self.keys,
             values=self.values,
         )

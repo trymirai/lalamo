@@ -1,5 +1,6 @@
-from dataclasses import dataclass
-from typing import NamedTuple
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -8,10 +9,9 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterDict
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 
-from .common import AttentionType, LalamoModule, WeightLayout
+from .common import AttentionType, LalamoModule, ParameterTree, WeightLayout
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -42,8 +42,8 @@ def _soft_capped_attention_kernel(
     scale: float | None,
     logit_soft_cap: float,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
-    dst_length, num_heads, head_dim = queries.shape
-    src_length, num_groups, _ = keys.shape
+    _, num_heads, head_dim = queries.shape
+    _, num_groups, _ = keys.shape
     if scale is None:
         scale = head_dim**-0.5
     group_size = num_heads // num_groups
@@ -118,14 +118,67 @@ class AttentionConfig:
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.init(
-                channels=head_dim,
+                input_dim=head_dim,
             )
         else:
             query_norm = None
 
         if self.key_norm_config is not None:
             key_norm = self.key_norm_config.init(
-                channels=head_dim,
+                input_dim=head_dim,
+            )
+        else:
+            key_norm = None
+
+        return Attention(
+            self,
+            qkv_projection=qkv_projection,
+            out_projection=out_projection,
+            query_norm=query_norm,
+            key_norm=key_norm,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            is_causal=is_causal,
+            scale=scale,
+            sliding_window_size=sliding_window_size,
+        )
+
+    def empty(
+        self,
+        model_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        is_causal: bool,
+        scale: float | None,
+        sliding_window_size: int | None,
+    ) -> "Attention":
+        qkv_projection = self.qkv_projection_config.empty(
+            input_dim=model_dim,
+            output_dims=(
+                num_heads * head_dim,
+                num_groups * head_dim,
+                num_groups * head_dim,
+            ),
+            has_biases=self.has_qkv_biases,
+        )
+        out_projection = self.out_projection_config.empty(
+            num_heads * head_dim,
+            (model_dim,),
+            has_biases=self.has_out_biases,
+        )
+
+        if self.query_norm_config is not None:
+            query_norm = self.query_norm_config.empty(
+                input_dim=head_dim,
+            )
+        else:
+            query_norm = None
+
+        if self.key_norm_config is not None:
+            key_norm = self.key_norm_config.empty(
+                input_dim=head_dim,
             )
         else:
             key_norm = None
@@ -233,6 +286,7 @@ class Attention(LalamoModule[AttentionConfig]):
                 f" got {v_output_dim}",
             )
 
+    @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -314,8 +368,8 @@ class Attention(LalamoModule[AttentionConfig]):
     def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.empty(capacity, self.num_groups, self.head_dim, self.activation_precision)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        result = ParameterDict(
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        result = dict(
             qkv_projection=self.qkv_projection.export_weights(weight_layout),
             out_projection=self.out_projection.export_weights(weight_layout),
         )
@@ -324,3 +378,29 @@ class Attention(LalamoModule[AttentionConfig]):
         if self.key_norm is not None:
             result["key_norm"] = self.key_norm.export_weights(weight_layout)
         return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["qkv_projection"], Mapping)
+        assert isinstance(weights["out_projection"], Mapping)
+        if self.query_norm is not None:
+            assert isinstance(weights["query_norm"], Mapping)
+            query_norm = self.query_norm.import_weights(weights["query_norm"], weight_layout)
+        else:
+            query_norm = None
+        if self.key_norm is not None:
+            assert isinstance(weights["key_norm"], Mapping)
+            key_norm = self.key_norm.import_weights(weights["key_norm"], weight_layout)
+        else:
+            key_norm = None
+        return replace(
+            self,
+            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"], weight_layout),
+            out_projection=self.out_projection.import_weights(weights["out_projection"], weight_layout),
+            query_norm=query_norm,
+            key_norm=key_norm,
+        )

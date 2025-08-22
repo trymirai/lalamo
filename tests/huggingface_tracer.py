@@ -113,7 +113,7 @@ class HFModelForCausalLM(Protocol):
     ) -> CausalLMOutputWithPast: ...
 
 
-@dataclass
+@dataclass(frozen=True)
 class HFDecoderTracer:
     hf_model: HFModelForCausalLM
     device: torch.device

@@ -16,13 +16,14 @@
 # limitations under the License.
 
 import math
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 
 import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .common import LalamoModule, WeightLayout, register_config_union
 
@@ -53,8 +54,8 @@ class PositionalEmbeddings(eqx.Module):
     def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
-    def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(
+    def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+        return dict(
             cosines=self.cosines,
             sines=self.sines,
         )
@@ -103,6 +104,11 @@ class RoPE(LalamoModule[RoPEConfigBase]):
         return self.config.precision
 
     def __post_init__(self) -> None:
+        num_tokens, _ = self.sines.shape
+        if num_tokens != self.config.max_sequence_length:
+            raise ValueError(
+                f"{num_tokens} does not match the specified max sequence length {self.config.max_sequence_length}",
+            )
         if self.cosines.dtype != self.config.precision:
             raise ValueError(
                 f"Cosines dtype {self.cosines.dtype} does not match the specified precision {self.config.precision}",
@@ -127,14 +133,26 @@ class RoPE(LalamoModule[RoPEConfigBase]):
         result, _ = self.sines.shape
         return result
 
+    @eqx.filter_jit
     def __call__(self, timesteps: Int[Array, " tokens"]) -> PositionalEmbeddings:
         return PositionalEmbeddings(
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(cosines=self.cosines, sines=self.sines)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]:  # noqa: ARG002
+        return {
+            "cosines": self.cosines,
+            "sines": self.sines,
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
+    ) -> "RoPE":
+        assert isinstance(weights, Mapping)
+        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
 
 
 class UnscaledRoPEConfig(RoPEConfigBase):

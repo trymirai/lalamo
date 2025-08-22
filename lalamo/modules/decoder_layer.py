@@ -1,11 +1,13 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Self
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 from .attention import Attention, AttentionConfig
 from .common import AttentionType, LalamoModule, WeightLayout
@@ -35,8 +37,8 @@ class DecoderLayerActivationTrace(eqx.Module):
     mlp: Float[Array, "suffix_tokens channels"]
     post_mlp_norm: Float[Array, "suffix_tokens channels"] | None
 
-    def export(self) -> ParameterDict:
-        result = ParameterDict(
+    def export(self) -> ParameterTree:
+        result = dict(
             inputs=self.inputs,
             positional_embeddings=self.positional_embeddings.export(),
             mlp_inputs=self.mlp_inputs,
@@ -59,8 +61,8 @@ class DecoderLayerResult(eqx.Module):
     updated_kv_cache: KVCacheLayer | None
     activation_trace: DecoderLayerActivationTrace | None
 
-    def export(self) -> ParameterDict:
-        result = ParameterDict(
+    def export(self) -> ParameterTree:
+        result: dict[str, ParameterTree | Array] = dict(
             outputs=self.outputs,
         )
         if self.updated_kv_cache is not None:
@@ -123,6 +125,46 @@ class DecoderLayerConfig:
             post_mlp_norm=post_mlp_norm,
         )
 
+    def empty(
+        self,
+        model_dim: int,
+        hidden_dim: int,
+        num_heads: int,
+        num_groups: int,
+        head_dim: int,
+        attention_scale: float | None,
+        sliding_window_size: int | None,
+    ) -> "DecoderLayer":
+        pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
+        attention = self.attention_config.empty(
+            model_dim=model_dim,
+            num_heads=num_heads,
+            num_groups=num_groups,
+            head_dim=head_dim,
+            is_causal=True,
+            scale=attention_scale,
+            sliding_window_size=sliding_window_size,
+        )
+        if self.post_attention_norm_config is not None:
+            post_attention_norm = self.post_attention_norm_config.empty(model_dim)
+        else:
+            post_attention_norm = None
+        pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
+        mlp = self.mlp_config.empty(model_dim, hidden_dim)
+        if self.post_mlp_norm_config is not None:
+            post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
+        else:
+            post_mlp_norm = None
+        return DecoderLayer(
+            config=self,
+            pre_attention_norm=pre_attention_norm,
+            attention=attention,
+            post_attention_norm=post_attention_norm,
+            pre_mlp_norm=pre_mlp_norm,
+            mlp=mlp,
+            post_mlp_norm=post_mlp_norm,
+        )
+
 
 class DecoderLayer(LalamoModule[DecoderLayerConfig]):
     pre_attention_norm: RMSNorm
@@ -168,6 +210,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
                 f" the up projection dim {self.mlp.hidden_dim}",
             )
 
+    @eqx.filter_jit
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
@@ -226,8 +269,8 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
     def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
         return self.attention.init_static_kv_cache(capacity)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        result = ParameterDict(
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        result = dict(
             pre_attention_norm=self.pre_attention_norm.export_weights(weight_layout),
             attention=self.attention.export_weights(weight_layout),
             pre_mlp_norm=self.pre_mlp_norm.export_weights(weight_layout),
@@ -238,3 +281,37 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         if self.post_mlp_norm is not None:
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights(weight_layout)
         return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["pre_attention_norm"], Mapping)
+        assert isinstance(weights["attention"], Mapping)
+        assert isinstance(weights["mlp"], Mapping)
+        assert isinstance(weights["pre_mlp_norm"], Mapping)
+
+        if self.post_attention_norm is not None:
+            assert isinstance(weights["post_attention_norm"], Mapping)
+            post_attention_norm = self.post_attention_norm.import_weights(
+                weights["post_attention_norm"],
+                weight_layout,
+            )
+        else:
+            post_attention_norm = None
+        if self.post_mlp_norm is not None:
+            assert isinstance(weights["post_mlp_norm"], Mapping)
+            post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"], weight_layout)
+        else:
+            post_mlp_norm = None
+        return replace(
+            self,
+            pre_attention_norm=self.pre_attention_norm.import_weights(weights["pre_attention_norm"], weight_layout),
+            attention=self.attention.import_weights(weights["attention"], weight_layout),
+            post_attention_norm=post_attention_norm,
+            pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"], weight_layout),
+            mlp=self.mlp.import_weights(weights["mlp"], weight_layout),
+            post_mlp_norm=post_mlp_norm,
+        )

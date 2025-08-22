@@ -10,34 +10,23 @@ from lalamo.modules import (
     DecoderLayerConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    LlamaRoPEConfig,
     MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
+    UntiedEmbeddingConfig,
     UpcastMode,
 )
-from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
-__all__ = ["HFLlamaConfig"]
+__all__ = ["HFQwen2Config"]
 
 
 @dataclass(frozen=True)
-class LlamaRopeScalingConfig:
-    factor: float
-    high_freq_factor: float
-    low_freq_factor: float
-    original_max_position_embeddings: int
-    rope_type: Literal["llama3"]
-
-
-@dataclass(frozen=True)
-class HFLlamaConfig(HuggingFaceConfig):
-    architectures: list[Literal["LlamaForCausalLM"]]
-    attention_bias: bool
+class HFQwen2Config(HuggingFaceConfig):
+    architectures: list[Literal["Qwen2ForCausalLM"]]
     attention_dropout: float
     bos_token_id: int | list[int]
     eos_token_id: int | list[int]
@@ -46,22 +35,33 @@ class HFLlamaConfig(HuggingFaceConfig):
     initializer_range: float
     intermediate_size: int
     max_position_embeddings: int
-    mlp_bias: bool
-    model_type: Literal["llama"]
+    max_window_layers: int
+    model_type: Literal["qwen2"]
     num_attention_heads: int
     num_hidden_layers: int
     num_key_value_heads: int
-    pretraining_tp: int
     rms_norm_eps: float
-    rope_scaling: LlamaRopeScalingConfig | None
     rope_theta: float
+    sliding_window: int
     tie_word_embeddings: bool
     transformers_version: str
     use_cache: bool
+    use_sliding_window: bool
     vocab_size: int
-    head_dim: int | None = None
 
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
+
+    def _get_sliding_window_sizes(self) -> list[int | None]:
+        if not self.use_sliding_window:
+            return [None] * self.num_hidden_layers
+
+        sliding_window_sizes = []
+        for i in range(self.num_hidden_layers):
+            if i < self.max_window_layers:
+                sliding_window_sizes.append(self.sliding_window)
+            else:
+                sliding_window_sizes.append(None)
+        return sliding_window_sizes
 
     def to_decoder_config(
         self,
@@ -81,22 +81,11 @@ class HFLlamaConfig(HuggingFaceConfig):
                 logits_soft_cap=None,
                 precision=activation_precision,
             )
-        if self.rope_scaling is None:
-            rope_config = UnscaledRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=self.max_position_embeddings,
-            )
-        else:
-            rope_config = LlamaRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=self.max_position_embeddings,
-                scaling_factor=self.rope_scaling.factor,
-                original_context_length=self.rope_scaling.original_max_position_embeddings,
-                low_frequency_factor=self.rope_scaling.low_freq_factor,
-                high_frequency_factor=self.rope_scaling.high_freq_factor,
-            )
+        rope_config = UnscaledRoPEConfig(
+            precision=activation_precision,
+            base=self.rope_theta,
+            max_sequence_length=context_length or self.max_position_embeddings,
+        )
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
@@ -121,7 +110,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             query_norm_config=None,
             key_norm_config=None,
             logit_soft_cap=None,
-            has_qkv_biases=self.attention_bias,
+            has_qkv_biases=True,
             has_out_biases=False,
         )
         mlp_config = MLPConfig(
@@ -147,9 +136,9 @@ class HFLlamaConfig(HuggingFaceConfig):
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
+            head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=None,
+            sliding_window_sizes=tuple(self._get_sliding_window_sizes()),
             context_length=context_length or self.max_position_embeddings,
         )

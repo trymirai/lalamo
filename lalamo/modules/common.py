@@ -2,19 +2,23 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
+from typing import Self
 
 import equinox as eqx
 from cattrs import Converter
+from einops import rearrange
 from jax import numpy as jnp
-from jaxtyping import DTypeLike
+from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree
 
 __all__ = [
     "AttentionType",
     "DummyUnionMember",
     "LalamoModule",
     "config_converter",
+    "from_layout",
+    "into_layout",
     "register_config_union",
 ]
 
@@ -34,6 +38,42 @@ class WeightLayout(Enum):
                 return "(output, input)"
 
 
+_DEFAULT_WEIGHT_LAYOUT = WeightLayout.INPUT_OUTPUT
+
+
+def into_layout(
+    weights: Float[Array, "in_channels out_channels"],
+    layout: WeightLayout,
+) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
+    if layout == WeightLayout.AUTO:
+        layout = _DEFAULT_WEIGHT_LAYOUT
+    match layout:
+        case WeightLayout.OUTPUT_INPUT:
+            return weights
+        case WeightLayout.INPUT_OUTPUT:
+            return rearrange(
+                weights,
+                "total_out_channels in_channels -> in_channels total_out_channels",
+            )
+
+
+def from_layout(
+    weights: ParameterTree | Array,
+    layout: WeightLayout,
+) -> Array:
+    assert isinstance(weights, Array)
+    if layout == WeightLayout.AUTO:
+        layout = _DEFAULT_WEIGHT_LAYOUT
+    match layout:
+        case WeightLayout.OUTPUT_INPUT:
+            return weights
+        case WeightLayout.INPUT_OUTPUT:
+            return rearrange(
+                weights,
+                "in_channels total_out_channels -> total_out_channels in_channels",
+            )
+
+
 class AttentionType(Enum):
     GLOBAL = "global"
     SLIDING_WINDOW = "sliding_window"
@@ -47,7 +87,14 @@ class LalamoModule[ConfigT](eqx.Module):
     def activation_precision(self) -> DTypeLike: ...
 
     @abstractmethod
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict: ...
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]: ...
+
+    @abstractmethod
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self: ...
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:
@@ -115,7 +162,7 @@ def register_config_union(union_type: UnionType) -> None:
         new_config = dict(config)
         type_name = new_config.pop("type")
         target_type = name_to_type[type_name]
-        return name_to_type[type_name](**config_converter.structure(new_config, target_type))
+        return config_converter.structure(new_config, target_type)
 
     config_converter.register_structure_hook(
         union_type,

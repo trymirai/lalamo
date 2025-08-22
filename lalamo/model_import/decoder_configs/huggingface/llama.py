@@ -10,56 +10,58 @@ from lalamo.modules import (
     DecoderLayerConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
+    LlamaRoPEConfig,
     MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
-    UntiedEmbeddingConfig,
     UpcastMode,
 )
+from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
-__all__ = ["HFQwen3Config"]
+__all__ = ["HFLlamaConfig"]
 
 
 @dataclass(frozen=True)
-class HFQwen3Config(HuggingFaceConfig):
+class LlamaRopeScalingConfig:
+    factor: float
+    high_freq_factor: float
+    low_freq_factor: float
+    original_max_position_embeddings: int
+    rope_type: Literal["llama3"]
+
+
+@dataclass(frozen=True)
+class HFLlamaConfig(HuggingFaceConfig):
+    architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
+    attention_dropout: float
+    bos_token_id: int | list[int]
+    eos_token_id: int | list[int]
     hidden_act: Literal["silu"]
     hidden_size: int
+    initializer_range: float
     intermediate_size: int
     max_position_embeddings: int
-    max_window_layers: int
-    model_type: Literal["qwen3"]
+    mlp_bias: bool
+    model_type: Literal["llama"]
     num_attention_heads: int
     num_hidden_layers: int
     num_key_value_heads: int
+    pretraining_tp: int
     rms_norm_eps: float
+    rope_scaling: LlamaRopeScalingConfig | None
     rope_theta: float
-    sliding_window: int | None
     tie_word_embeddings: bool
-    use_sliding_window: bool
+    transformers_version: str
+    use_cache: bool
     vocab_size: int
-    head_dim: int
+    head_dim: int | None = None
 
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
-
-    def _get_sliding_window_sizes(self) -> tuple[int | None, ...]:
-        if not self.use_sliding_window:
-            return tuple([None] * self.num_hidden_layers)
-
-        # The HuggingFace Qwen3 implementation's comment states that bottom layers use SWA,
-        # but the code (`configuration_qwen3.py`) implements it for the top layers.
-        # We are following the code.
-        sliding_window_sizes = []
-        for i in range(self.num_hidden_layers):
-            if i >= self.max_window_layers:
-                sliding_window_sizes.append(self.sliding_window)
-            else:
-                sliding_window_sizes.append(None)
-        return tuple(sliding_window_sizes)
 
     def to_decoder_config(
         self,
@@ -79,11 +81,22 @@ class HFQwen3Config(HuggingFaceConfig):
                 logits_soft_cap=None,
                 precision=activation_precision,
             )
-        rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
-            base=self.rope_theta,
-            max_sequence_length=self.max_position_embeddings,
-        )
+        if self.rope_scaling is None:
+            rope_config = UnscaledRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=context_length or self.max_position_embeddings,
+            )
+        else:
+            rope_config = LlamaRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=context_length or self.max_position_embeddings,
+                scaling_factor=self.rope_scaling.factor,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
+                low_frequency_factor=self.rope_scaling.low_freq_factor,
+                high_frequency_factor=self.rope_scaling.high_freq_factor,
+            )
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
@@ -105,11 +118,11 @@ class HFQwen3Config(HuggingFaceConfig):
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
-            query_norm_config=rmsnorm_config,
-            key_norm_config=rmsnorm_config,
+            query_norm_config=None,
+            key_norm_config=None,
             logit_soft_cap=None,
             has_qkv_biases=self.attention_bias,
-            has_out_biases=self.attention_bias,
+            has_out_biases=False,
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
@@ -134,9 +147,9 @@ class HFQwen3Config(HuggingFaceConfig):
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim,
+            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=self._get_sliding_window_sizes(),
+            sliding_window_sizes=None,
             context_length=context_length or self.max_position_embeddings,
         )

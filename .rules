@@ -2,6 +2,7 @@ The rules below are CRITICAL. Each rule should be respected. Rules can only be o
 
 # Workflow rules:
 - When given a coding task, AI Assistant carefully and deeply inspects the codebase to understand the context.
+- If the Assistant has access to search tools, it uses them to search for documentation and use case examples for external libraries.
 - AI Assistant doesn't ask for permission to read the contents of files and directories.
 - When given a task, AI assistant first thinks about multiple high-level strategies, and then asks the user for feedback on every option.
 - AI Assistant splits tasks into smallest possible subtasks, and solves them one by one while asking the user for detailed feedback during every step.
