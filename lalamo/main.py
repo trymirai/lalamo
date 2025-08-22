@@ -101,7 +101,7 @@ def _pack_uint4_weights(weights: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarra
     return packed_weights
 
 
-@app.command(help="Convert the model for use with the Uzu inference engine.")
+@app.command(help="Chat with a converted model.")
 def chat(
     model_path: Annotated[
         Path,
