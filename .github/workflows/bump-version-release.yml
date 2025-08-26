@@ -10,6 +10,7 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   bump-and-release:
@@ -73,20 +74,18 @@ jobs:
           git add lalamo/__init__.py
           git commit -m "Bump version to $new"
 
-      - name: Push commit to default branch
+      - name: Push bump branch
         shell: bash
         run: |
-          git push origin HEAD:${{ github.event.repository.default_branch }}
+          branch="bump/version-${{ inputs.new_version }}"
+          git push origin HEAD:"$branch"
 
-      - name: Create and push tag
-        shell: bash
-        run: |
-          git tag "v${{ inputs.new_version }}"
-          git push origin "v${{ inputs.new_version }}"
-
-      - name: Create GitHub Release
+      - name: Create pull request
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
-          gh release create "v${{ inputs.new_version }}" --generate-notes
+          gh pr create --base "${{ github.event.repository.default_branch }}" \
+                       --head "bump/version-${{ inputs.new_version }}" \
+                       --title "Bump version to ${{ inputs.new_version }}" \
+                       --body "This PR bumps __version__ in lalamo/__init__.py to ${{ inputs.new_version }}."
