@@ -1,0 +1,92 @@
+name: Bump version and create release
+
+on:
+  workflow_dispatch:
+    inputs:
+      new_version:
+        description: "New version (PEP 440, e.g., 0.2.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  bump-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository (default branch)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Validate version input
+        shell: bash
+        run: |
+          v="${{ inputs.new_version }}"
+          if ! echo "$v" | grep -Eq '^[0-9]+(\.[0-9]+)*([abc]|rc)?[0-9]*(\.post[0-9]+)?(\.dev[0-9]+)?$'; then
+            echo "Version '$v' does not look like a valid PEP 440 version"
+            exit 1
+          fi
+
+      - name: Read current version
+        id: current
+        shell: bash
+        run: |
+          cur=$(sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' lalamo/__init__.py | head -n1)
+          if [ -z "$cur" ]; then
+            echo "Could not read current version from lalamo/__init__.py"
+            exit 1
+          fi
+          echo "value=$cur" >> "$GITHUB_OUTPUT"
+          echo "Current version: $cur"
+
+      - name: Fail if same version
+        if: ${{ steps.current.outputs.value == inputs.new_version }}
+        shell: bash
+        run: |
+          echo "Requested version equals current version: ${{ inputs.new_version }}"
+          exit 1
+
+      - name: Ensure tag does not already exist
+        shell: bash
+        run: |
+          git fetch --tags
+          if git rev-parse -q --verify "refs/tags/v${{ inputs.new_version }}" >/dev/null; then
+            echo "Tag v${{ inputs.new_version }} already exists"
+            exit 1
+          fi
+
+      - name: Configure git user
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Bump version in lalamo/__init__.py
+        shell: bash
+        run: |
+          new="${{ inputs.new_version }}"
+          sed -i -E 's/^(__version__[[:space:]]*=[[:space:]]*).*/\1"'"$new"'"/' lalamo/__init__.py
+          echo "Bumped version to $new"
+          git add lalamo/__init__.py
+          git commit -m "Bump version to $new"
+
+      - name: Push commit to default branch
+        shell: bash
+        run: |
+          git push origin HEAD:${{ github.event.repository.default_branch }}
+
+      - name: Create and push tag
+        shell: bash
+        run: |
+          git tag "v${{ inputs.new_version }}"
+          git push origin "v${{ inputs.new_version }}"
+
+      - name: Create GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          gh release create "v${{ inputs.new_version }}" --generate-notes
