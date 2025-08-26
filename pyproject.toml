@@ -1,6 +1,6 @@
 [project]
 name = "lalamo"
-description = "Add your description here"
+description = "JAX library for optimization and export of models for use with the UZU inference engine."
 requires-python = ">=3.12, <4"
 dependencies = [
     "cattrs>=24.1.2",
@@ -18,7 +18,8 @@ dependencies = [
     "typer>=0.15.1",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]
-dynamic = ["version", "readme"]
+readme = { file = "README.md", content-type = "text/markdown" }
+dynamic = ["version"]
 
 [project.scripts]
 lalamo = "lalamo.main:app"
@@ -32,7 +33,7 @@ packages = ["lalamo"]
 
 [tool.setuptools.dynamic]
 version = { attr = "lalamo.__version__" }
-readme = { file = ["README.md"] }
+
 
 [tool.uv]
 package = true
@@ -47,6 +48,7 @@ dev-dependencies = [
     "torch>=2.7.1",
     "torchao>=0.7.0",
     "transformers>=4.48.0",
+    "twine>=6.1.0",
 ]
 
 [[tool.uv.index]]
