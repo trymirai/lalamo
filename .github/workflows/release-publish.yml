@@ -10,24 +10,24 @@ permissions:
 
 jobs:
   publish:
-    name: build-and-publish
+    name: Build and publish to PyPI
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
+      - name: Set up Python (from pyproject)
         uses: actions/setup-python@v5
         with:
           python-version-file: pyproject.toml
 
-      - name: Install uv
+      - name: Install uv (with cache)
         uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
 
-      - name: Read tag and project version
+      - name: Read tag and version from lalamo/__init__.py
         id: meta
         shell: bash
         run: |
@@ -39,7 +39,7 @@ jobs:
           fi
           echo "version=${cur}" >> "$GITHUB_OUTPUT"
 
-      - name: Verify tag matches version
+      - name: Verify tag equals __version__
         shell: bash
         run: |
           tag="${{ steps.meta.outputs.tag }}"
@@ -51,11 +51,11 @@ jobs:
           fi
           echo "Tag ($tag) matches package version ($ver)"
 
-      - name: Build distributions
+      - name: Build distributions (uv build)
         run: uv build --no-sources
 
-      - name: Check distributions with Twine
+      - name: Check distributions (twine check)
         run: uv run twine check dist/*
 
-      - name: Publish to PyPI
+      - name: Publish to PyPI (uv publish)
         run: uv publish

@@ -1,4 +1,4 @@
-name: Bump version and create release
+name: "Prepare Release: Bump version and open PR"
 
 on:
   workflow_dispatch:
@@ -74,13 +74,13 @@ jobs:
           git add lalamo/__init__.py
           git commit -m "Bump version to $new"
 
-      - name: Push bump branch
+      - name: Push bump branch (bump/version-*)
         shell: bash
         run: |
           branch="bump/version-${{ inputs.new_version }}"
           git push origin HEAD:"$branch"
 
-      - name: Create pull request
+      - name: Open pull request to default branch (bump/version-*)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
