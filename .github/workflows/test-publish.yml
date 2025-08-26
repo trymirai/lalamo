@@ -1,0 +1,39 @@
+name: Test build and TestPyPI publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_to_testpypi:
+        description: Publish to TestPyPI
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  test:
+    name: build-and-optional-testpypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Publish to TestPyPI
+        if: ${{ github.event.inputs.publish_to_testpypi == 'true' }}
+        run: uv publish --index testpypi
