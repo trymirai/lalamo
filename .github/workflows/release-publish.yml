@@ -1,0 +1,57 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: build-and-publish
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Read tag and project version
+        id: meta
+        shell: bash
+        run: |
+          echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          v=$(uv version | awk '{print $NF}')
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify tag matches version
+        shell: bash
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          ver="${{ steps.meta.outputs.version }}"
+          tag_stripped="${tag#v}"
+          if [ "$tag_stripped" != "$ver" ]; then
+            echo "Tag ($tag) does not match package version ($ver)"
+            exit 1
+          fi
+          echo "Tag ($tag) matches package version ($ver)"
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Check distributions with Twine
+        run: uv run twine check dist/*
+
+      - name: Publish to PyPI
+        run: uv publish

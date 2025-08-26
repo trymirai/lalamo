@@ -1,0 +1,64 @@
+name: Tag on bump version merge
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  tag-and-release:
+    name: Tag and create release on bump/version-* merge
+    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'bump/version-') }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Read version from lalamo/__init__.py
+        id: meta
+        shell: bash
+        run: |
+          ver=$(sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' lalamo/__init__.py | head -n1)
+          if [ -z "$ver" ]; then
+            echo "Could not read __version__ from lalamo/__init__.py"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $ver"
+
+      - name: Create and push tag if missing
+        shell: bash
+        run: |
+          ver="${{ steps.meta.outputs.version }}"
+          tag="v$ver"
+
+          git fetch --tags
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists"
+          else
+            git tag "$tag"
+            git push origin "$tag"
+            echo "Created and pushed tag $tag"
+          fi
+
+      - name: Create GitHub Release (if missing)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          ver="${{ steps.meta.outputs.version }}"
+          tag="v$ver"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release for $tag already exists"
+          else
+            gh release create "$tag" --generate-notes
+            echo "Created GitHub Release for $tag"
+          fi

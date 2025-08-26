@@ -1,16 +1,9 @@
-name: Test build and TestPyPI publish
+name: Test build and Check Distribution
 
 on:
-  workflow_dispatch:
-    inputs:
-      publish_to_testpypi:
-        description: Publish to TestPyPI
-        required: true
-        default: "false"
-        type: choice
-        options:
-          - "false"
-          - "true"
+  pull_request:
+    types: [closed]
+    branches: [main]
 
 permissions:
   contents: read
@@ -19,6 +12,7 @@ permissions:
 jobs:
   test:
     name: build-and-optional-testpypi
+    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'bump/version-') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +30,3 @@ jobs:
 
       - name: Check distributions with Twine
         run: uv run twine check dist/*
-
-      - name: Publish to TestPyPI
-        if: ${{ github.event.inputs.publish_to_testpypi == 'true' }}
-        run: uv publish --index testpypi
