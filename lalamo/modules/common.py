@@ -6,7 +6,6 @@ from typing import Self
 
 import equinox as eqx
 from cattrs import Converter
-from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
@@ -42,36 +41,32 @@ _DEFAULT_WEIGHT_LAYOUT = WeightLayout.INPUT_OUTPUT
 
 
 def into_layout(
-    weights: Float[Array, "in_channels out_channels"],
+    weights: Float[Array, "*components in_channels out_channels"],
     layout: WeightLayout,
-) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
+) -> Float[Array, "*components in_channels out_channels"] | Float[Array, "*components out_channels in_channels"]:
     if layout == WeightLayout.AUTO:
         layout = _DEFAULT_WEIGHT_LAYOUT
     match layout:
         case WeightLayout.OUTPUT_INPUT:
-            return weights
+            return weights.swapaxes(-1, -2)
         case WeightLayout.INPUT_OUTPUT:
-            return rearrange(
-                weights,
-                "total_out_channels in_channels -> in_channels total_out_channels",
-            )
+            return weights
 
 
 def from_layout(
-    weights: ParameterTree | Array,
+    weights: ParameterTree
+    | Float[Array, "*components in_channels out_channels"]
+    | Float[Array, "*components out_channels in_channels"],
     layout: WeightLayout,
-) -> Array:
+) -> Float[Array, "*components in_channels out_channels"]:
     assert isinstance(weights, Array)
     if layout == WeightLayout.AUTO:
         layout = _DEFAULT_WEIGHT_LAYOUT
     match layout:
         case WeightLayout.OUTPUT_INPUT:
-            return weights
+            return weights.swapaxes(-1, -1)
         case WeightLayout.INPUT_OUTPUT:
-            return rearrange(
-                weights,
-                "in_channels total_out_channels -> total_out_channels in_channels",
-            )
+            return weights
 
 
 class AttentionType(Enum):

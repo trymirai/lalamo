@@ -78,7 +78,7 @@ def _process_quantized_tensors(
     zero_points = unpacked_zero_points.astype(module.config.activation_precision)
     processed_scales = scales.astype(module.config.activation_precision)
 
-    return weights.transpose(), zero_points.transpose(), processed_scales.transpose()
+    return weights, zero_points, processed_scales
 
 
 def _fuse_full_precision_weights(
@@ -143,7 +143,7 @@ def load_linear(
 
     if isinstance(module, FullPrecisionLinear):
         weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
-        return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
+        return load_parameters(lambda m: (m.weights, m.biases), module, (weights.transpose(), bias))
 
     if isinstance(module, GroupQuantizedLinear):
         qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)

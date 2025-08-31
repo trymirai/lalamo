@@ -4,7 +4,6 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    Activation,
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
@@ -15,6 +14,7 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
 )
+from lalamo.modules.activations import SiLU
 from lalamo.modules.normalization import UpcastMode
 
 from .common import HuggingFaceConfig
@@ -97,7 +97,11 @@ class HFMistralConfig(HuggingFaceConfig):
 
         mlp_config = MLPConfig(
             linear_config=linear_config,
-            activation=Activation.SILU,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
         )
 
         decoder_layer_config = DecoderLayerConfig(

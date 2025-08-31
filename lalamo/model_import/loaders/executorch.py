@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass, replace
 
 import jax.numpy as jnp
@@ -43,7 +43,7 @@ def params_selector(module: QLoRALinear) -> tuple:
 
 
 def get_qlora_linear_params(
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
     weights_dtype: jnp.dtype,
 ) -> QLoRALinearParams:
@@ -76,7 +76,7 @@ def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: Param
     return load_parameters(params_selector, module, params)
 
 
-def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -> MLP:
+def load_mlp(module: MLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLP:
     if not isinstance(module.up_projection, QLoRALinear):
         raise TypeError(f"Expected up_projection to be QLoRALinear, got {type(module.up_projection)}")
     if not isinstance(module.down_projection, QLoRALinear):
@@ -95,7 +95,7 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
     )
 
 
-def load_rmsnorm(module: RMSNorm, weights_dict: dict[str, Array], path: ParameterPath) -> RMSNorm:
+def load_rmsnorm(module: RMSNorm, weights_dict: Mapping[str, Array], path: ParameterPath) -> RMSNorm:
     return load_parameters(lambda m: (m.scales,), module, (weights_dict[path / "weight"],))
 
 
@@ -131,7 +131,7 @@ def permute_qk_params(
 
 def load_attention(
     module: Attention,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Attention:
     if not isinstance(module.qkv_projection, QLoRALinear):
@@ -177,7 +177,7 @@ def load_attention(
 
 def load_decoder_layer(
     module: DecoderLayer,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> DecoderLayer:
     if module.post_attention_norm is not None:
@@ -197,7 +197,7 @@ def load_decoder_layer(
 
 def load_embedding(
     module: QuantizedTiedEmbedding,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> QuantizedTiedEmbedding:
     weights = weights_dict[path / "weight"].astype(module.weights.dtype)
@@ -206,7 +206,7 @@ def load_embedding(
     return load_parameters(lambda m: (m.weights, m.scales), module, (weights, scales))
 
 
-def load_executorch(module: Decoder, weights_dict: dict[str, Array]) -> Decoder:
+def load_executorch(module: Decoder, weights_dict: Mapping[str, Array]) -> Decoder:
     root_path = ParameterPath()
     if not isinstance(module.embedding, QuantizedTiedEmbedding):
         raise TypeError(f"Expected embedding to be QuantizedTiedEmbedding, got {type(module.embedding)}")

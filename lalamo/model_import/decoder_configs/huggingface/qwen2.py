@@ -4,7 +4,6 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    Activation,
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
@@ -17,6 +16,7 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
+from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
@@ -115,7 +115,11 @@ class HFQwen2Config(HuggingFaceConfig):
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
-            activation=Activation.SILU,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
             pre_attention_norm_config=rmsnorm_config,

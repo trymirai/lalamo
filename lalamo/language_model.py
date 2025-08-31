@@ -8,13 +8,13 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
-from safetensors.flax import load_file
 from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
 from lalamo.modules import Decoder, DecoderConfig, KVCache, LalamoModule, WeightLayout, config_converter
 from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.utils import open_safetensors
 
 __all__ = [
     "GenerationConfig",
@@ -66,8 +66,9 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         with open(path / "config.json") as config_file:
             config_json = json.load(config_file)
         config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
-        weights = unflatten_parameters(load_file(path / "model.safetensors"))
-        decoder = config.decoder_config.empty().import_weights(weights, weight_layout)
+        with open_safetensors(path / "model.safetensors") as weights_dict:
+            weights = unflatten_parameters(weights_dict)
+            decoder = config.decoder_config.empty().import_weights(weights, weight_layout)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return cls(config, decoder, message_processor)

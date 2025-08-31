@@ -6,7 +6,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
+import jax
 import jax.numpy as jnp
+import jax.profiler
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -121,30 +123,43 @@ def chat(
             show_default="auto",
         ),
     ] = None,
+    profile_xla: Annotated[
+        bool,
+        Option(
+            help="Record and save the XLA memory profile",
+        ),
+    ] = False,
 ) -> None:
-    if weight_layout is None:
-        weight_layout = WeightLayout.AUTO
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,
-    ) as progress:
-        progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = LanguageModel.load(model_path, weight_layout)
-    messages = []
-    while True:
-        user_text = console.input("[cyan]user> [/cyan]")
-        user_message = UserMessage(user_text)
-        messages.append(user_message)
+    try:
+        if weight_layout is None:
+            weight_layout = WeightLayout.AUTO
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+            model = LanguageModel.load(model_path, weight_layout)
+        messages = []
+        while True:
+            user_text = console.input("[cyan]user> [/cyan]")
+            user_message = UserMessage(user_text)
+            messages.append(user_message)
 
-        console.print("[red]assistant> [/red]", end="")
-        model_response_tokens = []
-        for token in model.stream_reply_text(messages):
-            console.print(token, end="")
-            model_response_tokens.append(token)
-        console.print()
-        model_response_text = "".join(model_response_tokens)
-        messages.append(model.message_processor.parse_response(model_response_text))
+            console.print("[red]assistant> [/red]", end="")
+            model_response_tokens = []
+            for token in model.stream_reply_text(messages):
+                console.print(token, end="")
+                model_response_tokens.append(token)
+            console.print()
+            model_response_text = "".join(model_response_tokens)
+            messages.append(model.message_processor.parse_response(model_response_text))
+    finally:
+        model_name = model_path.name
+        if profile_xla:
+            profile_filename = f"{model_name}-chat-memory.prof"
+            console.print(f"Saving XLA memory profile to {profile_filename}")
+            jax.profiler.save_device_memory_profile(profile_filename)
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
@@ -205,6 +220,12 @@ def convert(
         bool,
         Option(
             help="Overwrite existing model files.",
+        ),
+    ] = False,
+    profile_xla: Annotated[
+        bool,
+        Option(
+            help="Record and save the XLA memory profile",
         ),
     ] = False,
 ) -> None:
@@ -302,6 +323,11 @@ def convert(
         with open(output_dir / "config.json", "w") as file:
             json.dump(config_json, file, indent=4)
         progress.remove_task(save_task)
+
+    if profile_xla:
+        profile_filename = f"{output_dir.name}-convert-memory.prof"
+        console.print(f"Saving XLA memory profile to {profile_filename}")
+        jax.profiler.save_device_memory_profile(profile_filename)
 
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 

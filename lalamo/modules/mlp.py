@@ -4,6 +4,7 @@ from typing import Self
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree
@@ -19,6 +20,10 @@ __all__ = ["MLP", "MLPConfig"]
 class MLPConfig:
     linear_config: LinearConfig
     activation: Activation
+    has_up_biases: bool
+    has_down_biases: bool
+    gate_clipping: tuple[float | None, float | None] | None
+    up_clipping: tuple[float | None, float | None] | None
 
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MLP":
         up_key, down_key = jax.random.split(key)
@@ -27,13 +32,13 @@ class MLPConfig:
             up_projection=self.linear_config.random_init(
                 model_dim,
                 (hidden_dim, hidden_dim),
-                has_biases=False,
+                has_biases=self.has_up_biases,
                 key=up_key,
             ),
             down_projection=self.linear_config.random_init(
                 hidden_dim,
                 (model_dim,),
-                has_biases=False,
+                has_biases=self.has_down_biases,
                 key=down_key,
             ),
         )
@@ -44,12 +49,61 @@ class MLPConfig:
             up_projection=self.linear_config.empty(
                 model_dim,
                 (hidden_dim, hidden_dim),
-                has_biases=False,
+                has_biases=self.has_up_biases,
             ),
             down_projection=self.linear_config.empty(
                 hidden_dim,
                 (model_dim,),
-                has_biases=False,
+                has_biases=self.has_down_biases,
+            ),
+        )
+
+    def random_init_mixture(
+        self,
+        mixture_size: int,
+        model_dim: int,
+        hidden_dim: int,
+        *,
+        key: PRNGKeyArray,
+    ) -> "MLP":
+        up_key, down_key = jax.random.split(key)
+        return MLP(
+            self,
+            up_projection=self.linear_config.random_init_mixture(
+                mixture_size,
+                model_dim,
+                (hidden_dim, hidden_dim),
+                has_biases=self.has_up_biases,
+                key=up_key,
+            ),
+            down_projection=self.linear_config.random_init_mixture(
+                mixture_size,
+                hidden_dim,
+                (model_dim,),
+                has_biases=self.has_down_biases,
+                key=down_key,
+            ),
+        )
+
+    def empty_mixture(
+        self,
+        mixture_size: int,
+        model_dim: int,
+        hidden_dim: int,
+    ) -> "MLP":
+        return MLP(
+            self,
+            up_projection=self.linear_config.empty_mixture(
+                mixture_size,
+                model_dim,
+                (hidden_dim, hidden_dim),
+                has_biases=self.has_up_biases,
+            ),
+            down_projection=self.linear_config.empty_mixture(
+                mixture_size,
+                hidden_dim,
+                (model_dim,),
+                has_biases=self.has_down_biases,
             ),
         )
 
@@ -87,6 +141,10 @@ class MLP(LalamoModule[MLPConfig]):
     @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         up_proj, gate = self.up_projection(inputs)
+        if self.config.gate_clipping:
+            gate = jnp.clip(gate, *self.config.gate_clipping)
+        if self.config.up_clipping:
+            up_proj = jnp.clip(up_proj, *self.config.up_clipping)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
         return result

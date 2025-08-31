@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -5,7 +6,6 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.loaders import load_executorch
 from lalamo.modules import (
-    Activation,
     AttentionConfig,
     Decoder,
     DecoderConfig,
@@ -17,6 +17,7 @@ from lalamo.modules import (
     RMSNormConfig,
     UpcastMode,
 )
+from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
 from .common import ForeignConfig
@@ -58,7 +59,7 @@ class ExecutorchConfig(ForeignConfig):
     def _load_weights(
         cls,
         model: Decoder,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         return load_executorch(model, weights_dict)
 
@@ -137,7 +138,11 @@ class ETLlamaConfig(ExecutorchConfig):
         )
         mlp_config = MLPConfig(
             linear_config=linear_config,
-            activation=Activation.SILU,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
             pre_attention_norm_config=rmsnorm_config,

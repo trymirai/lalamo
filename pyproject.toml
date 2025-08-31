@@ -1,6 +1,6 @@
 [project]
 name = "lalamo"
-description = "JAX library for LLM optimisation and export"
+description = "JAX library for optimization and export of models for use with the UZU inference engine."
 requires-python = ">=3.12, <4"
 dependencies = [
     "cattrs>=24.1.2",

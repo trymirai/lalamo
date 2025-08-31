@@ -1,6 +1,7 @@
 import importlib.metadata
 from collections import ChainMap
 from collections.abc import Callable
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -171,14 +172,17 @@ def import_model(
         precision = foreign_decoder_config.default_precision
 
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
-    weights_dict: ChainMap[str, Array] = ChainMap(
-        *[model_spec.weights_type.load(weights_path, precision) for weights_path in weights_paths],  # type: ignore
-    )
+    with ExitStack() as stack:
+        weights_shards = []
+        for weights_path in weights_paths:
+            weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+            weights_shards.append(weights_shard)
+        weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
 
-    if progress_callback is not None:
-        progress_callback(InitializingModelEvent())
+        if progress_callback is not None:
+            progress_callback(InitializingModelEvent())
 
-    decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
+        decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())

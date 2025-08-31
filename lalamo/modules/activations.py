@@ -1,30 +1,40 @@
-from enum import Enum
+from abc import abstractmethod
 
 import jax
 import jax.numpy as jnp
-from jax import jit
+from attr import dataclass
 from jaxtyping import Array, Float
 
+from lalamo.modules.common import register_config_union
+
 __all__ = [
+    "GELU",
     "Activation",
-    "silu",
+    "SiLU",
 ]
 
 
-@jit
-def silu(x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
-    return x / (1 + jnp.exp(-x))
+@dataclass(frozen=True)
+class ActivationBase:
+    @abstractmethod
+    def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]: ...
 
 
-class Activation(Enum):
-    SILU = "silu"
-    GELU = "gelu"
+@dataclass(frozen=True)
+class SiLU(ActivationBase):
+    alpha: float = 1.0
 
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
-        return ACTIVATION_FUNCTIONS[self](x)
+        return x / (1 + jnp.exp(-x * self.alpha))
 
 
-ACTIVATION_FUNCTIONS = {
-    Activation.SILU: silu,
-    Activation.GELU: jax.nn.gelu,
-}
+@dataclass(frozen=True)
+class GELU(ActivationBase):
+    def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
+        return jax.nn.gelu(x)
+
+
+Activation = SiLU | GELU
+
+
+register_config_union(Activation)

@@ -1,4 +1,4 @@
-from .activations import Activation
+from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
 from .common import LalamoModule, WeightLayout, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderResult
@@ -37,6 +37,7 @@ from .rope import (
 )
 
 __all__ = [
+    "GELU",
     "MLP",
     "Activation",
     "Attention",
@@ -73,6 +74,7 @@ __all__ = [
     "RMSNormConfig",
     "RoPE",
     "RoPEConfig",
+    "SiLU",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",

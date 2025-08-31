@@ -8,7 +8,7 @@ from lalamo.modules import (
     DecoderConfig,
     TiedEmbeddingConfig,
 )
-from lalamo.modules.activations import Activation
+from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
 from lalamo.modules.decoder_layer import DecoderLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
@@ -106,7 +106,14 @@ class HFGemma3TextConfigRaw:
         )
 
         linear_config = FullPrecisionLinearConfig(precision=activation_precision)
-        mlp_config = MLPConfig(linear_config=linear_config, activation=Activation.GELU)
+        mlp_config = MLPConfig(
+            linear_config=linear_config,
+            activation=GELU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
+        )
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
