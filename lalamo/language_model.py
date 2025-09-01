@@ -23,6 +23,9 @@ __all__ = [
 ]
 
 
+_COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
+
+
 class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, " vocabulary"]
     last_token_position: Int[Array, ""]
@@ -233,7 +236,6 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         self,
         prompt_token_ids: Int[Array, " prompt_tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        prompt_length_without_padding: Int[Array, ""] | int | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         *,
@@ -245,10 +247,15 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
 
         (input_length,) = prompt_token_ids.shape
+
+        padded_input_length = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= input_length)
+        padded_token_ids = jnp.zeros((padded_input_length,), dtype=jnp.int32)
+        padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
+
         prefill_results = self._prefill(
-            prompt_token_ids,
-            prompt_length_without_padding,
-            input_length + max_output_length,
+            padded_token_ids,
+            jnp.array(input_length, dtype=jnp.int32),
+            padded_input_length + max_output_length,
         )
 
         if key is None:

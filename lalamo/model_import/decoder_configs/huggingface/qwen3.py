@@ -108,6 +108,7 @@ class HFQwen3Config(HuggingFaceConfig):
             query_norm_config=rmsnorm_config,
             key_norm_config=rmsnorm_config,
             logit_soft_cap=None,
+            has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )

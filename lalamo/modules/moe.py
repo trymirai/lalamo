@@ -82,7 +82,6 @@ class MixtureOfExperts(LalamoModule[MixtureOfExpertsConfig]):
                 f" the up projection output dimension {self.up_projection.input_dim}",
             )
 
-    @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         up_proj, gate = self.up_projection(inputs)
         gate = self.config.activation(gate)

@@ -88,6 +88,7 @@ class HFGemma2Config(HuggingFaceConfig):
             query_norm_config=None,
             key_norm_config=None,
             logit_soft_cap=self.attn_logit_softcapping,
+            has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=False,
         )

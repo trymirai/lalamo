@@ -138,8 +138,13 @@ def chat(
             TextColumn("[progress.description]{task.description}"),
             transient=True,
         ) as progress:
-            progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+            loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
             model = LanguageModel.load(model_path, weight_layout)
+            progress.remove_task(loading_task)
+            warmup_task = progress.add_task("🔥 Warming up compilation cache...")
+            list(model.stream_reply_text([UserMessage("")]))
+            progress.remove_task(warmup_task)
+        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
         messages = []
         while True:
             user_text = console.input("[cyan]user> [/cyan]")

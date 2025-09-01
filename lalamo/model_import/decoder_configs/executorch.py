@@ -133,6 +133,7 @@ class ETLlamaConfig(ExecutorchConfig):
             query_norm_config=None,
             key_norm_config=None,
             logit_soft_cap=None,
+            has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
         )
