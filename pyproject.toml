@@ -28,8 +28,10 @@ lalamo = "lalamo.main:app"
 requires = ["setuptools>=65.5.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["lalamo"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lalamo*"]
+namespaces = false
 
 [tool.setuptools.dynamic]
 version = { attr = "lalamo.__version__" }
