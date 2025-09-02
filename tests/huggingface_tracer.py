@@ -15,7 +15,7 @@ from transformers.processing_utils import Unpack
 
 from lalamo.modules import DecoderActivationTrace, DecoderLayerResult, PositionalEmbeddings
 from lalamo.modules.decoder import DecoderResult
-from lalamo.utils import jax_to_torch, torch_to_jax
+from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
