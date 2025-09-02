@@ -7,8 +7,8 @@ from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
 from lalamo.model_import.configs import ForeignConfig
+from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import torch_to_jax
 
 __all__ = [
     "HUGGINFACE_GENERATION_CONFIG_FILE",
