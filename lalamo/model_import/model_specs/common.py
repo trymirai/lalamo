@@ -7,7 +7,6 @@ from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
 from lalamo.model_import.configs import ForeignConfig
-from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.quantization import QuantizationMode
 
 __all__ = [
@@ -37,6 +36,8 @@ class WeightsType(Enum):
             return {k: cast_if_float(v, float_dtype) for k, v in load_safetensors(filename).items()}
 
         import torch
+
+        from lalamo.modules.torch_interop import torch_to_jax
 
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
         return {k: cast_if_float(torch_to_jax(v), float_dtype) for k, v in torch_weights.items()}
@@ -95,7 +96,7 @@ def awq_model_spec(
     )
 
 
-def build_quantized_models(model_specs: list[ModelSpec]):
+def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
     quantization_compatible_repos: list[str] = [
         "Qwen/Qwen2.5-3B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",
