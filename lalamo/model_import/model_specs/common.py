@@ -3,7 +3,6 @@ from enum import Enum
 from pathlib import Path
 
 import jax.numpy as jnp
-import torch
 from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
@@ -17,9 +16,9 @@ __all__ = [
     "ModelSpec",
     "TokenizerFileSpec",
     "UseCase",
-    "huggingface_weight_files",
     "awq_model_spec",
     "build_quantized_models",
+    "huggingface_weight_files",
 ]
 
 
@@ -36,6 +35,9 @@ class WeightsType(Enum):
     def load(self, filename: Path | str, float_dtype: DTypeLike) -> dict[str, jnp.ndarray]:
         if self == WeightsType.SAFETENSORS:
             return {k: cast_if_float(v, float_dtype) for k, v in load_safetensors(filename).items()}
+
+        import torch
+
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
         return {k: cast_if_float(torch_to_jax(v), float_dtype) for k, v in torch_weights.items()}
 
@@ -72,11 +74,15 @@ def huggingface_weight_files(num_shards: int) -> tuple[str, ...]:
     return tuple(f"model-{i:05d}-of-{num_shards:05d}.safetensors" for i in range(1, num_shards + 1))
 
 
-def awq_model_spec(model_spec: ModelSpec, repo: str, quantization: QuantizationMode = QuantizationMode.UINT4) -> ModelSpec:
+def awq_model_spec(
+    model_spec: ModelSpec,
+    repo: str,
+    quantization: QuantizationMode = QuantizationMode.UINT4,
+) -> ModelSpec:
     return ModelSpec(
         vendor=model_spec.vendor,
         family=model_spec.family,
-        name="{}-AWQ".format(model_spec.name),
+        name=f"{model_spec.name}-AWQ",
         size=model_spec.size,
         quantization=quantization,
         repo=repo,
