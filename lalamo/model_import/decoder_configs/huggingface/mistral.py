@@ -7,8 +7,8 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
+    DenseMLPConfig,
     FullPrecisionLinearConfig,
-    MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
@@ -96,7 +96,7 @@ class HFMistralConfig(HuggingFaceConfig):
             has_out_biases=False,
         )
 
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
             has_up_biases=False,

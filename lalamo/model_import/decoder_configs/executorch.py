@@ -10,8 +10,8 @@ from lalamo.modules import (
     Decoder,
     DecoderConfig,
     DecoderLayerConfig,
+    DenseMLPConfig,
     LlamaRoPEConfig,
-    MLPConfig,
     QLoRALinearConfig,
     QuantizedTiedEmbeddingConfig,
     RMSNormConfig,
@@ -137,7 +137,7 @@ class ETLlamaConfig(ExecutorchConfig):
             has_qkv_biases=False,
             has_out_biases=False,
         )
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
             has_up_biases=False,

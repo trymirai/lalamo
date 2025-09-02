@@ -6,7 +6,7 @@ from einops import rearrange
 from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterPath
-from lalamo.modules import MLP, Attention, Decoder, DecoderLayer, QLoRALinear, QuantizedTiedEmbedding, RMSNorm
+from lalamo.modules import Attention, Decoder, DecoderLayer, DenseMLP, QLoRALinear, QuantizedTiedEmbedding, RMSNorm
 
 from .common import load_parameters
 
@@ -76,7 +76,7 @@ def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: Param
     return load_parameters(params_selector, module, params)
 
 
-def load_mlp(module: MLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLP:
+def load_mlp(module: DenseMLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> DenseMLP:
     if not isinstance(module.up_projection, QLoRALinear):
         raise TypeError(f"Expected up_projection to be QLoRALinear, got {type(module.up_projection)}")
     if not isinstance(module.down_projection, QLoRALinear):

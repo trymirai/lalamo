@@ -12,7 +12,7 @@ from lalamo.common import ParameterTree
 from .attention import Attention, AttentionConfig
 from .common import AttentionType, LalamoModule, WeightLayout
 from .kv_cache import KVCacheLayer, StaticKVCacheLayer
-from .mlp import MLP, MLPConfig
+from .mlp import MLPBase, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import PositionalEmbeddings
 
@@ -171,7 +171,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
     attention: Attention
     post_attention_norm: RMSNorm | None
     pre_mlp_norm: RMSNorm
-    mlp: MLP
+    mlp: MLPBase
     post_mlp_norm: RMSNorm | None
 
     @property

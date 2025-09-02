@@ -6,10 +6,10 @@ from jaxtyping import Array
 
 from lalamo.common import ParameterPath
 from lalamo.modules import (
-    MLP,
     Attention,
     Decoder,
     DecoderLayer,
+    DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
@@ -164,7 +164,7 @@ def load_linear(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_mlp(module: MLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLP:
+def load_mlp(module: DenseMLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> DenseMLP:
     up_projection = load_linear(module.up_projection, weights_dict, path, sublayers_to_fuse=["up_proj", "gate_proj"])
     down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
     return load_parameters(lambda m: (m.up_projection, m.down_projection), module, (up_projection, down_projection))

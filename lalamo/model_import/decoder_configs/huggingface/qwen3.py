@@ -7,9 +7,9 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
+    DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
@@ -112,7 +112,7 @@ class HFQwen3Config(HuggingFaceConfig):
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
             has_up_biases=False,

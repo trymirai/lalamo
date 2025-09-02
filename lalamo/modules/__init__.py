@@ -24,7 +24,16 @@ from .linear import (
     QLoRALinear,
     QLoRALinearConfig,
 )
-from .mlp import MLP, MLPConfig
+from .mlp import (
+    DenseMLP,
+    DenseMLPConfig,
+    MixtureOfExperts,
+    MixtureOfExpertsConfig,
+    MLPBase,
+    MLPConfig,
+    RoutingFunction,
+    SoftmaxRouting,
+)
 from .normalization import RMSNorm, RMSNormConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
@@ -38,7 +47,6 @@ from .rope import (
 
 __all__ = [
     "GELU",
-    "MLP",
     "Activation",
     "Attention",
     "AttentionConfig",
@@ -50,6 +58,8 @@ __all__ = [
     "DecoderLayerConfig",
     "DecoderLayerResult",
     "DecoderResult",
+    "DenseMLP",
+    "DenseMLPConfig",
     "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
@@ -64,7 +74,10 @@ __all__ = [
     "LinearConfig",
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
+    "MLPBase",
     "MLPConfig",
+    "MixtureOfExperts",
+    "MixtureOfExpertsConfig",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
@@ -74,7 +87,9 @@ __all__ = [
     "RMSNormConfig",
     "RoPE",
     "RoPEConfig",
+    "RoutingFunction",
     "SiLU",
+    "SoftmaxRouting",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",

@@ -12,7 +12,7 @@ from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
 from lalamo.modules.decoder_layer import DecoderLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
-from lalamo.modules.mlp import MLPConfig
+from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import RMSNormConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
 
@@ -106,7 +106,7 @@ class HFGemma3TextConfigRaw:
         )
 
         linear_config = FullPrecisionLinearConfig(precision=activation_precision)
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),
             has_up_biases=False,
