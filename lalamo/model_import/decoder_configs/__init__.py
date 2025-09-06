@@ -1,5 +1,5 @@
 from .common import ForeignConfig
-from .executorch import ETLlamaConfig
+# from .executorch import ETLlamaConfig
 from .huggingface import (
     HFGemma2Config,
     HFGemma3Config,
@@ -11,7 +11,7 @@ from .huggingface import (
 )
 
 __all__ = [
-    "ETLlamaConfig",
+    # "ETLlamaConfig",
     "ForeignConfig",
     "HFGemma2Config",
     "HFGemma3Config",

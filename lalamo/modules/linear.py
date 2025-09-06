@@ -295,6 +295,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
     zero_points: Float[Array, "total_out_channels groups"]
     biases: Float[Array, " total_out_channels"] | None
 
+    @classmethod
+    def _default_weight_layout(cls) -> WeightLayout:
+        return WeightLayout.OUTPUT_INPUT
+
     @property
     def activation_precision(self) -> DTypeLike:
         return self.config.activation_precision
@@ -417,97 +421,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
-    # def requantize_weights(
-    #     self,
-    #     weights: Array,
-    #     zero_points: Array,
-    #     scales: Array,
-    # ) -> tuple[Array, Array, Array]:
-    #     """
-    #     Requantize weights from [20, 6144] grouping to [2560, 48] grouping.
-
-    #     Args:
-    #         weights: uint4 array of shape [M, N]
-    #         zero_points: uint4 array of shape [M//group_size_0, N//group_size_1]
-    #         scales: float16 array of shape [M//group_size_0, N//group_size_1]
-
-    #     Returns:
-    #         new_weights: uint4 array of shape [M, N]
-    #         new_zero_points: uint4 array of shape [M, N//128]
-    #         new_scales: float16 array of shape [M, N//128]
-    #     """
-    #     # Get dimensions
-    #     M, N = weights.shape
-    #     old_groups_0, old_groups_1 = zero_points.shape
-
-    #     # Calculate old group sizes
-    #     old_group_size_0 = M // old_groups_0  # 2560 // 20 = 128
-    #     old_group_size_1 = N // old_groups_1  # 6144 // 6144 = 1
-
-    #     # New group sizes
-    #     new_group_size_0 = 1  # 2560 // 2560 = 1
-    #     new_group_size_1 = self.config.group_size  # 6144 // 48 = 128
-
-    #     # Step 1: Dequantize with original parameters
-    #     # Expand zero_points and scales to match weights shape
-    #     zp_expanded = jnp.repeat(jnp.repeat(zero_points, old_group_size_0, axis=0), old_group_size_1, axis=1)
-    #     scales_expanded = jnp.repeat(jnp.repeat(scales, old_group_size_0, axis=0), old_group_size_1, axis=1)
-
-    #     # Dequantize (convert to float for computation)
-    #     weights_float = weights.astype(jnp.float32)
-    #     zp_float = zp_expanded.astype(jnp.float32)
-    #     dequantized = (weights_float - zp_float) * scales_expanded.astype(jnp.float32)
-
-    #     # Step 2: Requantize with new group structure [2560, 48]
-    #     # Reshape for new groups
-    #     dequantized_reshaped = dequantized.reshape(
-    #         M // new_group_size_0,
-    #         new_group_size_0,
-    #         N // new_group_size_1,
-    #         new_group_size_1,
-    #     )
-
-    #     # Compute new scales and zero points per group
-    #     # Move group dimensions to the end for reduction
-    #     dequantized_groups = dequantized_reshaped.transpose(0, 2, 1, 3)  # [2560, 48, 1, 128]
-
-    #     # Find min and max per group
-    #     group_min = dequantized_groups.min(axis=(2, 3), keepdims=True)
-    #     group_max = dequantized_groups.max(axis=(2, 3), keepdims=True)
-
-    #     # Compute scales (with small epsilon to avoid division by zero)
-    #     eps = 1e-6
-    #     new_scales = ((group_max - group_min) / 15.0 + eps).astype(scales.dtype)
-    #     new_scales = new_scales.squeeze(axis=(2, 3))  # [2560, 48]
-
-    #     # Compute zero points (quantize to uint4 range 0-15)
-    #     new_zero_points = jnp.round(-group_min.squeeze(axis=(2, 3)) / new_scales).astype(jnp.uint4)
-    #     new_zero_points = jnp.clip(new_zero_points, 0, 15)
-
-    #     # Quantize with new parameters
-    #     scales_expanded_new = jnp.repeat(new_scales, new_group_size_1, axis=1).reshape(M, N)
-    #     zp_expanded_new = jnp.repeat(new_zero_points, new_group_size_1, axis=1).reshape(M, N)
-
-    #     new_weights = jnp.round(
-    #         dequantized / scales_expanded_new.astype(jnp.float32) + zp_expanded_new.astype(jnp.float32),
-    #     )
-    #     new_weights = jnp.clip(new_weights, 0, 15).astype(jnp.uint4)
-
-    #     return new_weights, new_zero_points, new_scales
-
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        exported_weights = into_layout(self.int_weights, weight_layout)
-
-        exported_zero_points = into_layout(self.int_zero_points, weight_layout)
-
-        exported_scales = into_layout(self.scales, weight_layout)
-
-        # # CRIMINAL HACK!!!
-        # exported_weights, exported_zero_points, exported_scales = self.requantize_weights(
-        #     exported_weights,
-        #     exported_zero_points,
-        #     exported_scales,
-        # )
+        exported_weights = self._into_layout(self.int_weights, weight_layout)
+        exported_zero_points = self._into_layout(self.int_zero_points, weight_layout)
+        exported_scales = self._into_layout(self.scales, weight_layout)
 
         result = dict(
             weights=exported_weights,

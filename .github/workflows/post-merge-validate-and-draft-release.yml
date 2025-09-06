@@ -1,0 +1,124 @@
+name: "Post-merge: Validate build, tag and draft release"
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-check:
+    name: Validate build (uv build + twine check)
+    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'bump/version-') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version-file: pyproject.toml
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Build distributions
+        run: uv build --no-sources
+
+      - name: Check distributions with Twine
+        run: uv run twine check dist/*
+
+  tag-and-draft-release:
+    name: Tag and create Draft Release
+    needs: build-and-check
+    if: ${{ github.event.pull_request.merged == true && startsWith(github.event.pull_request.head.ref, 'bump/version-') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Check out default branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.base.ref }}
+
+      - name: Read version
+        id: meta
+        shell: bash
+        run: |
+          ver=$(sed -nE 's/^__version__[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' lalamo/__init__.py | head -n1)
+          if [ -z "$ver" ]; then
+            echo "Could not read __version__ from lalamo/__init__.py"
+            exit 1
+          fi
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $ver"
+
+      - name: Create and push tag if missing
+        shell: bash
+        run: |
+          ver="${{ steps.meta.outputs.version }}"
+          tag="v$ver"
+
+          git fetch --tags
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "Tag $tag already exists"
+          else
+            git tag "$tag"
+            git push origin "$tag"
+            echo "Created and pushed tag $tag"
+          fi
+
+      - name: Create Draft GitHub Release
+        shell: bash
+        run: |
+          ver="${{ steps.meta.outputs.version }}"
+          tag="v$ver"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release for $tag already exists"
+          else
+            gh release create "$tag" --generate-notes --draft
+            echo "Created Draft GitHub Release for $tag"
+          fi
+
+      - name: Append PyPI links to release notes
+        shell: bash
+        run: |
+          ver="${{ steps.meta.outputs.version }}"
+          tag="v$ver"
+
+          body="$(gh release view "$tag" --json body -q .body)"
+          project_link="PyPI: https://pypi.org/project/lalamo/"
+          version_link="PyPI (this version): https://pypi.org/project/lalamo/$ver/"
+
+          echo "$body" > /tmp/body.md
+          append_needed=0
+          if ! grep -Fq "$project_link" /tmp/body.md; then
+            append_needed=1
+          fi
+          if ! grep -Fq "$version_link" /tmp/body.md; then
+            append_needed=1
+          fi
+
+          if [ "$append_needed" -eq 1 ]; then
+            {
+              echo ""
+              echo "$project_link"
+              echo "$version_link"
+            } >> /tmp/body.md
+            gh release edit "$tag" --notes-file /tmp/body.md
+            echo "Appended PyPI links to release notes"
+          else
+            echo "PyPI links already present"
+          fi

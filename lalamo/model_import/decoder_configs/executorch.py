@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.loaders import load_executorch
+from lalamo.model_import.loaders.executorch import load_executorch
 from lalamo.modules import (
     Activation,
     AttentionConfig,

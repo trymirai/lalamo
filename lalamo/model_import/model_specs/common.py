@@ -6,7 +6,6 @@ from enum import Enum
 from pathlib import Path
 
 import jax.numpy as jnp
-import torch
 from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
@@ -38,6 +37,8 @@ class WeightsType(Enum):
     def load(self, filename: Path | str, float_dtype: DTypeLike) -> Mapping[str, jnp.ndarray]:
         if self == WeightsType.SAFETENSORS:
             return MapDictValues(lambda v: cast_if_float(v, float_dtype), load_safetensors(filename))
+
+        import torch
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
         return MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
 

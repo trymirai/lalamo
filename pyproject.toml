@@ -1,6 +1,6 @@
 [project]
 name = "lalamo"
-description = "JAX library for LLM optimisation and export"
+description = "JAX library for optimization and export of models for use with the UZU inference engine."
 requires-python = ">=3.12, <4"
 dependencies = [
     "cattrs>=24.1.2",
@@ -18,9 +18,11 @@ dependencies = [
     "thefuzz>=0.22.1",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
+    "safetensors>=0.6.2",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]
-dynamic = ["version", "readme"]
+readme = { file = "README.md", content-type = "text/markdown" }
+dynamic = ["version"]
 
 [project.scripts]
 lalamo = "lalamo.main:app"
@@ -29,12 +31,14 @@ lalamo = "lalamo.main:app"
 requires = ["setuptools>=65.5.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
-[tool.setuptools]
-packages = ["lalamo"]
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["lalamo*"]
+namespaces = false
 
 [tool.setuptools.dynamic]
 version = { attr = "lalamo.__version__" }
-readme = { file = ["README.md"] }
+
 
 [tool.uv]
 package = true
@@ -50,6 +54,7 @@ dev-dependencies = [
     "torch>=2.7.1",
     "torchao>=0.7.0",
     "transformers>=4.48.0",
+    "twine>=6.1.0",
 ]
 
 [[tool.uv.index]]
@@ -60,6 +65,12 @@ explicit = true
 [[tool.uv.index]]
 name = "torch-gpu"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
 explicit = true
 
 [tool.uv.sources]
