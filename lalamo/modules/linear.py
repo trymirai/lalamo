@@ -295,10 +295,6 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
     zero_points: Float[Array, "total_out_channels groups"]
     biases: Float[Array, " total_out_channels"] | None
 
-    @classmethod
-    def _default_weight_layout(cls) -> WeightLayout:
-        return WeightLayout.OUTPUT_INPUT
-
     @property
     def activation_precision(self) -> DTypeLike:
         return self.config.activation_precision
@@ -422,9 +418,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        exported_weights = into_layout(self.int_weights, weight_layout)
-        exported_zero_points = into_layout(self.int_zero_points, weight_layout)
-        exported_scales = into_layout(self.scales, weight_layout)
+        expected_weight_layout = WeightLayout.OUTPUT_INPUT
+        exported_weights = into_layout(self.int_weights, expected_weight_layout)
+        exported_zero_points = into_layout(self.int_zero_points, expected_weight_layout)
+        exported_scales = into_layout(self.scales, expected_weight_layout)
 
         result = dict(
             weights=exported_weights,
