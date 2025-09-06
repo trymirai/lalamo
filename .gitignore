@@ -34,3 +34,7 @@ models/
 sync.bb
 .clj-kondo
 .lsp
+
+# Profiler
+memray-*.bin
+memray-*.html

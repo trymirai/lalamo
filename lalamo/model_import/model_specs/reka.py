@@ -1,12 +1,6 @@
-from lalamo.model_import.configs import HFLlamaConfig
+from lalamo.model_import.decoder_configs import HFLlamaConfig
 
-from .common import (
-    HUGGINFACE_GENERATION_CONFIG_FILE,
-    HUGGINGFACE_TOKENIZER_FILES,
-    ModelSpec,
-    WeightsType,
-    huggingface_weight_files,
-)
+from .common import ModelSpec
 
 __all__ = ["REKA_MODELS"]
 
@@ -19,10 +13,7 @@ REKA_MODELS = [
         quantization=None,
         repo="RekaAI/reka-flash-3.1",
         config_type=HFLlamaConfig,
-        config_file_name="config.json",
-        weights_file_names=huggingface_weight_files(9),  # Model has 9 shards
-        weights_type=WeightsType.SAFETENSORS,
-        tokenizer_files=(*HUGGINGFACE_TOKENIZER_FILES, HUGGINFACE_GENERATION_CONFIG_FILE),
+        user_role_name="human",
         use_cases=tuple(),
     ),
-] 
+]

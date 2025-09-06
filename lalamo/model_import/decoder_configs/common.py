@@ -1,11 +1,11 @@
 import json
 from abc import abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
-import jax
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import Decoder, DecoderConfig
@@ -18,6 +18,12 @@ class ForeignConfig:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
+    eos_token_id: int | list[int]
+
+    @property
+    def eos_token_ids(self) -> list[int]:
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+
     @property
     @abstractmethod
     def default_precision(self) -> DTypeLike: ...
@@ -28,11 +34,6 @@ class ForeignConfig:
         with open(json_path) as f:
             config = json.load(f)
         return cls._converter.structure(config, cls)
-
-    def to_json(self, json_path: Path | str) -> None:
-        json_path = Path(json_path)
-        with open(json_path, "w") as f:
-            json.dump(self._converter.unstructure(self), f, indent=2)
 
     def to_decoder_config(
         self,
@@ -46,17 +47,17 @@ class ForeignConfig:
     def _load_weights(
         cls,
         model: Decoder,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         raise NotImplementedError
 
-    def load_model(
+    def load_decoder(
         self,
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
-        model = config.random_init(key=jax.random.PRNGKey(0))
+        model = config.empty()
         return self._load_weights(model, weights_dict)

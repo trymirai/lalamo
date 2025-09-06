@@ -1,3 +1,5 @@
+from collections.abc import Mapping
+
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array
@@ -80,7 +82,7 @@ def _process_quantized_tensors(
 
 
 def _fuse_full_precision_weights(
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
 ) -> Array:
@@ -92,7 +94,7 @@ def _fuse_full_precision_weights(
 
 
 def _fuse_quantized_weights(
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
 ) -> tuple[Array, Array, Array]:
@@ -117,7 +119,7 @@ def _fuse_quantized_weights(
 
 def load_linear(
     module: LinearBase,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None = None,
 ) -> LinearBase:
@@ -162,7 +164,7 @@ def load_linear(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -> MLP:
+def load_mlp(module: MLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLP:
     up_projection = load_linear(module.up_projection, weights_dict, path, sublayers_to_fuse=["up_proj", "gate_proj"])
     down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
     return load_parameters(lambda m: (m.up_projection, m.down_projection), module, (up_projection, down_projection))
@@ -170,7 +172,7 @@ def load_mlp(module: MLP, weights_dict: dict[str, Array], path: ParameterPath) -
 
 def load_rmsnorm(
     module: RMSNorm,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> RMSNorm:
     scales = weights_dict[path / "weight"]
@@ -179,7 +181,7 @@ def load_rmsnorm(
 
 def load_attention(
     module: Attention,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Attention:
     qkv_projection = load_linear(
@@ -209,7 +211,7 @@ def load_attention(
 
 def load_decoder_layer(
     module: DecoderLayer,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> DecoderLayer:
     pre_attention_norm = load_rmsnorm(
@@ -257,7 +259,7 @@ def load_decoder_layer(
 
 def load_tied_embedding(
     module: TiedEmbedding,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     decoder_path: ParameterPath,
 ) -> TiedEmbedding:
     weights = weights_dict[decoder_path / "embed_tokens" / "weight"]
@@ -266,7 +268,7 @@ def load_tied_embedding(
 
 def load_untied_embedding(
     module: UntiedEmbedding,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
     decoder_path: ParameterPath,
     lm_head_path: ParameterPath,
 ) -> UntiedEmbedding:
@@ -277,7 +279,7 @@ def load_untied_embedding(
 
 def load_huggingface(
     module: Decoder,
-    weights_dict: dict[str, Array],
+    weights_dict: Mapping[str, Array],
 ) -> Decoder:
     if any(key.startswith("language_model.") for key in weights_dict):
         base_path = ParameterPath("language_model")

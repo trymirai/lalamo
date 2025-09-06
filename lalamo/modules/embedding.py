@@ -1,15 +1,23 @@
 from abc import abstractmethod
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from typing import Self
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
-from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree, dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 
-from .common import LalamoModule, WeightLayout, register_config_union
+from .common import (
+    LalamoModule,
+    WeightLayout,
+    from_layout,
+    into_layout,
+    register_config_union,
+)
 from .utils import apply_soft_capping
 
 __all__ = [
@@ -38,6 +46,13 @@ class EmbeddingConfigBase:
         key: PRNGKeyArray,
     ) -> "EmbeddingBase": ...
 
+    @abstractmethod
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "EmbeddingBase": ...
+
 
 class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @abstractmethod
@@ -54,16 +69,14 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @abstractmethod
     def model_dim(self) -> int: ...
 
-    @classmethod
-    def _default_weight_layout(cls) -> WeightLayout:
-        return WeightLayout.INPUT_OUTPUT
-
+    @eqx.filter_jit
     def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
         result = self._prepare_input_weights()[x]
         if self.config.input_scale is not None:
             result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
         return result
 
+    @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         logits = self._prepare_output_weights() @ x
         if self.config.logits_soft_cap is not None:
@@ -83,6 +96,14 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
         key: PRNGKeyArray,
     ) -> "TiedEmbedding":
         weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.precision)
+        return TiedEmbedding(config=self, weights=weights)
+
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "TiedEmbedding":
+        weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
         return TiedEmbedding(config=self, weights=weights)
 
 
@@ -115,8 +136,16 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(weights=self.weights)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+        return {"weights": self.weights}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(self, weights=weights["weights"])
 
 
 @dataclass(frozen=True)
@@ -133,6 +162,19 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
         input_key, output_key = jax.random.split(key)
         input_weights = jax.random.normal(input_key, (vocab_size, model_dim), dtype=self.precision)
         output_weights = jax.random.normal(output_key, (vocab_size, model_dim), dtype=self.precision)
+        return UntiedEmbedding(
+            config=self,
+            input_weights=input_weights,
+            output_weights=output_weights,
+        )
+
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "UntiedEmbedding":
+        input_weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
+        output_weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
         return UntiedEmbedding(
             config=self,
             input_weights=input_weights,
@@ -186,21 +228,22 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.output_weights
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:
-        if weight_layout == WeightLayout.AUTO:
-            weight_layout = self._default_weight_layout()
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        return {
+            "input_weights": self.input_weights,
+            "output_weights": into_layout(self.output_weights, weight_layout),
+        }
 
-        match weight_layout:
-            case WeightLayout.OUTPUT_INPUT:
-                output_weights = self.output_weights
-            case WeightLayout.INPUT_OUTPUT:
-                output_weights = rearrange(self.output_weights, "token_ids channels -> channels token_ids")
-            case _:
-                raise ValueError(f"Unsupported weight layout: {weight_layout}")
-
-        return ParameterDict(
-            input_weights=self.input_weights,
-            output_weights=output_weights,
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            input_weights=weights["input_weights"],
+            output_weights=from_layout(weights["output_weights"], weight_layout),
         )
 
 
@@ -223,6 +266,15 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
         scales = scale * jnp.ones(vocab_size, dtype=self.activation_precision)
         weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.activation_precision)
         weights = quantize_weights(weights * min_abs_val, self.embedding_quantization_mode)
+        return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
+
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "QuantizedTiedEmbedding":
+        scales = dummy_array(vocab_size, dtype=self.activation_precision)
+        weights = dummy_array((vocab_size, model_dim), dtype=self.activation_precision)
         return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
 
 
@@ -257,7 +309,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
                 f" {self.config.activation_precision}"
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        weights_vocab_size, weights_model_dim = self.weights.shape
+        weights_vocab_size, _ = self.weights.shape
         (scales_vocab_size,) = self.scales.shape
         if weights_vocab_size != scales_vocab_size:
             raise ValueError(
@@ -281,15 +333,29 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self._prepare_weights()
 
+    @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(
-            weights=self.int_weights,
-            scales=self.scales,
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+        return {
+            "weights": into_layout(self.int_weights, weight_layout),
+            "scales": into_layout(self.scales, weight_layout),
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["weights"], Array)
+        return replace(
+            self,
+            weights=from_layout(weights["weights"].astype(self.weights.dtype), weight_layout),
+            scales=from_layout(weights["scales"], weight_layout),
         )
 
 

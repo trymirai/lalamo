@@ -1,4 +1,4 @@
-from .common import awq_model_spec, build_quantized_models, ModelSpec, UseCase
+from .common import FileSpec, ModelSpec, UseCase, build_quantized_models
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .huggingface import HUGGINGFACE_MODELS
@@ -12,6 +12,7 @@ from .reka import REKA_MODELS
 __all__ = [
     "ALL_MODELS",
     "REPO_TO_MODEL",
+    "FileSpec",
     "ModelSpec",
     "UseCase",
 ]
@@ -23,7 +24,7 @@ ALL_MODEL_LISTS = [
     GEMMA_MODELS,
     HUGGINGFACE_MODELS,
     MISTRAL_MODELS,
-    PLEIAS_MODELS,
+    # PLEIAS_MODELS,  # TODO(norpadon): Add chat template
     POLARIS_MODELS,
     QWEN_MODELS,
     REKA_MODELS,

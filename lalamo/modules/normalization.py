@@ -1,11 +1,14 @@
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from enum import Enum
+from typing import Self
 
+import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterDict
+from lalamo.common import ParameterTree, dummy_array
 
 from .common import LalamoModule, WeightLayout
 
@@ -29,9 +32,15 @@ class RMSNormConfig:
     scale_offset: float | None
     upcast_mode: UpcastMode
 
-    def init(self, channels: int) -> "RMSNorm":
-        scales = jnp.ones(channels, dtype=self.scale_precision)
+    def init(self, input_dim: int) -> "RMSNorm":
+        scales = jnp.ones(input_dim, dtype=self.scale_precision)
         return RMSNorm(self, scales=scales)
+
+    def empty(self, input_dim: int) -> "RMSNorm":
+        return RMSNorm(
+            config=self,
+            scales=dummy_array(input_dim, dtype=self.scale_precision),
+        )
 
 
 class RMSNorm(LalamoModule[RMSNormConfig]):
@@ -53,6 +62,7 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
                 f" specified precision {self.config.scale_precision}",
             )
 
+    @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(self.config.accumulation_precision)
 
@@ -73,5 +83,13 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         result = normalized_x * adjusted_scales
         return result.astype(inputs.dtype)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterDict:  # noqa: ARG002
-        return ParameterDict(scales=self.scales)
+    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+        return {"scales": self.scales}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(self, scales=weights["scales"])
