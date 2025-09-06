@@ -422,9 +422,9 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        exported_weights = self._into_layout(self.int_weights, weight_layout)
-        exported_zero_points = self._into_layout(self.int_zero_points, weight_layout)
-        exported_scales = self._into_layout(self.scales, weight_layout)
+        exported_weights = into_layout(self.int_weights, weight_layout)
+        exported_zero_points = into_layout(self.int_zero_points, weight_layout)
+        exported_scales = into_layout(self.scales, weight_layout)
 
         result = dict(
             weights=exported_weights,
