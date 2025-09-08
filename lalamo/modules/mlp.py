@@ -281,6 +281,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         (router_logits,) = self.router(inputs)
         routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+        eqx
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
         return {
