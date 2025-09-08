@@ -10,8 +10,9 @@ from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
 
 from lalamo.model_import.decoder_configs import ForeignConfig
+from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import MapDictValues, torch_to_jax
+from lalamo.utils import MapDictValues
 
 __all__ = [
     "ConfigMap",
@@ -39,6 +40,7 @@ class WeightsType(Enum):
             return MapDictValues(lambda v: cast_if_float(v, float_dtype), load_safetensors(filename))
 
         import torch
+
         torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
         return MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
 

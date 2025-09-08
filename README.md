@@ -28,6 +28,8 @@ To convert a model, run:
 uv run lalamo convert MODEL_REPO
 ```
 
+Note: on some CPU platform you may be getting an error saying `The precision 'F16_F16_F32' is not supported by dot_general on CPU`. This is due to a bug in XLA, which causes matmuls inside `jax.jit` not work correctly on CPUs. The workaround is to set the environment variable `JAX_DISABLE_JIT=1` when running the conversion.
+
 After that, you can find the converted model in the `models` folder. For more options see `uv run lalamo convert --help`.
 
 ## Model Support
