@@ -204,7 +204,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 pad_token = jnp.zeros(batch_size, dtype=jnp.int32)
                 return state, pad_token
 
-            return jax.lax.cond(jnp.any(state.stop_flags), pad_and_repeat_state, sample_and_update)
+            return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
         _, tokens_transposed = jax.lax.scan(loop_iteration, initial_state, keys)
 
@@ -281,17 +281,17 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             if jnp.any(next_token_id == eos_token_ids):
                 return
 
-            next_token_position = state.last_token_indices.squeeze(0) + 1
+            next_token_indices = state.last_token_indices + 1
             decoder_outputs = self.decoder(
                 next_token_id.reshape(1, 1),
-                next_token_position.reshape(1, 1),
+                next_token_indices.reshape(1, 1),
                 state.kv_cache,
                 return_updated_kv_cache=True,
             )
             assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
             state = DecodingState(
                 decoder_outputs.logits.squeeze(1),
-                next_token_position,
+                next_token_indices,
                 decoder_outputs.updated_kv_cache,
                 state.stop_flags,
             )
