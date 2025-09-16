@@ -1,10 +1,13 @@
 from collections.abc import (
+    Callable,
     Mapping,
 )
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from typing import ClassVar, cast, get_args, get_origin
 
+import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 from safetensors.flax import load_file as load_safetensors
@@ -65,8 +68,40 @@ class ConfigMap:
     chat_template: FileSpec | None = None
 
 
+def _is_foreign_config_type(t: object) -> bool:
+    origin = get_origin(t)
+    args = get_args(t)
+    return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
+
+
+def _structure_foreign_config_factory(
+    t: object,
+    c: cattrs.Converter,
+) -> Callable[[object, object], type[ForeignConfig]]:
+    name_to_type = {t.__name__: t for t in ForeignConfig.__descendants__()}
+
+    def _hook(v: object, _t: object) -> type[ForeignConfig]:
+        if isinstance(v, type) and issubclass(v, ForeignConfig):
+            return v
+        return name_to_type[cast("str", v)]
+
+    return _hook
+
+
+def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:
+    def _hook(v: type[ForeignConfig]) -> str:
+        return v.__name__
+
+    return _hook
+
+
 @dataclass(frozen=True)
 class ModelSpec:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
+    _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
+    _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
+
     vendor: str
     family: str
     name: str
@@ -82,6 +117,13 @@ class ModelSpec:
     weights_type: WeightsType = WeightsType.SAFETENSORS
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
+
+    @classmethod
+    def from_json(cls, json_data: dict) -> "ModelSpec":
+        return cls._converter.structure(json_data, cls)
+
+    def to_json(self) -> dict:
+        return self._converter.unstructure(self)
 
 
 def awq_model_spec(
