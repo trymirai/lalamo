@@ -15,10 +15,13 @@ from tokenizers import Tokenizer
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
 from lalamo.modules import Decoder, DecoderConfig, KVCache, LalamoModule, WeightLayout, config_converter
+from lalamo.modules.common import ForwardPassMode
+from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
 from lalamo.utils import open_safetensors
 
 __all__ = [
+    "ForwardPassConfig",
     "GenerationConfig",
     "LanguageModel",
     "LanguageModelConfig",
@@ -26,6 +29,9 @@ __all__ = [
 
 
 _COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
+
+
+type ForwardPassConfig = DecoderForwardPassConfig
 
 
 class PrefillResults(NamedTuple):
@@ -108,6 +114,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         token_ids: Int[Array, "batch tokens"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         kv_cache_capacity: int | None = None,
+        forward_pass_config: ForwardPassConfig | None = None,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
         token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
@@ -122,6 +129,8 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             kv_cache,
             return_updated_kv_cache=True,
             lengths_without_padding=lengths_without_padding,
+            forward_pass_mode=ForwardPassMode.PREFILL,
+            forward_pass_config=forward_pass_config,
         )
 
         if lengths_without_padding is not None:
@@ -146,6 +155,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
+        forward_pass_config: ForwardPassConfig | None = None,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "batch response_tokens"]:
@@ -159,6 +169,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             prompt_token_ids,
             prompt_lengths_without_padding,
             sequence_length + max_output_length,
+            forward_pass_config=forward_pass_config,
         )
 
         initial_state = DecodingState(
@@ -189,6 +200,8 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                     next_token_indices[:, None],
                     state.kv_cache,
                     return_updated_kv_cache=True,
+                    forward_pass_mode=ForwardPassMode.DECODE,
+                    forward_pass_config=forward_pass_config,
                 )
                 assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
                 new_state = DecodingState(
@@ -214,12 +227,18 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         self,
         messages: Iterable[Message],
         sampling_policy: SamplingPolicy | None = None,
+        forward_pass_config: ForwardPassConfig | None = None,
         *,
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)[None, :]
-        response_ids = self.generate_tokens(token_ids, sampling_policy, key=key).squeeze(0)
+        response_ids = self.generate_tokens(
+            token_ids,
+            sampling_policy,
+            forward_pass_config=forward_pass_config,
+            key=key,
+        ).squeeze(0)
         response_text = self.message_processor.detokenize(response_ids.tolist())
         return self.message_processor.parse_response(response_text)
 
@@ -227,12 +246,18 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         self,
         messages: Iterable[Message],
         sampling_policy: SamplingPolicy | None = None,
+        forward_pass_config: ForwardPassConfig | None = None,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[str]:
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)
-        for token_id in self.stream_tokens(token_ids, sampling_policy, key=key):
+        for token_id in self.stream_tokens(
+            token_ids,
+            sampling_policy,
+            forward_pass_config=forward_pass_config,
+            key=key,
+        ):
             yield self.message_processor.detokenize([token_id.item()])
 
     def stream_tokens(
@@ -241,6 +266,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         sampling_policy: SamplingPolicy | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
+        forward_pass_config: ForwardPassConfig | None = None,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
@@ -259,6 +285,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             padded_token_ids[None, :],
             jnp.array([input_length], dtype=jnp.int32),
             padded_input_length + max_output_length,
+            forward_pass_config=forward_pass_config,
         )
 
         if key is None:
@@ -287,6 +314,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 next_token_indices.reshape(1, 1),
                 state.kv_cache,
                 return_updated_kv_cache=True,
+                forward_pass_config=forward_pass_config,
             )
             assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
             state = DecodingState(

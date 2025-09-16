@@ -12,9 +12,9 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 
 from .attention import Attention, AttentionConfig
-from .common import AttentionType, LalamoModule, WeightLayout
+from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout
 from .kv_cache import KVCacheLayer, StaticKVCacheLayer
-from .mlp import MLPBase, MLPConfig
+from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import PositionalEmbeddings
 from .utils import vmap_twice
@@ -23,8 +23,12 @@ __all__ = [
     "DecoderLayer",
     "DecoderLayerActivationTrace",
     "DecoderLayerConfig",
+    "DecoderLayerForwardPassConfig",
     "DecoderLayerResult",
 ]
+
+
+type DecoderLayerForwardPassConfig = MLPForwardPassConfig
 
 
 class DecoderLayerActivationTrace(eqx.Module):
@@ -222,6 +226,8 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_config: DecoderLayerForwardPassConfig | None = None,
     ) -> DecoderLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -244,7 +250,11 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             mlp_inputs = inputs + attention_outputs
 
         normalized_mlp_inputs = vmap_twice(self.pre_mlp_norm)(mlp_inputs)
-        mlp_outputs = self.mlp(normalized_mlp_inputs)
+        mlp_outputs = self.mlp(
+            normalized_mlp_inputs,
+            forward_pass_mode=forward_pass_mode,
+            forward_pass_config=forward_pass_config,
+        )
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs

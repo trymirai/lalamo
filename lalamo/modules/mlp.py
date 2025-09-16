@@ -7,6 +7,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree
@@ -21,11 +22,17 @@ __all__ = [
     "DenseMLPConfig",
     "MLPBase",
     "MLPConfig",
+    "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "RoutingFunction",
     "SoftmaxRouting",
 ]
+
+
+@dataclass(frozen=True)
+class MLPForwardPassConfig:
+    moe_chunk_size_ratio: float = 0.2
 
 
 @dataclass(frozen=True)
@@ -137,7 +144,8 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_mode: ForwardPassMode,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_config: MLPForwardPassConfig | None = None,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -179,7 +187,8 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_mode: ForwardPassMode,  # noqa: ARG002
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,  # noqa: ARG002
+        forward_pass_config: MLPForwardPassConfig | None = None,  # noqa: ARG002
     ) -> Float[Array, "batch suffix_tokens channels"]:
         return vmap_twice(self.call_unbatched)(inputs)
 
@@ -227,8 +236,8 @@ class RoutingMap(eqx.Module):
 
 @dataclass(frozen=True)
 class RoutingFunctionBase(ABC):
-    def __call__(self, logits: Float[Array, "batch suffix_tokens experts"], num_active: int) -> RoutingMap:
-        return vmap_twice(partial(self.call_unbatched, num_active=num_active))(logits)
+    def __call__(self, logits: Float[Array, "batch_tokens experts"], num_active: int) -> RoutingMap:
+        return vmap(partial(self.call_unbatched, num_active=num_active))(logits)
 
     @abstractmethod
     def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap: ...
@@ -307,10 +316,16 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_mode: ForwardPassMode,  # noqa: ARG002
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,  # noqa: ARG002
+        forward_pass_config: MLPForwardPassConfig | None = None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        (router_logits,) = self.router(inputs)
-        routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
+        # batch_size, sequence_length, num_channels = inputs.shape
+        # flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
+        # (router_logits,) = vmap(self.router)(flattened_inputs)
+        # routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+
+        # flattened_tokens =
         raise NotImplementedError
 
     def export_weights(

@@ -10,8 +10,8 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
-from .common import AttentionType, LalamoModule, WeightLayout
-from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
+from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout
+from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .normalization import RMSNorm, RMSNormConfig
@@ -21,8 +21,12 @@ __all__ = [
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
+    "DecoderForwardPassConfig",
     "DecoderResult",
 ]
+
+
+type DecoderForwardPassConfig = DecoderLayerForwardPassConfig
 
 
 class DecoderActivationTrace(eqx.Module):
@@ -226,6 +230,8 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_config: DecoderForwardPassConfig | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -261,6 +267,8 @@ class Decoder(LalamoModule[DecoderConfig]):
                 return_updated_kv_cache=return_updated_kv_cache,
                 return_activation_trace=return_activation_trace,
                 lengths_without_padding=lengths_without_padding,
+                forward_pass_mode=forward_pass_mode,
+                forward_pass_config=forward_pass_config,
             )
             inner_features = layer_result.outputs
             layer_results.append(layer_result)

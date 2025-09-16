@@ -1,8 +1,14 @@
 from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout, config_converter
-from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderResult
-from .decoder_layer import DecoderLayer, DecoderLayerActivationTrace, DecoderLayerConfig, DecoderLayerResult
+from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
+from .decoder_layer import (
+    DecoderLayer,
+    DecoderLayerActivationTrace,
+    DecoderLayerConfig,
+    DecoderLayerForwardPassConfig,
+    DecoderLayerResult,
+)
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -31,6 +37,7 @@ from .mlp import (
     MixtureOfExpertsConfig,
     MLPBase,
     MLPConfig,
+    MLPForwardPassConfig,
     RoutingFunction,
     SoftmaxRouting,
 )
@@ -54,9 +61,11 @@ __all__ = [
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
+    "DecoderForwardPassConfig",
     "DecoderLayer",
     "DecoderLayerActivationTrace",
     "DecoderLayerConfig",
+    "DecoderLayerForwardPassConfig",
     "DecoderLayerResult",
     "DecoderResult",
     "DenseMLP",
@@ -78,6 +87,7 @@ __all__ = [
     "LlamaRoPEConfig",
     "MLPBase",
     "MLPConfig",
+    "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "PositionalEmbeddings",
