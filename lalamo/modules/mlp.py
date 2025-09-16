@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Self
 
 import equinox as eqx
@@ -12,7 +13,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
-from .common import DummyUnionMember, LalamoModule, WeightLayout, register_config_union
+from .common import DummyUnionMember, ForwardPassMode, LalamoModule, WeightLayout, register_config_union
 from .linear import LinearBase, LinearConfig
 
 __all__ = [
@@ -136,6 +137,7 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
+        forward_pass_mode: ForwardPassMode,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -177,6 +179,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
+        forward_pass_mode: ForwardPassMode,  # noqa: ARG002
     ) -> Float[Array, "batch suffix_tokens channels"]:
         return vmap_twice(self.call_unbatched)(inputs)
 
@@ -218,19 +221,22 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
 
 class RoutingMap(eqx.Module):
-    expert_mask: Bool[Array, " experts"]
-    expert_weights: Float[Array, " experts"]
+    expert_mask: Bool[Array, "*batch_tokens experts"]
+    expert_weights: Float[Array, "*batch_tokens experts"]
 
 
 @dataclass(frozen=True)
 class RoutingFunctionBase(ABC):
+    def __call__(self, logits: Float[Array, "batch suffix_tokens experts"], num_active: int) -> RoutingMap:
+        return vmap_twice(partial(self.call_unbatched, num_active=num_active))(logits)
+
     @abstractmethod
-    def __call__(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap: ...
+    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap: ...
 
 
 @dataclass(frozen=True)
 class SoftmaxRouting(RoutingFunctionBase):
-    def __call__(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
+    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
         active_logits, active_indices = jax.lax.top_k(logits, num_active)
         active_weights = jax.nn.softmax(active_logits)
         mask = jnp.zeros_like(logits, dtype=bool)
@@ -298,11 +304,19 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def hidden_dim(self) -> int:
         return self.experts.hidden_dim
 
-    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+    def __call__(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        forward_pass_mode: ForwardPassMode,  # noqa: ARG002
+    ) -> Float[Array, "batch suffix_tokens channels"]:
         (router_logits,) = self.router(inputs)
         routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
         raise NotImplementedError
 
+    def export_weights(
+        self,
+        weight_layout: WeightLayout = WeightLayout.AUTO,
+    ) -> ParameterTree[Array]:
         return {
             "router": self.router.export_weights(weight_layout),
             "experts": self.experts.export_weights(weight_layout),

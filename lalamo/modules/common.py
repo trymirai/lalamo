@@ -14,6 +14,7 @@ from lalamo.common import ParameterTree
 __all__ = [
     "AttentionType",
     "DummyUnionMember",
+    "ForwardPassMode",
     "LalamoModule",
     "config_converter",
     "from_layout",
@@ -72,6 +73,11 @@ def from_layout(
 class AttentionType(Enum):
     GLOBAL = "global"
     SLIDING_WINDOW = "sliding_window"
+
+
+class ForwardPassMode(Enum):
+    PREFILL = "prefill"
+    DECODE = "decode"
 
 
 class LalamoModule[ConfigT](eqx.Module):

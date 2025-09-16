@@ -9,6 +9,7 @@ from transformers.tokenization_utils import PreTrainedTokenizer
 
 from lalamo.language_model import LanguageModel
 from lalamo.model_import import REPO_TO_MODEL, import_model
+from lalamo.sampling import GreedyPolicy
 
 
 @dataclass(frozen=True)
@@ -150,14 +151,17 @@ def test_streaming_vs_eager_consistency(
     language_model: LanguageModel,
     generation_input: GenerationInput,
 ) -> None:
+    sampling_policy = GreedyPolicy()
     eager_token_ids = language_model.generate_tokens(
-        generation_input.token_ids[:, None],
+        generation_input.token_ids[None, :],
+        sampling_policy=sampling_policy,
         max_output_length=32,
         eos_token_ids=jnp.array([-1]),  # Never stop.
     ).squeeze(0)
 
     streaming_token_generator = language_model.stream_tokens(
         generation_input.token_ids,
+        sampling_policy=sampling_policy,
         max_output_length=32,
         eos_token_ids=jnp.array([-1]),  # Never stop.
     )

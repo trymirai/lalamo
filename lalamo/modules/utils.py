@@ -10,9 +10,9 @@ __all__ = [
 ]
 
 
-def vmap_twice(
-    func: Callable[[Float[Array, "*axes"]], Float[Array, "*axes"]],
-) -> Callable[[Float[Array, "batch tokens *axes"]], Float[Array, "batch tokens *axes"]]:
+def vmap_twice[F: Callable](
+    func: F,
+) -> F:
     return vmap(vmap(func, in_axes=0), in_axes=0)
 
 

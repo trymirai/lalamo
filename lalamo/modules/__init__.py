@@ -1,6 +1,6 @@
 from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
-from .common import LalamoModule, WeightLayout, config_converter
+from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderResult
 from .decoder_layer import DecoderLayer, DecoderLayerActivationTrace, DecoderLayerConfig, DecoderLayerResult
 from .embedding import (
@@ -50,6 +50,7 @@ __all__ = [
     "Activation",
     "Attention",
     "AttentionConfig",
+    "AttentionType",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -63,6 +64,7 @@ __all__ = [
     "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
+    "ForwardPassMode",
     "FullPrecisionLinear",
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
