@@ -9,12 +9,13 @@ import cattrs
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import Decoder, DecoderConfig
+from lalamo.registry_abc import RegistryABC
 
 __all__ = ["ForeignConfig"]
 
 
 @dataclass(frozen=True)
-class ForeignConfig:
+class ForeignConfig(RegistryABC):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
