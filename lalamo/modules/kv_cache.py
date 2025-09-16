@@ -13,20 +13,26 @@ __all__ = ["DynamicKVCacheLayer", "KVCache", "KVCacheLayer", "StaticKVCacheLayer
 
 
 class KVCacheLayer(eqx.Module):
-    has_sinks: bool
-    keys: Float[Array, "tokens groups head_channels"]
-    values: Float[Array, "tokens groups head_channels"]
+    has_sinks: bool = eqx.field(static=True)
+    keys: Float[Array, "*batch tokens groups head_channels"]
+    values: Float[Array, "*batch tokens groups head_channels"]
 
     def __post_init__(self) -> None:
-        if self.keys.ndim != 3:
+        if self.keys.ndim not in (3, 4):
             raise ValueError(
-                f"Key and value buffers must have 3 dimensions: capacity, groups, head_channels,"
+                f"Key and value buffers must have 3 or 4 dimensions: [batch], capacity, groups, head_channels,"
                 f" got shape {self.keys.shape}",
             )
         if self.keys.shape != self.values.shape:
             raise ValueError("Keys and values buffers must have the same shape")
         if self.keys.dtype != self.values.dtype:
             raise ValueError("Keys and values buffers must have the same dtype")
+
+    def _raise_if_batched(self) -> None:
+        if self.keys.ndim != 3:
+            raise ValueError(
+                "Attempted to call a method on a batched version of KVCacheLayer. Use vmap instead.",
+            )
 
     @abstractmethod
     def attention_mask(
@@ -92,6 +98,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
         suffix_length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
+        self._raise_if_batched()
         total_num_tokens, _, _ = self.keys.shape
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
@@ -110,6 +117,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
         added_values: Float[Array, "new_tokens groups head_channels"],
         added_length: Int[Array, ""] | int | None = None,
     ) -> "DynamicKVCacheLayer":
+        self._raise_if_batched()
         updated_keys = jnp.concatenate([self.keys, added_keys], axis=0)
         updated_values = jnp.concatenate([self.values, added_values], axis=0)
 
@@ -131,7 +139,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
 
 
 class StaticKVCacheLayer(KVCacheLayer):
-    current_length: Int[Array, ""]
+    current_length: Int[Array, "*batch"]
 
     def attention_mask(
         self,
@@ -140,6 +148,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
+        self._raise_if_batched()
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
         if is_causal:
@@ -163,10 +172,12 @@ class StaticKVCacheLayer(KVCacheLayer):
 
     @property
     def padding_mask(self) -> Bool[Array, " tokens"] | None:
+        self._raise_if_batched()
         return jnp.arange(self.capacity, dtype=jnp.int32) < self.current_length
 
     @property
     def capacity(self) -> int:
+        self._raise_if_batched()
         result, _, _ = self.keys.shape
         return result
 
@@ -176,6 +187,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         added_values: Float[Array, "tokens groups head_channels"],
         added_length: Int[Array, ""] | int | None = None,
     ) -> "StaticKVCacheLayer":
+        self._raise_if_batched()
         if added_keys.shape != added_values.shape:
             raise ValueError("Keys and values must have the same shape")
         num_added_tokens, new_num_groups, new_head_dim = added_keys.shape

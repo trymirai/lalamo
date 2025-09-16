@@ -51,6 +51,7 @@ class TopPPolicy(SamplingPolicy):
     p: float = eqx.field(static=True)
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        return logits
         sorted_indices = jnp.argsort(logits, descending=True)
         sorted_logits = logits[sorted_indices]
         cumulative_probs = jnp.cumsum(jax.nn.softmax(sorted_logits))

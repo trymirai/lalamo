@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, Bool, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree
+from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
 from .common import DummyUnionMember, LalamoModule, WeightLayout, register_config_union
@@ -132,7 +133,10 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
     def hidden_dim(self) -> int: ...
 
     @abstractmethod
-    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]: ...
+    def __call__(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+    ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
 class DenseMLP(MLPBase[DenseMLPConfig]):
@@ -151,6 +155,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     def hidden_dim(self) -> int:
         return self.down_projection.input_dim
 
+    @property
+    def mixture_size(self) -> int | None:
+        return self.up_projection.mixture_size
+
     def __post_init__(self) -> None:
         up_output_dim, gate_output_dim = self.up_projection.output_dims
         if up_output_dim != gate_output_dim:
@@ -166,7 +174,19 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             )
 
     @eqx.filter_jit
-    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+    def __call__(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        return vmap_twice(self.call_unbatched)(inputs)
+
+    @eqx.filter_jit
+    def call_unbatched(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+        if self.mixture_size is not None:
+            raise ValueError(
+                "Mixtures of linear layers cannot be called directly."
+                "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
+            )
         up_proj, gate = self.up_projection(inputs)
         if self.config.gate_clipping:
             gate = jnp.clip(gate, *self.config.gate_clipping)
@@ -281,9 +301,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         (router_logits,) = self.router(inputs)
         routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
-        eqx
+        raise NotImplementedError
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
         return {
             "router": self.router.export_weights(weight_layout),
             "experts": self.experts.export_weights(weight_layout),

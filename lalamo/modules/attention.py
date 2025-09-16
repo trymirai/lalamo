@@ -71,7 +71,7 @@ def _soft_capped_attention_kernel(
 
 
 class AttentionResult(NamedTuple):
-    outputs: Float[Array, "suffix_tokens channels"]
+    outputs: Float[Array, "*batch suffix_tokens channels"]
     kv_cache: KVCacheLayer | None = None
 
 

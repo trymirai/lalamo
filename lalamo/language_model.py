@@ -7,6 +7,8 @@ from typing import NamedTuple, Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from einops import rearrange
+from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
@@ -27,16 +29,16 @@ _COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
 
 
 class PrefillResults(NamedTuple):
-    last_token_logits: Float[Array, " vocabulary"]
-    last_token_position: Int[Array, ""]
+    last_token_logits: Float[Array, "batch vocabulary"]
+    last_token_indices: Int[Array, " batch"]
     kv_cache: KVCache
 
 
 class DecodingState(NamedTuple):
-    last_token_logits: Float[Array, " vocabulary"]
-    last_token_position: Int[Array, ""]
+    last_token_logits: Float[Array, "batch vocabulary"]
+    last_token_indices: Int[Array, " batch"]
     kv_cache: KVCache
-    stop_flag: Bool[Array, ""]
+    stop_flags: Bool[Array, " batch"]
 
 
 @dataclass(frozen=True)
@@ -103,14 +105,14 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
     @eqx.filter_jit
     def _prefill(
         self,
-        token_ids: Int[Array, " tokens"],
-        length_without_padding: Int[Array, ""] | int | None = None,
+        token_ids: Int[Array, "batch tokens"],
+        lengths_without_padding: Int[Array, " batch"] | None = None,
         kv_cache_capacity: int | None = None,
     ) -> PrefillResults:
-        (num_tokens,) = token_ids.shape
-        token_positions = jnp.arange(num_tokens, dtype=jnp.int32)
+        batch_size, sequence_length = token_ids.shape
+        token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
         if kv_cache_capacity is not None:
-            kv_cache = self.decoder.init_static_kv_cache(kv_cache_capacity)
+            kv_cache = self.decoder.init_static_kv_cache(batch_size, kv_cache_capacity)
         else:
             kv_cache = None
 
@@ -119,52 +121,51 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             token_positions,
             kv_cache,
             return_updated_kv_cache=True,
-            length_without_padding=length_without_padding,
+            lengths_without_padding=lengths_without_padding,
         )
 
-        if length_without_padding is not None:
-            last_logits_index = length_without_padding - 1
+        if lengths_without_padding is not None:
+            last_logits_indices = lengths_without_padding - 1
         else:
-            last_logits_index = num_tokens - 1
+            last_logits_indices = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
 
-        last_token_logits = decoder_outputs.logits[last_logits_index, :]
-        last_token_position = jnp.array(last_logits_index, dtype=jnp.int32)
+        last_token_logits = vmap(lambda logits, index: logits[index])(decoder_outputs.logits, last_logits_indices)
 
         assert decoder_outputs.updated_kv_cache is not None
         return PrefillResults(
             last_token_logits=last_token_logits,
-            last_token_position=last_token_position,
+            last_token_indices=last_logits_indices,
             kv_cache=decoder_outputs.updated_kv_cache,
         )
 
     @eqx.filter_jit
     def generate_tokens(
         self,
-        prompt_token_ids: Int[Array, " prompt_tokens"],
+        prompt_token_ids: Int[Array, "batch prompt_tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        prompt_length_without_padding: Int[Array, ""] | int | None = None,
+        prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         *,
         key: PRNGKeyArray | None = None,
-    ) -> Int[Array, " response_tokens"]:
+    ) -> Int[Array, "batch response_tokens"]:
         if sampling_policy is None:
             sampling_policy = self.default_sampling_policy()
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
 
-        (input_length,) = prompt_token_ids.shape
+        batch_size, sequence_length = prompt_token_ids.shape
         prefill_results = self._prefill(
             prompt_token_ids,
-            prompt_length_without_padding,
-            input_length + max_output_length,
+            prompt_lengths_without_padding,
+            sequence_length + max_output_length,
         )
 
         initial_state = DecodingState(
             prefill_results.last_token_logits,
-            prefill_results.last_token_position,
+            prefill_results.last_token_indices,
             prefill_results.kv_cache,
-            jnp.array(0, dtype=jnp.bool),
+            jnp.zeros(batch_size, dtype=jnp.bool),
         )
 
         if key is None:
@@ -174,38 +175,40 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         def loop_iteration(
             state: DecodingState,
             key: PRNGKeyArray,
-        ) -> tuple[DecodingState, Int[Array, ""]]:
-            def sample_and_update() -> tuple[DecodingState, Int[Array, ""]]:
-                processed_logits = sampling_policy.process_logits(state.last_token_logits)
-                next_token_id = jax.random.categorical(key, processed_logits)
-                next_token_position = state.last_token_position + 1
+        ) -> tuple[DecodingState, Int[Array, " batch"]]:
+            def sample_and_update() -> tuple[DecodingState, Int[Array, " batch"]]:
+                processed_logits = vmap(sampling_policy.process_logits)(state.last_token_logits)
+                next_token_ids = jax.random.categorical(key, processed_logits)
+                next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
+                next_token_indices = state.last_token_indices + 1
 
-                stop_flag = state.stop_flag | jnp.any(next_token_id == eos_token_ids)
+                stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
 
                 decoder_outputs = self.decoder(
-                    next_token_id.reshape(1),
-                    next_token_position.reshape(1),
+                    next_token_ids[:, None],
+                    next_token_indices[:, None],
                     state.kv_cache,
                     return_updated_kv_cache=True,
                 )
                 assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
                 new_state = DecodingState(
-                    decoder_outputs.logits.squeeze(),
-                    next_token_position,
+                    decoder_outputs.logits.squeeze(1),
+                    next_token_indices,
                     decoder_outputs.updated_kv_cache,
-                    stop_flag,
+                    stop_flags,
                 )
-                return new_state, next_token_id
+                return new_state, next_token_ids
 
-            def pad_and_repeat_state() -> tuple[DecodingState, Int[Array, ""]]:
-                pad_token = jnp.array(0, dtype=jnp.int32)
+            def pad_and_repeat_state() -> tuple[DecodingState, Int[Array, " batch"]]:
+                (batch_size,) = state.stop_flags.shape
+                pad_token = jnp.zeros(batch_size, dtype=jnp.int32)
                 return state, pad_token
 
-            return jax.lax.cond(state.stop_flag, pad_and_repeat_state, sample_and_update)
+            return jax.lax.cond(jnp.any(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        _, tokens = jax.lax.scan(loop_iteration, initial_state, keys)
+        _, tokens_transposed = jax.lax.scan(loop_iteration, initial_state, keys)
 
-        return tokens
+        return rearrange(tokens_transposed, "iteration batch -> batch iteration")
 
     def reply(
         self,
@@ -215,8 +218,8 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
         formatted_messages = self.message_processor.render_request(messages)
-        token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)
-        response_ids = self.generate_tokens(token_ids, sampling_policy, key=key)
+        token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)[None, :]
+        response_ids = self.generate_tokens(token_ids, sampling_policy, key=key).squeeze(0)
         response_text = self.message_processor.detokenize(response_ids.tolist())
         return self.message_processor.parse_response(response_text)
 
@@ -253,8 +256,8 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
 
         prefill_results = self._prefill(
-            padded_token_ids,
-            jnp.array(input_length, dtype=jnp.int32),
+            padded_token_ids[None, :],
+            jnp.array([input_length], dtype=jnp.int32),
             padded_input_length + max_output_length,
         )
 
@@ -264,13 +267,13 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
 
         state = DecodingState(
             prefill_results.last_token_logits,
-            prefill_results.last_token_position,
+            prefill_results.last_token_indices,
             prefill_results.kv_cache,
-            jnp.array(0, dtype=jnp.bool),
+            jnp.array([0], dtype=jnp.bool),
         )
 
         for iter_key in keys:
-            processed_logits = sampling_policy.process_logits(state.last_token_logits)
+            processed_logits = sampling_policy.process_logits(state.last_token_logits.squeeze(0))
             next_token_id = jax.random.categorical(iter_key, processed_logits)
 
             yield next_token_id
@@ -278,17 +281,17 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             if jnp.any(next_token_id == eos_token_ids):
                 return
 
-            next_token_position = state.last_token_position + 1
+            next_token_position = state.last_token_indices.squeeze(0) + 1
             decoder_outputs = self.decoder(
-                next_token_id.reshape(1),
-                next_token_position.reshape(1),
+                next_token_id.reshape(1, 1),
+                next_token_position.reshape(1, 1),
                 state.kv_cache,
                 return_updated_kv_cache=True,
             )
             assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
             state = DecodingState(
-                decoder_outputs.logits.squeeze(),
+                decoder_outputs.logits.squeeze(1),
                 next_token_position,
                 decoder_outputs.updated_kv_cache,
-                state.stop_flag,
+                state.stop_flags,
             )

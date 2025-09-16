@@ -39,19 +39,22 @@ __all__ = [
 
 
 class PositionalEmbeddings(eqx.Module):
-    cosines: Float[Array, "tokens head_channels"]
-    sines: Float[Array, "tokens head_channels"]
+    cosines: Float[Array, "*batch tokens head_channels"]
+    sines: Float[Array, "*batch tokens head_channels"]
 
     @property
     def head_dim(self) -> int:
         return self.cosines.shape[-1]
 
-    def rotate_half(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
+    def rotate_half(
+        self,
+        heads: Float[Array, "*batch tokens head_channels"],
+    ) -> Float[Array, "*batch tokens head_channels"]:
         x1 = heads[..., : self.head_dim // 2]
         x2 = heads[..., self.head_dim // 2 :]
         return jnp.concatenate((-x2, x1), axis=-1)
 
-    def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
+    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
     def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002

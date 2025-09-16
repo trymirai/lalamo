@@ -1,9 +1,11 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from functools import partial
 from typing import Self
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
@@ -15,6 +17,7 @@ from .kv_cache import KVCacheLayer, StaticKVCacheLayer
 from .mlp import MLPBase, MLPConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import PositionalEmbeddings
+from .utils import vmap_twice
 
 __all__ = [
     "DecoderLayer",
@@ -25,17 +28,17 @@ __all__ = [
 
 
 class DecoderLayerActivationTrace(eqx.Module):
-    inputs: Float[Array, "suffix_tokens channels"]
+    inputs: Float[Array, "batch suffix_tokens channels"]
     positional_embeddings: PositionalEmbeddings
     kv_cache: KVCacheLayer | None
 
-    mlp_inputs: Float[Array, "suffix_tokens channels"]
-    pre_attention_norm: Float[Array, "suffix_tokens channels"]
-    attention: Float[Array, "suffix_tokens channels"]
-    post_attention_norm: Float[Array, "suffix_tokens channels"] | None
-    pre_mlp_norm: Float[Array, "suffix_tokens channels"]
-    mlp: Float[Array, "suffix_tokens channels"]
-    post_mlp_norm: Float[Array, "suffix_tokens channels"] | None
+    mlp_inputs: Float[Array, "batch suffix_tokens channels"]
+    pre_attention_norm: Float[Array, "batch suffix_tokens channels"]
+    attention: Float[Array, "batch suffix_tokens channels"]
+    post_attention_norm: Float[Array, "batch suffix_tokens channels"] | None
+    pre_mlp_norm: Float[Array, "batch suffix_tokens channels"]
+    mlp: Float[Array, "batch suffix_tokens channels"]
+    post_mlp_norm: Float[Array, "batch suffix_tokens channels"] | None
 
     def export(self) -> ParameterTree:
         result = dict(
@@ -213,32 +216,37 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
     @eqx.filter_jit
     def __call__(
         self,
-        inputs: Float[Array, "suffix_tokens channels"],
+        inputs: Float[Array, "batch suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayer | None = None,
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
-        length_without_padding: Int[Array, ""] | int | None = None,
+        lengths_without_padding: Int[Array, " batch"] | None = None,
     ) -> DecoderLayerResult:
-        normalized_attention_inputs = vmap(self.pre_attention_norm, in_axes=0)(inputs)
-        attention_outputs, updated_kv_cache = self.attention(
+        if inputs.ndim != 3:
+            raise ValueError(
+                f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
+                f" got {inputs.shape}",
+            )
+        normalized_attention_inputs = vmap_twice(self.pre_attention_norm)(inputs)
+        batched_attention_fn = vmap(partial(self.attention, return_updated_kv_cache=return_updated_kv_cache))
+        attention_outputs, updated_kv_cache = batched_attention_fn(
             normalized_attention_inputs,
             positional_embeddings,
             kv_cache=kv_cache,
-            return_updated_kv_cache=return_updated_kv_cache,
-            length_without_padding=length_without_padding,
+            length_without_padding=lengths_without_padding,
         )
         if self.post_attention_norm is not None:
-            normalized_attention_outputs = vmap(self.post_attention_norm, in_axes=0)(attention_outputs)
+            normalized_attention_outputs = vmap_twice(self.post_attention_norm)(attention_outputs)
             mlp_inputs = inputs + normalized_attention_outputs
         else:
             normalized_attention_outputs = None
             mlp_inputs = inputs + attention_outputs
 
-        normalized_mlp_inputs = vmap(self.pre_mlp_norm, in_axes=0)(mlp_inputs)
-        mlp_outputs = vmap(self.mlp, in_axes=0)(normalized_mlp_inputs)
+        normalized_mlp_inputs = vmap_twice(self.pre_mlp_norm)(mlp_inputs)
+        mlp_outputs = self.mlp(normalized_mlp_inputs)
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = vmap(self.post_mlp_norm, in_axes=0)(mlp_outputs)
+            normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None
@@ -266,8 +274,11 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             activation_trace=activation_trace,
         )
 
-    def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
-        return self.attention.init_static_kv_cache(capacity)
+    def init_static_kv_cache(self, batch_size: int, capacity: int) -> StaticKVCacheLayer:
+        return jax.tree.map(
+            lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
+            self.attention.init_static_kv_cache(capacity),
+        )
 
     def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
         result = dict(

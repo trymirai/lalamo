@@ -67,8 +67,8 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
     )
     hf_tracer = load_hf_tracer(test_spec.model_repo, torch_dtype=test_spec.dtype.torch_dtype)
 
-    token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)
-    token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)
+    token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)[None, :]
+    token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)[None, :]
 
     err, llm_result = checkify_forward(llm_model.decoder)(
         token_ids=token_ids,
