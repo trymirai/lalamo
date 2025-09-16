@@ -106,9 +106,9 @@ class ModelSpec:
     family: str
     name: str
     size: str
-    quantization: QuantizationMode | None
     repo: str
     config_type: type[ForeignConfig]
+    quantization: QuantizationMode | None = None
     output_parser_regex: str | None = None
     system_role_name: str = "system"
     user_role_name: str = "user"
