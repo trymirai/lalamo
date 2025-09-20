@@ -281,7 +281,7 @@ register_config_union(RoutingFunction)
 class MixtureOfExpertsConfig(ABC):
     mixture_size: int
     num_experts_per_token: int
-    routing_function: RoutingFunctionBase
+    routing_function: RoutingFunction
 
     router_config: LinearConfig
     router_has_biases: bool

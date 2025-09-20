@@ -45,11 +45,10 @@ def decode_mxfp4(
     # Prepare LUT in target dtype
     lut = jnp.array(_MXFP4_LUT_VALUES, dtype=target_dtype)
 
-    # Shapes: (..., rows, packed_cols)
     *prefix, rows, packed_cols = blocks.shape
     if scales.shape != (*prefix, rows):
         raise ValueError(
-            f"MXFP4 scales shape {scales.shape} does not match blocks prefix/rows {tuple(prefix + [rows])}",
+            f"MXFP4 scales shape {scales.shape} does not match blocks prefix/rows {(*prefix, rows)}",
         )
 
     # Extract low/high nibble indices
@@ -81,29 +80,6 @@ def deinterleave_pairwise_columns(
     *,
     first: str = "even",
 ) -> tuple[Array, Array]:
-    """
-    Split columns that are interleaved as a0, b0, a1, b1, ... into two contiguous matrices.
-
-    Parameters
-    ----------
-    matrix:
-        Input array with shape [..., cols]. The last dimension size must be even.
-    first:
-        Which stream is returned as the first output:
-        - "even": returns (matrix[..., 0::2], matrix[..., 1::2])
-        - "odd":  returns (matrix[..., 1::2], matrix[..., 0::2])
-
-    Returns
-    -------
-    (Array, Array)
-        Tuple of two arrays with shape [..., cols/2] each.
-
-    Examples
-    --------
-    - For GPT-OSS expert up/gate fused outputs (interleaved), use:
-      up, gate = deinterleave_pairwise_columns(fused, first="odd")
-      where the interleaving is [gate0, up0, gate1, up1, ...] and you want (up, gate).
-    """
     if matrix.shape[-1] % 2 != 0:
         raise ValueError(f"Last dimension must be even, got {matrix.shape[-1]}")
 
