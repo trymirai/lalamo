@@ -220,9 +220,10 @@ class HFDecoderTracer:
 
         # Test full decoder layer
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
+        assert ref_inputs.ndim == 3
         cosines = jax_to_torch(activation_trace.positional_embeddings.cosines).to(self.device)
         sines = jax_to_torch(activation_trace.positional_embeddings.sines).to(self.device)
-
+        assert cosines.ndim == 3
         if isinstance(hf_layer, Gemma3DecoderLayer):
             torch_outputs, *_ = hf_layer.forward(
                 hidden_states=ref_inputs,
@@ -236,6 +237,9 @@ class HFDecoderTracer:
             )
 
         ref_outputs = torch_to_jax(torch_outputs)
+        if ref_outputs.ndim != 3:
+            ref_outputs = ref_outputs[None, ...]
+        assert ref_outputs.ndim == 3
         assert_close(
             result=layer_result.outputs,
             reference=ref_outputs,
@@ -387,7 +391,7 @@ class HFDecoderTracer:
         )
 
 
-def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer:
+def load_hf_tracer(model_repo: str, dtype: torch.dtype) -> HFDecoderTracer:
     if torch.cuda.is_available():
         device = torch.device("cuda")
     else:
@@ -395,7 +399,7 @@ def load_hf_tracer(model_repo: str, torch_dtype: torch.dtype) -> HFDecoderTracer
 
     hf_model = AutoModelForCausalLM.from_pretrained(
         model_repo,
-        torch_dtype=torch_dtype,
+        dtype=dtype,
         device_map=device,
     )
 

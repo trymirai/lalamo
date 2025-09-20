@@ -187,6 +187,7 @@ def load_decoder_layer(
     attention_norm = load_rmsnorm(module.pre_attention_norm, weights_dict, path / "attention_norm")
     attention = load_attention(module.attention, weights_dict, path / "attention")
     mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
+    assert isinstance(module.mlp, DenseMLP)
     mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward")
     return load_parameters(
         lambda m: (m.pre_attention_norm, m.attention, m.pre_mlp_norm, m.mlp),

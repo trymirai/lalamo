@@ -4,6 +4,7 @@ from .huggingface import (
     HFGemma2Config,
     HFGemma3Config,
     HFGemma3TextConfig,
+    HFGPTOssConfig,
     HFLlamaConfig,
     HFMistralConfig,
     HFQwen2Config,
@@ -13,6 +14,7 @@ from .huggingface import (
 __all__ = [
     "ETLlamaConfig",
     "ForeignConfig",
+    "HFGPTOssConfig",
     "HFGemma2Config",
     "HFGemma3Config",
     "HFGemma3TextConfig",

@@ -1,10 +1,12 @@
 from .common import FileSpec, ModelSpec, UseCase, build_quantized_models
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
+from .gpt_oss import GPT_OSS_MODELS
 from .huggingface import HUGGINGFACE_MODELS
 from .llama import LLAMA_MODELS
 from .mistral import MISTRAL_MODELS
-from .pleias import PLEIAS_MODELS
+
+# from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
 from .reka import REKA_MODELS
@@ -23,6 +25,7 @@ ALL_MODEL_LISTS = [
     DEEPSEEK_MODELS,
     GEMMA_MODELS,
     HUGGINGFACE_MODELS,
+    GPT_OSS_MODELS,
     MISTRAL_MODELS,
     # PLEIAS_MODELS,  # TODO(norpadon): Add chat template
     POLARIS_MODELS,

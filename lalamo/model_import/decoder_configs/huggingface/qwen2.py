@@ -26,6 +26,7 @@ __all__ = ["HFQwen2Config"]
 
 @dataclass(frozen=True)
 class HFQwen2Config(HuggingFaceConfig):
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Qwen2ForCausalLM"]]
     attention_dropout: float
     bos_token_id: int | list[int]

@@ -36,6 +36,7 @@ class GemmaRoPEScalingConfig:
 
 @dataclass(frozen=True)
 class HFGemma3TextConfigRaw:
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
     hidden_size: int
     intermediate_size: int
     model_type: Literal["gemma3_text"]

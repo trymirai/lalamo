@@ -24,6 +24,7 @@ __all__ = ["HFMistralConfig"]
 
 @dataclass(frozen=True)
 class HFMistralConfig(HuggingFaceConfig):
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["MistralForCausalLM"]]
     attention_dropout: float
     bos_token_id: int

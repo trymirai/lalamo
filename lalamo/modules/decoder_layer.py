@@ -211,11 +211,6 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
                 f"MLP up projection dim {self.mlp.up_projection.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
             )
-        if self.mlp.hidden_dim != self.mlp.down_projection.input_dim:
-            raise ValueError(
-                f"MLP down projection dim {self.mlp.down_projection.input_dim} does not match"
-                f" the up projection dim {self.mlp.hidden_dim}",
-            )
 
     @eqx.filter_jit
     def __call__(

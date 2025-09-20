@@ -8,8 +8,8 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub[hf-transfer]>=0.27.1",
-    "jax>=0.4.38; sys_platform == 'darwin'",
-    "jax[cuda]>=0.4.38; sys_platform == 'linux'",
+    "jax>=0.7.2; sys_platform == 'darwin'",
+    "jax[cuda]>=0.7.2; sys_platform == 'linux'",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
@@ -21,6 +21,21 @@ dependencies = [
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]
 dynamic = ["version", "readme"]
+
+[dependency-groups]
+dev = [
+    "accelerate>=1.7.0",
+    "autoawq>=0.2.9; sys_platform == 'linux'",
+    "beartype>=0.19.0",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.5",
+    "memray>=1.17.2",
+    "pytest-env>=1.1.5",
+    "pytest>=8.3.4",
+    "torch>=2.7.1",
+    "torchao>=0.7.0",
+    "transformers>=4.48.0",
+]
 
 [project.scripts]
 lalamo = "lalamo.main:app"
@@ -38,19 +53,6 @@ readme = { file = ["README.md"] }
 
 [tool.uv]
 package = true
-dev-dependencies = [
-    "accelerate>=1.7.0",
-    "autoawq>=0.2.9; sys_platform == 'linux'",
-    "beartype>=0.19.0",
-    "ipykernel>=6.29.5",
-    "ipywidgets>=8.1.5",
-    "memray>=1.17.2",
-    "pytest-env>=1.1.5",
-    "pytest>=8.3.4",
-    "torch>=2.7.1",
-    "torchao>=0.7.0",
-    "transformers>=4.48.0",
-]
 
 [[tool.uv.index]]
 name = "torch-cpu"

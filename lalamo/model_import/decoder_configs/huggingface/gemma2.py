@@ -50,6 +50,7 @@ class HFGemma2Config(HuggingFaceConfig):
     transformers_version: str
     use_cache: bool
     vocab_size: int
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
 
     def to_decoder_config(
         self,
