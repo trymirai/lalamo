@@ -58,7 +58,7 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: MLPForwardPassConfig | None = None,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
@@ -203,7 +203,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,  # noqa: ARG002
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,  # noqa: ARG002
         forward_pass_config: MLPForwardPassConfig | None = None,  # noqa: ARG002
     ) -> Float[Array, "batch suffix_tokens channels"]:
         return vmap_twice(self.call_unbatched)(inputs)
@@ -329,17 +329,36 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def hidden_dim(self) -> int:
         return self.experts.hidden_dim
 
+    def __post_init__(self) -> None:
+        if self.router.input_dim != self.experts.model_dim:
+            raise ValueError(
+                f"Router input dimension ({self.router.input_dim}) must match experts model_dim"
+                f" ({self.experts.model_dim}).",
+            )
+
+        (router_output_dim,) = self.router.output_dims
+        if router_output_dim != self.mixture_size:
+            raise ValueError(
+                f"Router output dimension ({router_output_dim}) must equal mixture_size ({self.mixture_size}).",
+            )
+
+        if self.experts.mixture_size != self.mixture_size:
+            raise ValueError(
+                f"Experts mixture_size ({self.experts.mixture_size}) does not match specified mixture_size"
+                f" ({self.mixture_size}).",
+            )
+
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: MLPForwardPassConfig | None = None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_mode:
-            case ForwardPassMode.PREFILL:
+            case ForwardPassMode.MULTI_TOKEN:
                 return self.call_prefill_mode(inputs, lengths_without_padding, forward_pass_config)
-            case ForwardPassMode.DECODE:
+            case ForwardPassMode.SINGLE_TOKEN:
                 return self.call_decode_mode(inputs)
 
     @eqx.filter_jit
@@ -424,7 +443,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     indices: Int[Array, " tokens_per_chunk"],
                     weights: Float[Array, " tokens_per_chunk"],
                 ) -> Float[Array, "tokens_per_chunk channels"]:
-                    inputs = flattened_inputs[indices]
+                    inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
                     return vmap(expert.call_unbatched)(inputs) * weights[:, None]
 
                 expert_outputs = vmap(run_expert)(self.experts, token_indices_for_chunk, weights_for_chunk)

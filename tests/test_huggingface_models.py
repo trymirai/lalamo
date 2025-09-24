@@ -1,3 +1,4 @@
+import gc
 from dataclasses import dataclass
 from enum import Enum
 
@@ -40,7 +41,7 @@ MODEL_LIST = [
     # Spec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     Spec("Qwen/Qwen3-0.6B", DType.FLOAT32),
     Spec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16, requires_gpu=True),
-    Spec("openai/gpt-oss-20b", DType.FLOAT16, requires_gpu=True),
+    Spec("openai/gpt-oss-20b", DType.BFLOAT16, requires_gpu=True),
 ]
 
 
@@ -71,12 +72,16 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)[None, :]
     token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)[None, :]
 
-    err, llm_result = checkify_forward(llm_model.decoder)(
-        token_ids=token_ids,
-        token_positions=token_positions,
-        return_updated_kv_cache=True,
-        return_activation_trace=True,
-    )
-    err.throw()
+    with jax.disable_jit():
+        err, llm_result = checkify_forward(llm_model.decoder)(
+            token_ids=token_ids,
+            token_positions=token_positions,
+            return_updated_kv_cache=True,
+            return_activation_trace=True,
+        )
+        err.throw()
+
+    del llm_model
+    gc.collect()
 
     hf_tracer.match_activations(llm_result)

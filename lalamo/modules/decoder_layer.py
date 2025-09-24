@@ -208,7 +208,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             )
         if self.mlp.model_dim != model_dim:
             raise ValueError(
-                f"MLP up projection dim {self.mlp.up_projection.input_dim} does not match"
+                f"MLP up projection dim {self.mlp.model_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
             )
 
@@ -221,7 +221,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderLayerForwardPassConfig | None = None,
     ) -> DecoderLayerResult:
         if inputs.ndim != 3:

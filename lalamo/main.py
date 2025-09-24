@@ -343,10 +343,10 @@ def _model_size_string_to_int(
 ) -> float:
     match = _regex.match(size_str)
     factors = {
-        "K": 1024**1,
-        "M": 1024**2,
-        "B": 1024**3,
-        "T": 1024**4,
+        "K": 1000**1,
+        "M": 1000**2,
+        "B": 1000**3,
+        "T": 1000**4,
     }
     if match:
         return float(match.group("number")) * factors[match.group("suffix")]

@@ -96,8 +96,10 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
                 beta_fast=self.rope_scaling.beta_fast,
                 beta_slow=self.rope_scaling.beta_slow,
+                truncate=self.rope_scaling.truncate,
             )
         else:
             rope_config = YARNRoPEConfig(
@@ -105,8 +107,10 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=1.0,
+                original_context_length=self.max_position_embeddings,
                 beta_fast=32.0,
                 beta_slow=1.0,
+                truncate=True,
             )
 
         rmsnorm_config = RMSNormConfig(
@@ -114,7 +118,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
-            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            upcast_mode=UpcastMode.FULL_LAYER,
         )
 
         # Linear layers

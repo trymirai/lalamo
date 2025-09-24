@@ -129,7 +129,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             kv_cache,
             return_updated_kv_cache=True,
             lengths_without_padding=lengths_without_padding,
-            forward_pass_mode=ForwardPassMode.PREFILL,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=forward_pass_config,
         )
 
@@ -195,12 +195,17 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
 
                 stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
 
+                if batch_size == 1:
+                    forward_pass_mode = ForwardPassMode.SINGLE_TOKEN
+                else:
+                    forward_pass_mode = ForwardPassMode.MULTI_TOKEN
+
                 decoder_outputs = self.decoder(
                     next_token_ids[:, None],
                     next_token_indices[:, None],
                     state.kv_cache,
                     return_updated_kv_cache=True,
-                    forward_pass_mode=ForwardPassMode.DECODE,
+                    forward_pass_mode=forward_pass_mode,
                     forward_pass_config=forward_pass_config,
                 )
                 assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"

@@ -76,8 +76,8 @@ class AttentionType(Enum):
 
 
 class ForwardPassMode(Enum):
-    PREFILL = "prefill"
-    DECODE = "decode"
+    MULTI_TOKEN = "multi_token"
+    SINGLE_TOKEN = "single_token"
 
 
 class LalamoModule[ConfigT](eqx.Module):

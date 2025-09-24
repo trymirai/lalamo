@@ -25,8 +25,12 @@ def assert_close(
     fraction_of_allowed_violations: float = 0.0,
     operation_name: str | None = None,
 ) -> None:
-    assert result.shape == reference.shape, f"Shapes do not match: {result.shape} != {reference.shape}"
-    assert result.dtype == reference.dtype, f"Data types do not match: {result.dtype} != {reference.dtype}"
+    assert result.shape == reference.shape, (
+        f"{operation_name} shapes do not match: {result.shape} != {reference.shape}"
+    )
+    assert result.dtype == reference.dtype, (
+        f"{operation_name} data types do not match: {result.dtype} != {reference.dtype}"
+    )
 
     result = result.astype(jnp.float32)
     reference = reference.astype(jnp.float32)

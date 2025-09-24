@@ -167,4 +167,7 @@ def test_streaming_vs_eager_consistency(
     )
     streaming_token_ids = jnp.array(list(streaming_token_generator))
 
-    assert jnp.array_equal(eager_token_ids, streaming_token_ids)
+    assert jnp.array_equal(eager_token_ids, streaming_token_ids), (
+        eager_token_ids.squeeze().tolist(),
+        streaming_token_ids.squeeze().tolist(),
+    )

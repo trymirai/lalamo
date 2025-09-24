@@ -81,14 +81,19 @@ class DynamicKVCacheLayer(KVCacheLayer):
         values: Float[Array, "tokens groups head_channels"],
         length: Int[Array, ""] | int | None = None,
     ) -> "DynamicKVCacheLayer":
-        num_tokens, _, _ = keys.shape
+        num_tokens, num_groups, head_dim = keys.shape
         if length is None:
             padding_mask = None
         else:
             token_indices = jnp.arange(num_tokens, dtype=jnp.int32)
-            if has_sinks:
-                token_indices = token_indices + 1
             padding_mask = token_indices < length
+        if has_sinks:
+            sinks = jnp.zeros((1, num_groups, head_dim), dtype=keys.dtype)
+            keys = jnp.concatenate([sinks, keys], axis=0)
+            values = jnp.concatenate([sinks, values], axis=0)
+            if padding_mask is not None:
+                true = jnp.ones((1,), dtype=jnp.bool)
+                padding_mask = jnp.concatenate([true, padding_mask], axis=0)
         return cls(has_sinks, keys, values, padding_mask)
 
     def attention_mask(
@@ -102,9 +107,9 @@ class DynamicKVCacheLayer(KVCacheLayer):
         total_num_tokens, _, _ = self.keys.shape
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
-            result = jnp.tril(result, k=total_num_tokens - suffix_length + self.has_sinks)
+            result = jnp.tril(result, k=total_num_tokens - suffix_length)
         if sliding_window_size is not None:
-            result = jnp.triu(result, k=1 - sliding_window_size + self.has_sinks)
+            result = jnp.triu(result, k=1 - sliding_window_size)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
@@ -158,8 +163,6 @@ class StaticKVCacheLayer(KVCacheLayer):
 
         query_indices = self.current_length + query_offsets
         key_indices = jnp.arange(self.capacity, dtype=jnp.int32)
-        if self.has_sinks:
-            key_indices = key_indices - 1
 
         result = query_indices[:, None] >= key_indices[None, :]
         if sliding_window_size is not None:

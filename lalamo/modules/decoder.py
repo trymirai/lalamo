@@ -230,7 +230,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_updated_kv_cache: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_mode: ForwardPassMode = ForwardPassMode.PREFILL,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderForwardPassConfig | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:

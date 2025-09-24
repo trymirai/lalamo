@@ -45,8 +45,6 @@ def _soft_capped_attention_kernel(
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
-    if scale is None:
-        scale = head_dim**-0.5
     group_size = num_heads // num_groups
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
@@ -60,7 +58,11 @@ def _soft_capped_attention_kernel(
     if mask is not None:
         attention_logits = jnp.where(mask, attention_logits, jnp.array(float("-inf"), dtype=attention_logits.dtype))
 
-    attention_logits = attention_logits * scale
+    if scale is None:
+        scale_val = head_dim**-0.5
+    else:
+        scale_val = float(scale)
+    attention_logits = attention_logits * scale_val
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     attention_weights = jax.nn.softmax(attention_logits, axis=-1)
     return einsum(
@@ -362,9 +364,9 @@ class Attention(LalamoModule[AttentionConfig]):
             length_without_padding,
             self.sliding_window_size,
         )
-        if self.has_sinks:
-            sink_bias = jnp.zeros_like(mask, dtype=queries.dtype)
-            sink_bias = sink_bias.at[:, 0].set(self.sinks)
+        if self.sinks is not None:
+            sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)
+            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
         else:
             sink_bias = None
 

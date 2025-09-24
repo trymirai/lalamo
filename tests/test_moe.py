@@ -52,7 +52,7 @@ def test_moe_prefill_vs_decode_match() -> None:
     inputs = jax.random.normal(inputs_key, (batch, suffix_tokens, model_dim), dtype=jnp.float32)
 
     # Compare PREFILL vs DECODE
-    out_prefill = moe(inputs, forward_pass_mode=ForwardPassMode.PREFILL)
-    out_decode = moe(inputs, forward_pass_mode=ForwardPassMode.DECODE)
+    out_prefill = moe(inputs, forward_pass_mode=ForwardPassMode.MULTI_TOKEN)
+    out_decode = moe(inputs, forward_pass_mode=ForwardPassMode.SINGLE_TOKEN)
 
     assert_close(result=out_decode, reference=out_prefill)

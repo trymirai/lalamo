@@ -15,6 +15,7 @@ from lalamo.modules import (
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UpcastMode,
+    YARNRoPEConfig,
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.embedding import UntiedEmbeddingConfig
@@ -32,6 +33,16 @@ class LlamaRopeScalingConfig:
     low_freq_factor: float
     original_max_position_embeddings: int
     rope_type: Literal["llama3"]
+
+
+@dataclass(frozen=True)
+class YarnRopeScalingConfig:
+    factor: float
+    beta_fast: float
+    beta_slow: float
+    original_max_position_embeddings: int
+    rope_type: Literal["yarn"]
+    truncate: bool
 
 
 @dataclass(frozen=True)
@@ -54,7 +65,7 @@ class HFLlamaConfig(HuggingFaceConfig):
     num_key_value_heads: int
     pretraining_tp: int
     rms_norm_eps: float
-    rope_scaling: LlamaRopeScalingConfig | None
+    rope_scaling: LlamaRopeScalingConfig | YarnRopeScalingConfig | None
     rope_theta: float
     tie_word_embeddings: bool
     transformers_version: str
@@ -88,7 +99,18 @@ class HFLlamaConfig(HuggingFaceConfig):
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
             )
-        else:
+        elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
+            rope_config = YARNRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=context_length or self.max_position_embeddings,
+                scaling_factor=self.rope_scaling.factor,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
+                beta_fast=self.rope_scaling.beta_fast,
+                beta_slow=self.rope_scaling.beta_slow,
+                truncate=self.rope_scaling.truncate,
+            )
+        elif isinstance(self.rope_scaling, LlamaRopeScalingConfig):
             rope_config = LlamaRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
@@ -98,6 +120,8 @@ class HFLlamaConfig(HuggingFaceConfig):
                 low_frequency_factor=self.rope_scaling.low_freq_factor,
                 high_frequency_factor=self.rope_scaling.high_freq_factor,
             )
+        else:
+            raise ValueError("Unsupported rope_scaling configuration")
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
