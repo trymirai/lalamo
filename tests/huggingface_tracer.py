@@ -167,7 +167,7 @@ class HFDecoderTracer:
 
         ref_input = jax_to_torch(activation_trace.token_ids)[None, ...].to(self.device)
         torch_embedding = hf_embedding.forward(ref_input)
-        ref_embedding = torch_to_jax(torch_embedding)  # .squeeze(0)
+        ref_embedding = torch_to_jax(torch_embedding).squeeze(0)
         assert_close(
             result=llm_results,
             reference=ref_embedding,
@@ -183,7 +183,7 @@ class HFDecoderTracer:
         ref_normalized_outputs = jax_to_torch(result.activation_trace.output_norm)[None, ...].to(self.device)
         hf_logits = self.hf_model.lm_head(ref_normalized_outputs)
 
-        ref_logits = torch_to_jax(hf_logits)  # .squeeze(0)
+        ref_logits = torch_to_jax(hf_logits).squeeze(0)
 
         assert_close(
             result=llm_logits,
