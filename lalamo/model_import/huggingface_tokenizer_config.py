@@ -72,10 +72,7 @@ class HFTokenizerConfig:
     def added_tokens(self) -> list[AddedToken]:
         if self.added_tokens_decoder is None:
             return []
-        return [
-            AddedToken(content=token.content, single_word=token.single_word, normalized=token.normalized)
-            for token in self.added_tokens_decoder.values()
-        ]
+        return [token.to_added_token() for token in self.added_tokens_decoder.values()]
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> "HFTokenizerConfig":

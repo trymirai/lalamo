@@ -73,7 +73,7 @@ class BanTokensPolicy(SamplingPolicy):
 
 
 class CompositePolicy(SamplingPolicy):
-    policies: tuple[SamplingPolicy, ...]
+    policies: tuple[SamplingPolicy, ...] = eqx.field(static=True)
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         for policy in self.policies:

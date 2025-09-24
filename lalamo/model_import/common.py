@@ -139,7 +139,13 @@ def import_message_processor(
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
     tokenizer = Tokenizer.from_file(str(tokenizer_file))
-    tokenizer.add_special_tokens(tokenizer_config.added_tokens())
+
+    added_tokens = tokenizer_config.added_tokens()
+    added_special_tokens = [token for token in added_tokens if token.special]
+    added_not_special_tokens = [token for token in added_tokens if not token.special]
+    tokenizer.add_special_tokens(added_special_tokens)
+    tokenizer.add_tokens(added_not_special_tokens)
+
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
         output_parser_regex=model_spec.output_parser_regex,
