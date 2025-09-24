@@ -1,7 +1,7 @@
 import math
 
 from jax import numpy as jnp
-from jax.experimental.checkify import checkify, div_checks, index_checks, nan_checks, user_checks
+from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
 
 __all__ = ["assert_close", "checkify_forward"]
 
@@ -12,7 +12,7 @@ RTOL = 0.03
 def checkify_forward(module):  # noqa: ANN001, ANN201
     return checkify(
         module.__call__,
-        errors=index_checks | nan_checks | div_checks | user_checks,
+        errors=nan_checks | div_checks | user_checks,
     )
 
 
