@@ -15,7 +15,7 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import MapDictValues, open_safetensors, torch_to_jax
+from lalamo.utils import MapDictValues, open_safetensors
 
 __all__ = [
     "ConfigMap",
@@ -45,6 +45,8 @@ class WeightsType(Enum):
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict)
         else:
             import torch
+
+            from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
             yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
@@ -89,7 +91,7 @@ def _structure_foreign_config_factory(
     return _hook
 
 
-def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:
+def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
     def _hook(v: type[ForeignConfig]) -> str:
         return v.__name__
 
