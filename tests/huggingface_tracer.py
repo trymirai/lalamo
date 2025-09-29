@@ -334,6 +334,8 @@ class HFDecoderTracer:
     def match_mlp(self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
         torch_outputs = hf_mlp.forward(ref_inputs)
+        if isinstance(torch_outputs, tuple):
+            torch_outputs, _ = torch_outputs
         ref_outputs = torch_to_jax(torch_outputs)
         assert_close(
             result=llm_outputs,

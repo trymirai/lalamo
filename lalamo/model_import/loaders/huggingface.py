@@ -200,14 +200,12 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             weights_dict[experts_path / "gate_up_proj_blocks"],
             weights_dict[experts_path / "gate_up_proj_scales"],
             dtype=module.activation_precision,
-            flatten=True,
+            flatten=False,
         )
-        # Reshape robustly to (mixture, in, 2*hidden_dim) before deinterleaving
-        mixture_size = module.mixture_size
-        model_dim = module.model_dim
-        hidden_dim = module.hidden_dim
-        fused = fused.reshape(mixture_size, model_dim, 2 * hidden_dim)
-        up_w, gate_w = deinterleave_pairwise_columns(fused, first="odd")
+        # Stored as (experts, outputs=2*hidden_dim, input_blocks, input_block_elems)
+        # Merge blocks and move outputs last
+        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
+        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
         combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=-1)
 
         gub = weights_dict[experts_path / "gate_up_proj_bias"]
@@ -227,10 +225,11 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             weights_dict[experts_path / "down_proj_blocks"],
             weights_dict[experts_path / "down_proj_scales"],
             dtype=module.activation_precision,
-            flatten=True,
+            flatten=False,
         )
-        # Reshape robustly to (mixture, hidden_dim, model_dim)
-        down_w = down_w.reshape(mixture_size, hidden_dim, module.model_dim)
+        # Stored as (experts, outputs=model_dim, input_blocks, input_block_elems)
+        # Merge blocks and move outputs last
+        down_w = rearrange(down_w, "e o ib ie -> e (ib ie) o")
         down_b = weights_dict[experts_path / "down_proj_bias"]
         if down_b.ndim == 1:
             down_b = jnp.broadcast_to(down_b, down_w.shape[:-1] + (down_b.shape[0],))
