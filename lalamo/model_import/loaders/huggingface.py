@@ -160,7 +160,7 @@ def load_linear(
         return load_parameters(
             lambda m: (m.weights, m.scales, m.zero_points, m.biases),
             module,
-            (weights, scales, zero_points, bias),
+            (weights.T, scales.T, zero_points.T, bias),
         )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
