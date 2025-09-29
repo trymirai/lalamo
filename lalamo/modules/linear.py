@@ -15,9 +15,6 @@ from lalamo.quantization import QuantizationMode, dynamically_quantize_activatio
 
 from .common import (
     LalamoModule,
-    WeightLayout,
-    from_layout,
-    into_layout,
     register_config_union,
 )
 
@@ -263,8 +260,8 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        result = dict(weights=into_layout(self.weights, weight_layout))
+    def export_weights(self) -> ParameterTree:
+        result = dict(weights=self.weights)
         if self.biases is not None:
             result["biases"] = self.biases
         return result
@@ -272,12 +269,11 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         return replace(
             self,
-            weights=from_layout(weights["weights"], weight_layout),
+            weights=weights["weights"],
             biases=weights["biases"] if self.has_biases else None,
         )
 
@@ -300,14 +296,14 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
         min_val, max_val = self.weight_quantization_mode.range
         weights = jax.random.uniform(
             key,
-            (input_dim, sum(output_dims)),
+            (sum(output_dims), input_dim),
             minval=min_val - 1,
             maxval=max_val + 1,
             dtype=self.activation_precision,
         )
         num_groups = input_dim // self.group_size
         scale = 1 / ((max_val - min_val) / 2 * math.sqrt(input_dim))
-        scales = scale * jnp.ones((num_groups, sum(output_dims)), dtype=self.activation_precision)
+        scales = scale * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
         if has_biases:
             biases = jnp.zeros((sum(output_dims),), dtype=self.activation_precision)
@@ -315,7 +311,7 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
             biases = None
 
         zero_point = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
-        zero_points = zero_point * jnp.ones((num_groups, sum(output_dims)), dtype=self.activation_precision)
+        zero_points = zero_point * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
         return GroupQuantizedLinear(
             config=self,
@@ -346,17 +342,17 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
         has_biases: bool,
     ) -> LinearBase:
         weights = dummy_array(
-            (*leading_dims, input_dim, sum(output_dims)),
+            (*leading_dims, sum(output_dims), input_dim),
             dtype=self.activation_precision,
         )
         num_groups = input_dim // self.group_size
-        scales = dummy_array((*leading_dims, num_groups, sum(output_dims)), dtype=self.activation_precision)
+        scales = dummy_array((*leading_dims, sum(output_dims), num_groups), dtype=self.activation_precision)
 
         if has_biases:
             biases = dummy_array((*leading_dims, sum(output_dims)), dtype=self.activation_precision)
         else:
             biases = None
-        zero_points = dummy_array((*leading_dims, num_groups, sum(output_dims)), dtype=self.activation_precision)
+        zero_points = dummy_array((*leading_dims, sum(output_dims), num_groups), dtype=self.activation_precision)
 
         return GroupQuantizedLinear(
             config=self,
@@ -386,9 +382,9 @@ class GroupQuantizedLinearConfig(LinearConfigBase):
 
 
 class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[ConfigT]):
-    weights: Float[Array, "*components in_channels total_out_channels"]
-    scales: Float[Array, "*components groups total_out_channels"]
-    zero_points: Float[Array, "*components groups total_out_channels"]
+    weights: Float[Array, "*components total_out_channels in_channels"]
+    scales: Float[Array, "*components total_out_channels groups"]
+    zero_points: Float[Array, "*components total_out_channels groups"]
     biases: Float[Array, "*components total_out_channels"] | None
 
     @property
@@ -405,7 +401,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
 
     @property
     def input_dim(self) -> int:
-        *_, input_dim, _ = self.weights.shape
+        *_, _, input_dim = self.weights.shape
         return input_dim
 
     @property
@@ -433,7 +429,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
                 f" ({self.config.activation_precision}).",
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *w_num_components, _, w_output_dim = self.weights.shape
+        *w_num_components, w_output_dim, _ = self.weights.shape
         if w_output_dim != sum(self.output_dims):
             raise ValueError(
                 f"Number of output channels in weights ({w_output_dim}) is not"
@@ -446,7 +442,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
                 f" ({self.config.activation_precision}).",
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *s_num_components, s_num_groups, s_output_dim = self.scales.shape
+        *s_num_components, s_output_dim, s_num_groups = self.scales.shape
         if w_output_dim != s_output_dim:
             raise ValueError(
                 f"Number of output channels in weights ({w_output_dim}) is not"
@@ -469,7 +465,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
                 f" ({self.config.activation_precision}).",
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *zp_num_components, zp_num_groups, zp_output_dim = self.zero_points.shape
+        *zp_num_components, zp_output_dim, zp_num_groups = self.zero_points.shape
         if w_output_dim != zp_output_dim:
             raise ValueError(
                 f"Number of output channels in weights ({w_output_dim}) is not"
@@ -509,25 +505,25 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
-            "... (groups group_channels) total_out_channels -> ... groups group_channels total_out_channels",
+            "... total_out_channels (groups group_channels) -> ... total_out_channels groups group_channels",
             groups=self.num_groups,
         )
 
-        zero_points = rearrange(self.zero_points, "... groups total_out_channels -> ... groups 1 total_out_channels")
+        zero_points = rearrange(self.zero_points, "... total_out_channels groups -> ... total_out_channels groups 1")
         grouped_weights = grouped_weights - zero_points
 
-        scales = rearrange(self.scales, "... groups total_out_channels -> ... groups 1 total_out_channels")
+        scales = rearrange(self.scales, "... total_out_channels groups -> ... total_out_channels groups 1")
         scaled_grouped_weights = grouped_weights * scales
         result = rearrange(
             scaled_grouped_weights,
-            "... groups group_channels total_out_channels -> ... (groups group_channels) total_out_channels",
+            "... total_out_channels groups group_channels -> ... total_out_channels (groups group_channels)",
         )
         return result
 
     def _apply_weights(self, inputs: Float[Array, " in_channels"]) -> Float[Array, " total_out_channels"]:
         if self.config.activation_quantization_mode is not None:
             inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
-        return inputs @ self._prepare_scaled_weights()
+        return self._prepare_scaled_weights() @ inputs
 
     @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
@@ -541,17 +537,11 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        exported_weights = into_layout(self.int_weights, weight_layout)
-
-        exported_zero_points = into_layout(self.int_zero_points, weight_layout)
-
-        exported_scales = into_layout(self.scales, weight_layout)
-
+    def export_weights(self) -> ParameterTree:
         result = dict(
-            weights=exported_weights,
-            zero_points=exported_zero_points,
-            scales=exported_scales,
+            weights=self.int_weights,
+            zero_points=self.int_zero_points,
+            scales=self.scales,
         )
         if self.biases is not None:
             result["biases"] = self.biases
@@ -560,15 +550,15 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["weights"], Array)
+        assert isinstance(weights["zero_points"], Array)
         return replace(
             self,
-            weights=from_layout(weights["weights"].astype(self.weights.dtype), weight_layout),
-            scales=from_layout(weights["scales"], weight_layout),
-            zero_points=from_layout(weights["zero_points"], weight_layout).astype(self.zero_points.dtype),
+            weights=weights["weights"].astype(self.weights.dtype),
+            scales=weights["scales"],
+            zero_points=weights["zero_points"].astype(self.zero_points.dtype),
             biases=weights["biases"] if self.has_biases else None,
         )
 
@@ -681,13 +671,8 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> LinearBase:
-        num_groups = input_dim // self.group_size
-        weights = dummy_array((*leading_dims, input_dim, sum(output_dims)), dtype=self.activation_precision)
-        scales = dummy_array((*leading_dims, num_groups, sum(output_dims)), dtype=self.activation_precision)
-        zero_points = dummy_array((*leading_dims, num_groups, sum(output_dims)), dtype=self.activation_precision)
-        biases = (
-            dummy_array((*leading_dims, sum(output_dims)), dtype=self.activation_precision) if has_biases else None
-        )
+        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
+        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
 
         hidden_lora_rank = len(output_dims) * self.lora_rank
         lora_down_weights = dummy_array(
@@ -705,10 +690,10 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         return QLoRALinear(
             config=self,
             output_dims=output_dims,
-            weights=weights,
-            scales=scales,
-            biases=biases,
-            zero_points=zero_points,
+            weights=group_quantized_linear.weights,
+            scales=group_quantized_linear.scales,
+            biases=group_quantized_linear.biases,
+            zero_points=group_quantized_linear.zero_points,
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
         )
@@ -811,30 +796,25 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
 
         return tuple(results)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+    def export_weights(self) -> ParameterTree:
         quantized_linear_weights: dict[str, ParameterTree] = super().export_weights()  # type: ignore
-        exported_lora_down_weights = into_layout(self.lora_down_weights, weight_layout)
-        exported_lora_up_weights = [
-            into_layout(lora_up_weight, weight_layout) for lora_up_weight in self.lora_up_weights
-        ]
         return dict(
-            down_weights=exported_lora_down_weights,
-            up_weights=exported_lora_up_weights,
+            down_weights=self.lora_down_weights,
+            up_weights=self.lora_up_weights,
             **quantized_linear_weights,
         )
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
-        base = super().import_weights(weights, weight_layout)
+        base = super().import_weights(weights)
         assert isinstance(weights, Mapping)
         assert isinstance(weights["up_weights"], Sequence)
         return replace(
             base,
-            lora_down_weights=from_layout(weights["down_weights"], weight_layout),
-            lora_up_weights=tuple(from_layout(up_weights, weight_layout) for up_weights in weights["up_weights"]),
+            lora_down_weights=weights["down_weights"],
+            lora_up_weights=tuple(up_weights for up_weights in weights["up_weights"]),
         )
 
 

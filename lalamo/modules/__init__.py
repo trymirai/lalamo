@@ -1,6 +1,6 @@
 from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
-from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout, config_converter
+from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
 from .decoder_layer import (
     DecoderLayer,
@@ -109,7 +109,6 @@ __all__ = [
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
-    "WeightLayout",
     "YARNRoPEConfig",
     "config_converter",
 ]

@@ -33,7 +33,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.modules import WeightLayout, config_converter
+from lalamo.modules import config_converter
 from lalamo.utils import jax_uint4_to_packed_uint8
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -112,17 +112,6 @@ def chat(
             metavar="MODEL_PATH",
         ),
     ],
-    weight_layout: Annotated[
-        WeightLayout | None,
-        Option(
-            help=(
-                "(EXPERIMENTAL) Order of dimensions in the weights of linear layers."
-                "\n\n\n\n"
-                "If set to AUTO, the layout will depend on the model."
-            ),
-            show_default="auto",
-        ),
-    ] = None,
     profile_xla: Annotated[
         bool,
         Option(
@@ -131,15 +120,13 @@ def chat(
     ] = False,
 ) -> None:
     try:
-        if weight_layout is None:
-            weight_layout = WeightLayout.AUTO
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
             transient=True,
         ) as progress:
             loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-            model = LanguageModel.load(model_path, weight_layout)
+            model = LanguageModel.load(model_path)
             progress.remove_task(loading_task)
             warmup_task = progress.add_task("🔥 Warming up compilation cache...")
             list(model.stream_reply_text([UserMessage("")], max_output_length=1))
@@ -190,17 +177,6 @@ def convert(
             show_default="Native precision of the model",
         ),
     ] = None,
-    weight_layout: Annotated[
-        WeightLayout | None,
-        Option(
-            help=(
-                "(EXPERIMENTAL) Order of dimensions in the weights of linear layers."
-                "\n\n\n\n"
-                "If set to AUTO, the layout will depend on the model."
-            ),
-            show_default="auto",
-        ),
-    ] = None,
     output_dir: Annotated[
         Path | None,
         Option(
@@ -239,18 +215,11 @@ def convert(
     else:
         precision_dtype = None
 
-    if weight_layout is not None:
-        weight_layout = WeightLayout(weight_layout)
-    else:
-        weight_layout = WeightLayout.AUTO
-
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 
     console.print(f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan].")
-    conversion_strs = [
-        f"⚙️ Using weight layout [cyan]{weight_layout}[/cyan]",
-    ]
+    conversion_strs = []
     if precision is not None:
         conversion_strs.append(
             f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
@@ -318,7 +287,7 @@ def convert(
         progress.remove_task(main_task)
 
         model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-        weights = flatten_parameters(model.export_weights(weight_layout))
+        weights = flatten_parameters(model.export_weights())
         del model
 
         packed_weights = _pack_uint4_weights(weights)

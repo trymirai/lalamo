@@ -16,7 +16,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
-from .common import DummyUnionMember, ForwardPassMode, LalamoModule, WeightLayout, register_config_union
+from .common import DummyUnionMember, ForwardPassMode, LalamoModule, register_config_union
 from .linear import LinearBase, LinearConfig
 
 __all__ = [
@@ -224,24 +224,23 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         (result,) = self.down_projection(up_proj * gate)
         return result
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+    def export_weights(self) -> ParameterTree:
         return {
-            "up_projection": self.up_projection.export_weights(weight_layout),
-            "down_projection": self.down_projection.export_weights(weight_layout),
+            "up_projection": self.up_projection.export_weights(),
+            "down_projection": self.down_projection.export_weights(),
         }
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["up_projection"], Mapping)
         assert isinstance(weights["down_projection"], Mapping)
         return replace(
             self,
-            up_projection=self.up_projection.import_weights(weights["up_projection"], weight_layout),
-            down_projection=self.down_projection.import_weights(weights["down_projection"], weight_layout),
+            up_projection=self.up_projection.import_weights(weights["up_projection"]),
+            down_projection=self.down_projection.import_weights(weights["down_projection"]),
         )
 
 
@@ -459,25 +458,23 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
     def export_weights(
         self,
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> ParameterTree[Array]:
         return {
-            "router": self.router.export_weights(weight_layout),
-            "experts": self.experts.export_weights(weight_layout),
+            "router": self.router.export_weights(),
+            "experts": self.experts.export_weights(),
         }
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["router"], Mapping)
         assert isinstance(weights["experts"], Mapping)
         return replace(
             self,
-            router=self.router.import_weights(weights["router"], weight_layout),
-            experts=self.experts.import_weights(weights["experts"], weight_layout),
+            router=self.router.import_weights(weights["router"]),
+            experts=self.experts.import_weights(weights["experts"]),
         )
 
 

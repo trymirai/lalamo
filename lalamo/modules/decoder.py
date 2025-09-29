@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
-from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout
+from .common import AttentionType, ForwardPassMode, LalamoModule
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
@@ -304,21 +304,20 @@ class Decoder(LalamoModule[DecoderConfig]):
     def init_static_kv_cache(self, batch_size: int, capacity: int) -> KVCache:
         return KVCache(layer.init_static_kv_cache(batch_size, capacity) for layer in self.layers)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+    def export_weights(self) -> ParameterTree:
         result = dict(
-            embedding=self.embedding.export_weights(weight_layout),
-            global_rope=self.global_rope.export_weights(weight_layout),
-            layers=[layer.export_weights(weight_layout) for layer in self.layers],
-            output_norm=self.output_norm.export_weights(weight_layout),
+            embedding=self.embedding.export_weights(),
+            global_rope=self.global_rope.export_weights(),
+            layers=[layer.export_weights() for layer in self.layers],
+            output_norm=self.output_norm.export_weights(),
         )
         if self.local_rope:
-            result["local_rope"] = self.local_rope.export_weights(weight_layout)
+            result["local_rope"] = self.local_rope.export_weights()
         return result
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["embedding"], Mapping)
@@ -327,19 +326,19 @@ class Decoder(LalamoModule[DecoderConfig]):
         assert isinstance(weights["output_norm"], Mapping)
         if self.local_rope:
             assert isinstance(weights["local_rope"], Mapping)
-            local_rope = self.local_rope.import_weights(weights["local_rope"], weight_layout)
+            local_rope = self.local_rope.import_weights(weights["local_rope"])
         else:
             local_rope = None
 
         layers = []
         for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
             assert isinstance(layer_weights, Mapping)
-            layers.append(layer.import_weights(layer_weights, weight_layout))
+            layers.append(layer.import_weights(layer_weights))
         return replace(
             self,
-            embedding=self.embedding.import_weights(weights["embedding"], weight_layout),
-            global_rope=self.global_rope.import_weights(weights["global_rope"], weight_layout),
+            embedding=self.embedding.import_weights(weights["embedding"]),
+            global_rope=self.global_rope.import_weights(weights["global_rope"]),
             layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(weights["output_norm"], weight_layout),
+            output_norm=self.output_norm.import_weights(weights["output_norm"]),
             local_rope=local_rope,
         )

@@ -12,7 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 
 from .attention import Attention, AttentionConfig
-from .common import AttentionType, ForwardPassMode, LalamoModule, WeightLayout
+from .common import AttentionType, ForwardPassMode, LalamoModule
 from .kv_cache import KVCacheLayer, StaticKVCacheLayer
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import RMSNorm, RMSNormConfig
@@ -285,23 +285,22 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             self.attention.init_static_kv_cache(capacity),
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+    def export_weights(self) -> ParameterTree:
         result = dict(
-            pre_attention_norm=self.pre_attention_norm.export_weights(weight_layout),
-            attention=self.attention.export_weights(weight_layout),
-            pre_mlp_norm=self.pre_mlp_norm.export_weights(weight_layout),
-            mlp=self.mlp.export_weights(weight_layout),
+            pre_attention_norm=self.pre_attention_norm.export_weights(),
+            attention=self.attention.export_weights(),
+            pre_mlp_norm=self.pre_mlp_norm.export_weights(),
+            mlp=self.mlp.export_weights(),
         )
         if self.post_attention_norm is not None:
-            result["post_attention_norm"] = self.post_attention_norm.export_weights(weight_layout)
+            result["post_attention_norm"] = self.post_attention_norm.export_weights()
         if self.post_mlp_norm is not None:
-            result["post_mlp_norm"] = self.post_mlp_norm.export_weights(weight_layout)
+            result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
         return result
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["pre_attention_norm"], Mapping)
@@ -313,21 +312,20 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             assert isinstance(weights["post_attention_norm"], Mapping)
             post_attention_norm = self.post_attention_norm.import_weights(
                 weights["post_attention_norm"],
-                weight_layout,
             )
         else:
             post_attention_norm = None
         if self.post_mlp_norm is not None:
             assert isinstance(weights["post_mlp_norm"], Mapping)
-            post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"], weight_layout)
+            post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"])
         else:
             post_mlp_norm = None
         return replace(
             self,
-            pre_attention_norm=self.pre_attention_norm.import_weights(weights["pre_attention_norm"], weight_layout),
-            attention=self.attention.import_weights(weights["attention"], weight_layout),
+            pre_attention_norm=self.pre_attention_norm.import_weights(weights["pre_attention_norm"]),
+            attention=self.attention.import_weights(weights["attention"]),
             post_attention_norm=post_attention_norm,
-            pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"], weight_layout),
-            mlp=self.mlp.import_weights(weights["mlp"], weight_layout),
+            pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"]),
+            mlp=self.mlp.import_weights(weights["mlp"]),
             post_mlp_norm=post_mlp_norm,
         )

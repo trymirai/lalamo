@@ -14,7 +14,7 @@ from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
-from lalamo.modules import Decoder, DecoderConfig, KVCache, LalamoModule, WeightLayout, config_converter
+from lalamo.modules import Decoder, DecoderConfig, KVCache, LalamoModule, config_converter
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
@@ -71,7 +71,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
     message_processor: MessageProcessor = eqx.field(static=True)
 
     @classmethod
-    def load(cls, path: Path | str, weight_layout: WeightLayout = WeightLayout.AUTO) -> Self:
+    def load(cls, path: Path | str) -> Self:
         if isinstance(path, str):
             path = Path(path)
         with open(path / "config.json") as config_file:
@@ -79,7 +79,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
         with open_safetensors(path / "model.safetensors") as weights_dict:
             weights = unflatten_parameters(weights_dict)
-            decoder = config.decoder_config.empty().import_weights(weights, weight_layout)
+            decoder = config.decoder_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return cls(config, decoder, message_processor)
@@ -88,17 +88,16 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.decoder.activation_precision
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        return self.decoder.export_weights(weight_layout)
+    def export_weights(self) -> ParameterTree:
+        return self.decoder.export_weights()
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         return replace(
             self,
-            decoder=self.decoder.import_weights(weights, weight_layout),
+            decoder=self.decoder.import_weights(weights),
         )
 
     @property

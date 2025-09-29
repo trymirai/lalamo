@@ -25,7 +25,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-from .common import LalamoModule, WeightLayout, register_config_union
+from .common import LalamoModule, register_config_union
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -57,7 +57,7 @@ class PositionalEmbeddings(eqx.Module):
     def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
-    def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+    def export(self) -> ParameterTree:
         return dict(
             cosines=self.cosines,
             sines=self.sines,
@@ -143,7 +143,7 @@ class RoPE(LalamoModule[RoPEConfigBase]):
             sines=self.sines[timesteps],
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]:  # noqa: ARG002
+    def export_weights(self) -> ParameterTree[Array]:
         return {
             "cosines": self.cosines,
             "sines": self.sines,
@@ -152,7 +152,6 @@ class RoPE(LalamoModule[RoPEConfigBase]):
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
     ) -> "RoPE":
         assert isinstance(weights, Mapping)
         return replace(self, cosines=weights["cosines"], sines=weights["sines"])

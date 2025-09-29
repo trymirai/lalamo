@@ -7,7 +7,7 @@ from typing import Self
 import equinox as eqx
 from cattrs import Converter
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree
 
@@ -17,57 +17,8 @@ __all__ = [
     "ForwardPassMode",
     "LalamoModule",
     "config_converter",
-    "from_layout",
-    "into_layout",
     "register_config_union",
 ]
-
-
-class WeightLayout(Enum):
-    AUTO = "auto"
-    INPUT_OUTPUT = "input_output"
-    OUTPUT_INPUT = "output_input"
-
-    def __str__(self) -> str:
-        match self:
-            case WeightLayout.AUTO:
-                return "auto"
-            case WeightLayout.INPUT_OUTPUT:
-                return "(input, output)"
-            case WeightLayout.OUTPUT_INPUT:
-                return "(output, input)"
-
-
-_DEFAULT_WEIGHT_LAYOUT = WeightLayout.INPUT_OUTPUT
-
-
-def into_layout(
-    weights: Float[Array, "*components in_channels out_channels"],
-    layout: WeightLayout,
-) -> Float[Array, "*components in_channels out_channels"] | Float[Array, "*components out_channels in_channels"]:
-    if layout == WeightLayout.AUTO:
-        layout = _DEFAULT_WEIGHT_LAYOUT
-    match layout:
-        case WeightLayout.OUTPUT_INPUT:
-            return weights.swapaxes(-1, -2)
-        case WeightLayout.INPUT_OUTPUT:
-            return weights
-
-
-def from_layout(
-    weights: ParameterTree
-    | Float[Array, "*components in_channels out_channels"]
-    | Float[Array, "*components out_channels in_channels"],
-    layout: WeightLayout,
-) -> Float[Array, "*components in_channels out_channels"]:
-    assert isinstance(weights, Array)
-    if layout == WeightLayout.AUTO:
-        layout = _DEFAULT_WEIGHT_LAYOUT
-    match layout:
-        case WeightLayout.OUTPUT_INPUT:
-            return weights.swapaxes(-1, -1)
-        case WeightLayout.INPUT_OUTPUT:
-            return weights
 
 
 class AttentionType(Enum):
@@ -88,13 +39,12 @@ class LalamoModule[ConfigT](eqx.Module):
     def activation_precision(self) -> DTypeLike: ...
 
     @abstractmethod
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]: ...
+    def export_weights(self) -> ParameterTree[Array]: ...
 
     @abstractmethod
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self: ...
 
 

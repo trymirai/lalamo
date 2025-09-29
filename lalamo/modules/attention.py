@@ -12,7 +12,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import dummy_array
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 
-from .common import AttentionType, LalamoModule, ParameterTree, WeightLayout
+from .common import AttentionType, LalamoModule, ParameterTree
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -413,15 +413,15 @@ class Attention(LalamoModule[AttentionConfig]):
             self.activation_precision,
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
+    def export_weights(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = {
-            "qkv_projection": self.qkv_projection.export_weights(weight_layout),
-            "out_projection": self.out_projection.export_weights(weight_layout),
+            "qkv_projection": self.qkv_projection.export_weights(),
+            "out_projection": self.out_projection.export_weights(),
         }
         if self.query_norm is not None:
-            result["query_norm"] = self.query_norm.export_weights(weight_layout)
+            result["query_norm"] = self.query_norm.export_weights()
         if self.key_norm is not None:
-            result["key_norm"] = self.key_norm.export_weights(weight_layout)
+            result["key_norm"] = self.key_norm.export_weights()
         if self.sinks is not None:
             assert isinstance(self.sinks, Array)
             result["sinks"] = self.sinks
@@ -430,19 +430,18 @@ class Attention(LalamoModule[AttentionConfig]):
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["qkv_projection"], Mapping)
         assert isinstance(weights["out_projection"], Mapping)
         if self.query_norm is not None:
             assert isinstance(weights["query_norm"], Mapping)
-            query_norm = self.query_norm.import_weights(weights["query_norm"], weight_layout)
+            query_norm = self.query_norm.import_weights(weights["query_norm"])
         else:
             query_norm = None
         if self.key_norm is not None:
             assert isinstance(weights["key_norm"], Mapping)
-            key_norm = self.key_norm.import_weights(weights["key_norm"], weight_layout)
+            key_norm = self.key_norm.import_weights(weights["key_norm"])
         else:
             key_norm = None
         if self.sinks is not None:
@@ -452,8 +451,8 @@ class Attention(LalamoModule[AttentionConfig]):
             sinks = None
         return replace(
             self,
-            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"], weight_layout),
-            out_projection=self.out_projection.import_weights(weights["out_projection"], weight_layout),
+            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"]),
+            out_projection=self.out_projection.import_weights(weights["out_projection"]),
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,
