@@ -28,6 +28,9 @@ downloads/
 # Converted models
 models/
 
+# Inference traces
+traces/
+
 # IDE
 .idea/
 

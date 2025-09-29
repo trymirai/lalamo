@@ -3,7 +3,7 @@ name = "lalamo"
 description = "JAX library for optimization and export of models for use with the UZU inference engine."
 requires-python = ">=3.12, <4"
 dependencies = [
-    "cattrs>=24.1.2",
+    "cattrs[msgpack]>=24.1.2",
     "click>=8.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.11",
@@ -18,6 +18,8 @@ dependencies = [
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
     "safetensors>=0.6.2",
+    "polars>=1.33.1",
+    "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
