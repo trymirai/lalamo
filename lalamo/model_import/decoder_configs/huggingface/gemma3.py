@@ -36,7 +36,6 @@ class GemmaRoPEScalingConfig:
 
 @dataclass(frozen=True)
 class HFGemma3TextConfigRaw:
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     hidden_size: int
     intermediate_size: int
     model_type: Literal["gemma3_text"]
@@ -154,7 +153,7 @@ class HFGemma3TextConfigRaw:
 
 @dataclass(frozen=True)
 class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
-    pass
+    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
 
 @dataclass(frozen=True)
@@ -171,6 +170,7 @@ class HFGemma3VisionConfig:
 
 @dataclass(frozen=True)
 class HFGemma3Config(HuggingFaceConfig):
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Gemma3ForConditionalGeneration"]]
     boi_token_index: int
     eoi_token_index: int
