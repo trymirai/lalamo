@@ -65,7 +65,7 @@ class HFGemma2Config(HuggingFaceConfig):
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=embedding_input_scale,
-            logits_soft_cap=self.final_logit_softcapping,
+            logit_soft_cap=self.final_logit_softcapping,
             precision=activation_precision,
         )
         rope_config = UnscaledRoPEConfig(

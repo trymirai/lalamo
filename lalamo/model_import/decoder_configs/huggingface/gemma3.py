@@ -75,7 +75,7 @@ class HFGemma3TextConfigRaw:
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=input_scale,
-            logits_soft_cap=None,
+            logit_soft_cap=None,
             precision=activation_precision,
         )
         rms_norm_config = RMSNormConfig(

@@ -98,7 +98,7 @@ class ETLlamaConfig(ExecutorchConfig):
 
         embedding_config = QuantizedTiedEmbeddingConfig(
             input_scale=None,
-            logits_soft_cap=None,
+            logit_soft_cap=None,
             embedding_quantization_mode=EMBEDDING_QUANTIZATION_MODE,
             activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
             activation_precision=activation_precision,

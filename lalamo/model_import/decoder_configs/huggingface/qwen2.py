@@ -73,13 +73,13 @@ class HFQwen2Config(HuggingFaceConfig):
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
-                logits_soft_cap=None,
+                logit_soft_cap=None,
                 precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
-                logits_soft_cap=None,
+                logit_soft_cap=None,
                 precision=activation_precision,
             )
         rope_config = UnscaledRoPEConfig(

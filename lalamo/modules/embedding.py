@@ -32,7 +32,7 @@ __all__ = [
 @dataclass(frozen=True)
 class EmbeddingConfigBase:
     input_scale: float | None
-    logits_soft_cap: float | None
+    logit_soft_cap: float | None
 
     @abstractmethod
     def random_init(
@@ -76,8 +76,8 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         logits = self._prepare_output_weights() @ x
-        if self.config.logits_soft_cap is not None:
-            logits = apply_soft_capping(logits, self.config.logits_soft_cap)
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits
 
 
