@@ -41,7 +41,7 @@ MODEL_LIST = [
     # Spec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     Spec("Qwen/Qwen3-0.6B", DType.FLOAT32),
     Spec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16, requires_gpu=True),
-    Spec("openai/gpt-oss-20b", DType.BFLOAT16),
+    Spec("openai/gpt-oss-20b", DType.FLOAT16, requires_gpu=True),
 ]
 
 
