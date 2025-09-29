@@ -142,7 +142,7 @@ def chat(
             model = LanguageModel.load(model_path, weight_layout)
             progress.remove_task(loading_task)
             warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-            list(model.stream_reply_text([UserMessage("")]))
+            list(model.stream_reply_text([UserMessage("")], max_output_length=1))
             progress.remove_task(warmup_task)
         console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
         messages = []
