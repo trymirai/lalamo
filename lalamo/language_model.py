@@ -187,7 +187,8 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             key: PRNGKeyArray,
         ) -> tuple[DecodingState, Int[Array, " batch"]]:
             def sample_and_update() -> tuple[DecodingState, Int[Array, " batch"]]:
-                processed_logits = vmap(sampling_policy.process_logits)(state.last_token_logits)
+                upcasted_logits = state.last_token_logits.astype(jnp.float32)
+                processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
                 next_token_ids = jax.random.categorical(key, processed_logits)
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 next_token_indices = state.last_token_indices + 1
@@ -306,7 +307,8 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         )
 
         for iter_key in keys:
-            processed_logits = sampling_policy.process_logits(state.last_token_logits.squeeze(0))
+            upcasted_logits = state.last_token_logits.astype(jnp.float32)
+            processed_logits = sampling_policy.process_logits(upcasted_logits.squeeze(0))
             next_token_id = jax.random.categorical(iter_key, processed_logits)
 
             yield next_token_id

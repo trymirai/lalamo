@@ -218,8 +218,7 @@ def convert(
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 
-    console.print(f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan].")
-    conversion_strs = []
+    conversion_strs = [f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan]"]
     if precision is not None:
         conversion_strs.append(
             f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
