@@ -6,19 +6,19 @@ from jaxtyping import Array
 
 from lalamo.common import ParameterPath
 from lalamo.modules import (
+    AffineQuantizedLinear,
     Attention,
     Decoder,
     DecoderLayer,
     DenseMLP,
     FullPrecisionLinear,
-    GroupQuantizedLinear,
     LinearBase,
     RMSNorm,
     TiedEmbedding,
     UntiedEmbedding,
 )
 from lalamo.modules.mlp import MixtureOfExperts, MLPBase
-from lalamo.quantization import QuantizationMode
+from lalamo.quantization import AffineQuantizationMode
 
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
@@ -41,7 +41,7 @@ def _reverse_uint4_awq_order(array: Array) -> Array:
     return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
 
 
-def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
+def unpack_int32(packed_weights: Array, mode: AffineQuantizationMode) -> Array:
     assert packed_weights.dtype == jnp.int32, (
         f"Expected packed_weights to be of dtype jnp.int32, got {packed_weights.dtype}"
     )
@@ -62,18 +62,18 @@ def _process_quantized_tensors(
     qweights: Array,
     qzeros: Array,
     scales: Array,
-    module: GroupQuantizedLinear,
+    module: AffineQuantizedLinear,
 ) -> tuple[Array, Array, Array]:
     """Unpacks, recenters, transposes, and casts quantized tensors to the correct dtype."""
     mode = module.config.weight_quantization_mode
     assert qweights.dtype == jnp.int32
     unpacked_weights = unpack_int32(qweights, mode)
-    if mode == QuantizationMode.UINT4:
+    if mode == AffineQuantizationMode.UINT4:
         unpacked_weights = _reverse_uint4_awq_order(unpacked_weights)
 
     assert qzeros.dtype == jnp.int32
     unpacked_zero_points = unpack_int32(qzeros, mode)
-    if mode == QuantizationMode.UINT4:
+    if mode == AffineQuantizationMode.UINT4:
         unpacked_zero_points = _reverse_uint4_awq_order(unpacked_zero_points)
 
     weights = unpacked_weights.astype(module.config.activation_precision)
@@ -147,7 +147,7 @@ def load_linear(
         weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
         return load_parameters(lambda m: (m.weights, m.biases), module, (weights.transpose(), bias))
 
-    if isinstance(module, GroupQuantizedLinear):
+    if isinstance(module, AffineQuantizedLinear):
         qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
 
         weights, zero_points, scales = _process_quantized_tensors(

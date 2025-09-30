@@ -21,10 +21,10 @@ from .embedding import (
 )
 from .kv_cache import DynamicKVCacheLayer, KVCache, KVCacheLayer, StaticKVCacheLayer
 from .linear import (
+    AffineQuantizedLinear,
+    AffineQuantizedLinearConfig,
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
-    GroupQuantizedLinear,
-    GroupQuantizedLinearConfig,
     LinearBase,
     LinearConfig,
     QLoRALinear,
@@ -55,6 +55,8 @@ from .rope import (
 __all__ = [
     "GELU",
     "Activation",
+    "AffineQuantizedLinear",
+    "AffineQuantizedLinearConfig",
     "Attention",
     "AttentionConfig",
     "AttentionType",
@@ -76,8 +78,6 @@ __all__ = [
     "ForwardPassMode",
     "FullPrecisionLinear",
     "FullPrecisionLinearConfig",
-    "GroupQuantizedLinear",
-    "GroupQuantizedLinearConfig",
     "KVCache",
     "KVCacheLayer",
     "LalamoModule",

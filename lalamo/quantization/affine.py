@@ -3,16 +3,16 @@ from enum import Enum
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-__all__ = ["QuantizationMode", "quantize_weights"]
+__all__ = ["AffineQuantizationMode", "affine_quantize_weights"]
 
 
-class QuantizationMode(Enum):
+class AffineQuantizationMode(Enum):
     UINT4 = "uint4"
     INT8 = "int8"
     UINT8 = "uint8"
 
     @classmethod
-    def from_num_bits(cls, num_bits: int) -> "QuantizationMode":
+    def from_num_bits(cls, num_bits: int) -> "AffineQuantizationMode":
         bit_to_mode = {
             4: cls.UINT4,
             8: cls.UINT8,
@@ -28,18 +28,18 @@ class QuantizationMode(Enum):
     @property
     def dtype(self) -> DTypeLike:
         value_to_dtype = {
-            QuantizationMode.UINT4: jnp.uint4,
-            QuantizationMode.INT8: jnp.int8,
-            QuantizationMode.UINT8: jnp.uint8,
+            AffineQuantizationMode.UINT4: jnp.uint4,
+            AffineQuantizationMode.INT8: jnp.int8,
+            AffineQuantizationMode.UINT8: jnp.uint8,
         }
         return value_to_dtype[self]
 
     @property
     def bits(self) -> int:
         value_to_bits = {
-            QuantizationMode.UINT4: 4,
-            QuantizationMode.INT8: 8,
-            QuantizationMode.UINT8: 8,
+            AffineQuantizationMode.UINT4: 4,
+            AffineQuantizationMode.INT8: 8,
+            AffineQuantizationMode.UINT8: 8,
         }
         return value_to_bits[self]
 
@@ -48,20 +48,20 @@ class QuantizationMode(Enum):
 
 
 MODE_TO_RANGE = {
-    QuantizationMode.UINT4: (0, 15),
-    QuantizationMode.INT8: (-128, 127),
-    QuantizationMode.UINT8: (0, 255),
+    AffineQuantizationMode.UINT4: (0, 15),
+    AffineQuantizationMode.INT8: (-128, 127),
+    AffineQuantizationMode.UINT8: (0, 255),
 }
 
 
-def quantize_weights(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
+def affine_quantize_weights(x: Float[Array, "..."], mode: AffineQuantizationMode) -> Float[Array, "..."]:
     range_min, range_max = MODE_TO_RANGE[mode]
     return jnp.clip(jnp.round(x), range_min, range_max)
 
 
 def dynamically_quantize_activations(
     x: Float[Array, " channels"],
-    mode: QuantizationMode,
+    mode: AffineQuantizationMode,
 ) -> Float[Array, " channels"]:
     # Reference implementation: https://github.com/pytorch/pytorch/blob/2ccbacfa24cae724ec1ea3bc7de189e5bf948d46/torch/ao/quantization/fx/_decomposed.py#L790
     range_min, range_max = mode.range

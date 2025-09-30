@@ -14,7 +14,7 @@ from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.quantization import QuantizationMode
+from lalamo.quantization import AffineQuantizationMode
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
@@ -63,7 +63,7 @@ class ModelMetadata:
     family: str
     name: str
     size: str
-    quantization: QuantizationMode | None
+    quantization: AffineQuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
     model_config: LanguageModelConfig

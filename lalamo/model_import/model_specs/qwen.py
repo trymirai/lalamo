@@ -1,5 +1,5 @@
 from lalamo.model_import.decoder_configs import HFQwen2Config, HFQwen3Config
-from lalamo.quantization import QuantizationMode
+from lalamo.quantization import AffineQuantizationMode
 
 from .common import ModelSpec, UseCase, WeightsType
 
@@ -173,7 +173,7 @@ QWEN3 = [
         family="Qwen3",
         name="Qwen3-4B-AWQ",
         size="4B",
-        quantization=QuantizationMode.UINT4,
+        quantization=AffineQuantizationMode.UINT4,
         repo="Qwen/Qwen3-4B-AWQ",
         config_type=HFQwen3Config,
     ),
@@ -191,7 +191,7 @@ QWEN3 = [
         family="Qwen3",
         name="Qwen3-8B-AWQ",
         size="8B",
-        quantization=QuantizationMode.UINT4,
+        quantization=AffineQuantizationMode.UINT4,
         repo="Qwen/Qwen3-8B-AWQ",
         config_type=HFQwen3Config,
     ),
@@ -227,7 +227,7 @@ QWEN3 = [
         family="Qwen3",
         name="Qwen3-32B-AWQ",
         size="32B",
-        quantization=QuantizationMode.UINT4,
+        quantization=AffineQuantizationMode.UINT4,
         repo="Qwen/Qwen3-32B-AWQ",
         config_type=HFQwen3Config,
     ),

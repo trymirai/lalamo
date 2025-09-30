@@ -4,12 +4,12 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
+    AffineQuantizedLinearConfig,
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
-    GroupQuantizedLinearConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
@@ -17,7 +17,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.quantization import QuantizationMode
+from lalamo.quantization import AffineQuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
@@ -99,9 +99,9 @@ class HFQwen2Config(HuggingFaceConfig):
                 precision=activation_precision,
             )
         else:
-            linear_config = GroupQuantizedLinearConfig(
+            linear_config = AffineQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                weight_quantization_mode=AffineQuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )

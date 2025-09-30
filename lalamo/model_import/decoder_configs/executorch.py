@@ -18,7 +18,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.quantization import QuantizationMode
+from lalamo.quantization import AffineQuantizationMode
 
 from .common import ForeignConfig
 
@@ -33,9 +33,9 @@ MAX_SEQUENCE_LENGTH = 8192 * 32
 
 ROPE_SCALING_FACTOR = 32.0
 
-EMBEDDING_QUANTIZATION_MODE = QuantizationMode.INT8
-ACTIVATION_QUANTIZATION_MODE = QuantizationMode.INT8
-WEIGHT_QUANTIZATION_MODE = QuantizationMode.UINT4
+EMBEDDING_QUANTIZATION_MODE = AffineQuantizationMode.INT8
+ACTIVATION_QUANTIZATION_MODE = AffineQuantizationMode.INT8
+WEIGHT_QUANTIZATION_MODE = AffineQuantizationMode.UINT4
 
 
 @dataclass(frozen=True)

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array
-from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
+from lalamo.quantization import AffineQuantizationMode, affine_quantize_weights, dynamically_quantize_activations
 
 from .common import (
     LalamoModule,
@@ -244,8 +244,8 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
 @dataclass(frozen=True)
 class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
-    embedding_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
+    embedding_quantization_mode: AffineQuantizationMode
+    activation_quantization_mode: AffineQuantizationMode | None
     activation_precision: DTypeLike
 
     def random_init(
@@ -260,7 +260,7 @@ class QuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
         scale = 1 / min_abs_val
         scales = scale * jnp.ones(vocab_size, dtype=self.activation_precision)
         weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.activation_precision)
-        weights = quantize_weights(weights * min_abs_val, self.embedding_quantization_mode)
+        weights = affine_quantize_weights(weights * min_abs_val, self.embedding_quantization_mode)
         return QuantizedTiedEmbedding(config=self, weights=weights, scales=scales)
 
     def empty(
@@ -314,11 +314,11 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
 
     @property
     def int_weights(self) -> Int[Array, "vocabulary channels"]:
-        result = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+        result = affine_quantize_weights(self.weights, self.config.embedding_quantization_mode)
         return result.astype(self.config.embedding_quantization_mode.dtype)
 
     def _prepare_weights(self) -> Float[Array, "vocabulary channels"]:
-        quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+        quantized_weights = affine_quantize_weights(self.weights, self.config.embedding_quantization_mode)
         quantized_weights = quantized_weights * self.scales.reshape(-1, 1)
         return quantized_weights
 

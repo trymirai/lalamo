@@ -14,7 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignConfig
-from lalamo.quantization import QuantizationMode
+from lalamo.quantization import AffineQuantizationMode
 from lalamo.utils import MapDictValues, open_safetensors
 
 __all__ = [
@@ -111,7 +111,7 @@ class ModelSpec:
     size: str
     repo: str
     config_type: type[ForeignConfig]
-    quantization: QuantizationMode | None = None
+    quantization: AffineQuantizationMode | None = None
     output_parser_regex: str | None = None
     system_role_name: str = "system"
     user_role_name: str = "user"
@@ -132,7 +132,7 @@ class ModelSpec:
 def awq_model_spec(
     model_spec: ModelSpec,
     repo: str,
-    quantization: QuantizationMode = QuantizationMode.UINT4,
+    quantization: AffineQuantizationMode = AffineQuantizationMode.UINT4,
 ) -> ModelSpec:
     return ModelSpec(
         vendor=model_spec.vendor,
