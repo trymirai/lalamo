@@ -20,7 +20,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from safetensors.flax import save_file
-from typer import Argument, Exit, Option, Typer
+from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.common import flatten_parameters
 from lalamo.language_model import LanguageModel
@@ -112,46 +112,33 @@ def chat(
             metavar="MODEL_PATH",
         ),
     ],
-    profile_xla: Annotated[
-        bool,
-        Option(
-            help="Record and save the XLA memory profile",
-        ),
-    ] = False,
 ) -> None:
-    try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True,
-        ) as progress:
-            loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-            model = LanguageModel.load(model_path)
-            progress.remove_task(loading_task)
-            warmup_task = progress.add_task("🔥 Warming up compilation cache...")
-            list(model.stream_reply_text([UserMessage("")], max_output_length=1))
-            progress.remove_task(warmup_task)
-        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
-        messages = []
-        while True:
-            user_text = console.input("[cyan]user> [/cyan]")
-            user_message = UserMessage(user_text)
-            messages.append(user_message)
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+        model = LanguageModel.load(model_path)
+        progress.remove_task(loading_task)
+        warmup_task = progress.add_task("🔥 Warming up compilation cache...")
+        list(model.stream_reply_text([UserMessage("")], max_output_length=1))
+        progress.remove_task(warmup_task)
+    console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
+    messages = []
+    while True:
+        user_text = console.input("[cyan]user> [/cyan]")
+        user_message = UserMessage(user_text)
+        messages.append(user_message)
 
-            console.print("[red]assistant> [/red]", end="")
-            model_response_tokens = []
-            for token in model.stream_reply_text(messages):
-                console.print(token, end="")
-                model_response_tokens.append(token)
-            console.print()
-            model_response_text = "".join(model_response_tokens)
-            messages.append(model.message_processor.parse_response(model_response_text))
-    finally:
-        model_name = model_path.name
-        if profile_xla:
-            profile_filename = f"{model_name}-chat-memory.prof"
-            console.print(f"Saving XLA memory profile to {profile_filename}")
-            jax.profiler.save_device_memory_profile(profile_filename)
+        console.print("[red]assistant> [/red]", end="")
+        model_response_tokens = []
+        for token in model.stream_reply_text(messages):
+            console.print(token, end="")
+            model_response_tokens.append(token)
+        console.print()
+        model_response_text = "".join(model_response_tokens)
+        messages.append(model.message_processor.parse_response(model_response_text))
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
@@ -201,12 +188,6 @@ def convert(
         bool,
         Option(
             help="Overwrite existing model files.",
-        ),
-    ] = False,
-    profile_xla: Annotated[
-        bool,
-        Option(
-            help="Record and save the XLA memory profile",
         ),
     ] = False,
 ) -> None:
@@ -297,11 +278,6 @@ def convert(
             json.dump(config_json, file, indent=4)
         progress.remove_task(save_task)
 
-    if profile_xla:
-        profile_filename = f"{output_dir.name}-convert-memory.prof"
-        console.print(f"Saving XLA memory profile to {profile_filename}")
-        jax.profiler.save_device_memory_profile(profile_filename)
-
     console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
@@ -365,6 +341,30 @@ def list_models(
             spec.repo,
         )
     console.print(table)
+
+@app.callback()
+def _profile_memory(
+    ctx: Context,
+    profile_memory: Annotated[
+        Path | None,
+        Option(
+            help="Record and save the XLA memory profile to specified path",
+            show_default="Don't save the XLA memory profile",
+            envvar="LALAMO_PROFILE_MEMORY",
+        ),
+    ] = None,
+) -> None:
+    if profile_memory is None:
+        return
+
+    if profile_memory.is_dir():
+        profile_memory /= "lalamo-memory.prof"
+
+    def _save_memory_profile() -> None:
+        console.print(f"Saving XLA memory profile to {profile_memory}")
+        jax.profiler.save_device_memory_profile(profile_memory)
+
+    ctx.call_on_close(_save_memory_profile)
 
 
 if __name__ == "__main__":
