@@ -4,17 +4,17 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    Activation,
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
+    DenseMLPConfig,
     FullPrecisionLinearConfig,
-    MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UpcastMode,
 )
+from lalamo.modules.activations import GELU
 
 from .common import HuggingFaceConfig
 
@@ -50,6 +50,7 @@ class HFGemma2Config(HuggingFaceConfig):
     transformers_version: str
     use_cache: bool
     vocab_size: int
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
 
     def to_decoder_config(
         self,
@@ -64,7 +65,7 @@ class HFGemma2Config(HuggingFaceConfig):
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=embedding_input_scale,
-            logits_soft_cap=self.final_logit_softcapping,
+            logit_soft_cap=self.final_logit_softcapping,
             precision=activation_precision,
         )
         rope_config = UnscaledRoPEConfig(
@@ -88,12 +89,17 @@ class HFGemma2Config(HuggingFaceConfig):
             query_norm_config=None,
             key_norm_config=None,
             logit_soft_cap=self.attn_logit_softcapping,
+            has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=False,
         )
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=Activation.GELU,
+            activation=GELU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
             pre_attention_norm_config=rmsnorm_config,

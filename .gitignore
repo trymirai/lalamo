@@ -38,3 +38,4 @@ sync.bb
 # Profiler
 memray-*.bin
 memray-*.html
+*.prof

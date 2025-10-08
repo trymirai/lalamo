@@ -1,11 +1,26 @@
-from lalamo.model_import import REPO_TO_MODEL, ModelSpec, import_model
-from lalamo.modules import Decoder
+from lalamo.language_model import LanguageModel
+from lalamo.message_processor import (
+    AssistantMessage,
+    ContentBlock,
+    Image,
+    Message,
+    SystemMessage,
+    ToolSchema,
+    UserMessage,
+)
+from lalamo.model_import import ModelSpec, import_model
 
-__version__ = "0.3.4"
+__version__ = "0.4.0"
 
 __all__ = [
-    "REPO_TO_MODEL",
-    "Decoder",
+    "AssistantMessage",
+    "ContentBlock",
+    "Image",
+    "LanguageModel",
+    "Message",
     "ModelSpec",
+    "SystemMessage",
+    "ToolSchema",
+    "UserMessage",
     "import_model",
 ]

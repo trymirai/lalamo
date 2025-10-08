@@ -6,10 +6,10 @@ from jaxtyping import Array
 
 from lalamo.common import ParameterPath
 from lalamo.modules import (
-    MLP,
     Attention,
     Decoder,
     DecoderLayer,
+    DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
@@ -17,9 +17,11 @@ from lalamo.modules import (
     TiedEmbedding,
     UntiedEmbedding,
 )
+from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
+from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
 __all__ = ["load_huggingface"]
 
@@ -78,7 +80,7 @@ def _process_quantized_tensors(
     zero_points = unpacked_zero_points.astype(module.config.activation_precision)
     processed_scales = scales.astype(module.config.activation_precision)
 
-    return weights.transpose(), zero_points.transpose(), processed_scales.transpose()
+    return weights, zero_points, processed_scales
 
 
 def _fuse_full_precision_weights(
@@ -143,7 +145,7 @@ def load_linear(
 
     if isinstance(module, FullPrecisionLinear):
         weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
-        return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
+        return load_parameters(lambda m: (m.weights, m.biases), module, (weights.transpose(), bias))
 
     if isinstance(module, GroupQuantizedLinear):
         qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
@@ -158,16 +160,100 @@ def load_linear(
         return load_parameters(
             lambda m: (m.weights, m.scales, m.zero_points, m.biases),
             module,
-            (weights, scales, zero_points, bias),
+            (weights.T, scales.T, zero_points.T, bias),
         )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_mlp(module: MLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLP:
-    up_projection = load_linear(module.up_projection, weights_dict, path, sublayers_to_fuse=["up_proj", "gate_proj"])
-    down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
-    return load_parameters(lambda m: (m.up_projection, m.down_projection), module, (up_projection, down_projection))
+def load_mlp(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
+    if isinstance(module, DenseMLP):
+        # Standard dense MLP with separate sublayers.
+        up_projection = load_linear(
+            module.up_projection,
+            weights_dict,
+            path,
+            sublayers_to_fuse=["up_proj", "gate_proj"],
+        )
+        down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
+        return load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module,
+            (up_projection, down_projection),
+        )
+
+    if isinstance(module, MixtureOfExperts):
+        return load_moe(module, weights_dict, path)
+
+    raise TypeError(f"Unsupported module type for loading: {type(module)}")
+
+
+def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:
+    # Load router via the standard linear loader
+    router = load_linear(module.router, weights_dict, path / "router")
+
+    experts_path = path / "experts"
+    # Handle fused MXFP4 experts layout if present
+    if (experts_path / "gate_up_proj_blocks") in weights_dict:
+        # Decode fused gate/up (interleaved), split into (up, gate), and add +1.0 to up bias
+        fused = decode_mxfp4(
+            weights_dict[experts_path / "gate_up_proj_blocks"],
+            weights_dict[experts_path / "gate_up_proj_scales"],
+            dtype=module.activation_precision,
+            flatten=False,
+        )
+        # Stored as (experts, outputs=2*hidden_dim, input_blocks, input_block_elems)
+        # Merge blocks and move outputs last
+        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
+        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
+        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=-1)
+
+        gub = weights_dict[experts_path / "gate_up_proj_bias"]
+        if gub.ndim == 1:
+            gub = jnp.broadcast_to(gub, combined_up_gate_w.shape[:-1] + (gub.shape[0],))
+        up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
+        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
+
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),  # type: ignore
+            module.experts.up_projection,
+            (combined_up_gate_w, combined_up_gate_b),
+        )
+
+        # Down projection: decode MXFP4 to dense
+        down_w = decode_mxfp4(
+            weights_dict[experts_path / "down_proj_blocks"],
+            weights_dict[experts_path / "down_proj_scales"],
+            dtype=module.activation_precision,
+            flatten=False,
+        )
+        # Stored as (experts, outputs=model_dim, input_blocks, input_block_elems)
+        # Merge blocks and move outputs last
+        down_w = rearrange(down_w, "e o ib ie -> e (ib ie) o")
+        down_b = weights_dict[experts_path / "down_proj_bias"]
+        if down_b.ndim == 1:
+            down_b = jnp.broadcast_to(down_b, down_w.shape[:-1] + (down_b.shape[0],))
+
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),  # type: ignore
+            module.experts.down_projection,
+            (down_w, down_b),
+        )
+
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+    else:
+        # Fallback: recursively load a standard DenseMLP experts module
+        experts = load_mlp(module.experts, weights_dict, experts_path)
+
+    return load_parameters(
+        lambda m: (m.router, m.experts),
+        module,
+        (router, experts),
+    )
 
 
 def load_rmsnorm(
@@ -202,10 +288,16 @@ def load_attention(
     else:
         key_norm = None
 
+    # GPT-OSS adds per-head attention sinks; load them if present.
+    if (path / "sinks") in weights_dict:
+        sinks = weights_dict[path / "sinks"]
+    else:
+        sinks = module.sinks
+
     return load_parameters(
-        lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
+        lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm, m.sinks),
         module,
-        (qkv_projection, out_projection, query_norm, key_norm),
+        (qkv_projection, out_projection, query_norm, key_norm, sinks),
     )
 
 

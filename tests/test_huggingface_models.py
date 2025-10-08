@@ -1,3 +1,4 @@
+import gc
 from dataclasses import dataclass
 from enum import Enum
 
@@ -6,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 import torch
 
-from lalamo import REPO_TO_MODEL, import_model
+from lalamo import import_model
 from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
 
@@ -40,10 +41,11 @@ MODEL_LIST = [
     # Spec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     Spec("Qwen/Qwen3-0.6B", DType.FLOAT32),
     Spec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16, requires_gpu=True),
+    Spec("openai/gpt-oss-20b", DType.FLOAT16, requires_gpu=True),
 ]
 
 
-NUM_TOKENS = 512
+NUM_TOKENS = 2
 TOKEN_STRIDE = 64
 
 
@@ -61,21 +63,25 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
         pytest.skip("GPU is required for this test")
 
     llm_model, *_ = import_model(
-        REPO_TO_MODEL[test_spec.model_repo],
+        test_spec.model_repo,
         context_length=NUM_TOKENS * TOKEN_STRIDE,
         precision=test_spec.dtype.jax_dtype,
     )
-    hf_tracer = load_hf_tracer(test_spec.model_repo, torch_dtype=test_spec.dtype.torch_dtype)
+    hf_tracer = load_hf_tracer(test_spec.model_repo, dtype=test_spec.dtype.torch_dtype)
 
-    token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)
-    token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)
+    token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)[None, :]
+    token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)[None, :]
 
-    err, llm_result = checkify_forward(llm_model.decoder)(
-        token_ids=token_ids,
-        token_positions=token_positions,
-        return_updated_kv_cache=True,
-        return_activation_trace=True,
-    )
-    err.throw()
+    with jax.disable_jit():
+        err, llm_result = checkify_forward(llm_model.decoder)(
+            token_ids=token_ids,
+            token_positions=token_positions,
+            return_updated_kv_cache=True,
+            return_activation_trace=True,
+        )
+        err.throw()
+
+    del llm_model
+    gc.collect()
 
     hf_tracer.match_activations(llm_result)

@@ -9,18 +9,45 @@ from collections.abc import (
     Sequence,
     ValuesView,
 )
+from contextlib import contextmanager
 from dataclasses import dataclass
+from pathlib import Path
 from typing import overload
 
 import einops
 import jax.numpy as jnp
 from jaxtyping import Array
+from safetensors import safe_open
 
 __all__ = [
     "MapDictValues",
     "MapSequence",
     "jax_uint4_to_packed_uint8",
+    "open_safetensors",
 ]
+
+
+@dataclass(frozen=True)
+class LazyDict[K, V](Mapping[K, V]):
+    stored_keys: set[K]
+    getter: Callable[[K], V]
+
+    def __getitem__(self, key: K) -> V:
+        if key not in self.stored_keys:
+            raise KeyError(key)
+        return self.getter(key)
+
+    def __iter__(self) -> Iterator[K]:
+        return iter(self.stored_keys)
+
+    def __len__(self) -> int:
+        return len(self.stored_keys)
+
+
+@contextmanager
+def open_safetensors(filename: Path | str) -> Iterator[Mapping[str, Array]]:
+    with safe_open(filename, framework="flax") as safetensors_nonsense:
+        yield LazyDict(set(safetensors_nonsense.keys()), safetensors_nonsense.get_tensor)
 
 
 @dataclass(frozen=True)

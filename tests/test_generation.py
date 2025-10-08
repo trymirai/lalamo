@@ -3,13 +3,13 @@ from textwrap import dedent
 import jax.numpy as jnp
 import pytest
 from attr import dataclass
-from jax import jit, vmap
 from jaxtyping import Array, Int
 from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from lalamo.language_model import LanguageModel
 from lalamo.model_import import REPO_TO_MODEL, import_model
+from lalamo.sampling import GreedyPolicy
 
 
 @dataclass(frozen=True)
@@ -67,7 +67,10 @@ def test_eager_generation(
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
 ) -> None:
-    response_token_ids = language_model.generate_tokens(generation_input.token_ids, max_output_length=32)
+    response_token_ids = language_model.generate_tokens(
+        generation_input.token_ids[None, :],
+        max_output_length=32,
+    ).squeeze(0)
     response_text = tokenizer.decode(response_token_ids)
     assert "<|im_end|>" in response_text
 
@@ -81,22 +84,21 @@ def test_padding(language_model: LanguageModel, tokenizer: PreTrainedTokenizer) 
         <think>\n\n</think>\n\n
     """.lstrip(),
     )
-    token_ids = jnp.array(tokenizer.encode(prompt))
+    token_ids = jnp.array(tokenizer.encode(prompt))[None, :]
 
-    length = jnp.array(0, dtype=jnp.int32)
     response_token_ids = language_model.generate_tokens(
         token_ids,
-        prompt_length_without_padding=length,
+        prompt_lengths_without_padding=jnp.array([0], dtype=jnp.int32),
         max_output_length=32,
-    )
+    ).squeeze(0)
     response_text = tokenizer.decode(response_token_ids)
     assert "elephants" not in response_text.lower()
 
     response_token_ids = language_model.generate_tokens(
         token_ids,
-        prompt_length_without_padding=token_ids.size,
+        prompt_lengths_without_padding=jnp.array([token_ids.size]),
         max_output_length=32,
-    )
+    ).squeeze(0)
     response_text = tokenizer.decode(response_token_ids)
     assert "elephants" in response_text.lower()
 
@@ -107,15 +109,6 @@ def test_batch_generation(
     generation_input: GenerationInput,
     another_generation_input: GenerationInput,
 ) -> None:
-    def generate_fn(token_ids: Int[Array, " tokens"], sequence_length: Int[Array, ""]) -> Int[Array, " tokens"]:
-        return language_model.generate_tokens(
-            token_ids,
-            prompt_length_without_padding=sequence_length,
-            max_output_length=32,
-        )
-
-    batched_generate_fn = jit(vmap(generate_fn))
-
     inputs = [generation_input, another_generation_input]
     pad_token_id = 0
 
@@ -133,7 +126,11 @@ def test_batch_generation(
         ],
     )
 
-    response_token_ids = batched_generate_fn(padded_token_ids, batched_prompt_lengths)
+    response_token_ids = language_model.generate_tokens(
+        padded_token_ids,
+        prompt_lengths_without_padding=batched_prompt_lengths,
+        max_output_length=32,
+    )
     for ids in response_token_ids:
         response_text = tokenizer.decode(ids)
         assert "<|im_end|>" in response_text
@@ -154,17 +151,23 @@ def test_streaming_vs_eager_consistency(
     language_model: LanguageModel,
     generation_input: GenerationInput,
 ) -> None:
+    sampling_policy = GreedyPolicy()
     eager_token_ids = language_model.generate_tokens(
-        generation_input.token_ids,
+        generation_input.token_ids[None, :],
+        sampling_policy=sampling_policy,
         max_output_length=32,
         eos_token_ids=jnp.array([-1]),  # Never stop.
-    )
+    ).squeeze(0)
 
     streaming_token_generator = language_model.stream_tokens(
         generation_input.token_ids,
+        sampling_policy=sampling_policy,
         max_output_length=32,
         eos_token_ids=jnp.array([-1]),  # Never stop.
     )
     streaming_token_ids = jnp.array(list(streaming_token_generator))
 
-    assert jnp.array_equal(eager_token_ids, streaming_token_ids)
+    assert jnp.array_equal(eager_token_ids, streaming_token_ids), (
+        eager_token_ids.squeeze().tolist(),
+        streaming_token_ids.squeeze().tolist(),
+    )

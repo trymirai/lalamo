@@ -16,7 +16,7 @@ def test_basic_registration_and_multilevel() -> None:
         pass
 
     # __get_descendants__ is a class method returning a list
-    assert isinstance(AbstractFoo.__descendants__(), list)
+    assert isinstance(AbstractFoo.__descendants__(), tuple)
 
     # Order is not guaranteed; compare as sets
     assert set(AbstractFoo.__descendants__()) >= {A, B}
@@ -139,9 +139,8 @@ def test_descendants_method_exists_on_all_registryabc_subclasses() -> None:
 
     # Method exists and returns lists on all levels
     for C in (Root, Mid, Leaf):  # noqa: N806
-        assert hasattr(C, "__get_descendants__")
         assert callable(C.__descendants__)
-        assert isinstance(C.__descendants__(), list)
+        assert isinstance(C.__descendants__(), tuple)
 
     assert Leaf in Mid.__descendants__()
     assert Leaf in Root.__descendants__()

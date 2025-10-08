@@ -4,19 +4,19 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    Activation,
     AttentionConfig,
     DecoderConfig,
     DecoderLayerConfig,
+    DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    MLPConfig,
     RMSNormConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
 )
+from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
@@ -26,6 +26,7 @@ __all__ = ["HFQwen3Config"]
 
 @dataclass(frozen=True)
 class HFQwen3Config(HuggingFaceConfig):
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
     attention_bias: bool
     hidden_act: Literal["silu"]
     hidden_size: int
@@ -70,13 +71,13 @@ class HFQwen3Config(HuggingFaceConfig):
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
-                logits_soft_cap=None,
+                logit_soft_cap=None,
                 precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
-                logits_soft_cap=None,
+                logit_soft_cap=None,
                 precision=activation_precision,
             )
         rope_config = UnscaledRoPEConfig(
@@ -108,12 +109,17 @@ class HFQwen3Config(HuggingFaceConfig):
             query_norm_config=rmsnorm_config,
             key_norm_config=rmsnorm_config,
             logit_soft_cap=None,
+            has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=Activation.SILU,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
             pre_attention_norm_config=rmsnorm_config,

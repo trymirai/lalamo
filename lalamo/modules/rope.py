@@ -25,7 +25,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-from .common import LalamoModule, WeightLayout, register_config_union
+from .common import LalamoModule, register_config_union
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -39,22 +39,25 @@ __all__ = [
 
 
 class PositionalEmbeddings(eqx.Module):
-    cosines: Float[Array, "tokens head_channels"]
-    sines: Float[Array, "tokens head_channels"]
+    cosines: Float[Array, "*batch tokens head_channels"]
+    sines: Float[Array, "*batch tokens head_channels"]
 
     @property
     def head_dim(self) -> int:
         return self.cosines.shape[-1]
 
-    def rotate_half(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
+    def rotate_half(
+        self,
+        heads: Float[Array, "*batch tokens head_channels"],
+    ) -> Float[Array, "*batch tokens head_channels"]:
         x1 = heads[..., : self.head_dim // 2]
         x2 = heads[..., self.head_dim // 2 :]
         return jnp.concatenate((-x2, x1), axis=-1)
 
-    def apply(self, heads: Float[Array, "tokens head_channels"]) -> Float[Array, "tokens head_channels"]:
+    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
 
-    def export(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+    def export(self) -> ParameterTree:
         return dict(
             cosines=self.cosines,
             sines=self.sines,
@@ -140,7 +143,7 @@ class RoPE(LalamoModule[RoPEConfigBase]):
             sines=self.sines[timesteps],
         )
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]:  # noqa: ARG002
+    def export_weights(self) -> ParameterTree[Array]:
         return {
             "cosines": self.cosines,
             "sines": self.sines,
@@ -149,7 +152,6 @@ class RoPE(LalamoModule[RoPEConfigBase]):
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
     ) -> "RoPE":
         assert isinstance(weights, Mapping)
         return replace(self, cosines=weights["cosines"], sines=weights["sines"])
@@ -199,13 +201,15 @@ class LlamaRoPEConfig(RoPEConfigBase):
 @dataclass(frozen=True)
 class YARNRoPEConfig(RoPEConfigBase):
     scaling_factor: float
+    original_context_length: int
     beta_fast: float
     beta_slow: float
+    truncate: bool
 
     @classmethod
-    def _find_correction_dim(cls, num_rotations: float, dim: int, base: float, max_position_embeddings: int) -> float:
+    def _find_correction_dim(cls, num_rotations: float, dim: int, base: float, original_context_length: int) -> float:
         """Inverse dimension formula to find the dimension based on the number of rotations"""
-        return (dim * math.log(max_position_embeddings / (num_rotations * 2 * math.pi))) / (2 * math.log(base))
+        return (dim * math.log(original_context_length / (num_rotations * 2 * math.pi))) / (2 * math.log(base))
 
     @classmethod
     def _find_correction_range(
@@ -214,19 +218,25 @@ class YARNRoPEConfig(RoPEConfigBase):
         high_rot: float,
         dim: int,
         base: float,
-        max_position_embeddings: int,
-    ) -> tuple[int, int]:
+        original_context_length: int,
+        truncate: bool,
+    ) -> tuple[float, float]:
         """Find dimension range bounds based on rotations"""
-        low = math.floor(cls._find_correction_dim(low_rot, dim, base, max_position_embeddings))
-        high = math.ceil(cls._find_correction_dim(high_rot, dim, base, max_position_embeddings))
-        return max(low, 0), min(high, dim - 1)
+        low = cls._find_correction_dim(low_rot, dim, base, original_context_length)
+        high = cls._find_correction_dim(high_rot, dim, base, original_context_length)
+        if truncate:
+            low = math.floor(low)
+            high = math.ceil(high)
+        return max(low, 0.0), min(high, float(dim - 1))
 
     @classmethod
     def _linear_ramp_factor(cls, min_value: float, max_value: float, dim: int) -> Float[Array, " head_dim"]:
         if min_value == max_value:
             max_value += 0.001  # Prevent singularity
 
-        linear_func = (jnp.arange(dim, dtype=jnp.float32) - min_value) / (max_value - min_value)
+        min_v = jnp.float32(min_value)
+        max_v = jnp.float32(max_value)
+        linear_func = (jnp.arange(dim, dtype=jnp.float32) - min_v) / (max_v - min_v)
         ramp_func = jnp.clip(linear_func, 0, 1)
         return ramp_func
 
@@ -234,7 +244,7 @@ class YARNRoPEConfig(RoPEConfigBase):
         self,
         inverse_frequencies: Float[Array, " tokens"],
         head_dim: int,
-        max_sequence_length: int,
+        max_sequence_length: int,  # noqa: ARG002
     ) -> Float[Array, " tokens"]:
         scaled_frequencies = inverse_frequencies / self.scaling_factor
 
@@ -243,7 +253,8 @@ class YARNRoPEConfig(RoPEConfigBase):
             self.beta_slow,
             head_dim,
             self.base,
-            max_sequence_length,
+            self.original_context_length,
+            self.truncate,
         )
 
         # Get n-dimensional rotational scaling corrected for extrapolation
@@ -251,7 +262,7 @@ class YARNRoPEConfig(RoPEConfigBase):
         return scaled_frequencies * (1 - smoothing_factor) + inverse_frequencies * smoothing_factor
 
     @property
-    def attention_scaling_factor(self) -> float:
+    def _attention_scaling_factor(self) -> float:
         return 0.1 * math.log(self.scaling_factor) + 1.0
 
 

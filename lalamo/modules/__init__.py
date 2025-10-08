@@ -1,8 +1,14 @@
-from .activations import Activation
+from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
-from .common import LalamoModule, WeightLayout, config_converter
-from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderResult
-from .decoder_layer import DecoderLayer, DecoderLayerActivationTrace, DecoderLayerConfig, DecoderLayerResult
+from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
+from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
+from .decoder_layer import (
+    DecoderLayer,
+    DecoderLayerActivationTrace,
+    DecoderLayerConfig,
+    DecoderLayerForwardPassConfig,
+    DecoderLayerResult,
+)
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
@@ -24,7 +30,17 @@ from .linear import (
     QLoRALinear,
     QLoRALinearConfig,
 )
-from .mlp import MLP, MLPConfig
+from .mlp import (
+    DenseMLP,
+    DenseMLPConfig,
+    MixtureOfExperts,
+    MixtureOfExpertsConfig,
+    MLPBase,
+    MLPConfig,
+    MLPForwardPassConfig,
+    RoutingFunction,
+    SoftmaxRouting,
+)
 from .normalization import RMSNorm, RMSNormConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
@@ -37,21 +53,27 @@ from .rope import (
 )
 
 __all__ = [
-    "MLP",
+    "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
+    "AttentionType",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
+    "DecoderForwardPassConfig",
     "DecoderLayer",
     "DecoderLayerActivationTrace",
     "DecoderLayerConfig",
+    "DecoderLayerForwardPassConfig",
     "DecoderLayerResult",
     "DecoderResult",
+    "DenseMLP",
+    "DenseMLPConfig",
     "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
+    "ForwardPassMode",
     "FullPrecisionLinear",
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
@@ -63,7 +85,11 @@ __all__ = [
     "LinearConfig",
     "LinearScalingRoPEConfig",
     "LlamaRoPEConfig",
+    "MLPBase",
     "MLPConfig",
+    "MLPForwardPassConfig",
+    "MixtureOfExperts",
+    "MixtureOfExpertsConfig",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
@@ -73,6 +99,9 @@ __all__ = [
     "RMSNormConfig",
     "RoPE",
     "RoPEConfig",
+    "RoutingFunction",
+    "SiLU",
+    "SoftmaxRouting",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
@@ -80,7 +109,6 @@ __all__ = [
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
-    "WeightLayout",
     "YARNRoPEConfig",
     "config_converter",
 ]

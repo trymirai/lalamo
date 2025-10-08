@@ -9,9 +9,10 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
+from lalamo.common import dummy_array
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 
-from .common import AttentionType, LalamoModule, ParameterTree, WeightLayout
+from .common import AttentionType, LalamoModule, ParameterTree
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -44,8 +45,6 @@ def _soft_capped_attention_kernel(
 ) -> Float[Array, "dst_tokens heads head_channels"]:
     _, num_heads, head_dim = queries.shape
     _, num_groups, _ = keys.shape
-    if scale is None:
-        scale = head_dim**-0.5
     group_size = num_heads // num_groups
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
@@ -59,7 +58,11 @@ def _soft_capped_attention_kernel(
     if mask is not None:
         attention_logits = jnp.where(mask, attention_logits, jnp.array(float("-inf"), dtype=attention_logits.dtype))
 
-    attention_logits = attention_logits * scale
+    if scale is None:
+        scale_val = head_dim**-0.5
+    else:
+        scale_val = float(scale)
+    attention_logits = attention_logits * scale_val
     attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
     attention_weights = jax.nn.softmax(attention_logits, axis=-1)
     return einsum(
@@ -70,7 +73,7 @@ def _soft_capped_attention_kernel(
 
 
 class AttentionResult(NamedTuple):
-    outputs: Float[Array, "suffix_tokens channels"]
+    outputs: Float[Array, "*batch suffix_tokens channels"]
     kv_cache: KVCacheLayer | None = None
 
 
@@ -83,6 +86,7 @@ class AttentionConfig:
     key_norm_config: RMSNormConfig | None
 
     logit_soft_cap: float | None
+    has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
 
@@ -130,12 +134,18 @@ class AttentionConfig:
         else:
             key_norm = None
 
+        if self.has_sinks:
+            sinks = jnp.zeros((num_heads,), dtype=qkv_projection.activation_precision)
+        else:
+            sinks = None
+
         return Attention(
             self,
             qkv_projection=qkv_projection,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
+            sinks=sinks,
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
@@ -183,12 +193,18 @@ class AttentionConfig:
         else:
             key_norm = None
 
+        if self.has_sinks:
+            sinks = dummy_array(num_heads, qkv_projection.activation_precision)
+        else:
+            sinks = None
+
         return Attention(
             self,
             qkv_projection=qkv_projection,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
+            sinks=sinks,
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
@@ -204,6 +220,8 @@ class Attention(LalamoModule[AttentionConfig]):
 
     query_norm: RMSNorm | None
     key_norm: RMSNorm | None
+
+    sinks: Float[Array, " heads"] | None
 
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
@@ -233,6 +251,10 @@ class Attention(LalamoModule[AttentionConfig]):
     @property
     def attention_type(self) -> AttentionType:
         return AttentionType.SLIDING_WINDOW if self.sliding_window_size is not None else AttentionType.GLOBAL
+
+    @property
+    def has_sinks(self) -> bool:
+        return self.sinks is not None
 
     def __post_init__(self) -> None:
         if self.qkv_projection.has_biases != self.config.has_qkv_biases:
@@ -285,6 +307,12 @@ class Attention(LalamoModule[AttentionConfig]):
                 f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
                 f" got {v_output_dim}",
             )
+        if self.sinks is not None:
+            (num_sink_heads,) = self.sinks.shape
+            if num_sink_heads != self.num_heads:
+                raise ValueError(
+                    f"Number of sink heads must be equal to number of heads ({self.num_heads}), got {num_sink_heads}",
+                )
 
     @eqx.filter_jit
     def __call__(
@@ -325,12 +353,22 @@ class Attention(LalamoModule[AttentionConfig]):
         keys = apply_positional_embeddings(keys)
 
         if kv_cache is None:
-            updated_kv_cache = DynamicKVCacheLayer.init(keys, values, length=length_without_padding)
+            updated_kv_cache = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
         else:
             updated_kv_cache = kv_cache.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
-        mask = updated_kv_cache.attention_mask(num_suffix_tokens, self.is_causal, self.sliding_window_size)
+        mask = updated_kv_cache.attention_mask(
+            num_suffix_tokens,
+            self.is_causal,
+            length_without_padding,
+            self.sliding_window_size,
+        )
+        if self.sinks is not None:
+            sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)
+            sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
+        else:
+            sink_bias = None
 
         if self.config.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
@@ -346,6 +384,7 @@ class Attention(LalamoModule[AttentionConfig]):
                 queries,
                 updated_kv_cache.keys,
                 updated_kv_cache.values,
+                bias=sink_bias,
                 mask=mask,
                 scale=self.scale,
             )
@@ -366,41 +405,55 @@ class Attention(LalamoModule[AttentionConfig]):
         )
 
     def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
-        return StaticKVCacheLayer.empty(capacity, self.num_groups, self.head_dim, self.activation_precision)
-
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:
-        result = dict(
-            qkv_projection=self.qkv_projection.export_weights(weight_layout),
-            out_projection=self.out_projection.export_weights(weight_layout),
+        return StaticKVCacheLayer.empty(
+            self.has_sinks,
+            capacity,
+            self.num_groups,
+            self.head_dim,
+            self.activation_precision,
         )
+
+    def export_weights(self) -> ParameterTree:
+        result: dict[str, ParameterTree | Array] = {
+            "qkv_projection": self.qkv_projection.export_weights(),
+            "out_projection": self.out_projection.export_weights(),
+        }
         if self.query_norm is not None:
-            result["query_norm"] = self.query_norm.export_weights(weight_layout)
+            result["query_norm"] = self.query_norm.export_weights()
         if self.key_norm is not None:
-            result["key_norm"] = self.key_norm.export_weights(weight_layout)
+            result["key_norm"] = self.key_norm.export_weights()
+        if self.sinks is not None:
+            assert isinstance(self.sinks, Array)
+            result["sinks"] = self.sinks
         return result
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["qkv_projection"], Mapping)
         assert isinstance(weights["out_projection"], Mapping)
         if self.query_norm is not None:
             assert isinstance(weights["query_norm"], Mapping)
-            query_norm = self.query_norm.import_weights(weights["query_norm"], weight_layout)
+            query_norm = self.query_norm.import_weights(weights["query_norm"])
         else:
             query_norm = None
         if self.key_norm is not None:
             assert isinstance(weights["key_norm"], Mapping)
-            key_norm = self.key_norm.import_weights(weights["key_norm"], weight_layout)
+            key_norm = self.key_norm.import_weights(weights["key_norm"])
         else:
             key_norm = None
+        if self.sinks is not None:
+            assert isinstance(weights["sinks"], Array)
+            sinks = weights["sinks"]
+        else:
+            sinks = None
         return replace(
             self,
-            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"], weight_layout),
-            out_projection=self.out_projection.import_weights(weights["out_projection"], weight_layout),
+            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"]),
+            out_projection=self.out_projection.import_weights(weights["out_projection"]),
             query_norm=query_norm,
             key_norm=key_norm,
+            sinks=sinks,
         )

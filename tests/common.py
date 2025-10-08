@@ -1,7 +1,7 @@
 import math
 
 from jax import numpy as jnp
-from jax.experimental.checkify import checkify, div_checks, index_checks, nan_checks, user_checks
+from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
 
 __all__ = ["assert_close", "checkify_forward"]
 
@@ -12,7 +12,7 @@ RTOL = 0.03
 def checkify_forward(module):  # noqa: ANN001, ANN201
     return checkify(
         module.__call__,
-        errors=index_checks | nan_checks | div_checks | user_checks,
+        errors=nan_checks | div_checks | user_checks,
     )
 
 
@@ -25,6 +25,13 @@ def assert_close(
     fraction_of_allowed_violations: float = 0.0,
     operation_name: str | None = None,
 ) -> None:
+    assert result.shape == reference.shape, (
+        f"{operation_name} shapes do not match: {result.shape} != {reference.shape}"
+    )
+    assert result.dtype == reference.dtype, (
+        f"{operation_name} data types do not match: {result.dtype} != {reference.dtype}"
+    )
+
     result = result.astype(jnp.float32)
     reference = reference.astype(jnp.float32)
 

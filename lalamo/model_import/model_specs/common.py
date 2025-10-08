@@ -1,7 +1,9 @@
 from collections.abc import (
     Callable,
+    Iterator,
     Mapping,
 )
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -10,11 +12,10 @@ from typing import ClassVar, cast, get_args, get_origin
 import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
-from safetensors.flax import load_file as load_safetensors
 
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import MapDictValues
+from lalamo.utils import MapDictValues, open_safetensors
 
 __all__ = [
     "ConfigMap",
@@ -37,16 +38,18 @@ class WeightsType(Enum):
     SAFETENSORS = "safetensors"
     TORCH = "torch"
 
-    def load(self, filename: Path | str, float_dtype: DTypeLike) -> Mapping[str, jnp.ndarray]:
+    @contextmanager
+    def load(self, filename: Path | str, float_dtype: DTypeLike) -> Iterator[Mapping[str, jnp.ndarray]]:
         if self == WeightsType.SAFETENSORS:
-            return MapDictValues(lambda v: cast_if_float(v, float_dtype), load_safetensors(filename))
+            with open_safetensors(filename) as weights_dict:
+                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict)
+        else:
+            import torch
 
-        import torch
+            from lalamo.modules.torch_interop import torch_to_jax
 
-        from lalamo.modules.torch_interop import torch_to_jax
-
-        torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-        return MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
+            torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
+            yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
 
 
 class UseCase(Enum):
@@ -75,8 +78,8 @@ def _is_foreign_config_type(t: object) -> bool:
 
 
 def _structure_foreign_config_factory(
-    t: object,
-    c: cattrs.Converter,
+    t: object,  # noqa: ARG001
+    c: cattrs.Converter,  # noqa: ARG001
 ) -> Callable[[object, object], type[ForeignConfig]]:
     name_to_type = {t.__name__: t for t in ForeignConfig.__descendants__()}
 
@@ -88,7 +91,7 @@ def _structure_foreign_config_factory(
     return _hook
 
 
-def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:
+def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
     def _hook(v: type[ForeignConfig]) -> str:
         return v.__name__
 

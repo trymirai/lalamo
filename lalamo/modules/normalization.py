@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.common import ParameterTree, dummy_array
 
-from .common import LalamoModule, WeightLayout
+from .common import LalamoModule
 
 __all__ = [
     "RMSNorm",
@@ -83,13 +83,12 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         result = normalized_x * adjusted_scales
         return result.astype(inputs.dtype)
 
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree:  # noqa: ARG002
+    def export_weights(self) -> ParameterTree:
         return {"scales": self.scales}
 
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,  # noqa: ARG002
     ) -> Self:
         assert isinstance(weights, Mapping)
         return replace(self, scales=weights["scales"])

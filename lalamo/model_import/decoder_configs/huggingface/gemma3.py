@@ -8,11 +8,11 @@ from lalamo.modules import (
     DecoderConfig,
     TiedEmbeddingConfig,
 )
-from lalamo.modules.activations import Activation
+from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
 from lalamo.modules.decoder_layer import DecoderLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
-from lalamo.modules.mlp import MLPConfig
+from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import RMSNormConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
 
@@ -75,7 +75,7 @@ class HFGemma3TextConfigRaw:
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=input_scale,
-            logits_soft_cap=None,
+            logit_soft_cap=None,
             precision=activation_precision,
         )
         rms_norm_config = RMSNormConfig(
@@ -106,13 +106,21 @@ class HFGemma3TextConfigRaw:
         )
 
         linear_config = FullPrecisionLinearConfig(precision=activation_precision)
-        mlp_config = MLPConfig(linear_config=linear_config, activation=Activation.GELU)
+        mlp_config = DenseMLPConfig(
+            linear_config=linear_config,
+            activation=GELU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
+        )
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,
             query_norm_config=rms_norm_config,
             key_norm_config=rms_norm_config,
             logit_soft_cap=self.attn_logit_softcapping,
+            has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )
@@ -145,7 +153,7 @@ class HFGemma3TextConfigRaw:
 
 @dataclass(frozen=True)
 class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
-    pass
+    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
 
 @dataclass(frozen=True)
@@ -162,6 +170,7 @@ class HFGemma3VisionConfig:
 
 @dataclass(frozen=True)
 class HFGemma3Config(HuggingFaceConfig):
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Gemma3ForConditionalGeneration"]]
     boi_token_index: int
     eoi_token_index: int

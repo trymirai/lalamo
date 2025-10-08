@@ -8,8 +8,7 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub[hf-transfer]>=0.27.1",
-    "jax>=0.4.38; sys_platform == 'darwin'",
-    "jax[cuda]>=0.4.38; sys_platform == 'linux'",
+    "jax>=0.7.2",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
@@ -23,6 +22,28 @@ dependencies = [
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
+
+[project.optional-dependencies]
+cpu = ["jax[cpu]>=0.7.2"]
+cuda = ["jax[cuda]>=0.7.2"]
+tpu = ["jax[tpu]>=0.7.2"]
+
+[dependency-groups]
+dev = [
+    "accelerate>=1.7.0",
+    "autoawq>=0.2.9; platform_system == 'Linux' and platform_machine == 'x86_64'",
+    "beartype>=0.19.0",
+    "ipykernel>=6.29.5",
+    "ipywidgets>=8.1.5",
+    "kernels>=0.10.2",
+    "memray>=1.17.2",
+    "pytest-env>=1.1.5",
+    "pytest>=8.3.4",
+    "torch>=2.8.0",
+    "torchao>=0.7.0",
+    "transformers>=4.56.0",
+    "twine>=6.1.0",
+]
 
 [project.scripts]
 lalamo = "lalamo.main:app"
@@ -42,20 +63,6 @@ version = { attr = "lalamo.__version__" }
 
 [tool.uv]
 package = true
-dev-dependencies = [
-    "accelerate>=1.7.0",
-    "autoawq>=0.2.9; sys_platform == 'linux'",
-    "beartype>=0.19.0",
-    "ipykernel>=6.29.5",
-    "ipywidgets>=8.1.5",
-    "memray>=1.17.2",
-    "pytest-env>=1.1.5",
-    "pytest>=8.3.4",
-    "torch>=2.8.0",
-    "torchao>=0.7.0",
-    "transformers>=4.48.0",
-    "twine>=6.1.0",
-]
 
 [[tool.uv.index]]
 name = "torch-cpu"
@@ -64,7 +71,7 @@ explicit = true
 
 [[tool.uv.index]]
 name = "torch-gpu"
-url = "https://download.pytorch.org/whl/cu128"
+url = "https://download.pytorch.org/whl/cu129"
 explicit = true
 
 [[tool.uv.index]]
@@ -75,8 +82,8 @@ explicit = true
 
 [tool.uv.sources]
 torch = [
-    { index = "torch-cpu", marker = "platform_system == 'Darwin'" },
-    { index = "torch-gpu", marker = "platform_system == 'Linux'" },
+    { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
+    { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
 ]
 
 [tool.pytest.ini_options]
@@ -87,6 +94,8 @@ torch = [
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "True"
 JAX_TRACEBACK_FILTERING = "off"
+XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
+TORCH_COMPILE_DISABLE = "1"
 
 [tool.pyright]
 venv = "."

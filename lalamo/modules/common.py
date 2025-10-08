@@ -6,77 +6,29 @@ from typing import Self
 
 import equinox as eqx
 from cattrs import Converter
-from einops import rearrange
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree
 
 __all__ = [
     "AttentionType",
     "DummyUnionMember",
+    "ForwardPassMode",
     "LalamoModule",
     "config_converter",
-    "from_layout",
-    "into_layout",
     "register_config_union",
 ]
-
-
-class WeightLayout(Enum):
-    AUTO = "auto"
-    INPUT_OUTPUT = "input_output"
-    OUTPUT_INPUT = "output_input"
-
-    def __str__(self) -> str:
-        match self:
-            case WeightLayout.AUTO:
-                return "auto"
-            case WeightLayout.INPUT_OUTPUT:
-                return "(input, output)"
-            case WeightLayout.OUTPUT_INPUT:
-                return "(output, input)"
-
-
-_DEFAULT_WEIGHT_LAYOUT = WeightLayout.INPUT_OUTPUT
-
-
-def into_layout(
-    weights: Float[Array, "in_channels out_channels"],
-    layout: WeightLayout,
-) -> Float[Array, "in_channels out_channels"] | Float[Array, "out_channels in_channels"]:
-    if layout == WeightLayout.AUTO:
-        layout = _DEFAULT_WEIGHT_LAYOUT
-    match layout:
-        case WeightLayout.OUTPUT_INPUT:
-            return weights
-        case WeightLayout.INPUT_OUTPUT:
-            return rearrange(
-                weights,
-                "total_out_channels in_channels -> in_channels total_out_channels",
-            )
-
-
-def from_layout(
-    weights: ParameterTree | Array,
-    layout: WeightLayout,
-) -> Array:
-    assert isinstance(weights, Array)
-    if layout == WeightLayout.AUTO:
-        layout = _DEFAULT_WEIGHT_LAYOUT
-    match layout:
-        case WeightLayout.OUTPUT_INPUT:
-            return weights
-        case WeightLayout.INPUT_OUTPUT:
-            return rearrange(
-                weights,
-                "in_channels total_out_channels -> total_out_channels in_channels",
-            )
 
 
 class AttentionType(Enum):
     GLOBAL = "global"
     SLIDING_WINDOW = "sliding_window"
+
+
+class ForwardPassMode(Enum):
+    MULTI_TOKEN = "multi_token"
+    SINGLE_TOKEN = "single_token"
 
 
 class LalamoModule[ConfigT](eqx.Module):
@@ -87,13 +39,12 @@ class LalamoModule[ConfigT](eqx.Module):
     def activation_precision(self) -> DTypeLike: ...
 
     @abstractmethod
-    def export_weights(self, weight_layout: WeightLayout = WeightLayout.AUTO) -> ParameterTree[Array]: ...
+    def export_weights(self) -> ParameterTree[Array]: ...
 
     @abstractmethod
     def import_weights(
         self,
         weights: ParameterTree[Array],
-        weight_layout: WeightLayout = WeightLayout.AUTO,
     ) -> Self: ...
 
 

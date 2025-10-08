@@ -6,7 +6,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
+import jax
 import jax.numpy as jnp
+import jax.profiler
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -18,7 +20,7 @@ from rich.panel import Panel
 from rich.progress import Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from safetensors.flax import save_file
-from typer import Argument, Exit, Option, Typer
+from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.common import flatten_parameters
 from lalamo.language_model import LanguageModel
@@ -31,7 +33,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.modules import WeightLayout, config_converter
+from lalamo.modules import config_converter
 from lalamo.utils import jax_uint4_to_packed_uint8
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -110,27 +112,19 @@ def chat(
             metavar="MODEL_PATH",
         ),
     ],
-    weight_layout: Annotated[
-        WeightLayout | None,
-        Option(
-            help=(
-                "(EXPERIMENTAL) Order of dimensions in the weights of linear layers."
-                "\n\n\n\n"
-                "If set to AUTO, the layout will depend on the model."
-            ),
-            show_default="auto",
-        ),
-    ] = None,
 ) -> None:
-    if weight_layout is None:
-        weight_layout = WeightLayout.AUTO
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
         transient=True,
     ) as progress:
-        progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = LanguageModel.load(model_path, weight_layout)
+        loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+        model = LanguageModel.load(model_path)
+        progress.remove_task(loading_task)
+        warmup_task = progress.add_task("🔥 Warming up compilation cache...")
+        list(model.stream_reply_text([UserMessage("")], max_output_length=1))
+        progress.remove_task(warmup_task)
+    console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
     messages = []
     while True:
         user_text = console.input("[cyan]user> [/cyan]")
@@ -170,17 +164,6 @@ def convert(
             show_default="Native precision of the model",
         ),
     ] = None,
-    weight_layout: Annotated[
-        WeightLayout | None,
-        Option(
-            help=(
-                "(EXPERIMENTAL) Order of dimensions in the weights of linear layers."
-                "\n\n\n\n"
-                "If set to AUTO, the layout will depend on the model."
-            ),
-            show_default="auto",
-        ),
-    ] = None,
     output_dir: Annotated[
         Path | None,
         Option(
@@ -213,18 +196,10 @@ def convert(
     else:
         precision_dtype = None
 
-    if weight_layout is not None:
-        weight_layout = WeightLayout(weight_layout)
-    else:
-        weight_layout = WeightLayout.AUTO
-
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 
-    console.print(f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan].")
-    conversion_strs = [
-        f"⚙️ Using weight layout [cyan]{weight_layout}[/cyan]",
-    ]
+    conversion_strs = [f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan]"]
     if precision is not None:
         conversion_strs.append(
             f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
@@ -292,7 +267,7 @@ def convert(
         progress.remove_task(main_task)
 
         model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-        weights = flatten_parameters(model.export_weights(weight_layout))
+        weights = flatten_parameters(model.export_weights())
         del model
 
         packed_weights = _pack_uint4_weights(weights)
@@ -312,10 +287,10 @@ def _model_size_string_to_int(
 ) -> float:
     match = _regex.match(size_str)
     factors = {
-        "K": 1024**1,
-        "M": 1024**2,
-        "B": 1024**3,
-        "T": 1024**4,
+        "K": 1000**1,
+        "M": 1000**2,
+        "B": 1000**3,
+        "T": 1000**4,
     }
     if match:
         return float(match.group("number")) * factors[match.group("suffix")]
@@ -366,6 +341,30 @@ def list_models(
             spec.repo,
         )
     console.print(table)
+
+@app.callback()
+def _profile_memory(
+    ctx: Context,
+    profile_memory: Annotated[
+        Path | None,
+        Option(
+            help="Record and save the XLA memory profile to specified path",
+            show_default="Don't save the XLA memory profile",
+            envvar="LALAMO_PROFILE_MEMORY",
+        ),
+    ] = None,
+) -> None:
+    if profile_memory is None:
+        return
+
+    if profile_memory.is_dir():
+        profile_memory /= "lalamo-memory.prof"
+
+    def _save_memory_profile() -> None:
+        console.print(f"Saving XLA memory profile to {profile_memory}")
+        jax.profiler.save_device_memory_profile(profile_memory)
+
+    ctx.call_on_close(_save_memory_profile)
 
 
 if __name__ == "__main__":

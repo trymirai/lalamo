@@ -1,6 +1,7 @@
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
@@ -22,6 +23,10 @@ __all__ = [
 
 type ToolSchema = None  # WIP
 type Image = None  # WIP
+
+
+def _strftime_now(format_string: str) -> str:
+    return datetime.now().strftime(format_string)  # noqa: DTZ005
 
 
 class HuggingFaceMessage(TypedDict):
@@ -141,7 +146,7 @@ class MessageProcessor:
 
     def render_request(self, messages: Iterable[Message]) -> str:
         request_dict = self.request_to_dict(messages)
-        return self.prompt_template.render(request_dict)
+        return self.prompt_template.render({**request_dict, "strftime_now": _strftime_now})
 
     def parse_response(self, response: str) -> AssistantMessage:
         if self.output_parser_regex is None:

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -5,18 +6,18 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.loaders.executorch import load_executorch
 from lalamo.modules import (
-    Activation,
     AttentionConfig,
     Decoder,
     DecoderConfig,
     DecoderLayerConfig,
+    DenseMLPConfig,
     LlamaRoPEConfig,
-    MLPConfig,
     QLoRALinearConfig,
     QuantizedTiedEmbeddingConfig,
     RMSNormConfig,
     UpcastMode,
 )
+from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
 from .common import ForeignConfig
@@ -58,7 +59,7 @@ class ExecutorchConfig(ForeignConfig):
     def _load_weights(
         cls,
         model: Decoder,
-        weights_dict: dict[str, Array],
+        weights_dict: Mapping[str, Array],
     ) -> Decoder:
         return load_executorch(model, weights_dict)
 
@@ -97,7 +98,7 @@ class ETLlamaConfig(ExecutorchConfig):
 
         embedding_config = QuantizedTiedEmbeddingConfig(
             input_scale=None,
-            logits_soft_cap=None,
+            logit_soft_cap=None,
             embedding_quantization_mode=EMBEDDING_QUANTIZATION_MODE,
             activation_quantization_mode=ACTIVATION_QUANTIZATION_MODE,
             activation_precision=activation_precision,
@@ -132,12 +133,17 @@ class ETLlamaConfig(ExecutorchConfig):
             query_norm_config=None,
             key_norm_config=None,
             logit_soft_cap=None,
+            has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
         )
-        mlp_config = MLPConfig(
+        mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=Activation.SILU,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
