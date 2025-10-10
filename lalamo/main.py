@@ -1,8 +1,10 @@
 import json
+import random
 import re
 import shutil
 import sys
 from enum import Enum
+from itertools import chain
 from pathlib import Path
 from typing import Annotated
 
@@ -16,13 +18,24 @@ from click import ParamType
 from jaxtyping import DTypeLike
 from rich import box
 from rich.console import Console
+from rich.live import Live
 from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+    track,
+)
 from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.common import flatten_parameters
+from lalamo.data import import_hf_parquet
+from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.language_model import LanguageModel
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
@@ -34,6 +47,9 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.modules import config_converter
+from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
+from lalamo.speculator.ngram import NGramSpeculator
+from lalamo.speculator.utils import SpeculatorTrainingEvent, test_speculator, train_speculator
 from lalamo.utils import jax_uint4_to_packed_uint8
 
 SCRIPT_NAME = Path(sys.argv[0]).name
@@ -341,6 +357,219 @@ def list_models(
             spec.repo,
         )
     console.print(table)
+
+
+speculator_app = Typer()
+app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
+
+
+@speculator_app.command(help="Run model inference and collect traces for speculator training")
+def collect_traces(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the dataset with prompts",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="File to save the trace to",
+            metavar="OUTPUT_PATH",
+        ),
+    ],
+    num_logits_per_token: Annotated[
+        int,
+        Option(help="Record logits for this number of most probable tokens"),
+    ] = 8,
+    max_input_length: Annotated[
+        int,
+        Option(help="Filter prompts that have more than this number of tokens in context"),
+    ] = 1024,
+    max_output_length: Annotated[
+        int,
+        Option(help="Maximum number of tokens to generate in one completion"),
+    ] = 1024,
+    batch_size: Annotated[
+        int,
+        Option(help="Number of sequences in one batch"),
+    ] = 1,
+    num_tokens_to_generate: Annotated[
+        int | None,
+        Option(
+            help="Exit early after generating this number of output tokens",
+            show_default="all",
+        ),
+    ] = None,
+) -> None:
+    with Live(refresh_per_second=10) as live:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+            disable=True,
+        ) as progress:
+            live.update(progress, refresh=True)
+            loading_model_task = progress.add_task("🧠 [cyan]Loading model...[/cyan]")
+            model = LanguageModel.load(model_path)
+            progress.remove_task(loading_model_task)
+
+            loading_dataset_task = progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
+            dataset = iter(import_hf_parquet(dataset_path))
+            dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
+            progress.remove_task(loading_dataset_task)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+            disable=True,
+        ) as progress:
+            live.update(progress, refresh=True)
+            inference_task = progress.add_task("🔮 [cyan]Running inference...[/cyan]", total=num_tokens_to_generate)
+
+            def progress_callback(event: CollectTracesEvent) -> None:
+                progress.update(inference_task, completed=event.tokens_generated)
+
+            traces = inference_collect_traces(
+                model,
+                dataset,
+                num_logits_per_token,
+                batch_size,
+                max_input_length,
+                max_output_length,
+                num_tokens_to_generate,
+                progress_callback,
+            )
+
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "wb+") as output_fd:
+                for trace in traces:
+                    blob = trace.serialize()
+                    output_fd.write(blob)
+
+            progress.update(inference_task, description="✅ Completed")
+
+
+@speculator_app.command(help="Train a speculator from inference traces")
+def train(
+    trace_path: Annotated[
+        Path,
+        Argument(
+            help="File of llm inference traces to train the speculator on",
+            metavar="TRACE_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="File to save the output to",
+            metavar="OUTPUT_PATH",
+        ),
+    ],
+    hashtable_size: Annotated[
+        int,
+        Option(help="Size of ngram hashtable"),
+    ] = 65536,
+    num_logits_per_token: Annotated[
+        int,
+        Option(help="Top K tokens to keep in ngram hashtable"),
+    ] = 8,
+    ngram_size: Annotated[
+        int,
+        Option(help="Length of ngrams"),
+    ] = 2,
+    subsample_size: Annotated[
+        int | None,
+        Option(
+            help="Exit early after training the model on this number of tokens",
+            show_default="all",
+        ),
+    ] = None,
+) -> None:
+    with open(trace_path, "rb") as trace_fd:
+        traces = LalamoCompletion.deserialize_many(trace_fd)
+
+        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, ngram_size)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        ) as progress:
+            inference_task = progress.add_task("🔮 [cyan]Training speculator...[/cyan]", total=subsample_size)
+
+
+            def progress_callback(event: SpeculatorTrainingEvent) -> None:
+                progress.update(inference_task, completed=event.trained_tokens)
+
+            train_speculator(speculator, traces, subsample_size, progress_callback)
+
+            progress.update(inference_task, description="✅ Completed")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb+") as fd:
+        fd.write(speculator.serialize())
+
+
+@speculator_app.command(help="Run speculator as an autoregressive llm")
+def test(
+    speculator_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the speculator file.",
+            metavar="SPECULATOR_PATH",
+        ),
+    ],
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory for detokenization.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    seed: Annotated[
+        int | None,
+        Option(help="Set seed for deterministic sampling"),
+    ] = None,
+    num_sequences: Annotated[
+        int,
+        Option(help="Number of sequences to generate"),
+    ] = 8,
+) -> None:
+    model = LanguageModel.load(model_path)
+
+    with open(speculator_path, "rb") as fd:
+        speculator = NGramSpeculator.deserialize(fd.read())
+
+    table = Table(
+        show_header=False,
+        show_lines=True,
+        box=box.ROUNDED,
+    )
+
+    if seed is not None:
+        random.seed(seed)
+
+    for _ in range(num_sequences):
+        sequence = test_speculator(speculator)
+        detokenized = model.message_processor.detokenize(sequence)
+        table.add_row(detokenized)
+
+    console.print(table)
+
 
 @app.callback()
 def _profile_memory(

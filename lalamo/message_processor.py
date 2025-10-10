@@ -159,6 +159,11 @@ class MessageProcessor:
     def tokenize(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
+    def tokenize_request(self, messages: Iterable[Message]) -> list[int]:
+        rendered = self.render_request(messages)
+        tokenized = self.tokenize(rendered)
+        return tokenized
+
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 

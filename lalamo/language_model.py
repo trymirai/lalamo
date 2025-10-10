@@ -47,6 +47,18 @@ class DecodingState(NamedTuple):
     stop_flags: Bool[Array, " batch"]
 
 
+class GenerationStepResults(NamedTuple):
+    token_ids: Int[Array, " batch"]
+    top_k_token_ids: Int[Array, " batch k"] | None
+    top_k_token_logits: Float[Array, " batch k"] | None
+
+
+class GenerationResults(NamedTuple):
+    token_ids: Int[Array, "batch response_tokens"]
+    top_k_token_ids: Int[Array, "batch response_tokens k"] | None
+    top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+
+
 @dataclass(frozen=True)
 class GenerationConfig:
     stop_token_ids: tuple[int, ...]
@@ -155,9 +167,10 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
+        num_top_logits_to_return: int | None = None,
         *,
         key: PRNGKeyArray | None = None,
-    ) -> Int[Array, "batch response_tokens"]:
+    ) -> GenerationResults:
         if sampling_policy is None:
             sampling_policy = self.default_sampling_policy()
         if eos_token_ids is None:
@@ -185,12 +198,20 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         def loop_iteration(
             state: DecodingState,
             key: PRNGKeyArray,
-        ) -> tuple[DecodingState, Int[Array, " batch"]]:
-            def sample_and_update() -> tuple[DecodingState, Int[Array, " batch"]]:
+        ) -> tuple[DecodingState, GenerationStepResults]:
+            def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
                 processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
                 next_token_ids = jax.random.categorical(key, processed_logits)
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
+                if num_top_logits_to_return is not None:
+                    next_top_k_token_logits, next_top_k_token_ids = jax.lax.top_k(
+                        processed_logits,
+                        num_top_logits_to_return,
+                    )
+                else:
+                    next_top_k_token_ids = None
+                    next_top_k_token_logits = None
                 next_token_indices = state.last_token_indices + 1
 
                 stop_flags = state.stop_flags | jnp.any(next_token_ids[:, None] == eos_token_ids[None, :], axis=-1)
@@ -215,18 +236,33 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                     decoder_outputs.updated_kv_cache,
                     stop_flags,
                 )
-                return new_state, next_token_ids
+                return new_state, GenerationStepResults(next_token_ids, next_top_k_token_ids, next_top_k_token_logits)
 
-            def pad_and_repeat_state() -> tuple[DecodingState, Int[Array, " batch"]]:
+            def pad_and_repeat_state() -> tuple[DecodingState, GenerationStepResults]:
                 (batch_size,) = state.stop_flags.shape
                 pad_token = jnp.zeros(batch_size, dtype=jnp.int32)
-                return state, pad_token
+                if num_top_logits_to_return is not None:
+                    top_k_token_ids = jnp.zeros((batch_size, num_top_logits_to_return), dtype=jnp.int32)
+                    top_k_token_logits = jnp.zeros((batch_size, num_top_logits_to_return), dtype=jnp.float32)
+                else:
+                    top_k_token_ids = None
+                    top_k_token_logits = None
+                return state, GenerationStepResults(pad_token, top_k_token_ids, top_k_token_logits)
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        _, tokens_transposed = jax.lax.scan(loop_iteration, initial_state, keys)
+        _, generated = jax.lax.scan(loop_iteration, initial_state, keys)
 
-        return rearrange(tokens_transposed, "iteration batch -> batch iteration")
+        token_ids = rearrange(generated.token_ids, "iteration batch -> batch iteration")
+
+        if num_top_logits_to_return is not None:
+            top_k_token_ids = rearrange(generated.top_k_token_ids, "iteration batch k -> batch iteration k")
+            top_k_token_logits = rearrange(generated.top_k_token_logits, "iteration batch k -> batch iteration k")
+        else:
+            top_k_token_ids = None
+            top_k_token_logits = None
+
+        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits)
 
     def reply(
         self,
@@ -243,7 +279,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             sampling_policy,
             forward_pass_config=forward_pass_config,
             key=key,
-        ).squeeze(0)
+        ).token_ids.squeeze(0)
         response_text = self.message_processor.detokenize(response_ids.tolist())
         return self.message_processor.parse_response(response_text)
 
