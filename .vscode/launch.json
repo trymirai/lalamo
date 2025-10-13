@@ -15,24 +15,6 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
-        },
-        {
-            "name": "Convert ModernBERT",
-            "type": "debugpy",
-            "request": "launch",
-            "program": "${workspaceFolder}/lalamo/main.py",
-            "console": "integratedTerminal",
-            "purpose":["debug-in-terminal"],
-            "env": {"PYTHONPATH": "${workspaceFolder}"},
-            "justMyCode": false,
-            "args": [
-                // "--help"
-
-                "convert",
-                "trymirai/flo-bert-classifier"
-
-                // "list-models"
-            ]
-        } 
+        }
     ]
 }
