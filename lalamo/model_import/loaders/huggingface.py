@@ -145,7 +145,7 @@ def load_linear(
 
     if isinstance(module, FullPrecisionLinear):
         weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
-        return load_parameters(lambda m: (m.weights, m.biases), module, (weights.transpose(), bias))
+        return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
     if isinstance(module, GroupQuantizedLinear):
         qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
@@ -204,15 +204,15 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         )
         # Stored as (experts, outputs=2*hidden_dim, input_blocks, input_block_elems)
         # Merge blocks and move outputs last
-        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
+        fused_eio = rearrange(fused, "e o ib ie -> e o (ib ie)")
         up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
-        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=-1)
+        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=-2)
 
         gub = weights_dict[experts_path / "gate_up_proj_bias"]
         if gub.ndim == 1:
             gub = jnp.broadcast_to(gub, combined_up_gate_w.shape[:-1] + (gub.shape[0],))
         up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
-        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
+        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-2)
 
         up_projection = load_parameters(
             lambda m: (m.weights, m.biases),  # type: ignore
@@ -229,7 +229,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         )
         # Stored as (experts, outputs=model_dim, input_blocks, input_block_elems)
         # Merge blocks and move outputs last
-        down_w = rearrange(down_w, "e o ib ie -> e (ib ie) o")
+        down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
         down_b = weights_dict[experts_path / "down_proj_bias"]
         if down_b.ndim == 1:
             down_b = jnp.broadcast_to(down_b, down_w.shape[:-1] + (down_b.shape[0],))
