@@ -152,3 +152,6 @@ class NGramSpeculator(Speculator):
         offset += ngram_counts_len
 
         return cls(hashtable_size, ngram_k, ngram_len, ngram_pad, ngram_keys, ngram_values, ngram_counts)
+
+def name_for_ngram(ngram:NGramSpeculator) -> str:
+    return f"{ngram.ngram_n}gram-{ngram.hashtable_size}-k{ngram.ngram_k}.bin"

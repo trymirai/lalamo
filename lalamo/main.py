@@ -3,6 +3,7 @@ import random
 import re
 import shutil
 import sys
+from dataclasses import replace
 from enum import Enum
 from itertools import chain
 from pathlib import Path
@@ -27,7 +28,6 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    track,
 )
 from rich.table import Table
 from safetensors.flax import save_file
@@ -48,7 +48,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.modules import config_converter
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
-from lalamo.speculator.ngram import NGramSpeculator
+from lalamo.speculator.ngram import NGramSpeculator, name_for_ngram
 from lalamo.speculator.utils import SpeculatorTrainingEvent, test_speculator, train_speculator
 from lalamo.utils import jax_uint4_to_packed_uint8
 
@@ -194,6 +194,12 @@ def convert(
             show_default="Model's native maximum context length.",
         ),
     ] = None,
+    speculator: Annotated[
+        Path|None,
+        Option(
+            help="Speculator to embed into the model.",
+        ),
+    ] = None,
     include_traces: Annotated[
         bool,
         Option(
@@ -288,6 +294,15 @@ def convert(
 
         packed_weights = _pack_uint4_weights(weights)
         save_file(packed_weights, output_dir / "model.safetensors")
+
+        if speculator is not None:
+            with open(speculator, "rb") as fd:
+                ngram = NGramSpeculator.deserialize(fd.read())
+
+            with open(output_dir / name_for_ngram(ngram), "wb+") as fd:
+                fd.write(ngram.serialize())
+
+            metadata = replace(metadata, speculator=name_for_ngram(ngram))
 
         config_json = config_converter.unstructure(metadata, ModelMetadata)
         with open(output_dir / "config.json", "w") as file:
@@ -510,7 +525,6 @@ def train(
             TimeRemainingColumn(),
         ) as progress:
             inference_task = progress.add_task("🔮 [cyan]Training speculator...[/cyan]", total=subsample_size)
-
 
             def progress_callback(event: SpeculatorTrainingEvent) -> None:
                 progress.update(inference_task, completed=event.trained_tokens)

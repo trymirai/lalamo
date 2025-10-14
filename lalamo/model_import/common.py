@@ -63,6 +63,7 @@ class ModelMetadata:
     family: str
     name: str
     size: str
+    speculator: str|None
     quantization: QuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
@@ -229,6 +230,7 @@ def import_model(
         family=model_spec.family,
         name=model_spec.name,
         size=model_spec.size,
+        speculator=None,
         quantization=model_spec.quantization,
         repo=model_spec.repo,
         use_cases=model_spec.use_cases,
