@@ -367,7 +367,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     ) -> Float[Array, "batch suffix_tokens channels"]:
         def per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
             (router_logits,) = self.router(x)
-            routing = self.config.routing_function.call_unbatched(
+            routing = self.config.routing_function.call_unbatched(  # pyright: ignore[reportAttributeAccessIssue]
                 router_logits,
                 num_active=self.num_experts_per_token,
             )
@@ -404,7 +404,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
-        routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+        routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)  # pyright: ignore[reportCallIssue]
         token_mask = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
