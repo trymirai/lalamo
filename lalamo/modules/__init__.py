@@ -59,6 +59,10 @@ from .classifier import (
     Classifier,
     ClassifierConfig
 )
+from .transformer import (
+    TransformerConfig,
+    Transformer
+)
 
 __all__ = [
     "GELU",
@@ -123,4 +127,6 @@ __all__ = [
     "Classifier",
     "ModernBertPredictionHead",
     "ModernBertPredictionHeadConfig",
+    "TransformerConfig",
+    "Transformer"
 ]

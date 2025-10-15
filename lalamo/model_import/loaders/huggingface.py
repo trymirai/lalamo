@@ -388,11 +388,11 @@ def load_huggingface(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.layers)
+        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, decoder_path / "norm")
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "norm")
     return load_parameters(
-        lambda m: (m.embedding, m.layers, m.output_norm),
+        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
         (embedding, decoder_layers, output_norm),
     )

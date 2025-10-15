@@ -9,6 +9,7 @@ from jax.random import PRNGKey
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
+from lalamo.modules.transformer import TransformerConfig, Transformer
 
 from .common import AttentionType, LalamoModule
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
@@ -73,10 +74,8 @@ class ClassifierResult(eqx.Module):
 @dataclass(frozen=True)
 class ClassifierConfig:
     embedding_config: EmbeddingConfig
+    transformer_config: TransformerConfig
     prediction_head_config: ModernBertPredictionHeadConfig
-    global_rope_config: RoPEConfig
-    local_rope_config: RoPEConfig | None
-    layer_config: DecoderLayerConfig
     classifier_config: FullPrecisionLinearConfig
 
     vocab_size: int
@@ -92,75 +91,70 @@ class ClassifierConfig:
     num_labels: int
 
     def __post_init__(self) -> None:
-        if self.local_rope_config is not None and self.sliding_window_sizes is None:
-            raise ValueError("Sliding window sizes must be provided when using local RoPE")
-        if self.sliding_window_sizes is None:
-            return
-        if len(self.sliding_window_sizes) != self.num_layers:
-            raise ValueError(
-                f"Number of sliding window sizes {len(self.sliding_window_sizes)} does not match"
-                f" the number of layers {self.num_layers}",
-            )
+        self.transformer_config.__post_init__()
 
     def random_init(
         self,
         *,
         key: PRNGKeyArray,
     ) -> "Classifier":
-        embedding_key, layers_key = jax.random.split(key)
+        embedding_key, transformer_key = jax.random.split(key)
         embedding = self.embedding_config.random_init(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
             key=embedding_key,
         )
-        global_rope = self.global_rope_config.init(
-            head_dim=self.head_dim,
-            num_timesteps=self.context_length,
+        # global_rope = self.global_rope_config.init(
+        #     head_dim=self.head_dim,
+        #     num_timesteps=self.context_length,
+        # )
+
+        # if self.local_rope_config:
+        #     assert self.sliding_window_sizes is not None
+        #     max_sliding_window_size = max(
+        #         window_size for window_size in self.sliding_window_sizes if window_size is not None
+        #     )
+        #     local_rope = self.local_rope_config.init(
+        #         head_dim=self.head_dim,
+        #         num_timesteps=max(max_sliding_window_size, self.context_length),
+        #     )
+        # else:
+        #     local_rope = None
+
+        # if self.local_rope_config:
+        #     assert self.sliding_window_sizes is not None
+        #     max_sliding_window_size = max(
+        #         window_size for window_size in self.sliding_window_sizes if window_size is not None
+        #     )
+        #     local_rope = self.local_rope_config.init(
+        #         head_dim=self.head_dim,
+        #         num_timesteps=max(max_sliding_window_size, self.context_length),
+        #     )
+        # else:
+        #     local_rope = None
+
+        # if self.sliding_window_sizes is None:
+        #     sliding_window_sizes = [None] * self.num_layers
+        # else:
+        #     sliding_window_sizes = self.sliding_window_sizes
+        # layers_keys = jax.random.split(layers_key, self.num_layers)
+        # layers = tuple(
+        #     self.layer_config.random_init(
+        #         model_dim=self.model_dim,
+        #         hidden_dim=self.hidden_dim,
+        #         num_heads=self.num_heads,
+        #         num_groups=1,
+        #         head_dim=self.head_dim,
+        #         attention_scale=self.attention_scale,
+        #         sliding_window_size=sliding_window_size,
+        #         key=key,
+        #     )
+        #     for sliding_window_size, key in zip(sliding_window_sizes, layers_keys, strict=True)
+        # )
+        # output_norm = self.output_norm_config.init(self.model_dim)
+        transformer = self.transformer_config.random_init(
+            key=transformer_key
         )
-
-        if self.local_rope_config:
-            assert self.sliding_window_sizes is not None
-            max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
-            )
-            local_rope = self.local_rope_config.init(
-                head_dim=self.head_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
-            )
-        else:
-            local_rope = None
-
-        if self.local_rope_config:
-            assert self.sliding_window_sizes is not None
-            max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
-            )
-            local_rope = self.local_rope_config.init(
-                head_dim=self.head_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
-            )
-        else:
-            local_rope = None
-
-        if self.sliding_window_sizes is None:
-            sliding_window_sizes = [None] * self.num_layers
-        else:
-            sliding_window_sizes = self.sliding_window_sizes
-        layers_keys = jax.random.split(layers_key, self.num_layers)
-        layers = tuple(
-            self.layer_config.random_init(
-                model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
-                num_heads=self.num_heads,
-                num_groups=1,
-                head_dim=self.head_dim,
-                attention_scale=self.attention_scale,
-                sliding_window_size=sliding_window_size,
-                key=key,
-            )
-            for sliding_window_size, key in zip(sliding_window_sizes, layers_keys, strict=True)
-        )
-        output_norm = self.output_norm_config.init(self.model_dim)
         classifier = self.classifier_config.random_init(
             self.hidden_dim,
             (self.num_labels,),
@@ -170,10 +164,7 @@ class ClassifierConfig:
         return Classifier(
             self,
             embedding=embedding,
-            layers=layers,
-            global_rope=global_rope,
-            local_rope=local_rope,
-            output_norm=output_norm,
+            transformer=transformer,
             classifier=classifier
         )
 
@@ -184,57 +175,53 @@ class ClassifierConfig:
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        global_rope = self.global_rope_config.init(
-            head_dim=self.head_dim,
-            num_timesteps=self.context_length,
-        )
+        # global_rope = self.global_rope_config.init(
+        #     head_dim=self.head_dim,
+        #     num_timesteps=self.context_length,
+        # )
 
-        if self.local_rope_config:
-            assert self.sliding_window_sizes is not None
-            max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
-            )
-            local_rope = self.local_rope_config.init(
-                head_dim=self.head_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
-            )
-        else:
-            local_rope = None
+        # if self.local_rope_config:
+        #     assert self.sliding_window_sizes is not None
+        #     max_sliding_window_size = max(
+        #         window_size for window_size in self.sliding_window_sizes if window_size is not None
+        #     )
+        #     local_rope = self.local_rope_config.init(
+        #         head_dim=self.head_dim,
+        #         num_timesteps=max(max_sliding_window_size, self.context_length),
+        #     )
+        # else:
+        #     local_rope = None
 
-        if self.sliding_window_sizes is None:
-            sliding_window_sizes = [None] * self.num_layers
-        else:
-            sliding_window_sizes = self.sliding_window_sizes
-        layers = tuple(
-            self.layer_config.empty(
-                model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
-                num_heads=self.num_heads,
-                num_groups=1,
-                head_dim=self.head_dim,
-                attention_scale=self.attention_scale,
-                sliding_window_size=sliding_window_size,
-            )
-            for sliding_window_size in sliding_window_sizes
-        )
-        output_norm = self.output_norm_config.empty(self.model_dim)
+        # if self.sliding_window_sizes is None:
+        #     sliding_window_sizes = [None] * self.num_layers
+        # else:
+        #     sliding_window_sizes = self.sliding_window_sizes
+        # layers = tuple(
+        #     self.layer_config.empty(
+        #         model_dim=self.model_dim,
+        #         hidden_dim=self.hidden_dim,
+        #         num_heads=self.num_heads,
+        #         num_groups=1,
+        #         head_dim=self.head_dim,
+        #         attention_scale=self.attention_scale,
+        #         sliding_window_size=sliding_window_size,
+        #     )
+        #     for sliding_window_size in sliding_window_sizes
+        # )
+        # output_norm = self.output_norm_config.empty(self.model_dim)
+        transformer= self.transformer_config.empty()
         classifier = self.classifier_config.empty(self.hidden_dim, (self.num_labels,), True)
         return Classifier(
             self,
             embedding=embedding,
-            layers=layers,
-            global_rope=global_rope,
-            local_rope=local_rope,
-            output_norm=output_norm,
+            transformer=transformer,
             classifier=classifier,
         )
 
 
 class Classifier(LalamoModule[ClassifierConfig]):
     embedding: EmbeddingBase
-    layers: tuple[DecoderLayer, ...]
-    global_rope: RoPE
-    local_rope: RoPE | None
+    transformer: Transformer
     classifier: FullPrecisionLinear
 
     @property
@@ -313,12 +300,9 @@ class Classifier(LalamoModule[ClassifierConfig]):
     def export_weights(self) -> ParameterTree:
         result = dict(
             embedding=self.embedding.export_weights(),
-            global_rope=self.global_rope.export_weights(),
-            layers=[layer.export_weights() for layer in self.layers],
-            output_norm=self.output_norm.export_weights(),
+            transformer=self.transformer.export_weights(),
+            classifier=self.classifier.export_weights()
         )
-        if self.local_rope:
-            result["local_rope"] = self.local_rope.export_weights()
         return result
 
     def import_weights(
@@ -327,24 +311,11 @@ class Classifier(LalamoModule[ClassifierConfig]):
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["embedding"], Mapping)
-        assert isinstance(weights["global_rope"], Mapping)
-        assert isinstance(weights["layers"], Sequence)
-        assert isinstance(weights["output_norm"], Mapping)
-        if self.local_rope:
-            assert isinstance(weights["local_rope"], Mapping)
-            local_rope = self.local_rope.import_weights(weights["local_rope"], weight_layout)
-        else:
-            local_rope = None
-
-        layers = []
-        for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
-            assert isinstance(layer_weights, Mapping)
-            layers.append(layer.import_weights(layer_weights))
+        assert isinstance(weights["transformer"], Mapping)
+        assert isinstance(weights["classifier"], Mapping)
         return replace(
             self,
             embedding=self.embedding.import_weights(weights["embedding"]),
-            global_rope=self.global_rope.import_weights(weights["global_rope"]),
-            layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(weights["output_norm"]),
-            local_rope=local_rope,
+            transformer=self.transformer.import_weights(weights["transformer"]),
+            classifier=self.classifier.import_weights(weights["classifier"])
         )

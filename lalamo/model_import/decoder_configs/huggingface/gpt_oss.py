@@ -16,6 +16,7 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
+    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 
@@ -161,6 +162,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=moe_config,
             post_mlp_norm_config=None,
+            is_causal=True
         )
 
         # Per-layer sliding-window
@@ -176,13 +178,11 @@ class HFGPTOssConfig(HuggingFaceConfig):
 
         head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        trasnformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -192,4 +192,10 @@ class HFGPTOssConfig(HuggingFaceConfig):
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=sliding_window_sizes,
             context_length=context_length or self.max_position_embeddings,
+        )
+
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=trasnformer_config,
+            vocab_size=self.vocab_size,
         )

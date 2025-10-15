@@ -71,12 +71,10 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
         # Otherwise, use standard RMSNorm (variance of inputs directly)
         if self.config.subtract_mean:
             mean = jnp.mean(upcasted_inputs)
-            centered_inputs = upcasted_inputs - mean
-            adjusted_variance = jnp.mean(jnp.square(centered_inputs)) + self.config.epsilon
-            normalized_x = centered_inputs * jax.lax.rsqrt(adjusted_variance)
-        else:
-            adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
-            normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
+            upcasted_inputs = upcasted_inputs - mean
+        
+        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+        normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 
         if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)

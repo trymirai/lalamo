@@ -16,6 +16,7 @@ from lalamo.modules import (
     QuantizedTiedEmbeddingConfig,
     RMSNormConfig,
     UpcastMode,
+    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
@@ -152,14 +153,13 @@ class ETLlamaConfig(ExecutorchConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            is_causal=True
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),
             num_heads=self.n_heads,
@@ -169,4 +169,9 @@ class ETLlamaConfig(ExecutorchConfig):
             num_layers=self.n_layers,
             sliding_window_sizes=None,
             context_length=context_length or MAX_SEQUENCE_LENGTH,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

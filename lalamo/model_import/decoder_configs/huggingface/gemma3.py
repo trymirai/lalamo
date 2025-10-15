@@ -7,6 +7,7 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     DecoderConfig,
     TiedEmbeddingConfig,
+    TransformerConfig
 )
 from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
@@ -131,14 +132,13 @@ class HFGemma3TextConfigRaw:
             pre_mlp_norm_config=rms_norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=rms_norm_config,
+            is_causal=True
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rms_norm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -148,6 +148,11 @@ class HFGemma3TextConfigRaw:
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=tuple(self.sliding_window_sizes),
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )
 
 

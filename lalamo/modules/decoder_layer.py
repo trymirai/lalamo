@@ -87,6 +87,7 @@ class DecoderLayerConfig:
     pre_mlp_norm_config: RMSNormConfig
     mlp_config: MLPConfig
     post_mlp_norm_config: RMSNormConfig | None
+    is_causal: bool
 
     def random_init(
         self,
@@ -107,7 +108,7 @@ class DecoderLayerConfig:
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            is_causal=True,
+            is_causal=self.is_causal,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
             key=attention_key,
@@ -148,7 +149,7 @@ class DecoderLayerConfig:
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            is_causal=True,
+            is_causal=self.is_causal,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
         )
