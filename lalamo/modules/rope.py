@@ -108,9 +108,9 @@ class RoPE(LalamoModule[RoPEConfigBase]):
 
     def __post_init__(self) -> None:
         num_tokens, _ = self.sines.shape
-        if num_tokens != self.config.max_sequence_length:
+        if num_tokens > self.config.max_sequence_length:
             raise ValueError(
-                f"{num_tokens} does not match the specified max sequence length {self.config.max_sequence_length}",
+                f"{num_tokens} exceeds the specified max sequence length {self.config.max_sequence_length}",
             )
         if self.cosines.dtype != self.config.precision:
             raise ValueError(
