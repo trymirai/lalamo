@@ -76,7 +76,7 @@ class DecoderResult(eqx.Module):
 @dataclass(frozen=True)
 class DecoderConfig:
     embedding_config: EmbeddingConfig
-    global_rope_config: RoPEConfig
+    global_rope_config: RoPEConfig | None
     local_rope_config: RoPEConfig | None
     layer_config: DecoderLayerConfig
     output_norm_config: RMSNormConfig
@@ -114,10 +114,14 @@ class DecoderConfig:
             model_dim=self.model_dim,
             key=embedding_key,
         )
-        global_rope = self.global_rope_config.init(
-            head_dim=self.head_dim,
-            num_timesteps=self.context_length,
-        )
+
+        if self.global_rope_config:
+            global_rope = self.global_rope_config.init(
+                head_dim=self.head_dim,
+                num_timesteps=self.context_length,
+            )
+        else:
+            global_rope = None
 
         if self.local_rope_config:
             assert self.sliding_window_sizes is not None
@@ -166,10 +170,14 @@ class DecoderConfig:
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        global_rope = self.global_rope_config.init(
-            head_dim=self.head_dim,
-            num_timesteps=self.context_length,
-        )
+
+        if self.global_rope_config:
+            global_rope = self.global_rope_config.init(
+                head_dim=self.head_dim,
+                num_timesteps=self.context_length,
+            )
+        else:
+            global_rope = None
 
         if self.local_rope_config:
             local_rope = self.local_rope_config.init(
@@ -208,7 +216,7 @@ class DecoderConfig:
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
-    global_rope: RoPE
+    global_rope: RoPE | None
     local_rope: RoPE | None
     layers: tuple[DecoderLayer, ...]
     output_norm: RMSNorm
@@ -242,7 +250,12 @@ class Decoder(LalamoModule[DecoderConfig]):
         maybe_kv_cache = kv_cache or ([None] * len(self.layers))
         inner_features = vmap(self.embedding.embed)(token_ids)
 
-        global_positional_embeddings = vmap(self.global_rope)(token_positions)
+        if self.global_rope is not None:
+            global_positional_embeddings = vmap(self.global_rope)(token_positions)
+        else:
+            global_positional_embeddings = None
+            raise NotImplementedError # support this
+
         if self.local_rope is not None:
             local_positional_embeddings = vmap(self.local_rope)(token_positions)
         else:
@@ -303,10 +316,11 @@ class Decoder(LalamoModule[DecoderConfig]):
     def export_weights(self) -> ParameterTree:
         result = dict(
             embedding=self.embedding.export_weights(),
-            global_rope=self.global_rope.export_weights(),
             layers=[layer.export_weights() for layer in self.layers],
             output_norm=self.output_norm.export_weights(),
         )
+        if self.global_rope:
+            result["global_rope"] = self.global_rope.export_weights()
         if self.local_rope:
             result["local_rope"] = self.local_rope.export_weights()
         return result
@@ -320,11 +334,18 @@ class Decoder(LalamoModule[DecoderConfig]):
         assert isinstance(weights["global_rope"], Mapping)
         assert isinstance(weights["layers"], Sequence)
         assert isinstance(weights["output_norm"], Mapping)
+
         if self.local_rope:
             assert isinstance(weights["local_rope"], Mapping)
             local_rope = self.local_rope.import_weights(weights["local_rope"])
         else:
             local_rope = None
+
+        if self.global_rope:
+            assert isinstance(weights["global_rope"], Mapping)
+            global_rope = self.global_rope.import_weights(weights["global_rope"])
+        else:
+            global_rope = None
 
         layers = []
         for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
@@ -333,7 +354,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return replace(
             self,
             embedding=self.embedding.import_weights(weights["embedding"]),
-            global_rope=self.global_rope.import_weights(weights["global_rope"]),
+            global_rope=global_rope,
             layers=tuple(layers),
             output_norm=self.output_norm.import_weights(weights["output_norm"]),
             local_rope=local_rope,

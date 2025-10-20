@@ -26,6 +26,7 @@ __all__ = ["HFQwen3Config"]
 
 @dataclass(frozen=True)
 class HFQwen3Config(HuggingFaceConfig):
+    eos_token_id: int | list[int]
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     attention_bias: bool
     hidden_act: Literal["silu"]
