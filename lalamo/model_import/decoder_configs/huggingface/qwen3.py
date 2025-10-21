@@ -92,6 +92,7 @@ class HFQwen3Config(HuggingFaceConfig):
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         if self.quantization_config is None:
             linear_config = FullPrecisionLinearConfig(

@@ -57,7 +57,7 @@ class ExecutorchConfig(ForeignConfig):
         return jnp.bfloat16
 
     @classmethod
-    def _load_weights(
+    def _load_decoder_weights(
         cls,
         model: Decoder,
         weights_dict: Mapping[str, Array],
@@ -119,6 +119,7 @@ class ETLlamaConfig(ExecutorchConfig):
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         linear_config = QLoRALinearConfig(
             group_size=self.quantization_args.group_size,

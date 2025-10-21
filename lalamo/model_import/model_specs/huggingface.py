@@ -1,4 +1,5 @@
-from lalamo.model_import.decoder_configs import HFLlamaConfig#, ModernBERTConfig
+from lalamo.model_import.decoder_configs import HFLlamaConfig
+from lalamo.model_import.decoder_configs.huggingface import ModernBERTConfig
 
 from .common import ModelSpec
 
@@ -15,14 +16,14 @@ HUGGINGFACE_MODELS = [
         config_type=HFLlamaConfig,
         use_cases=tuple(),
     ),
-    # ModelSpec(
-    #     vendor="trymirai",
-    #     family="ModernBERT",
-    #     name="ModernBERT-base",
-    #     size="0.15B",
-    #     quantization=None,
-    #     repo="trymirai/flo-bert-classifier",
-    #     config_type=ModernBERTConfig,
-    #     use_cases=tuple(),
-    # ),
+    ModelSpec(
+        vendor="trymirai",
+        family="ModernBERT",
+        name="ModernBERT-base",
+        size="0.15B",
+        quantization=None,
+        repo="trymirai/flo-bert-classifier",
+        config_type=ModernBERTConfig,
+        use_cases=tuple(),
+    ),
 ]

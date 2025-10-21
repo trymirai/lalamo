@@ -120,6 +120,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
 
         # Linear layers

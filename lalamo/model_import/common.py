@@ -13,6 +13,7 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
+from lalamo.router_model import RoutingConfig, RouterModel, RouterModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.quantization import QuantizationMode
 
@@ -66,7 +67,7 @@ class ModelMetadata:
     quantization: QuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
-    model_config: LanguageModelConfig
+    model_config: LanguageModelConfig | RouterModelConfig
 
 
 def download_file(
@@ -112,7 +113,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel
+    model: LanguageModel | RouterModel
     metadata: ModelMetadata
 
 
@@ -235,3 +236,55 @@ def import_model(
         model_config=language_model_config,
     )
     return ImportResults(language_model, metadata)
+
+def import_classifier_model(
+    model_spec: ModelSpec| str,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> ImportResults:
+    if isinstance(model_spec, str):
+        try:
+            model_spec = REPO_TO_MODEL[model_spec]
+        except KeyError as e:
+            raise ValueError(f"Unknown model: {model_spec}") from e
+
+    
+    foreign_classifier_config_file = download_config_file(model_spec)
+    foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
+
+    if precision is None:
+        precision = foreign_classifier_config.default_precision
+
+    weights_paths = download_weights(model_spec, progress_callback=progress_callback)
+    with ExitStack() as stack:
+            weights_shards = []
+            for weights_path in weights_paths:
+                weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+                weights_shards.append(weights_shard)
+            weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+
+            if progress_callback is not None:
+                progress_callback(InitializingModelEvent())
+
+    classifier = foreign_classifier_config.load_classifier(context_length, precision, accumulation_precision, weights_dict)
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
+    router_model_config = RouterModelConfig(
+    )
+    router_model = RouterModel(router_model_config, classifier=classifier)
+    metadata = ModelMetadata(
+        toolchain_version=LALAMO_VERSION,
+        vendor=model_spec.vendor,
+        family=model_spec.family,
+        name=model_spec.name,
+        size=model_spec.size,
+        quantization=model_spec.quantization,
+        repo=model_spec.repo,
+        use_cases=model_spec.use_cases,
+        model_config=router_model_config,
+    )
+    return ImportResults(router_model, metadata)

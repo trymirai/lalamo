@@ -80,6 +80,7 @@ class HFMistralConfig(HuggingFaceConfig):
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
 
         linear_config = FullPrecisionLinearConfig(

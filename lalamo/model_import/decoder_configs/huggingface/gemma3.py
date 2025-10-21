@@ -85,6 +85,7 @@ class HFGemma3TextConfigRaw:
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
 
         if self.rope_scaling is not None:

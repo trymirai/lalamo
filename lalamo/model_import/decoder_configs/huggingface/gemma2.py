@@ -80,6 +80,7 @@ class HFGemma2Config(HuggingFaceConfig):
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,

@@ -7,17 +7,19 @@ import jax
 from jax import vmap
 from jax.random import PRNGKey
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+import jax.numpy as jnp
 
 from lalamo.common import ParameterTree
-from lalamo.modules.transformer import TransformerConfig, Transformer
+from lalamo.modules.normalization import RMSNormConfig, UpcastMode
+from lalamo.modules.transformer import TransformerConfig, Transformer, TransformerForwardPassConfig, RMSNorm
 
-from .common import AttentionType, LalamoModule
-from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerResult
-from .linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from .activations import ActivationBase, activation_from_str_id
+from .common import LalamoModule, ForwardPassMode
+from .decoder_layer import DecoderLayerResult
+from .linear import FullPrecisionLinearConfig, LinearBase, LinearConfigBase
 from .embedding import EmbeddingBase, EmbeddingConfig
-from .kv_cache import KVCache
-from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .bert_heads import ModernBertPredictionHead, ModernBertPredictionHeadConfig
+from .rope import PositionalEmbeddings
+from .linear import FullPrecisionLinear
 
 __all__ = [
     "Classifier",
@@ -26,18 +28,92 @@ __all__ = [
     "ClassifierResult",
 ]
 
+@dataclass(frozen=True)
+class PredictionHeadConfig:
+    input_size: int
+    output_size: int
+    use_bias: bool
+    activation: str
+    norm_size: int
+    norm_eps: float
+    use_norm_bias: bool
+
+    def empty(self, activation_precision: DTypeLike) -> "PredictionHead":
+        dense_config = FullPrecisionLinearConfig(activation_precision)
+        dense_layer = dense_config.empty(self.input_size, (self.output_size,), self.use_bias)
+        activation = activation_from_str_id(self.activation)()
+        norm_config = RMSNormConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=jnp.float32,
+            epsilon = self.norm_eps,
+            scale_offset = 0.0,
+            upcast_mode = UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean = True
+        )
+        norm = norm_config.empty(self.norm_size)
+
+        return PredictionHead(config=self, dense=dense_layer, activation=activation, norm=norm)
+
+    def random_init(self, activation_precision: DTypeLike, key: PRNGKeyArray) -> "PredictionHead":
+        dense_key, norm_key = jax.random.split(key)
+        dense_config = FullPrecisionLinearConfig(activation_precision)
+        dense_layer = dense_config.random_init(self.input_size, (self.output_size,), self.use_bias, key=dense_key)
+        activation = activation_from_str_id(self.activation)()
+        norm_config = RMSNormConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=jnp.float32,
+            epsilon = self.norm_eps,
+            scale_offset = 0.0,
+            upcast_mode = UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean = True
+        )
+        norm = norm_config.empty(self.input_size)
+
+        return PredictionHead(config=self, dense=dense_layer, activation=activation, norm=norm)
+
+
+class PredictionHead(LalamoModule[PredictionHeadConfig]):
+    dense: LinearBase
+    activation: ActivationBase
+    norm: RMSNorm
+
+    def __call__(self, inner_features: Float[Array, " in_channels"])->Float[Array, " out_channels"]:
+        dense_out = self.dense(inner_features)
+        assert len(dense_out) == 1, "PredictionHead, expecting dense output to have only 1 tensor"
+        return self.norm(self.activation(dense_out[0]))
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.activation_precision
+    
+    def export_weights(self) -> ParameterTree:
+        result = dict(
+            dense=self.dense,
+            norm=self.norm
+        )
+        return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            dense=weights["dense"],
+            norm=weights["norm"],
+        )
 
 class ClassifierActivationTrace(eqx.Module):
-    token_ids: Int[Array, " suffix_tokens"]
-    token_positions: Int[Array, " suffix_tokens"]
-    kv_cache: KVCache | None
+    token_ids: Int[Array, " tokens"]
+    token_positions: Int[Array, " tokens"]
 
     local_positional_embeddings: PositionalEmbeddings
     global_positional_embeddings: PositionalEmbeddings
 
     layer_results: tuple[DecoderLayerResult, ...]
 
-    output_norm: Float[Array, "suffix_tokens channels"]
+    output_norm: Float[Array, "tokens channels"]
 
     def export(self) -> ParameterTree:
         result = dict(
@@ -48,24 +124,17 @@ class ClassifierActivationTrace(eqx.Module):
             layer_results=[layer_result.export() for layer_result in self.layer_results],
             output_norm=self.output_norm,
         )
-        if self.kv_cache is not None:
-            result["kv_cache"] = [kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache]
         return result
 
 
 class ClassifierResult(eqx.Module):
-    logits: Float[Array, "suffix_tokens channels"]
-    updated_kv_cache: KVCache | None = None
+    logits: Float[Array, "tokens channels"]
     activation_trace: ClassifierActivationTrace | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
             logits=self.logits,
         )
-        if self.updated_kv_cache is not None:
-            result["updated_kv_cache"] = [
-                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.updated_kv_cache
-            ]
         if self.activation_trace is not None:
             result["activation_trace"] = self.activation_trace.export()
         return result
@@ -75,8 +144,8 @@ class ClassifierResult(eqx.Module):
 class ClassifierConfig:
     embedding_config: EmbeddingConfig
     transformer_config: TransformerConfig
-    prediction_head_config: ModernBertPredictionHeadConfig
-    classifier_config: FullPrecisionLinearConfig
+    prediction_head_config: PredictionHeadConfig
+    classifier_config: LinearConfigBase
 
     vocab_size: int
     model_dim: int
@@ -95,6 +164,7 @@ class ClassifierConfig:
 
     def random_init(
         self,
+        activation_precision: DTypeLike,
         *,
         key: PRNGKeyArray,
     ) -> "Classifier":
@@ -104,54 +174,6 @@ class ClassifierConfig:
             model_dim=self.model_dim,
             key=embedding_key,
         )
-        # global_rope = self.global_rope_config.init(
-        #     head_dim=self.head_dim,
-        #     num_timesteps=self.context_length,
-        # )
-
-        # if self.local_rope_config:
-        #     assert self.sliding_window_sizes is not None
-        #     max_sliding_window_size = max(
-        #         window_size for window_size in self.sliding_window_sizes if window_size is not None
-        #     )
-        #     local_rope = self.local_rope_config.init(
-        #         head_dim=self.head_dim,
-        #         num_timesteps=max(max_sliding_window_size, self.context_length),
-        #     )
-        # else:
-        #     local_rope = None
-
-        # if self.local_rope_config:
-        #     assert self.sliding_window_sizes is not None
-        #     max_sliding_window_size = max(
-        #         window_size for window_size in self.sliding_window_sizes if window_size is not None
-        #     )
-        #     local_rope = self.local_rope_config.init(
-        #         head_dim=self.head_dim,
-        #         num_timesteps=max(max_sliding_window_size, self.context_length),
-        #     )
-        # else:
-        #     local_rope = None
-
-        # if self.sliding_window_sizes is None:
-        #     sliding_window_sizes = [None] * self.num_layers
-        # else:
-        #     sliding_window_sizes = self.sliding_window_sizes
-        # layers_keys = jax.random.split(layers_key, self.num_layers)
-        # layers = tuple(
-        #     self.layer_config.random_init(
-        #         model_dim=self.model_dim,
-        #         hidden_dim=self.hidden_dim,
-        #         num_heads=self.num_heads,
-        #         num_groups=1,
-        #         head_dim=self.head_dim,
-        #         attention_scale=self.attention_scale,
-        #         sliding_window_size=sliding_window_size,
-        #         key=key,
-        #     )
-        #     for sliding_window_size, key in zip(sliding_window_sizes, layers_keys, strict=True)
-        # )
-        # output_norm = self.output_norm_config.init(self.model_dim)
         transformer = self.transformer_config.random_init(
             key=transformer_key
         )
@@ -159,62 +181,33 @@ class ClassifierConfig:
             self.hidden_dim,
             (self.num_labels,),
             has_biases=True,
-            key=PRNGKey(123)
+            key=PRNGKey(123) # TODO: parametrize the seed from cfg?
         )
+        prediction_head = self.prediction_head_config.random_init(activation_precision, key)
         return Classifier(
             self,
             embedding=embedding,
             transformer=transformer,
+            prediction_head=prediction_head,
             classifier=classifier
         )
 
     def empty(
         self,
+        activation_precision: DTypeLike,
     ) -> "Classifier":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        # global_rope = self.global_rope_config.init(
-        #     head_dim=self.head_dim,
-        #     num_timesteps=self.context_length,
-        # )
-
-        # if self.local_rope_config:
-        #     assert self.sliding_window_sizes is not None
-        #     max_sliding_window_size = max(
-        #         window_size for window_size in self.sliding_window_sizes if window_size is not None
-        #     )
-        #     local_rope = self.local_rope_config.init(
-        #         head_dim=self.head_dim,
-        #         num_timesteps=max(max_sliding_window_size, self.context_length),
-        #     )
-        # else:
-        #     local_rope = None
-
-        # if self.sliding_window_sizes is None:
-        #     sliding_window_sizes = [None] * self.num_layers
-        # else:
-        #     sliding_window_sizes = self.sliding_window_sizes
-        # layers = tuple(
-        #     self.layer_config.empty(
-        #         model_dim=self.model_dim,
-        #         hidden_dim=self.hidden_dim,
-        #         num_heads=self.num_heads,
-        #         num_groups=1,
-        #         head_dim=self.head_dim,
-        #         attention_scale=self.attention_scale,
-        #         sliding_window_size=sliding_window_size,
-        #     )
-        #     for sliding_window_size in sliding_window_sizes
-        # )
-        # output_norm = self.output_norm_config.empty(self.model_dim)
         transformer= self.transformer_config.empty()
         classifier = self.classifier_config.empty(self.hidden_dim, (self.num_labels,), True)
+        prediction_head = self.prediction_head_config.empty(activation_precision)
         return Classifier(
             self,
             embedding=embedding,
             transformer=transformer,
+            prediction_head=prediction_head,
             classifier=classifier,
         )
 
@@ -222,7 +215,8 @@ class ClassifierConfig:
 class Classifier(LalamoModule[ClassifierConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
-    classifier: FullPrecisionLinear
+    prediction_head: PredictionHead
+    classifier: LinearBase
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -231,76 +225,59 @@ class Classifier(LalamoModule[ClassifierConfig]):
     @eqx.filter_jit
     def __call__(
         self,
-        token_ids: Int[Array, " suffix_tokens"],
-        token_positions: Int[Array, " suffix_tokens"],
-        kv_cache: KVCache | None = None,
-        return_updated_kv_cache: bool = False,
+        token_ids: Int[Array, " tokens"],
+        token_positions: Int[Array, " tokens"],
         return_activation_trace: bool = False,
-        length_without_padding: Int[Array, ""] | int | None = None,
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        forward_pass_config: TransformerForwardPassConfig | None = None,
     ) -> ClassifierResult:
-        maybe_kv_cache = kv_cache or ([None] * len(self.layers))
         inner_features = self.embedding.embed(token_ids)
 
-        global_positional_embeddings = self.global_rope(token_positions)
-        if self.local_rope is not None:
-            local_positional_embeddings = self.local_rope(token_positions)
-        else:
-            local_positional_embeddings = global_positional_embeddings
+        transformer_result = self.transformer(
+            inner_features=inner_features,
+            token_positions=token_positions,
+            kv_cache=None,
+            return_updated_kv_cache=False,
+            return_layer_results=return_activation_trace,
+            return_positional_embeddings=return_activation_trace,
+            lengths_without_padding=lengths_without_padding,
+            forward_pass_mode=forward_pass_mode,
+            forward_pass_config=forward_pass_config,
+        )
 
-        updated_kv_cache_layers = []
-        layer_results = []
-        for layer, kv_cache_slice in zip(self.layers, maybe_kv_cache, strict=True):
-            if layer.attention_type == AttentionType.SLIDING_WINDOW:
-                positional_embeddings_to_use = local_positional_embeddings
-            else:
-                positional_embeddings_to_use = global_positional_embeddings
+        prediction_output = self.prediction_head(transformer_result.outputs)
+        classifier_output = self.classifier(prediction_output)
 
-            layer_result = layer(
-                inner_features,
-                positional_embeddings_to_use,
-                kv_cache=kv_cache_slice,
-                return_updated_kv_cache=return_updated_kv_cache,
-                return_activation_trace=return_activation_trace,
-                length_without_padding=length_without_padding,
-            )
-            inner_features = layer_result.outputs
-            layer_results.append(layer_result)
-            updated_kv_cache_layers.append(layer_result.updated_kv_cache)
+        assert len(classifier_output) == 1, "Classifier, expecting only single tensor at classifier output"
 
-        normalized_outputs = vmap(self.output_norm, in_axes=0)(inner_features)
-        logits = vmap(self.embedding.readout, in_axes=0)(normalized_outputs)
+        logits = vmap(self.embedding.readout, in_axes=0)(classifier_output[0])
 
         if return_activation_trace:
+            assert transformer_result.layer_results is not None
+            assert transformer_result.global_positional_embeddings is not None
+            assert transformer_result.local_positional_embeddings is not None
             activation_trace = ClassifierActivationTrace(
                 token_ids=token_ids,
                 token_positions=token_positions,
-                kv_cache=kv_cache,
-                global_positional_embeddings=global_positional_embeddings,
-                local_positional_embeddings=local_positional_embeddings,
-                layer_results=tuple(layer_results),
-                output_norm=normalized_outputs,
+                global_positional_embeddings=transformer_result.global_positional_embeddings,
+                local_positional_embeddings=transformer_result.local_positional_embeddings,
+                layer_results=tuple(transformer_result.layer_results),
+                output_norm=transformer_result.outputs,
             )
         else:
             activation_trace = None
 
-        if return_updated_kv_cache:
-            updated_kv_cache = KVCache(updated_kv_cache_layers)
-        else:
-            updated_kv_cache = None
-
         return ClassifierResult(
             logits=logits,
-            updated_kv_cache=updated_kv_cache,
             activation_trace=activation_trace,
         )
-
-    def init_static_kv_cache(self, capacity: int) -> KVCache:
-        return KVCache(layer.init_static_kv_cache(capacity) for layer in self.layers)
 
     def export_weights(self) -> ParameterTree:
         result = dict(
             embedding=self.embedding.export_weights(),
             transformer=self.transformer.export_weights(),
+            prediction_head=self.prediction_head.export_weights(),
             classifier=self.classifier.export_weights()
         )
         return result
@@ -312,10 +289,12 @@ class Classifier(LalamoModule[ClassifierConfig]):
         assert isinstance(weights, Mapping)
         assert isinstance(weights["embedding"], Mapping)
         assert isinstance(weights["transformer"], Mapping)
+        assert isinstance(weights["prediction_head"], Mapping)
         assert isinstance(weights["classifier"], Mapping)
         return replace(
             self,
             embedding=self.embedding.import_weights(weights["embedding"]),
             transformer=self.transformer.import_weights(weights["transformer"]),
+            prediction_head=self.prediction_head.import_weights(weights["prediction_head"]),
             classifier=self.classifier.import_weights(weights["classifier"])
         )

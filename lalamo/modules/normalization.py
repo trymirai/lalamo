@@ -31,7 +31,7 @@ class RMSNormConfig:
     epsilon: float
     scale_offset: float | None
     upcast_mode: UpcastMode
-    subtract_mean: bool = False
+    subtract_mean: bool
 
     def init(self, input_dim: int) -> "RMSNorm":
         scales = jnp.ones(input_dim, dtype=self.scale_precision)

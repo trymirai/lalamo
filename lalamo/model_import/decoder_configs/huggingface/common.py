@@ -6,8 +6,9 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignConfig
-from lalamo.model_import.loaders import load_huggingface
+from lalamo.model_import.loaders import load_huggingface_decoder, load_huggingface_classifier
 from lalamo.modules import Decoder
+from lalamo.modules.classifier import Classifier
 
 __all__ = [
     "AWQQuantizationConfig",
@@ -67,9 +68,17 @@ class HuggingFaceConfig(ForeignConfig):
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     @classmethod
-    def _load_weights(
+    def _load_decoder_weights(
         cls,
         model: Decoder,
         weights_dict: Mapping[str, Array],
     ) -> Decoder:
-        return load_huggingface(model, weights_dict)
+        return load_huggingface_decoder(model, weights_dict)
+
+    @classmethod
+    def _load_classifier_weights(
+        cls,
+        model: Classifier,
+        weights_dict: Mapping[str, Array],
+    ) -> Classifier:
+        return load_huggingface_classifier(model, weights_dict)

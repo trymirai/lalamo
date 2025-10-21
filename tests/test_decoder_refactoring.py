@@ -48,6 +48,7 @@ def create_test_decoder_config() -> DecoderConfig:
         epsilon=1e-5,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False
     )
 
     linear_config = FullPrecisionLinearConfig(
