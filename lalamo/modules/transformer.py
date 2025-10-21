@@ -138,13 +138,9 @@ class TransformerConfig:
         )
 
         if self.local_rope_config:
-            assert self.sliding_window_sizes is not None
-            max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
-            )
             local_rope = self.local_rope_config.init(
                 head_dim=self.head_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
+                num_timesteps=self.context_length,
             )
         else:
             local_rope = None

@@ -269,8 +269,8 @@ def convert(
 
             num_tokens = 512
             token_stride = 8
-            token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)
-            token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)
+            token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)[None, :]
+            token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)[None, :]
             result = model.decoder(
                 token_ids,
                 token_positions,

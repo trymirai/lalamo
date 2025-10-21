@@ -124,7 +124,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         scale = 1 / math.sqrt(input_dim)
         weights = jax.random.uniform(
             key,
-            (input_dim, sum(output_dims)),
+            (sum(output_dims), input_dim),
             minval=-scale,
             maxval=scale,
             dtype=self.precision,
@@ -161,7 +161,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         has_biases: bool,
     ) -> "FullPrecisionLinear":
         weights = dummy_array(
-            (*leading_dims, input_dim, sum(output_dims)),
+            (*leading_dims, sum(output_dims), input_dim),
             dtype=self.precision,
         )
         if has_biases:
@@ -195,7 +195,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
 
 
 class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
-    weights: Float[Array, "*components in_channels total_out_channels"]
+    weights: Float[Array, "*components total_out_channels in_channels"]
     biases: Float[Array, "*components total_out_channels"] | None
 
     @property
@@ -212,7 +212,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
 
     @property
     def input_dim(self) -> int:
-        *_, input_dim, _ = self.weights.shape
+        *_, _, input_dim = self.weights.shape
         return input_dim
 
     @property
@@ -224,7 +224,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified precision ({self.config.precision}).",
             )
-        *w_num_components, _, w_output_dim = self.weights.shape
+        *w_num_components, w_output_dim, _ = self.weights.shape
         if w_output_dim != sum(self.output_dims):
             raise ValueError(
                 f"Number of output channels in weights ({w_output_dim}) is not"
@@ -255,7 +255,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
                 "Mixtures of linear layers cannot be called directly."
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
-        result = inputs @ self.weights
+        result = self.weights @ inputs
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
