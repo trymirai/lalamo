@@ -31,6 +31,7 @@ class RMSNormConfig:
     epsilon: float
     scale_offset: float | None
     upcast_mode: UpcastMode
+    subtract_mean: bool
 
     def init(self, input_dim: int) -> "RMSNorm":
         scales = jnp.ones(input_dim, dtype=self.scale_precision)
@@ -66,6 +67,12 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(self.config.accumulation_precision)
 
+        # If subtract_mean is True, compute variance after mean subtraction (like LayerNorm)
+        # Otherwise, use standard RMSNorm (variance of inputs directly)
+        if self.config.subtract_mean:
+            mean = jnp.mean(upcasted_inputs)
+            upcasted_inputs = upcasted_inputs - mean
+        
         adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
         normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 

@@ -15,6 +15,7 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
+    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
@@ -91,6 +92,7 @@ class HFQwen3Config(HuggingFaceConfig):
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         if self.quantization_config is None:
             linear_config = FullPrecisionLinearConfig(
@@ -128,14 +130,13 @@ class HFQwen3Config(HuggingFaceConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            is_causal=True
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -145,4 +146,9 @@ class HFQwen3Config(HuggingFaceConfig):
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=self._get_sliding_window_sizes(),
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size
         )

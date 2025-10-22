@@ -6,6 +6,7 @@ from .llama import HFLlamaConfig
 from .mistral import HFMistralConfig
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
+from .modern_bert import ModernBERTConfig
 
 __all__ = [
     "HFGPTOssConfig",
@@ -17,4 +18,5 @@ __all__ = [
     "HFQwen2Config",
     "HFQwen3Config",
     "HuggingFaceConfig",
+    "ModernBERTConfig",
 ]

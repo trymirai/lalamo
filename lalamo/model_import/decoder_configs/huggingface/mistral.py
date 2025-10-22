@@ -13,6 +13,7 @@ from lalamo.modules import (
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
+    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.normalization import UpcastMode
@@ -42,7 +43,6 @@ class HFMistralConfig(HuggingFaceConfig):
     rope_theta: float
     sliding_window: int | None
     tie_word_embeddings: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     transformers_version: str
     use_cache: bool
     vocab_size: int
@@ -80,6 +80,7 @@ class HFMistralConfig(HuggingFaceConfig):
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
 
         linear_config = FullPrecisionLinearConfig(
@@ -113,17 +114,15 @@ class HFMistralConfig(HuggingFaceConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            is_causal=True
         )
 
         head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -135,4 +134,9 @@ class HFMistralConfig(HuggingFaceConfig):
             if self.sliding_window is not None
             else None,
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

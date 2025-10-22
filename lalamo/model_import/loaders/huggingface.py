@@ -17,13 +17,14 @@ from lalamo.modules import (
     TiedEmbedding,
     UntiedEmbedding,
 )
+from lalamo.modules.classifier import Classifier
 from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
-__all__ = ["load_huggingface"]
+__all__ = ["load_huggingface_decoder"]
 
 
 AWQ_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
@@ -372,7 +373,7 @@ def load_untied_embedding(
     return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
 
 
-def load_huggingface(
+def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
 ) -> Decoder:
@@ -391,11 +392,20 @@ def load_huggingface(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.layers)
+        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, decoder_path / "norm")
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "norm")
     return load_parameters(
-        lambda m: (m.embedding, m.layers, m.output_norm),
+        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
         (embedding, decoder_layers, output_norm),
     )
+
+def load_huggingface_classifier(
+    module: Classifier,
+    weights_dict: Mapping[str, Array],
+) -> Classifier:
+
+    # TODO: do the actual weighs loading
+
+    return module

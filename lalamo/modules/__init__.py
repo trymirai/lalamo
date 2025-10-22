@@ -51,6 +51,18 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from .bert_heads import (
+    ModernBertPredictionHead,
+    ModernBertPredictionHeadConfig,
+)
+from .classifier import (
+    Classifier,
+    ClassifierConfig
+)
+from .transformer import (
+    TransformerConfig,
+    Transformer
+)
 
 __all__ = [
     "GELU",
@@ -111,4 +123,10 @@ __all__ = [
     "UpcastMode",
     "YARNRoPEConfig",
     "config_converter",
+    "ClassifierConfig",
+    "Classifier",
+    "ModernBertPredictionHead",
+    "ModernBertPredictionHeadConfig",
+    "TransformerConfig",
+    "Transformer"
 ]

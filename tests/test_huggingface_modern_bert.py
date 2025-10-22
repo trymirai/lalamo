@@ -8,7 +8,8 @@ import pytest
 import torch
 
 from lalamo import import_model
-from lalamo.language_model import LanguageModel
+from lalamo.model_import.common import import_classifier_model
+from lalamo.router_model import RouterModel
 from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
 
@@ -35,18 +36,11 @@ class Spec:
 
 
 MODEL_LIST = [
-    Spec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
-    Spec("google/gemma-3-1b-it", DType.FLOAT32),
-    Spec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
-    Spec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
-    # Spec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
-    Spec("Qwen/Qwen3-0.6B", DType.FLOAT32),
-    Spec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16, requires_gpu=True),
-    Spec("openai/gpt-oss-20b", DType.FLOAT16, requires_gpu=True),
+    Spec("trymirai/flo-bert-classifier", DType.FLOAT32),
 ]
 
 
-NUM_TOKENS = 512
+NUM_TOKENS = 2
 TOKEN_STRIDE = 64
 
 
@@ -63,19 +57,19 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
     if test_spec.requires_gpu and not torch.cuda.is_available():
         pytest.skip("GPU is required for this test")
 
-    llm_model, *_ = import_model(
+    router_model, *_ = import_classifier_model(
         test_spec.model_repo,
         context_length=NUM_TOKENS * TOKEN_STRIDE,
         precision=test_spec.dtype.jax_dtype,
     )
-    assert isinstance(llm_model, LanguageModel)
+    assert isinstance(router_model, RouterModel)
     hf_tracer = load_hf_tracer(test_spec.model_repo, dtype=test_spec.dtype.torch_dtype)
 
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)[None, :]
     token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)[None, :]
 
     with jax.disable_jit():
-        err, llm_result = checkify_forward(llm_model.decoder)(
+        err, llm_result = checkify_forward(router_model.classifier)(
             token_ids=token_ids,
             token_positions=token_positions,
             return_updated_kv_cache=True,
@@ -83,7 +77,7 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
         )
         err.throw()
 
-    del llm_model
+    del router_model
     gc.collect()
 
     hf_tracer.match_activations(llm_result)
