@@ -5,7 +5,7 @@ sys.path.append(os.path.abspath(os.getcwd() + os.path.sep + ".."))
 import jax.numpy as jnp
 from jax import random
 
-from lalamo.modules.normalization import RMSNormConfig, UpcastMode
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 
 
 def test_rmsnorm_without_subtract_mean():
@@ -14,7 +14,7 @@ def test_rmsnorm_without_subtract_mean():
     input_dim = 128
     test_input = random.normal(rng_key, (input_dim,))
 
-    config = RMSNormConfig(
+    config = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,
@@ -40,7 +40,7 @@ def test_rmsnorm_with_subtract_mean():
     input_dim = 128
     test_input = random.normal(rng_key, (input_dim,))
 
-    config = RMSNormConfig(
+    config = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,
@@ -69,7 +69,7 @@ def test_subtract_mean_changes_output():
     input_dim = 128
     test_input = random.normal(rng_key, (input_dim,))
 
-    config_without = RMSNormConfig(
+    config_without = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,
@@ -77,7 +77,7 @@ def test_subtract_mean_changes_output():
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
-    config_with = RMSNormConfig(
+    config_with = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,
@@ -103,7 +103,7 @@ def test_rmsnorm_with_custom_scales():
     input_dim = 128
     test_input = random.normal(rng_key, (input_dim,))
 
-    config = RMSNormConfig(
+    config = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,
@@ -134,7 +134,7 @@ def test_rmsnorm_zero_input():
     zero_input = jnp.zeros(input_dim)
 
     for subtract_mean in [False, True]:
-        config = RMSNormConfig(
+        config = NormalizationConfig(
             scale_precision=jnp.float32,
             accumulation_precision=jnp.float32,
             epsilon=1e-5,
@@ -167,7 +167,7 @@ def test_rmsnorm_vs_torch_layernorm():
     test_input_torch = torch.from_numpy(test_input_np).float()
 
     # RMSNorm with subtract_mean=True
-    config = RMSNormConfig(
+    config = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,

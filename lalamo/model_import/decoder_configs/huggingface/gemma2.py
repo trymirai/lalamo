@@ -9,7 +9,7 @@ from lalamo.modules import (
     DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UpcastMode,
@@ -74,7 +74,7 @@ class HFGemma2Config(HuggingFaceConfig):
             base=self.rope_theta,
             max_sequence_length=self.max_position_embeddings,
         )
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,

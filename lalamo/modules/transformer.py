@@ -13,7 +13,7 @@ from lalamo.modules.utils import vmap_twice
 from .common import AttentionType, ForwardPassMode, LalamoModule
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
 from .kv_cache import KVCache
-from .normalization import RMSNorm, RMSNormConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 
 __all__ = [
@@ -27,7 +27,6 @@ type TransformerForwardPassConfig = DecoderLayerForwardPassConfig
 
 
 class TransformerResult(eqx.Module):
-    """Result of transformer forward pass."""
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_kv_cache: KVCache | None = None
     layer_results: tuple[DecoderLayerResult, ...] | None = None
@@ -53,11 +52,10 @@ class TransformerResult(eqx.Module):
 
 @dataclass(frozen=True)
 class TransformerConfig:
-    """Configuration for Transformer (RoPE + Layers + OutputNorm)."""
     global_rope_config: RoPEConfig
     local_rope_config: RoPEConfig | None
     layer_config: DecoderLayerConfig
-    output_norm_config: RMSNormConfig
+    output_norm_config: NormalizationConfig
 
     model_dim: int
     hidden_dim: int
@@ -174,15 +172,14 @@ class TransformerConfig:
 
 
 class Transformer(LalamoModule[TransformerConfig]):
-    """Transformer: RoPE + Layers + OutputNorm."""
     global_rope: RoPE
     local_rope: RoPE | None
     layers: tuple[DecoderLayer, ...]
-    output_norm: RMSNorm
+    output_norm: Normalization
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.layers[0].activation_precision if self.layers else self.output_norm.activation_precision
+        return self.layers[0].activation_precision
 
     @eqx.filter_jit
     def __call__(
@@ -197,20 +194,6 @@ class Transformer(LalamoModule[TransformerConfig]):
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig | None,
     ) -> TransformerResult:
-        """
-        Apply transformer layers to inner features.
-
-        Args:
-            inner_features: Input features (after embedding)
-            token_positions: Token positions for RoPE
-            kv_cache: Optional KV cache
-            return_updated_kv_cache: Whether to return updated KV cache
-            return_layer_results: Whether to return layer-wise results
-            return_positional_embeddings: Whether to return positional embeddings
-            lengths_without_padding: Lengths without padding
-            forward_pass_mode: Forward pass mode
-            forward_pass_config: Forward pass configuration
-        """
         if inner_features.ndim != 3:
             raise ValueError(
                 f"inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim), got {inner_features.shape}",

@@ -8,7 +8,7 @@ import pytest
 import torch
 
 from lalamo import import_model
-from lalamo.model_import.common import import_classifier_model
+from lalamo.model_import.common import import_router_model
 from lalamo.router_model import RouterModel
 from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
@@ -57,7 +57,7 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
     if test_spec.requires_gpu and not torch.cuda.is_available():
         pytest.skip("GPU is required for this test")
 
-    router_model, *_ = import_classifier_model(
+    router_model, *_ = import_router_model(
         test_spec.model_repo,
         context_length=NUM_TOKENS * TOKEN_STRIDE,
         precision=test_spec.dtype.jax_dtype,

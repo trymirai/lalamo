@@ -15,12 +15,12 @@ from lalamo.modules import (
     UpcastMode,
 
     ClassifierConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     DenseMLPConfig,
     TransformerConfig
 )
-from lalamo.modules.activations import GELU, SiLU, activation_from_str_id
-from lalamo.modules.classifier import PredictionHeadConfig
+from lalamo.modules.activations import GELU, SiLU
+from lalamo.modules.classifier import PredictionHeadConfig, activation_from_str
 from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
@@ -105,7 +105,7 @@ class ModernBERTConfig(HuggingFaceConfig):
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.layer_norm_eps,
@@ -127,11 +127,11 @@ class ModernBERTConfig(HuggingFaceConfig):
             has_qkv_biases=self.attention_bias,
             has_out_biases=False,
         )
-        activation = activation_from_str_id(self.hidden_activation)
+        activation = activation_from_str(self.hidden_activation)
         assert activation is SiLU or activation is GELU
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=activation(),
+            activation=activation,
             has_up_biases=False,
             has_down_biases=False,
             up_clipping=None,
@@ -167,13 +167,13 @@ class ModernBERTConfig(HuggingFaceConfig):
             input_size = self.hidden_size,
             output_size = self.hidden_size,
             use_bias = self.classifier_bias,
-            activation = self.classifier_activation,
+            activation = activation_from_str(self.classifier_activation),
             norm_size = self.hidden_size,
             norm_eps = self.norm_eps,
             use_norm_bias = self.norm_bias
         )
 
-        classifier_config = FullPrecisionLinearConfig(
+        final_linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
 
@@ -181,7 +181,7 @@ class ModernBERTConfig(HuggingFaceConfig):
             embedding_config = embedding_config,
             transformer_config = transformer_config,
             prediction_head_config = prediction_head_config,
-            classifier_config = classifier_config,
+            final_linear_config = final_linear_config,
             vocab_size = self.vocab_size,
             model_dim = self.hidden_size,
             hidden_dim = self.hidden_size,

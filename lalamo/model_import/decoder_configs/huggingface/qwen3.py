@@ -10,7 +10,7 @@ from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
@@ -86,7 +86,7 @@ class HFQwen3Config(HuggingFaceConfig):
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,

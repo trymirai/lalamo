@@ -114,7 +114,6 @@ class DecoderConfig:
 
 
 class Decoder(LalamoModule[DecoderConfig]):
-    """Refactored Decoder using Transformer."""
     embedding: EmbeddingBase
     transformer: Transformer
 
@@ -144,10 +143,8 @@ class Decoder(LalamoModule[DecoderConfig]):
                 f" got {token_positions.shape}",
             )
 
-        # Embed tokens
         inner_features = vmap(self.embedding.embed)(token_ids)
 
-        # Apply transformer
         transformer_result = self.transformer(
             inner_features=inner_features,
             token_positions=token_positions,

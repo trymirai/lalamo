@@ -1,3 +1,4 @@
+from enum import Enum
 import importlib.metadata
 from collections import ChainMap
 from collections.abc import Callable
@@ -30,6 +31,7 @@ __all__ = [
     "ModelSpec",
     "StatusEvent",
     "import_model",
+    "ModelType",
 ]
 
 
@@ -57,6 +59,11 @@ type StatusEvent = (
 )
 
 
+class ModelType(Enum):
+    LANGUAGE_MODEL=1,
+    ROUTER_MODEL=2,
+
+
 @dataclass(frozen=True)
 class ModelMetadata:
     toolchain_version: str
@@ -67,6 +74,7 @@ class ModelMetadata:
     quantization: QuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
+    model_type: ModelType
     model_config: LanguageModelConfig | RouterModelConfig
 
 
@@ -233,11 +241,12 @@ def import_model(
         quantization=model_spec.quantization,
         repo=model_spec.repo,
         use_cases=model_spec.use_cases,
+        model_type=ModelType.LANGUAGE_MODEL,
         model_config=language_model_config,
     )
     return ImportResults(language_model, metadata)
 
-def import_classifier_model(
+def import_router_model(
     model_spec: ModelSpec| str,
     *,
     context_length: int | None = None,
@@ -269,7 +278,8 @@ def import_classifier_model(
             if progress_callback is not None:
                 progress_callback(InitializingModelEvent())
 
-    classifier = foreign_classifier_config.load_classifier(context_length, precision, accumulation_precision, weights_dict)
+            classifier = foreign_classifier_config.load_classifier(context_length, precision, accumulation_precision, weights_dict)
+    
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
@@ -285,6 +295,7 @@ def import_classifier_model(
         quantization=model_spec.quantization,
         repo=model_spec.repo,
         use_cases=model_spec.use_cases,
+        model_type=ModelType.ROUTER_MODEL,
         model_config=router_model_config,
     )
     return ImportResults(router_model, metadata)

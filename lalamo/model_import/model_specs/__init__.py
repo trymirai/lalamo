@@ -33,6 +33,7 @@ ALL_MODEL_LISTS = [
     REKA_MODELS,
 ]
 
+# TODO: think how to separate out router models ... add separate ROUTER_MODELS ?
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
 

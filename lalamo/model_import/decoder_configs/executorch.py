@@ -14,7 +14,7 @@ from lalamo.modules import (
     LlamaRoPEConfig,
     QLoRALinearConfig,
     QuantizedTiedEmbeddingConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     UpcastMode,
     TransformerConfig
 )
@@ -113,7 +113,7 @@ class ETLlamaConfig(ExecutorchConfig):
             low_frequency_factor=LOW_FREQ_FACTOR,
             high_frequency_factor=HIGH_FREQ_FACTOR,
         )
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,

@@ -9,7 +9,7 @@ from lalamo.modules import (
     DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
@@ -74,7 +74,7 @@ class HFMistralConfig(HuggingFaceConfig):
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,

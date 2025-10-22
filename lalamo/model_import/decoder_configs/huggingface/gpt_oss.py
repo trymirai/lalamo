@@ -10,7 +10,7 @@ from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     MixtureOfExpertsConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     SoftmaxRouting,
     TiedEmbeddingConfig,
     UntiedEmbeddingConfig,
@@ -114,7 +114,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 truncate=True,
             )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,

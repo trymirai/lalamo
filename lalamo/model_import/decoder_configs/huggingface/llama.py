@@ -11,7 +11,7 @@ from lalamo.modules import (
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
     UpcastMode,
@@ -123,7 +123,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             )
         else:
             raise ValueError("Unsupported rope_scaling configuration")
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,

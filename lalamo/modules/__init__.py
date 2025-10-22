@@ -41,7 +41,7 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import RMSNorm, RMSNormConfig, UpcastMode
+from .normalization import Normalization, NormalizationConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -107,8 +107,8 @@ __all__ = [
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
-    "RMSNorm",
-    "RMSNormConfig",
+    "Normalization",
+    "NormalizationConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",

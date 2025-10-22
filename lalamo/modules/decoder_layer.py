@@ -15,7 +15,7 @@ from .attention import Attention, AttentionConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule
 from .kv_cache import KVCacheLayer, StaticKVCacheLayer
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import RMSNorm, RMSNormConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .utils import vmap_twice
 
@@ -81,12 +81,12 @@ class DecoderLayerResult(eqx.Module):
 
 @dataclass(frozen=True)
 class DecoderLayerConfig:
-    pre_attention_norm_config: RMSNormConfig
+    pre_attention_norm_config: NormalizationConfig
     attention_config: AttentionConfig
-    post_attention_norm_config: RMSNormConfig | None
-    pre_mlp_norm_config: RMSNormConfig
+    post_attention_norm_config: NormalizationConfig | None
+    pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
-    post_mlp_norm_config: RMSNormConfig | None
+    post_mlp_norm_config: NormalizationConfig | None
     is_causal: bool
 
     def random_init(
@@ -175,12 +175,12 @@ class DecoderLayerConfig:
 
 
 class DecoderLayer(LalamoModule[DecoderLayerConfig]):
-    pre_attention_norm: RMSNorm
+    pre_attention_norm: Normalization
     attention: Attention
-    post_attention_norm: RMSNorm | None
-    pre_mlp_norm: RMSNorm
+    post_attention_norm: Normalization | None
+    pre_mlp_norm: Normalization
     mlp: MLPBase
-    post_mlp_norm: RMSNorm | None
+    post_mlp_norm: Normalization | None
 
     @property
     def activation_precision(self) -> DTypeLike:

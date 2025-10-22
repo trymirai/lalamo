@@ -14,7 +14,7 @@ from lalamo.modules.attention import AttentionConfig
 from lalamo.modules.decoder_layer import DecoderLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import RMSNormConfig, UpcastMode
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
 
 from .common import HuggingFaceConfig
@@ -79,7 +79,7 @@ class HFGemma3TextConfigRaw:
             logit_soft_cap=None,
             precision=activation_precision,
         )
-        rms_norm_config = RMSNormConfig(
+        rms_norm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,

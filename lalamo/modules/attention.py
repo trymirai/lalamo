@@ -10,7 +10,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array
-from lalamo.modules.normalization import RMSNorm, RMSNormConfig
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 
 from .common import AttentionType, LalamoModule, ParameterTree
 from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
@@ -82,8 +82,8 @@ class AttentionConfig:
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
-    query_norm_config: RMSNormConfig | None
-    key_norm_config: RMSNormConfig | None
+    query_norm_config: NormalizationConfig | None
+    key_norm_config: NormalizationConfig | None
 
     logit_soft_cap: float | None
     has_sinks: bool
@@ -218,8 +218,8 @@ class Attention(LalamoModule[AttentionConfig]):
     qkv_projection: LinearBase
     out_projection: LinearBase
 
-    query_norm: RMSNorm | None
-    key_norm: RMSNorm | None
+    query_norm: Normalization | None
+    key_norm: Normalization | None
 
     sinks: Float[Array, " heads"] | None
 

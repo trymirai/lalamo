@@ -14,7 +14,7 @@ from .common import AttentionType, ForwardPassMode, LalamoModule
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
-from .normalization import RMSNorm, RMSNormConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 
 __all__ = [
@@ -79,7 +79,7 @@ class DecoderConfig:
     global_rope_config: RoPEConfig
     local_rope_config: RoPEConfig | None
     layer_config: DecoderLayerConfig
-    output_norm_config: RMSNormConfig
+    output_norm_config: NormalizationConfig
 
     vocab_size: int
     model_dim: int
@@ -215,7 +215,7 @@ class Decoder(LalamoModule[DecoderConfig]):
     global_rope: RoPE
     local_rope: RoPE | None
     layers: tuple[DecoderLayer, ...]
-    output_norm: RMSNorm
+    output_norm: Normalization
 
     @property
     def activation_precision(self) -> DTypeLike:

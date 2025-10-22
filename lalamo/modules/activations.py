@@ -13,15 +13,6 @@ __all__ = [
     "SiLU",
 ]
 
-def activation_from_str_id(str_id: str) -> type["ActivationBase"]:
-    str_id = str_id.lower()
-    assert str_id in [a.lower() for a in __all__], f"Unknown type of activation: {str_id}"
-    if str_id == "gelu":
-        return GELU
-    elif str_id == "silu":
-        return SiLU
-    else:
-        raise Exception("Should not be here")
 
 @dataclass(frozen=True)
 class ActivationBase:

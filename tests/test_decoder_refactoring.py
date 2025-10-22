@@ -11,7 +11,7 @@ from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.decoder import Decoder, DecoderConfig
-from lalamo.modules.normalization import RMSNormConfig, UpcastMode
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.transformer import TransformerConfig
 
@@ -42,7 +42,7 @@ def create_test_decoder_config() -> DecoderConfig:
         max_sequence_length=context_length,
     )
 
-    norm_config = RMSNormConfig(
+    norm_config = NormalizationConfig(
         scale_precision=jnp.float32,
         accumulation_precision=jnp.float32,
         epsilon=1e-5,
