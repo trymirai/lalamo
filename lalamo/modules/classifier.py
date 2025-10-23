@@ -15,7 +15,7 @@ from lalamo.modules.transformer import TransformerConfig, Transformer, Transform
 
 from .activations import Activation, SiLU, GELU
 from .common import LalamoModule, ForwardPassMode
-from .decoder_layer import DecoderLayerResult
+from .decoder_layer import TransformerLayerResult
 from .linear import FullPrecisionLinearConfig, LinearBase, LinearConfig
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
@@ -123,7 +123,7 @@ class ClassifierActivationTrace(eqx.Module):
     local_positional_embeddings: PositionalEmbeddings
     global_positional_embeddings: PositionalEmbeddings
 
-    layer_results: tuple[DecoderLayerResult, ...]
+    layer_results: tuple[TransformerLayerResult, ...]
 
     output_norm: Float[Array, "tokens channels"]
 

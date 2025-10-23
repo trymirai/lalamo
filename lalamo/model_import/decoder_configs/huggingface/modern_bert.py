@@ -9,7 +9,7 @@ from torch._dynamo.utils import istype
 
 from lalamo.modules import (
     AttentionConfig,
-    DecoderLayerConfig,
+    TransformerLayerConfig,
     FullPrecisionLinearConfig,
     UnscaledRoPEConfig,
     UpcastMode,
@@ -137,7 +137,7 @@ class ModernBERTConfig(HuggingFaceConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
             post_attention_norm_config=None,

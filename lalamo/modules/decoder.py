@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, LalamoModule
-from .decoder_layer import DecoderLayerResult
+from .decoder_layer import TransformerLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .rope import PositionalEmbeddings
@@ -37,7 +37,7 @@ class DecoderActivationTrace(eqx.Module):
     local_positional_embeddings: PositionalEmbeddings
     global_positional_embeddings: PositionalEmbeddings
 
-    layer_results: tuple[DecoderLayerResult, ...]
+    layer_results: tuple[TransformerLayerResult, ...]
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 

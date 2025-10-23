@@ -20,18 +20,18 @@ from .rope import PositionalEmbeddings
 from .utils import vmap_twice
 
 __all__ = [
-    "DecoderLayer",
-    "DecoderLayerActivationTrace",
-    "DecoderLayerConfig",
-    "DecoderLayerForwardPassConfig",
-    "DecoderLayerResult",
+    "TransformerLayer",
+    "TransformerLayerActivationTrace",
+    "TransformerLayerConfig",
+    "TransformerLayerForwardPassConfig",
+    "TransformerLayerResult",
 ]
 
 
-type DecoderLayerForwardPassConfig = MLPForwardPassConfig
+type TransformerLayerForwardPassConfig = MLPForwardPassConfig
 
 
-class DecoderLayerActivationTrace(eqx.Module):
+class TransformerLayerActivationTrace(eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
     positional_embeddings: PositionalEmbeddings
     kv_cache: KVCacheLayer | None
@@ -63,10 +63,10 @@ class DecoderLayerActivationTrace(eqx.Module):
         return result
 
 
-class DecoderLayerResult(eqx.Module):
+class TransformerLayerResult(eqx.Module):
     outputs: Float[Array, "suffix_tokens channels"]
     updated_kv_cache: KVCacheLayer | None
-    activation_trace: DecoderLayerActivationTrace | None
+    activation_trace: TransformerLayerActivationTrace | None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -80,7 +80,7 @@ class DecoderLayerResult(eqx.Module):
 
 
 @dataclass(frozen=True)
-class DecoderLayerConfig:
+class TransformerLayerConfig:
     pre_attention_norm_config: NormalizationConfig
     attention_config: AttentionConfig
     post_attention_norm_config: NormalizationConfig | None
@@ -100,7 +100,7 @@ class DecoderLayerConfig:
         sliding_window_size: int | None,
         *,
         key: PRNGKeyArray,
-    ) -> "DecoderLayer":
+    ) -> "TransformerLayer":
         attention_key, mlp_key = jax.random.split(key)
         pre_attention_norm = self.pre_attention_norm_config.init(model_dim)
         attention = self.attention_config.random_init(
@@ -123,7 +123,7 @@ class DecoderLayerConfig:
             post_mlp_norm = self.post_mlp_norm_config.init(model_dim)
         else:
             post_mlp_norm = None
-        return DecoderLayer(
+        return TransformerLayer(
             config=self,
             pre_attention_norm=pre_attention_norm,
             attention=attention,
@@ -142,7 +142,7 @@ class DecoderLayerConfig:
         head_dim: int,
         attention_scale: float | None,
         sliding_window_size: int | None,
-    ) -> "DecoderLayer":
+    ) -> "TransformerLayer":
         pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
         attention = self.attention_config.empty(
             model_dim=model_dim,
@@ -163,7 +163,7 @@ class DecoderLayerConfig:
             post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
         else:
             post_mlp_norm = None
-        return DecoderLayer(
+        return TransformerLayer(
             config=self,
             pre_attention_norm=pre_attention_norm,
             attention=attention,
@@ -174,7 +174,7 @@ class DecoderLayerConfig:
         )
 
 
-class DecoderLayer(LalamoModule[DecoderLayerConfig]):
+class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     pre_attention_norm: Normalization
     attention: Attention
     post_attention_norm: Normalization | None
@@ -223,8 +223,8 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: DecoderLayerForwardPassConfig | None = None,
-    ) -> DecoderLayerResult:
+        forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+    ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
@@ -259,7 +259,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             outputs = mlp_inputs + mlp_outputs
 
         if return_activation_trace:
-            activation_trace = DecoderLayerActivationTrace(
+            activation_trace = TransformerLayerActivationTrace(
                 inputs=inputs,
                 positional_embeddings=positional_embeddings,
                 kv_cache=kv_cache,
@@ -274,7 +274,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         else:
             activation_trace = None
 
-        return DecoderLayerResult(
+        return TransformerLayerResult(
             outputs=outputs,
             updated_kv_cache=updated_kv_cache,
             activation_trace=activation_trace,

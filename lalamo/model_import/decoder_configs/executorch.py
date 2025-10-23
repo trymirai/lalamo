@@ -9,7 +9,7 @@ from lalamo.modules import (
     AttentionConfig,
     Decoder,
     DecoderConfig,
-    DecoderLayerConfig,
+    TransformerLayerConfig,
     DenseMLPConfig,
     LlamaRoPEConfig,
     QLoRALinearConfig,
@@ -147,7 +147,7 @@ class ETLlamaConfig(ExecutorchConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
             post_attention_norm_config=None,

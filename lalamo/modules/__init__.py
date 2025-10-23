@@ -3,11 +3,11 @@ from .attention import Attention, AttentionConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
 from .decoder_layer import (
-    DecoderLayer,
-    DecoderLayerActivationTrace,
-    DecoderLayerConfig,
+    TransformerLayer,
+    TransformerLayerActivationTrace,
+    TransformerLayerConfig,
     DecoderLayerForwardPassConfig,
-    DecoderLayerResult,
+    TransformerLayerResult,
 )
 from .embedding import (
     EmbeddingBase,
@@ -74,11 +74,11 @@ __all__ = [
     "DecoderActivationTrace",
     "DecoderConfig",
     "DecoderForwardPassConfig",
-    "DecoderLayer",
-    "DecoderLayerActivationTrace",
-    "DecoderLayerConfig",
+    "TransformerLayer",
+    "TransformerLayerActivationTrace",
+    "TransformerLayerConfig",
     "DecoderLayerForwardPassConfig",
-    "DecoderLayerResult",
+    "TransformerLayerResult",
     "DecoderResult",
     "DenseMLP",
     "DenseMLPConfig",

@@ -6,7 +6,7 @@ from einops import rearrange
 from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterPath
-from lalamo.modules import Attention, Decoder, DecoderLayer, DenseMLP, QLoRALinear, QuantizedTiedEmbedding, Normalization
+from lalamo.modules import Attention, Decoder, TransformerLayer, DenseMLP, QLoRALinear, QuantizedTiedEmbedding, Normalization
 
 from .common import load_parameters
 
@@ -176,10 +176,10 @@ def load_attention(
 
 
 def load_decoder_layer(
-    module: DecoderLayer,
+    module: TransformerLayer,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> DecoderLayer:
+) -> TransformerLayer:
     if module.post_attention_norm is not None:
         raise ValueError("Post attention normalization is not supported")
     if module.post_mlp_norm is not None:

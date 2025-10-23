@@ -8,7 +8,7 @@ from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
     Decoder,
-    DecoderLayer,
+    TransformerLayer,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
@@ -306,10 +306,10 @@ def load_attention(
 
 
 def load_decoder_layer(
-    module: DecoderLayer,
+    module: TransformerLayer,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> DecoderLayer:
+) -> TransformerLayer:
     pre_attention_norm = load_rmsnorm(
         module.pre_attention_norm,
         weights_dict,
@@ -419,11 +419,11 @@ def load_huggingface_classifier(
         return load_parameters(lambda m: (m.input_weights,), module, (input_weights,))
 
     def load_decoder_layer_local(
-        module: DecoderLayer,
+        module: TransformerLayer,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
         layer_idx: int,
-    ) -> DecoderLayer:
+    ) -> TransformerLayer:
         if layer_idx > 0:
             pre_attention_norm = load_rmsnorm(
                 module.pre_attention_norm,

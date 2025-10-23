@@ -11,7 +11,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .common import AttentionType, ForwardPassMode, LalamoModule
-from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
+from .decoder_layer import TransformerLayer, TransformerLayerConfig, DecoderLayerForwardPassConfig, TransformerLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .normalization import Normalization, NormalizationConfig
@@ -37,7 +37,7 @@ class DecoderActivationTrace(eqx.Module):
     local_positional_embeddings: PositionalEmbeddings
     global_positional_embeddings: PositionalEmbeddings
 
-    layer_results: tuple[DecoderLayerResult, ...]
+    layer_results: tuple[TransformerLayerResult, ...]
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
@@ -78,7 +78,7 @@ class DecoderConfig:
     embedding_config: EmbeddingConfig
     global_rope_config: RoPEConfig
     local_rope_config: RoPEConfig | None
-    layer_config: DecoderLayerConfig
+    layer_config: TransformerLayerConfig
     output_norm_config: NormalizationConfig
 
     vocab_size: int
@@ -214,7 +214,7 @@ class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     global_rope: RoPE
     local_rope: RoPE | None
-    layers: tuple[DecoderLayer, ...]
+    layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
     @property

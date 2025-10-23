@@ -11,7 +11,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .common import AttentionType, ForwardPassMode, LalamoModule
-from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
+from .decoder_layer import TransformerLayer, TransformerLayerConfig, DecoderLayerForwardPassConfig, TransformerLayerResult
 from .kv_cache import KVCache
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
@@ -29,7 +29,7 @@ type TransformerForwardPassConfig = DecoderLayerForwardPassConfig
 class TransformerResult(eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_kv_cache: KVCache | None = None
-    layer_results: tuple[DecoderLayerResult, ...] | None = None
+    layer_results: tuple[TransformerLayerResult, ...] | None = None
     global_positional_embeddings: PositionalEmbeddings | None = None
     local_positional_embeddings: PositionalEmbeddings | None = None
 
@@ -54,7 +54,7 @@ class TransformerResult(eqx.Module):
 class TransformerConfig:
     global_rope_config: RoPEConfig
     local_rope_config: RoPEConfig | None
-    layer_config: DecoderLayerConfig
+    layer_config: TransformerLayerConfig
     output_norm_config: NormalizationConfig
 
     model_dim: int
@@ -174,7 +174,7 @@ class TransformerConfig:
 class Transformer(LalamoModule[TransformerConfig]):
     global_rope: RoPE
     local_rope: RoPE | None
-    layers: tuple[DecoderLayer, ...]
+    layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
     @property

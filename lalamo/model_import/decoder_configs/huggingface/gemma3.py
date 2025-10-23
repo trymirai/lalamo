@@ -11,7 +11,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
-from lalamo.modules.decoder_layer import DecoderLayerConfig
+from lalamo.modules.decoder_layer import TransformerLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -126,7 +126,7 @@ class HFGemma3TextConfigRaw:
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rms_norm_config,
             attention_config=attention_config,
             post_attention_norm_config=rms_norm_config,
