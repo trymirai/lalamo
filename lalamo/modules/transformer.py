@@ -11,7 +11,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .common import AttentionType, ForwardPassMode, LalamoModule
-from .decoder_layer import TransformerLayer, TransformerLayerConfig, DecoderLayerForwardPassConfig, TransformerLayerResult
+from .decoder_layer import TransformerLayer, TransformerLayerConfig, TransformerLayerForwardPassConfig, TransformerLayerResult
 from .kv_cache import KVCache
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
@@ -23,7 +23,7 @@ __all__ = [
 ]
 
 
-type TransformerForwardPassConfig = DecoderLayerForwardPassConfig
+type TransformerForwardPassConfig = TransformerLayerForwardPassConfig
 
 
 class TransformerResult(eqx.Module):

@@ -6,7 +6,7 @@ from .decoder_layer import (
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
-    DecoderLayerForwardPassConfig,
+    TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
 from .embedding import (
@@ -77,7 +77,7 @@ __all__ = [
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
-    "DecoderLayerForwardPassConfig",
+    "TransformerLayerForwardPassConfig",
     "TransformerLayerResult",
     "DecoderResult",
     "DenseMLP",
