@@ -13,7 +13,7 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
@@ -128,7 +128,7 @@ class HFGemma3TextConfigRaw:
             post_attention_norm_config=rms_norm_config,
             pre_mlp_norm_config=rms_norm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=rms_norm_config
+            post_mlp_norm_config=rms_norm_config,
         )
         transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
@@ -153,7 +153,7 @@ class HFGemma3TextConfigRaw:
 
 
 @dataclass(frozen=True)
-class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
+class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
 
@@ -170,7 +170,7 @@ class HFGemma3VisionConfig:
 
 
 @dataclass(frozen=True)
-class HFGemma3Config(HuggingFaceConfig):
+class HFGemma3Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Gemma3ForConditionalGeneration"]]
     boi_token_index: int

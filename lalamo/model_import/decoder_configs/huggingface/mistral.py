@@ -18,13 +18,13 @@ from lalamo.modules import (
 from lalamo.modules.activations import SiLU
 from lalamo.modules.normalization import UpcastMode
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFMistralConfig"]
 
 
 @dataclass(frozen=True)
-class HFMistralConfig(HuggingFaceConfig):
+class HFMistralConfig(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["MistralForCausalLM"]]
     attention_dropout: float

@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from lalamo.language_model import LanguageModel
-from lalamo.model_import import REPO_TO_MODEL, import_model
+from lalamo.model_import import REPO_TO_MODEL, import_language_model
 from lalamo.sampling import GreedyPolicy
 
 
@@ -48,7 +48,7 @@ def another_generation_input(tokenizer: PreTrainedTokenizer) -> GenerationInput:
 
 @pytest.fixture
 def language_model() -> LanguageModel:
-    return import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
+    return import_language_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
 
 
 @pytest.fixture

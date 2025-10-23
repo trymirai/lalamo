@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 import torch
 
-from lalamo import import_model
+from lalamo import import_language_model
 from lalamo.model_import.common import import_router_model
 from lalamo.router_model import RouterModel
 from tests.common import checkify_forward

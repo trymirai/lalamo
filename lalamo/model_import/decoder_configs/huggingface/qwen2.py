@@ -20,13 +20,13 @@ from lalamo.modules import (
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
 
 __all__ = ["HFQwen2Config"]
 
 
 @dataclass(frozen=True)
-class HFQwen2Config(HuggingFaceConfig):
+class HFQwen2Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Qwen2ForCausalLM"]]
     attention_dropout: float

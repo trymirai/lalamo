@@ -19,7 +19,7 @@ from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.classifier import PredictionHeadConfig, activation_from_str
 from lalamo.modules.embedding import UntiedEmbeddingConfig
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceClassifireConfig
 
 __all__ = ["ModernBERTConfig"]
 
@@ -34,7 +34,7 @@ class LlamaRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class ModernBERTConfig(HuggingFaceConfig):
+class ModernBERTConfig(HuggingFaceClassifireConfig):
     architectures: list[Literal["ModernBertForSequenceClassification"]]
     attention_bias: bool
     attention_dropout: float

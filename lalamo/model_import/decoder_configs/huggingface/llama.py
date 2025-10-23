@@ -22,7 +22,7 @@ from lalamo.modules.activations import SiLU
 from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
 
 __all__ = ["HFLlamaConfig"]
 
@@ -47,7 +47,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFLlamaConfig(HuggingFaceConfig):
+class HFLlamaConfig(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool

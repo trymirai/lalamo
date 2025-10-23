@@ -20,13 +20,13 @@ from lalamo.modules import (
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
 
 __all__ = ["HFQwen3Config"]
 
 
 @dataclass(frozen=True)
-class HFQwen3Config(HuggingFaceConfig):
+class HFQwen3Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     attention_bias: bool
     hidden_act: Literal["silu"]

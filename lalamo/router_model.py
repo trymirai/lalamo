@@ -1,10 +1,10 @@
-from dataclasses import dataclass, replace
-from typing import NamedTuple, Self
+from dataclasses import replace
+from typing import Self
 
 from jax import Array
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
-from lalamo.modules import Classifier, ClassifierConfig, LalamoModule, config_converter
+from lalamo.modules import Classifier, LalamoModule, config_converter
 
 
 class RoutingConfig:
@@ -16,7 +16,7 @@ class RouterModelConfig:
 
 
 class RouterModel(LalamoModule[RouterModelConfig]):
-    
+
     classifier: Classifier
 
     @property

@@ -5,8 +5,9 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.decoder_configs import ForeignConfig
-from lalamo.model_import.loaders import load_huggingface_decoder, load_huggingface_classifier
+from lalamo.model_import.decoder_configs import ForeignLMConfig
+from lalamo.model_import.decoder_configs.common import ForeignClassifierConfig
+from lalamo.model_import.loaders import load_huggingface_classifier, load_huggingface_decoder
 from lalamo.modules import Decoder
 from lalamo.modules.classifier import Classifier
 
@@ -14,7 +15,7 @@ __all__ = [
     "AWQQuantizationConfig",
     "GPTQMetaConfig",
     "GPTQQuantizationConfig",
-    "HuggingFaceConfig",
+    "HuggingFaceLMConfig",
 ]
 
 
@@ -58,7 +59,7 @@ class GPTQQuantizationConfig:
 
 
 @dataclass(frozen=True)
-class HuggingFaceConfig(ForeignConfig):
+class HuggingFaceLMConfig(ForeignLMConfig):
     @property
     def eos_token_ids(self) -> list[int]:
         return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
@@ -74,6 +75,17 @@ class HuggingFaceConfig(ForeignConfig):
         weights_dict: Mapping[str, Array],
     ) -> Decoder:
         return load_huggingface_decoder(model, weights_dict)
+
+
+@dataclass(frozen=True)
+class HuggingFaceClassifireConfig(ForeignClassifierConfig):
+    @property
+    def eos_token_ids(self) -> list[int]:
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     @classmethod
     def _load_classifier_weights(

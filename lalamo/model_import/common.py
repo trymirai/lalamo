@@ -1,9 +1,9 @@
-from enum import Enum
 import importlib.metadata
 from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -14,9 +14,10 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
-from lalamo.router_model import RoutingConfig, RouterModel, RouterModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.quantization import QuantizationMode
+from lalamo.router_model import RouterModel, RouterModelConfig
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
@@ -29,9 +30,9 @@ __all__ = [
     "InitializingModelEvent",
     "ModelMetadata",
     "ModelSpec",
-    "StatusEvent",
-    "import_model",
     "ModelType",
+    "StatusEvent",
+    "import_language_model",
 ]
 
 
@@ -60,8 +61,8 @@ type StatusEvent = (
 
 
 class ModelType(Enum):
-    LANGUAGE_MODEL=1,
-    ROUTER_MODEL=2,
+    LANGUAGE_MODEL=1
+    ROUTER_MODEL=2
 
 
 @dataclass(frozen=True)
@@ -166,7 +167,7 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
-def import_model(
+def import_language_model(
     model_spec: ModelSpec | str,
     *,
     context_length: int | None = None,
@@ -197,6 +198,7 @@ def import_model(
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
+        assert isinstance(foreign_decoder_config, ForeignLMConfig)
         decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
 
     if progress_callback is not None:
@@ -260,7 +262,6 @@ def import_router_model(
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    
     foreign_classifier_config_file = download_config_file(model_spec)
     foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
 
@@ -278,8 +279,13 @@ def import_router_model(
             if progress_callback is not None:
                 progress_callback(InitializingModelEvent())
 
-            classifier = foreign_classifier_config.load_classifier(context_length, precision, accumulation_precision, weights_dict)
-    
+            assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
+            classifier = foreign_classifier_config.load_classifier(
+                context_length, precision,
+                accumulation_precision,
+                weights_dict,
+            )
+
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 

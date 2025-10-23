@@ -21,7 +21,7 @@ from lalamo.modules import (
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
-from .common import ForeignConfig
+from .common import ForeignLMConfig
 
 __all__ = ["ETLlamaConfig"]
 
@@ -51,7 +51,7 @@ class LoraConfig:
 
 
 @dataclass(frozen=True)
-class ExecutorchConfig(ForeignConfig):
+class ExecutorchConfig(ForeignLMConfig):
     @property
     def default_precision(self) -> DTypeLike:
         return jnp.bfloat16

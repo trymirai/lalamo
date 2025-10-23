@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 import torch
 
-from lalamo import import_model
+from lalamo import import_language_model
 from lalamo.language_model import LanguageModel
 from tests.common import checkify_forward
 from tests.huggingface_tracer import load_hf_tracer
@@ -63,7 +63,7 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
     if test_spec.requires_gpu and not torch.cuda.is_available():
         pytest.skip("GPU is required for this test")
 
-    llm_model, *_ = import_model(
+    llm_model, *_ = import_language_model(
         test_spec.model_repo,
         context_length=NUM_TOKENS * TOKEN_STRIDE,
         precision=test_spec.dtype.jax_dtype,

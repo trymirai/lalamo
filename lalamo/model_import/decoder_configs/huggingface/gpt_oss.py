@@ -20,7 +20,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import SiLU
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGPTOssConfig"]
 
@@ -36,7 +36,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFGPTOssConfig(HuggingFaceConfig):
+class HFGPTOssConfig(HuggingFaceLMConfig):
     # Core HF fields
     architectures: list[Literal["GptOssForCausalLM"]]
     attention_bias: bool

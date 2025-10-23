@@ -17,13 +17,13 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import GELU
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGemma2Config"]
 
 
 @dataclass(frozen=True)
-class HFGemma2Config(HuggingFaceConfig):
+class HFGemma2Config(HuggingFaceLMConfig):
     architectures: list[Literal["Gemma2ForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
@@ -109,7 +109,7 @@ class HFGemma2Config(HuggingFaceConfig):
             post_attention_norm_config=rmsnorm_config,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=rmsnorm_config
+            post_mlp_norm_config=rmsnorm_config,
         )
         transformer_config= TransformerConfig(
             global_rope_config=rope_config,

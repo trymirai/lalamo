@@ -8,13 +8,13 @@ from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
     Decoder,
-    TransformerLayer,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
     Normalization,
     TiedEmbedding,
+    TransformerLayer,
     UntiedEmbedding,
 )
 from lalamo.modules.classifier import Classifier
