@@ -87,7 +87,6 @@ class TransformerLayerConfig:
     pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
     post_mlp_norm_config: NormalizationConfig | None
-    is_causal: bool
 
     def random_init(
         self,
@@ -98,6 +97,7 @@ class TransformerLayerConfig:
         head_dim: int,
         attention_scale: float | None,
         sliding_window_size: int | None,
+        is_causal: bool,
         *,
         key: PRNGKeyArray,
     ) -> "TransformerLayer":
@@ -108,7 +108,7 @@ class TransformerLayerConfig:
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            is_causal=self.is_causal,
+            is_causal=is_causal,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
             key=attention_key,
@@ -142,6 +142,7 @@ class TransformerLayerConfig:
         head_dim: int,
         attention_scale: float | None,
         sliding_window_size: int | None,
+        is_causal:bool,
     ) -> "TransformerLayer":
         pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
         attention = self.attention_config.empty(
@@ -149,7 +150,7 @@ class TransformerLayerConfig:
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            is_causal=self.is_causal,
+            is_causal=is_causal,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
         )

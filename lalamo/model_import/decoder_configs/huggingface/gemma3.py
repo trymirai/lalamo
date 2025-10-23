@@ -11,7 +11,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
-from lalamo.modules.decoder_layer import TransformerLayerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -132,8 +132,7 @@ class HFGemma3TextConfigRaw:
             post_attention_norm_config=rms_norm_config,
             pre_mlp_norm_config=rms_norm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=rms_norm_config,
-            is_causal=True
+            post_mlp_norm_config=rms_norm_config
         )
         transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,

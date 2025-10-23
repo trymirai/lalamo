@@ -166,8 +166,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-            is_causal=True
+            post_mlp_norm_config=None
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,

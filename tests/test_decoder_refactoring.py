@@ -6,7 +6,7 @@ from jax import random
 
 from lalamo.modules.activations import SiLU
 from lalamo.modules.attention import AttentionConfig
-from lalamo.modules.decoder_layer import TransformerLayerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
@@ -81,8 +81,7 @@ def create_test_decoder_config() -> DecoderConfig:
         post_attention_norm_config=None,
         pre_mlp_norm_config=norm_config,
         mlp_config=mlp_config,
-        post_mlp_norm_config=None,
-        is_causal=False
+        post_mlp_norm_config=None
     )
     transformer_config = TransformerConfig(
         global_rope_config=rope_config,

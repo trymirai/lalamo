@@ -11,7 +11,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .common import AttentionType, ForwardPassMode, LalamoModule
-from .decoder_layer import TransformerLayer, TransformerLayerConfig, TransformerLayerForwardPassConfig, TransformerLayerResult
+from .transformer_layer import TransformerLayer, TransformerLayerConfig, TransformerLayerForwardPassConfig, TransformerLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .normalization import Normalization, NormalizationConfig
@@ -146,6 +146,7 @@ class DecoderConfig:
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
                 key=key,
+                is_causal=True
             )
             for sliding_window_size, key in zip(sliding_window_sizes, layers_keys, strict=True)
         )
@@ -196,6 +197,7 @@ class DecoderConfig:
                 head_dim=self.head_dim,
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
+                is_causal=True
             )
             for sliding_window_size in sliding_window_sizes
         )

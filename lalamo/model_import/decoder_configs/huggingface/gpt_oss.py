@@ -162,8 +162,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=moe_config,
-            post_mlp_norm_config=None,
-            is_causal=True
+            post_mlp_norm_config=None
         )
 
         # Per-layer sliding-window

@@ -2,7 +2,7 @@ from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
-from .decoder_layer import (
+from .transformer_layer import (
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,

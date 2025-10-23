@@ -1,5 +1,6 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
+from operator import is_
 from typing import Self
 
 import equinox as eqx
@@ -15,7 +16,7 @@ from lalamo.modules.transformer import TransformerConfig, Transformer, Transform
 
 from .activations import Activation, SiLU, GELU
 from .common import LalamoModule, ForwardPassMode
-from .decoder_layer import TransformerLayerResult
+from .transformer_layer import TransformerLayerResult
 from .linear import FullPrecisionLinearConfig, LinearBase, LinearConfig
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
@@ -31,7 +32,7 @@ __all__ = [
 def activation_from_str(activation: str) -> Activation:
     supported_activations = {
         "silu" : SiLU,
-        "gely" : GELU,
+        "gelu" : GELU,
     }
     if activation in supported_activations:
         return supported_activations[activation]()
@@ -184,7 +185,8 @@ class ClassifierConfig:
             key=embedding_key,
         )
         transformer = self.transformer_config.random_init(
-            key=transformer_key
+            key=transformer_key,
+            is_causal=False
         )
         final_linear = self.final_linear_config.random_init(
             self.hidden_dim,
@@ -209,7 +211,7 @@ class ClassifierConfig:
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        transformer= self.transformer_config.empty()
+        transformer= self.transformer_config.empty(is_causal=False)
         final_linear = self.final_linear_config.empty(self.hidden_dim, (self.num_labels,), True)
         prediction_head = self.prediction_head_config.empty(activation_precision)
         return Classifier(

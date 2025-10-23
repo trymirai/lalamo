@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, LalamoModule
-from .decoder_layer import TransformerLayerResult
+from .transformer_layer import TransformerLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .rope import PositionalEmbeddings
@@ -91,7 +91,7 @@ class DecoderConfig:
             model_dim=self.transformer_config.model_dim,
             key=embedding_key,
         )
-        transformer = self.transformer_config.random_init(key=transformer_key)
+        transformer = self.transformer_config.random_init(key=transformer_key, is_causal=True)
 
         return Decoder(
             config=self,
@@ -104,7 +104,7 @@ class DecoderConfig:
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
         )
-        transformer = self.transformer_config.empty()
+        transformer = self.transformer_config.empty(is_causal=True)
 
         return Decoder(
             config=self,

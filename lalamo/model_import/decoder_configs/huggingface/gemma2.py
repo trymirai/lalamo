@@ -109,8 +109,7 @@ class HFGemma2Config(HuggingFaceConfig):
             post_attention_norm_config=rmsnorm_config,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=rmsnorm_config,
-            is_causal=True
+            post_mlp_norm_config=rmsnorm_config
         )
         transformer_config= TransformerConfig(
             global_rope_config=rope_config,
