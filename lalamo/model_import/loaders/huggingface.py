@@ -1,8 +1,9 @@
 from collections.abc import Mapping
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -13,6 +14,8 @@ from lalamo.modules import (
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
+    MLXQuantizedLinear,
+    MLXQuantizedTiedEmbedding,
     RMSNorm,
     TiedEmbedding,
     UntiedEmbedding,
@@ -26,10 +29,10 @@ from .utils import decode_mxfp4, deinterleave_pairwise_columns
 __all__ = ["load_huggingface"]
 
 
-AWQ_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
+AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
 
-def _reverse_uint4_awq_order(array: Array) -> Array:
+def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
     """Reverses the AWQ packing order to get the logical order of channels for INT4."""
     pack_factor = 32 // 4
     *_, last_dim = array.shape
@@ -37,13 +40,13 @@ def _reverse_uint4_awq_order(array: Array) -> Array:
         return array
 
     array_reshaped = rearrange(array, "... (group pack_factor) -> ... group pack_factor", pack_factor=pack_factor)
-    array_reordered = array_reshaped[..., AWQ_REVERSE_ORDER]
+    array_reordered = array_reshaped[..., reverse_order]
     return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
 
 
 def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
-    assert packed_weights.dtype == jnp.int32, (
-        f"Expected packed_weights to be of dtype jnp.int32, got {packed_weights.dtype}"
+    assert packed_weights.dtype in (jnp.int32, jnp.uint32), (
+        f"Expected packed_weights to be of dtype jnp.(u)int32, got {packed_weights.dtype}"
     )
     assert 32 % mode.bits == 0
 
@@ -58,29 +61,18 @@ def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
     return unpacked
 
 
-def _process_quantized_tensors(
-    qweights: Array,
-    qzeros: Array,
-    scales: Array,
-    module: GroupQuantizedLinear,
-) -> tuple[Array, Array, Array]:
-    """Unpacks, recenters, transposes, and casts quantized tensors to the correct dtype."""
-    mode = module.config.weight_quantization_mode
-    assert qweights.dtype == jnp.int32
-    unpacked_weights = unpack_int32(qweights, mode)
-    if mode == QuantizationMode.UINT4:
-        unpacked_weights = _reverse_uint4_awq_order(unpacked_weights)
+def _process_quantized_tensor(
+    quantized: Array,
+    weight_quantization: QuantizationMode,
+    activation_precision: DTypeLike,
+    reverse_order: Array | None = None,
+) -> Array:
+    unpacked = unpack_int32(quantized, weight_quantization)
+    if reverse_order is not None:
+        assert weight_quantization == QuantizationMode.UINT4, "reverse order only supported on uint4 quant type"
+        unpacked = _reverse_uint4_order(unpacked, reverse_order)
 
-    assert qzeros.dtype == jnp.int32
-    unpacked_zero_points = unpack_int32(qzeros, mode)
-    if mode == QuantizationMode.UINT4:
-        unpacked_zero_points = _reverse_uint4_awq_order(unpacked_zero_points)
-
-    weights = unpacked_weights.astype(module.config.activation_precision)
-    zero_points = unpacked_zero_points.astype(module.config.activation_precision)
-    processed_scales = scales.astype(module.config.activation_precision)
-
-    return weights, zero_points, processed_scales
+    return unpacked.astype(activation_precision)
 
 
 def _fuse_full_precision_weights(
@@ -95,26 +87,39 @@ def _fuse_full_precision_weights(
     return jnp.concatenate(weights, axis=0)
 
 
+@dataclass(frozen=True)
+class QuantizedParamLayout:
+    weight: str
+    scale: str
+    bias: str
+    transposed: bool
+
+
+AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros", transposed=True)
+MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
+
+
 def _fuse_quantized_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
+    quantized_param_layout: QuantizedParamLayout,
 ) -> tuple[Array, Array, Array]:
     # Note that AWQ quantized weights are stored transposed relative to full-precision weights
 
     if sublayers_to_fuse is None:
-        qweights = weights_dict[path / "qweight"]
-        qzeros = weights_dict[path / "qzeros"]
-        scales = weights_dict[path / "scales"]
+        qweights = weights_dict[path / quantized_param_layout.weight]
+        qzeros = weights_dict[path / quantized_param_layout.bias]
+        scales = weights_dict[path / quantized_param_layout.scale]
         return qweights, qzeros, scales
 
-    qweights = [weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse]
-    qzeros = [weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse]
-    scales = [weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse]
+    qweights = [weights_dict[path / layer_name / quantized_param_layout.weight] for layer_name in sublayers_to_fuse]
+    qzeros = [weights_dict[path / layer_name / quantized_param_layout.bias] for layer_name in sublayers_to_fuse]
+    scales = [weights_dict[path / layer_name / quantized_param_layout.scale] for layer_name in sublayers_to_fuse]
 
-    fused_qweights = jnp.concatenate(qweights, axis=1)
-    fused_qzeros = jnp.concatenate(qzeros, axis=1)
-    fused_scales = jnp.concatenate(scales, axis=1)
+    fused_qweights = jnp.concatenate(qweights, axis=int(quantized_param_layout.transposed))
+    fused_qzeros = jnp.concatenate(qzeros, axis=int(quantized_param_layout.transposed))
+    fused_scales = jnp.concatenate(scales, axis=int(quantized_param_layout.transposed))
 
     return fused_qweights, fused_qzeros, fused_scales
 
@@ -148,19 +153,57 @@ def load_linear(
         return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
     if isinstance(module, GroupQuantizedLinear):
-        qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
-
-        weights, zero_points, scales = _process_quantized_tensors(
-            qweights,
-            qzeros,
-            scales,
-            module,
+        qweights, qzeros, scales = _fuse_quantized_weights(
+            weights_dict, path, sublayers_to_fuse, AWQ_QUANTIZED_WEIGHT_LAYOUT,
         )
+        weight_quantization = module.config.weight_quantization_mode
+        activation_precision = module.activation_precision
+
+        if weight_quantization == QuantizationMode.UINT4:
+            reverse_order = AWQ_UINT4_REVERSE_ORDER
+        else:
+            reverse_order = None
+
+        weights = _process_quantized_tensor(
+            qweights,
+            weight_quantization,
+            activation_precision,
+            reverse_order,
+        )
+        zeros = _process_quantized_tensor(
+            qzeros,
+            weight_quantization,
+            activation_precision,
+            reverse_order,
+        )
+        scales = scales.astype(activation_precision)
 
         return load_parameters(
             lambda m: (m.weights, m.scales, m.zero_points, m.biases),
             module,
-            (weights.T, scales.T, zero_points.T, bias),
+            (weights.T, scales.T, zeros.T, bias),
+        )
+
+    if isinstance(module, MLXQuantizedLinear):
+        qweights, deq_biases, scales = _fuse_quantized_weights(
+            weights_dict, path, sublayers_to_fuse, MLX_QUANTIZED_WEIGHT_LAYOUT,
+        )
+        weight_quantization = module.config.weight_quantization_mode
+        activation_precision = module.activation_precision
+
+        weights = _process_quantized_tensor(
+            qweights,
+            weight_quantization,
+            activation_precision,
+            None,
+        )
+        scales = scales.astype(activation_precision)
+        deq_biases = deq_biases.astype(activation_precision)
+
+        return load_parameters(
+            lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
+            module,
+            (weights, scales, deq_biases, bias),
         )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
@@ -361,6 +404,27 @@ def load_tied_embedding(
     return load_parameters(lambda m: (m.weights,), module, (weights,))
 
 
+def load_mlx_quantized_tied_embedding(
+    module: MLXQuantizedTiedEmbedding,
+    weights_dict: Mapping[str, Array],
+    decoder_path: ParameterPath,
+) -> MLXQuantizedTiedEmbedding:
+    qweights = weights_dict[decoder_path / "embed_tokens" / "weight"]
+    qscales = weights_dict[decoder_path / "embed_tokens" / "scales"]
+    qbiases = weights_dict[decoder_path / "embed_tokens" / "biases"]
+
+    weights = _process_quantized_tensor(
+        qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    scales = qscales.astype(module.activation_precision)
+    biases = qbiases.astype(module.activation_precision)
+
+    return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
+
+
 def load_untied_embedding(
     module: UntiedEmbedding,
     weights_dict: Mapping[str, Array],
@@ -386,6 +450,8 @@ def load_huggingface(
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(module.embedding, weights_dict, decoder_path)
+    elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
+        embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, decoder_path)
     elif isinstance(module.embedding, UntiedEmbedding):
         embedding = load_untied_embedding(module.embedding, weights_dict, decoder_path, lm_head_path)
     else:
