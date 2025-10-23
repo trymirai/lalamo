@@ -6,17 +6,17 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    TransformerLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
     NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
     YARNRoPEConfig,
-    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.embedding import UntiedEmbeddingConfig
@@ -166,7 +166,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=None
+            post_mlp_norm_config=None,
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,

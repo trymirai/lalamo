@@ -1,26 +1,22 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from operator import is_
 from typing import Self
 
 import equinox as eqx
 import jax
 from jax import vmap
-from jax.random import PRNGKey
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
-import jax.numpy as jnp
 
 from lalamo.common import ParameterTree
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.transformer import TransformerConfig, Transformer, TransformerForwardPassConfig, Normalization
+from lalamo.modules.normalization import NormalizationConfig
+from lalamo.modules.transformer import Normalization, Transformer, TransformerConfig, TransformerForwardPassConfig
 
-from .activations import Activation, SiLU, GELU
-from .common import LalamoModule, ForwardPassMode
-from .transformer_layer import TransformerLayerResult
-from .linear import FullPrecisionLinearConfig, LinearBase, LinearConfig
+from .activations import GELU, Activation, SiLU
+from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
+from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
-from .linear import FullPrecisionLinear
+from .transformer_layer import TransformerLayerResult
 
 __all__ = [
     "Classifier",
@@ -36,49 +32,39 @@ def activation_from_str(activation: str) -> Activation:
     }
     if activation in supported_activations:
         return supported_activations[activation]()
-    else:
-        raise ValueError("Only activations from the following list are supported by Classifier: {}".format(supported_activations.keys()))
+
+    raise ValueError(
+        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}"
+    )
 
 @dataclass(frozen=True)
 class PredictionHeadConfig:
-    input_size: int
-    output_size: int
-    use_bias: bool
+    dense_config: LinearConfig
     activation: Activation
-    norm_size: int
-    norm_eps: float
-    use_norm_bias: bool
+    normalization_config: NormalizationConfig
+    use_dense_bias: bool
+    use_norm_bias: bool #NOTE: currently not used because Normalization class does not support bias
 
-    def empty(self, activation_precision: DTypeLike) -> "PredictionHead":
-        dense_config = FullPrecisionLinearConfig(activation_precision)
-        dense_layer = dense_config.empty(self.input_size, (self.output_size,), self.use_bias)
-        activation = self.activation
-        norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=jnp.float32,
-            epsilon=self.norm_eps,
-            scale_offset=0.0,
-            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-            subtract_mean=True
+    def empty(self, input_size:int, output_size: int) -> "PredictionHead":
+        dense_layer = self.dense_config.empty(
+            input_dim=input_size,
+            output_dims=(output_size,),
+            has_biases=self.use_dense_bias,
         )
-        norm = norm_config.empty(self.norm_size)
+        activation = self.activation
+        norm = self.normalization_config.empty(output_size)
 
         return PredictionHead(config=self, dense=dense_layer, activation=activation, norm=norm)
 
-    def random_init(self, activation_precision: DTypeLike, key: PRNGKeyArray) -> "PredictionHead":
-        dense_key, norm_key = jax.random.split(key)
-        dense_config = FullPrecisionLinearConfig(activation_precision)
-        dense_layer = dense_config.random_init(self.input_size, (self.output_size,), self.use_bias, key=dense_key)
+    def random_init(self, input_size:int, output_size: int, key: PRNGKeyArray) -> "PredictionHead":
+        dense_key, _ = jax.random.split(key)
+        dense_layer = self.dense_config.random_init(
+            input_size,
+            (output_size,),
+            has_biases=self.use_dense_bias,
+            key=dense_key)
         activation = self.activation
-        norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=jnp.float32,
-            epsilon = self.norm_eps,
-            scale_offset = 0.0,
-            upcast_mode = UpcastMode.ONLY_NORMALIZATION,
-            subtract_mean = True
-        )
-        norm = norm_config.empty(self.input_size)
+        norm = self.normalization_config.empty(output_size)
 
         return PredictionHead(config=self, dense=dense_layer, activation=activation, norm=norm)
 
@@ -89,18 +75,17 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     norm: Normalization
 
     def __call__(self, inner_features: Float[Array, " in_channels"])->Float[Array, " out_channels"]:
-        dense_out = self.dense(inner_features)
-        assert len(dense_out) == 1, "PredictionHead, expecting dense output to have only 1 tensor"
+        (dense_out,) = self.dense(inner_features)
         return self.norm(self.activation(dense_out[0]))
 
     @property
     def activation_precision(self) -> DTypeLike:
         return self.activation_precision
-    
+
     def export_weights(self) -> ParameterTree:
         result = dict(
             dense=self.dense.export_weights(),
-            norm=self.norm.export_weights()
+            norm=self.norm.export_weights(),
         )
         return result
 
@@ -114,7 +99,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         return replace(
             self,
             dense=self.dense.import_weights(weights["dense"]),
-            norm=self.norm.import_weights(weights["norm"])
+            norm=self.norm.import_weights(weights["norm"]),
         )
 
 class ClassifierActivationTrace(eqx.Module):
@@ -174,7 +159,6 @@ class ClassifierConfig:
 
     def random_init(
         self,
-        activation_precision: DTypeLike,
         *,
         key: PRNGKeyArray,
     ) -> "Classifier":
@@ -186,34 +170,44 @@ class ClassifierConfig:
         )
         transformer = self.transformer_config.random_init(
             key=transformer_key,
-            is_causal=False
+            is_causal=False,
         )
         final_linear = self.final_linear_config.random_init(
-            self.hidden_dim,
-            (self.num_labels,),
+            input_dim=self.hidden_dim,
+            output_dims=(self.num_labels,),
             has_biases=True,
             key=classifier_key,
         )
-        prediction_head = self.prediction_head_config.random_init(activation_precision, key)
+        prediction_head = self.prediction_head_config.random_init(
+            input_size=self.hidden_dim,
+            output_size=self.hidden_dim,
+            key=key,
+        )
         return Classifier(
             self,
             embedding=embedding,
             transformer=transformer,
             prediction_head=prediction_head,
-            final_linear=final_linear
+            final_linear=final_linear,
         )
 
     def empty(
         self,
-        activation_precision: DTypeLike,
     ) -> "Classifier":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
         transformer= self.transformer_config.empty(is_causal=False)
-        final_linear = self.final_linear_config.empty(self.hidden_dim, (self.num_labels,), True)
-        prediction_head = self.prediction_head_config.empty(activation_precision)
+        final_linear = self.final_linear_config.empty(
+            input_dim=self.hidden_dim,
+            output_dims=(self.num_labels,),
+            has_biases=True,
+        )
+        prediction_head = self.prediction_head_config.empty(
+            input_size=self.hidden_dim,
+            output_size=self.hidden_dim,
+        )
         return Classifier(
             self,
             embedding=embedding,
@@ -287,7 +281,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             embedding=self.embedding.export_weights(),
             transformer=self.transformer.export_weights(),
             prediction_head=self.prediction_head.export_weights(),
-            final_linear=self.final_linear.export_weights()
+            final_linear=self.final_linear.export_weights(),
         )
         return result
 
@@ -305,5 +299,5 @@ class Classifier(LalamoModule[ClassifierConfig]):
             embedding=self.embedding.import_weights(weights["embedding"]),
             transformer=self.transformer.import_weights(weights["transformer"]),
             prediction_head=self.prediction_head.import_weights(weights["prediction_head"]),
-            final_linear=self.final_linear.import_weights(weights["final_linear"])
+            final_linear=self.final_linear.import_weights(weights["final_linear"]),
         )

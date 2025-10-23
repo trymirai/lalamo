@@ -46,6 +46,7 @@ class NormalizationConfig:
 
 class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
+    # TODO: do we need to extend Normalizatino with bias?
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -72,7 +73,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         if self.config.subtract_mean:
             mean = jnp.mean(upcasted_inputs)
             upcasted_inputs = upcasted_inputs - mean
-        
+
         adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
         normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 

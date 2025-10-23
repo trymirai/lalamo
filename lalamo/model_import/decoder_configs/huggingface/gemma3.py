@@ -4,18 +4,14 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.modules import (
-    DecoderConfig,
-    TiedEmbeddingConfig,
-    TransformerConfig
-)
+from lalamo.modules import DecoderConfig, TiedEmbeddingConfig, TransformerConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceConfig
 

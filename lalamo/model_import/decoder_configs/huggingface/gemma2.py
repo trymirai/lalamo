@@ -6,14 +6,14 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    TransformerLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
-    TransformerConfig
 )
 from lalamo.modules.activations import GELU
 

@@ -6,16 +6,16 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    TransformerLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
-    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
@@ -131,7 +131,7 @@ class HFQwen2Config(HuggingFaceConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=None
+            post_mlp_norm_config=None,
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
@@ -151,5 +151,5 @@ class HFQwen2Config(HuggingFaceConfig):
         return DecoderConfig(
             embedding_config=embedding_config,
             transformer_config=transformer_config,
-            vocab_size=self.vocab_size
+            vocab_size=self.vocab_size,
         )

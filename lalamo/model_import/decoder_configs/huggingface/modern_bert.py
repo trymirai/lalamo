@@ -1,28 +1,23 @@
-
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike, Array
-from collections.abc import Mapping
-
-from torch._dynamo.utils import istype
+import jax.numpy as jnp
+from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     AttentionConfig,
-    TransformerLayerConfig,
+    ClassifierConfig,
+    DenseMLPConfig,
     FullPrecisionLinearConfig,
+    NormalizationConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
-
-    ClassifierConfig,
-    NormalizationConfig,
-    DenseMLPConfig,
-    TransformerConfig
 )
 from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.classifier import PredictionHeadConfig, activation_from_str
 from lalamo.modules.embedding import UntiedEmbeddingConfig
-from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
 
@@ -82,7 +77,7 @@ class ModernBERTConfig(HuggingFaceConfig):
 
     # NOTE: this one is present in vanilla modern-bert from HF (answerdotai/ModernBERT-base)
     # tie_word_embeddings: bool
-    
+
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
 
     def to_classifier_config(
@@ -143,7 +138,7 @@ class ModernBERTConfig(HuggingFaceConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=None
+            post_mlp_norm_config=None,
         )
 
         transformer_config = TransformerConfig(
@@ -162,14 +157,23 @@ class ModernBERTConfig(HuggingFaceConfig):
             context_length=context_length or self.max_position_embeddings,
         )
 
+        prediction_head_dense_config = FullPrecisionLinearConfig(
+            precision=activation_precision,
+        )
+        prediction_head_norm_config = NormalizationConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=jnp.float32,
+            epsilon=self.norm_eps,
+            scale_offset=0.0,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=True,
+        )
         prediction_head_config = PredictionHeadConfig(
-            input_size = self.hidden_size,
-            output_size = self.hidden_size,
-            use_bias = self.classifier_bias,
+            dense_config=prediction_head_dense_config,
             activation = activation_from_str(self.classifier_activation),
-            norm_size = self.hidden_size,
-            norm_eps = self.norm_eps,
-            use_norm_bias = self.norm_bias
+            normalization_config=prediction_head_norm_config,
+            use_dense_bias=self.classifier_bias,
+            use_norm_bias=self.norm_bias,
         )
 
         final_linear_config = FullPrecisionLinearConfig(
@@ -191,5 +195,5 @@ class ModernBERTConfig(HuggingFaceConfig):
             num_layers = self.num_hidden_layers,
             sliding_window_sizes = None, # TODO: figure out this one from self.local_attention
             context_length = self.max_position_embeddings,
-            num_labels = len(self.label2id)
+            num_labels = len(self.label2id),
         )

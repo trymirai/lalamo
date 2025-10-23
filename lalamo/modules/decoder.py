@@ -10,11 +10,11 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, LalamoModule
-from .transformer_layer import TransformerLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .rope import PositionalEmbeddings
 from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
+from .transformer_layer import TransformerLayerResult
 from .utils import vmap_twice
 
 __all__ = [

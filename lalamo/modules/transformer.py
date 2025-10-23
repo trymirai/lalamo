@@ -11,10 +11,15 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .common import AttentionType, ForwardPassMode, LalamoModule
-from .transformer_layer import TransformerLayer, TransformerLayerConfig, TransformerLayerForwardPassConfig, TransformerLayerResult
 from .kv_cache import KVCache
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
+from .transformer_layer import (
+    TransformerLayer,
+    TransformerLayerConfig,
+    TransformerLayerForwardPassConfig,
+    TransformerLayerResult,
+)
 
 __all__ = [
     "Transformer",
@@ -117,7 +122,7 @@ class TransformerConfig:
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
                 key=layer_key,
-                is_causal=is_causal
+                is_causal=is_causal,
             )
             for sliding_window_size, layer_key in zip(sliding_window_sizes, layers_keys, strict=True)
         )
@@ -159,7 +164,7 @@ class TransformerConfig:
                 head_dim=self.head_dim,
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
-                is_causal=is_causal
+                is_causal=is_causal,
             )
             for sliding_window_size in sliding_window_sizes
         )

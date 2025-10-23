@@ -9,14 +9,14 @@ from lalamo.modules import (
     AttentionConfig,
     Decoder,
     DecoderConfig,
-    TransformerLayerConfig,
     DenseMLPConfig,
     LlamaRoPEConfig,
+    NormalizationConfig,
     QLoRALinearConfig,
     QuantizedTiedEmbeddingConfig,
-    NormalizationConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UpcastMode,
-    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
@@ -153,7 +153,7 @@ class ETLlamaConfig(ExecutorchConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
-            post_mlp_norm_config=None
+            post_mlp_norm_config=None,
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,

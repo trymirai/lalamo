@@ -11,11 +11,16 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .common import AttentionType, ForwardPassMode, LalamoModule
-from .transformer_layer import TransformerLayer, TransformerLayerConfig, TransformerLayerForwardPassConfig, TransformerLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .kv_cache import KVCache
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
+from .transformer_layer import (
+    TransformerLayer,
+    TransformerLayerConfig,
+    TransformerLayerForwardPassConfig,
+    TransformerLayerResult,
+)
 
 __all__ = [
     "Decoder",
@@ -47,11 +52,15 @@ class DecoderActivationTrace(eqx.Module):
             token_positions=self.token_positions,
             local_positional_embeddings=self.local_positional_embeddings.export(),
             global_positional_embeddings=self.global_positional_embeddings.export(),
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
+            layer_results=[
+                layer_result.export() for layer_result in self.layer_results
+            ],
             output_norm=self.output_norm,
         )
         if self.kv_cache is not None:
-            result["kv_cache"] = [kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache]
+            result["kv_cache"] = [
+                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache
+            ]
         return result
 
 
@@ -66,7 +75,8 @@ class DecoderResult(eqx.Module):
         )
         if self.updated_kv_cache is not None:
             result["updated_kv_cache"] = [
-                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.updated_kv_cache
+                kv_cache_layer_slice.export()
+                for kv_cache_layer_slice in self.updated_kv_cache
             ]
         if self.activation_trace is not None:
             result["activation_trace"] = self.activation_trace.export()
@@ -94,7 +104,9 @@ class DecoderConfig:
 
     def __post_init__(self) -> None:
         if self.local_rope_config is not None and self.sliding_window_sizes is None:
-            raise ValueError("Sliding window sizes must be provided when using local RoPE")
+            raise ValueError(
+                "Sliding window sizes must be provided when using local RoPE"
+            )
         if self.sliding_window_sizes is None:
             return
         if len(self.sliding_window_sizes) != self.num_layers:
@@ -122,7 +134,9 @@ class DecoderConfig:
         if self.local_rope_config:
             assert self.sliding_window_sizes is not None
             max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
+                window_size
+                for window_size in self.sliding_window_sizes
+                if window_size is not None
             )
             local_rope = self.local_rope_config.init(
                 head_dim=self.head_dim,
@@ -146,9 +160,11 @@ class DecoderConfig:
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
                 key=key,
-                is_causal=True
+                is_causal=True,
             )
-            for sliding_window_size, key in zip(sliding_window_sizes, layers_keys, strict=True)
+            for sliding_window_size, key in zip(
+                sliding_window_sizes, layers_keys, strict=True
+            )
         )
         output_norm = self.output_norm_config.init(self.model_dim)
         return Decoder(
@@ -175,7 +191,9 @@ class DecoderConfig:
         if self.local_rope_config:
             assert self.sliding_window_sizes is not None
             max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
+                window_size
+                for window_size in self.sliding_window_sizes
+                if window_size is not None
             )
             local_rope = self.local_rope_config.init(
                 head_dim=self.head_dim,
@@ -197,7 +215,7 @@ class DecoderConfig:
                 head_dim=self.head_dim,
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
-                is_causal=True
+                is_causal=True,
             )
             for sliding_window_size in sliding_window_sizes
         )
@@ -304,7 +322,9 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
     def init_static_kv_cache(self, batch_size: int, capacity: int) -> KVCache:
-        return KVCache(layer.init_static_kv_cache(batch_size, capacity) for layer in self.layers)
+        return KVCache(
+            layer.init_static_kv_cache(batch_size, capacity) for layer in self.layers
+        )
 
     def export_weights(self) -> ParameterTree:
         result = dict(

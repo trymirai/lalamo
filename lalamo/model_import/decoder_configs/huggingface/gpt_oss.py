@@ -6,17 +6,17 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    TransformerLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     MixtureOfExpertsConfig,
     NormalizationConfig,
     SoftmaxRouting,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
-    TransformerConfig
 )
 from lalamo.modules.activations import SiLU
 
@@ -162,7 +162,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
             post_attention_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=moe_config,
-            post_mlp_norm_config=None
+            post_mlp_norm_config=None,
         )
 
         # Per-layer sliding-window
