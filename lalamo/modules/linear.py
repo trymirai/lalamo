@@ -12,6 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
+from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
@@ -414,13 +415,27 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
 
     @property
     def int_weights(self) -> Int[Array, "*components in_channels out_channels"]:
-        result = quantize_weights(self.weights, self.config.weight_quantization_mode)
-        return result.astype(self.config.weight_quantization_mode.dtype)
+        quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
+        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
+
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+            packed = jax_uint4_to_packed_uint8(casted)
+        else:
+            packed = casted
+
+        return packed
 
     @property
     def int_zero_points(self) -> Int[Array, "*components groups out_channels"]:
-        result = quantize_weights(self.zero_points, self.config.weight_quantization_mode)
-        return result.astype(self.config.weight_quantization_mode.dtype)
+        quantized = quantize_weights(self.zero_points, self.config.weight_quantization_mode)
+        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
+
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+            packed = jax_uint4_to_packed_uint8(casted)
+        else:
+            packed = casted
+
+        return packed
 
     def __post_init__(self) -> None:  # noqa: PLR0912
         if self.weights.dtype != self.config.activation_precision:
@@ -554,11 +569,18 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](LinearBase[C
         assert isinstance(weights, Mapping)
         assert isinstance(weights["weights"], Array)
         assert isinstance(weights["zero_points"], Array)
+        unpacked_weights = weights["weights"]
+        unpacked_zero_points = weights["zero_points"]
+
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+            unpacked_weights = jax_uint8_to_unpacked_uint4(weights["weights"])
+            unpacked_zero_points = jax_uint8_to_unpacked_uint4(weights["zero_points"])
+
         return replace(
             self,
-            weights=weights["weights"].astype(self.weights.dtype),
+            weights=unpacked_weights.astype(self.weights.dtype),
             scales=weights["scales"],
-            zero_points=weights["zero_points"].astype(self.zero_points.dtype),
+            zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
             biases=weights["biases"] if self.has_biases else None,
         )
 
