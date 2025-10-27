@@ -3,8 +3,8 @@ from typing import Self
 
 from jax import Array
 
-from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
-from lalamo.modules import Classifier, LalamoModule, config_converter
+from lalamo.common import DTypeLike, ParameterTree
+from lalamo.modules import Classifier, LalamoModule
 
 
 class RoutingConfig:

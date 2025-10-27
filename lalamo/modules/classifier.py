@@ -17,6 +17,7 @@ from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
 from .transformer_layer import TransformerLayerResult
+from .utils import vmap_twice
 
 __all__ = [
     "Classifier",
@@ -31,7 +32,7 @@ def activation_from_str(activation: str) -> Activation:
         "gelu" : GELU,
     }
     if activation in supported_activations:
-        return supported_activations[activation]()
+        return supported_activations[activation]
 
     raise ValueError(
         f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}"
@@ -75,8 +76,9 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     norm: Normalization
 
     def __call__(self, inner_features: Float[Array, " in_channels"])->Float[Array, " out_channels"]:
-        (dense_out,) = self.dense(inner_features)
-        return self.norm(self.activation(dense_out[0]))
+        dense_outs = vmap_twice(self.dense)(inner_features)
+        dense_outs = vmap_twice(self.activation)(inner_features)
+        return vmap_twice(self.norm)(dense_outs)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -149,7 +151,7 @@ class ClassifierConfig:
     model_dim: int
     hidden_dim: int
     num_heads: int
-    # num_groups: int  NOTE: this one seem to be not used in ModertBert attention
+    num_groups: int  #NOTE: this one seem to be not used in ModertBert attention
     head_dim: int
     attention_scale: float | None
     num_layers: int
@@ -161,6 +163,7 @@ class ClassifierConfig:
         self,
         *,
         key: PRNGKeyArray,
+        skip_pre_attention_norm:bool = False,
     ) -> "Classifier":
         embedding_key, transformer_key, classifier_key = jax.random.split(key, num=3)
         embedding = self.embedding_config.random_init(
@@ -171,6 +174,7 @@ class ClassifierConfig:
         transformer = self.transformer_config.random_init(
             key=transformer_key,
             is_causal=False,
+            skip_pre_attention_norm=skip_pre_attention_norm
         )
         final_linear = self.final_linear_config.random_init(
             input_dim=self.hidden_dim,
@@ -193,12 +197,13 @@ class ClassifierConfig:
 
     def empty(
         self,
+        skip_pre_attention_norm:bool = False,
     ) -> "Classifier":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        transformer= self.transformer_config.empty(is_causal=False)
+        transformer= self.transformer_config.empty(is_causal=False, skip_pre_attention_norm=skip_pre_attention_norm)
         final_linear = self.final_linear_config.empty(
             input_dim=self.hidden_dim,
             output_dims=(self.num_labels,),
@@ -252,9 +257,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         )
 
         prediction_output = self.prediction_head(transformer_result.outputs)
-        (classifier_output,) = self.final_linear(prediction_output)
-
-        logits = vmap(self.embedding.readout, in_axes=0)(classifier_output[0])
+        (logits,) = vmap_twice(self.final_linear)(prediction_output)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None

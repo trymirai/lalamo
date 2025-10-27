@@ -94,5 +94,5 @@ class ForeignClassifierConfig(ForeignConfig):
         weights_dict: Mapping[str, Array],
     ) -> Classifier:
         config = self.to_classifier_config(context_length, activation_precision, accumulation_precision)
-        model = config.empty()
+        model = config.empty(skip_pre_attention_norm=True)
         return self._load_classifier_weights(model, weights_dict)

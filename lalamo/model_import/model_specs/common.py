@@ -13,7 +13,7 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
+from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import MapDictValues, open_safetensors
 
@@ -45,7 +45,6 @@ class WeightsType(Enum):
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict)
         else:
             import torch
-
             from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
@@ -74,25 +73,25 @@ class ConfigMap:
 def _is_foreign_config_type(t: object) -> bool:
     origin = get_origin(t)
     args = get_args(t)
-    return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignLMConfig)
+    return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
 
 
 def _structure_foreign_config_factory(
     t: object,  # noqa: ARG001
     c: cattrs.Converter,  # noqa: ARG001
-) -> Callable[[object, object], type[ForeignLMConfig]]:
-    name_to_type = {t.__name__: t for t in ForeignLMConfig.__descendants__()}
+) -> Callable[[object, object], type[ForeignConfig]]:
+    name_to_type = {t.__name__: t for t in ForeignConfig.__descendants__()}
 
-    def _hook(v: object, _t: object) -> type[ForeignLMConfig]:
-        if isinstance(v, type) and issubclass(v, ForeignLMConfig):
+    def _hook(v: object, _t: object) -> type[ForeignConfig]:
+        if isinstance(v, type) and issubclass(v, ForeignConfig):
             return v
         return name_to_type[cast("str", v)]
 
     return _hook
 
 
-def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignLMConfig]], str]:  # noqa: ARG001
-    def _hook(v: type[ForeignLMConfig]) -> str:
+def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
+    def _hook(v: type[ForeignConfig]) -> str:
         return v.__name__
 
     return _hook
@@ -110,7 +109,7 @@ class ModelSpec:
     name: str
     size: str
     repo: str
-    config_type: type[ForeignLMConfig|ForeignClassifierConfig]
+    config_type: type[ForeignConfig]
     quantization: QuantizationMode | None = None
     output_parser_regex: str | None = None
     system_role_name: str = "system"

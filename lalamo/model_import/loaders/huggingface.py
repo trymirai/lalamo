@@ -405,9 +405,140 @@ def load_huggingface_classifier(
     module: Classifier,
     weights_dict: Mapping[str, Array],
 ) -> Classifier:
+    def load_tied_embedding_local(
+        module: TiedEmbedding,
+        weights_dict: Mapping[str, Array],
+        decoder_path: ParameterPath,
+    ) -> TiedEmbedding:
+        input_weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
+        return load_parameters(lambda m: (m.weights,), module, (input_weights,))
 
-    # TODO: debugging this code in a separate branch due to found bugs
-    # not ready for review yet
+    def load_attention_local(
+        module: Attention,
+        weights_dict: Mapping[str, Array],
+        path: ParameterPath,
+    ) -> Attention:
+        qkv_projection = load_linear(
+            module.qkv_projection,
+            weights_dict,
+            path / "Wqkv",
+            sublayers_to_fuse=None,
+        )
+        out_projection = load_linear(module.out_projection, weights_dict, path / "Wo")
 
-    return module
+        if module.query_norm is not None:
+            query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+        else:
+            query_norm = None
+
+        if module.key_norm is not None:
+            key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+        else:
+            key_norm = None
+
+        # GPT-OSS adds per-head attention sinks; load them if present.
+        if (path / "sinks") in weights_dict:
+            sinks = weights_dict[path / "sinks"]
+        else:
+            sinks = module.sinks
+
+        return load_parameters(
+            lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm, m.sinks),
+            module,
+            (qkv_projection, out_projection, query_norm, key_norm, sinks),
+        )
+
+    def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
+        if isinstance(module, DenseMLP):
+            # Standard dense MLP with separate sublayers.
+            up_projection = load_linear(
+                module.up_projection,
+                weights_dict,
+                path / "Wi",
+                sublayers_to_fuse=None,
+            )
+            down_projection = load_linear(module.down_projection, weights_dict, path / "Wo")
+            return load_parameters(
+                lambda m: (m.up_projection, m.down_projection),
+                module,
+                (up_projection, down_projection),
+            )
+
+        if isinstance(module, MixtureOfExperts):
+            return load_moe(module, weights_dict, path)
+
+        raise TypeError(f"Unsupported module type for loading: {type(module)}")
+
+    def load_decoder_layer_local(
+        module: TransformerLayer,
+        weights_dict: Mapping[str, Array],
+        path: ParameterPath,
+        layer_idx: int,
+    ) -> TransformerLayer:
+        if module.pre_attention_norm is not None and layer_idx > 0:
+                pre_attention_norm= load_rmsnorm(
+                    module.pre_attention_norm,
+                    weights_dict,
+                    path / "attn_norm",
+                )
+        else:
+            # TODO: in HF ModernBert we just load 'Identity' op for firts layer pre-attn norm
+            pre_attention_norm = None
+
+        attention = load_attention_local(module.attention, weights_dict, path / "attn")
+        if module.post_attention_norm is not None:
+            post_attention_norm = load_rmsnorm(
+                module.post_attention_norm,
+                weights_dict,
+                path / "post_attention_layernorm",
+            )
+
+            pre_mlp_norm = load_rmsnorm(
+                module.pre_mlp_norm,
+                weights_dict,
+                path / "pre_feedforward_layernorm",
+            )
+        else:
+            post_attention_norm = None
+
+            pre_mlp_norm = load_rmsnorm(
+                module.pre_mlp_norm,
+                weights_dict,
+                path / "mlp_norm",
+            )
+
+        mlp = load_mlp_local(module.mlp, weights_dict, path / "mlp")
+        if module.post_mlp_norm is not None:
+            post_mlp_norm = load_rmsnorm(
+                module.post_mlp_norm,
+                weights_dict,
+                path / "post_feedforward_layernorm",
+            )
+        else:
+            post_mlp_norm = None
+        return load_parameters(
+            lambda m: (m.pre_attention_norm, m.attention, m.post_attention_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
+            module,
+            (pre_attention_norm, attention, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
+        )
+
+    base_path = ParameterPath()
+    decoder_path = base_path / "model"
+    head_path = base_path / "head"
+    classifier_path = base_path / "classifier"
+    assert isinstance(module.embedding, TiedEmbedding)
+    embedding = load_tied_embedding_local(module.embedding, weights_dict, decoder_path)
+
+    decoder_layers = tuple(
+        load_decoder_layer_local(layer, weights_dict, decoder_path / "layers" / i, i) for i, layer in enumerate(module.transformer.layers)
+    )
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
+    head_dense = load_linear(module.prediction_head.dense, weights_dict, head_path / "dense")
+    head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path/"norm")
+    classifier = load_linear(module.final_linear, weights_dict, classifier_path)
+    return load_parameters(
+        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm, m.prediction_head.dense, m.prediction_head.norm, m.final_linear),
+        module,
+        (embedding, decoder_layers, output_norm, head_dense, head_norm, classifier),
+    )
 

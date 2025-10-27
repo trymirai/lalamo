@@ -100,9 +100,13 @@ class TransformerLayerConfig:
         is_causal: bool,
         *,
         key: PRNGKeyArray,
+        skip_pre_attention_norm:bool = False,
     ) -> "TransformerLayer":
         attention_key, mlp_key = jax.random.split(key)
-        pre_attention_norm = self.pre_attention_norm_config.init(model_dim)
+        if not skip_pre_attention_norm:
+            pre_attention_norm = self.pre_attention_norm_config.init(model_dim)
+        else:
+            pre_attention_norm = None
         attention = self.attention_config.random_init(
             model_dim=model_dim,
             num_heads=num_heads,
@@ -143,8 +147,15 @@ class TransformerLayerConfig:
         attention_scale: float | None,
         sliding_window_size: int | None,
         is_causal:bool,
+
+        # TODO: this one is ugly, but need a mechanism to disable pre-attention normalization
+        # ONLY for the very first layer in the stack of Transformer layers of ModernBERT
+        skip_pre_attention_norm:bool = False,
     ) -> "TransformerLayer":
-        pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
+        if self.pre_attention_norm_config is not None and not skip_pre_attention_norm:
+            pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
+        else:
+            pre_attention_norm = None
         attention = self.attention_config.empty(
             model_dim=model_dim,
             num_heads=num_heads,
@@ -176,7 +187,7 @@ class TransformerLayerConfig:
 
 
 class TransformerLayer(LalamoModule[TransformerLayerConfig]):
-    pre_attention_norm: Normalization
+    pre_attention_norm: Normalization | None
     attention: Attention
     post_attention_norm: Normalization | None
     pre_mlp_norm: Normalization
@@ -192,7 +203,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return self.attention.attention_type
 
     def __post_init__(self) -> None:
-        model_dim = self.pre_attention_norm.input_dim
+        model_dim = self.pre_attention_norm.input_dim if self.pre_attention_norm is not None else self.attention.model_dim
         if self.attention.model_dim != model_dim:
             raise ValueError(
                 f"Attention model dim {self.attention.model_dim} does not match"
@@ -231,7 +242,11 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        normalized_attention_inputs = vmap_twice(self.pre_attention_norm)(inputs)
+        if self.pre_attention_norm is not None:
+            normalized_attention_inputs = vmap_twice(self.pre_attention_norm)(inputs)
+        else:
+            normalized_attention_inputs = inputs
+
         batched_attention_fn = vmap(partial(self.attention, return_updated_kv_cache=return_updated_kv_cache))
         attention_outputs, updated_kv_cache = batched_attention_fn(
             normalized_attention_inputs,
@@ -289,11 +304,12 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
     def export_weights(self) -> ParameterTree:
         result = dict(
-            pre_attention_norm=self.pre_attention_norm.export_weights(),
             attention=self.attention.export_weights(),
             pre_mlp_norm=self.pre_mlp_norm.export_weights(),
             mlp=self.mlp.export_weights(),
         )
+        if self.pre_attention_norm is not None:
+            result["pre_attention_norm"]=self.pre_attention_norm.export_weights()
         if self.post_attention_norm is not None:
             result["post_attention_norm"] = self.post_attention_norm.export_weights()
         if self.post_mlp_norm is not None:
@@ -322,9 +338,14 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"])
         else:
             post_mlp_norm = None
+        if self.pre_attention_norm is not None:
+            assert isinstance(weights["pre_attention_norm"], Mapping)
+            pre_attention_norm = self.pre_attention_norm.import_weights(weights["pre_attention_norm"])
+        else:
+            pre_attention_norm = None
         return replace(
             self,
-            pre_attention_norm=self.pre_attention_norm.import_weights(weights["pre_attention_norm"]),
+            pre_attention_norm=pre_attention_norm,
             attention=self.attention.import_weights(weights["attention"]),
             post_attention_norm=post_attention_norm,
             pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"]),

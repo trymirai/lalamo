@@ -17,7 +17,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.classifier import PredictionHeadConfig, activation_from_str
-from lalamo.modules.embedding import UntiedEmbeddingConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceClassifireConfig
 
@@ -87,7 +87,7 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
         accumulation_precision: DTypeLike) -> ClassifierConfig:
 
         # TODO: could not find default value for this one in Mirai's transformer
-        embedding_config = UntiedEmbeddingConfig(
+        embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
                 precision=activation_precision,
@@ -126,13 +126,13 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
         assert activation is SiLU or activation is GELU
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=activation,
+            activation=activation(),
             has_up_biases=False,
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = TransformerLayerConfig(
+        transformer_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
             post_attention_norm_config=None,
@@ -144,12 +144,16 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_config=transformer_layer_config,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
-            num_groups=1,
+
+            # TODO: assigned this one just to make weights loading work, need to double
+            # check if its actually the right way to go
+            num_groups=self.num_attention_heads,
+            
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
@@ -168,9 +172,10 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
+        head_activation = activation_from_str(self.classifier_activation)
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
-            activation = activation_from_str(self.classifier_activation),
+            activation = head_activation(),
             normalization_config=prediction_head_norm_config,
             use_dense_bias=self.classifier_bias,
             use_norm_bias=self.norm_bias,
@@ -189,7 +194,7 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
             model_dim = self.hidden_size,
             hidden_dim = self.hidden_size,
             num_heads = self.num_attention_heads,
-            # num_groups: int  NOTE: this one seem to be not used in ModertBert attention
+            num_groups =  self.num_attention_heads,#int,  NOTE: this one seem to be not used in ModertBert attention
             head_dim = self.hidden_size // self.num_attention_heads,
             attention_scale = None,
             num_layers = self.num_hidden_layers,

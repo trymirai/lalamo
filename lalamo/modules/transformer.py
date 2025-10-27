@@ -88,6 +88,7 @@ class TransformerConfig:
         is_causal: bool,
         *,
         key: PRNGKeyArray,
+        skip_pre_attention_norm:bool = False,
     ) -> "Transformer":
         global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
@@ -112,6 +113,7 @@ class TransformerConfig:
             sliding_window_sizes = self.sliding_window_sizes
 
         layers_keys = jax.random.split(key, self.num_layers)
+        layer_idxs = list(range(self.num_layers))
         layers = tuple(
             self.layer_config.random_init(
                 model_dim=self.model_dim,
@@ -121,10 +123,11 @@ class TransformerConfig:
                 head_dim=self.head_dim,
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
-                key=layer_key,
                 is_causal=is_causal,
+                key=layer_key,
+                skip_pre_attention_norm = (skip_pre_attention_norm and layer_idx == 0),
             )
-            for sliding_window_size, layer_key in zip(sliding_window_sizes, layers_keys, strict=True)
+            for sliding_window_size, layer_key, layer_idx in zip(sliding_window_sizes, layers_keys, layer_idxs, strict=True)
         )
         output_norm = self.output_norm_config.init(self.model_dim)
 
@@ -136,7 +139,7 @@ class TransformerConfig:
             output_norm=output_norm,
         )
 
-    def empty(self, is_causal:bool) -> "Transformer":
+    def empty(self, is_causal:bool, skip_pre_attention_norm:bool = False) -> "Transformer":
         global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
             num_timesteps=self.context_length,
@@ -155,6 +158,8 @@ class TransformerConfig:
         else:
             sliding_window_sizes = self.sliding_window_sizes
 
+        layer_idxs = list(range(self.num_layers))
+
         layers = tuple(
             self.layer_config.empty(
                 model_dim=self.model_dim,
@@ -165,8 +170,9 @@ class TransformerConfig:
                 attention_scale=self.attention_scale,
                 sliding_window_size=sliding_window_size,
                 is_causal=is_causal,
+                skip_pre_attention_norm=(skip_pre_attention_norm and layer_idx == 0),
             )
-            for sliding_window_size in sliding_window_sizes
+            for sliding_window_size, layer_idx in zip(sliding_window_sizes, layer_idxs, strict=True)
         )
         output_norm = self.output_norm_config.empty(self.model_dim)
 
