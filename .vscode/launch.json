@@ -24,6 +24,15 @@
             "console": "integratedTerminal",
             "args" : [
             ]
+        },
+                {
+            "name": "Run Moder-Bert stuff",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/sandbox/modern_bert_jax.py",
+            "console": "integratedTerminal",
+            "args" : [
+            ]
         }
     ]
 }

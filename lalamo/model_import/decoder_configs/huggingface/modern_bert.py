@@ -16,7 +16,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import GELU, SiLU
-from lalamo.modules.classifier import PredictionHeadConfig, activation_from_str
+from lalamo.modules.classifier import PoolingType, PredictionHeadConfig, activation_from_str
 from lalamo.modules.embedding import TiedEmbeddingConfig
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceClassifireConfig
@@ -201,4 +201,5 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
             sliding_window_sizes = None, # TODO: figure out this one from self.local_attention
             context_length = self.max_position_embeddings,
             num_labels = len(self.label2id),
+            classifier_pooling=PoolingType(self.classifier_pooling),
         )

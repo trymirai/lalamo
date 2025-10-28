@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from enum import StrEnum
 from typing import Self
 
 import equinox as eqx
@@ -17,7 +18,6 @@ from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
 from .transformer_layer import TransformerLayerResult
-from .utils import vmap_twice
 
 __all__ = [
     "Classifier",
@@ -25,6 +25,10 @@ __all__ = [
     "ClassifierConfig",
     "ClassifierResult",
 ]
+
+class PoolingType(StrEnum):
+    CLS = "cls"
+    MEAN = "mean"
 
 def activation_from_str(activation: str) -> Activation:
     supported_activations = {
@@ -76,9 +80,9 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     norm: Normalization
 
     def __call__(self, inner_features: Float[Array, " in_channels"])->Float[Array, " out_channels"]:
-        dense_outs = vmap_twice(self.dense)(inner_features)
-        dense_outs = vmap_twice(self.activation)(inner_features)
-        return vmap_twice(self.norm)(dense_outs)
+        dense_outs = vmap(self.dense)(inner_features)
+        dense_outs = vmap(self.activation)(inner_features)
+        return vmap(self.norm)(dense_outs)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -158,6 +162,7 @@ class ClassifierConfig:
     sliding_window_sizes: tuple[int | None, ...] | None
     context_length: int
     num_labels: int
+    classifier_pooling: PoolingType
 
     def random_init(
         self,
@@ -256,8 +261,16 @@ class Classifier(LalamoModule[ClassifierConfig]):
             forward_pass_config=forward_pass_config,
         )
 
-        prediction_output = self.prediction_head(transformer_result.outputs)
-        (logits,) = vmap_twice(self.final_linear)(prediction_output)
+        if self.config.classifier_pooling == PoolingType.CLS:
+            pooled_output = transformer_result.outputs[:,0,:]
+        elif self.config.classifier_pooling == PoolingType.MEAN:
+            mask = jax.numpy.expand_dims(token_positions, -1)
+            pooled_output = (transformer_result.outputs * mask).sum(axis=1) / mask.sum(axis=1)
+        else:
+            raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
+
+        prediction_output = self.prediction_head(pooled_output)
+        (logits,) = vmap(self.final_linear)(prediction_output)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
