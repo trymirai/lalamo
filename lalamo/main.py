@@ -38,7 +38,7 @@ from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.language_model import LanguageModel
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
+from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_language_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
     FinishedDownloadingFileEvent,
@@ -255,7 +255,7 @@ def convert(
                     progress.remove_task(event_to_task[event])
 
         main_task = progress.add_task("👨‍🍳 Cooking...")
-        model, metadata = import_model(
+        model, metadata = import_language_model(
             model_repo,
             precision=precision_dtype,
             context_length=context_length,

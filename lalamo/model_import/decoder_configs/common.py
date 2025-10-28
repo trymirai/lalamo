@@ -8,10 +8,10 @@ from typing import ClassVar, Self
 import cattrs
 from jaxtyping import Array, DTypeLike
 
-from lalamo.modules import Decoder, DecoderConfig
+from lalamo.modules import Classifier, ClassifierConfig, Decoder, DecoderConfig
 from lalamo.registry_abc import RegistryABC
 
-__all__ = ["ForeignConfig"]
+__all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,9 @@ class ForeignConfig(RegistryABC):
             config = json.load(f)
         return cls._converter.structure(config, cls)
 
+@dataclass(frozen=True)
+class ForeignLMConfig(ForeignConfig):
+
     def to_decoder_config(
         self,
         context_length: int | None,
@@ -45,7 +48,7 @@ class ForeignConfig(RegistryABC):
         raise NotImplementedError
 
     @classmethod
-    def _load_weights(
+    def _load_decoder_weights(
         cls,
         model: Decoder,
         weights_dict: Mapping[str, Array],
@@ -61,4 +64,35 @@ class ForeignConfig(RegistryABC):
     ) -> Decoder:
         config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
         model = config.empty()
-        return self._load_weights(model, weights_dict)
+        return self._load_decoder_weights(model, weights_dict)
+
+
+@dataclass(frozen=True)
+class ForeignClassifierConfig(ForeignConfig):
+
+    def to_classifier_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+    ) -> ClassifierConfig:
+        raise NotImplementedError
+
+    @classmethod
+    def _load_classifier_weights(
+        cls,
+        model: Classifier,
+        weights_dict: Mapping[str, Array],
+    ) -> Classifier:
+        raise NotImplementedError
+
+    def load_classifier(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+        weights_dict: Mapping[str, Array],
+    ) -> Classifier:
+        config = self.to_classifier_config(context_length, activation_precision, accumulation_precision)
+        model = config.empty(skip_pre_attention_norm=True)
+        return self._load_classifier_weights(model, weights_dict)

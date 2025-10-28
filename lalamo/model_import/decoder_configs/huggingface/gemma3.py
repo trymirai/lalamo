@@ -4,19 +4,16 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.modules import (
-    DecoderConfig,
-    TiedEmbeddingConfig,
-)
+from lalamo.modules import DecoderConfig, TiedEmbeddingConfig, TransformerConfig
 from lalamo.modules.activations import GELU
 from lalamo.modules.attention import AttentionConfig
-from lalamo.modules.decoder_layer import DecoderLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import RMSNormConfig, UpcastMode
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
@@ -78,12 +75,13 @@ class HFGemma3TextConfigRaw:
             logit_soft_cap=None,
             precision=activation_precision,
         )
-        rms_norm_config = RMSNormConfig(
+        rms_norm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
 
         if self.rope_scaling is not None:
@@ -124,7 +122,7 @@ class HFGemma3TextConfigRaw:
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rms_norm_config,
             attention_config=attention_config,
             post_attention_norm_config=rms_norm_config,
@@ -132,13 +130,11 @@ class HFGemma3TextConfigRaw:
             mlp_config=mlp_config,
             post_mlp_norm_config=rms_norm_config,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
             layer_config=decoder_layer_config,
             output_norm_config=rms_norm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -149,10 +145,15 @@ class HFGemma3TextConfigRaw:
             sliding_window_sizes=tuple(self.sliding_window_sizes),
             context_length=context_length or self.max_position_embeddings,
         )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
+        )
 
 
 @dataclass(frozen=True)
-class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
+class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
 
@@ -169,7 +170,7 @@ class HFGemma3VisionConfig:
 
 
 @dataclass(frozen=True)
-class HFGemma3Config(HuggingFaceConfig):
+class HFGemma3Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Gemma3ForConditionalGeneration"]]
     boi_token_index: int

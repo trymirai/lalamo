@@ -45,7 +45,6 @@ class WeightsType(Enum):
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict)
         else:
             import torch
-
             from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)

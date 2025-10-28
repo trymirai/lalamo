@@ -15,7 +15,7 @@ from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.processing_utils import Unpack
 
-from lalamo.modules import DecoderActivationTrace, DecoderLayerResult, PositionalEmbeddings
+from lalamo.modules import DecoderActivationTrace, TransformerLayerResult, PositionalEmbeddings
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
@@ -194,7 +194,7 @@ class HFDecoderTracer:
 
     def match_layer(
         self,
-        layer_result: DecoderLayerResult,
+        layer_result: TransformerLayerResult,
         hf_layer: HFDecoderLayer | Gemma3DecoderLayer,
         layer_index: int,
     ) -> None:

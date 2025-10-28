@@ -6,20 +6,21 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     MixtureOfExpertsConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     SoftmaxRouting,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
 )
 from lalamo.modules.activations import SiLU
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGPTOssConfig"]
 
@@ -35,7 +36,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFGPTOssConfig(HuggingFaceConfig):
+class HFGPTOssConfig(HuggingFaceLMConfig):
     # Core HF fields
     architectures: list[Literal["GptOssForCausalLM"]]
     attention_bias: bool
@@ -113,12 +114,13 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 truncate=True,
             )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
 
         # Linear layers
@@ -154,7 +156,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
             router_has_biases=True,
             expert_config=experts_config,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
             post_attention_norm_config=None,
@@ -176,13 +178,11 @@ class HFGPTOssConfig(HuggingFaceConfig):
 
         head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        trasnformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -192,4 +192,10 @@ class HFGPTOssConfig(HuggingFaceConfig):
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=sliding_window_sizes,
             context_length=context_length or self.max_position_embeddings,
+        )
+
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=trasnformer_config,
+            vocab_size=self.vocab_size,
         )

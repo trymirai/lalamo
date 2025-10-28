@@ -3,6 +3,7 @@ from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -14,7 +15,9 @@ from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.quantization import QuantizationMode
+from lalamo.router_model import RouterModel, RouterModelConfig
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
@@ -27,8 +30,9 @@ __all__ = [
     "InitializingModelEvent",
     "ModelMetadata",
     "ModelSpec",
+    "ModelType",
     "StatusEvent",
-    "import_model",
+    "import_language_model",
 ]
 
 
@@ -56,6 +60,11 @@ type StatusEvent = (
 )
 
 
+class ModelType(Enum):
+    LANGUAGE_MODEL=1
+    ROUTER_MODEL=2
+
+
 @dataclass(frozen=True)
 class ModelMetadata:
     toolchain_version: str
@@ -66,7 +75,8 @@ class ModelMetadata:
     quantization: QuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
-    model_config: LanguageModelConfig
+    model_type: ModelType
+    model_config: LanguageModelConfig | RouterModelConfig
 
 
 def download_file(
@@ -112,7 +122,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel
+    model: LanguageModel | RouterModel
     metadata: ModelMetadata
 
 
@@ -157,7 +167,7 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
-def import_model(
+def import_language_model(
     model_spec: ModelSpec | str,
     *,
     context_length: int | None = None,
@@ -188,6 +198,7 @@ def import_model(
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
+        assert isinstance(foreign_decoder_config, ForeignLMConfig)
         decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
 
     if progress_callback is not None:
@@ -232,6 +243,65 @@ def import_model(
         quantization=model_spec.quantization,
         repo=model_spec.repo,
         use_cases=model_spec.use_cases,
+        model_type=ModelType.LANGUAGE_MODEL,
         model_config=language_model_config,
     )
     return ImportResults(language_model, metadata)
+
+def import_router_model(
+    model_spec: ModelSpec| str,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> ImportResults:
+    if isinstance(model_spec, str):
+        try:
+            model_spec = REPO_TO_MODEL[model_spec]
+        except KeyError as e:
+            raise ValueError(f"Unknown model: {model_spec}") from e
+
+    foreign_classifier_config_file = download_config_file(model_spec)
+    foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
+
+    if precision is None:
+        precision = foreign_classifier_config.default_precision
+
+    weights_paths = download_weights(model_spec, progress_callback=progress_callback)
+    with ExitStack() as stack:
+            weights_shards = []
+            for weights_path in weights_paths:
+                weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+                weights_shards.append(weights_shard)
+            weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+
+            if progress_callback is not None:
+                progress_callback(InitializingModelEvent())
+
+            assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
+            classifier = foreign_classifier_config.load_classifier(
+                context_length, precision,
+                accumulation_precision,
+                weights_dict,
+            )
+
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
+    router_model_config = RouterModelConfig(
+    )
+    router_model = RouterModel(router_model_config, classifier=classifier)
+    metadata = ModelMetadata(
+        toolchain_version=LALAMO_VERSION,
+        vendor=model_spec.vendor,
+        family=model_spec.family,
+        name=model_spec.name,
+        size=model_spec.size,
+        quantization=model_spec.quantization,
+        repo=model_spec.repo,
+        use_cases=model_spec.use_cases,
+        model_type=ModelType.ROUTER_MODEL,
+        model_config=router_model_config,
+    )
+    return ImportResults(router_model, metadata)

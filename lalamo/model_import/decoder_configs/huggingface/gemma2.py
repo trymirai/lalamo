@@ -6,23 +6,24 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
 )
 from lalamo.modules.activations import GELU
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGemma2Config"]
 
 
 @dataclass(frozen=True)
-class HFGemma2Config(HuggingFaceConfig):
+class HFGemma2Config(HuggingFaceLMConfig):
     architectures: list[Literal["Gemma2ForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
@@ -73,12 +74,13 @@ class HFGemma2Config(HuggingFaceConfig):
             base=self.rope_theta,
             max_sequence_length=self.max_position_embeddings,
         )
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
@@ -101,7 +103,7 @@ class HFGemma2Config(HuggingFaceConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
             post_attention_norm_config=rmsnorm_config,
@@ -109,13 +111,11 @@ class HFGemma2Config(HuggingFaceConfig):
             mlp_config=mlp_config,
             post_mlp_norm_config=rmsnorm_config,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config= TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -125,4 +125,9 @@ class HFGemma2Config(HuggingFaceConfig):
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=sliding_window_sizes,
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

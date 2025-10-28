@@ -2,12 +2,12 @@ from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
-from .decoder_layer import (
-    DecoderLayer,
-    DecoderLayerActivationTrace,
-    DecoderLayerConfig,
-    DecoderLayerForwardPassConfig,
-    DecoderLayerResult,
+from .transformer_layer import (
+    TransformerLayer,
+    TransformerLayerActivationTrace,
+    TransformerLayerConfig,
+    TransformerLayerForwardPassConfig,
+    TransformerLayerResult,
 )
 from .embedding import (
     EmbeddingBase,
@@ -41,7 +41,7 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import RMSNorm, RMSNormConfig, UpcastMode
+from .normalization import Normalization, NormalizationConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -50,6 +50,18 @@ from .rope import (
     RoPEConfig,
     UnscaledRoPEConfig,
     YARNRoPEConfig,
+)
+from .bert_heads import (
+    ModernBertPredictionHead,
+    ModernBertPredictionHeadConfig,
+)
+from .classifier import (
+    Classifier,
+    ClassifierConfig
+)
+from .transformer import (
+    TransformerConfig,
+    Transformer
 )
 
 __all__ = [
@@ -62,11 +74,11 @@ __all__ = [
     "DecoderActivationTrace",
     "DecoderConfig",
     "DecoderForwardPassConfig",
-    "DecoderLayer",
-    "DecoderLayerActivationTrace",
-    "DecoderLayerConfig",
-    "DecoderLayerForwardPassConfig",
-    "DecoderLayerResult",
+    "TransformerLayer",
+    "TransformerLayerActivationTrace",
+    "TransformerLayerConfig",
+    "TransformerLayerForwardPassConfig",
+    "TransformerLayerResult",
     "DecoderResult",
     "DenseMLP",
     "DenseMLPConfig",
@@ -95,8 +107,8 @@ __all__ = [
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
-    "RMSNorm",
-    "RMSNormConfig",
+    "Normalization",
+    "NormalizationConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
@@ -111,4 +123,10 @@ __all__ = [
     "UpcastMode",
     "YARNRoPEConfig",
     "config_converter",
+    "ClassifierConfig",
+    "Classifier",
+    "ModernBertPredictionHead",
+    "ModernBertPredictionHeadConfig",
+    "TransformerConfig",
+    "Transformer"
 ]

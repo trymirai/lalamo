@@ -6,24 +6,25 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.normalization import UpcastMode
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFMistralConfig"]
 
 
 @dataclass(frozen=True)
-class HFMistralConfig(HuggingFaceConfig):
+class HFMistralConfig(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["MistralForCausalLM"]]
     attention_dropout: float
@@ -42,7 +43,6 @@ class HFMistralConfig(HuggingFaceConfig):
     rope_theta: float
     sliding_window: int | None
     tie_word_embeddings: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     transformers_version: str
     use_cache: bool
     vocab_size: int
@@ -74,12 +74,13 @@ class HFMistralConfig(HuggingFaceConfig):
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
 
         linear_config = FullPrecisionLinearConfig(
@@ -106,7 +107,7 @@ class HFMistralConfig(HuggingFaceConfig):
             gate_clipping=None,
         )
 
-        decoder_layer_config = DecoderLayerConfig(
+        decoder_layer_config = TransformerLayerConfig(
             pre_attention_norm_config=rmsnorm_config,
             attention_config=attention_config,
             post_attention_norm_config=None,
@@ -116,14 +117,11 @@ class HFMistralConfig(HuggingFaceConfig):
         )
 
         head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_config=decoder_layer_config,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
@@ -135,4 +133,9 @@ class HFMistralConfig(HuggingFaceConfig):
             if self.sliding_window is not None
             else None,
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

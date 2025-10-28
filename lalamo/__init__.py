@@ -8,7 +8,7 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
-from lalamo.model_import import ModelSpec, import_model
+from lalamo.model_import import ModelSpec, import_language_model
 
 __version__ = "0.4.1"
 
@@ -22,5 +22,5 @@ __all__ = [
     "SystemMessage",
     "ToolSchema",
     "UserMessage",
-    "import_model",
+    "import_language_model",
 ]

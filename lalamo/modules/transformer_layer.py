@@ -15,23 +15,23 @@ from .attention import Attention, AttentionConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule
 from .kv_cache import KVCacheLayer, StaticKVCacheLayer
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import RMSNorm, RMSNormConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .utils import vmap_twice
 
 __all__ = [
-    "DecoderLayer",
-    "DecoderLayerActivationTrace",
-    "DecoderLayerConfig",
-    "DecoderLayerForwardPassConfig",
-    "DecoderLayerResult",
+    "TransformerLayer",
+    "TransformerLayerActivationTrace",
+    "TransformerLayerConfig",
+    "TransformerLayerForwardPassConfig",
+    "TransformerLayerResult",
 ]
 
 
-type DecoderLayerForwardPassConfig = MLPForwardPassConfig
+type TransformerLayerForwardPassConfig = MLPForwardPassConfig
 
 
-class DecoderLayerActivationTrace(eqx.Module):
+class TransformerLayerActivationTrace(eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
     positional_embeddings: PositionalEmbeddings
     kv_cache: KVCacheLayer | None
@@ -63,10 +63,10 @@ class DecoderLayerActivationTrace(eqx.Module):
         return result
 
 
-class DecoderLayerResult(eqx.Module):
+class TransformerLayerResult(eqx.Module):
     outputs: Float[Array, "suffix_tokens channels"]
     updated_kv_cache: KVCacheLayer | None
-    activation_trace: DecoderLayerActivationTrace | None
+    activation_trace: TransformerLayerActivationTrace | None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -80,13 +80,13 @@ class DecoderLayerResult(eqx.Module):
 
 
 @dataclass(frozen=True)
-class DecoderLayerConfig:
-    pre_attention_norm_config: RMSNormConfig
+class TransformerLayerConfig:
+    pre_attention_norm_config: NormalizationConfig
     attention_config: AttentionConfig
-    post_attention_norm_config: RMSNormConfig | None
-    pre_mlp_norm_config: RMSNormConfig
+    post_attention_norm_config: NormalizationConfig | None
+    pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
-    post_mlp_norm_config: RMSNormConfig | None
+    post_mlp_norm_config: NormalizationConfig | None
 
     def random_init(
         self,
@@ -97,17 +97,22 @@ class DecoderLayerConfig:
         head_dim: int,
         attention_scale: float | None,
         sliding_window_size: int | None,
+        is_causal: bool,
         *,
         key: PRNGKeyArray,
-    ) -> "DecoderLayer":
+        skip_pre_attention_norm:bool = False,
+    ) -> "TransformerLayer":
         attention_key, mlp_key = jax.random.split(key)
-        pre_attention_norm = self.pre_attention_norm_config.init(model_dim)
+        if not skip_pre_attention_norm:
+            pre_attention_norm = self.pre_attention_norm_config.init(model_dim)
+        else:
+            pre_attention_norm = None
         attention = self.attention_config.random_init(
             model_dim=model_dim,
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            is_causal=True,
+            is_causal=is_causal,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
             key=attention_key,
@@ -122,7 +127,7 @@ class DecoderLayerConfig:
             post_mlp_norm = self.post_mlp_norm_config.init(model_dim)
         else:
             post_mlp_norm = None
-        return DecoderLayer(
+        return TransformerLayer(
             config=self,
             pre_attention_norm=pre_attention_norm,
             attention=attention,
@@ -141,14 +146,22 @@ class DecoderLayerConfig:
         head_dim: int,
         attention_scale: float | None,
         sliding_window_size: int | None,
-    ) -> "DecoderLayer":
-        pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
+        is_causal:bool,
+
+        # TODO: this one is ugly, but need a mechanism to disable pre-attention normalization
+        # ONLY for the very first layer in the stack of Transformer layers of ModernBERT
+        skip_pre_attention_norm:bool = False,
+    ) -> "TransformerLayer":
+        if self.pre_attention_norm_config is not None and not skip_pre_attention_norm:
+            pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
+        else:
+            pre_attention_norm = None
         attention = self.attention_config.empty(
             model_dim=model_dim,
             num_heads=num_heads,
             num_groups=num_groups,
             head_dim=head_dim,
-            is_causal=True,
+            is_causal=is_causal,
             scale=attention_scale,
             sliding_window_size=sliding_window_size,
         )
@@ -162,7 +175,7 @@ class DecoderLayerConfig:
             post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
         else:
             post_mlp_norm = None
-        return DecoderLayer(
+        return TransformerLayer(
             config=self,
             pre_attention_norm=pre_attention_norm,
             attention=attention,
@@ -173,13 +186,13 @@ class DecoderLayerConfig:
         )
 
 
-class DecoderLayer(LalamoModule[DecoderLayerConfig]):
-    pre_attention_norm: RMSNorm
+class TransformerLayer(LalamoModule[TransformerLayerConfig]):
+    pre_attention_norm: Normalization | None
     attention: Attention
-    post_attention_norm: RMSNorm | None
-    pre_mlp_norm: RMSNorm
+    post_attention_norm: Normalization | None
+    pre_mlp_norm: Normalization
     mlp: MLPBase
-    post_mlp_norm: RMSNorm | None
+    post_mlp_norm: Normalization | None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -190,7 +203,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         return self.attention.attention_type
 
     def __post_init__(self) -> None:
-        model_dim = self.pre_attention_norm.input_dim
+        model_dim = self.pre_attention_norm.input_dim if self.pre_attention_norm is not None else self.attention.model_dim
         if self.attention.model_dim != model_dim:
             raise ValueError(
                 f"Attention model dim {self.attention.model_dim} does not match"
@@ -222,14 +235,18 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: DecoderLayerForwardPassConfig | None = None,
-    ) -> DecoderLayerResult:
+        forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+    ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        normalized_attention_inputs = vmap_twice(self.pre_attention_norm)(inputs)
+        if self.pre_attention_norm is not None:
+            normalized_attention_inputs = vmap_twice(self.pre_attention_norm)(inputs)
+        else:
+            normalized_attention_inputs = inputs
+
         batched_attention_fn = vmap(partial(self.attention, return_updated_kv_cache=return_updated_kv_cache))
         attention_outputs, updated_kv_cache = batched_attention_fn(
             normalized_attention_inputs,
@@ -258,7 +275,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             outputs = mlp_inputs + mlp_outputs
 
         if return_activation_trace:
-            activation_trace = DecoderLayerActivationTrace(
+            activation_trace = TransformerLayerActivationTrace(
                 inputs=inputs,
                 positional_embeddings=positional_embeddings,
                 kv_cache=kv_cache,
@@ -273,7 +290,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
         else:
             activation_trace = None
 
-        return DecoderLayerResult(
+        return TransformerLayerResult(
             outputs=outputs,
             updated_kv_cache=updated_kv_cache,
             activation_trace=activation_trace,
@@ -287,11 +304,12 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
 
     def export_weights(self) -> ParameterTree:
         result = dict(
-            pre_attention_norm=self.pre_attention_norm.export_weights(),
             attention=self.attention.export_weights(),
             pre_mlp_norm=self.pre_mlp_norm.export_weights(),
             mlp=self.mlp.export_weights(),
         )
+        if self.pre_attention_norm is not None:
+            result["pre_attention_norm"]=self.pre_attention_norm.export_weights()
         if self.post_attention_norm is not None:
             result["post_attention_norm"] = self.post_attention_norm.export_weights()
         if self.post_mlp_norm is not None:
@@ -320,9 +338,14 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"])
         else:
             post_mlp_norm = None
+        if self.pre_attention_norm is not None:
+            assert isinstance(weights["pre_attention_norm"], Mapping)
+            pre_attention_norm = self.pre_attention_norm.import_weights(weights["pre_attention_norm"])
+        else:
+            pre_attention_norm = None
         return replace(
             self,
-            pre_attention_norm=self.pre_attention_norm.import_weights(weights["pre_attention_norm"]),
+            pre_attention_norm=pre_attention_norm,
             attention=self.attention.import_weights(weights["attention"]),
             post_attention_norm=post_attention_norm,
             pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"]),
