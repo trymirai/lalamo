@@ -22,7 +22,7 @@ HUGGINGFACE_MODELS = [
         name="ModernBERT-base",
         size="0.15B",
         quantization=None,
-        repo="trymirai/flo-bert-classifier",
+        repo="trymirai/chat-moderation-router",
         config_type=ModernBERTConfig,
         use_cases=tuple(),
     ),

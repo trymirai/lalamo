@@ -1,13 +1,17 @@
 from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
+from .bert_heads import (
+    ModernBertPredictionHead,
+    ModernBertPredictionHeadConfig,
+)
+from .classifier import Classifier, ClassifierConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
-from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
-from .transformer_layer import (
-    TransformerLayer,
-    TransformerLayerActivationTrace,
-    TransformerLayerConfig,
-    TransformerLayerForwardPassConfig,
-    TransformerLayerResult,
+from .decoder import (
+    Decoder,
+    DecoderActivationTrace,
+    DecoderConfig,
+    DecoderForwardPassConfig,
+    DecoderResult,
 )
 from .embedding import (
     EmbeddingBase,
@@ -51,12 +55,14 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
-from .bert_heads import (
-    ModernBertPredictionHead,
-    ModernBertPredictionHeadConfig,
+from .transformer import Transformer, TransformerConfig
+from .transformer_layer import (
+    TransformerLayer,
+    TransformerLayerActivationTrace,
+    TransformerLayerConfig,
+    TransformerLayerForwardPassConfig,
+    TransformerLayerResult,
 )
-from .classifier import Classifier, ClassifierConfig
-from .transformer import TransformerConfig, Transformer
 
 __all__ = [
     "GELU",
@@ -64,15 +70,12 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionType",
+    "Classifier",
+    "ClassifierConfig",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
     "DecoderForwardPassConfig",
-    "TransformerLayer",
-    "TransformerLayerActivationTrace",
-    "TransformerLayerConfig",
-    "TransformerLayerForwardPassConfig",
-    "TransformerLayerResult",
     "DecoderResult",
     "DenseMLP",
     "DenseMLPConfig",
@@ -96,13 +99,15 @@ __all__ = [
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "ModernBertPredictionHead",
+    "ModernBertPredictionHeadConfig",
+    "Normalization",
+    "NormalizationConfig",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
-    "Normalization",
-    "NormalizationConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
@@ -111,16 +116,17 @@ __all__ = [
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
+    "Transformer",
+    "TransformerConfig",
+    "TransformerLayer",
+    "TransformerLayerActivationTrace",
+    "TransformerLayerConfig",
+    "TransformerLayerForwardPassConfig",
+    "TransformerLayerResult",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
     "YARNRoPEConfig",
     "config_converter",
-    "ClassifierConfig",
-    "Classifier",
-    "ModernBertPredictionHead",
-    "ModernBertPredictionHeadConfig",
-    "TransformerConfig",
-    "Transformer",
 ]
