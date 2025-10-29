@@ -392,7 +392,8 @@ def load_huggingface_decoder(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.transformer.layers)
+        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i)
+        for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "norm")
     return load_parameters(
@@ -400,6 +401,7 @@ def load_huggingface_decoder(
         module,
         (embedding, decoder_layers, output_norm),
     )
+
 
 def load_huggingface_classifier(
     module: Classifier,
@@ -476,11 +478,11 @@ def load_huggingface_classifier(
         layer_idx: int,
     ) -> TransformerLayer:
         if module.pre_attention_norm is not None and layer_idx > 0:
-                pre_attention_norm= load_rmsnorm(
-                    module.pre_attention_norm,
-                    weights_dict,
-                    path / "attn_norm",
-                )
+            pre_attention_norm = load_rmsnorm(
+                module.pre_attention_norm,
+                weights_dict,
+                path / "attn_norm",
+            )
         else:
             # TODO: in HF ModernBert we just load 'Identity' op for firts layer pre-attn norm
             pre_attention_norm = None
@@ -517,7 +519,14 @@ def load_huggingface_classifier(
         else:
             post_mlp_norm = None
         return load_parameters(
-            lambda m: (m.pre_attention_norm, m.attention, m.post_attention_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
+            lambda m: (
+                m.pre_attention_norm,
+                m.attention,
+                m.post_attention_norm,
+                m.pre_mlp_norm,
+                m.mlp,
+                m.post_mlp_norm,
+            ),
             module,
             (pre_attention_norm, attention, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
         )
@@ -530,15 +539,22 @@ def load_huggingface_classifier(
     embedding = load_tied_embedding_local(module.embedding, weights_dict, decoder_path)
 
     decoder_layers = tuple(
-        load_decoder_layer_local(layer, weights_dict, decoder_path / "layers" / i, i) for i, layer in enumerate(module.transformer.layers)
+        load_decoder_layer_local(layer, weights_dict, decoder_path / "layers" / i, i)
+        for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
     head_dense = load_linear(module.prediction_head.dense, weights_dict, head_path / "dense")
-    head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path/"norm")
+    head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path / "norm")
     classifier = load_linear(module.final_linear, weights_dict, classifier_path)
     return load_parameters(
-        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm, m.prediction_head.dense, m.prediction_head.norm, m.final_linear),
+        lambda m: (
+            m.embedding,
+            m.transformer.layers,
+            m.transformer.output_norm,
+            m.prediction_head.dense,
+            m.prediction_head.norm,
+            m.final_linear,
+        ),
         module,
         (embedding, decoder_layers, output_norm, head_dense, head_norm, classifier),
     )
-

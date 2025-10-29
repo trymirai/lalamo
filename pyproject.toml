@@ -21,6 +21,7 @@ dependencies = [
     "polars>=1.33.1",
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
+    "ruff==0.14.0",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]

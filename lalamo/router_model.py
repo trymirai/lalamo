@@ -16,7 +16,6 @@ class RouterModelConfig:
 
 
 class RouterModel(LalamoModule[RouterModelConfig]):
-
     classifier: Classifier
 
     @property

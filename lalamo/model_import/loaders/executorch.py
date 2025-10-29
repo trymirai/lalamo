@@ -6,7 +6,15 @@ from einops import rearrange
 from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterPath
-from lalamo.modules import Attention, Decoder, TransformerLayer, DenseMLP, QLoRALinear, QuantizedTiedEmbedding, Normalization
+from lalamo.modules import (
+    Attention,
+    Decoder,
+    DenseMLP,
+    Normalization,
+    QLoRALinear,
+    QuantizedTiedEmbedding,
+    TransformerLayer,
+)
 
 from .common import load_parameters
 

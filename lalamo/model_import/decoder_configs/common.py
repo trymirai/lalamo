@@ -36,9 +36,9 @@ class ForeignConfig(RegistryABC):
             config = json.load(f)
         return cls._converter.structure(config, cls)
 
-@dataclass(frozen=True)
-class ForeignLMConfig(ForeignConfig):
 
+@dataclass(frozen=True)
+class ForeignLMConfig(ForeignConfig, RegistryABC):
     def to_decoder_config(
         self,
         context_length: int | None,
@@ -68,8 +68,7 @@ class ForeignLMConfig(ForeignConfig):
 
 
 @dataclass(frozen=True)
-class ForeignClassifierConfig(ForeignConfig):
-
+class ForeignClassifierConfig(ForeignConfig, RegistryABC):
     def to_classifier_config(
         self,
         context_length: int | None,

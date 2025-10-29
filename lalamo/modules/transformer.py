@@ -44,14 +44,21 @@ class TransformerResult(eqx.Module):
         )
         if self.updated_kv_cache is not None:
             result["updated_kv_cache"] = [
-                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.updated_kv_cache
+                kv_cache_layer_slice.export()
+                for kv_cache_layer_slice in self.updated_kv_cache
             ]
         if self.layer_results is not None:
-            result["layer_results"] = [layer_result.export() for layer_result in self.layer_results]
+            result["layer_results"] = [
+                layer_result.export() for layer_result in self.layer_results
+            ]
         if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
+            result["global_positional_embeddings"] = (
+                self.global_positional_embeddings.export()
+            )
         if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
+            result["local_positional_embeddings"] = (
+                self.local_positional_embeddings.export()
+            )
         return result
 
 
@@ -74,7 +81,9 @@ class TransformerConfig:
 
     def __post_init__(self) -> None:
         if self.local_rope_config is not None and self.sliding_window_sizes is None:
-            raise ValueError("Sliding window sizes must be provided when using local RoPE")
+            raise ValueError(
+                "Sliding window sizes must be provided when using local RoPE"
+            )
         if self.sliding_window_sizes is None:
             return
         if len(self.sliding_window_sizes) != self.num_layers:
@@ -88,7 +97,7 @@ class TransformerConfig:
         is_causal: bool,
         *,
         key: PRNGKeyArray,
-        skip_pre_attention_norm:bool = False,
+        skip_pre_attention_norm: bool = False,
     ) -> "Transformer":
         global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
@@ -98,7 +107,9 @@ class TransformerConfig:
         if self.local_rope_config:
             assert self.sliding_window_sizes is not None
             max_sliding_window_size = max(
-                window_size for window_size in self.sliding_window_sizes if window_size is not None
+                window_size
+                for window_size in self.sliding_window_sizes
+                if window_size is not None
             )
             local_rope = self.local_rope_config.init(
                 head_dim=self.head_dim,
@@ -113,7 +124,7 @@ class TransformerConfig:
             sliding_window_sizes = self.sliding_window_sizes
 
         layers_keys = jax.random.split(key, self.num_layers)
-        layer_idxs = list(range(self.num_layers))
+        layer_indices = range(self.num_layers)
         layers = tuple(
             self.layer_config.random_init(
                 model_dim=self.model_dim,
@@ -125,9 +136,11 @@ class TransformerConfig:
                 sliding_window_size=sliding_window_size,
                 is_causal=is_causal,
                 key=layer_key,
-                skip_pre_attention_norm = (skip_pre_attention_norm and layer_idx == 0),
+                skip_pre_attention_norm=(skip_pre_attention_norm and layer_idx == 0),
             )
-            for sliding_window_size, layer_key, layer_idx in zip(sliding_window_sizes, layers_keys, layer_idxs, strict=True)
+            for sliding_window_size, layer_key, layer_idx in zip(
+                sliding_window_sizes, layers_keys, layer_indices, strict=True
+            )
         )
         output_norm = self.output_norm_config.init(self.model_dim)
 
@@ -139,7 +152,9 @@ class TransformerConfig:
             output_norm=output_norm,
         )
 
-    def empty(self, is_causal:bool, skip_pre_attention_norm:bool = False) -> "Transformer":
+    def empty(
+        self, is_causal: bool, skip_pre_attention_norm: bool = False
+    ) -> "Transformer":
         global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
             num_timesteps=self.context_length,
@@ -158,7 +173,7 @@ class TransformerConfig:
         else:
             sliding_window_sizes = self.sliding_window_sizes
 
-        layer_idxs = list(range(self.num_layers))
+        layer_indices = range(self.num_layers)
 
         layers = tuple(
             self.layer_config.empty(
@@ -172,7 +187,9 @@ class TransformerConfig:
                 is_causal=is_causal,
                 skip_pre_attention_norm=(skip_pre_attention_norm and layer_idx == 0),
             )
-            for sliding_window_size, layer_idx in zip(sliding_window_sizes, layer_idxs, strict=True)
+            for sliding_window_size, layer_idx in zip(
+                sliding_window_sizes, layer_indices, strict=True
+            )
         )
         output_norm = self.output_norm_config.empty(self.model_dim)
 
@@ -253,14 +270,22 @@ class Transformer(LalamoModule[TransformerConfig]):
 
         return TransformerResult(
             outputs=normalized_outputs,
-            updated_kv_cache=KVCache(updated_kv_cache_layers) if return_updated_kv_cache else None,
+            updated_kv_cache=(
+                KVCache(updated_kv_cache_layers) if return_updated_kv_cache else None
+            ),
             layer_results=tuple(layer_results) if return_layer_results else None,
-            global_positional_embeddings=global_positional_embeddings if return_positional_embeddings else None,
-            local_positional_embeddings=local_positional_embeddings if return_positional_embeddings else None,
+            global_positional_embeddings=(
+                global_positional_embeddings if return_positional_embeddings else None
+            ),
+            local_positional_embeddings=(
+                local_positional_embeddings if return_positional_embeddings else None
+            ),
         )
 
     def init_static_kv_cache(self, batch_size: int, capacity: int) -> KVCache:
-        return KVCache(layer.init_static_kv_cache(batch_size, capacity) for layer in self.layers)
+        return KVCache(
+            layer.init_static_kv_cache(batch_size, capacity) for layer in self.layers
+        )
 
     def export_weights(self) -> ParameterTree:
         result = dict(

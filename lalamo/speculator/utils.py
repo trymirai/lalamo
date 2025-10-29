@@ -19,7 +19,7 @@ def train_speculator(
 ) -> None:
     trained_tokens = 0
 
-    for trained_sequences,trace in enumerate(traces, start=1):
+    for trained_sequences, trace in enumerate(traces, start=1):
         if tokens_to_train is not None and trained_tokens + len(trace.completion_token_ids) > tokens_to_train:
             end = tokens_to_train - trained_tokens
         else:
@@ -39,7 +39,9 @@ def train_speculator(
 
 
 def test_speculator(
-    speculator: Speculator, sequence: Iterable[int] = [], max_completion_length: int = 32,
+    speculator: Speculator,
+    sequence: Iterable[int] = [],
+    max_completion_length: int = 32,
 ) -> list[int]:
     sequence = list(sequence)
     for _ in range(max_completion_length):

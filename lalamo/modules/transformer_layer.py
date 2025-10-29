@@ -100,7 +100,7 @@ class TransformerLayerConfig:
         is_causal: bool,
         *,
         key: PRNGKeyArray,
-        skip_pre_attention_norm:bool = False,
+        skip_pre_attention_norm: bool = False,
     ) -> "TransformerLayer":
         attention_key, mlp_key = jax.random.split(key)
         if not skip_pre_attention_norm:
@@ -146,11 +146,10 @@ class TransformerLayerConfig:
         head_dim: int,
         attention_scale: float | None,
         sliding_window_size: int | None,
-        is_causal:bool,
-
+        is_causal: bool,
         # TODO: this one is ugly, but need a mechanism to disable pre-attention normalization
         # ONLY for the very first layer in the stack of Transformer layers of ModernBERT
-        skip_pre_attention_norm:bool = False,
+        skip_pre_attention_norm: bool = False,
     ) -> "TransformerLayer":
         if self.pre_attention_norm_config is not None and not skip_pre_attention_norm:
             pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
@@ -203,7 +202,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return self.attention.attention_type
 
     def __post_init__(self) -> None:
-        model_dim = self.pre_attention_norm.input_dim if self.pre_attention_norm is not None else self.attention.model_dim
+        model_dim = (
+            self.pre_attention_norm.input_dim if self.pre_attention_norm is not None else self.attention.model_dim
+        )
         if self.attention.model_dim != model_dim:
             raise ValueError(
                 f"Attention model dim {self.attention.model_dim} does not match"
@@ -309,7 +310,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             mlp=self.mlp.export_weights(),
         )
         if self.pre_attention_norm is not None:
-            result["pre_attention_norm"]=self.pre_attention_norm.export_weights()
+            result["pre_attention_norm"] = self.pre_attention_norm.export_weights()
         if self.post_attention_norm is not None:
             result["post_attention_norm"] = self.post_attention_norm.export_weights()
         if self.post_mlp_norm is not None:

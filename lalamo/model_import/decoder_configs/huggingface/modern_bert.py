@@ -56,7 +56,7 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
     initializer_cutoff_factor: float
     initializer_range: float
     intermediate_size: int
-    layer_norm_eps:float
+    layer_norm_eps: float
     local_attention: int
     local_rope_theta: float
     max_position_embeddings: int
@@ -81,16 +81,13 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
 
     def to_classifier_config(
-        self,
-        context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike) -> ClassifierConfig:
-
+        self, context_length: int | None, activation_precision: DTypeLike, accumulation_precision: DTypeLike
+    ) -> ClassifierConfig:
         # TODO: could not find default value for this one in Mirai's transformer
         embedding_config = TiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                precision=activation_precision,
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=activation_precision,
         )
 
         # TODO: looks like using 'default' type of Rope scaling which means unscaled - UnscaledRoPEConfig
@@ -149,11 +146,9 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
-
             # TODO: assigned this one just to make weights loading work, need to double
             # check if its actually the right way to go
             num_groups=self.num_attention_heads,
-            
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
@@ -175,7 +170,7 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
         head_activation = activation_from_str(self.classifier_activation)
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
-            activation = head_activation(),
+            activation=head_activation(),
             normalization_config=prediction_head_norm_config,
             use_dense_bias=self.classifier_bias,
             use_norm_bias=self.norm_bias,
@@ -186,20 +181,20 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
         )
 
         return ClassifierConfig(
-            embedding_config = embedding_config,
-            transformer_config = transformer_config,
-            prediction_head_config = prediction_head_config,
-            final_linear_config = final_linear_config,
-            vocab_size = self.vocab_size,
-            model_dim = self.hidden_size,
-            hidden_dim = self.hidden_size,
-            num_heads = self.num_attention_heads,
-            num_groups =  self.num_attention_heads,#int,  NOTE: this one seem to be not used in ModertBert attention
-            head_dim = self.hidden_size // self.num_attention_heads,
-            attention_scale = None,
-            num_layers = self.num_hidden_layers,
-            sliding_window_sizes = None, # TODO: figure out this one from self.local_attention
-            context_length = self.max_position_embeddings,
-            num_labels = len(self.label2id),
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            prediction_head_config=prediction_head_config,
+            final_linear_config=final_linear_config,
+            vocab_size=self.vocab_size,
+            model_dim=self.hidden_size,
+            hidden_dim=self.hidden_size,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_attention_heads,  # int,  NOTE: this one seem to be not used in ModertBert attention
+            head_dim=self.hidden_size // self.num_attention_heads,
+            attention_scale=None,
+            num_layers=self.num_hidden_layers,
+            sliding_window_sizes=None,  # TODO: figure out this one from self.local_attention
+            context_length=self.max_position_embeddings,
+            num_labels=len(self.label2id),
             classifier_pooling=PoolingType(self.classifier_pooling),
         )

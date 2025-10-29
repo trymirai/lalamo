@@ -1,22 +1,22 @@
 """
 Tests to verify that NewDecoder (using Transformer) produces identical outputs to original Decoder.
 """
+
 import jax.numpy as jnp
 from jax import random
 
 from lalamo.modules.activations import SiLU
 from lalamo.modules.attention import AttentionConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.modules.decoder import Decoder, DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.decoder import Decoder, DecoderConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import UnscaledRoPEConfig
-from lalamo.modules.transformer import TransformerConfig
-
 from lalamo.modules.old_decoder import Decoder as OldDecoder
 from lalamo.modules.old_decoder import DecoderConfig as OldDecoderConfig
+from lalamo.modules.rope import UnscaledRoPEConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 
 def create_test_decoder_config() -> DecoderConfig:
@@ -48,7 +48,7 @@ def create_test_decoder_config() -> DecoderConfig:
         epsilon=1e-5,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False
+        subtract_mean=False,
     )
 
     linear_config = FullPrecisionLinearConfig(
@@ -81,7 +81,7 @@ def create_test_decoder_config() -> DecoderConfig:
         post_attention_norm_config=None,
         pre_mlp_norm_config=norm_config,
         mlp_config=mlp_config,
-        post_mlp_norm_config=None
+        post_mlp_norm_config=None,
     )
     transformer_config = TransformerConfig(
         global_rope_config=rope_config,
@@ -144,7 +144,9 @@ def test_decoder_shapes_match():
     # Create test input
     batch_size = 2
     seq_length = 16
-    token_ids = random.randint(input_key, (batch_size, seq_length), 0, decoder_config.vocab_size)
+    token_ids = random.randint(
+        input_key, (batch_size, seq_length), 0, decoder_config.vocab_size
+    )
     token_positions = jnp.arange(seq_length)[None, :].repeat(batch_size, axis=0)
 
     # Run inference
@@ -153,7 +155,11 @@ def test_decoder_shapes_match():
 
     # Check shapes match
     assert decoder_result.logits.shape == old_decoder_result.logits.shape
-    assert decoder_result.logits.shape == (batch_size, seq_length, decoder_config.vocab_size)
+    assert decoder_result.logits.shape == (
+        batch_size,
+        seq_length,
+        decoder_config.vocab_size,
+    )
 
 
 def test_decoder_outputs_match_with_same_weights():
@@ -189,7 +195,9 @@ def test_decoder_outputs_match_with_same_weights():
     # Create test input
     batch_size = 2
     seq_length = 16
-    token_ids = random.randint(input_key, (batch_size, seq_length), 0, decoder_config.vocab_size)
+    token_ids = random.randint(
+        input_key, (batch_size, seq_length), 0, decoder_config.vocab_size
+    )
     token_positions = jnp.arange(seq_length)[None, :].repeat(batch_size, axis=0)
 
     # Run inference
@@ -197,7 +205,9 @@ def test_decoder_outputs_match_with_same_weights():
     old_decoder_result = old_decoder(token_ids, token_positions)
 
     # Outputs should match exactly
-    assert jnp.allclose(decoder_result.logits, old_decoder_result.logits, rtol=1e-5, atol=1e-5)
+    assert jnp.allclose(
+        decoder_result.logits, old_decoder_result.logits, rtol=1e-5, atol=1e-5
+    )
 
 
 def test_decoder_with_kv_cache():
@@ -228,7 +238,9 @@ def test_decoder_with_kv_cache():
     # Create test input
     batch_size = 1
     seq_length = 8
-    token_ids = random.randint(input_key, (batch_size, seq_length), 0, decoder_config.vocab_size)
+    token_ids = random.randint(
+        input_key, (batch_size, seq_length), 0, decoder_config.vocab_size
+    )
     token_positions = jnp.arange(seq_length)[None, :].repeat(batch_size, axis=0)
 
     # Initialize KV cache
@@ -251,7 +263,9 @@ def test_decoder_with_kv_cache():
     )
 
     # Check logits match
-    assert jnp.allclose(decoder_result.logits, old_decoder_result.logits, rtol=1e-5, atol=1e-5)
+    assert jnp.allclose(
+        decoder_result.logits, old_decoder_result.logits, rtol=1e-5, atol=1e-5
+    )
 
     # Check updated KV caches exist
     assert decoder_result.updated_kv_cache is not None
@@ -286,7 +300,9 @@ def test_decoder_activation_trace():
     # Create test input
     batch_size = 1
     seq_length = 4
-    token_ids = random.randint(input_key, (batch_size, seq_length), 0, decoder_config.vocab_size)
+    token_ids = random.randint(
+        input_key, (batch_size, seq_length), 0, decoder_config.vocab_size
+    )
     token_positions = jnp.arange(seq_length)[None, :].repeat(batch_size, axis=0)
 
     # Run with activation trace
@@ -306,7 +322,9 @@ def test_decoder_activation_trace():
     assert old_decoder_result.activation_trace is not None
 
     # Check layer results match in count
-    assert len(decoder_result.activation_trace.layer_results) == len(old_decoder_result.activation_trace.layer_results)
+    assert len(decoder_result.activation_trace.layer_results) == len(
+        old_decoder_result.activation_trace.layer_results
+    )
 
     # Check output norms match
     assert jnp.allclose(

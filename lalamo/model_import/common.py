@@ -3,7 +3,7 @@ from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -60,9 +60,9 @@ type StatusEvent = (
 )
 
 
-class ModelType(Enum):
-    LANGUAGE_MODEL=1
-    ROUTER_MODEL=2
+class ModelType(StrEnum):
+    LANGUAGE_MODEL = "language_model"
+    ROUTER_MODEL = "router_model"
 
 
 @dataclass(frozen=True)
@@ -248,8 +248,9 @@ def import_language_model(
     )
     return ImportResults(language_model, metadata)
 
+
 def import_router_model(
-    model_spec: ModelSpec| str,
+    model_spec: ModelSpec | str,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
@@ -270,27 +271,27 @@ def import_router_model(
 
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
-            weights_shards = []
-            for weights_path in weights_paths:
-                weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
-                weights_shards.append(weights_shard)
-            weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+        weights_shards = []
+        for weights_path in weights_paths:
+            weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+            weights_shards.append(weights_shard)
+        weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
 
-            if progress_callback is not None:
-                progress_callback(InitializingModelEvent())
+        if progress_callback is not None:
+            progress_callback(InitializingModelEvent())
 
-            assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
-            classifier = foreign_classifier_config.load_classifier(
-                context_length, precision,
-                accumulation_precision,
-                weights_dict,
-            )
+        assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
+        classifier = foreign_classifier_config.load_classifier(
+            context_length,
+            precision,
+            accumulation_precision,
+            weights_dict,
+        )
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    router_model_config = RouterModelConfig(
-    )
+    router_model_config = RouterModelConfig()
     router_model = RouterModel(router_model_config, classifier=classifier)
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,

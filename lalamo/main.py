@@ -511,7 +511,6 @@ def train(
         ) as progress:
             inference_task = progress.add_task("🔮 [cyan]Training speculator...[/cyan]", total=subsample_size)
 
-
             def progress_callback(event: SpeculatorTrainingEvent) -> None:
                 progress.update(inference_task, completed=event.trained_tokens)
 

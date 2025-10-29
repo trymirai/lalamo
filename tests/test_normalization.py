@@ -1,5 +1,6 @@
 import os
 import sys
+
 sys.path.append(os.path.abspath(os.getcwd() + os.path.sep + ".."))
 
 import jax.numpy as jnp
@@ -96,7 +97,6 @@ def test_subtract_mean_changes_output():
     assert not jnp.allclose(output_without, output_with)
 
 
-
 def test_rmsnorm_with_custom_scales():
     """Test RMSNorm with custom scale values."""
     rng_key = random.PRNGKey(42)
@@ -116,6 +116,7 @@ def test_rmsnorm_with_custom_scales():
     # Modify scales to be non-uniform
     custom_scales = jnp.linspace(0.5, 1.5, input_dim)
     from dataclasses import replace
+
     norm = replace(norm, scales=custom_scales)
 
     output = norm(test_input)
@@ -147,7 +148,6 @@ def test_rmsnorm_zero_input():
 
         # Output should be zero (or very close to it)
         assert jnp.allclose(output, 0.0, atol=1e-6)
-
 
 
 def test_rmsnorm_vs_torch_layernorm():
@@ -193,4 +193,3 @@ def test_rmsnorm_vs_torch_layernorm():
 
     # They should be very close
     assert np.allclose(rmsnorm_output_np, layernorm_output_np, rtol=1e-5, atol=1e-5)
-

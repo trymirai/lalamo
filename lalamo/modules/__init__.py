@@ -55,14 +55,8 @@ from .bert_heads import (
     ModernBertPredictionHead,
     ModernBertPredictionHeadConfig,
 )
-from .classifier import (
-    Classifier,
-    ClassifierConfig
-)
-from .transformer import (
-    TransformerConfig,
-    Transformer
-)
+from .classifier import Classifier, ClassifierConfig
+from .transformer import TransformerConfig, Transformer
 
 __all__ = [
     "GELU",
@@ -128,5 +122,5 @@ __all__ = [
     "ModernBertPredictionHead",
     "ModernBertPredictionHeadConfig",
     "TransformerConfig",
-    "Transformer"
+    "Transformer",
 ]

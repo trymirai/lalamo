@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import torch
 from jaxtyping import Array
 from torch import Tensor, nn
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
@@ -15,7 +15,7 @@ from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.processing_utils import Unpack
 
-from lalamo.modules import DecoderActivationTrace, TransformerLayerResult, PositionalEmbeddings
+from lalamo.modules import DecoderActivationTrace, PositionalEmbeddings, TransformerLayerResult
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
@@ -487,5 +487,27 @@ def load_hf_tracer(model_repo: str, dtype: torch.dtype) -> HFDecoderTracer:
         wrong_scale = hf_model.model.embed_tokens.embed_scale
         correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
         hf_model.model.embed_tokens.embed_scale = correct_scale
+
+    return HFDecoderTracer(hf_model, device)
+
+
+def load_hf_tracer_classifier(model_repo: str, dtype: torch.dtype) -> HFDecoderTracer:
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    hf_model = AutoModelForSequenceClassification.from_pretrained(
+        model_repo,
+        dtype=dtype,
+        device_map=device,
+    )
+
+    # Correct the bug in the HF Gemma implementation
+    # See https://github.com/huggingface/transformers/issues/38702
+    # if hasattr(hf_model.model.embed_tokens, "embed_scale"):
+    #     wrong_scale = hf_model.model.embed_tokens.embed_scale
+    #     correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
+    #     hf_model.model.embed_tokens.embed_scale = correct_scale
 
     return HFDecoderTracer(hf_model, device)
