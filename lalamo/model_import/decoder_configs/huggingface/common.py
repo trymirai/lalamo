@@ -89,6 +89,9 @@ class HuggingFaceConfig(ForeignConfig):
 
     @property
     def eos_token_ids(self) -> list[int]:
+        if not hasattr(self, "eos_token_id"):
+            raise RuntimeError("model doesn't havve eos_token_id, override eos_token_ids in model config")
+
         return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
 
     @property
