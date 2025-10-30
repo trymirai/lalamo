@@ -10,6 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
+from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
@@ -314,8 +315,15 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
 
     @property
     def int_weights(self) -> Int[Array, "vocabulary channels"]:
-        result = quantize_weights(self.weights, self.config.embedding_quantization_mode)
-        return result.astype(self.config.embedding_quantization_mode.dtype)
+        quantized = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+        casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
+
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+            packed = jax_uint4_to_packed_uint8(casted)
+        else:
+            packed = casted
+
+        return packed
 
     def _prepare_weights(self) -> Float[Array, "vocabulary channels"]:
         quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
@@ -346,9 +354,14 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["weights"], Array)
+        stored_weights = weights["weights"]
+
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+            stored_weights = jax_uint8_to_unpacked_uint4(stored_weights)
+
         return replace(
             self,
-            weights=weights["weights"].astype(self.weights.dtype),
+            weights=stored_weights.astype(self.weights.dtype),
             scales=weights["scales"],
         )
 
