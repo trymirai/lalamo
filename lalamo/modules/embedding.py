@@ -6,6 +6,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array
@@ -21,6 +22,8 @@ from .utils import apply_soft_capping
 __all__ = [
     "EmbeddingBase",
     "EmbeddingConfig",
+    "MLXQuantizedTiedEmbedding",
+    "MLXQuantizedTiedEmbeddingConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
     "TiedEmbedding",
@@ -366,7 +369,130 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
         )
 
 
-EmbeddingConfig = TiedEmbeddingConfig | UntiedEmbeddingConfig | QuantizedTiedEmbeddingConfig
+@dataclass(frozen=True)
+class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
+    group_size: int
+    embedding_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
+    activation_precision: DTypeLike
+
+    def random_init(
+        self,
+        vocab_size: int,
+        model_dim: int,
+        *,
+        key: PRNGKeyArray,
+    ) -> "QuantizedTiedEmbedding":
+        raise NotImplementedError
+
+    def empty(
+        self,
+        vocab_size: int,
+        model_dim: int,
+    ) -> "MLXQuantizedTiedEmbedding":
+        assert model_dim % self.group_size == 0
+        model_groups = model_dim // self.group_size
+        weights = dummy_array((vocab_size, model_dim), dtype=self.activation_precision)
+        scales = dummy_array((vocab_size, model_groups), dtype=self.activation_precision)
+        biases = dummy_array((vocab_size, model_groups), dtype=self.activation_precision)
+        return MLXQuantizedTiedEmbedding(config=self, weights=weights, scales=scales, biases=biases)
+
+
+class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
+    weights: Float[Array, "vocabulary channels"]
+    scales: Float[Array, "vocabulary groups"]
+    biases: Float[Array, "vocabulary groups"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.activation_precision
+
+    @property
+    def model_dim(self) -> int:
+        _, model_dim = self.weights.shape
+        return model_dim
+
+    @property
+    def vocab_size(self) -> int:
+        vocab_size, _ = self.weights.shape
+        return vocab_size
+
+    @property
+    def int_weights(self) -> Int[Array, "vocabulary channels"]:
+        quantized = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+        casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
+
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+            packed = jax_uint4_to_packed_uint8(casted)
+        else:
+            packed = casted
+
+        return packed
+
+    def _prepare_weights(self) -> Float[Array, "vocabulary channels"]:
+        quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
+        grouped_weights = rearrange(
+            quantized_weights,
+            "vocab (groups elements) -> vocab groups elements",
+            elements=self.config.group_size,
+        )
+
+        scales = rearrange(self.scales, "vocab groups -> vocab groups 1")
+
+        biases = rearrange(self.biases, "vocab groups -> vocab groups 1")
+
+        scaled_grouped_weights = grouped_weights * scales + biases
+
+        result = rearrange(
+            scaled_grouped_weights,
+            "vocab groups elements -> vocab (groups elements)",
+        )
+        return result
+
+    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
+        return self._prepare_weights()
+
+    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
+        return self._prepare_weights()
+
+    @eqx.filter_jit
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
+        if self.config.activation_quantization_mode is not None:
+            x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
+        return super().readout(x)
+
+    def export_weights(self) -> ParameterTree:
+        return {
+            "weights": self.int_weights,
+            "scales": self.scales,
+            "biases": self.biases,
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["weights"], Array)
+        assert isinstance(weights["scales"], Array)
+        assert isinstance(weights["biases"], Array)
+
+        unpacked_weights = weights["weights"]
+
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+            unpacked_weights = jax_uint8_to_unpacked_uint4(weights["weights"])
+
+        return replace(
+            self,
+            weights=unpacked_weights.astype(self.weights.dtype),
+            scales=weights["scales"],
+            biases=weights["biases"],
+        )
+
+
+EmbeddingConfig = (
+    TiedEmbeddingConfig | UntiedEmbeddingConfig | QuantizedTiedEmbeddingConfig | MLXQuantizedTiedEmbeddingConfig
+)
 
 
 register_config_union(EmbeddingConfig)
