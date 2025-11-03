@@ -137,3 +137,21 @@ def jax_uint4_to_packed_uint8(array: Array) -> Array:
     packed = (high_nibbles << 4) | low_nibbles
 
     return packed.astype(jnp.uint8)
+
+def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
+    if array.dtype != jnp.uint8:
+        raise ValueError(f"Input array must have dtype jnp.uint8, but got {array.dtype}")
+
+    if not array.shape:
+        raise ValueError("Input array cannot be a scalar and must have at least one dimension.")
+
+    low_nibbles = array & 0x0F
+    high_nibbles = (array >> 4) & 0xF
+
+    unpacked = einops.rearrange(
+        jnp.stack([low_nibbles, high_nibbles]),
+        "two ... dim_half -> ... (dim_half two)",
+        two=2,
+    )
+
+    return unpacked.astype(jnp.uint4)

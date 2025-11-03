@@ -27,7 +27,6 @@ from rich.progress import (
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
-    track,
 )
 from rich.table import Table
 from safetensors.flax import save_file
@@ -50,7 +49,6 @@ from lalamo.modules import config_converter
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, test_speculator, train_speculator
-from lalamo.utils import jax_uint4_to_packed_uint8
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -107,16 +105,6 @@ def _error(message: str) -> None:
     panel = Panel(message, box=box.ROUNDED, title="Error", title_align="left", border_style="red")
     err_console.print(panel)
     raise Exit(1)
-
-
-def _pack_uint4_weights(weights: dict[str, jnp.ndarray]) -> dict[str, jnp.ndarray]:
-    packed_weights = {}
-    for key, value in weights.items():
-        if value.dtype == jnp.uint4:
-            packed_weights[key] = jax_uint4_to_packed_uint8(value)
-        else:
-            packed_weights[key] = value
-    return packed_weights
 
 
 @app.command(help="Chat with a converted model.")
@@ -286,8 +274,7 @@ def convert(
         weights = flatten_parameters(model.export_weights())
         del model
 
-        packed_weights = _pack_uint4_weights(weights)
-        save_file(packed_weights, output_dir / "model.safetensors")
+        save_file(weights, output_dir / "model.safetensors")
 
         config_json = config_converter.unstructure(metadata, ModelMetadata)
         with open(output_dir / "config.json", "w") as file:

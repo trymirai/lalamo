@@ -1,7 +1,7 @@
 from lalamo.model_import.decoder_configs import HFQwen2Config, HFQwen3Config
 from lalamo.quantization import QuantizationMode
 
-from .common import ModelSpec, UseCase, WeightsType
+from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType
 
 __all__ = ["QWEN_MODELS"]
 
@@ -151,6 +151,20 @@ QWEN3 = [
     ModelSpec(
         vendor="Alibaba",
         family="Qwen3",
+        name="Qwen3-0.6B-MLX-4bit",
+        size="0.6B",
+        quantization=QuantizationMode.UINT4,
+        repo="Qwen/Qwen3-0.6B-MLX-4bit",
+        config_type=HFQwen3Config,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-0.6B"),
+            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-0.6B"),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-0.6B"),
+        ),
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3",
         name="Qwen3-1.7B",
         size="1.7B",
         quantization=None,
@@ -176,6 +190,20 @@ QWEN3 = [
         quantization=QuantizationMode.UINT4,
         repo="Qwen/Qwen3-4B-AWQ",
         config_type=HFQwen3Config,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3",
+        name="Qwen3-4B-MLX-4bit",
+        size="4B",
+        quantization=QuantizationMode.UINT4,
+        repo="Qwen/Qwen3-4B-MLX-4bit",
+        config_type=HFQwen3Config,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-4B"),
+            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-4B"),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-4B"),
+        ),
     ),
     ModelSpec(
         vendor="Alibaba",

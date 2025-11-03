@@ -40,6 +40,7 @@ dev = [
     "ipywidgets>=8.1.5",
     "kernels>=0.10.2",
     "memray>=1.17.2",
+    "mlx-lm>=0.28.3 ; sys_platform == 'darwin'",
     "pytest-env>=1.1.5",
     "pytest>=8.3.4",
     "torch>=2.8.0",

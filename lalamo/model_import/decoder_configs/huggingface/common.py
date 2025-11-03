@@ -1,13 +1,17 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import ClassVar, Literal
 
+import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignLMConfig
 from lalamo.model_import.decoder_configs.common import ForeignClassifierConfig
-from lalamo.model_import.loaders import load_huggingface_classifier, load_huggingface_decoder
+from lalamo.model_import.loaders import (
+    load_huggingface_classifier,
+    load_huggingface_decoder,
+)
 from lalamo.modules import Decoder
 from lalamo.modules.classifier import Classifier
 
@@ -59,10 +63,49 @@ class GPTQQuantizationConfig:
 
 
 @dataclass(frozen=True)
+class MLXQuantizationConfig:
+    group_size: int
+    bits: int
+
+
+QuantizationConfigType = (
+    AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig | None
+)
+
+
+def _structure_quantization_config(v: object, _: object) -> QuantizationConfigType:
+    match v:
+        case None:
+            return None
+
+        case {"quant_method": "awq", **_other}:
+            return cattrs.structure(v, AWQQuantizationConfig)
+
+        case {"quant_method": "gptq", **_other}:
+            return cattrs.structure(v, GPTQQuantizationConfig)
+
+        case {**_other}:
+            return cattrs.structure(v, MLXQuantizationConfig)
+
+        case _:
+            raise RuntimeError(f"Cannot structure {v}field")
+
+
+@dataclass(frozen=True)
 class HuggingFaceLMConfig(ForeignLMConfig):
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+    _converter.register_structure_hook(int | list[int], lambda v, _: v)
+    _converter.register_structure_hook(
+        QuantizationConfigType, _structure_quantization_config
+    )
+
     @property
     def eos_token_ids(self) -> list[int]:
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+        return (
+            [self.eos_token_id]
+            if isinstance(self.eos_token_id, int)
+            else self.eos_token_id
+        )
 
     @property
     def default_precision(self) -> DTypeLike:
@@ -81,7 +124,11 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 class HuggingFaceClassifireConfig(ForeignClassifierConfig):
     @property
     def eos_token_ids(self) -> list[int]:
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+        return (
+            [self.eos_token_id]
+            if isinstance(self.eos_token_id, int)
+            else self.eos_token_id
+        )
 
     @property
     def default_precision(self) -> DTypeLike:
