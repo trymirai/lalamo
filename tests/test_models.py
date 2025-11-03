@@ -11,8 +11,12 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import import_model
-from lalamo.modules.decoder import DecoderActivationTrace, DecoderLayerResult, DecoderResult
+from lalamo import LanguageModel, import_language_model
+from lalamo.modules.decoder import (
+    DecoderActivationTrace,
+    TransformerLayerResult,
+    DecoderResult,
+)
 from tests.common import assert_close, checkify_forward
 
 try:
@@ -37,7 +41,7 @@ class DType(Enum):
 
     @property
     def mlx_dtype(self) -> "mx.Dtype":
-        return getattr(mx, self.value) # type: ignore
+        return getattr(mx, self.value)  # type: ignore
 
     @property
     def jax_dtype(self) -> jnp.dtype:
@@ -83,7 +87,12 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def mlp(self, mlp: MlpT, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def layer(self, layer: LayerT, hidden_states: ArrayT, position_embeddings: tuple[ArrayT, ArrayT]) -> ArrayT: ...
+    def layer(
+        self,
+        layer: LayerT,
+        hidden_states: ArrayT,
+        position_embeddings: tuple[ArrayT, ArrayT],
+    ) -> ArrayT: ...
 
     @abstractmethod
     def layer_pre_attention_norm(self, layer: LayerT) -> RMSNormT: ...
@@ -113,7 +122,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def readout(self, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def forward(self, input_ids: ArrayT, position_ids: ArrayT) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
+    def forward(
+        self, input_ids: ArrayT, position_ids: ArrayT
+    ) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
 
     def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
@@ -191,7 +202,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str) -> None:
+    def match_rmsnorm(
+        self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str
+    ) -> None:
         ref_inputs = self.from_jax(llm_inputs)
         torch_outputs = self.rmsnorm(ref_layer, ref_inputs)
         ref_outputs = self.to_jax(torch_outputs)
@@ -233,7 +246,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str) -> None:
+    def match_mlp(
+        self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str
+    ) -> None:
         ref_inputs = self.from_jax(llm_inputs)
         ref_native_outputs = self.mlp(ref_mlp, ref_inputs)
         ref_outputs = self.to_jax(ref_native_outputs)
@@ -246,7 +261,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_layer(
         self,
-        layer_result: DecoderLayerResult,
+        layer_result: TransformerLayerResult,
         ref_layer: LayerT,
         layer_index: int,
     ) -> None:
@@ -266,7 +281,10 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             activation_trace.pre_attention_norm,
             activation_trace.attention,
             ref_attention,
-            (activation_trace.positional_embeddings.cosines, activation_trace.positional_embeddings.sines),
+            (
+                activation_trace.positional_embeddings.cosines,
+                activation_trace.positional_embeddings.sines,
+            ),
             f"Layer {layer_index} Attention",
         )
 
@@ -332,7 +350,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         llm_logits = result.logits
 
-        ref_normalized_outputs = self.from_jax(result.activation_trace.output_norm[None, ...])
+        ref_normalized_outputs = self.from_jax(
+            result.activation_trace.output_norm[None, ...]
+        )
         ref_native_logits = self.readout(ref_normalized_outputs)
         ref_logits = self.to_jax(ref_native_logits).squeeze(0)
 
@@ -350,7 +370,11 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         self.match_embedding(result.activation_trace)
 
         for i, (ref_layer, layer_result) in enumerate(
-            zip(self.iterate_layers(), result.activation_trace.layer_results, strict=True),
+            zip(
+                self.iterate_layers(),
+                result.activation_trace.layer_results,
+                strict=True,
+            ),
         ):
             self.match_layer(layer_result, ref_layer, i)
 
@@ -365,7 +389,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         hf_input_ids = self.from_jax(result.activation_trace.token_ids)
         hf_token_positions = self.from_jax(result.activation_trace.token_positions)
-        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
+        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(
+            hf_input_ids, hf_token_positions
+        )
 
         for i, (hf_layer_inputs, layer_result) in enumerate(
             zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
@@ -413,11 +439,12 @@ def configure_precision_for_tests() -> None:
 def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -> None:
     configure_precision_for_tests()
 
-    llm_model, *_ = import_model(
+    llm_model, *_ = import_language_model(
         test_spec.model_repo,
         context_length=test_spec.num_tokens * test_spec.token_stride,
         precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
     )
+    assert isinstance(llm_model, LanguageModel)
     tracer = decoder_tracer.load(
         test_spec.model_repo,
         dtype=test_spec.dtype,

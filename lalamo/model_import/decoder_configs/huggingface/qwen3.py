@@ -22,7 +22,7 @@ from lalamo.modules.embedding import MLXQuantizedTiedEmbeddingConfig
 from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFQwen3Config"]
 

@@ -45,7 +45,7 @@ def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
         "... (group pack_factor) -> ... group pack_factor",
         pack_factor=pack_factor,
     )
-    array_reordered = array_reshaped[..., AWQ_REVERSE_ORDER]
+    array_reordered = array_reshaped[..., reverse_order]
     return rearrange(
         array_reordered, "... group pack_factor -> ... (group pack_factor)"
     )

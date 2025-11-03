@@ -203,7 +203,7 @@ def _build_hf_attention_mask(
 class HFDecoderTracer(
     DecoderTracer[
         torch.Tensor,
-        HFDecoderLayer | Gemma3DecoderLayer,
+        HFTransformerLayer | Gemma3DecoderLayer,
         HFRMSNorm,
         HFAttention | Gemma3Attention,
         HFMLP,
@@ -260,7 +260,7 @@ class HFDecoderTracer(
 
     def layer(
         self,
-        layer: HFDecoderLayer | Gemma3DecoderLayer,
+        layer: HFTransformerLayer | Gemma3DecoderLayer,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
     ) -> torch.Tensor:
@@ -279,14 +279,14 @@ class HFDecoderTracer(
         return torch_outputs
 
     def layer_pre_attention_norm(
-        self, layer: HFDecoderLayer | Gemma3DecoderLayer
+        self, layer: HFTransformerLayer | Gemma3DecoderLayer
     ) -> HFRMSNorm:
         return layer.input_layernorm
 
     # Gemma and Llama/Qwen confusingly have very different naming conventions.
 
     def layer_post_attention_norm(
-        self, layer: HFDecoderLayer | Gemma3DecoderLayer
+        self, layer: HFTransformerLayer | Gemma3DecoderLayer
     ) -> HFRMSNorm | None:
         if hasattr(layer, "post_feedforward_layernorm"):
             return layer.post_attention_layernorm
@@ -294,7 +294,7 @@ class HFDecoderTracer(
         return None
 
     def layer_pre_mlp_norm(
-        self, layer: HFDecoderLayer | Gemma3DecoderLayer
+        self, layer: HFTransformerLayer | Gemma3DecoderLayer
     ) -> HFRMSNorm:
         if hasattr(layer, "post_feedforward_layernorm"):
             return layer.pre_feedforward_layernorm  # type: ignore
@@ -302,19 +302,19 @@ class HFDecoderTracer(
         return layer.post_attention_layernorm
 
     def layer_attention(
-        self, layer: HFDecoderLayer | Gemma3DecoderLayer
+        self, layer: HFTransformerLayer | Gemma3DecoderLayer
     ) -> HFAttention | Gemma3Attention:
         return layer.self_attn
 
-    def layer_mlp(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFMLP:
+    def layer_mlp(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFMLP:
         return layer.mlp
 
     def layer_post_mlp_norm(
-        self, layer: HFDecoderLayer | Gemma3DecoderLayer
+        self, layer: HFTransformerLayer | Gemma3DecoderLayer
     ) -> HFRMSNorm | None:
         return getattr(layer, "post_feedforward_layernorm", None)
 
-    def iterate_layers(self) -> Iterable[HFDecoderLayer | Gemma3DecoderLayer]:
+    def iterate_layers(self) -> Iterable[HFTransformerLayer | Gemma3DecoderLayer]:
         return self.hf_model.model.layers
 
     def output_norm(self) -> HFRMSNorm:
