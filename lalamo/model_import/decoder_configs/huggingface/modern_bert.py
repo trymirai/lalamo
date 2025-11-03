@@ -16,10 +16,18 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import GELU, SiLU
-from lalamo.modules.classifier import PoolingType, PredictionHeadConfig, activation_from_str
+from lalamo.modules.classifier import (
+    PoolingType,
+    PredictionHeadConfig,
+    activation_from_str,
+)
 from lalamo.modules.embedding import TiedEmbeddingConfig
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceClassifireConfig
+from .common import (
+    AWQQuantizationConfig,
+    GPTQQuantizationConfig,
+    HuggingFaceClassifireConfig,
+)
 
 __all__ = ["ModernBERTConfig"]
 
@@ -75,37 +83,62 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
     id2label: dict[str, str]
     label2id: dict[str, int]
 
-    # NOTE: this one is present in vanilla modern-bert from HF (answerdotai/ModernBERT-base)
-    # tie_word_embeddings: bool
-
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
 
+    def calculate_sliding_windows(
+        self, num_layers: int, global_attn_every_n_layers: int
+    ) -> tuple[None, ...]:
+        result = [None] * num_layers
+        for index in range(len(result)):
+            if index % global_attn_every_n_layers != 0:
+                result[index] = self.local_attention  # type: ignore
+            else:
+                pass
+        return tuple(result)
+
     def to_classifier_config(
-        self, context_length: int | None, activation_precision: DTypeLike, accumulation_precision: DTypeLike
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
     ) -> ClassifierConfig:
-        # TODO: could not find default value for this one in Mirai's transformer
         embedding_config = TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
             precision=activation_precision,
         )
+        embedding_norm_config = NormalizationConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=accumulation_precision,
+            epsilon=self.norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=True,
+        )
 
-        # TODO: looks like using 'default' type of Rope scaling which means unscaled - UnscaledRoPEConfig
-        rope_config = UnscaledRoPEConfig(
+        global_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.global_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
-
-        rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
-            epsilon=self.layer_norm_eps,
-            scale_offset=None,
-            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-            subtract_mean=False,
+        local_rope_config = UnscaledRoPEConfig(
+            precision=activation_precision,
+            base=self.local_rope_theta,
+            max_sequence_length=context_length or self.local_attention,
         )
 
+        sliding_window_sizes = self.calculate_sliding_windows(
+            self.num_hidden_layers, self.global_attn_every_n_layers
+        )
+
+        transformer_norm_config = NormalizationConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=accumulation_precision,
+            epsilon=self.norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=True,
+        )
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
@@ -130,29 +163,27 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
             gate_clipping=None,
         )
         transformer_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
+            pre_attention_norm_config=transformer_norm_config,
             attention_config=attention_config,
             post_attention_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
+            pre_mlp_norm_config=transformer_norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
         )
 
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
+            global_rope_config=global_rope_config,
+            local_rope_config=local_rope_config,
             layer_config=transformer_layer_config,
-            output_norm_config=rmsnorm_config,
+            output_norm_config=transformer_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
-            # TODO: assigned this one just to make weights loading work, need to double
-            # check if its actually the right way to go
             num_groups=self.num_attention_heads,
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=None,
+            sliding_window_sizes=sliding_window_sizes,
             context_length=context_length or self.max_position_embeddings,
         )
 
@@ -182,6 +213,7 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
 
         return ClassifierConfig(
             embedding_config=embedding_config,
+            embedding_norm_config=embedding_norm_config,
             transformer_config=transformer_config,
             prediction_head_config=prediction_head_config,
             final_linear_config=final_linear_config,
@@ -189,11 +221,11 @@ class ModernBERTConfig(HuggingFaceClassifireConfig):
             model_dim=self.hidden_size,
             hidden_dim=self.hidden_size,
             num_heads=self.num_attention_heads,
-            num_groups=self.num_attention_heads,  # int,  NOTE: this one seem to be not used in ModertBert attention
+            num_groups=self.num_attention_heads,
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=None,  # TODO: figure out this one from self.local_attention
+            sliding_window_sizes=sliding_window_sizes,
             context_length=self.max_position_embeddings,
             num_labels=len(self.label2id),
             classifier_pooling=PoolingType(self.classifier_pooling),

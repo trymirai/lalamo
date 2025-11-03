@@ -37,20 +37,28 @@ def _reverse_uint4_awq_order(array: Array) -> Array:
     if last_dim % pack_factor != 0:
         return array
 
-    array_reshaped = rearrange(array, "... (group pack_factor) -> ... group pack_factor", pack_factor=pack_factor)
+    array_reshaped = rearrange(
+        array,
+        "... (group pack_factor) -> ... group pack_factor",
+        pack_factor=pack_factor,
+    )
     array_reordered = array_reshaped[..., AWQ_REVERSE_ORDER]
-    return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
+    return rearrange(
+        array_reordered, "... group pack_factor -> ... (group pack_factor)"
+    )
 
 
 def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
-    assert packed_weights.dtype == jnp.int32, (
-        f"Expected packed_weights to be of dtype jnp.int32, got {packed_weights.dtype}"
-    )
+    assert (
+        packed_weights.dtype == jnp.int32
+    ), f"Expected packed_weights to be of dtype jnp.int32, got {packed_weights.dtype}"
     assert 32 % mode.bits == 0
 
     shifts = jnp.arange(0, 32, mode.bits)
     mask = (2**mode.bits) - 1
-    unpacked = jnp.bitwise_and(jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask)
+    unpacked = jnp.bitwise_and(
+        jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask
+    )
     unpacked = rearrange(
         unpacked,
         "out_channels packed_groups packed_values -> out_channels (packed_groups packed_values)",
@@ -92,7 +100,9 @@ def _fuse_full_precision_weights(
     if sublayers_to_fuse is None:
         return weights_dict[path / "weight"]
 
-    weights = [weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse]
+    weights = [
+        weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse
+    ]
     return jnp.concatenate(weights, axis=0)
 
 
@@ -109,9 +119,15 @@ def _fuse_quantized_weights(
         scales = weights_dict[path / "scales"]
         return qweights, qzeros, scales
 
-    qweights = [weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse]
-    qzeros = [weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse]
-    scales = [weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse]
+    qweights = [
+        weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse
+    ]
+    qzeros = [
+        weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse
+    ]
+    scales = [
+        weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse
+    ]
 
     fused_qweights = jnp.concatenate(qweights, axis=1)
     fused_qzeros = jnp.concatenate(qzeros, axis=1)
@@ -134,13 +150,18 @@ def load_linear(
             paths_to_check = path / "bias"
         for p in paths_to_check:
             if p in weights_dict:
-                raise ValueError(f"Bias tensor found at {p} but module does not support it.")
+                raise ValueError(
+                    f"Bias tensor found at {p} but module does not support it."
+                )
         bias = None
     elif sublayers_to_fuse is None:
         bias = weights_dict[path / "bias"]
     else:
         bias = jnp.concatenate(
-            [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
+            [
+                weights_dict[path / proj_name / "bias"]
+                for proj_name in sublayers_to_fuse
+            ],
             axis=0,
         )
 
@@ -149,7 +170,9 @@ def load_linear(
         return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
     if isinstance(module, GroupQuantizedLinear):
-        qweights, qzeros, scales = _fuse_quantized_weights(weights_dict, path, sublayers_to_fuse)
+        qweights, qzeros, scales = _fuse_quantized_weights(
+            weights_dict, path, sublayers_to_fuse
+        )
 
         weights, zero_points, scales = _process_quantized_tensors(
             qweights,
@@ -167,7 +190,9 @@ def load_linear(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_mlp(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
+def load_mlp(
+    module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath
+) -> MLPBase:
     if isinstance(module, DenseMLP):
         # Standard dense MLP with separate sublayers.
         up_projection = load_linear(
@@ -176,7 +201,9 @@ def load_mlp(module: MLPBase, weights_dict: Mapping[str, Array], path: Parameter
             path,
             sublayers_to_fuse=["up_proj", "gate_proj"],
         )
-        down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
+        down_projection = load_linear(
+            module.down_projection, weights_dict, path / "down_proj"
+        )
         return load_parameters(
             lambda m: (m.up_projection, m.down_projection),
             module,
@@ -189,7 +216,9 @@ def load_mlp(module: MLPBase, weights_dict: Mapping[str, Array], path: Parameter
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:
+def load_moe(
+    module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath
+) -> MixtureOfExperts:
     # Load router via the standard linear loader
     router = load_linear(module.router, weights_dict, path / "router")
 
@@ -299,7 +328,13 @@ def load_attention(
         sinks = module.sinks
 
     return load_parameters(
-        lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm, m.sinks),
+        lambda m: (
+            m.qkv_projection,
+            m.out_projection,
+            m.query_norm,
+            m.key_norm,
+            m.sinks,
+        ),
         module,
         (qkv_projection, out_projection, query_norm, key_norm, sinks),
     )
@@ -310,11 +345,14 @@ def load_decoder_layer(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> TransformerLayer:
-    pre_attention_norm = load_rmsnorm(
-        module.pre_attention_norm,
-        weights_dict,
-        path / "input_layernorm",
-    )
+    if module.pre_attention_norm is not None:
+        pre_attention_norm = load_rmsnorm(
+            module.pre_attention_norm,
+            weights_dict,
+            path / "input_layernorm",
+        )
+    else:
+        pre_attention_norm = None
     attention = load_attention(module.attention, weights_dict, path / "self_attn")
     if module.post_attention_norm is not None:
         post_attention_norm = load_rmsnorm(
@@ -347,9 +385,23 @@ def load_decoder_layer(
     else:
         post_mlp_norm = None
     return load_parameters(
-        lambda m: (m.pre_attention_norm, m.attention, m.post_attention_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
+        lambda m: (
+            m.pre_attention_norm,
+            m.attention,
+            m.post_attention_norm,
+            m.pre_mlp_norm,
+            m.mlp,
+            m.post_mlp_norm,
+        ),
         module,
-        (pre_attention_norm, attention, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
+        (
+            pre_attention_norm,
+            attention,
+            post_attention_norm,
+            pre_mlp_norm,
+            mlp,
+            post_mlp_norm,
+        ),
     )
 
 
@@ -370,7 +422,11 @@ def load_untied_embedding(
 ) -> UntiedEmbedding:
     input_weights = weights_dict[decoder_path / "embed_tokens" / "weight"]
     output_weights = weights_dict[lm_head_path / "weight"]
-    return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
+    return load_parameters(
+        lambda m: (m.input_weights, m.output_weights),
+        module,
+        (input_weights, output_weights),
+    )
 
 
 def load_huggingface_decoder(
@@ -388,14 +444,18 @@ def load_huggingface_decoder(
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(module.embedding, weights_dict, decoder_path)
     elif isinstance(module.embedding, UntiedEmbedding):
-        embedding = load_untied_embedding(module.embedding, weights_dict, decoder_path, lm_head_path)
+        embedding = load_untied_embedding(
+            module.embedding, weights_dict, decoder_path, lm_head_path
+        )
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
         load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i)
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "norm")
+    output_norm = load_rmsnorm(
+        module.transformer.output_norm, weights_dict, decoder_path / "norm"
+    )
     return load_parameters(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
@@ -412,7 +472,9 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         decoder_path: ParameterPath,
     ) -> TiedEmbedding:
-        input_weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
+        input_weights = weights_dict[
+            decoder_path / "embeddings" / "tok_embeddings" / "weight"
+        ]
         return load_parameters(lambda m: (m.weights,), module, (input_weights,))
 
     def load_attention_local(
@@ -445,12 +507,20 @@ def load_huggingface_classifier(
             sinks = module.sinks
 
         return load_parameters(
-            lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm, m.sinks),
+            lambda m: (
+                m.qkv_projection,
+                m.out_projection,
+                m.query_norm,
+                m.key_norm,
+                m.sinks,
+            ),
             module,
             (qkv_projection, out_projection, query_norm, key_norm, sinks),
         )
 
-    def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
+    def load_mlp_local(
+        module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath
+    ) -> MLPBase:
         if isinstance(module, DenseMLP):
             # Standard dense MLP with separate sublayers.
             up_projection = load_linear(
@@ -459,7 +529,9 @@ def load_huggingface_classifier(
                 path / "Wi",
                 sublayers_to_fuse=None,
             )
-            down_projection = load_linear(module.down_projection, weights_dict, path / "Wo")
+            down_projection = load_linear(
+                module.down_projection, weights_dict, path / "Wo"
+            )
             return load_parameters(
                 lambda m: (m.up_projection, m.down_projection),
                 module,
@@ -471,7 +543,7 @@ def load_huggingface_classifier(
 
         raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
-    def load_decoder_layer_local(
+    def load_transformer_layer_local(
         module: TransformerLayer,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
@@ -528,7 +600,14 @@ def load_huggingface_classifier(
                 m.post_mlp_norm,
             ),
             module,
-            (pre_attention_norm, attention, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
+            (
+                pre_attention_norm,
+                attention,
+                post_attention_norm,
+                pre_mlp_norm,
+                mlp,
+                post_mlp_norm,
+            ),
         )
 
     base_path = ParameterPath()
@@ -537,18 +616,30 @@ def load_huggingface_classifier(
     classifier_path = base_path / "classifier"
     assert isinstance(module.embedding, TiedEmbedding)
     embedding = load_tied_embedding_local(module.embedding, weights_dict, decoder_path)
+    embedding_norm = load_rmsnorm(
+        module.embedding_norm, weights_dict, base_path / "model" / "embeddings" / "norm"
+    )
 
     decoder_layers = tuple(
-        load_decoder_layer_local(layer, weights_dict, decoder_path / "layers" / i, i)
+        load_transformer_layer_local(
+            layer, weights_dict, decoder_path / "layers" / i, i
+        )
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
-    head_dense = load_linear(module.prediction_head.dense, weights_dict, head_path / "dense")
-    head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path / "norm")
+    output_norm = load_rmsnorm(
+        module.transformer.output_norm, weights_dict, decoder_path / "final_norm"
+    )
+    head_dense = load_linear(
+        module.prediction_head.dense, weights_dict, head_path / "dense"
+    )
+    head_norm = load_rmsnorm(
+        module.prediction_head.norm, weights_dict, head_path / "norm"
+    )
     classifier = load_linear(module.final_linear, weights_dict, classifier_path)
     return load_parameters(
         lambda m: (
             m.embedding,
+            m.embedding_norm,
             m.transformer.layers,
             m.transformer.output_norm,
             m.prediction_head.dense,
@@ -556,5 +647,13 @@ def load_huggingface_classifier(
             m.final_linear,
         ),
         module,
-        (embedding, decoder_layers, output_norm, head_dense, head_norm, classifier),
+        (
+            embedding,
+            embedding_norm,
+            decoder_layers,
+            output_norm,
+            head_dense,
+            head_norm,
+            classifier,
+        ),
     )

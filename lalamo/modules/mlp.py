@@ -16,7 +16,12 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
-from .common import DummyUnionMember, ForwardPassMode, LalamoModule, register_config_union
+from .common import (
+    DummyUnionMember,
+    ForwardPassMode,
+    LalamoModule,
+    register_config_union,
+)
 from .linear import LinearBase, LinearConfig
 
 __all__ = [
@@ -66,7 +71,9 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
 @dataclass(frozen=True)
 class MLPConfigBase(ABC):
     @abstractmethod
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> MLPBase: ...
+    def random_init(
+        self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray
+    ) -> MLPBase: ...
 
     @abstractmethod
     def empty(self, model_dim: int, hidden_dim: int) -> MLPBase: ...
@@ -81,7 +88,9 @@ class DenseMLPConfig(MLPConfigBase):
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
 
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
+    def random_init(
+        self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray
+    ) -> "DenseMLP":
         up_key, down_key = jax.random.split(key)
         return DenseMLP(
             self,
@@ -192,7 +201,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
                 f" the gate output dimension {gate_output_dim}",
             )
         (down_output_dim,) = self.down_projection.output_dims
-        if (self.up_projection.input_dim, up_output_dim) != (down_output_dim, self.down_projection.input_dim):
+        if (self.up_projection.input_dim, up_output_dim) != (
+            down_output_dim,
+            self.down_projection.input_dim,
+        ):
             raise ValueError(
                 f"Down projection dimensions {self.down_projection.input_dim, down_output_dim} do not match"
                 f" the up projection output dimensions {self.up_projection.input_dim, up_output_dim}",
@@ -209,7 +221,9 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         return vmap_twice(self.call_unbatched)(inputs)
 
     @eqx.filter_jit
-    def call_unbatched(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+    def call_unbatched(
+        self, inputs: Float[Array, " channels"]
+    ) -> Float[Array, " channels"]:
         if self.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly."
@@ -222,6 +236,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
+        # TODO: in ModernBERT activation is applied to up-projection output, not gate
+        # up_proj = self.config.activation(up_proj)
+        # (result,) = self.down_projection(up_proj * gate)
+
         return result
 
     def export_weights(self) -> ParameterTree:
@@ -240,7 +258,9 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         return replace(
             self,
             up_projection=self.up_projection.import_weights(weights["up_projection"]),
-            down_projection=self.down_projection.import_weights(weights["down_projection"]),
+            down_projection=self.down_projection.import_weights(
+                weights["down_projection"]
+            ),
         )
 
 
@@ -251,16 +271,22 @@ class RoutingMap(eqx.Module):
 
 @dataclass(frozen=True)
 class RoutingFunctionBase(ABC):
-    def __call__(self, logits: Float[Array, "batch_tokens experts"], num_active: int) -> RoutingMap:
+    def __call__(
+        self, logits: Float[Array, "batch_tokens experts"], num_active: int
+    ) -> RoutingMap:
         return vmap(partial(self.call_unbatched, num_active=num_active))(logits)
 
     @abstractmethod
-    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap: ...
+    def call_unbatched(
+        self, logits: Float[Array, " experts"], num_active: int
+    ) -> RoutingMap: ...
 
 
 @dataclass(frozen=True)
 class SoftmaxRouting(RoutingFunctionBase):
-    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
+    def call_unbatched(
+        self, logits: Float[Array, " experts"], num_active: int
+    ) -> RoutingMap:
         active_logits, active_indices = jax.lax.top_k(logits, num_active)
         active_weights = jax.nn.softmax(active_logits)
         mask = jnp.zeros_like(logits, dtype=bool)
@@ -287,7 +313,9 @@ class MixtureOfExpertsConfig(ABC):
 
     expert_config: DenseMLPConfig
 
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MixtureOfExperts":
+    def random_init(
+        self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray
+    ) -> "MixtureOfExperts":
         experts_key, router_key = jax.random.split(key)
         router = self.router_config.random_init(
             model_dim,
@@ -295,12 +323,18 @@ class MixtureOfExpertsConfig(ABC):
             has_biases=self.router_has_biases,
             key=router_key,
         )
-        experts = self.expert_config.random_init_mixture(self.mixture_size, model_dim, hidden_dim, key=experts_key)
+        experts = self.expert_config.random_init_mixture(
+            self.mixture_size, model_dim, hidden_dim, key=experts_key
+        )
         return MixtureOfExperts(self, router, experts)
 
     def empty(self, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":
-        router = self.router_config.empty(model_dim, (self.mixture_size,), has_biases=self.router_has_biases)
-        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, hidden_dim)
+        router = self.router_config.empty(
+            model_dim, (self.mixture_size,), has_biases=self.router_has_biases
+        )
+        experts = self.expert_config.empty_mixture(
+            self.mixture_size, model_dim, hidden_dim
+        )
         return MixtureOfExperts(self, router, experts)
 
 
@@ -356,7 +390,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_mode:
             case ForwardPassMode.MULTI_TOKEN:
-                return self.call_prefill_mode(inputs, lengths_without_padding, forward_pass_config)
+                return self.call_prefill_mode(
+                    inputs, lengths_without_padding, forward_pass_config
+                )
             case ForwardPassMode.SINGLE_TOKEN:
                 return self.call_decode_mode(inputs)
 
@@ -371,12 +407,18 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 router_logits,
                 num_active=self.num_experts_per_token,
             )
-            active_indices = jnp.flatnonzero(routing.expert_mask, size=self.num_experts_per_token)
+            active_indices = jnp.flatnonzero(
+                routing.expert_mask, size=self.num_experts_per_token
+            )
             active_weights = routing.expert_weights[active_indices]
 
-            def apply_one(idx: Int[Array, ""], w: Float[Array, ""]) -> Float[Array, " channels"]:
+            def apply_one(
+                idx: Int[Array, ""], w: Float[Array, ""]
+            ) -> Float[Array, " channels"]:
                 selected_expert = jax.tree_util.tree_map(
-                    lambda leaf: jax.lax.dynamic_index_in_dim(leaf, idx, axis=0, keepdims=False),
+                    lambda leaf: jax.lax.dynamic_index_in_dim(
+                        leaf, idx, axis=0, keepdims=False
+                    ),
                     self.experts,
                 )
                 return selected_expert.call_unbatched(x) * w
@@ -397,14 +439,24 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:
-            lengths_without_padding = jnp.ones(batch_size, dtype=jnp.int32) * sequence_length
-        padding_mask = jnp.arange(sequence_length)[None, :] < lengths_without_padding[:, None]
+            lengths_without_padding = (
+                jnp.ones(batch_size, dtype=jnp.int32) * sequence_length
+            )
+        padding_mask = (
+            jnp.arange(sequence_length)[None, :] < lengths_without_padding[:, None]
+        )
 
-        flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
-        flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
+        flattened_inputs = rearrange(
+            inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels"
+        )
+        flattened_padding_mask = rearrange(
+            padding_mask, "batch suffix_tokens -> (batch suffix_tokens)"
+        )
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
-        routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+        routing_map = self.config.routing_function(
+            router_logits, self.num_experts_per_token
+        )
         token_mask = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
@@ -417,7 +469,9 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
         num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
-        token_indices = vmap(lambda m: jnp.flatnonzero(m, size=num_padded_tokens, fill_value=_SENTINEL))(token_mask)
+        token_indices = vmap(
+            lambda m: jnp.flatnonzero(m, size=num_padded_tokens, fill_value=_SENTINEL)
+        )(token_mask)
         chunked_token_indices = rearrange(
             token_indices,
             "experts (chunks chunk_tokens) -> chunks experts chunk_tokens",
@@ -442,19 +496,36 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     indices: Int[Array, " tokens_per_chunk"],
                     weights: Float[Array, " tokens_per_chunk"],
                 ) -> Float[Array, "tokens_per_chunk channels"]:
-                    inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
+                    inputs = flattened_inputs.at[indices].get(
+                        mode="fill", fill_value=0.0
+                    )
                     return vmap(expert.call_unbatched)(inputs) * weights[:, None]
 
-                expert_outputs = vmap(run_expert)(self.experts, token_indices_for_chunk, weights_for_chunk)
+                expert_outputs = vmap(run_expert)(
+                    self.experts, token_indices_for_chunk, weights_for_chunk
+                )
                 return accumulator.at[token_indices_for_chunk].add(
                     expert_outputs,
                     mode="drop",
                 )
 
-            return jax.lax.cond(jnp.any(token_indices_for_chunk != _SENTINEL), inner, lambda: accumulator), None
+            return (
+                jax.lax.cond(
+                    jnp.any(token_indices_for_chunk != _SENTINEL),
+                    inner,
+                    lambda: accumulator,
+                ),
+                None,
+            )
 
-        result, _ = jax.lax.scan(loop_iteration, jnp.zeros_like(flattened_inputs), chunked_token_indices)
-        return rearrange(result, "(batch suffix_tokens) channels -> batch suffix_tokens channels", batch=batch_size)
+        result, _ = jax.lax.scan(
+            loop_iteration, jnp.zeros_like(flattened_inputs), chunked_token_indices
+        )
+        return rearrange(
+            result,
+            "(batch suffix_tokens) channels -> batch suffix_tokens channels",
+            batch=batch_size,
+        )
 
     def export_weights(
         self,

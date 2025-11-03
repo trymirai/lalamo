@@ -48,15 +48,23 @@ def _soft_capped_attention_kernel(
     group_size = num_heads // num_groups
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
-    queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
-    keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
+    queries_head_first = rearrange(
+        queries, "dst_tokens heads channels -> heads dst_tokens channels"
+    )
+    keys_head_first = rearrange(
+        keys, "src_tokens heads channels -> heads src_tokens channels"
+    )
     attention_logits = einsum(
         queries_head_first,
         keys_head_first,
         "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
     )
     if mask is not None:
-        attention_logits = jnp.where(mask, attention_logits, jnp.array(float("-inf"), dtype=attention_logits.dtype))
+        attention_logits = jnp.where(
+            mask,
+            attention_logits,
+            jnp.array(float("-inf"), dtype=attention_logits.dtype),
+        )
 
     if scale is None:
         scale_val = head_dim**-0.5
@@ -250,7 +258,11 @@ class Attention(LalamoModule[AttentionConfig]):
 
     @property
     def attention_type(self) -> AttentionType:
-        return AttentionType.SLIDING_WINDOW if self.sliding_window_size is not None else AttentionType.GLOBAL
+        return (
+            AttentionType.SLIDING_WINDOW
+            if self.sliding_window_size is not None
+            else AttentionType.GLOBAL
+        )
 
     @property
     def has_sinks(self) -> bool:
@@ -348,14 +360,20 @@ class Attention(LalamoModule[AttentionConfig]):
         if self.key_norm is not None:
             keys = vmap(vmap(self.key_norm))(keys)
 
-        apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
+        apply_positional_embeddings = vmap(
+            positional_embeddings.apply, in_axes=1, out_axes=1
+        )
         queries = apply_positional_embeddings(queries)
         keys = apply_positional_embeddings(keys)
 
         if kv_cache is None:
-            updated_kv_cache = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
+            updated_kv_cache = DynamicKVCacheLayer.init(
+                self.has_sinks, keys, values, length=length_without_padding
+            )
         else:
-            updated_kv_cache = kv_cache.extend(keys, values, added_length=length_without_padding)
+            updated_kv_cache = kv_cache.extend(
+                keys, values, added_length=length_without_padding
+            )
 
         num_suffix_tokens, _, _ = queries.shape
         mask = updated_kv_cache.attention_mask(
@@ -399,10 +417,7 @@ class Attention(LalamoModule[AttentionConfig]):
         if not return_updated_kv_cache:
             updated_kv_cache = None
 
-        return AttentionResult(
-            outputs=result,
-            kv_cache=updated_kv_cache,
-        )
+        return AttentionResult(outputs=result, kv_cache=updated_kv_cache)
 
     def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.empty(
@@ -451,8 +466,12 @@ class Attention(LalamoModule[AttentionConfig]):
             sinks = None
         return replace(
             self,
-            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"]),
-            out_projection=self.out_projection.import_weights(weights["out_projection"]),
+            qkv_projection=self.qkv_projection.import_weights(
+                weights["qkv_projection"]
+            ),
+            out_projection=self.out_projection.import_weights(
+                weights["out_projection"]
+            ),
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,

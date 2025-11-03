@@ -68,8 +68,6 @@ class Normalization(LalamoModule[NormalizationConfig]):
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(self.config.accumulation_precision)
 
-        # If subtract_mean is True, compute variance after mean subtraction (like LayerNorm)
-        # Otherwise, use standard RMSNorm (variance of inputs directly)
         if self.config.subtract_mean:
             mean = jnp.mean(upcasted_inputs)
             upcasted_inputs = upcasted_inputs - mean

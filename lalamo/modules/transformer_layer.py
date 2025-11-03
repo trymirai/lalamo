@@ -64,7 +64,7 @@ class TransformerLayerActivationTrace(eqx.Module):
 
 
 class TransformerLayerResult(eqx.Module):
-    outputs: Float[Array, "suffix_tokens channels"]
+    outputs: Float[Array, "batch tokens channels"]
     updated_kv_cache: KVCacheLayer | None
     activation_trace: TransformerLayerActivationTrace | None
 
@@ -203,14 +203,19 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
 
     def __post_init__(self) -> None:
         model_dim = (
-            self.pre_attention_norm.input_dim if self.pre_attention_norm is not None else self.attention.model_dim
+            self.pre_attention_norm.input_dim
+            if self.pre_attention_norm is not None
+            else self.attention.model_dim
         )
         if self.attention.model_dim != model_dim:
             raise ValueError(
                 f"Attention model dim {self.attention.model_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
             )
-        if self.post_attention_norm is not None and self.post_attention_norm.input_dim != model_dim:
+        if (
+            self.post_attention_norm is not None
+            and self.post_attention_norm.input_dim != model_dim
+        ):
             raise ValueError(
                 f"Post attention normalization dim {self.post_attention_norm.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
@@ -229,7 +234,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     @eqx.filter_jit
     def __call__(
         self,
-        inputs: Float[Array, "batch suffix_tokens channels"],
+        inputs: Float[Array, "batch tokens channels"],
         positional_embeddings: PositionalEmbeddings,
         kv_cache: KVCacheLayer | None = None,
         return_updated_kv_cache: bool = False,
@@ -248,7 +253,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             normalized_attention_inputs = inputs
 
-        batched_attention_fn = vmap(partial(self.attention, return_updated_kv_cache=return_updated_kv_cache))
+        batched_attention_fn = vmap(
+            partial(self.attention, return_updated_kv_cache=return_updated_kv_cache)
+        )
         attention_outputs, updated_kv_cache = batched_attention_fn(
             normalized_attention_inputs,
             positional_embeddings,
@@ -256,7 +263,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             length_without_padding=lengths_without_padding,
         )
         if self.post_attention_norm is not None:
-            normalized_attention_outputs = vmap_twice(self.post_attention_norm)(attention_outputs)
+            normalized_attention_outputs = vmap_twice(self.post_attention_norm)(
+                attention_outputs
+            )
             mlp_inputs = inputs + normalized_attention_outputs
         else:
             normalized_attention_outputs = None
@@ -297,7 +306,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             activation_trace=activation_trace,
         )
 
-    def init_static_kv_cache(self, batch_size: int, capacity: int) -> StaticKVCacheLayer:
+    def init_static_kv_cache(
+        self, batch_size: int, capacity: int
+    ) -> StaticKVCacheLayer:
         return jax.tree.map(
             lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
             self.attention.init_static_kv_cache(capacity),
@@ -341,7 +352,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             post_mlp_norm = None
         if self.pre_attention_norm is not None:
             assert isinstance(weights["pre_attention_norm"], Mapping)
-            pre_attention_norm = self.pre_attention_norm.import_weights(weights["pre_attention_norm"])
+            pre_attention_norm = self.pre_attention_norm.import_weights(
+                weights["pre_attention_norm"]
+            )
         else:
             pre_attention_norm = None
         return replace(

@@ -7,11 +7,10 @@ import jax.numpy as jnp
 import pytest
 import torch
 
-from lalamo import import_language_model
 from lalamo.model_import.common import import_router_model
 from lalamo.router_model import RouterModel
 from tests.common import checkify_forward
-from tests.huggingface_tracer import load_hf_tracer
+from tests.huggingface_tracer import load_hf_classifier_tracer
 
 
 class DType(Enum):
@@ -36,7 +35,7 @@ class Spec:
 
 
 MODEL_LIST = [
-    Spec("trymirai/flo-bert-classifier", DType.FLOAT32),
+    Spec("trymirai/chat-moderation-router", DType.FLOAT32),
 ]
 
 
@@ -53,7 +52,9 @@ def configure_precision_for_tests() -> None:
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST)
-def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:  # noqa: ARG001
+def test_hf_classifier_model(
+    test_spec: Spec, configure_precision_for_tests: None
+) -> None:  # noqa: ARG001
     if test_spec.requires_gpu and not torch.cuda.is_available():
         pytest.skip("GPU is required for this test")
 
@@ -63,16 +64,19 @@ def test_hf_model(test_spec: Spec, configure_precision_for_tests: None) -> None:
         precision=test_spec.dtype.jax_dtype,
     )
     assert isinstance(router_model, RouterModel)
-    hf_tracer = load_hf_tracer(test_spec.model_repo, dtype=test_spec.dtype.torch_dtype)
+    hf_tracer = load_hf_classifier_tracer(
+        test_spec.model_repo, dtype=test_spec.dtype.torch_dtype
+    )
 
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)[None, :]
-    token_positions = jnp.arange(0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32)[None, :]
+    token_positions = jnp.arange(
+        0, NUM_TOKENS * TOKEN_STRIDE, TOKEN_STRIDE, dtype=jnp.int32
+    )[None, :]
 
     with jax.disable_jit():
         err, llm_result = checkify_forward(router_model.classifier)(
             token_ids=token_ids,
             token_positions=token_positions,
-            return_updated_kv_cache=True,
             return_activation_trace=True,
         )
         err.throw()

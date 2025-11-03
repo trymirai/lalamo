@@ -21,6 +21,7 @@
             "type": "debugpy",
             "request": "launch",
             "program": "${file}",
+            "justMyCode": false,
             "console": "integratedTerminal",
             "args" : [
             ]
@@ -29,6 +30,7 @@
             "name": "Run Moder-Bert stuff",
             "type": "debugpy",
             "request": "launch",
+            "justMyCode": false,
             "program": "${workspaceFolder}/sandbox/modern_bert_jax.py",
             "console": "integratedTerminal",
             "args" : [
