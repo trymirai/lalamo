@@ -99,18 +99,6 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         QuantizationConfigType, _structure_quantization_config
     )
 
-    @property
-    def eos_token_ids(self) -> list[int]:
-        return (
-            [self.eos_token_id]
-            if isinstance(self.eos_token_id, int)
-            else self.eos_token_id
-        )
-
-    @property
-    def default_precision(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
-
     @classmethod
     def _load_decoder_weights(
         cls,
@@ -121,18 +109,7 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
 
 @dataclass(frozen=True)
-class HuggingFaceClassifireConfig(ForeignClassifierConfig):
-    @property
-    def eos_token_ids(self) -> list[int]:
-        return (
-            [self.eos_token_id]
-            if isinstance(self.eos_token_id, int)
-            else self.eos_token_id
-        )
-
-    @property
-    def default_precision(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
+class HuggingFaceClassifierConfig(ForeignClassifierConfig):
 
     @classmethod
     def _load_classifier_weights(

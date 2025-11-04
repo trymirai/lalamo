@@ -26,7 +26,7 @@ from lalamo.modules.embedding import TiedEmbeddingConfig
 from .common import (
     AWQQuantizationConfig,
     GPTQQuantizationConfig,
-    HuggingFaceClassifireConfig,
+    HuggingFaceClassifierConfig,
 )
 
 __all__ = ["ModernBERTConfig"]
@@ -42,7 +42,7 @@ class LlamaRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class ModernBERTConfig(HuggingFaceClassifireConfig):
+class ModernBERTConfig(HuggingFaceClassifierConfig):
     architectures: list[Literal["ModernBertForSequenceClassification"]]
     attention_bias: bool
     attention_dropout: float

@@ -1,11 +1,11 @@
 import json
-from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
+from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import Classifier, ClassifierConfig, Decoder, DecoderConfig
@@ -23,11 +23,15 @@ class ForeignConfig(RegistryABC):
 
     @property
     def eos_token_ids(self) -> list[int]:
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+        return (
+            [self.eos_token_id]
+            if isinstance(self.eos_token_id, int)
+            else self.eos_token_id
+        )
 
     @property
-    @abstractmethod
-    def default_precision(self) -> DTypeLike: ...
+    def default_precision(self) -> DTypeLike:
+        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -62,7 +66,9 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
     ) -> Decoder:
-        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
+        config = self.to_decoder_config(
+            context_length, activation_precision, accumulation_precision
+        )
         model = config.empty()
         return self._load_decoder_weights(model, weights_dict)
 
@@ -92,6 +98,8 @@ class ForeignClassifierConfig(ForeignConfig, RegistryABC):
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
     ) -> Classifier:
-        config = self.to_classifier_config(context_length, activation_precision, accumulation_precision)
+        config = self.to_classifier_config(
+            context_length, activation_precision, accumulation_precision
+        )
         model = config.empty(skip_pre_attention_norm=True)
         return self._load_classifier_weights(model, weights_dict)

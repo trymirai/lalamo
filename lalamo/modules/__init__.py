@@ -1,9 +1,5 @@
 from .activations import GELU, Activation, SiLU
 from .attention import Attention, AttentionConfig
-from .bert_heads import (
-    ModernBertPredictionHead,
-    ModernBertPredictionHeadConfig,
-)
 from .classifier import Classifier, ClassifierConfig
 from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
 from .decoder import (
@@ -107,8 +103,6 @@ __all__ = [
     "MLXQuantizedTiedEmbeddingConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
-    "ModernBertPredictionHead",
-    "ModernBertPredictionHeadConfig",
     "Normalization",
     "NormalizationConfig",
     "PositionalEmbeddings",

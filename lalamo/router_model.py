@@ -1,18 +1,19 @@
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Self
 
 from jax import Array
 
 from lalamo.common import DTypeLike, ParameterTree
-from lalamo.modules import Classifier, LalamoModule
+from lalamo.modules import Classifier, ClassifierConfig, LalamoModule
 
 
 class RoutingConfig:
     pass
 
 
+@dataclass(frozen=True)
 class RouterModelConfig:
-    pass
+    classifier_config: ClassifierConfig
 
 
 class RouterModel(LalamoModule[RouterModelConfig]):

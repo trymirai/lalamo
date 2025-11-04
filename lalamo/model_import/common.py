@@ -18,7 +18,7 @@ from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModel
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.router_model import RouterModel, RouterModelConfig
+from lalamo.router_model import RouterModelConfig, RouterModel
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
@@ -177,19 +177,13 @@ def import_message_processor(
 
 
 def _import_language_model(
-    model_spec: ModelSpec | str,
+    model_spec: ModelSpec,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> ImportResults:
-    if isinstance(model_spec, str):
-        try:
-            model_spec = REPO_TO_MODEL[model_spec]
-        except KeyError as e:
-            raise ValueError(f"Unknown model: {model_spec}") from e
-
+) -> tuple[LanguageModel, LanguageModelConfig]:
     foreign_decoder_config_file = download_config_file(model_spec)
     foreign_decoder_config = model_spec.config_type.from_json(
         foreign_decoder_config_file
@@ -251,35 +245,17 @@ def _import_language_model(
     )
 
     language_model = LanguageModel(language_model_config, decoder, message_processor)
-    metadata = ModelMetadata(
-        toolchain_version=LALAMO_VERSION,
-        vendor=model_spec.vendor,
-        family=model_spec.family,
-        name=model_spec.name,
-        size=model_spec.size,
-        quantization=model_spec.quantization,
-        repo=model_spec.repo,
-        use_cases=model_spec.use_cases,
-        model_type=ModelType.LANGUAGE_MODEL,
-        model_config=language_model_config,
-    )
-    return ImportResults(language_model, metadata)
+    return language_model, language_model_config
 
 
 def _import_router_model(
-    model_spec: ModelSpec | str,
+    model_spec: ModelSpec,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> ImportResults:
-    if isinstance(model_spec, str):
-        try:
-            model_spec = REPO_TO_MODEL[model_spec]
-        except KeyError as e:
-            raise ValueError(f"Unknown model: {model_spec}") from e
-
+) -> tuple[RouterModel, RouterModelConfig]:
     foreign_classifier_config_file = download_config_file(model_spec)
     foreign_classifier_config = model_spec.config_type.from_json(
         foreign_classifier_config_file
@@ -312,21 +288,9 @@ def _import_router_model(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    router_model_config = RouterModelConfig()
+    router_model_config = RouterModelConfig(classifier_config=classifier.config)
     router_model = RouterModel(router_model_config, classifier=classifier)
-    metadata = ModelMetadata(
-        toolchain_version=LALAMO_VERSION,
-        vendor=model_spec.vendor,
-        family=model_spec.family,
-        name=model_spec.name,
-        size=model_spec.size,
-        quantization=model_spec.quantization,
-        repo=model_spec.repo,
-        use_cases=model_spec.use_cases,
-        model_type=ModelType.ROUTER_MODEL,
-        model_config=router_model_config,
-    )
-    return ImportResults(router_model, metadata)
+    return router_model, router_model_config
 
 
 def import_model(
@@ -344,21 +308,36 @@ def import_model(
             raise ValueError(f"Unknown model: {model_spec}") from e
 
     if model_spec.model_type == ModelType.LANGUAGE_MODEL:
-        return _import_language_model(
+        model, config = _import_language_model(
             model_spec,
             context_length=context_length,
             precision=precision,
             accumulation_precision=accumulation_precision,
             progress_callback=progress_callback,
         )
-    if model_spec.model_type == ModelType.ROUTER_MODEL:
-        return _import_router_model(
+    elif model_spec.model_type == ModelType.ROUTER_MODEL:
+        model, config = _import_router_model(
             model_spec,
             context_length=context_length,
             precision=precision,
             accumulation_precision=accumulation_precision,
             progress_callback=progress_callback,
         )
-    raise ValueError(
-        f"Unknown type of model in provided model spec: {model_spec.model_type}"
+    else:
+        raise ValueError(
+            f"Unknown type of model in provided model spec: {model_spec.model_type}"
+        )
+
+    metadata = ModelMetadata(
+        toolchain_version=LALAMO_VERSION,
+        vendor=model_spec.vendor,
+        family=model_spec.family,
+        name=model_spec.name,
+        size=model_spec.size,
+        quantization=model_spec.quantization,
+        repo=model_spec.repo,
+        use_cases=model_spec.use_cases,
+        model_type=model_spec.model_type,
+        model_config=config,
     )
+    return ImportResults(model, metadata)
