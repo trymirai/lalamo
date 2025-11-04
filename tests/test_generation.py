@@ -8,7 +8,7 @@ from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
 from lalamo.language_model import LanguageModel
-from lalamo.model_import import REPO_TO_MODEL, import_language_model
+from lalamo.model_import import REPO_TO_MODEL, import_model
 from lalamo.sampling import GreedyPolicy
 
 
@@ -48,7 +48,7 @@ def another_generation_input(tokenizer: PreTrainedTokenizer) -> GenerationInput:
 
 @pytest.fixture
 def language_model() -> LanguageModel:
-    model = import_language_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
+    model = import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
     assert isinstance(model, LanguageModel)
     return model
 
@@ -58,7 +58,9 @@ def tokenizer() -> PreTrainedTokenizer:
     return AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
 
-def test_tokenizer(language_model: LanguageModel, generation_input: GenerationInput) -> None:
+def test_tokenizer(
+    language_model: LanguageModel, generation_input: GenerationInput
+) -> None:
     token_ids = language_model.message_processor.tokenize(generation_input.prompt)
     ref_token_ids = generation_input.token_ids.tolist()
     assert token_ids == ref_token_ids
@@ -166,7 +168,9 @@ def test_streaming_generation(
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
 ) -> None:
-    token_stream = language_model.stream_tokens(generation_input.token_ids, max_output_length=32)
+    token_stream = language_model.stream_tokens(
+        generation_input.token_ids, max_output_length=32
+    )
     response_token_ids = jnp.array(list(token_stream))
     response_text = tokenizer.decode(response_token_ids)
     assert "<|im_end|>" in response_text

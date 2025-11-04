@@ -1,7 +1,7 @@
 from lalamo.model_import.decoder_configs import HFLlamaConfig
 from lalamo.model_import.decoder_configs.huggingface import ModernBERTConfig
 
-from .common import ModelSpec
+from .common import ModelSpec, ModelType
 
 __all__ = ["HUGGINGFACE_MODELS"]
 
@@ -25,5 +25,6 @@ HUGGINGFACE_MODELS = [
         repo="trymirai/chat-moderation-router",
         config_type=ModernBERTConfig,
         use_cases=tuple(),
+        model_type=ModelType("router_model"),
     ),
 ]

@@ -11,7 +11,7 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import LanguageModel, import_language_model
+from lalamo import LanguageModel, import_model
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
     TransformerLayerResult,
@@ -439,7 +439,7 @@ def configure_precision_for_tests() -> None:
 def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -> None:
     configure_precision_for_tests()
 
-    llm_model, *_ = import_language_model(
+    llm_model, *_ = import_model(
         test_spec.model_repo,
         context_length=test_spec.num_tokens * test_spec.token_stride,
         precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,

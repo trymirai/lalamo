@@ -7,7 +7,7 @@ import jax.numpy as jnp
 import pytest
 import torch
 
-from lalamo.model_import.common import import_router_model
+from lalamo.model_import.common import import_model
 from lalamo.router_model import RouterModel
 from tests.common import checkify_forward
 
@@ -59,7 +59,7 @@ def configure_precision_for_tests() -> None:
 #     if test_spec.requires_gpu and not torch.cuda.is_available():
 #         pytest.skip("GPU is required for this test")
 
-#     router_model, *_ = import_router_model(
+#     router_model, *_ = import_model(
 #         test_spec.model_repo,
 #         context_length=NUM_TOKENS * TOKEN_STRIDE,
 #         precision=test_spec.dtype.jax_dtype,

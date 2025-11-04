@@ -1,4 +1,4 @@
-from .common import FileSpec, ModelSpec, UseCase, build_quantized_models
+from .common import FileSpec, ModelSpec, ModelType, UseCase, build_quantized_models
 from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .gpt_oss import GPT_OSS_MODELS
@@ -16,6 +16,7 @@ __all__ = [
     "REPO_TO_MODEL",
     "FileSpec",
     "ModelSpec",
+    "ModelType",
     "UseCase",
 ]
 
