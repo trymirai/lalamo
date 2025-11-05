@@ -138,7 +138,9 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    self.quantization_config.bits
+                ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -167,20 +169,24 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            sliding_window_size=None,
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=[decoder_layer_config] * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
+            head_dim=(
+                self.head_dim
+                if self.head_dim is not None
+                else self.hidden_size // self.num_attention_heads
+            ),
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=None,
             context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(

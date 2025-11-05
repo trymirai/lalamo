@@ -66,7 +66,7 @@ class TransformerResult(eqx.Module):
 class TransformerConfig:
     global_rope_config: RoPEConfig
     local_rope_config: RoPEConfig | None
-    layer_config: TransformerLayerConfig
+    layer_configs: list[TransformerLayerConfig]
     output_norm_config: NormalizationConfig
 
     model_dim: int
@@ -76,40 +76,22 @@ class TransformerConfig:
     head_dim: int
     attention_scale: float | None
     num_layers: int
-    sliding_window_sizes: tuple[int | None, ...] | None
     context_length: int
 
     def __post_init__(self) -> None:
-        if self.local_rope_config is not None and self.sliding_window_sizes is None:
-            raise ValueError(
-                "Sliding window sizes must be provided when using local RoPE"
-            )
-        if self.sliding_window_sizes is None:
-            return
-        if len(self.sliding_window_sizes) != self.num_layers:
-            raise ValueError(
-                f"Number of sliding window sizes {len(self.sliding_window_sizes)} does not match"
-                f" the number of layers {self.num_layers}",
-            )
+        pass  # for now ...
 
-    def random_init(
-        self,
-        is_causal: bool,
-        *,
-        key: PRNGKeyArray,
-        skip_pre_attention_norm: bool = False,
-    ) -> "Transformer":
+    def random_init(self, is_causal: bool, *, key: PRNGKeyArray) -> "Transformer":
         global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
             num_timesteps=self.context_length,
         )
 
         if self.local_rope_config:
-            assert self.sliding_window_sizes is not None
             max_sliding_window_size = max(
-                window_size
-                for window_size in self.sliding_window_sizes
-                if window_size is not None
+                layer_config.sliding_window_size
+                for layer_config in self.layer_configs
+                if layer_config.sliding_window_size is not None
             )
             local_rope = self.local_rope_config.init(
                 head_dim=self.head_dim,
@@ -118,28 +100,20 @@ class TransformerConfig:
         else:
             local_rope = None
 
-        if self.sliding_window_sizes is None:
-            sliding_window_sizes = [None] * self.num_layers
-        else:
-            sliding_window_sizes = self.sliding_window_sizes
-
         layers_keys = jax.random.split(key, self.num_layers)
-        layer_indices = range(self.num_layers)
         layers = tuple(
-            self.layer_config.random_init(
+            layer_config.random_init(
                 model_dim=self.model_dim,
                 hidden_dim=self.hidden_dim,
                 num_heads=self.num_heads,
                 num_groups=self.num_groups,
                 head_dim=self.head_dim,
                 attention_scale=self.attention_scale,
-                sliding_window_size=sliding_window_size,
                 is_causal=is_causal,
                 key=layer_key,
-                skip_pre_attention_norm=(skip_pre_attention_norm and layer_idx == 0),
             )
-            for sliding_window_size, layer_key, layer_idx in zip(
-                sliding_window_sizes, layers_keys, layer_indices, strict=True
+            for layer_key, layer_config in zip(
+                layers_keys, self.layer_configs, strict=True
             )
         )
         output_norm = self.output_norm_config.init(self.model_dim)
@@ -152,9 +126,7 @@ class TransformerConfig:
             output_norm=output_norm,
         )
 
-    def empty(
-        self, is_causal: bool, skip_pre_attention_norm: bool = False
-    ) -> "Transformer":
+    def empty(self, is_causal: bool) -> "Transformer":
         global_rope = self.global_rope_config.init(
             head_dim=self.head_dim,
             num_timesteps=self.context_length,
@@ -168,28 +140,17 @@ class TransformerConfig:
         else:
             local_rope = None
 
-        if self.sliding_window_sizes is None:
-            sliding_window_sizes = [None] * self.num_layers
-        else:
-            sliding_window_sizes = self.sliding_window_sizes
-
-        layer_indices = range(self.num_layers)
-
         layers = tuple(
-            self.layer_config.empty(
+            layer_config.empty(
                 model_dim=self.model_dim,
                 hidden_dim=self.hidden_dim,
                 num_heads=self.num_heads,
                 num_groups=self.num_groups,
                 head_dim=self.head_dim,
                 attention_scale=self.attention_scale,
-                sliding_window_size=sliding_window_size,
                 is_causal=is_causal,
-                skip_pre_attention_norm=(skip_pre_attention_norm and layer_idx == 0),
             )
-            for sliding_window_size, layer_idx in zip(
-                sliding_window_sizes, layer_indices, strict=True
-            )
+            for layer_config in self.layer_configs
         )
         output_norm = self.output_norm_config.empty(self.model_dim)
 

@@ -103,7 +103,9 @@ class HFQwen2Config(HuggingFaceLMConfig):
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    self.quantization_config.bits
+                ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -125,18 +127,22 @@ class HFQwen2Config(HuggingFaceLMConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-        )
+        decoder_layer_configs = [
+            TransformerLayerConfig(
+                pre_attention_norm_config=rmsnorm_config,
+                attention_config=attention_config,
+                post_attention_norm_config=None,
+                pre_mlp_norm_config=rmsnorm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=None,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size in self._get_sliding_window_sizes()
+        ]
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=decoder_layer_configs,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
@@ -145,7 +151,6 @@ class HFQwen2Config(HuggingFaceLMConfig):
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=tuple(self._get_sliding_window_sizes()),
             context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(

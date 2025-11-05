@@ -157,6 +157,7 @@ class ClassifierActivationTrace(eqx.Module):
 class ClassifierResult(eqx.Module):
     logits: Float[Array, "batch logits"]
     activation_trace: ClassifierActivationTrace | None = None
+    labels: Mapping[str, float] | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -192,7 +193,6 @@ class ClassifierConfig:
         self,
         *,
         key: PRNGKeyArray,
-        skip_pre_attention_norm: bool = False,
     ) -> "Classifier":
         embedding_key, transformer_key, classifier_key = jax.random.split(key, num=3)
         embedding = self.embedding_config.random_init(
@@ -204,7 +204,6 @@ class ClassifierConfig:
         transformer = self.transformer_config.random_init(
             key=transformer_key,
             is_causal=False,
-            skip_pre_attention_norm=skip_pre_attention_norm,
         )
         final_linear = self.final_linear_config.random_init(
             input_dim=self.hidden_dim,
@@ -226,18 +225,13 @@ class ClassifierConfig:
             final_linear=final_linear,
         )
 
-    def empty(
-        self,
-        skip_pre_attention_norm: bool = False,
-    ) -> "Classifier":
+    def empty(self) -> "Classifier":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
         embedding_norm = self.embedding_norm_config.empty(self.model_dim)
-        transformer = self.transformer_config.empty(
-            is_causal=False, skip_pre_attention_norm=skip_pre_attention_norm
-        )
+        transformer = self.transformer_config.empty(is_causal=False)
         final_linear = self.final_linear_config.empty(
             input_dim=self.hidden_dim,
             output_dims=(self.num_labels,),

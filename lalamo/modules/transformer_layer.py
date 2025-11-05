@@ -81,12 +81,13 @@ class TransformerLayerResult(eqx.Module):
 
 @dataclass(frozen=True)
 class TransformerLayerConfig:
-    pre_attention_norm_config: NormalizationConfig
+    pre_attention_norm_config: NormalizationConfig | None
     attention_config: AttentionConfig
     post_attention_norm_config: NormalizationConfig | None
     pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
     post_mlp_norm_config: NormalizationConfig | None
+    sliding_window_size: int | None
 
     def random_init(
         self,
@@ -96,14 +97,12 @@ class TransformerLayerConfig:
         num_groups: int,
         head_dim: int,
         attention_scale: float | None,
-        sliding_window_size: int | None,
         is_causal: bool,
         *,
         key: PRNGKeyArray,
-        skip_pre_attention_norm: bool = False,
     ) -> "TransformerLayer":
         attention_key, mlp_key = jax.random.split(key)
-        if not skip_pre_attention_norm:
+        if self.pre_attention_norm_config is not None:
             pre_attention_norm = self.pre_attention_norm_config.init(model_dim)
         else:
             pre_attention_norm = None
@@ -114,7 +113,7 @@ class TransformerLayerConfig:
             head_dim=head_dim,
             is_causal=is_causal,
             scale=attention_scale,
-            sliding_window_size=sliding_window_size,
+            sliding_window_size=self.sliding_window_size,
             key=attention_key,
         )
         if self.post_attention_norm_config is not None:
@@ -145,13 +144,9 @@ class TransformerLayerConfig:
         num_groups: int,
         head_dim: int,
         attention_scale: float | None,
-        sliding_window_size: int | None,
         is_causal: bool,
-        # TODO: this one is ugly, but need a mechanism to disable pre-attention normalization
-        # ONLY for the very first layer in the stack of Transformer layers of ModernBERT
-        skip_pre_attention_norm: bool = False,
     ) -> "TransformerLayer":
-        if self.pre_attention_norm_config is not None and not skip_pre_attention_norm:
+        if self.pre_attention_norm_config is not None:
             pre_attention_norm = self.pre_attention_norm_config.empty(model_dim)
         else:
             pre_attention_norm = None
@@ -162,7 +157,7 @@ class TransformerLayerConfig:
             head_dim=head_dim,
             is_causal=is_causal,
             scale=attention_scale,
-            sliding_window_size=sliding_window_size,
+            sliding_window_size=self.sliding_window_size,
         )
         if self.post_attention_norm_config is not None:
             post_attention_norm = self.post_attention_norm_config.empty(model_dim)

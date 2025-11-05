@@ -150,38 +150,54 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         )
         moe_config = MixtureOfExpertsConfig(
             mixture_size=self.num_local_experts,
-            num_experts_per_token=(self.num_experts_per_tok or self.experts_per_token or 1),
+            num_experts_per_token=(
+                self.num_experts_per_tok or self.experts_per_token or 1
+            ),
             routing_function=SoftmaxRouting(),
             router_config=linear_config,
             router_has_biases=True,
             expert_config=experts_config,
         )
-        decoder_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=moe_config,
-            post_mlp_norm_config=None,
-        )
-
         # Per-layer sliding-window
-        if self.layer_types is not None and len(self.layer_types) == self.num_hidden_layers:
+        if (
+            self.layer_types is not None
+            and len(self.layer_types) == self.num_hidden_layers
+        ):
             sliding_window_sizes = tuple(
-                self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
+                self.sliding_window if layer_type == "sliding_attention" else None
+                for layer_type in self.layer_types
             )
         else:
             # Fallback: apply the same sliding window to all layers if provided
             sliding_window_sizes = (
-                tuple([self.sliding_window] * self.num_hidden_layers) if self.sliding_window is not None else None
+                tuple([self.sliding_window] * self.num_hidden_layers)
+                if self.sliding_window is not None
+                else tuple([None] * self.num_hidden_layers)
             )
 
-        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
+        decoder_layer_configs = [
+            TransformerLayerConfig(
+                pre_attention_norm_config=rmsnorm_config,
+                attention_config=attention_config,
+                post_attention_norm_config=None,
+                pre_mlp_norm_config=rmsnorm_config,
+                mlp_config=moe_config,
+                post_mlp_norm_config=None,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size in sliding_window_sizes
+        ]
+
+        head_dim = (
+            self.head_dim
+            if self.head_dim is not None
+            else self.hidden_size // self.num_attention_heads
+        )
 
         trasnformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=decoder_layer_configs,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
@@ -190,7 +206,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             head_dim=head_dim,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=sliding_window_sizes,
             context_length=context_length or self.max_position_embeddings,
         )
 

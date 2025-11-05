@@ -154,11 +154,12 @@ class ETLlamaConfig(ExecutorchConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            sliding_window_size=None,
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=[decoder_layer_config] * self.n_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),
@@ -167,7 +168,6 @@ class ETLlamaConfig(ExecutorchConfig):
             head_dim=self.dim // self.n_heads,
             attention_scale=None,
             num_layers=self.n_layers,
-            sliding_window_sizes=None,
             context_length=context_length or MAX_SEQUENCE_LENGTH,
         )
         return DecoderConfig(

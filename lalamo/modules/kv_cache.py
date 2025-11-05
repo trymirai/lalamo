@@ -112,12 +112,12 @@ class DynamicKVCacheLayer(KVCacheLayer):
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
             result = jnp.tril(result, k=total_num_tokens - suffix_length)
-        if sliding_window_size is not None:
-            result = jnp.triu(result, k=1 - sliding_window_size)
-            # TODO: ModernBERT hack, using different sliding-window mask
-            # bottom_half = jnp.triu(result, k=-sliding_window_size // 2)
-            # top_half = jnp.invert(jnp.triu(result, k=sliding_window_size // 2 + 1))
-            # result = bottom_half * top_half
+            if sliding_window_size is not None:
+                result = jnp.triu(result, k=1 - sliding_window_size)
+        elif sliding_window_size is not None:
+            bottom_half = jnp.triu(result, k=-sliding_window_size // 2)
+            band = jnp.invert(jnp.triu(result, k=sliding_window_size // 2 + 1))
+            result = bottom_half * band
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:

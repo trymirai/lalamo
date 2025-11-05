@@ -107,20 +107,25 @@ class HFMistralConfig(HuggingFaceLMConfig):
             gate_clipping=None,
         )
 
-        decoder_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-        )
+        sliding_window_sizes = [self.sliding_window] * self.num_hidden_layers
+        decoder_layer_configs = [
+            TransformerLayerConfig(
+                pre_attention_norm_config=rmsnorm_config,
+                attention_config=attention_config,
+                post_attention_norm_config=None,
+                pre_mlp_norm_config=rmsnorm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=None,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size in sliding_window_sizes
+        ]
 
         head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=decoder_layer_configs,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
@@ -129,9 +134,6 @@ class HFMistralConfig(HuggingFaceLMConfig):
             head_dim=head_dim,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=tuple([self.sliding_window] * self.num_hidden_layers)
-            if self.sliding_window is not None
-            else None,
             context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(

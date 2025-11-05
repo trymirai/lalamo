@@ -1,10 +1,8 @@
-from ast import If
 import importlib.metadata
 from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 from typing import NamedTuple
 
@@ -18,7 +16,7 @@ from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModel
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.router_model import RouterModelConfig, RouterModel
+from lalamo.router_model import RouterConfig, RouterModel
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
@@ -75,7 +73,7 @@ class ModelMetadata:
     repo: str
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
-    model_config: LanguageModelConfig | RouterModelConfig
+    model_config: LanguageModelConfig | RouterConfig
 
 
 def download_file(
@@ -255,7 +253,7 @@ def _import_router_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[RouterModel, RouterModelConfig]:
+) -> tuple[RouterModel, RouterConfig]:
     foreign_classifier_config_file = download_config_file(model_spec)
     foreign_classifier_config = model_spec.config_type.from_json(
         foreign_classifier_config_file
@@ -288,8 +286,18 @@ def _import_router_model(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    router_model_config = RouterModelConfig(classifier_config=classifier.config)
-    router_model = RouterModel(router_model_config, classifier=classifier)
+    # TODO: will fix in forthcoming commits once chat_template is in the repo
+    # message_processor = import_message_processor(model_spec)
+
+    router_model_config = RouterConfig(
+        classifier_config=classifier.config,
+        # message_processor_config=message_processor.config,
+    )
+    router_model = RouterModel(
+        router_model_config,
+        classifier=classifier,
+        # message_processor=message_processor
+    )
     return router_model, router_model_config
 
 

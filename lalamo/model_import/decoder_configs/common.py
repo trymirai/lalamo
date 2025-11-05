@@ -101,5 +101,5 @@ class ForeignClassifierConfig(ForeignConfig, RegistryABC):
         config = self.to_classifier_config(
             context_length, activation_precision, accumulation_precision
         )
-        model = config.empty(skip_pre_attention_norm=True)
+        model = config.empty()
         return self._load_classifier_weights(model, weights_dict)

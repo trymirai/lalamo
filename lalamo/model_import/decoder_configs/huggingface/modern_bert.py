@@ -161,20 +161,34 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
+            activation_to_gate=False,
         )
-        transformer_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=transformer_norm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
-            pre_mlp_norm_config=transformer_norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-        )
+
+        # In ModernBERT architecture first Transformer layer has no pre-attention normalization
+        pre_attn_configs = [
+            transformer_norm_config if i > 0 else None
+            for i in range(self.num_hidden_layers)
+        ]
+
+        transformer_layer_configs = [
+            TransformerLayerConfig(
+                pre_attention_norm_config=pre_attn_config,
+                attention_config=attention_config,
+                post_attention_norm_config=None,
+                pre_mlp_norm_config=transformer_norm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=None,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size, pre_attn_config in zip(
+                sliding_window_sizes, pre_attn_configs, strict=True
+            )
+        ]
 
         transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
-            layer_config=transformer_layer_config,
+            layer_configs=transformer_layer_configs,
             output_norm_config=transformer_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
@@ -183,7 +197,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=sliding_window_sizes,
             context_length=context_length or self.max_position_embeddings,
         )
 

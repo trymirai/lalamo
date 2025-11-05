@@ -87,6 +87,7 @@ class DenseMLPConfig(MLPConfigBase):
     has_down_biases: bool
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
+    activation_to_gate: Bool = (True,)
 
     def random_init(
         self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray
@@ -222,7 +223,8 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
     @eqx.filter_jit
     def call_unbatched(
-        self, inputs: Float[Array, " channels"]
+        self,
+        inputs: Float[Array, " channels"],
     ) -> Float[Array, " channels"]:
         if self.mixture_size is not None:
             raise ValueError(
@@ -234,11 +236,12 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             gate = jnp.clip(gate, *self.config.gate_clipping)
         if self.config.up_clipping:
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
-        gate = self.config.activation(gate)
-        (result,) = self.down_projection(up_proj * gate)
-        # # TODO: in ModernBERT hack, activation is applied to up-projection output, not gate
-        # up_proj = self.config.activation(up_proj)
-        # (result,) = self.down_projection(up_proj * gate)
+        if self.config.activation_to_gate:
+            gate = self.config.activation(gate)
+            (result,) = self.down_projection(up_proj * gate)
+        else:
+            up_proj = self.config.activation(up_proj)
+            (result,) = self.down_projection(up_proj * gate)
 
         return result
 

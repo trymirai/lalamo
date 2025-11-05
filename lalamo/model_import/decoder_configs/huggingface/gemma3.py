@@ -122,18 +122,22 @@ class HFGemma3TextConfigRaw:
             has_qkv_biases=self.attention_bias,
             has_out_biases=self.attention_bias,
         )
-        decoder_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=rms_norm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=rms_norm_config,
-            pre_mlp_norm_config=rms_norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=rms_norm_config,
-        )
+        decoder_layer_configs = [
+            TransformerLayerConfig(
+                pre_attention_norm_config=rms_norm_config,
+                attention_config=attention_config,
+                post_attention_norm_config=rms_norm_config,
+                pre_mlp_norm_config=rms_norm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=rms_norm_config,
+                sliding_window_size=sliding_window_size,
+            )
+            for sliding_window_size in self.sliding_window_sizes
+        ]
         transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
-            layer_config=decoder_layer_config,
+            layer_configs=decoder_layer_configs,
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
@@ -142,7 +146,7 @@ class HFGemma3TextConfigRaw:
             head_dim=self.head_dim,
             attention_scale=attention_scale,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=tuple(self.sliding_window_sizes),
+            # sliding_window_sizes=tuple(self.sliding_window_sizes),
             context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(
