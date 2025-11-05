@@ -126,7 +126,9 @@ def test_rmsnorm_with_custom_scales():
 
     # Mean should still be close to 0 due to subtract_mean
     output_mean = jnp.mean(output)
-    assert jnp.isclose(output_mean, 0.0, atol=0.1)  # Looser tolerance with non-uniform scales
+    assert jnp.isclose(
+        output_mean, 0.0, atol=0.1
+    )  # Looser tolerance with non-uniform scales
 
 
 def test_rmsnorm_zero_input():

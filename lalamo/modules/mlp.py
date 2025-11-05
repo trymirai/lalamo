@@ -236,7 +236,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
-        # TODO: in ModernBERT activation is applied to up-projection output, not gate
+        # # TODO: in ModernBERT hack, activation is applied to up-projection output, not gate
         # up_proj = self.config.activation(up_proj)
         # (result,) = self.down_projection(up_proj * gate)
 

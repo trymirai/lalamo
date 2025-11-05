@@ -26,12 +26,22 @@
             "args" : [
             ]
         },
-                {
+        {
             "name": "Run Moder-Bert stuff",
             "type": "debugpy",
             "request": "launch",
             "justMyCode": false,
             "program": "${workspaceFolder}/sandbox/modern_bert_jax.py",
+            "console": "integratedTerminal",
+            "args" : [
+            ]
+        },
+        {
+            "name": "Individual tests",
+            "type": "debugpy",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "${workspaceFolder}/tests/test_huggingface_modern_bert.py",
             "console": "integratedTerminal",
             "args" : [
             ]

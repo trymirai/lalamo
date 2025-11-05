@@ -10,7 +10,7 @@ from mlx_lm.utils import load
 
 from lalamo.modules.decoder import DecoderActivationTrace
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.test_models import DecoderTracer, DType
+from tests.test_models import ModelTracer, DType
 
 
 def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
@@ -22,7 +22,9 @@ def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
 
 
 @dataclass(frozen=True)
-class MLXDecoderTracer(DecoderTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, nn.Module]):
+class MLXDecoderTracer(
+    ModelTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, nn.Module]
+):
     mlx_model: nn.Module
     mlx_tokenizer: TokenizerWrapper
 
@@ -114,9 +116,9 @@ class MLXDecoderTracer(DecoderTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module,
         input_ids: mx.array,
         position_ids: mx.array,
     ) -> tuple[tuple[mx.array, ...], mx.array, mx.array]:
-        assert mx.array_equal(position_ids.squeeze(), mx.arange(position_ids.shape[-1])), (
-            "mlx always does sequential position_ids"
-        )
+        assert mx.array_equal(
+            position_ids.squeeze(), mx.arange(position_ids.shape[-1])
+        ), "mlx always does sequential position_ids"
 
         assert self.mlx_model.model is not None
 
@@ -134,6 +136,8 @@ class MLXDecoderTracer(DecoderTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module,
         mlx_model, mlx_tokenizer, *_ = load(model_repo)
 
         if dtype is not None:
-            mlx_model.apply(lambda x: x.astype(dtype.mlx_dtype) if x.dtype == mx.bfloat16 else x)
+            mlx_model.apply(
+                lambda x: x.astype(dtype.mlx_dtype) if x.dtype == mx.bfloat16 else x
+            )
 
         return cls(mlx_model, mlx_tokenizer)

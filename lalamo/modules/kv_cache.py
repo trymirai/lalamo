@@ -66,7 +66,9 @@ class KVCache(tuple[KVCacheLayer, ...]):
         return (tuple(self), None)
 
     @classmethod
-    def tree_unflatten(cls, aux_data: None, children: tuple[KVCacheLayer, ...]) -> Self:  # noqa: ARG003
+    def tree_unflatten(
+        cls, aux_data: None, children: tuple[KVCacheLayer, ...]
+    ) -> Self:  # noqa: ARG003
         return cls(children)
 
 
@@ -100,7 +102,9 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
+        suffix_length_without_padding: (
+            Int[Array, ""] | int | None
+        ) = None,  # noqa: ARG002
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
@@ -110,6 +114,10 @@ class DynamicKVCacheLayer(KVCacheLayer):
             result = jnp.tril(result, k=total_num_tokens - suffix_length)
         if sliding_window_size is not None:
             result = jnp.triu(result, k=1 - sliding_window_size)
+            # TODO: ModernBERT hack, using different sliding-window mask
+            # bottom_half = jnp.triu(result, k=-sliding_window_size // 2)
+            # top_half = jnp.invert(jnp.triu(result, k=sliding_window_size // 2 + 1))
+            # result = bottom_half * top_half
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
@@ -138,9 +146,15 @@ class DynamicKVCacheLayer(KVCacheLayer):
             old_num_tokens, _, _ = self.keys.shape
             old_padding_mask = jnp.ones(old_num_tokens, dtype=jnp.bool)
 
-        added_padding_mask = jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
-        updated_padding_mask = jnp.concatenate([old_padding_mask, added_padding_mask], axis=0)
-        return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
+        added_padding_mask = (
+            jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
+        )
+        updated_padding_mask = jnp.concatenate(
+            [old_padding_mask, added_padding_mask], axis=0
+        )
+        return DynamicKVCacheLayer(
+            self.has_sinks, updated_keys, updated_values, updated_padding_mask
+        )
 
 
 class StaticKVCacheLayer(KVCacheLayer):
@@ -157,7 +171,10 @@ class StaticKVCacheLayer(KVCacheLayer):
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
         if is_causal:
-            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            query_offsets = (
+                jnp.arange(0, suffix_length, dtype=jnp.int32)
+                - suffix_length_without_padding
+            )
         else:
             query_offsets = jnp.zeros(suffix_length, dtype=jnp.int32)
 
@@ -166,7 +183,9 @@ class StaticKVCacheLayer(KVCacheLayer):
 
         result = query_indices[:, None] >= key_indices[None, :]
         if sliding_window_size is not None:
-            swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
+            swa_mask = query_indices[:, None] < (
+                key_indices[None, :] + sliding_window_size
+            )
             result = result & swa_mask
         if self.has_sinks:
             result = result.at[:, 0].set(True)
@@ -196,7 +215,9 @@ class StaticKVCacheLayer(KVCacheLayer):
         num_added_tokens, new_num_groups, new_head_dim = added_keys.shape
         _, old_num_groups, old_head_dim = self.keys.shape
         if new_num_groups != old_num_groups or new_head_dim != old_head_dim:
-            raise ValueError("New keys and values must have the same number of groups and head dimensions")
+            raise ValueError(
+                "New keys and values must have the same number of groups and head dimensions"
+            )
 
         if added_length is None:
             added_length = num_added_tokens
@@ -224,7 +245,14 @@ class StaticKVCacheLayer(KVCacheLayer):
         )
 
     @classmethod
-    def empty(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
+    def empty(
+        cls,
+        has_sinks: bool,
+        capacity: int,
+        num_groups: int,
+        head_dim: int,
+        dtype: DTypeLike,
+    ) -> Self:
         return cls(
             has_sinks=has_sinks,
             keys=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),
