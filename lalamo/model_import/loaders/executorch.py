@@ -224,7 +224,7 @@ def load_attention(
     )
 
 
-def load_decoder_layer(
+def load_transformer_layer(
     module: TransformerLayer,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -272,7 +272,7 @@ def load_executorch(module: Decoder, weights_dict: Mapping[str, Array]) -> Decod
         module.embedding, weights_dict, root_path / "tok_embeddings"
     )
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, root_path / f"layers.{i}")
+        load_transformer_layer(layer, weights_dict, root_path / f"layers.{i}")
         for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(

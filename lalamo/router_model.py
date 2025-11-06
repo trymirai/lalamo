@@ -4,6 +4,7 @@ from typing import Self
 
 from jax import Array
 from jax import numpy as jnp
+from jaxtyping import Float
 
 from lalamo.common import DTypeLike, ParameterTree
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig
@@ -12,7 +13,7 @@ from lalamo.modules import Classifier, ClassifierConfig, LalamoModule
 
 @dataclass
 class RouterResult:
-    message_labels: Mapping[str, float]
+    message_labels: Mapping[str, Float]
 
 
 @dataclass(frozen=True)
@@ -55,5 +56,6 @@ class RouterModel(LalamoModule[RouterConfig]):
             token_ids=token_ids, token_positions=token_positions
         )
 
-        assert classifier_output.labels is not None
-        return RouterResult(message_labels=classifier_output.labels)
+        if len(classifier_output.labels) > 0:
+            raise ValueError("Expecting to have only single output batch")
+        return RouterResult(message_labels=classifier_output.labels[0])

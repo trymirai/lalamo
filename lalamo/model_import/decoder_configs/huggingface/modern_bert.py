@@ -227,7 +227,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             normalization_config=prediction_head_norm_config,
             final_linear_config=prediction_head_final_linear_config,
             use_dense_bias=self.classifier_bias,
-            use_norm_bias=self.norm_bias,
         )
 
         output_labels = [self.id2label[idx] for idx in range(len(self.id2label))]

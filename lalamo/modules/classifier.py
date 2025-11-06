@@ -5,9 +5,9 @@ from typing import Self
 
 import equinox as eqx
 import jax
+from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
-from jax import numpy as jnp
 
 from lalamo.common import ParameterTree
 from lalamo.modules.normalization import NormalizationConfig
@@ -19,7 +19,7 @@ from lalamo.modules.transformer import (
 )
 from lalamo.modules.utils import vmap_twice
 
-from .activations import Activation, GELU, SiLU
+from .activations import GELU, Activation, SiLU
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
@@ -39,7 +39,7 @@ class PoolingType(StrEnum):
     MEAN = "mean"
 
 
-def activation_from_str(activation: str) -> Activation:
+def activation_from_str(activation: str) -> type[Activation]:
     supported_activations = {
         "silu": SiLU,
         "gelu": GELU,
@@ -59,7 +59,6 @@ class PredictionHeadConfig:
     normalization_config: NormalizationConfig
     final_linear_config: LinearConfig
     use_dense_bias: bool
-    use_norm_bias: bool  # NOTE: currently not used because Normalization class does not support bias
 
     def empty(self, input_size: int, num_labels: int) -> "PredictionHead":
         dense_layer = self.dense_config.empty(
@@ -67,7 +66,6 @@ class PredictionHeadConfig:
             output_dims=(input_size,),
             has_biases=self.use_dense_bias,
         )
-        activation = self.activation
         norm = self.normalization_config.empty(input_size)
         final_linear = self.final_linear_config.empty(
             input_dim=input_size, output_dims=(num_labels,), has_biases=True
@@ -76,7 +74,7 @@ class PredictionHeadConfig:
         return PredictionHead(
             config=self,
             dense=dense_layer,
-            activation=activation,
+            activation=self.activation,
             norm=norm,
             final_linear=final_linear,
         )
@@ -88,7 +86,6 @@ class PredictionHeadConfig:
         dense_layer = self.dense_config.random_init(
             input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key
         )
-        activation = self.activation
         norm = self.normalization_config.empty(input_size)
         final_linear = self.final_linear_config.random_init(
             input_dim=input_size,
@@ -100,7 +97,7 @@ class PredictionHeadConfig:
         return PredictionHead(
             config=self,
             dense=dense_layer,
-            activation=activation,
+            activation=self.activation,
             norm=norm,
             final_linear=final_linear,
         )
@@ -115,10 +112,16 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     def __call__(
         self, inner_features: Float[Array, "batch in_channels"]
     ) -> Float[Array, "batch n_logits"]:
-        (dense_outs,) = vmap(self.dense)(inner_features)
-        dense_outs = vmap(self.activation)(dense_outs)
-        norm_outs = vmap(self.norm)(dense_outs)
-        (result,) = vmap(self.final_linear)(norm_outs)
+        return vmap(self.call_unbatched)(inner_features)
+
+    def call_unbatched(
+        self,
+        inner_features: Float[Array, " in_channels"],
+    ) -> Float[Array, " logits"]:
+        (dense_outs,) = self.dense(inner_features)
+        dense_outs = self.activation(dense_outs)
+        norm_outs = self.norm(dense_outs)
+        (result,) = self.final_linear(norm_outs)
         return result
 
     @property
@@ -180,8 +183,8 @@ class ClassifierActivationTrace(eqx.Module):
 
 class ClassifierResult(eqx.Module):
     logits: Float[Array, "batch logits"]
+    labels: list[Mapping[str, Float]]
     activation_trace: ClassifierActivationTrace | None = None
-    labels: list[Mapping[str, Float]] | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -220,7 +223,9 @@ class ClassifierConfig:
         *,
         key: PRNGKeyArray,
     ) -> "Classifier":
-        embedding_key, transformer_key = jax.random.split(key)
+        embedding_key, transformer_key, prediction_head_key = jax.random.split(
+            key, num=3
+        )
         embedding = self.embedding_config.random_init(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
@@ -234,7 +239,7 @@ class ClassifierConfig:
         prediction_head = self.prediction_head_config.random_init(
             input_size=self.hidden_dim,
             num_labels=self.num_labels,
-            key=key,
+            key=prediction_head_key,
         )
         return Classifier(
             self,
@@ -367,8 +372,8 @@ class Classifier(LalamoModule[ClassifierConfig]):
 
         return ClassifierResult(
             logits=logits,
-            activation_trace=activation_trace,
             labels=labels,
+            activation_trace=activation_trace,
         )
 
     def export_weights(self) -> ParameterTree:

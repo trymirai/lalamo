@@ -399,7 +399,7 @@ def load_attention(
     )
 
 
-def load_decoder_layer(
+def load_transformer_layer(
     module: TransformerLayer,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -536,7 +536,7 @@ def load_huggingface_decoder(
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i)
+        load_transformer_layer(layer, weights_dict, decoder_path / "layers" / i)
         for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(
