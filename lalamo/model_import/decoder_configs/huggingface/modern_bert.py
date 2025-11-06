@@ -211,17 +211,17 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
-        head_activation = activation_from_str(self.classifier_activation)
+        prediction_head_activation = activation_from_str(self.classifier_activation)
+        prediction_head_final_linear_config = FullPrecisionLinearConfig(
+            precision=activation_precision,
+        )
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
-            activation=head_activation(),
+            activation=prediction_head_activation(),
             normalization_config=prediction_head_norm_config,
+            final_linear_config=prediction_head_final_linear_config,
             use_dense_bias=self.classifier_bias,
             use_norm_bias=self.norm_bias,
-        )
-
-        final_linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
         )
 
         return ClassifierConfig(
@@ -229,7 +229,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             embedding_norm_config=embedding_norm_config,
             transformer_config=transformer_config,
             prediction_head_config=prediction_head_config,
-            final_linear_config=final_linear_config,
+            final_linear_config=prediction_head_final_linear_config,
             vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.hidden_size,

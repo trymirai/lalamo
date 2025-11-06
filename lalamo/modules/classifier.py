@@ -57,34 +57,52 @@ class PredictionHeadConfig:
     dense_config: LinearConfig
     activation: Activation
     normalization_config: NormalizationConfig
+    final_linear_config: LinearConfig
     use_dense_bias: bool
     use_norm_bias: bool  # NOTE: currently not used because Normalization class does not support bias
 
-    def empty(self, input_size: int, output_size: int) -> "PredictionHead":
+    def empty(self, input_size: int, num_labels: int) -> "PredictionHead":
         dense_layer = self.dense_config.empty(
             input_dim=input_size,
-            output_dims=(output_size,),
+            output_dims=(input_size,),
             has_biases=self.use_dense_bias,
         )
         activation = self.activation
-        norm = self.normalization_config.empty(output_size)
+        norm = self.normalization_config.empty(input_size)
+        final_linear = self.final_linear_config.empty(
+            input_dim=input_size, output_dims=(num_labels,), has_biases=True
+        )
 
         return PredictionHead(
-            config=self, dense=dense_layer, activation=activation, norm=norm
+            config=self,
+            dense=dense_layer,
+            activation=activation,
+            norm=norm,
+            final_linear=final_linear,
         )
 
     def random_init(
-        self, input_size: int, output_size: int, key: PRNGKeyArray
+        self, input_size: int, num_labels: int, key: PRNGKeyArray
     ) -> "PredictionHead":
-        dense_key, _ = jax.random.split(key)
+        dense_key, final_linear_key = jax.random.split(key)
         dense_layer = self.dense_config.random_init(
-            input_size, (output_size,), has_biases=self.use_dense_bias, key=dense_key
+            input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key
         )
         activation = self.activation
-        norm = self.normalization_config.empty(output_size)
+        norm = self.normalization_config.empty(input_size)
+        final_linear = self.final_linear_config.random_init(
+            input_dim=input_size,
+            output_dims=(num_labels,),
+            has_biases=True,
+            key=final_linear_key,
+        )
 
         return PredictionHead(
-            config=self, dense=dense_layer, activation=activation, norm=norm
+            config=self,
+            dense=dense_layer,
+            activation=activation,
+            norm=norm,
+            final_linear=final_linear,
         )
 
 
@@ -92,13 +110,16 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     dense: LinearBase
     activation: Activation
     norm: Normalization
+    final_linear: LinearBase
 
     def __call__(
         self, inner_features: Float[Array, "batch in_channels"]
     ) -> Float[Array, "batch out_channels"]:
         (dense_outs,) = vmap(self.dense)(inner_features)
         dense_outs = vmap(self.activation)(dense_outs)
-        return vmap(self.norm)(dense_outs)
+        norm_outs = vmap(self.norm)(dense_outs)
+        (result,) = vmap(self.final_linear)(norm_outs)
+        return result
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -108,6 +129,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         result = dict(
             dense=self.dense.export_weights(),
             norm=self.norm.export_weights(),
+            final_linear=self.final_linear.export_weights(),
         )
         return result
 
@@ -118,10 +140,12 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         assert isinstance(weights, Mapping)
         assert isinstance(weights["dense"], Mapping)
         assert isinstance(weights["norm"], Mapping)
+        assert isinstance(weights["final_linear"], Mapping)
         return replace(
             self,
             dense=self.dense.import_weights(weights["dense"]),
             norm=self.norm.import_weights(weights["norm"]),
+            final_linear=self.norm.import_weights(weights["final_linear"]),
         )
 
 
@@ -136,7 +160,7 @@ class ClassifierActivationTrace(eqx.Module):
     layer_results: tuple[TransformerLayerResult, ...]
     output_norm: Float[Array, "batch tokens channels"]
     output_pooling: Float[Array, "batch channels"]
-    output_prediction_head: Float[Array, "batch channels"]
+    logits: Float[Array, "batch n_labels"]
 
     def export(self) -> ParameterTree:
         result = dict(
@@ -149,7 +173,7 @@ class ClassifierActivationTrace(eqx.Module):
             ],
             output_norm=self.output_norm,
             output_pooling=self.output_pooling,
-            output_prediction_head=self.output_prediction_head,
+            logits=self.logits,
         )
         return result
 
@@ -205,15 +229,9 @@ class ClassifierConfig:
             key=transformer_key,
             is_causal=False,
         )
-        final_linear = self.final_linear_config.random_init(
-            input_dim=self.hidden_dim,
-            output_dims=(self.num_labels,),
-            has_biases=True,
-            key=classifier_key,
-        )
         prediction_head = self.prediction_head_config.random_init(
             input_size=self.hidden_dim,
-            output_size=self.hidden_dim,
+            num_labels=self.num_labels,
             key=key,
         )
         return Classifier(
@@ -222,7 +240,6 @@ class ClassifierConfig:
             embedding_norm=embedding_norm,
             transformer=transformer,
             prediction_head=prediction_head,
-            final_linear=final_linear,
         )
 
     def empty(self) -> "Classifier":
@@ -232,14 +249,9 @@ class ClassifierConfig:
         )
         embedding_norm = self.embedding_norm_config.empty(self.model_dim)
         transformer = self.transformer_config.empty(is_causal=False)
-        final_linear = self.final_linear_config.empty(
-            input_dim=self.hidden_dim,
-            output_dims=(self.num_labels,),
-            has_biases=True,
-        )
         prediction_head = self.prediction_head_config.empty(
             input_size=self.hidden_dim,
-            output_size=self.hidden_dim,
+            num_labels=self.num_labels,
         )
         return Classifier(
             self,
@@ -247,7 +259,6 @@ class ClassifierConfig:
             embedding_norm=embedding_norm,
             transformer=transformer,
             prediction_head=prediction_head,
-            final_linear=final_linear,
         )
 
 
@@ -256,7 +267,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
     embedding_norm: Normalization
     transformer: Transformer
     prediction_head: PredictionHead
-    final_linear: LinearBase
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -301,8 +311,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
                 f"classifier_pooling of unknown type: {self.config.classifier_pooling}"
             )
 
-        prediction_output = self.prediction_head(pooled_output)
-        (logits,) = vmap(self.final_linear)(prediction_output)
+        logits = self.prediction_head(pooled_output)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
@@ -317,13 +326,13 @@ class Classifier(LalamoModule[ClassifierConfig]):
                 layer_results=tuple(transformer_result.layer_results),
                 output_norm=transformer_result.outputs,
                 output_pooling=pooled_output,
-                output_prediction_head=prediction_output,
+                logits=logits,
             )
         else:
             activation_trace = None
 
         return ClassifierResult(
-            logits=logits,
+            logits=logits,  # TODO: replace with labels dict
             activation_trace=activation_trace,
         )
 
@@ -332,7 +341,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
             embedding=self.embedding.export_weights(),
             transformer=self.transformer.export_weights(),
             prediction_head=self.prediction_head.export_weights(),
-            final_linear=self.final_linear.export_weights(),
         )
         return result
 
@@ -352,5 +360,4 @@ class Classifier(LalamoModule[ClassifierConfig]):
             prediction_head=self.prediction_head.import_weights(
                 weights["prediction_head"]
             ),
-            final_linear=self.final_linear.import_weights(weights["final_linear"]),
         )

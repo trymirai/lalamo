@@ -1,6 +1,6 @@
 from lalamo.model_import.decoder_configs import HFLlamaConfig
 
-from .common import ModelSpec, ModelType
+from .common import ModelSpec
 
 __all__ = ["HUGGINGFACE_MODELS"]
 

@@ -463,25 +463,6 @@ class HFClassifierTracer(ModelTracer):
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_readout(self, result: ClassifierResult) -> None:
-        assert result.activation_trace is not None
-
-        llm_logits = result.logits
-
-        ref_normalized_outputs = jax_to_torch(
-            result.activation_trace.output_prediction_head
-        )[None, ...].to(self.device)
-        hf_logits = self.hf_model.classifier(ref_normalized_outputs)  # type: ignore
-
-        ref_logits = torch_to_jax(hf_logits).squeeze(0)
-
-        assert_close(
-            result=llm_logits,
-            reference=ref_logits,
-            operation_name="Readout (final linear)",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
     def match_layer(
         self,
         layer_result: TransformerLayerResult,
@@ -679,15 +660,6 @@ class HFClassifierTracer(ModelTracer):
             "Output RMSNorm",
         )
 
-        self.match_prediction_head(
-            result.activation_trace.output_pooling,
-            result.activation_trace.output_prediction_head,
-            self.hf_model.head,
-            "Prediction Head",
-        )
-
-        self.match_readout(result)
-
         hf_input_ids = jax_to_torch(result.activation_trace.token_ids).to(self.device)
         hf_token_positions = jax_to_torch(result.activation_trace.token_positions).to(
             self.device
@@ -727,6 +699,9 @@ class HFClassifierTracer(ModelTracer):
             operation_name="End2End Output Normalized",
         )
 
+        # NOTE: logits used to be compared in 'match_readout' but after moving
+        # final classification layer into PredictionHead it becomes awkward.
+        # Instead we just compare logits at the output of full HF model with ours.
         assert hf_outputs.logits is not None
         assert_close(
             result=result.logits,
