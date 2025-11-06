@@ -114,7 +114,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
 
     def __call__(
         self, inner_features: Float[Array, "batch in_channels"]
-    ) -> Float[Array, "batch out_channels"]:
+    ) -> Float[Array, "batch n_logits"]:
         (dense_outs,) = vmap(self.dense)(inner_features)
         dense_outs = vmap(self.activation)(dense_outs)
         norm_outs = vmap(self.norm)(dense_outs)
@@ -181,7 +181,7 @@ class ClassifierActivationTrace(eqx.Module):
 class ClassifierResult(eqx.Module):
     logits: Float[Array, "batch logits"]
     activation_trace: ClassifierActivationTrace | None = None
-    labels: Mapping[str, float] | None = None
+    labels: list[Mapping[str, Float]] | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -213,12 +213,14 @@ class ClassifierConfig:
     num_labels: int
     classifier_pooling: PoolingType
 
+    output_labels: tuple[str, ...] | None
+
     def random_init(
         self,
         *,
         key: PRNGKeyArray,
     ) -> "Classifier":
-        embedding_key, transformer_key, classifier_key = jax.random.split(key, num=3)
+        embedding_key, transformer_key = jax.random.split(key)
         embedding = self.embedding_config.random_init(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
@@ -271,6 +273,33 @@ class Classifier(LalamoModule[ClassifierConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
+
+    def __post_init__(self) -> None:
+        if (
+            self.config.output_labels is not None
+            and len(self.config.output_labels) != self.config.num_labels
+        ):
+            raise ValueError(
+                "Number of output logits is different from provided list of labels"
+            )
+
+    def label_output_logits(
+        self, logits: Float[Array, " logits"]
+    ) -> Mapping[str, Float]:
+        labels = (
+            self.config.output_labels
+            if self.config.output_labels is not None
+            else [f"class_{idx}" for idx in range(self.config.num_labels)]
+        )
+
+        n_labels = len(labels)
+        if n_labels != logits.shape[0]:
+            raise ValueError(
+                "Number of output logits is different from provided list of labels"
+            )
+
+        sigmoids: Array = jax.nn.sigmoid(logits)
+        return {labels[idx]: sigmoids[idx] for idx in range(n_labels)}
 
     @eqx.filter_jit
     def __call__(
@@ -331,9 +360,15 @@ class Classifier(LalamoModule[ClassifierConfig]):
         else:
             activation_trace = None
 
+        batch_size, _ = logits.shape
+        labels = [
+            self.label_output_logits(logits[batch]) for batch in range(batch_size)
+        ]
+
         return ClassifierResult(
-            logits=logits,  # TODO: replace with labels dict
+            logits=logits,
             activation_trace=activation_trace,
+            labels=labels,
         )
 
     def export_weights(self) -> ParameterTree:

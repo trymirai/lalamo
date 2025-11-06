@@ -80,10 +80,16 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
     sep_token_id: int | list[int]
     transformers_version: str
     vocab_size: int
-    id2label: dict[str, str]
+    id2label: dict[int, str]
     label2id: dict[str, int]
 
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
+
+    def __post_init__(self) -> None:
+        if len(self.label2id) != len(self.id2label):
+            raise ValueError(
+                "Legnth of label2id and id2label is expected to be the same"
+            )
 
     def calculate_sliding_windows(
         self, num_layers: int, global_attn_every_n_layers: int
@@ -224,6 +230,8 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             use_norm_bias=self.norm_bias,
         )
 
+        output_labels = [self.id2label[idx] for idx in range(len(self.id2label))]
+
         return ClassifierConfig(
             embedding_config=embedding_config,
             embedding_norm_config=embedding_norm_config,
@@ -240,6 +248,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             num_layers=self.num_hidden_layers,
             sliding_window_sizes=sliding_window_sizes,
             context_length=self.max_position_embeddings,
-            num_labels=len(self.label2id),
+            num_labels=len(self.id2label),
             classifier_pooling=PoolingType(self.classifier_pooling),
+            output_labels=tuple(output_labels),
         )
