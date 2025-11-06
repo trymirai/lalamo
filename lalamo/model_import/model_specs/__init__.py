@@ -4,6 +4,7 @@ from .gemma import GEMMA_MODELS
 from .gpt_oss import GPT_OSS_MODELS
 from .huggingface import HUGGINGFACE_MODELS
 from .llama import LLAMA_MODELS
+from .mirai import MIRAI_ROUTER_MODELS
 from .mistral import MISTRAL_MODELS
 
 # from .pleias import PLEIAS_MODELS
@@ -32,9 +33,8 @@ ALL_MODEL_LISTS = [
     POLARIS_MODELS,
     QWEN_MODELS,
     REKA_MODELS,
+    MIRAI_ROUTER_MODELS,
 ]
-
-# TODO: think how to separate out router models ... add separate ROUTER_MODELS ?
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
 

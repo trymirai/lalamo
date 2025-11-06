@@ -633,16 +633,14 @@ def load_huggingface_classifier(
         module: TransformerLayer,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
-        layer_idx: int,
     ) -> TransformerLayer:
-        if module.pre_attention_norm is not None and layer_idx > 0:
+        if module.pre_attention_norm is not None:
             pre_attention_norm = load_rmsnorm(
                 module.pre_attention_norm,
                 weights_dict,
                 path / "attn_norm",
             )
         else:
-            # TODO: in HF ModernBert we just load 'Identity' op for firts layer pre-attn norm
             pre_attention_norm = None
 
         attention = load_attention_local(module.attention, weights_dict, path / "attn")
@@ -707,9 +705,7 @@ def load_huggingface_classifier(
     )
 
     decoder_layers = tuple(
-        load_transformer_layer_local(
-            layer, weights_dict, decoder_path / "layers" / i, i
-        )
+        load_transformer_layer_local(layer, weights_dict, decoder_path / "layers" / i)
         for i, layer in enumerate(module.transformer.layers)
     )
     output_norm = load_rmsnorm(

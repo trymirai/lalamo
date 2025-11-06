@@ -24,13 +24,9 @@ from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.test_models import ModelTracer, DType
 
-# TODO: ModernBERT per-layer tracing, remove once refactoring finished
+# TODO(pglushkov): ModernBERT per-layer tracing, remove once refactoring finished
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
-from lalamo.modules import (
-    DecoderActivationTrace,
-    PositionalEmbeddings,
-    TransformerLayerResult,
-)
+from lalamo.modules import TransformerLayerResult
 from tests.common import assert_close
 import jax
 

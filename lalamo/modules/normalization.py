@@ -46,7 +46,6 @@ class NormalizationConfig:
 
 class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
-    # TODO: do we need to extend Normalizatino with bias?
 
     @property
     def activation_precision(self) -> DTypeLike:

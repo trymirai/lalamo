@@ -286,17 +286,15 @@ def _import_router_model(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    # TODO: will fix in forthcoming commits once chat_template is in the repo
-    # message_processor = import_message_processor(model_spec)
+    # TODO(pglushkov): will fix in forthcoming commits once chat_template
+    # is in the repo message_processor = import_message_processor(model_spec)
 
     router_model_config = RouterConfig(
         classifier_config=classifier.config,
-        # message_processor_config=message_processor.config,
+        message_processor_config=None,
     )
     router_model = RouterModel(
-        router_model_config,
-        classifier=classifier,
-        # message_processor=message_processor
+        router_model_config, classifier=classifier, message_processor=None
     )
     return router_model, router_model_config
 
