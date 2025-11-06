@@ -496,16 +496,16 @@ class HFClassifierTracer(ModelTracer):
         activation_trace = layer_result.activation_trace
         assert activation_trace is not None
 
+        use_global_attention = (
+            layer_index % hf_layer.config.global_attn_every_n_layers == 0
+        )
+
         hf_pre_attention_norm = hf_layer.attn_norm
         hf_pre_mlp_norm = hf_layer.mlp_norm
 
         attention_mask = torch.ones(
             activation_trace.pre_attention_norm.shape[0:2], dtype=torch.bool
         )
-
-        # attention_mask, sliding_window = self._update_attention_mask(
-        #     attention_mask, torch.float32, self.hf_model.config.local_attention
-        # )
 
         attention_mask, sliding_window = self.hf_model.model._update_attention_mask(
             attention_mask, output_attentions=False
@@ -526,7 +526,6 @@ class HFClassifierTracer(ModelTracer):
             hf_layer.attn,  # type: ignore
             attention_mask,
             sliding_window,
-            activation_trace.positional_embeddings,
             f"Layer {layer_index} Attention",
         )
 
@@ -544,20 +543,31 @@ class HFClassifierTracer(ModelTracer):
             f"Layer {layer_index} MLP",
         )
 
+        cosines = activation_trace.positional_embeddings.cosines
+        sines = activation_trace.positional_embeddings.sines
+        assert cosines.ndim == 3
+        torch_pos_ids = jax_to_torch(position_ids)
+        # NOTE: first argument to 'rotary_emb' should be qkv tensor but it is only used
+        # for its dtype and device, actual values are irrelevant.
+        fake_qkv = torch.ones(1, dtype=torch.float32, device=self.device)
+        ref_cosines, ref_sines = hf_layer.attn.rotary_emb(fake_qkv, torch_pos_ids)
+        assert_close(
+            result=sines,
+            reference=torch_to_jax(ref_sines),
+            operation_name=f"Rottary Embedding Cosines (global={use_global_attention})",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
+        )
+        assert_close(
+            result=cosines,
+            reference=torch_to_jax(ref_cosines),
+            operation_name=f"Rottary Embedding Cosines (global={use_global_attention})",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
+        )
+
         # Test full decoder layer
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
         assert ref_inputs.ndim == 3
-        cosines = jax_to_torch(activation_trace.positional_embeddings.cosines).to(
-            self.device
-        )
-        sines = jax_to_torch(activation_trace.positional_embeddings.sines).to(
-            self.device
-        )
-        assert cosines.ndim == 3
 
-        use_global_attention = (
-            layer_index % hf_layer.config.global_attn_every_n_layers == 0
-        )
         if not use_global_attention:
             hf_layer.attn.local_attention = (1, 1)
 
@@ -599,7 +609,6 @@ class HFClassifierTracer(ModelTracer):
         hf_attention: HFAttention,
         attention_mask: torch.Tensor,
         sliding_window_mask: torch.Tensor,
-        position_embeddings: PositionalEmbeddings,
         name: str,
     ) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
@@ -694,7 +703,6 @@ class HFClassifierTracer(ModelTracer):
         )
         assert hf_outputs.hidden_states is not None
 
-        ## ======= go as usual ...
         *hf_hidden_states, hf_last_non_norm_output = hf_outputs.hidden_states
 
         for i, (hf_layer_inputs, layer_result) in enumerate(

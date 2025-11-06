@@ -115,9 +115,8 @@ class DynamicKVCacheLayer(KVCacheLayer):
             if sliding_window_size is not None:
                 result = jnp.triu(result, k=1 - sliding_window_size)
         elif sliding_window_size is not None:
-            bottom_half = jnp.triu(result, k=-sliding_window_size // 2)
-            band = jnp.invert(jnp.triu(result, k=sliding_window_size // 2 + 1))
-            result = bottom_half * band
+            top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
+            result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
