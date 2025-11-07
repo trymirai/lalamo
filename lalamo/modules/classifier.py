@@ -148,7 +148,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
             self,
             dense=self.dense.import_weights(weights["dense"]),
             norm=self.norm.import_weights(weights["norm"]),
-            final_linear=self.norm.import_weights(weights["final_linear"]),
+            final_linear=self.final_linear.import_weights(weights["final_linear"]),
         )
 
 
@@ -392,7 +392,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
         assert isinstance(weights["embedding"], Mapping)
         assert isinstance(weights["transformer"], Mapping)
         assert isinstance(weights["prediction_head"], Mapping)
-        assert isinstance(weights["final_linear"], Mapping)
         return replace(
             self,
             embedding=self.embedding.import_weights(weights["embedding"]),

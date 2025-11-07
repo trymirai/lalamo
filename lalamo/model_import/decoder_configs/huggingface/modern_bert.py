@@ -130,7 +130,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.local_rope_theta,
-            max_sequence_length=context_length or self.local_attention,
+            max_sequence_length=context_length or self.max_position_embeddings,
         )
 
         sliding_window_sizes = self.calculate_sliding_windows(

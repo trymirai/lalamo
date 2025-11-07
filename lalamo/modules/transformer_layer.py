@@ -328,7 +328,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["pre_attention_norm"], Mapping)
         assert isinstance(weights["attention"], Mapping)
         assert isinstance(weights["mlp"], Mapping)
         assert isinstance(weights["pre_mlp_norm"], Mapping)
