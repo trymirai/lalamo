@@ -87,7 +87,7 @@ class DenseMLPConfig(MLPConfigBase):
     has_down_biases: bool
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
-    activation_to_gate: Bool = (True,)
+    activation_to_gate: bool = True
 
     def random_init(
         self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray

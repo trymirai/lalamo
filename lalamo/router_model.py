@@ -1,14 +1,18 @@
-from collections.abc import Iterable, Mapping
+import json
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Self
 
 from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Float
+from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, ParameterTree
+from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig
-from lalamo.modules import Classifier, ClassifierConfig, LalamoModule
+from lalamo.modules import Classifier, ClassifierConfig, LalamoModule, config_converter
+from lalamo.utils import open_safetensors
 
 
 @dataclass
@@ -19,12 +23,12 @@ class RouterResult:
 @dataclass(frozen=True)
 class RouterConfig:
     classifier_config: ClassifierConfig
-    message_processor_config: MessageProcessorConfig | None = None
+    message_processor_config: MessageProcessorConfig
 
 
 class RouterModel(LalamoModule[RouterConfig]):
     classifier: Classifier
-    message_processor: MessageProcessor | None = None
+    message_processor: MessageProcessor
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -42,11 +46,25 @@ class RouterModel(LalamoModule[RouterConfig]):
             classifier=self.classifier.import_weights(weights),
         )
 
+    @classmethod
+    def load(cls, path: Path | str) -> Self:
+        if isinstance(path, str):
+            path = Path(path)
+        with open(path / "config.json") as config_file:
+            config_json = json.load(config_file)
+        config = config_converter.structure(config_json["model_config"], RouterConfig)
+        with open_safetensors(path / "model.safetensors") as weights_dict:
+            weights = unflatten_parameters(weights_dict)
+            decoder = config.classifier_config.empty().import_weights(weights)
+        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
+        message_processor = MessageProcessor(config.message_processor_config, tokenizer)
+        return cls(config, decoder, message_processor)
+
     def classify(
         self,
-        messages: Iterable[Message],
+        message: Message,
     ) -> RouterResult:
-        formatted_messages = self.message_processor.render_request(messages)
+        formatted_messages = self.message_processor.render_request(messages=[message])
         token_ids = jnp.array(
             self.message_processor.tokenize(formatted_messages), dtype=jnp.int32
         )[None, :]
