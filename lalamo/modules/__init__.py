@@ -12,6 +12,8 @@ from .decoder_layer import (
 from .embedding import (
     EmbeddingBase,
     EmbeddingConfig,
+    MLXQuantizedTiedEmbedding,
+    MLXQuantizedTiedEmbeddingConfig,
     QuantizedTiedEmbedding,
     QuantizedTiedEmbeddingConfig,
     TiedEmbedding,
@@ -27,6 +29,8 @@ from .linear import (
     GroupQuantizedLinearConfig,
     LinearBase,
     LinearConfig,
+    MLXQuantizedLinear,
+    MLXQuantizedLinearConfig,
     QLoRALinear,
     QLoRALinearConfig,
 )
@@ -88,6 +92,10 @@ __all__ = [
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
+    "MLXQuantizedLinear",
+    "MLXQuantizedLinearConfig",
+    "MLXQuantizedTiedEmbedding",
+    "MLXQuantizedTiedEmbeddingConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "PositionalEmbeddings",

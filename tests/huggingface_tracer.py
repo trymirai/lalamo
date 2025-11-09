@@ -1,9 +1,7 @@
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Protocol, Self
 
-import jax.nn
-import jax.numpy as jnp
 import torch
 from jaxtyping import Array
 from torch import Tensor, nn
@@ -11,14 +9,13 @@ from transformers import AutoModelForCausalLM
 from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import BaseModelOutputWithPast, CausalLMOutputWithPast
-from transformers.models.gemma3.modeling_gemma3 import Gemma3DecoderLayer
+from transformers.models.gemma3.modeling_gemma3 import Gemma3Attention, Gemma3DecoderLayer
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.processing_utils import Unpack
 
-from lalamo.modules import DecoderActivationTrace, DecoderLayerResult, PositionalEmbeddings
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-from tests.common import assert_close
+from tests.test_models import DecoderTracer, DType
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
@@ -115,7 +112,7 @@ class HFModelForCausalLM(Protocol):
     ) -> CausalLMOutputWithPast: ...
 
 
-def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention) -> Tensor:
+def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention | Gemma3Attention) -> Tensor:
     batch, seqlen, _ = hidden_states.shape
     q_len = seqlen
     k_len = seqlen
@@ -155,337 +152,151 @@ def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention) -
 
 
 @dataclass(frozen=True)
-class HFDecoderTracer:
+class HFDecoderTracer(
+    DecoderTracer[
+        torch.Tensor,
+        HFDecoderLayer | Gemma3DecoderLayer,
+        HFRMSNorm,
+        HFAttention | Gemma3Attention,
+        HFMLP,
+    ],
+):
     hf_model: HFModelForCausalLM
     device: torch.device
 
-    def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
-        first_layer_results, *_ = activation_trace.layer_results
-        assert first_layer_results.activation_trace is not None
-        llm_results = first_layer_results.activation_trace.inputs
-        hf_embedding = self.hf_model.model.embed_tokens
+    def from_jax(self, array: Array) -> torch.Tensor:
+        return jax_to_torch(array).to(self.device)
 
-        ref_input = jax_to_torch(activation_trace.token_ids)[None, ...].to(self.device)
-        torch_embedding = hf_embedding.forward(ref_input)
-        ref_embedding = torch_to_jax(torch_embedding).squeeze(0)
-        assert_close(
-            result=llm_results,
-            reference=ref_embedding,
-            operation_name="Embedding",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
+    def to_jax(self, array: torch.Tensor) -> Array:
+        return torch_to_jax(array)
 
-    def match_readout(self, result: DecoderResult) -> None:
-        assert result.activation_trace is not None
+    def embedding(self, token_ids: torch.Tensor) -> torch.Tensor:
+        return self.hf_model.model.embed_tokens.forward(token_ids)
 
-        llm_logits = result.logits
+    def global_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.hf_model.model.rotary_emb.forward(x, position_ids)
 
-        ref_normalized_outputs = jax_to_torch(result.activation_trace.output_norm)[None, ...].to(self.device)
-        hf_logits = self.hf_model.lm_head(ref_normalized_outputs)
+    def local_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
+        return hf_rope.forward(x, position_ids)
 
-        ref_logits = torch_to_jax(hf_logits).squeeze(0)
+    def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
+        return rmsnorm.forward(x)
 
-        assert_close(
-            result=llm_logits,
-            reference=ref_logits,
-            operation_name="Readout (lm_head)",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_layer(
+    def attention(
         self,
-        layer_result: DecoderLayerResult,
-        hf_layer: HFDecoderLayer | Gemma3DecoderLayer,
-        layer_index: int,
-    ) -> None:
-        activation_trace = layer_result.activation_trace
-        assert activation_trace is not None
+        attention: HFAttention | Gemma3Attention,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        attention_mask = _build_hf_attention_mask(hidden_states, attention)
 
-        # Gemma and Llama/Qwen confusingly have very different naming conventions.
-        if hasattr(hf_layer, "post_feedforward_layernorm"):
-            hf_pre_attention_norm = hf_layer.input_layernorm
-            hf_post_attention_norm = hf_layer.post_attention_layernorm
-            hf_pre_mlp_norm = hf_layer.pre_feedforward_layernorm  # type: ignore
-            hf_post_mlp_norm = hf_layer.post_feedforward_layernorm  # type: ignore
-        else:
-            hf_pre_attention_norm = hf_layer.input_layernorm
-            hf_post_attention_norm = None
-            hf_pre_mlp_norm = hf_layer.post_attention_layernorm
-            hf_post_mlp_norm = None
-
-        self.match_rmsnorm(
-            activation_trace.inputs,
-            activation_trace.pre_attention_norm,
-            hf_pre_attention_norm,
-            f"Layer {layer_index} Pre Attention RMSNorm",
-        )
-
-        self.match_attention(
-            activation_trace.pre_attention_norm,
-            activation_trace.attention,
-            hf_layer.self_attn,  # type: ignore
-            activation_trace.positional_embeddings,
-            f"Layer {layer_index} Attention",
-        )
-
-        if hf_post_attention_norm is not None:
-            assert activation_trace.post_attention_norm is not None
-            self.match_rmsnorm(
-                activation_trace.attention,
-                activation_trace.post_attention_norm,
-                hf_post_attention_norm,
-                f"Layer {layer_index} Post Attention RMSNorm",
-            )
-        self.match_rmsnorm(
-            activation_trace.mlp_inputs,
-            activation_trace.pre_mlp_norm,
-            hf_pre_mlp_norm,
-            f"Layer {layer_index} Pre MLP RMSNorm",
-        )
-
-        self.match_mlp(
-            activation_trace.pre_mlp_norm,
-            activation_trace.mlp,
-            hf_layer.mlp,
-            f"Layer {layer_index} MLP",
-        )
-
-        if hf_post_mlp_norm is not None:
-            assert activation_trace.post_mlp_norm is not None
-            self.match_rmsnorm(
-                activation_trace.mlp,
-                activation_trace.post_mlp_norm,
-                hf_post_mlp_norm,
-                f"Layer {layer_index} Post MLP RMSNorm",
-            )
-
-        # Test full decoder layer
-        ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
-        assert ref_inputs.ndim == 3
-        cosines = jax_to_torch(activation_trace.positional_embeddings.cosines).to(self.device)
-        sines = jax_to_torch(activation_trace.positional_embeddings.sines).to(self.device)
-        assert cosines.ndim == 3
-        if isinstance(hf_layer, Gemma3DecoderLayer):
-            torch_outputs, *_ = hf_layer.forward(
-                hidden_states=ref_inputs,
-                position_embeddings_global=(cosines, sines),  # type: ignore
-                position_embeddings_local=(cosines, sines),  # type: ignore
-            )
-        else:
-            torch_outputs, *_ = hf_layer.forward(
-                hidden_states=ref_inputs,
-                position_embeddings=(cosines, sines),
-            )
-
-        ref_outputs = torch_to_jax(torch_outputs)
-        if ref_outputs.ndim != 3:
-            ref_outputs = ref_outputs[None, ...]
-        assert ref_outputs.ndim == 3
-        assert_close(
-            result=layer_result.outputs,
-            reference=ref_outputs,
-            operation_name=f"Layer {layer_index} Full Output",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
-        ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        torch_outputs = hf_layer.forward(ref_inputs)
-        ref_outputs = torch_to_jax(torch_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_attention(
-        self,
-        llm_inputs: Array,
-        llm_outputs: Array,
-        hf_attention: HFAttention,
-        position_embeddings: PositionalEmbeddings,
-        name: str,
-    ) -> None:
-        ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        cosines = jax_to_torch(position_embeddings.cosines).to(self.device)
-        sines = jax_to_torch(position_embeddings.sines).to(self.device)
-
-        head_dim = cosines.shape[-1] // 2
-        if isinstance(hf_attention, GptOssAttention):
-            cosines = cosines[:, :, :head_dim]
-            sines = sines[:, :, :head_dim]
-
-        attention_mask = _build_hf_attention_mask(ref_inputs, hf_attention)
-
-        torch_outputs, _ = hf_attention.forward(
-            hidden_states=ref_inputs,
-            position_embeddings=(cosines, sines),
+        attention_output, _ = attention.forward(  # type: ignore
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,  # type: ignore
             attention_mask=attention_mask,
         )
-        ref_outputs = torch_to_jax(torch_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
+        return attention_output
+
+    def mlp(self, mlp: HFMLP, x: torch.Tensor) -> torch.Tensor:
+        forward_outputs = mlp.forward(x)
+        if isinstance(forward_outputs, tuple):
+            forward_outputs, _ = forward_outputs
+        return forward_outputs
+
+    def layer(
+        self,
+        layer: HFDecoderLayer | Gemma3DecoderLayer,
+        hidden_states: torch.Tensor,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+    ) -> torch.Tensor:
+        if isinstance(layer, Gemma3DecoderLayer):
+            torch_outputs, *_ = layer.forward(
+                hidden_states=hidden_states,
+                position_embeddings_global=position_embeddings,  # type: ignore
+                position_embeddings_local=position_embeddings,  # type: ignore
+            )
+        else:
+            torch_outputs, *_ = layer.forward(
+                hidden_states=hidden_states,
+                position_embeddings=position_embeddings,
+            )
+
+        return torch_outputs
+
+    def layer_pre_attention_norm(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFRMSNorm:
+        return layer.input_layernorm
+
+    # Gemma and Llama/Qwen confusingly have very different naming conventions.
+
+    def layer_post_attention_norm(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFRMSNorm | None:
+        if hasattr(layer, "post_feedforward_layernorm"):
+            return layer.post_attention_layernorm
+
+        return None
+
+    def layer_pre_mlp_norm(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFRMSNorm:
+        if hasattr(layer, "post_feedforward_layernorm"):
+            return layer.pre_feedforward_layernorm  # type: ignore
+
+        return layer.post_attention_layernorm
+
+    def layer_attention(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFAttention | Gemma3Attention:
+        return layer.self_attn
+
+    def layer_mlp(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFMLP:
+        return layer.mlp
+
+    def layer_post_mlp_norm(self, layer: HFDecoderLayer | Gemma3DecoderLayer) -> HFRMSNorm | None:
+        return getattr(layer, "post_feedforward_layernorm", None)
+
+    def iterate_layers(self) -> Iterable[HFDecoderLayer | Gemma3DecoderLayer]:
+        return self.hf_model.model.layers
+
+    def output_norm(self) -> HFRMSNorm:
+        return self.hf_model.model.norm
+
+    def readout(self, x: torch.Tensor) -> torch.Tensor:
+        return self.hf_model.lm_head(x)
+
+    def forward(
+        self, input_ids: torch.Tensor, position_ids: torch.Tensor,
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
+        hf_outputs = self.hf_model.forward(
+            input_ids=input_ids,
+            position_ids=position_ids,
+            output_hidden_states=True,
         )
 
-    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
-        ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        torch_outputs = hf_mlp.forward(ref_inputs)
-        if isinstance(torch_outputs, tuple):
-            torch_outputs, _ = torch_outputs
-        ref_outputs = torch_to_jax(torch_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
+        assert hf_outputs.hidden_states is not None
+        assert hf_outputs.logits is not None
 
-    def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
-        llm_results = activation_trace.local_positional_embeddings
-        hf_global_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
+        *hf_hidden_states, hf_last_norm_output = hf_outputs.hidden_states
 
-        dummy_input = torch.zeros((), dtype=torch.float32).to(self.device)
-        ref_input = jax_to_torch(activation_trace.token_positions).to(self.device)
-        torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input)
-        ref_cosines = torch_to_jax(torch_cosines)
-        ref_sines = torch_to_jax(torch_sines)
-
-        _, _, head_dim = llm_results.cosines.shape
-        llm_cosines = llm_results.cosines
-        llm_sines = llm_results.sines
-        if head_dim == ref_cosines.shape[-1] * 2:
-            # GPT-OSS has a different rope implementation in hf
-            llm_cosines = llm_cosines[:, :, : head_dim // 2].astype(jnp.float32)
-            llm_sines = llm_sines[:, :, : head_dim // 2].astype(jnp.float32)
-
-        assert_close(
-            result=llm_cosines,
-            reference=ref_cosines,
-            operation_name="Local RoPE Cosines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-        assert_close(
-            result=llm_sines,
-            reference=ref_sines,
-            operation_name="Local RoPE Sines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
-        llm_results = activation_trace.global_positional_embeddings
-        hf_global_rope = self.hf_model.model.rotary_emb
-
-        dummy_input = torch.zeros((), dtype=torch.float32).to(self.device)
-        ref_input = jax_to_torch(activation_trace.token_positions).to(self.device)
-        torch_cosines, torch_sines = hf_global_rope.forward(dummy_input, ref_input)
-        ref_cosines = torch_to_jax(torch_cosines)
-        ref_sines = torch_to_jax(torch_sines)
-
-        _, _, head_dim = llm_results.cosines.shape
-        llm_cosines = llm_results.cosines
-        llm_sines = llm_results.sines
-        if head_dim == ref_cosines.shape[-1] * 2:
-            # GPT-OSS has a different rope implementation in hf
-            llm_cosines = llm_cosines[:, :, : head_dim // 2].astype(jnp.float32)
-            llm_sines = llm_sines[:, :, : head_dim // 2].astype(jnp.float32)
-
-        assert_close(
-            result=llm_cosines,
-            reference=ref_cosines,
-            operation_name="Global RoPE Cosines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-        assert_close(
-            result=llm_sines,
-            reference=ref_sines,
-            operation_name="Global RoPE Sines",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
+        return (tuple(hf_hidden_states), hf_last_norm_output, hf_outputs.logits)
 
     @torch.no_grad()
     def match_activations(self, result: DecoderResult) -> None:
-        assert result.activation_trace is not None
-        self.match_local_rope(result.activation_trace)
-        self.match_global_rope(result.activation_trace)
-        self.match_embedding(result.activation_trace)
+        return super().match_activations(result)
 
-        for i, (hf_layer, layer_result) in enumerate(
-            zip(self.hf_model.model.layers, result.activation_trace.layer_results, strict=True),
-        ):
-            self.match_layer(layer_result, hf_layer, i)
+    @classmethod
+    def load(cls, model_repo: str, dtype: DType | None) -> Self:
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        else:
+            device = torch.device("cpu")
 
-        self.match_rmsnorm(
-            result.activation_trace.layer_results[-1].outputs,
-            result.activation_trace.output_norm,
-            self.hf_model.model.norm,
-            "Output RMSNorm",
+        hf_model = AutoModelForCausalLM.from_pretrained(
+            model_repo,
+            dtype=dtype.torch_dtype if dtype is not None else None,
+            device_map=device,
         )
 
-        self.match_readout(result)
+        # Correct the bug in the HF Gemma implementation
+        # See https://github.com/huggingface/transformers/issues/38702
+        if hasattr(hf_model.model.embed_tokens, "embed_scale"):
+            wrong_scale = hf_model.model.embed_tokens.embed_scale
+            correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
+            hf_model.model.embed_tokens.embed_scale = correct_scale
 
-        hf_input_ids = jax_to_torch(result.activation_trace.token_ids).to(self.device)
-        hf_token_positions = jax_to_torch(result.activation_trace.token_positions).to(self.device)
-        hf_outputs = self.hf_model.forward(
-            input_ids=hf_input_ids,
-            position_ids=hf_token_positions,
-            output_hidden_states=True,
-        )
-        assert hf_outputs.hidden_states is not None
-        *hf_hidden_states, hf_last_norm_output = hf_outputs.hidden_states
-
-        for i, (hf_layer_inputs, layer_result) in enumerate(
-            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
-        ):
-            layer_activation_trace = layer_result.activation_trace
-            assert layer_activation_trace is not None
-            ref_layer_inputs = torch_to_jax(hf_layer_inputs)
-            assert_close(
-                result=layer_activation_trace.inputs,
-                reference=ref_layer_inputs,
-                fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-                operation_name=f"End2End Layer {i} inputs",
-            )
-
-        ref_last_norm_output = torch_to_jax(hf_last_norm_output)
-        assert_close(
-            result=result.activation_trace.output_norm,
-            reference=ref_last_norm_output,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Output RMSNorm",
-        )
-
-        assert hf_outputs.logits is not None
-        ref_probas = jax.nn.softmax(torch_to_jax(hf_outputs.logits), axis=-1)
-        llm_probas = jax.nn.softmax(result.logits, axis=-1)
-        assert_close(
-            result=llm_probas,
-            reference=ref_probas,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Token Probabilities",
-        )
-
-
-def load_hf_tracer(model_repo: str, dtype: torch.dtype) -> HFDecoderTracer:
-    if torch.cuda.is_available():
-        device = torch.device("cuda")
-    else:
-        device = torch.device("cpu")
-
-    hf_model = AutoModelForCausalLM.from_pretrained(
-        model_repo,
-        dtype=dtype,
-        device_map=device,
-    )
-
-    # Correct the bug in the HF Gemma implementation
-    # See https://github.com/huggingface/transformers/issues/38702
-    if hasattr(hf_model.model.embed_tokens, "embed_scale"):
-        wrong_scale = hf_model.model.embed_tokens.embed_scale
-        correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
-        hf_model.model.embed_tokens.embed_scale = correct_scale
-
-    return HFDecoderTracer(hf_model, device)
+        return cls(hf_model, device)
