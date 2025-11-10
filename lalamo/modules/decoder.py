@@ -109,9 +109,9 @@ class DecoderConfig:
 
         if self.local_rope_config:
             max_sliding_window_size = max(
-                layer_config.sliding_window_size or 0
+                layer_config.mixer_config.sliding_window_size or 0
                 for layer_config in self.layer_configs
-                if isinstance(layer_config, AttentionConfig)
+                if isinstance(layer_config.mixer_config, AttentionConfig)
             )
             local_rope = self.local_rope_config.init(
                 head_dim=first_layer_config.rope_dim,
@@ -159,9 +159,9 @@ class DecoderConfig:
 
         if self.local_rope_config:
             max_sliding_window_size = max(
-                layer_config.sliding_window_size or 0
+                layer_config.mixer_config.sliding_window_size or 0
                 for layer_config in self.layer_configs
-                if isinstance(layer_config, AttentionConfig)
+                if isinstance(layer_config.mixer_config, AttentionConfig)
             )
             local_rope = self.local_rope_config.init(
                 head_dim=first_layer_config.rope_dim,
