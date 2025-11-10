@@ -284,7 +284,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return State(layer.init_static_kv_cache(batch_size, capacity) for layer in self.layers)
+        return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
 
     def export_weights(self) -> ParameterTree:
         result = dict(

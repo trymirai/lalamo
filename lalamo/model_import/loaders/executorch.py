@@ -185,6 +185,7 @@ def load_decoder_layer(
     if module.post_mlp_norm is not None:
         raise ValueError("Post MLP normalization is not supported")
     attention_norm = load_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attention_norm")
+    assert isinstance(module.mixer, Attention)
     attention = load_attention(module.mixer, weights_dict, path / "attention")
     mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
     assert isinstance(module.mlp, DenseMLP)

@@ -56,7 +56,7 @@ class DecoderLayerActivationTrace(eqx.Module):
             mlp=self.mlp,
         )
         if self.state is not None:
-            result["kv_cache"] = self.state.export()
+            result["state"] = self.state.export()
         if self.post_mixer_norm is not None:
             result["post_mixer_norm"] = self.post_mixer_norm
         if self.post_mlp_norm is not None:
@@ -213,7 +213,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
                 f" got {inputs.shape}",
             )
         normalized_mixer_inputs = vmap_twice(self.pre_mixer_norm)(inputs)
-        batched_mixer_fn = vmap(partial(self.mixer, return_updated_kv_cache=return_updated_state))
+        batched_mixer_fn = vmap(partial(self.mixer, return_updated_state=return_updated_state))
         mixer_outputs, updated_state = batched_mixer_fn(
             normalized_mixer_inputs,
             positional_embeddings,
@@ -262,7 +262,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
             activation_trace=activation_trace,
         )
 
-    def init_static_kv_cache(self, batch_size: int, capacity: int) -> StaticKVCacheLayer:
+    def init_static_state(self, batch_size: int, capacity: int) -> StaticKVCacheLayer:
         return jax.tree.map(
             lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
             self.mixer.init_static_state(capacity),

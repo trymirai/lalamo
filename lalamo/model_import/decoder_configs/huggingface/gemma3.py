@@ -9,12 +9,12 @@ from lalamo.modules import (
     TiedEmbeddingConfig,
 )
 from lalamo.modules.activations import GELU
-from lalamo.modules.attention import AttentionConfig
 from lalamo.modules.decoder_layer import DecoderLayerConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import RMSNormConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
+from lalamo.modules.token_mixers import AttentionConfig
 
 from .common import HuggingFaceConfig
 
@@ -115,39 +115,42 @@ class HFGemma3TextConfigRaw:
             up_clipping=None,
             gate_clipping=None,
         )
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=rms_norm_config,
-            key_norm_config=rms_norm_config,
-            logit_soft_cap=self.attn_logit_softcapping,
-            has_sinks=False,
-            has_qkv_biases=self.attention_bias,
-            has_out_biases=self.attention_bias,
-        )
-        decoder_layer_config = DecoderLayerConfig(
-            pre_mixer_norm_config=rms_norm_config,
-            mixer_config=attention_config,
-            post_mixer_norm_config=rms_norm_config,
-            pre_mlp_norm_config=rms_norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=rms_norm_config,
-        )
+        layer_configs = []
+        for sliding_window_size in self.sliding_window_sizes:
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=rms_norm_config,
+                key_norm_config=rms_norm_config,
+                logit_soft_cap=self.attn_logit_softcapping,
+                has_sinks=False,
+                has_qkv_biases=self.attention_bias,
+                has_out_biases=self.attention_bias,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                is_causal=True,
+                scale=attention_scale,
+                sliding_window_size=sliding_window_size,
+            )
+            decoder_layer_config = DecoderLayerConfig(
+                pre_mixer_norm_config=rms_norm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=rms_norm_config,
+                pre_mlp_norm_config=rms_norm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=rms_norm_config,
+            )
+            layer_configs.append(decoder_layer_config)
         return DecoderConfig(
             embedding_config=embedding_config,
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
-            layer_config=decoder_layer_config,
+            layer_configs=tuple(layer_configs),
             output_norm_config=rms_norm_config,
             vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim,
-            attention_scale=attention_scale,
-            num_layers=self.num_hidden_layers,
-            sliding_window_sizes=tuple(self.sliding_window_sizes),
             context_length=context_length or self.max_position_embeddings,
         )
 

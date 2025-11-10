@@ -228,7 +228,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                     forward_pass_mode=forward_pass_mode,
                     forward_pass_config=forward_pass_config,
                 )
-                assert decoder_outputs.updated_state is not None, "updated_kv_cache should not be None"
+                assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
                     decoder_outputs.logits.squeeze(1),
                     next_token_indices,

@@ -435,7 +435,7 @@ def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -
         err, llm_result = checkify_forward(llm_model.decoder)(
             token_ids=token_ids,
             token_positions=token_positions,
-            return_updated_kv_cache=True,
+            return_updated_state=True,
             return_activation_trace=True,
         )
         err.throw()

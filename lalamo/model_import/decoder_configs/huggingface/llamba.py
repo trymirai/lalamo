@@ -106,16 +106,10 @@ class HFLlambaConfig(HuggingFaceConfig):
             embedding_config=embedding_config,
             global_rope_config=None,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=(decoder_layer_config,) * self.n_layer,
             output_norm_config=rmsnorm_config,
             vocab_size=self.vocab_size,
             model_dim=self.d_model,
             hidden_dim=self.mlp_cfg.intermediate_size,
-            num_heads=None,
-            num_groups=None,
-            head_dim=None,
-            attention_scale=None,
-            num_layers=self.n_layer,
-            sliding_window_sizes=None,
             context_length=context_length or 4096,  # mamba doesn't have context length.
         )
