@@ -1,4 +1,4 @@
-from .activations import GELU, Activation, SiLU
+from .activations import GELU, Activation, Identity, SiLU
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
 from .decoder_layer import (
@@ -54,7 +54,7 @@ from .rope import (
     YARNRoPEConfig,
 )
 from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
-from .token_mixers import Attention, AttentionConfig
+from .token_mixers import Attention, AttentionConfig, Mamba2, Mamba2Config
 
 __all__ = [
     "GELU",
@@ -81,6 +81,7 @@ __all__ = [
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
+    "Identity",
     "KVCacheLayer",
     "LalamoModule",
     "LinearBase",
@@ -94,6 +95,8 @@ __all__ = [
     "MLXQuantizedLinearConfig",
     "MLXQuantizedTiedEmbedding",
     "MLXQuantizedTiedEmbeddingConfig",
+    "Mamba2",
+    "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "PositionalEmbeddingSelector",

@@ -58,7 +58,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
+        positional_embeddings: PositionalEmbeddings | None,
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,

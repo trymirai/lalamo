@@ -8,12 +8,14 @@ from lalamo.modules import (
     DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
+    Identity,
+    Mamba2Config,
     RMSNormConfig,
+    SiLU,
     TiedEmbeddingConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
 )
-from lalamo.modules.activations import SiLU
 
 from .common import HuggingFaceConfig
 
@@ -34,6 +36,8 @@ class HFLlambaSsmConfig:
     chunk_size: int
     activation: Literal["identity"]
     bias: bool
+    conv_bias: bool = True
+    d_conv: int = 4
 
 
 @dataclass(frozen=True)
@@ -73,29 +77,56 @@ class HFLlambaConfig(HuggingFaceConfig):
                 precision=activation_precision,
             )
 
-        # seem to be identical to llama, but verify
         rmsnorm_config = RMSNormConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
-            epsilon=1e-6,
+            epsilon=self.norm_epsilon,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         )
+
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
+
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
-            has_up_biases=False,
-            has_down_biases=False,
+            has_up_biases=self.mlp_cfg.bias,
+            has_down_biases=self.mlp_cfg.bias,
             up_clipping=None,
             gate_clipping=None,
         )
 
+        inner_dim = self.ssm_cfg.expand * self.d_model
+        head_dim = inner_dim // self.ssm_cfg.n_v_heads
+
+        if self.ssm_cfg.activation == "identity":
+            activation = Identity()
+        elif self.ssm_cfg.activation == "silu":
+            activation = SiLU()
+        else:
+            activation = SiLU()  # fallback
+
+        mamba_config = Mamba2Config(
+            in_projection_config=linear_config,
+            out_projection_config=linear_config,
+            num_value_heads=self.ssm_cfg.n_v_heads,
+            num_query_key_heads=self.ssm_cfg.n_qk_heads,
+            head_dim=head_dim,
+            state_dim=self.ssm_cfg.d_state,
+            conv_kernel_size=self.ssm_cfg.d_conv,
+            expand=self.ssm_cfg.expand,
+            chunk_size=self.ssm_cfg.chunk_size,
+            activation=activation,
+            has_in_biases=self.ssm_cfg.bias,
+            has_out_biases=self.ssm_cfg.bias,
+            has_conv_biases=self.ssm_cfg.conv_bias,
+        )
+
         decoder_layer_config = DecoderLayerConfig(
             pre_mixer_norm_config=rmsnorm_config,
-            mixer_config=None,
+            mixer_config=mamba_config,
             post_mixer_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
@@ -111,5 +142,5 @@ class HFLlambaConfig(HuggingFaceConfig):
             vocab_size=self.vocab_size,
             model_dim=self.d_model,
             hidden_dim=self.mlp_cfg.intermediate_size,
-            context_length=context_length or 4096,  # mamba doesn't have context length.
+            context_length=context_length or 4096,
         )

@@ -20,6 +20,7 @@ from lalamo.utils import MapDictValues, open_safetensors
 __all__ = [
     "ConfigMap",
     "FileSpec",
+    "JSONFieldSpec",
     "ModelSpec",
     "UseCase",
     "WeightsType",
@@ -63,12 +64,18 @@ class FileSpec:
 
 
 @dataclass(frozen=True)
+class JSONFieldSpec:
+    file_spec: FileSpec
+    field_name: str
+
+
+@dataclass(frozen=True)
 class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
     tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | None = field(default=FileSpec("generation_config.json"))
-    chat_template: FileSpec | None = None
+    chat_template: FileSpec | JSONFieldSpec | None = None
 
 
 def _is_foreign_config_type(t: object) -> bool:

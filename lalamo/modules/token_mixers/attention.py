@@ -319,7 +319,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
+        positional_embeddings: PositionalEmbeddings | None,
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
@@ -349,9 +349,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         if self.key_norm is not None:
             keys = vmap(vmap(self.key_norm))(keys)
 
-        apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
-        queries = apply_positional_embeddings(queries)
-        keys = apply_positional_embeddings(keys)
+        if positional_embeddings is not None:
+            apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
+            queries = apply_positional_embeddings(queries)
+            keys = apply_positional_embeddings(keys)
 
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)

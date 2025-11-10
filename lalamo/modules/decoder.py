@@ -227,7 +227,6 @@ class Decoder(LalamoModule[DecoderConfig]):
             global_positional_embeddings = vmap(self.global_rope)(token_positions)
         else:
             global_positional_embeddings = None
-            raise NotImplementedError  # support this
 
         if self.local_rope is not None:
             local_positional_embeddings = vmap(self.local_rope)(token_positions)
@@ -237,10 +236,13 @@ class Decoder(LalamoModule[DecoderConfig]):
         updated_state_layers = []
         layer_results = []
         for layer, state_layer in zip(self.layers, maybe_state, strict=True):
-            if layer.positional_embedding_selector == PositionalEmbeddingSelector.LOCAL:
-                positional_embeddings_to_use = local_positional_embeddings
-            else:
-                positional_embeddings_to_use = global_positional_embeddings
+            match layer.positional_embedding_selector:
+                case PositionalEmbeddingSelector.LOCAL:
+                    positional_embeddings_to_use = local_positional_embeddings
+                case PositionalEmbeddingSelector.GLOBAL:
+                    positional_embeddings_to_use = global_positional_embeddings
+                case PositionalEmbeddingSelector.NONE:
+                    positional_embeddings_to_use = None
 
             layer_result = layer(
                 inner_features,
@@ -304,7 +306,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["embedding"], Mapping)
-        assert isinstance(weights["global_rope"], Mapping)
         assert isinstance(weights["layers"], Sequence)
         assert isinstance(weights["output_norm"], Mapping)
 
