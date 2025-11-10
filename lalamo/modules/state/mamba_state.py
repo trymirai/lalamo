@@ -1,7 +1,8 @@
 from typing import Self
 
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jax.lax import dynamic_slice_in_dim
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
@@ -46,15 +47,17 @@ class MambaStateLayer(StateLayerBase):
         self,
         conv_input: Float[Array, "suffix_tokens conv_channels"],
         ssm_state_update: Float[Array, "heads head_channels state_channels"],
+        added_length: Int[Array, ""] | int | None = None,
     ) -> "MambaStateLayer":
         self._raise_if_batched()
         conv_history_length, conv_channels = self.conv_state.shape
         num_new_tokens, _ = conv_input.shape
+        if added_length is None:
+            added_length = num_new_tokens
 
-        if num_new_tokens >= conv_history_length:
-            updated_conv_state = conv_input[-conv_history_length:]
-        else:
-            updated_conv_state = jnp.concatenate([self.conv_state[num_new_tokens:], conv_input], axis=0)
+        combined = jnp.concatenate([self.conv_state, conv_input], axis=0)
+        start = jnp.asarray(added_length, dtype=jnp.int32)
+        updated_conv_state = dynamic_slice_in_dim(combined, start, conv_history_length, axis=0)
 
         return MambaStateLayer(updated_conv_state, ssm_state_update)
 

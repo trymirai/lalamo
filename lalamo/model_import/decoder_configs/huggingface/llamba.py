@@ -4,6 +4,7 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
+    CausalConv1dConfig,
     DecoderConfig,
     DecoderLayerConfig,
     DenseMLPConfig,
@@ -33,7 +34,6 @@ class HFLlambaSsmConfig:
     n_v_heads: int
     n_qk_heads: int
     expand: int
-    chunk_size: int
     activation: Literal["identity"]
     bias: bool
     conv_bias: bool = True
@@ -111,16 +111,19 @@ class HFLlambaConfig(HuggingFaceConfig):
         mamba_config = Mamba2Config(
             in_projection_config=linear_config,
             out_projection_config=linear_config,
+            conv_config=CausalConv1dConfig(
+                kernel_size=self.ssm_cfg.d_conv,
+                activation=activation,
+                precision=activation_precision,
+                has_biases=self.ssm_cfg.conv_bias,
+            ),
             num_value_heads=self.ssm_cfg.n_v_heads,
             num_groups=self.ssm_cfg.n_qk_heads,
             head_dim=head_dim,
             state_dim=self.ssm_cfg.d_state,
-            conv_kernel_size=self.ssm_cfg.d_conv,
             expand=self.ssm_cfg.expand,
-            activation=activation,
             has_in_biases=self.ssm_cfg.bias,
             has_out_biases=self.ssm_cfg.bias,
-            has_conv_biases=self.ssm_cfg.conv_bias,
         )
 
         decoder_layer_config = DecoderLayerConfig(

@@ -54,13 +54,15 @@ from .rope import (
     YARNRoPEConfig,
 )
 from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
-from .token_mixers import Attention, AttentionConfig, Mamba2, Mamba2Config
+from .token_mixers import Attention, AttentionConfig, CausalConv1d, CausalConv1dConfig, Mamba2, Mamba2Config
 
 __all__ = [
     "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
+    "CausalConv1d",
+    "CausalConv1dConfig",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",

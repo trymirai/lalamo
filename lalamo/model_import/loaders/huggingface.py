@@ -399,14 +399,10 @@ def load_mamba2(
     else:
         gate_bias = module.gate_bias
 
-    from lalamo.modules.token_mixers.mamba import CausalConv1d
-
-    conv = CausalConv1d(
-        weight=conv_weight,
-        bias=conv_bias,
-        output_dims=module.conv.output_dims,
-        kernel_size=module.conv.kernel_size,
-    )
+    conv_subtree = {"weight": conv_weight}
+    if conv_bias is not None:
+        conv_subtree["bias"] = conv_bias
+    conv = module.conv.import_weights(conv_subtree)
 
     return load_parameters(
         lambda m: (m.in_projection, m.out_projection, m.conv, m.skip_connection_weight, m.gate_bias),
