@@ -47,11 +47,15 @@ class DecoderActivationTrace(eqx.Module):
             token_positions=self.token_positions,
             local_positional_embeddings=self.local_positional_embeddings.export(),
             global_positional_embeddings=self.global_positional_embeddings.export(),
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
+            layer_results=[
+                layer_result.export() for layer_result in self.layer_results
+            ],
             output_norm=self.output_norm,
         )
         if self.kv_cache is not None:
-            result["kv_cache"] = [kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache]
+            result["kv_cache"] = [
+                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache
+            ]
         return result
 
 
@@ -66,7 +70,8 @@ class DecoderResult(eqx.Module):
         )
         if self.updated_kv_cache is not None:
             result["updated_kv_cache"] = [
-                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.updated_kv_cache
+                kv_cache_layer_slice.export()
+                for kv_cache_layer_slice in self.updated_kv_cache
             ]
         if self.activation_trace is not None:
             result["activation_trace"] = self.activation_trace.export()
@@ -91,7 +96,9 @@ class DecoderConfig:
             model_dim=self.transformer_config.model_dim,
             key=embedding_key,
         )
-        transformer = self.transformer_config.random_init(key=transformer_key, is_causal=True)
+        transformer = self.transformer_config.random_init(
+            key=transformer_key, is_causal=True
+        )
 
         return Decoder(
             config=self,
@@ -157,10 +164,8 @@ class Decoder(LalamoModule[DecoderConfig]):
             forward_pass_config=forward_pass_config,
         )
 
-        # Project to vocabulary
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
 
-        # Build activation trace if requested
         if return_activation_trace:
             assert transformer_result.layer_results is not None
             assert transformer_result.global_positional_embeddings is not None

@@ -146,7 +146,6 @@ class HFGemma3TextConfigRaw:
             head_dim=self.head_dim,
             attention_scale=attention_scale,
             num_layers=self.num_hidden_layers,
-            # sliding_window_sizes=tuple(self.sliding_window_sizes),
             context_length=context_length or self.max_position_embeddings,
         )
         return DecoderConfig(

@@ -2,6 +2,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol, Self
 
+import jax
 import torch
 from jaxtyping import Array, Bool
 from torch import Tensor, nn
@@ -20,15 +21,14 @@ from transformers.models.gemma3.modeling_gemma3 import (
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.processing_utils import Unpack
 
-from lalamo.modules.decoder import DecoderResult
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-from tests.test_models import ModelTracer, DType
+from lalamo.modules import TransformerLayerResult
 
 # TODO(pglushkov): ModernBERT per-layer tracing, remove once refactoring finished
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
-from lalamo.modules import TransformerLayerResult
+from lalamo.modules.decoder import DecoderResult
+from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
-import jax
+from tests.test_models import DType, ModelTracer
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
@@ -117,7 +117,6 @@ class HFClassificationModel(Protocol):
     final_norm: HFRMSNorm
 
     head: HFPredictionHead
-    classifier: nn.Linear
 
     def forward(
         self,
@@ -400,54 +399,6 @@ class HFClassifierTracer(ModelTracer):
 
     hf_model: HFModelForSequenceClassification
     device: torch.device
-
-    def _hf_sliding_window_to_lalamo_format(
-        self,
-        sliding_window: torch.Tensor,
-    ) -> Bool[Array, "tokens tokens"]:
-        result = torch_to_jax(sliding_window)
-        return (result == 0).astype(jax.numpy.bool)
-
-    def _update_attention_mask(
-        self, attention_mask: torch.Tensor, dtype: torch.dtype, local_attention: int
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-
-        def _expand_mask(mask: torch.Tensor, dtype: torch.dtype):
-            """
-            Expands attention_mask from `[bsz, seq_len]` to `[bsz, 1, tgt_seq_len, src_seq_len]`.
-            """
-            bsz, src_len = mask.size()
-
-            expanded_mask = (
-                mask[:, None, None, :].expand(bsz, 1, src_len, src_len).to(dtype)
-            )
-
-            inverted_mask = torch.tensor(1.0, dtype=dtype) - expanded_mask
-
-            return inverted_mask.masked_fill(
-                inverted_mask.to(torch.bool), torch.finfo(dtype).min
-            )
-
-        global_attention_mask = _expand_mask(attention_mask, dtype)
-
-        # Create position indices
-        rows = torch.arange(global_attention_mask.shape[2]).unsqueeze(0)
-        # Calculate distance between positions
-        distance = torch.abs(rows - rows.T)
-
-        # Create sliding window mask (1 for positions within window, 0 outside)
-        window_mask = (
-            (distance <= local_attention // 2)
-            .unsqueeze(0)
-            .unsqueeze(0)
-            .to(attention_mask.device)
-        )
-        # Combine with existing mask
-        sliding_window_mask = global_attention_mask.masked_fill(
-            window_mask.logical_not(), torch.finfo(dtype).min
-        )
-
-        return global_attention_mask, sliding_window_mask
 
     def match_embedding(self, activation_trace: ClassifierActivationTrace) -> None:
         lalamo_embeddings = activation_trace.embedding_norm_output

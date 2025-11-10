@@ -586,48 +586,28 @@ def load_huggingface_classifier(
         else:
             key_norm = None
 
-        # GPT-OSS adds per-head attention sinks; load them if present.
-        if (path / "sinks") in weights_dict:
-            sinks = weights_dict[path / "sinks"]
-        else:
-            sinks = module.sinks
-
         return load_parameters(
-            lambda m: (
-                m.qkv_projection,
-                m.out_projection,
-                m.query_norm,
-                m.key_norm,
-                m.sinks,
-            ),
+            lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
             module,
-            (qkv_projection, out_projection, query_norm, key_norm, sinks),
+            (qkv_projection, out_projection, query_norm, key_norm),
         )
 
     def load_mlp_local(
         module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath
     ) -> MLPBase:
-        if isinstance(module, DenseMLP):
-            # Standard dense MLP with separate sublayers.
-            up_projection = load_linear(
-                module.up_projection,
-                weights_dict,
-                path / "Wi",
-                sublayers_to_fuse=None,
-            )
-            down_projection = load_linear(
-                module.down_projection, weights_dict, path / "Wo"
-            )
-            return load_parameters(
-                lambda m: (m.up_projection, m.down_projection),
-                module,
-                (up_projection, down_projection),
-            )
-
-        if isinstance(module, MixtureOfExperts):
-            return load_moe(module, weights_dict, path)
-
-        raise TypeError(f"Unsupported module type for loading: {type(module)}")
+        assert isinstance(module, DenseMLP)
+        up_projection = load_linear(
+            module.up_projection,
+            weights_dict,
+            path / "Wi",
+            sublayers_to_fuse=None,
+        )
+        down_projection = load_linear(module.down_projection, weights_dict, path / "Wo")
+        return load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module,
+            (up_projection, down_projection),
+        )
 
     def load_transformer_layer_local(
         module: TransformerLayer,

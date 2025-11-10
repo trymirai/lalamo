@@ -19,6 +19,7 @@ __all__ = [
     "AWQQuantizationConfig",
     "GPTQMetaConfig",
     "GPTQQuantizationConfig",
+    "HuggingFaceClassifierConfig",
     "HuggingFaceLMConfig",
 ]
 
