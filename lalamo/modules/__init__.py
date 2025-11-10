@@ -1,6 +1,5 @@
 from .activations import GELU, Activation, SiLU
-from .attention import Attention, AttentionConfig
-from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
+from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
 from .decoder_layer import (
     DecoderLayer,
@@ -21,7 +20,6 @@ from .embedding import (
     UntiedEmbedding,
     UntiedEmbeddingConfig,
 )
-from .kv_cache import DynamicKVCacheLayer, KVCache, KVCacheLayer, StaticKVCacheLayer
 from .linear import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -55,13 +53,14 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
+from .token_mixers import Attention, AttentionConfig
 
 __all__ = [
     "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
-    "AttentionType",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -82,7 +81,6 @@ __all__ = [
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "KVCache",
     "KVCacheLayer",
     "LalamoModule",
     "LinearBase",
@@ -98,6 +96,7 @@ __all__ = [
     "MLXQuantizedTiedEmbeddingConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
@@ -110,6 +109,7 @@ __all__ = [
     "RoutingFunction",
     "SiLU",
     "SoftmaxRouting",
+    "State",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",

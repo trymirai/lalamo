@@ -154,7 +154,10 @@ def load_linear(
 
     if isinstance(module, GroupQuantizedLinear):
         qweights, qzeros, scales = _fuse_quantized_weights(
-            weights_dict, path, sublayers_to_fuse, AWQ_QUANTIZED_WEIGHT_LAYOUT,
+            weights_dict,
+            path,
+            sublayers_to_fuse,
+            AWQ_QUANTIZED_WEIGHT_LAYOUT,
         )
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
@@ -186,7 +189,10 @@ def load_linear(
 
     if isinstance(module, MLXQuantizedLinear):
         qweights, deq_biases, scales = _fuse_quantized_weights(
-            weights_dict, path, sublayers_to_fuse, MLX_QUANTIZED_WEIGHT_LAYOUT,
+            weights_dict,
+            path,
+            sublayers_to_fuse,
+            MLX_QUANTIZED_WEIGHT_LAYOUT,
         )
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
@@ -353,14 +359,14 @@ def load_decoder_layer(
     path: ParameterPath,
 ) -> DecoderLayer:
     pre_attention_norm = load_rmsnorm(
-        module.pre_attention_norm,
+        module.pre_mixer_norm,
         weights_dict,
         path / "input_layernorm",
     )
-    attention = load_attention(module.attention, weights_dict, path / "self_attn")
-    if module.post_attention_norm is not None:
+    attention = load_attention(module.mixer, weights_dict, path / "self_attn")
+    if module.post_mixer_norm is not None:
         post_attention_norm = load_rmsnorm(
-            module.post_attention_norm,
+            module.post_mixer_norm,
             weights_dict,
             path / "post_attention_layernorm",
         )
@@ -389,7 +395,7 @@ def load_decoder_layer(
     else:
         post_mlp_norm = None
     return load_parameters(
-        lambda m: (m.pre_attention_norm, m.attention, m.post_attention_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
+        lambda m: (m.pre_mixer_norm, m.mixer, m.post_mixer_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
         module,
         (pre_attention_norm, attention, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
     )

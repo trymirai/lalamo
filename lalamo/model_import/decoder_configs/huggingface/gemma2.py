@@ -102,9 +102,9 @@ class HFGemma2Config(HuggingFaceConfig):
             gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=rmsnorm_config,
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=rmsnorm_config,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=rmsnorm_config,

@@ -126,9 +126,9 @@ class HFGemma3TextConfigRaw:
             has_out_biases=self.attention_bias,
         )
         decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rms_norm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=rms_norm_config,
+            pre_mixer_norm_config=rms_norm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=rms_norm_config,
             pre_mlp_norm_config=rms_norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=rms_norm_config,

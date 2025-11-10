@@ -37,7 +37,7 @@ class DType(Enum):
 
     @property
     def mlx_dtype(self) -> "mx.Dtype":
-        return getattr(mx, self.value) # type: ignore
+        return getattr(mx, self.value)  # type: ignore
 
     @property
     def jax_dtype(self) -> jnp.dtype:
@@ -256,15 +256,15 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         ref_pre_attention_norm = self.layer_pre_attention_norm(ref_layer)
         self.match_rmsnorm(
             activation_trace.inputs,
-            activation_trace.pre_attention_norm,
+            activation_trace.pre_mixer_norm,
             ref_pre_attention_norm,
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
 
         ref_attention = self.layer_attention(ref_layer)
         self.match_attention(
-            activation_trace.pre_attention_norm,
-            activation_trace.attention,
+            activation_trace.pre_mixer_norm,
+            activation_trace.mixer,
             ref_attention,
             (activation_trace.positional_embeddings.cosines, activation_trace.positional_embeddings.sines),
             f"Layer {layer_index} Attention",
@@ -272,10 +272,10 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         ref_post_attention_norm = self.layer_post_attention_norm(ref_layer)
         if ref_post_attention_norm is not None:
-            assert activation_trace.post_attention_norm is not None
+            assert activation_trace.post_mixer_norm is not None
             self.match_rmsnorm(
-                activation_trace.attention,
-                activation_trace.post_attention_norm,
+                activation_trace.mixer,
+                activation_trace.post_mixer_norm,
                 ref_post_attention_norm,
                 f"Layer {layer_index} Post Attention RMSNorm",
             )

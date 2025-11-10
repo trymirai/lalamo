@@ -278,14 +278,13 @@ register_config_union(RoutingFunction)
 
 @dataclass(frozen=True)
 class MixtureOfExpertsConfig(ABC):
-    mixture_size: int
-    num_experts_per_token: int
+    expert_config: DenseMLPConfig
+    router_config: LinearConfig
     routing_function: RoutingFunction
 
-    router_config: LinearConfig
+    mixture_size: int
+    num_experts_per_token: int
     router_has_biases: bool
-
-    expert_config: DenseMLPConfig
 
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MixtureOfExperts":
         experts_key, router_key = jax.random.split(key)

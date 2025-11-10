@@ -94,9 +94,9 @@ class HFLlambaConfig(HuggingFaceConfig):
         )
 
         decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=None,
-            post_attention_norm_config=None,
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=None,
+            post_mixer_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
