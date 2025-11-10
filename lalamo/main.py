@@ -43,9 +43,11 @@ from lalamo.model_import.common import (
     FinishedDownloadingFileEvent,
     FinishedInitializingModelEvent,
     InitializingModelEvent,
+    ModelType,
     StatusEvent,
 )
 from lalamo.modules import config_converter
+from lalamo.router_model import RouterModel
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import (
@@ -151,6 +153,39 @@ def chat(
         console.print()
         model_response_text = "".join(model_response_tokens)
         messages.append(model.message_processor.parse_response(model_response_text))
+
+
+@app.command(help="Classify given message with a Router type of model.")
+def classify(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+) -> None:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+        model = RouterModel.load(model_path)
+        progress.remove_task(loading_task)
+        warmup_task = progress.add_task("🔥 Warming up compilation cache...")
+        model.classify(UserMessage(content="warmup message"))
+        progress.remove_task(warmup_task)
+    console.print(f"🤖 Classifying input with [blue]{model_path}[/blue]:")
+    while True:
+        user_text = console.input("[cyan]user> [/cyan]")
+        user_message = UserMessage(user_text)
+
+        console.print("[red]assistant> [/red]", end="")
+        result = model.classify(user_message)
+        for label, confidence in result.message_labels.items():
+            console.print(f"{label} : {confidence}", end="\n")
+        console.print()
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
@@ -261,7 +296,6 @@ def convert(
             context_length=context_length,
             progress_callback=progress_callback,
         )
-        assert isinstance(model, LanguageModel)
         save_task = progress.add_task(f"💾 Saving the model to {output_dir}")
         output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -274,12 +308,25 @@ def convert(
             token_positions = jnp.arange(
                 0, num_tokens * token_stride, token_stride, dtype=jnp.int32
             )[None, :]
-            result = model.decoder(
-                token_ids,
-                token_positions,
-                return_updated_kv_cache=True,
-                return_activation_trace=True,
-            )
+            if metadata.model_type == ModelType.LANGUAGE_MODEL:
+                assert isinstance(model, LanguageModel)
+                result = model.decoder(
+                    token_ids,
+                    token_positions,
+                    return_updated_kv_cache=True,
+                    return_activation_trace=True,
+                )
+            elif metadata.model_type == ModelType.ROUTER_MODEL:
+                assert isinstance(model, RouterModel)
+                result = model.classifier(
+                    token_ids,
+                    token_positions,
+                    return_activation_trace=True,
+                )
+            else:
+                raise ValueError(
+                    f"Unknow type of model imported: {metadata.model_type}"
+                )
             traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
             progress.remove_task(trace_task)

@@ -69,11 +69,13 @@ class RouterModel(LalamoModule[RouterConfig]):
             self.message_processor.tokenize(formatted_messages), dtype=jnp.int32
         )[None, :]
         batch_size, sequence_length = token_ids.shape
-        token_positions = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
+        token_positions = jnp.tile(
+            jnp.arange(sequence_length, dtype=jnp.int32), (batch_size, 1)
+        )
         classifier_output = self.classifier(
             token_ids=token_ids, token_positions=token_positions
         )
 
-        if len(classifier_output.labels) > 0:
+        if len(classifier_output.labels) > 1:
             raise ValueError("Expecting to have only single output batch")
         return RouterResult(message_labels=classifier_output.labels[0])

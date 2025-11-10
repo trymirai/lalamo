@@ -379,6 +379,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
     def export_weights(self) -> ParameterTree:
         result = dict(
             embedding=self.embedding.export_weights(),
+            embedding_norm=self.embedding_norm.export_weights(),
             transformer=self.transformer.export_weights(),
             prediction_head=self.prediction_head.export_weights(),
         )
@@ -390,11 +391,15 @@ class Classifier(LalamoModule[ClassifierConfig]):
     ) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["embedding"], Mapping)
+        assert isinstance(weights["embedding_norm"], Mapping)
         assert isinstance(weights["transformer"], Mapping)
         assert isinstance(weights["prediction_head"], Mapping)
         return replace(
             self,
             embedding=self.embedding.import_weights(weights["embedding"]),
+            embedding_norm=self.embedding_norm.import_weights(
+                weights["embedding_norm"]
+            ),
             transformer=self.transformer.import_weights(weights["transformer"]),
             prediction_head=self.prediction_head.import_weights(
                 weights["prediction_head"]
