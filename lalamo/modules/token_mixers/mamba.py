@@ -76,12 +76,11 @@ class Mamba2Config(TokenMixerConfigBase):
     out_projection_config: LinearConfig
 
     num_value_heads: int
-    num_query_key_heads: int
+    num_groups: int
     head_dim: int
     state_dim: int
     conv_kernel_size: int
     expand: int
-    chunk_size: int
 
     activation: Activation
     has_in_biases: bool
@@ -107,7 +106,7 @@ class Mamba2Config(TokenMixerConfigBase):
         in_projection = self.in_projection_config.random_init(
             input_dim=model_dim,
             output_dims=(
-                self.inner_dim + 2 * self.num_query_key_heads * self.state_dim,
+                self.inner_dim + 2 * self.num_groups * self.state_dim,
                 self.inner_dim,
                 self.num_value_heads,
             ),
@@ -122,7 +121,7 @@ class Mamba2Config(TokenMixerConfigBase):
             key=out_key,
         )
 
-        conv_channels = self.inner_dim + 2 * self.num_query_key_heads * self.state_dim
+        conv_channels = self.inner_dim + 2 * self.num_groups * self.state_dim
         conv_weight = jax.random.uniform(
             conv_key,
             (conv_channels, self.conv_kernel_size),
@@ -141,8 +140,8 @@ class Mamba2Config(TokenMixerConfigBase):
             bias=conv_bias,
             output_dims=(
                 self.inner_dim,
-                self.num_query_key_heads * self.state_dim,
-                self.num_query_key_heads * self.state_dim,
+                self.num_groups * self.state_dim,
+                self.num_groups * self.state_dim,
             ),
             kernel_size=self.conv_kernel_size,
         )
@@ -163,10 +162,9 @@ class Mamba2Config(TokenMixerConfigBase):
             skip_connection_weight=skip_connection_weight,
             gate_bias=gate_bias,
             num_value_heads=self.num_value_heads,
-            num_query_key_heads=self.num_query_key_heads,
+            num_groups=self.num_groups,
             head_dim=self.head_dim,
             state_dim=self.state_dim,
-            chunk_size=self.chunk_size,
         )
 
     def empty(
@@ -176,7 +174,7 @@ class Mamba2Config(TokenMixerConfigBase):
         in_projection = self.in_projection_config.empty(
             input_dim=model_dim,
             output_dims=(
-                self.inner_dim + 2 * self.num_query_key_heads * self.state_dim,
+                self.inner_dim + 2 * self.num_groups * self.state_dim,
                 self.inner_dim,
                 self.num_value_heads,
             ),
@@ -189,7 +187,7 @@ class Mamba2Config(TokenMixerConfigBase):
             has_biases=self.has_out_biases,
         )
 
-        conv_channels = self.inner_dim + 2 * self.num_query_key_heads * self.state_dim
+        conv_channels = self.inner_dim + 2 * self.num_groups * self.state_dim
         conv_weight = dummy_array((conv_channels, self.conv_kernel_size), in_projection.activation_precision)
 
         if self.has_conv_biases:
@@ -202,8 +200,8 @@ class Mamba2Config(TokenMixerConfigBase):
             bias=conv_bias,
             output_dims=(
                 self.inner_dim,
-                self.num_query_key_heads * self.state_dim,
-                self.num_query_key_heads * self.state_dim,
+                self.num_groups * self.state_dim,
+                self.num_groups * self.state_dim,
             ),
             kernel_size=self.conv_kernel_size,
         )
@@ -219,10 +217,9 @@ class Mamba2Config(TokenMixerConfigBase):
             skip_connection_weight=skip_connection_weight,
             gate_bias=gate_bias,
             num_value_heads=self.num_value_heads,
-            num_query_key_heads=self.num_query_key_heads,
+            num_groups=self.num_groups,
             head_dim=self.head_dim,
             state_dim=self.state_dim,
-            chunk_size=self.chunk_size,
         )
 
 
@@ -235,10 +232,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
     gate_bias: Float[Array, " inner_dim"]
 
     num_value_heads: int = eqx.field(static=True)
-    num_query_key_heads: int = eqx.field(static=True)
+    num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
     state_dim: int = eqx.field(static=True)
-    chunk_size: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -266,51 +262,48 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
             raise ValueError(
                 f"Gate bias must have shape (inner_dim,) = ({self.inner_dim},), got {self.gate_bias.shape}",
             )
-        if self.num_value_heads % self.num_query_key_heads != 0:
+        if self.num_value_heads % self.num_groups != 0:
             raise ValueError(
                 f"Number of value heads ({self.num_value_heads}) must be divisible by "
-                f"number of query-key heads ({self.num_query_key_heads})",
+                f"number of groups ({self.num_groups})",
             )
 
-    def _chunk_scan(
+    def _scan(
         self,
         hidden_states: Float[Array, "suffix_tokens value_heads head_channels"],
-        input_projection: Float[Array, "suffix_tokens query_key_heads state_channels"],
-        output_projection: Float[Array, "suffix_tokens query_key_heads state_channels"],
-        time_delta_log: Float[Array, "suffix_tokens value_heads"],
-        initial_state: Float[Array, "value_heads head_channels state_channels"],
+        input_projection: Float[Array, "suffix_tokens groups state_channels"],
+        output_projection: Float[Array, "suffix_tokens groups state_channels"],
+        time_delta_log: Float[Array, "suffix_tokens groups"],
+        initial_state: Float[Array, "groups group_head_channels state_channels"],
     ) -> tuple[
         Float[Array, "suffix_tokens value_heads head_channels"],
-        Float[Array, "value_heads head_channels state_channels"],
+        Float[Array, "groups group_head_channels state_channels"],
     ]:
         def scan_fn(
-            carry_state: Float[Array, "value_heads head_channels state_channels"],
+            carry_state: Float[Array, "groups group_head_channels state_channels"],
             step_inputs: tuple[
                 Float[Array, "value_heads head_channels"],
-                Float[Array, "query_key_heads state_channels"],
-                Float[Array, "query_key_heads state_channels"],
-                Float[Array, " value_heads"],
+                Float[Array, "groups state_channels"],
+                Float[Array, "groups state_channels"],
+                Float[Array, " groups"],
             ],
         ) -> tuple[
-            Float[Array, "value_heads head_channels state_channels"],
+            Float[Array, "groups group_head_channels state_channels"],
             Float[Array, "value_heads head_channels"],
         ]:
             hidden_state_t, input_proj_t, output_proj_t, time_delta_log_t = step_inputs
 
-            time_delta_t = jax.nn.softplus(time_delta_log_t)[:, None]
+            dt = jax.nn.softplus(time_delta_log_t)[:, None]
 
-            heads_per_group = self.num_value_heads // self.num_query_key_heads
+            heads_per_group = self.num_value_heads // self.num_groups
             expanded_input_proj = jnp.repeat(input_proj_t, heads_per_group, axis=0)
             expanded_output_proj = jnp.repeat(output_proj_t, heads_per_group, axis=0)
 
-            normalized_hidden = hidden_state_t / (time_delta_t + 1e-8)
+            decay = jnp.exp(-dt)[:, :, None]
+            mix = (1.0 - jnp.exp(-dt))[:, :, None]
 
-            decay_factor = jnp.exp(-time_delta_t)[:, :, None]
-
-            input_contribution = (
-                time_delta_t[:, :, None] * normalized_hidden[:, :, None] * expanded_input_proj[:, None, :]
-            )
-            updated_state = decay_factor * carry_state + input_contribution
+            input_contribution = mix * hidden_state_t[:, :, None] * expanded_input_proj[:, None, :]
+            updated_state = decay * carry_state + input_contribution
 
             output_t = einsum(
                 updated_state,
@@ -340,13 +333,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
 
-        num_tokens = inputs.shape[0]
-
-        padded_length = ((num_tokens + self.chunk_size - 1) // self.chunk_size) * self.chunk_size
-        padding_amount = padded_length - num_tokens
-        padded_inputs = jnp.pad(inputs, ((0, padding_amount), (0, 0)), mode="constant", constant_values=0)
-
-        conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(padded_inputs)
+        conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(inputs)
 
         conv_state_input = state.conv_state if state is not None else None
         (hidden_states, input_projection, output_projection), updated_conv_state = self.conv(
@@ -365,13 +352,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
         )
         input_projection = rearrange(
             input_projection,
-            "suffix_tokens (query_key_heads state_channels) -> suffix_tokens query_key_heads state_channels",
-            query_key_heads=self.num_query_key_heads,
+            "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
+            groups=self.num_groups,
         )
         output_projection = rearrange(
             output_projection,
-            "suffix_tokens (query_key_heads state_channels) -> suffix_tokens query_key_heads state_channels",
-            query_key_heads=self.num_query_key_heads,
+            "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
+            groups=self.num_groups,
         )
         time_delta_log = rearrange(
             time_delta_log,
@@ -387,7 +374,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
                 dtype=hidden_states.dtype,
             )
 
-        ssm_outputs, final_ssm_state = self._chunk_scan(
+        ssm_outputs, final_ssm_state = self._scan(
             hidden_states,
             input_projection,
             output_projection,
@@ -407,11 +394,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
             "suffix_tokens value_heads head_channels -> suffix_tokens (value_heads head_channels)",
         )
 
-        gated_outputs = ssm_outputs * self.config.activation(gate_values + self.gate_bias)
+        gated_outputs = ssm_outputs * jax.nn.silu(gate_values + self.gate_bias)
 
         (outputs,) = vmap(self.out_projection)(gated_outputs)
-
-        outputs = outputs[:num_tokens]
 
         if return_updated_state:
             if length_without_padding is not None:
@@ -445,7 +430,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
         )
 
     def init_static_state(self, capacity: int) -> MambaStateLayer:  # noqa: ARG002
-        conv_channels = self.inner_dim + 2 * self.num_query_key_heads * self.state_dim
+        conv_channels = self.inner_dim + 2 * self.num_groups * self.state_dim
         return MambaStateLayer.empty(
             self.conv.kernel_size,
             conv_channels,

@@ -34,7 +34,7 @@ type DecoderLayerForwardPassConfig = MLPForwardPassConfig
 
 class DecoderLayerActivationTrace(eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
-    positional_embeddings: PositionalEmbeddings
+    positional_embeddings: PositionalEmbeddings | None
     state: StateLayerBase | None
 
     mlp_inputs: Float[Array, "batch suffix_tokens channels"]
@@ -46,15 +46,16 @@ class DecoderLayerActivationTrace(eqx.Module):
     post_mlp_norm: Float[Array, "batch suffix_tokens channels"] | None
 
     def export(self) -> ParameterTree:
-        result = dict(
+        result: dict[str, ParameterTree | Array] = dict(
             inputs=self.inputs,
-            positional_embeddings=self.positional_embeddings.export(),
             mlp_inputs=self.mlp_inputs,
             pre_mixer_norm=self.pre_mixer_norm,
             mixer=self.mixer,
             pre_mlp_norm=self.pre_mlp_norm,
             mlp=self.mlp,
         )
+        if self.positional_embeddings is not None:
+            result["positional_embeddings"] = self.positional_embeddings.export()
         if self.state is not None:
             result["state"] = self.state.export()
         if self.post_mixer_norm is not None:
@@ -199,7 +200,7 @@ class DecoderLayer(LalamoModule[DecoderLayerConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
+        positional_embeddings: PositionalEmbeddings | None,
         state: StateLayerBase | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,

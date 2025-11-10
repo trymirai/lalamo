@@ -35,22 +35,24 @@ class DecoderActivationTrace(eqx.Module):
     token_positions: Int[Array, "batch suffix_tokens"]
     state: State | None
 
-    local_positional_embeddings: PositionalEmbeddings
-    global_positional_embeddings: PositionalEmbeddings
+    local_positional_embeddings: PositionalEmbeddings | None
+    global_positional_embeddings: PositionalEmbeddings | None
 
     layer_results: tuple[DecoderLayerResult, ...]
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
     def export(self) -> ParameterTree:
-        result = dict(
+        result: dict[str, ParameterTree | Array] = dict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
-            local_positional_embeddings=self.local_positional_embeddings.export(),
-            global_positional_embeddings=self.global_positional_embeddings.export(),
             layer_results=[layer_result.export() for layer_result in self.layer_results],
             output_norm=self.output_norm,
         )
+        if self.local_positional_embeddings is not None:
+            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
+        if self.global_positional_embeddings is not None:
+            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
         if self.state is not None:
             result["state"] = [state_layer.export() for state_layer in self.state]
         return result
@@ -199,7 +201,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.embedding.activation_precision
 
     @eqx.filter_jit
-    def __call__(
+    def __call__(  # noqa: PLR0912
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],
