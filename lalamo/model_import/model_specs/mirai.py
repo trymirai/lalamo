@@ -1,6 +1,6 @@
 from lalamo.model_import.decoder_configs.huggingface import ModernBERTConfig
 
-from .common import ConfigMap, ModelSpec, ModelType, FileSpec
+from .common import ConfigMap, FileSpec, ModelSpec, ModelType
 
 __all__ = ["MIRAI_ROUTER_MODELS"]
 

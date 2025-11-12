@@ -100,6 +100,25 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         QuantizationConfigType, _structure_quantization_config
     )
 
+    eos_token_id: int | list[int]
+
+    @property
+    def eos_token_ids(self) -> list[int]:
+        if not hasattr(self, "eos_token_id"):
+            raise RuntimeError(
+                "model doesn't havve eos_token_id, override eos_token_ids in model config"
+            )
+
+        return (
+            [self.eos_token_id]
+            if isinstance(self.eos_token_id, int)
+            else self.eos_token_id
+        )
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
+
     @classmethod
     def _load_decoder_weights(
         cls,

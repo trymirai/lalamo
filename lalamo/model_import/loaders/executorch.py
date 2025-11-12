@@ -229,22 +229,23 @@ def load_transformer_layer(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> TransformerLayer:
-    if module.post_attention_norm is not None:
+    if module.post_mixer_norm is not None:
         raise ValueError("Post attention normalization is not supported")
     if module.post_mlp_norm is not None:
         raise ValueError("Post MLP normalization is not supported")
-    if module.pre_attention_norm is not None:
+    if module.pre_mixer_norm is not None:
         attention_norm = load_rmsnorm(
-            module.pre_attention_norm, weights_dict, path / "attention_norm"
+            module.pre_mixer_norm, weights_dict, path / "attention_norm"
         )
     else:
         attention_norm = None
-    attention = load_attention(module.attention, weights_dict, path / "attention")
+    assert isinstance(module.mixer, Attention)
+    attention = load_attention(module.mixer, weights_dict, path / "attention")
     mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
     assert isinstance(module.mlp, DenseMLP)
     mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward")
     return load_parameters(
-        lambda m: (m.pre_attention_norm, m.attention, m.pre_mlp_norm, m.mlp),
+        lambda m: (m.pre_mixer_norm, m.mixer, m.pre_mlp_norm, m.mlp),
         module,
         (attention_norm, attention, mlp_norm, mlp),
     )

@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import NamedTuple, Self
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -10,17 +10,19 @@ from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array
+from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector
+from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
+from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
+from lalamo.modules.utils import apply_soft_capping
 
-from .common import AttentionType, LalamoModule, ParameterTree
-from .kv_cache import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
-from .linear import LinearBase, LinearConfig
-from .rope import PositionalEmbeddings
-from .utils import apply_soft_capping
+from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 
 __all__ = [
     "Attention",
     "AttentionConfig",
+    "AttentionResult",
 ]
 
 
@@ -80,33 +82,36 @@ def _soft_capped_attention_kernel(
     )
 
 
-class AttentionResult(NamedTuple):
-    outputs: Float[Array, "*batch suffix_tokens channels"]
-    kv_cache: KVCacheLayer | None = None
+AttentionResult = TokenMixerResult[KVCacheLayer]
 
 
 @dataclass(frozen=True)
-class AttentionConfig:
+class AttentionConfig(TokenMixerConfigBase):
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
     query_norm_config: NormalizationConfig | None
     key_norm_config: NormalizationConfig | None
 
+    num_heads: int
+    num_groups: int
+    head_dim: int
+    is_causal: bool
+    scale: float | None
+    sliding_window_size: int | None
+
     logit_soft_cap: float | None
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
 
+    @property
+    def rope_dim(self) -> int:
+        return self.head_dim
+
     def random_init(
         self,
         model_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        is_causal: bool,
-        scale: float | None,
-        sliding_window_size: int | None,
         *,
         key: PRNGKeyArray,
     ) -> "Attention":
@@ -114,15 +119,15 @@ class AttentionConfig:
         qkv_projection = self.qkv_projection_config.random_init(
             input_dim=model_dim,
             output_dims=(
-                num_heads * head_dim,
-                num_groups * head_dim,
-                num_groups * head_dim,
+                self.num_heads * self.head_dim,
+                self.num_groups * self.head_dim,
+                self.num_groups * self.head_dim,
             ),
             has_biases=self.has_qkv_biases,
             key=qkv_key,
         )
         out_projection = self.out_projection_config.random_init(
-            num_heads * head_dim,
+            self.num_heads * self.head_dim,
             (model_dim,),
             has_biases=self.has_out_biases,
             key=out_key,
@@ -130,20 +135,22 @@ class AttentionConfig:
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.init(
-                input_dim=head_dim,
+                input_dim=self.head_dim,
             )
         else:
             query_norm = None
 
         if self.key_norm_config is not None:
             key_norm = self.key_norm_config.init(
-                input_dim=head_dim,
+                input_dim=self.head_dim,
             )
         else:
             key_norm = None
 
         if self.has_sinks:
-            sinks = jnp.zeros((num_heads,), dtype=qkv_projection.activation_precision)
+            sinks = jnp.zeros(
+                (self.num_heads,), dtype=qkv_projection.activation_precision
+            )
         else:
             sinks = None
 
@@ -154,55 +161,49 @@ class AttentionConfig:
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,
-            num_heads=num_heads,
-            num_groups=num_groups,
-            head_dim=head_dim,
-            is_causal=is_causal,
-            scale=scale,
-            sliding_window_size=sliding_window_size,
+            num_heads=self.num_heads,
+            num_groups=self.num_groups,
+            head_dim=self.head_dim,
+            is_causal=self.is_causal,
+            scale=self.scale,
+            sliding_window_size=self.sliding_window_size,
         )
 
     def empty(
         self,
         model_dim: int,
-        num_heads: int,
-        num_groups: int,
-        head_dim: int,
-        is_causal: bool,
-        scale: float | None,
-        sliding_window_size: int | None,
     ) -> "Attention":
         qkv_projection = self.qkv_projection_config.empty(
             input_dim=model_dim,
             output_dims=(
-                num_heads * head_dim,
-                num_groups * head_dim,
-                num_groups * head_dim,
+                self.num_heads * self.head_dim,
+                self.num_groups * self.head_dim,
+                self.num_groups * self.head_dim,
             ),
             has_biases=self.has_qkv_biases,
         )
         out_projection = self.out_projection_config.empty(
-            num_heads * head_dim,
+            self.num_heads * self.head_dim,
             (model_dim,),
             has_biases=self.has_out_biases,
         )
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.empty(
-                input_dim=head_dim,
+                input_dim=self.head_dim,
             )
         else:
             query_norm = None
 
         if self.key_norm_config is not None:
             key_norm = self.key_norm_config.empty(
-                input_dim=head_dim,
+                input_dim=self.head_dim,
             )
         else:
             key_norm = None
 
         if self.has_sinks:
-            sinks = dummy_array(num_heads, qkv_projection.activation_precision)
+            sinks = dummy_array(self.num_heads, qkv_projection.activation_precision)
         else:
             sinks = None
 
@@ -213,16 +214,16 @@ class AttentionConfig:
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,
-            num_heads=num_heads,
-            num_groups=num_groups,
-            head_dim=head_dim,
-            is_causal=is_causal,
-            scale=scale,
-            sliding_window_size=sliding_window_size,
+            num_heads=self.num_heads,
+            num_groups=self.num_groups,
+            head_dim=self.head_dim,
+            is_causal=self.is_causal,
+            scale=self.scale,
+            sliding_window_size=self.sliding_window_size,
         )
 
 
-class Attention(LalamoModule[AttentionConfig]):
+class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     qkv_projection: LinearBase
     out_projection: LinearBase
 
@@ -257,12 +258,10 @@ class Attention(LalamoModule[AttentionConfig]):
         return self.sliding_window_size is not None
 
     @property
-    def attention_type(self) -> AttentionType:
-        return (
-            AttentionType.SLIDING_WINDOW
-            if self.sliding_window_size is not None
-            else AttentionType.GLOBAL
-        )
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        if self.use_sliding_window:
+            return PositionalEmbeddingSelector.LOCAL
+        return PositionalEmbeddingSelector.GLOBAL
 
     @property
     def has_sinks(self) -> bool:
@@ -330,9 +329,9 @@ class Attention(LalamoModule[AttentionConfig]):
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings,
-        kv_cache: KVCacheLayer | None = None,
-        return_updated_kv_cache: bool = False,
+        positional_embeddings: PositionalEmbeddings | None,
+        state: KVCacheLayer | None = None,
+        return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
@@ -360,23 +359,24 @@ class Attention(LalamoModule[AttentionConfig]):
         if self.key_norm is not None:
             keys = vmap(vmap(self.key_norm))(keys)
 
-        apply_positional_embeddings = vmap(
-            positional_embeddings.apply, in_axes=1, out_axes=1
-        )
-        queries = apply_positional_embeddings(queries)
-        keys = apply_positional_embeddings(keys)
+        if positional_embeddings is not None:
+            apply_positional_embeddings = vmap(
+                positional_embeddings.apply, in_axes=1, out_axes=1
+            )
+            queries = apply_positional_embeddings(queries)
+            keys = apply_positional_embeddings(keys)
 
-        if kv_cache is None:
-            updated_kv_cache = DynamicKVCacheLayer.init(
+        if state is None:
+            updated_state = DynamicKVCacheLayer.init(
                 self.has_sinks, keys, values, length=length_without_padding
             )
         else:
-            updated_kv_cache = kv_cache.extend(
+            updated_state = state.extend(
                 keys, values, added_length=length_without_padding
             )
 
         num_suffix_tokens, _, _ = queries.shape
-        mask = updated_kv_cache.attention_mask(
+        mask = updated_state.attention_mask(
             num_suffix_tokens,
             self.is_causal,
             length_without_padding,
@@ -391,8 +391,8 @@ class Attention(LalamoModule[AttentionConfig]):
         if self.config.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
                 queries,
-                updated_kv_cache.keys,
-                updated_kv_cache.values,
+                updated_state.keys,
+                updated_state.values,
                 mask=mask,
                 scale=self.scale,
                 logit_soft_cap=self.config.logit_soft_cap,
@@ -400,8 +400,8 @@ class Attention(LalamoModule[AttentionConfig]):
         else:
             attention_output = jax.nn.dot_product_attention(
                 queries,
-                updated_kv_cache.keys,
-                updated_kv_cache.values,
+                updated_state.keys,
+                updated_state.values,
                 bias=sink_bias,
                 mask=mask,
                 scale=self.scale,
@@ -414,12 +414,15 @@ class Attention(LalamoModule[AttentionConfig]):
         )
         (result,) = vmap(self.out_projection, in_axes=0)(attention_output)
 
-        if not return_updated_kv_cache:
-            updated_kv_cache = None
+        if not return_updated_state:
+            updated_state = None
 
-        return AttentionResult(outputs=result, kv_cache=updated_kv_cache)
+        return AttentionResult(
+            outputs=result,
+            state=updated_state,
+        )
 
-    def init_static_kv_cache(self, capacity: int) -> StaticKVCacheLayer:
+    def init_static_state(self, capacity: int) -> StaticKVCacheLayer:
         return StaticKVCacheLayer.empty(
             self.has_sinks,
             capacity,

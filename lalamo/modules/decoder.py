@@ -11,10 +11,14 @@ from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
-from .kv_cache import KVCache
 from .rope import PositionalEmbeddings
-from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
-from .transformer_layer import TransformerLayerResult
+from .state import State
+from .transformer import (
+    Transformer,
+    TransformerConfig,
+    TransformerForwardPassConfig,
+    TransformerLayerResult,
+)
 from .utils import vmap_twice
 
 __all__ = [
@@ -32,46 +36,49 @@ type DecoderForwardPassConfig = TransformerForwardPassConfig
 class DecoderActivationTrace(eqx.Module):
     token_ids: Int[Array, "batch suffix_tokens"]
     token_positions: Int[Array, "batch suffix_tokens"]
-    kv_cache: KVCache | None
+    state: State | None
 
-    local_positional_embeddings: PositionalEmbeddings
-    global_positional_embeddings: PositionalEmbeddings
+    local_positional_embeddings: PositionalEmbeddings | None
+    global_positional_embeddings: PositionalEmbeddings | None
 
     layer_results: tuple[TransformerLayerResult, ...]
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
     def export(self) -> ParameterTree:
-        result = dict(
+        result: dict[str, ParameterTree | Array] = dict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
-            local_positional_embeddings=self.local_positional_embeddings.export(),
-            global_positional_embeddings=self.global_positional_embeddings.export(),
             layer_results=[
                 layer_result.export() for layer_result in self.layer_results
             ],
             output_norm=self.output_norm,
         )
-        if self.kv_cache is not None:
-            result["kv_cache"] = [
-                kv_cache_layer_slice.export() for kv_cache_layer_slice in self.kv_cache
-            ]
+        if self.state is not None:
+            result["state"] = [state_layer.export() for state_layer in self.state]
+        if self.local_positional_embeddings is not None:
+            result["local_positional_embeddings"] = (
+                self.local_positional_embeddings.export()
+            )
+        if self.global_positional_embeddings is not None:
+            result["global_positional_embeddings"] = (
+                self.global_positional_embeddings.export()
+            )
         return result
 
 
 class DecoderResult(eqx.Module):
     logits: Float[Array, "batch suffix_tokens channels"]
-    updated_kv_cache: KVCache | None = None
+    updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
             logits=self.logits,
         )
-        if self.updated_kv_cache is not None:
-            result["updated_kv_cache"] = [
-                kv_cache_layer_slice.export()
-                for kv_cache_layer_slice in self.updated_kv_cache
+        if self.updated_state is not None:
+            result["updated_state"] = [
+                state_layer.export() for state_layer in self.updated_state
             ]
         if self.activation_trace is not None:
             result["activation_trace"] = self.activation_trace.export()
@@ -96,9 +103,7 @@ class DecoderConfig:
             model_dim=self.transformer_config.model_dim,
             key=embedding_key,
         )
-        transformer = self.transformer_config.random_init(
-            key=transformer_key, is_causal=True
-        )
+        transformer = self.transformer_config.random_init(key=transformer_key)
 
         return Decoder(
             config=self,
@@ -111,7 +116,7 @@ class DecoderConfig:
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
         )
-        transformer = self.transformer_config.empty(is_causal=True)
+        transformer = self.transformer_config.empty()
 
         return Decoder(
             config=self,
@@ -129,12 +134,12 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.embedding.activation_precision
 
     @eqx.filter_jit
-    def __call__(
+    def __call__(  # noqa: PLR0912
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],
-        kv_cache: KVCache | None = None,
-        return_updated_kv_cache: bool = False,
+        state: State | None = None,
+        return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
@@ -155,8 +160,8 @@ class Decoder(LalamoModule[DecoderConfig]):
         transformer_result = self.transformer(
             inner_features=inner_features,
             token_positions=token_positions,
-            kv_cache=kv_cache,
-            return_updated_kv_cache=return_updated_kv_cache,
+            state=state,
+            return_updated_state=return_updated_state,
             return_layer_results=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
@@ -174,7 +179,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             activation_trace = DecoderActivationTrace(
                 token_ids=token_ids,
                 token_positions=token_positions,
-                kv_cache=kv_cache,
+                state=state,
                 global_positional_embeddings=transformer_result.global_positional_embeddings,
                 local_positional_embeddings=transformer_result.local_positional_embeddings,
                 layer_results=transformer_result.layer_results,
@@ -185,12 +190,12 @@ class Decoder(LalamoModule[DecoderConfig]):
 
         return DecoderResult(
             logits=logits,
-            updated_kv_cache=transformer_result.updated_kv_cache,
+            updated_state=transformer_result.updated_state,
             activation_trace=activation_trace,
         )
 
-    def init_static_kv_cache(self, batch_size: int, capacity: int) -> KVCache:
-        return self.transformer.init_static_kv_cache(batch_size, capacity)
+    def init_static_state(self, batch_size: int, capacity: int) -> State:
+        return self.transformer.init_static_state(batch_size, capacity)
 
     def export_weights(self) -> ParameterTree:
         return dict(

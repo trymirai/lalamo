@@ -1,7 +1,11 @@
-from .activations import GELU, Activation, SiLU
-from .attention import Attention, AttentionConfig
+from .activations import GELU, Activation, Identity, SiLU
 from .classifier import Classifier, ClassifierConfig
-from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
+from .common import (
+    ForwardPassMode,
+    LalamoModule,
+    PositionalEmbeddingSelector,
+    config_converter,
+)
 from .decoder import (
     Decoder,
     DecoderActivationTrace,
@@ -21,7 +25,6 @@ from .embedding import (
     UntiedEmbedding,
     UntiedEmbeddingConfig,
 )
-from .kv_cache import DynamicKVCacheLayer, KVCache, KVCacheLayer, StaticKVCacheLayer
 from .linear import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -55,6 +58,15 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
+from .token_mixers import (
+    Attention,
+    AttentionConfig,
+    CausalConv1d,
+    CausalConv1dConfig,
+    Mamba2,
+    Mamba2Config,
+)
 from .transformer import Transformer, TransformerConfig
 from .transformer_layer import (
     TransformerLayer,
@@ -69,7 +81,8 @@ __all__ = [
     "Activation",
     "Attention",
     "AttentionConfig",
-    "AttentionType",
+    "CausalConv1d",
+    "CausalConv1dConfig",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
@@ -87,7 +100,7 @@ __all__ = [
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "KVCache",
+    "Identity",
     "KVCacheLayer",
     "LalamoModule",
     "LinearBase",
@@ -101,10 +114,13 @@ __all__ = [
     "MLXQuantizedLinearConfig",
     "MLXQuantizedTiedEmbedding",
     "MLXQuantizedTiedEmbeddingConfig",
+    "Mamba2",
+    "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "Normalization",
     "NormalizationConfig",
+    "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
@@ -115,6 +131,7 @@ __all__ = [
     "RoutingFunction",
     "SiLU",
     "SoftmaxRouting",
+    "State",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",

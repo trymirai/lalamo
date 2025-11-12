@@ -6,11 +6,11 @@ from jaxtyping import DTypeLike
 
 from lalamo.modules import DecoderConfig, TiedEmbeddingConfig, TransformerConfig
 from lalamo.modules.activations import GELU
-from lalamo.modules.attention import AttentionConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
+from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .common import HuggingFaceLMConfig
@@ -33,6 +33,7 @@ class GemmaRoPEScalingConfig:
 
 @dataclass(frozen=True)
 class HFGemma3TextConfigRaw:
+    eos_token_id: int | list[int]
     hidden_size: int
     intermediate_size: int
     model_type: Literal["gemma3_text"]
@@ -112,42 +113,54 @@ class HFGemma3TextConfigRaw:
             up_clipping=None,
             gate_clipping=None,
         )
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=rms_norm_config,
-            key_norm_config=rms_norm_config,
-            logit_soft_cap=self.attn_logit_softcapping,
-            has_sinks=False,
-            has_qkv_biases=self.attention_bias,
-            has_out_biases=self.attention_bias,
-        )
-        decoder_layer_configs = [
-            TransformerLayerConfig(
-                pre_attention_norm_config=rms_norm_config,
-                attention_config=attention_config,
-                post_attention_norm_config=rms_norm_config,
+        layer_configs = []
+        for sliding_window_size in self.sliding_window_sizes:
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=rms_norm_config,
+                key_norm_config=rms_norm_config,
+                logit_soft_cap=self.attn_logit_softcapping,
+                has_sinks=False,
+                has_qkv_biases=self.attention_bias,
+                has_out_biases=self.attention_bias,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                is_causal=True,
+                scale=attention_scale,
+                sliding_window_size=sliding_window_size,
+            )
+            transformer_layer_config = TransformerLayerConfig(
+                pre_mixer_norm_config=rms_norm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=rms_norm_config,
                 pre_mlp_norm_config=rms_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=rms_norm_config,
-                sliding_window_size=sliding_window_size,
             )
-            for sliding_window_size in self.sliding_window_sizes
-        ]
+            layer_configs.append(transformer_layer_config)
+
         transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
-            layer_configs=decoder_layer_configs,
+            layer_configs=tuple(layer_configs),
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim,
-            attention_scale=attention_scale,
-            num_layers=self.num_hidden_layers,
             context_length=context_length or self.max_position_embeddings,
         )
+
+        # return DecoderConfig(
+        #     embedding_config=embedding_config,
+        #     global_rope_config=global_rope_config,
+        #     local_rope_config=local_rope_config,
+        #     layer_configs=tuple(layer_configs),
+        #     output_norm_config=rms_norm_config,
+        #     model_dim=self.hidden_size,
+        #     hidden_dim=self.intermediate_size,
+        #     context_length=context_length or self.max_position_embeddings,
+        # )
         return DecoderConfig(
             embedding_config=embedding_config,
             transformer_config=transformer_config,

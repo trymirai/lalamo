@@ -109,16 +109,7 @@ class HFQwen2Config(HuggingFaceLMConfig):
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=None,
-            key_norm_config=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=True,
-            has_out_biases=False,
-        )
+        head_dim = self.hidden_size // self.num_attention_heads
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
@@ -127,32 +118,46 @@ class HFQwen2Config(HuggingFaceLMConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_configs = [
-            TransformerLayerConfig(
-                pre_attention_norm_config=rmsnorm_config,
-                attention_config=attention_config,
-                post_attention_norm_config=None,
+
+        sliding_window_sizes = self._get_sliding_window_sizes()
+        layer_configs = []
+        for sliding_window_size in sliding_window_sizes:
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=None,
+                key_norm_config=None,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkv_biases=True,
+                has_out_biases=False,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=head_dim,
+                is_causal=True,
+                scale=None,
+                sliding_window_size=sliding_window_size,
+            )
+            transformer_layer_config = TransformerLayerConfig(
+                pre_mixer_norm_config=rmsnorm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=None,
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                sliding_window_size=sliding_window_size,
             )
-            for sliding_window_size in self._get_sliding_window_sizes()
-        ]
+            layer_configs.append(transformer_layer_config)
+
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_configs=decoder_layer_configs,
+            layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=self.hidden_size // self.num_attention_heads,
-            attention_scale=None,
-            num_layers=self.num_hidden_layers,
             context_length=context_length or self.max_position_embeddings,
         )
+
         return DecoderConfig(
             embedding_config=embedding_config,
             transformer_config=transformer_config,

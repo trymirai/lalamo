@@ -148,16 +148,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=None,
-            key_norm_config=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=self.attention_bias,
-            has_out_biases=False,
-        )
         activation = activation_from_str(self.hidden_activation)
         assert activation is SiLU or activation is GELU
         mlp_config = DenseMLPConfig(
@@ -176,33 +166,43 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             for i in range(self.num_hidden_layers)
         ]
 
-        transformer_layer_configs = [
-            TransformerLayerConfig(
-                pre_attention_norm_config=pre_attn_config,
-                attention_config=attention_config,
-                post_attention_norm_config=None,
+        transformer_layer_configs = []
+        for sliding_window_size, pre_attn_config in zip(
+            sliding_window_sizes, pre_attn_configs, strict=True
+        ):
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=None,
+                key_norm_config=None,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkv_biases=self.attention_bias,
+                has_out_biases=False,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_attention_heads,
+                head_dim=self.hidden_size // self.num_attention_heads,
+                scale=None,
+                is_causal=False,
+                sliding_window_size=sliding_window_size,
+            )
+            layer_config = TransformerLayerConfig(
+                pre_mixer_norm_config=pre_attn_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=None,
                 pre_mlp_norm_config=transformer_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                sliding_window_size=sliding_window_size,
             )
-            for sliding_window_size, pre_attn_config in zip(
-                sliding_window_sizes, pre_attn_configs, strict=True
-            )
-        ]
+            transformer_layer_configs.append(layer_config)
 
         transformer_config = TransformerConfig(
             global_rope_config=global_rope_config,
             local_rope_config=local_rope_config,
-            layer_configs=transformer_layer_configs,
+            layer_configs=tuple(transformer_layer_configs),
             output_norm_config=transformer_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_attention_heads,
-            head_dim=self.hidden_size // self.num_attention_heads,
-            attention_scale=None,
-            num_layers=self.num_hidden_layers,
             context_length=context_length or self.max_position_embeddings,
         )
 
@@ -245,7 +245,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             head_dim=self.hidden_size // self.num_attention_heads,
             attention_scale=None,
             num_layers=self.num_hidden_layers,
-            sliding_window_sizes=sliding_window_sizes,
             context_length=self.max_position_embeddings,
             num_labels=len(self.id2label),
             classifier_pooling=PoolingType(self.classifier_pooling),

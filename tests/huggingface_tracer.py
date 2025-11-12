@@ -432,7 +432,7 @@ class HFClassifierTracer(ModelTracer):
         hf_pre_mlp_norm = hf_layer.mlp_norm
 
         attention_mask = torch.ones(
-            activation_trace.pre_attention_norm.shape[0:2], dtype=torch.bool
+            activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool
         )
 
         attention_mask, sliding_window = self.hf_model.model._update_attention_mask(
@@ -442,15 +442,15 @@ class HFClassifierTracer(ModelTracer):
         if layer_index > 0:
             self.match_rmsnorm(
                 activation_trace.inputs,
-                activation_trace.pre_attention_norm,
+                activation_trace.pre_mixer_norm,
                 hf_pre_attention_norm,
                 f"Layer {layer_index} Pre Attention RMSNorm",
             )
 
         self.match_attention(
-            activation_trace.pre_attention_norm,
+            activation_trace.pre_mixer_norm,
             position_ids,
-            activation_trace.attention,
+            activation_trace.mixer,
             hf_layer.attn,  # type: ignore
             attention_mask,
             sliding_window,
@@ -471,6 +471,7 @@ class HFClassifierTracer(ModelTracer):
             f"Layer {layer_index} MLP",
         )
 
+        assert activation_trace.positional_embeddings is not None
         cosines = activation_trace.positional_embeddings.cosines
         sines = activation_trace.positional_embeddings.sines
         assert cosines.ndim == 3

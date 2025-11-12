@@ -19,16 +19,6 @@ class ForeignConfig(RegistryABC):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
-    eos_token_id: int | list[int]
-
-    @property
-    def eos_token_ids(self) -> list[int]:
-        return (
-            [self.eos_token_id]
-            if isinstance(self.eos_token_id, int)
-            else self.eos_token_id
-        )
-
     @property
     def default_precision(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
@@ -50,6 +40,16 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
         accumulation_precision: DTypeLike,
     ) -> DecoderConfig:
         raise NotImplementedError
+
+    eos_token_id: int | list[int]
+
+    @property
+    def eos_token_ids(self) -> list[int]:
+        return (
+            [self.eos_token_id]
+            if isinstance(self.eos_token_id, int)
+            else self.eos_token_id
+        )
 
     @classmethod
     def _load_decoder_weights(

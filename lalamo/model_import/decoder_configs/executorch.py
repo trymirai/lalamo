@@ -21,7 +21,7 @@ from lalamo.modules import (
 from lalamo.modules.activations import SiLU
 from lalamo.quantization import QuantizationMode
 
-from .common import ForeignLMConfig
+from .common import ForeignConfig
 
 __all__ = ["ETLlamaConfig"]
 
@@ -51,7 +51,17 @@ class LoraConfig:
 
 
 @dataclass(frozen=True)
-class ExecutorchConfig(ForeignLMConfig):
+class ExecutorchConfig(ForeignConfig):
+    eos_token_id: int | list[int]
+
+    @property
+    def eos_token_ids(self) -> list[int]:
+        return (
+            [self.eos_token_id]
+            if isinstance(self.eos_token_id, int)
+            else self.eos_token_id
+        )
+
     @property
     def default_precision(self) -> DTypeLike:
         return jnp.bfloat16
@@ -138,6 +148,12 @@ class ETLlamaConfig(ExecutorchConfig):
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
+            num_heads=self.n_heads,
+            num_groups=self.n_kv_heads,
+            head_dim=self.dim // self.n_heads,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
         )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -147,27 +163,21 @@ class ETLlamaConfig(ExecutorchConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = TransformerLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
+        tranformer_layer_config = TransformerLayerConfig(
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
-            sliding_window_size=None,
         )
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_configs=[decoder_layer_config] * self.n_layers,
+            layer_configs=(tranformer_layer_config,) * self.n_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),
-            num_heads=self.n_heads,
-            num_groups=self.n_kv_heads,
-            head_dim=self.dim // self.n_heads,
-            attention_scale=None,
-            num_layers=self.n_layers,
             context_length=context_length or MAX_SEQUENCE_LENGTH,
         )
         return DecoderConfig(

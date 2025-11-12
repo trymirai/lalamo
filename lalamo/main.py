@@ -313,7 +313,7 @@ def convert(
                 result = model.decoder(
                     token_ids,
                     token_positions,
-                    return_updated_kv_cache=True,
+                    return_updated_state=True,
                     return_activation_trace=True,
                 )
             elif metadata.model_type == ModelType.ROUTER_MODEL:

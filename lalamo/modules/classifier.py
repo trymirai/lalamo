@@ -211,7 +211,6 @@ class ClassifierConfig:
     head_dim: int
     attention_scale: float | None
     num_layers: int
-    sliding_window_sizes: tuple[int | None, ...] | None
     context_length: int
     num_labels: int
     classifier_pooling: PoolingType
@@ -234,7 +233,6 @@ class ClassifierConfig:
         embedding_norm = self.embedding_norm_config.empty(self.model_dim)
         transformer = self.transformer_config.random_init(
             key=transformer_key,
-            is_causal=False,
         )
         prediction_head = self.prediction_head_config.random_init(
             input_size=self.hidden_dim,
@@ -255,7 +253,7 @@ class ClassifierConfig:
             model_dim=self.model_dim,
         )
         embedding_norm = self.embedding_norm_config.empty(self.model_dim)
-        transformer = self.transformer_config.empty(is_causal=False)
+        transformer = self.transformer_config.empty()
         prediction_head = self.prediction_head_config.empty(
             input_size=self.hidden_dim,
             num_labels=self.num_labels,
@@ -322,8 +320,8 @@ class Classifier(LalamoModule[ClassifierConfig]):
         transformer_result = self.transformer(
             inner_features=normalized_embeddings,
             token_positions=token_positions,
-            kv_cache=None,
-            return_updated_kv_cache=False,
+            state=None,
+            return_updated_state=False,
             return_layer_results=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,

@@ -146,6 +146,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.global_positional_embeddings
+        assert llm_results is not None
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
@@ -176,6 +177,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.local_positional_embeddings
+        assert llm_results is not None
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
@@ -273,15 +275,16 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         ref_pre_attention_norm = self.layer_pre_attention_norm(ref_layer)
         self.match_rmsnorm(
             activation_trace.inputs,
-            activation_trace.pre_attention_norm,
+            activation_trace.pre_mixer_norm,
             ref_pre_attention_norm,
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
 
         ref_attention = self.layer_attention(ref_layer)
+        assert activation_trace.positional_embeddings is not None
         self.match_attention(
-            activation_trace.pre_attention_norm,
-            activation_trace.attention,
+            activation_trace.pre_mixer_norm,
+            activation_trace.mixer,
             ref_attention,
             (
                 activation_trace.positional_embeddings.cosines,
@@ -292,10 +295,10 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         ref_post_attention_norm = self.layer_post_attention_norm(ref_layer)
         if ref_post_attention_norm is not None:
-            assert activation_trace.post_attention_norm is not None
+            assert activation_trace.post_mixer_norm is not None
             self.match_rmsnorm(
-                activation_trace.attention,
-                activation_trace.post_attention_norm,
+                activation_trace.mixer,
+                activation_trace.post_mixer_norm,
                 ref_post_attention_norm,
                 f"Layer {layer_index} Post Attention RMSNorm",
             )
@@ -467,7 +470,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
             err, inference_results = checkify_forward(model.decoder)(
                 token_ids=token_ids,
                 token_positions=token_positions,
-                return_updated_kv_cache=True,
+                return_updated_state=True,
                 return_activation_trace=True,
             )
             err.throw()

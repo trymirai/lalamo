@@ -38,8 +38,12 @@ DEVSTRAL = [
         config_type=HFMistralConfig,
         configs=ConfigMap(
             tokenizer=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer.json"),
-            tokenizer_config=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"),
-            generation_config=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="generation_config.json"),
+            tokenizer_config=FileSpec(
+                repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"
+            ),
+            generation_config=FileSpec(
+                repo=DEVSTRAL_TOKENIZER_REPO, filename="generation_config.json"
+            ),
         ),
         use_cases=(UseCase.CODE,),
     ),
