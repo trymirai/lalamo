@@ -456,7 +456,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
-        routing_map = self.config.routing_function.call_unbatched(
+        routing_map = self.config.routing_function(
             router_logits, self.num_experts_per_token
         )
         token_mask = rearrange(
