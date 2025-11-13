@@ -267,6 +267,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         self,
         messages: Iterable[Message],
         sampling_policy: SamplingPolicy | None = None,
+        max_output_length: int = 8192,
         forward_pass_config: ForwardPassConfig | None = None,
         *,
         key: PRNGKeyArray | None = None,
@@ -276,6 +277,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         response_ids = self.generate_tokens(
             token_ids,
             sampling_policy,
+            max_output_length=max_output_length,
             forward_pass_config=forward_pass_config,
             key=key,
         ).token_ids.squeeze(0)
