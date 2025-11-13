@@ -316,7 +316,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
 
             # decay and mix per value head -> reshape per group
             decay = jnp.exp(-dt)[:, :, None]
-            mix = (1.0 - jnp.exp(-dt))[:, :, None]
+            mix = dt[:, :, None]
             decay_group = rearrange(
                 decay,
                 "(groups heads) 1 1 -> groups heads 1 1",
@@ -462,7 +462,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, MambaStateLayer]):
     def init_static_state(self, capacity: int) -> MambaStateLayer:  # noqa: ARG002
         conv_channels = self.inner_dim + 2 * self.num_groups * self.state_dim
         return MambaStateLayer.empty(
-            self.conv.config.kernel_size,
+            self.conv.config.kernel_size - 1,
             conv_channels,
             self.num_value_heads,
             self.head_dim,
