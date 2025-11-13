@@ -41,8 +41,6 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
     ) -> DecoderConfig:
         raise NotImplementedError
 
-    eos_token_id: int | list[int]
-
     @property
     def eos_token_ids(self) -> list[int]:
         return (

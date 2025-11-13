@@ -100,8 +100,6 @@ class HuggingFaceLMConfig(ForeignLMConfig):
         QuantizationConfigType, _structure_quantization_config
     )
 
-    eos_token_id: int | list[int]
-
     @property
     def eos_token_ids(self) -> list[int]:
         if not hasattr(self, "eos_token_id"):
