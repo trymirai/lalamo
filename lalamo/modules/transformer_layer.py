@@ -333,7 +333,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return replace(
             self,
             pre_mixer_norm=pre_mixer_norm,
-            attention=self.mixer.import_weights(weights["mixer"]),
+            mixer=self.mixer.import_weights(weights["mixer"]),
             post_mixer_norm=post_mixer_norm,
             pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"]),
             mlp=self.mlp.import_weights(weights["mlp"]),

@@ -266,7 +266,6 @@ class Transformer(LalamoModule[TransformerConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["global_rope"], Mapping)
         assert isinstance(weights["layers"], Sequence)
         assert isinstance(weights["output_norm"], Mapping)
 

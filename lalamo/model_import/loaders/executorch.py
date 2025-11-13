@@ -240,7 +240,7 @@ def load_transformer_layer(
     else:
         attention_norm = None
     assert isinstance(module.mixer, Attention)
-    attention = load_attention(module.mixer, weights_dict, path / "attention")
+    attention = load_attention(module.mixer, weights_dict, path / "mixer")
     mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
     assert isinstance(module.mlp, DenseMLP)
     mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward")
