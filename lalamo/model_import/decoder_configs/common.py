@@ -35,6 +35,7 @@ class ForeignConfig(RegistryABC):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         raise NotImplementedError
 
@@ -52,7 +53,8 @@ class ForeignConfig(RegistryABC):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
+        metadata_dict: Mapping[str, str],
     ) -> Decoder:
-        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
+        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision, metadata_dict)
         model = config.empty()
         return self._load_weights(model, weights_dict)

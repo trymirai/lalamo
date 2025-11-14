@@ -189,15 +189,18 @@ def import_model(
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
+        metadata_shards = []
         for weights_path in weights_paths:
-            weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+            weights_shard, metadata_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
             weights_shards.append(weights_shard)
+            metadata_shards.append(metadata_shard)
         weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+        metadata_dict: ChainMap[str, Array] = ChainMap(*metadata_shards)
 
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
+        decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict, metadata_dict)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
