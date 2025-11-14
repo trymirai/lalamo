@@ -13,8 +13,8 @@ from lalamo.common import ParameterTree, dummy_array
 from .common import LalamoModule
 
 __all__ = [
-    "RMSNorm",
-    "RMSNormConfig",
+    "Normalization",
+    "NormalizationConfig",
     "UpcastMode",
 ]
 
@@ -25,25 +25,26 @@ class UpcastMode(Enum):
 
 
 @dataclass(frozen=True)
-class RMSNormConfig:
+class NormalizationConfig:
     scale_precision: DTypeLike
     accumulation_precision: DTypeLike
     epsilon: float
     scale_offset: float | None
     upcast_mode: UpcastMode
+    subtract_mean: bool
 
-    def init(self, input_dim: int) -> "RMSNorm":
+    def init(self, input_dim: int) -> "Normalization":
         scales = jnp.ones(input_dim, dtype=self.scale_precision)
-        return RMSNorm(self, scales=scales)
+        return Normalization(self, scales=scales)
 
-    def empty(self, input_dim: int) -> "RMSNorm":
-        return RMSNorm(
+    def empty(self, input_dim: int) -> "Normalization":
+        return Normalization(
             config=self,
             scales=dummy_array(input_dim, dtype=self.scale_precision),
         )
 
 
-class RMSNorm(LalamoModule[RMSNormConfig]):
+class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
 
     @property
@@ -65,6 +66,10 @@ class RMSNorm(LalamoModule[RMSNormConfig]):
     @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
         upcasted_inputs = inputs.astype(self.config.accumulation_precision)
+
+        if self.config.subtract_mean:
+            mean = jnp.mean(upcasted_inputs)
+            upcasted_inputs = upcasted_inputs - mean
 
         adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
         normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)

@@ -42,3 +42,6 @@ sync.bb
 memray-*.bin
 memray-*.html
 *.prof
+
+# temporary data
+tmp/

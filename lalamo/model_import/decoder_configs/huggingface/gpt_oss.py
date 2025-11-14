@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -6,20 +7,21 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     MixtureOfExpertsConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     SoftmaxRouting,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
 )
 from lalamo.modules.activations import SiLU
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGPTOssConfig"]
 
@@ -35,7 +37,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFGPTOssConfig(HuggingFaceConfig):
+class HFGPTOssConfig(HuggingFaceLMConfig):
     # Core HF fields
     architectures: list[Literal["GptOssForCausalLM"]]
     attention_bias: bool
@@ -75,6 +77,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         # Embedding
         if self.tie_word_embeddings:
@@ -113,27 +116,17 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 truncate=True,
             )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
 
         # Linear layers
         linear_config = FullPrecisionLinearConfig(precision=activation_precision)
-
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=None,
-            key_norm_config=None,
-            logit_soft_cap=None,
-            has_sinks=True,
-            has_qkv_biases=self.attention_bias,
-            has_out_biases=self.attention_bias,
-        )
 
         # Experts (MoE) scaffold
         # Router: linear with bias; Experts: DenseMLP with SiLU(alpha=1.702) and value/gate clipping
@@ -148,48 +141,78 @@ class HFGPTOssConfig(HuggingFaceConfig):
         )
         moe_config = MixtureOfExpertsConfig(
             mixture_size=self.num_local_experts,
-            num_experts_per_token=(self.num_experts_per_tok or self.experts_per_token or 1),
+            num_experts_per_token=(
+                self.num_experts_per_tok or self.experts_per_token or 1
+            ),
             routing_function=SoftmaxRouting(),
             router_config=linear_config,
             router_has_biases=True,
             expert_config=experts_config,
         )
-        decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=moe_config,
-            post_mlp_norm_config=None,
-        )
 
         # Per-layer sliding-window
-        if self.layer_types is not None and len(self.layer_types) == self.num_hidden_layers:
-            sliding_window_sizes = tuple(
-                self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
-            )
+        if (
+            self.layer_types is not None
+            and len(self.layer_types) == self.num_hidden_layers
+        ):
+            sliding_window_sizes = [
+                self.sliding_window if layer_type == "sliding_attention" else None
+                for layer_type in self.layer_types
+            ]
         else:
             # Fallback: apply the same sliding window to all layers if provided
             sliding_window_sizes = (
-                tuple([self.sliding_window] * self.num_hidden_layers) if self.sliding_window is not None else None
+                [self.sliding_window] * self.num_hidden_layers
+                if self.sliding_window is not None
+                else [None] * self.num_hidden_layers
             )
 
-        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
+        head_dim = (
+            self.head_dim
+            if self.head_dim is not None
+            else self.hidden_size // self.num_attention_heads
+        )
+
+        layer_configs = []
+        for sliding_window_size in sliding_window_sizes:
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=None,
+                key_norm_config=None,
+                logit_soft_cap=None,
+                has_sinks=True,
+                has_qkv_biases=self.attention_bias,
+                has_out_biases=self.attention_bias,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=head_dim,
+                is_causal=True,
+                scale=None,
+                sliding_window_size=sliding_window_size,
+            )
+            transformer_layer_config = TransformerLayerConfig(
+                pre_mixer_norm_config=rmsnorm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=None,
+                pre_mlp_norm_config=rmsnorm_config,
+                mlp_config=moe_config,
+                post_mlp_norm_config=None,
+            )
+            layer_configs.append(transformer_layer_config)
+
+        transformer_config = TransformerConfig(
+            global_rope_config=rope_config,
+            local_rope_config=None,
+            layer_configs=tuple(layer_configs),
+            output_norm_config=rmsnorm_config,
+            model_dim=self.hidden_size,
+            hidden_dim=self.intermediate_size,
+            context_length=context_length or self.max_position_embeddings,
+        )
 
         return DecoderConfig(
             embedding_config=embedding_config,
-            global_rope_config=rope_config,
-            local_rope_config=None,
-            layer_config=decoder_layer_config,
-            output_norm_config=rmsnorm_config,
+            transformer_config=transformer_config,
             vocab_size=self.vocab_size,
-            model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=head_dim,
-            attention_scale=None,
-            num_layers=self.num_hidden_layers,
-            sliding_window_sizes=sliding_window_sizes,
-            context_length=context_length or self.max_position_embeddings,
         )

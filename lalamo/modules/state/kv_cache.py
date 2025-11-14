@@ -4,15 +4,16 @@ from typing import Self
 import equinox as eqx
 import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
-from jax.tree_util import register_pytree_node_class
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-__all__ = ["DynamicKVCacheLayer", "KVCache", "KVCacheLayer", "StaticKVCacheLayer"]
+from .common import StateLayerBase
+
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
 
-class KVCacheLayer(eqx.Module):
+class KVCacheLayer(StateLayerBase):
     has_sinks: bool = eqx.field(static=True)
     keys: Float[Array, "*batch tokens groups head_channels"]
     values: Float[Array, "*batch tokens groups head_channels"]
@@ -58,18 +59,6 @@ class KVCacheLayer(eqx.Module):
         )
 
 
-@register_pytree_node_class
-class KVCache(tuple[KVCacheLayer, ...]):
-    __slots__ = ()
-
-    def tree_flatten(self) -> tuple[tuple[KVCacheLayer, ...], None]:
-        return (tuple(self), None)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data: None, children: tuple[KVCacheLayer, ...]) -> Self:  # noqa: ARG003
-        return cls(children)
-
-
 class DynamicKVCacheLayer(KVCacheLayer):
     padding_mask: Bool[Array, " tokens"] | None = None
 
@@ -100,7 +89,9 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
+        suffix_length_without_padding: (
+            Int[Array, ""] | int | None
+        ) = None,  # noqa: ARG002
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
@@ -108,8 +99,11 @@ class DynamicKVCacheLayer(KVCacheLayer):
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
             result = jnp.tril(result, k=total_num_tokens - suffix_length)
-        if sliding_window_size is not None:
-            result = jnp.triu(result, k=1 - sliding_window_size)
+            if sliding_window_size is not None:
+                result = jnp.triu(result, k=1 - sliding_window_size)
+        elif sliding_window_size is not None:
+            top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
+            result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
@@ -138,9 +132,15 @@ class DynamicKVCacheLayer(KVCacheLayer):
             old_num_tokens, _, _ = self.keys.shape
             old_padding_mask = jnp.ones(old_num_tokens, dtype=jnp.bool)
 
-        added_padding_mask = jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
-        updated_padding_mask = jnp.concatenate([old_padding_mask, added_padding_mask], axis=0)
-        return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
+        added_padding_mask = (
+            jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
+        )
+        updated_padding_mask = jnp.concatenate(
+            [old_padding_mask, added_padding_mask], axis=0
+        )
+        return DynamicKVCacheLayer(
+            self.has_sinks, updated_keys, updated_values, updated_padding_mask
+        )
 
 
 class StaticKVCacheLayer(KVCacheLayer):
@@ -157,7 +157,10 @@ class StaticKVCacheLayer(KVCacheLayer):
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
         if is_causal:
-            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            query_offsets = (
+                jnp.arange(0, suffix_length, dtype=jnp.int32)
+                - suffix_length_without_padding
+            )
         else:
             query_offsets = jnp.zeros(suffix_length, dtype=jnp.int32)
 
@@ -166,7 +169,9 @@ class StaticKVCacheLayer(KVCacheLayer):
 
         result = query_indices[:, None] >= key_indices[None, :]
         if sliding_window_size is not None:
-            swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
+            swa_mask = query_indices[:, None] < (
+                key_indices[None, :] + sliding_window_size
+            )
             result = result & swa_mask
         if self.has_sinks:
             result = result.at[:, 0].set(True)
@@ -196,7 +201,9 @@ class StaticKVCacheLayer(KVCacheLayer):
         num_added_tokens, new_num_groups, new_head_dim = added_keys.shape
         _, old_num_groups, old_head_dim = self.keys.shape
         if new_num_groups != old_num_groups or new_head_dim != old_head_dim:
-            raise ValueError("New keys and values must have the same number of groups and head dimensions")
+            raise ValueError(
+                "New keys and values must have the same number of groups and head dimensions"
+            )
 
         if added_length is None:
             added_length = num_added_tokens
@@ -224,7 +231,14 @@ class StaticKVCacheLayer(KVCacheLayer):
         )
 
     @classmethod
-    def empty(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
+    def empty(
+        cls,
+        has_sinks: bool,
+        capacity: int,
+        num_groups: int,
+        head_dim: int,
+        dtype: DTypeLike,
+    ) -> Self:
         return cls(
             has_sinks=has_sinks,
             keys=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),

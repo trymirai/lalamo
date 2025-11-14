@@ -10,6 +10,7 @@ from lalamo.modules.common import register_config_union
 __all__ = [
     "GELU",
     "Activation",
+    "Identity",
     "SiLU",
 ]
 
@@ -34,7 +35,13 @@ class GELU(ActivationBase):
         return jax.nn.gelu(x)
 
 
-Activation = SiLU | GELU
+@dataclass(frozen=True)
+class Identity(ActivationBase):
+    def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
+        return x
+
+
+Activation = SiLU | GELU | Identity
 
 
 register_config_union(Activation)

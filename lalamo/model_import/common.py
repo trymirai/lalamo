@@ -1,4 +1,5 @@
 import importlib.metadata
+import json
 from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -14,11 +15,14 @@ from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.model_import.model_specs.common import JSONFieldSpec
+from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.quantization import QuantizationMode
+from lalamo.router_model import RouterConfig, RouterModel
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, UseCase
+from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
 
 __all__ = [
     "REPO_TO_MODEL",
@@ -27,6 +31,7 @@ __all__ = [
     "InitializingModelEvent",
     "ModelMetadata",
     "ModelSpec",
+    "ModelType",
     "StatusEvent",
     "import_model",
 ]
@@ -52,7 +57,10 @@ class FinishedInitializingModelEvent(NamedTuple):
 
 
 type StatusEvent = (
-    DownloadingFileEvent | FinishedDownloadingFileEvent | InitializingModelEvent | FinishedInitializingModelEvent
+    DownloadingFileEvent
+    | FinishedDownloadingFileEvent
+    | InitializingModelEvent
+    | FinishedInitializingModelEvent
 )
 
 
@@ -66,7 +74,8 @@ class ModelMetadata:
     quantization: QuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
-    model_config: LanguageModelConfig
+    model_type: ModelType
+    model_config: LanguageModelConfig | RouterConfig
 
 
 def download_file(
@@ -89,7 +98,11 @@ def download_file(
 
 def list_weight_files(model_repo: str) -> list[FileSpec]:
     all_files = huggingface_hub.list_repo_files(model_repo)
-    return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
+    return [
+        FileSpec(filename)
+        for filename in all_files
+        if filename.endswith(".safetensors")
+    ]
 
 
 def download_weights(
@@ -108,11 +121,13 @@ def download_config_file(
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> Path:
-    return download_file(model_spec.configs.model_config, model_spec.repo, output_dir, progress_callback)
+    return download_file(
+        model_spec.configs.model_config, model_spec.repo, output_dir, progress_callback
+    )
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel
+    model: LanguageModel | RouterModel
     metadata: ModelMetadata
 
 
@@ -121,7 +136,9 @@ def import_message_processor(
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> MessageProcessor:
-    tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback)
+    tokenizer_file = download_file(
+        model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback
+    )
     tokenizer_config_file = download_file(
         model_spec.configs.tokenizer_config,
         model_spec.repo,
@@ -130,10 +147,19 @@ def import_message_processor(
     )
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
     if tokenizer_config.chat_template is None:
-        if model_spec.configs.chat_template is None:
-            raise ValueError("Missiing chat template.")
-        chat_template_file = download_file(model_spec.configs.chat_template, model_spec.repo, output_dir)
-        prompt_template = chat_template_file.read_text()
+        match model_spec.configs.chat_template:
+            case JSONFieldSpec(file_spec, field_name):
+                json_file = download_file(file_spec, model_spec.repo, output_dir)
+                with open(json_file) as file:
+                    json_dict = json.load(file)
+                prompt_template = json_dict[field_name]
+            case FileSpec(_) as file_spec:
+                chat_template_file = download_file(
+                    file_spec, model_spec.repo, output_dir
+                )
+                prompt_template = chat_template_file.read_text()
+            case None:
+                raise ValueError("No chat template specified.")
     else:
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
@@ -157,22 +183,18 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
-def import_model(
-    model_spec: ModelSpec | str,
+def _import_language_model(
+    model_spec: ModelSpec,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> ImportResults:
-    if isinstance(model_spec, str):
-        try:
-            model_spec = REPO_TO_MODEL[model_spec]
-        except KeyError as e:
-            raise ValueError(f"Unknown model: {model_spec}") from e
-
+) -> tuple[LanguageModel, LanguageModelConfig]:
     foreign_decoder_config_file = download_config_file(model_spec)
-    foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
+    foreign_decoder_config = model_spec.config_type.from_json(
+        foreign_decoder_config_file
+    )
 
     if precision is None:
         precision = foreign_decoder_config.default_precision
@@ -180,15 +202,27 @@ def import_model(
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
+        metadata_shards = []
         for weights_path in weights_paths:
-            weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+            weights_shard, metadata_shard = stack.enter_context(
+                model_spec.weights_type.load(weights_path, precision)
+            )
             weights_shards.append(weights_shard)
+            metadata_shards.append(metadata_shard)
         weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+        metadata_dict: ChainMap[str, Array] = ChainMap(*metadata_shards)
 
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
+        assert isinstance(foreign_decoder_config, ForeignLMConfig)
+        decoder = foreign_decoder_config.load_decoder(
+            context_length,
+            precision,
+            accumulation_precision,
+            weights_dict,
+            metadata_dict,
+        )
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
@@ -198,7 +232,9 @@ def import_model(
     stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
 
     if model_spec.configs.generation_config is not None:
-        hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
+        hf_generation_config_file = download_file(
+            model_spec.configs.generation_config, model_spec.repo
+        )
         hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
         generation_config = GenerationConfig(
             stop_token_ids=stop_token_ids,
@@ -223,6 +259,96 @@ def import_model(
     )
 
     language_model = LanguageModel(language_model_config, decoder, message_processor)
+    return language_model, language_model_config
+
+
+def _import_router_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[RouterModel, RouterConfig]:
+    foreign_classifier_config_file = download_config_file(model_spec)
+    foreign_classifier_config = model_spec.config_type.from_json(
+        foreign_classifier_config_file
+    )
+
+    if precision is None:
+        precision = foreign_classifier_config.default_precision
+
+    weights_paths = download_weights(model_spec, progress_callback=progress_callback)
+    with ExitStack() as stack:
+        weights_shards = []
+        for weights_path in weights_paths:
+            weights_shard, _ = stack.enter_context(
+                model_spec.weights_type.load(weights_path, precision)
+            )
+            weights_shards.append(weights_shard)
+        weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+
+        if progress_callback is not None:
+            progress_callback(InitializingModelEvent())
+
+        assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
+        classifier = foreign_classifier_config.load_classifier(
+            context_length,
+            precision,
+            accumulation_precision,
+            weights_dict,
+        )
+
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
+    message_processor = import_message_processor(model_spec)
+
+    router_model_config = RouterConfig(
+        classifier_config=classifier.config,
+        message_processor_config=message_processor.config,
+    )
+    router_model = RouterModel(
+        router_model_config, classifier=classifier, message_processor=message_processor
+    )
+    return router_model, router_model_config
+
+
+def import_model(
+    model_spec: ModelSpec | str,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> ImportResults:
+    if isinstance(model_spec, str):
+        try:
+            model_spec = REPO_TO_MODEL[model_spec]
+        except KeyError as e:
+            raise ValueError(f"Unknown model: {model_spec}") from e
+
+    if model_spec.model_type == ModelType.LANGUAGE_MODEL:
+        model, config = _import_language_model(
+            model_spec,
+            context_length=context_length,
+            precision=precision,
+            accumulation_precision=accumulation_precision,
+            progress_callback=progress_callback,
+        )
+    elif model_spec.model_type == ModelType.ROUTER_MODEL:
+        model, config = _import_router_model(
+            model_spec,
+            context_length=context_length,
+            precision=precision,
+            accumulation_precision=accumulation_precision,
+            progress_callback=progress_callback,
+        )
+    else:
+        raise ValueError(
+            f"Unknown type of model in provided model spec: {model_spec.model_type}"
+        )
+
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,
         vendor=model_spec.vendor,
@@ -232,6 +358,7 @@ def import_model(
         quantization=model_spec.quantization,
         repo=model_spec.repo,
         use_cases=model_spec.use_cases,
-        model_config=language_model_config,
+        model_type=model_spec.model_type,
+        model_config=config,
     )
-    return ImportResults(language_model, metadata)
+    return ImportResults(model, metadata)

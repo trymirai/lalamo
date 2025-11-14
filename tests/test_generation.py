@@ -48,7 +48,9 @@ def another_generation_input(tokenizer: PreTrainedTokenizer) -> GenerationInput:
 
 @pytest.fixture
 def language_model() -> LanguageModel:
-    return import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
+    model = import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
+    assert isinstance(model, LanguageModel)
+    return model
 
 
 @pytest.fixture
@@ -56,7 +58,9 @@ def tokenizer() -> PreTrainedTokenizer:
     return AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
 
 
-def test_tokenizer(language_model: LanguageModel, generation_input: GenerationInput) -> None:
+def test_tokenizer(
+    language_model: LanguageModel, generation_input: GenerationInput
+) -> None:
     token_ids = language_model.message_processor.tokenize(generation_input.prompt)
     ref_token_ids = generation_input.token_ids.tolist()
     assert token_ids == ref_token_ids
@@ -67,7 +71,7 @@ def test_eager_generation(
     language_model: LanguageModel,
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
-    num_top_logits_to_return: int|None,
+    num_top_logits_to_return: int | None,
 ) -> None:
     result = language_model.generate_tokens(
         generation_input.token_ids[None, :],
@@ -164,7 +168,9 @@ def test_streaming_generation(
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
 ) -> None:
-    token_stream = language_model.stream_tokens(generation_input.token_ids, max_output_length=32)
+    token_stream = language_model.stream_tokens(
+        generation_input.token_ids, max_output_length=32
+    )
     response_token_ids = jnp.array(list(token_stream))
     response_text = tokenizer.decode(response_token_ids)
     assert "<|im_end|>" in response_text

@@ -1,13 +1,17 @@
-from .activations import GELU, Activation, SiLU
-from .attention import Attention, AttentionConfig
-from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
-from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
-from .decoder_layer import (
-    DecoderLayer,
-    DecoderLayerActivationTrace,
-    DecoderLayerConfig,
-    DecoderLayerForwardPassConfig,
-    DecoderLayerResult,
+from .activations import GELU, Activation, Identity, SiLU
+from .classifier import Classifier, ClassifierConfig
+from .common import (
+    ForwardPassMode,
+    LalamoModule,
+    PositionalEmbeddingSelector,
+    config_converter,
+)
+from .decoder import (
+    Decoder,
+    DecoderActivationTrace,
+    DecoderConfig,
+    DecoderForwardPassConfig,
+    DecoderResult,
 )
 from .embedding import (
     EmbeddingBase,
@@ -21,7 +25,6 @@ from .embedding import (
     UntiedEmbedding,
     UntiedEmbeddingConfig,
 )
-from .kv_cache import DynamicKVCacheLayer, KVCache, KVCacheLayer, StaticKVCacheLayer
 from .linear import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -45,7 +48,7 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import RMSNorm, RMSNormConfig, UpcastMode
+from .normalization import Normalization, NormalizationConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -55,22 +58,37 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
+from .token_mixers import (
+    Attention,
+    AttentionConfig,
+    CausalConv1d,
+    CausalConv1dConfig,
+    Mamba2,
+    Mamba2Config,
+)
+from .transformer import Transformer, TransformerConfig
+from .transformer_layer import (
+    TransformerLayer,
+    TransformerLayerActivationTrace,
+    TransformerLayerConfig,
+    TransformerLayerForwardPassConfig,
+    TransformerLayerResult,
+)
 
 __all__ = [
     "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
-    "AttentionType",
+    "CausalConv1d",
+    "CausalConv1dConfig",
+    "Classifier",
+    "ClassifierConfig",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
     "DecoderForwardPassConfig",
-    "DecoderLayer",
-    "DecoderLayerActivationTrace",
-    "DecoderLayerConfig",
-    "DecoderLayerForwardPassConfig",
-    "DecoderLayerResult",
     "DecoderResult",
     "DenseMLP",
     "DenseMLPConfig",
@@ -82,7 +100,7 @@ __all__ = [
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "KVCache",
+    "Identity",
     "KVCacheLayer",
     "LalamoModule",
     "LinearBase",
@@ -96,23 +114,34 @@ __all__ = [
     "MLXQuantizedLinearConfig",
     "MLXQuantizedTiedEmbedding",
     "MLXQuantizedTiedEmbeddingConfig",
+    "Mamba2",
+    "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "Normalization",
+    "NormalizationConfig",
+    "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
     "QuantizedTiedEmbedding",
     "QuantizedTiedEmbeddingConfig",
-    "RMSNorm",
-    "RMSNormConfig",
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
     "SiLU",
     "SoftmaxRouting",
+    "State",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
+    "Transformer",
+    "TransformerConfig",
+    "TransformerLayer",
+    "TransformerLayerActivationTrace",
+    "TransformerLayerConfig",
+    "TransformerLayerForwardPassConfig",
+    "TransformerLayerResult",
     "UnscaledRoPEConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",

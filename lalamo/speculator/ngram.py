@@ -23,11 +23,13 @@ def seqhash(tokens: Iterable[int], size: int) -> int:
 
     return xxhash.xxh3_64_intdigest(packed) % size
 
-def padded_sliding_window(seq: Iterable[int], size:int, pad:int) -> Iterable[tuple[int, ...]]:
+
+def padded_sliding_window(seq: Iterable[int], size: int, pad: int) -> Iterable[tuple[int, ...]]:
     seqs = tee(seq, size)
     pads = tuple(repeat(pad, size - i) for i in range(size))
     padded_seqs = tuple(chain(pad, seq) for pad, seq in zip(pads, seqs, strict=True))
     return zip(*padded_seqs, strict=False)
+
 
 def softmax(logits: Iterable[float]) -> list[float]:
     logits = list(logits)
@@ -36,8 +38,10 @@ def softmax(logits: Iterable[float]) -> list[float]:
     exp_log_sum = sum(exp_logs)
     return [exp_log / exp_log_sum for exp_log in exp_logs]
 
+
 def online_mean(old_mean: float, sample: float, new_count: int) -> float:
     return old_mean + (sample - old_mean) / new_count
+
 
 def update_probs(old_mean: dict[int, float], sample: dict[int, float], new_count: int, top_k: int) -> dict[int, float]:
     all_keys = set(old_mean.keys()).union(sample.keys())
@@ -115,7 +119,7 @@ class NGramSpeculator(Speculator):
         seq = list(seq)
         ngram_ctx = self.ngram_n - 1
         if ngram_ctx > 0:
-            padded_seq = [*repeat(self.ngram_pad, max(ngram_ctx - len(seq), 0)), *seq[-ngram_ctx :]]
+            padded_seq = [*repeat(self.ngram_pad, max(ngram_ctx - len(seq), 0)), *seq[-ngram_ctx:]]
         else:
             padded_seq = []
 
@@ -125,7 +129,7 @@ class NGramSpeculator(Speculator):
 
         return (
             memoryview(self.ngram_keys)[idx_start:idx_end],
-            memoryview(self.ngram_values)[idx_start:idx_end], # type: ignore (typechecker bug)
+            memoryview(self.ngram_values)[idx_start:idx_end],  # type: ignore (typechecker bug)
             memoryview(self.ngram_counts)[seq_hash : (seq_hash + 1)],
         )
 

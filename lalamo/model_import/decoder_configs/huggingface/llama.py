@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -6,13 +7,14 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
     YARNRoPEConfig,
@@ -21,7 +23,7 @@ from lalamo.modules.activations import SiLU
 from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
 
 __all__ = ["HFLlamaConfig"]
 
@@ -46,7 +48,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFLlamaConfig(HuggingFaceConfig):
+class HFLlamaConfig(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
@@ -80,6 +82,7 @@ class HFLlamaConfig(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
@@ -122,12 +125,13 @@ class HFLlamaConfig(HuggingFaceConfig):
             )
         else:
             raise ValueError("Unsupported rope_scaling configuration")
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         if self.quantization_config is None:
             linear_config = FullPrecisionLinearConfig(
@@ -136,7 +140,9 @@ class HFLlamaConfig(HuggingFaceConfig):
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    self.quantization_config.bits
+                ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -149,6 +155,16 @@ class HFLlamaConfig(HuggingFaceConfig):
             has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=False,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=(
+                self.head_dim
+                if self.head_dim is not None
+                else self.hidden_size // self.num_attention_heads
+            ),
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
         )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -158,28 +174,25 @@ class HFLlamaConfig(HuggingFaceConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
+        transformer_layer_config = TransformerLayerConfig(
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
-            attention_scale=None,
-            num_layers=self.num_hidden_layers,
-            sliding_window_sizes=None,
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

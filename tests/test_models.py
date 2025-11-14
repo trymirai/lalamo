@@ -11,8 +11,14 @@ import jax.numpy as jnp
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import import_model
-from lalamo.modules.decoder import DecoderActivationTrace, DecoderLayerResult, DecoderResult
+from lalamo import LanguageModel, import_model
+from lalamo.model_import.common import ModelType
+from lalamo.modules.decoder import (
+    DecoderActivationTrace,
+    DecoderResult,
+    TransformerLayerResult,
+)
+from lalamo.router_model import RouterModel
 from tests.common import assert_close, checkify_forward
 
 try:
@@ -37,7 +43,7 @@ class DType(Enum):
 
     @property
     def mlx_dtype(self) -> "mx.Dtype":
-        return getattr(mx, self.value) # type: ignore
+        return getattr(mx, self.value)  # type: ignore
 
     @property
     def jax_dtype(self) -> jnp.dtype:
@@ -52,7 +58,7 @@ class ModelTestSpec:
     token_stride: int = 64
 
 
-class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
+class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     @abstractmethod
     def from_jax(self, array: Array) -> ArrayT: ...
 
@@ -83,7 +89,12 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def mlp(self, mlp: MlpT, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def layer(self, layer: LayerT, hidden_states: ArrayT, position_embeddings: tuple[ArrayT, ArrayT]) -> ArrayT: ...
+    def layer(
+        self,
+        layer: LayerT,
+        hidden_states: ArrayT,
+        position_embeddings: tuple[ArrayT, ArrayT],
+    ) -> ArrayT: ...
 
     @abstractmethod
     def layer_pre_attention_norm(self, layer: LayerT) -> RMSNormT: ...
@@ -113,7 +124,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def readout(self, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def forward(self, input_ids: ArrayT, position_ids: ArrayT) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
+    def forward(
+        self, input_ids: ArrayT, position_ids: ArrayT
+    ) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
 
     def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
@@ -133,6 +146,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.global_positional_embeddings
+        assert llm_results is not None
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
@@ -163,6 +177,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.local_positional_embeddings
+        assert llm_results is not None
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
@@ -191,7 +206,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str) -> None:
+    def match_rmsnorm(
+        self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str
+    ) -> None:
         ref_inputs = self.from_jax(llm_inputs)
         torch_outputs = self.rmsnorm(ref_layer, ref_inputs)
         ref_outputs = self.to_jax(torch_outputs)
@@ -233,7 +250,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str) -> None:
+    def match_mlp(
+        self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str
+    ) -> None:
         ref_inputs = self.from_jax(llm_inputs)
         ref_native_outputs = self.mlp(ref_mlp, ref_inputs)
         ref_outputs = self.to_jax(ref_native_outputs)
@@ -246,7 +265,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_layer(
         self,
-        layer_result: DecoderLayerResult,
+        layer_result: TransformerLayerResult,
         ref_layer: LayerT,
         layer_index: int,
     ) -> None:
@@ -256,26 +275,30 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         ref_pre_attention_norm = self.layer_pre_attention_norm(ref_layer)
         self.match_rmsnorm(
             activation_trace.inputs,
-            activation_trace.pre_attention_norm,
+            activation_trace.pre_mixer_norm,
             ref_pre_attention_norm,
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
 
         ref_attention = self.layer_attention(ref_layer)
+        assert activation_trace.positional_embeddings is not None
         self.match_attention(
-            activation_trace.pre_attention_norm,
-            activation_trace.attention,
+            activation_trace.pre_mixer_norm,
+            activation_trace.mixer,
             ref_attention,
-            (activation_trace.positional_embeddings.cosines, activation_trace.positional_embeddings.sines),
+            (
+                activation_trace.positional_embeddings.cosines,
+                activation_trace.positional_embeddings.sines,
+            ),
             f"Layer {layer_index} Attention",
         )
 
         ref_post_attention_norm = self.layer_post_attention_norm(ref_layer)
         if ref_post_attention_norm is not None:
-            assert activation_trace.post_attention_norm is not None
+            assert activation_trace.post_mixer_norm is not None
             self.match_rmsnorm(
-                activation_trace.attention,
-                activation_trace.post_attention_norm,
+                activation_trace.mixer,
+                activation_trace.post_mixer_norm,
                 ref_post_attention_norm,
                 f"Layer {layer_index} Post Attention RMSNorm",
             )
@@ -332,7 +355,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         llm_logits = result.logits
 
-        ref_normalized_outputs = self.from_jax(result.activation_trace.output_norm[None, ...])
+        ref_normalized_outputs = self.from_jax(
+            result.activation_trace.output_norm[None, ...]
+        )
         ref_native_logits = self.readout(ref_normalized_outputs)
         ref_logits = self.to_jax(ref_native_logits).squeeze(0)
 
@@ -350,7 +375,11 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         self.match_embedding(result.activation_trace)
 
         for i, (ref_layer, layer_result) in enumerate(
-            zip(self.iterate_layers(), result.activation_trace.layer_results, strict=True),
+            zip(
+                self.iterate_layers(),
+                result.activation_trace.layer_results,
+                strict=True,
+            ),
         ):
             self.match_layer(layer_result, ref_layer, i)
 
@@ -365,7 +394,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         hf_input_ids = self.from_jax(result.activation_trace.token_ids)
         hf_token_positions = self.from_jax(result.activation_trace.token_positions)
-        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
+        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(
+            hf_input_ids, hf_token_positions
+        )
 
         for i, (hf_layer_inputs, layer_result) in enumerate(
             zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
@@ -410,18 +441,8 @@ def configure_precision_for_tests() -> None:
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
-def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -> None:
+def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> None:
     configure_precision_for_tests()
-
-    llm_model, *_ = import_model(
-        test_spec.model_repo,
-        context_length=test_spec.num_tokens * test_spec.token_stride,
-        precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
-    )
-    tracer = decoder_tracer.load(
-        test_spec.model_repo,
-        dtype=test_spec.dtype,
-    )
 
     token_ids = jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :]
     token_positions = jnp.arange(
@@ -431,16 +452,39 @@ def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -
         dtype=jnp.int32,
     )[None, :]
 
-    with jax.disable_jit():
-        err, llm_result = checkify_forward(llm_model.decoder)(
-            token_ids=token_ids,
-            token_positions=token_positions,
-            return_updated_kv_cache=True,
-            return_activation_trace=True,
-        )
-        err.throw()
+    tracer = model_tracer.load(
+        test_spec.model_repo,
+        dtype=test_spec.dtype,
+    )
 
-    del llm_model
+    model, model_metadata = import_model(
+        test_spec.model_repo,
+        context_length=test_spec.num_tokens * test_spec.token_stride,
+        precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
+    )
+    with jax.disable_jit():
+        inference_results = None
+
+        if model_metadata.model_type == ModelType.LANGUAGE_MODEL:
+            assert isinstance(model, LanguageModel)
+            err, inference_results = checkify_forward(model.decoder)(
+                token_ids=token_ids,
+                token_positions=token_positions,
+                return_updated_state=True,
+                return_activation_trace=True,
+            )
+            err.throw()
+
+        elif model_metadata.model_type == ModelType.ROUTER_MODEL:
+            assert isinstance(model, RouterModel)
+            err, inference_results = checkify_forward(model.classifier)(
+                token_ids=token_ids,
+                token_positions=token_positions,
+                return_activation_trace=True,
+            )
+            err.throw()
+
+    del model
     gc.collect()
 
-    tracer.match_activations(llm_result)
+    tracer.match_activations(inference_results)

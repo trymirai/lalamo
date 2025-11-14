@@ -29,6 +29,7 @@ class HFMessage:
             case other:
                 raise ValueError(f"Cannot convert {other} message")
 
+
 def import_hf_parquet(path: Path | str) -> Iterable[list[Message]]:
     path = Path(path)
 
