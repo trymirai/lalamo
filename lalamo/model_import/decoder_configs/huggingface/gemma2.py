@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -58,6 +59,7 @@ class HFGemma2Config(HuggingFaceLMConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         embedding_input_scale = self.hidden_size**0.5
         attention_scale = self.query_pre_attn_scalar**-0.5

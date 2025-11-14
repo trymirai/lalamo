@@ -47,13 +47,15 @@ class WeightsType(Enum):
 
     @contextmanager
     def load(
-        self, filename: Path | str, float_dtype: DTypeLike
-    ) -> Iterator[Mapping[str, jnp.ndarray]]:
+        self,
+        filename: Path | str,
+        float_dtype: DTypeLike,
+    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
         if self == WeightsType.SAFETENSORS:
-            with open_safetensors(filename) as weights_dict:
+            with open_safetensors(filename) as (weights_dict, metadata_dict):
                 yield MapDictValues(
                     lambda v: cast_if_float(v, float_dtype), weights_dict
-                )
+                ), metadata_dict
         else:
             import torch
             from lalamo.modules.torch_interop import torch_to_jax
@@ -61,7 +63,7 @@ class WeightsType(Enum):
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
             yield MapDictValues(
                 lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights
-            )
+            ), {}
 
 
 class UseCase(Enum):

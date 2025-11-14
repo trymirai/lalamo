@@ -45,9 +45,12 @@ class LazyDict[K, V](Mapping[K, V]):
 
 
 @contextmanager
-def open_safetensors(filename: Path | str) -> Iterator[Mapping[str, Array]]:
+def open_safetensors(filename: Path | str) -> Iterator[tuple[Mapping[str, Array], Mapping[str, str]]]:
     with safe_open(filename, framework="flax") as safetensors_nonsense:
-        yield LazyDict(set(safetensors_nonsense.keys()), safetensors_nonsense.get_tensor)
+        yield (
+            LazyDict(set(safetensors_nonsense.keys()), safetensors_nonsense.get_tensor),
+            safetensors_nonsense.metadata(),
+        )
 
 
 @dataclass(frozen=True)
@@ -137,6 +140,7 @@ def jax_uint4_to_packed_uint8(array: Array) -> Array:
     packed = (high_nibbles << 4) | low_nibbles
 
     return packed.astype(jnp.uint8)
+
 
 def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
     if array.dtype != jnp.uint8:

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -10,6 +11,7 @@ from lalamo.modules import (
     FullPrecisionLinearConfig,
     Identity,
     Mamba2Config,
+    MLXQuantizedLinearConfig,
     NormalizationConfig,
     SiLU,
     TiedEmbeddingConfig,
@@ -18,6 +20,7 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
+from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig
 
@@ -64,6 +67,7 @@ class HFLlambaConfig(HuggingFaceLMConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         if self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(
@@ -87,9 +91,19 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        if metadata_dict and "quantization_kwargs.group_size" in metadata_dict:
+            linear_config = MLXQuantizedLinearConfig(
+                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    int(metadata_dict["quantization_kwargs.bits"])
+                ),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+        else:
+            linear_config = FullPrecisionLinearConfig(
+                precision=activation_precision,
+            )
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,

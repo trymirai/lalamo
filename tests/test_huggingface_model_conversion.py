@@ -24,6 +24,7 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
     ModelTestSpec("cartesia-ai/Llamba-1B", DType.FLOAT32),
+    ModelTestSpec("cartesia-ai/Llamba-1B-4bit-mlx", DType.FLOAT32),
 ]
 
 MODEL_LIST += (

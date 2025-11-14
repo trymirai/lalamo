@@ -88,7 +88,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         with open(path / "config.json") as config_file:
             config_json = json.load(config_file)
         config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
-        with open_safetensors(path / "model.safetensors") as weights_dict:
+        with open_safetensors(path / "model.safetensors") as (weights_dict, _):
             weights = unflatten_parameters(weights_dict)
             decoder = config.decoder_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -71,6 +72,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         if isinstance(self.quantization_config, MLXQuantizationConfig):
             assert self.tie_word_embeddings, "only tied embeddings are supported"
