@@ -14,9 +14,12 @@ from lalamo.modules import (
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
+    Mamba2,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
+    MLXSemiQuantizedUntiedEmbedding,
     RMSNorm,
+    SeparableCausalConv,
     TiedEmbedding,
     UntiedEmbedding,
 )
@@ -154,7 +157,10 @@ def load_linear(
 
     if isinstance(module, GroupQuantizedLinear):
         qweights, qzeros, scales = _fuse_quantized_weights(
-            weights_dict, path, sublayers_to_fuse, AWQ_QUANTIZED_WEIGHT_LAYOUT,
+            weights_dict,
+            path,
+            sublayers_to_fuse,
+            AWQ_QUANTIZED_WEIGHT_LAYOUT,
         )
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
@@ -186,7 +192,10 @@ def load_linear(
 
     if isinstance(module, MLXQuantizedLinear):
         qweights, deq_biases, scales = _fuse_quantized_weights(
-            weights_dict, path, sublayers_to_fuse, MLX_QUANTIZED_WEIGHT_LAYOUT,
+            weights_dict,
+            path,
+            sublayers_to_fuse,
+            MLX_QUANTIZED_WEIGHT_LAYOUT,
         )
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
@@ -209,16 +218,23 @@ def load_linear(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_mlp(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
+def load_mlp(
+    module: MLPBase,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    up_proj_key: str,
+    gate_proj_key: str,
+    down_proj_key: str,
+) -> MLPBase:
     if isinstance(module, DenseMLP):
         # Standard dense MLP with separate sublayers.
         up_projection = load_linear(
             module.up_projection,
             weights_dict,
             path,
-            sublayers_to_fuse=["up_proj", "gate_proj"],
+            sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
-        down_projection = load_linear(module.down_projection, weights_dict, path / "down_proj")
+        down_projection = load_linear(module.down_projection, weights_dict, path / down_proj_key)
         return load_parameters(
             lambda m: (m.up_projection, m.down_projection),
             module,
@@ -293,7 +309,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         )
     else:
         # Fallback: recursively load a standard DenseMLP experts module
-        experts = load_mlp(module.experts, weights_dict, experts_path)
+        experts = load_mlp(module.experts, weights_dict, experts_path, "up_proj", "gate_proj", "down_proj")
 
     return load_parameters(
         lambda m: (m.router, m.experts),
@@ -347,28 +363,107 @@ def load_attention(
     )
 
 
+def _load_mamba_conv(
+    conv_module: SeparableCausalConv,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> SeparableCausalConv:
+    weight_path = path / "conv1d" / "weight"
+    if weight_path not in weights_dict:
+        weight_path = path / "conv_weight"
+    if weight_path not in weights_dict:
+        weight_path = None
+
+    if weight_path is not None:
+        raw = weights_dict[weight_path]
+        conv_weight = raw.squeeze(1) if raw.ndim == 3 else raw
+    else:
+        conv_weight = conv_module.weights
+
+    bias_path = path / "conv1d" / "bias"
+    if bias_path not in weights_dict:
+        bias_path = path / "conv_bias"
+    if bias_path not in weights_dict:
+        bias_path = None
+
+    if bias_path is not None and conv_module.biases is not None:
+        conv_bias = weights_dict[bias_path]
+    else:
+        conv_bias = conv_module.biases
+
+    return load_parameters(
+        lambda m: (m.weights, m.biases),
+        conv_module,
+        (conv_weight, conv_bias),
+    )
+
+
+def load_mamba2(
+    module: Mamba2,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> Mamba2:
+    in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
+    out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
+    conv = _load_mamba_conv(module.conv, weights_dict, path)
+
+    skip_connection_weight_path = path / "D"
+    if skip_connection_weight_path in weights_dict:
+        skip_connection_weight = weights_dict[skip_connection_weight_path]
+    else:
+        skip_connection_weight = module.skip_connection_weight
+
+    gate_bias_path = path / "z_bias"
+    if gate_bias_path in weights_dict:
+        gate_bias = weights_dict[gate_bias_path]
+    else:
+        gate_bias = module.gate_bias
+
+    return load_parameters(
+        lambda m: (m.in_projection, m.out_projection, m.conv, m.skip_connection_weight, m.gate_bias),
+        module,
+        (in_projection, out_projection, conv, skip_connection_weight, gate_bias),
+    )
+
+
 def load_decoder_layer(
     module: DecoderLayer,
     weights_dict: Mapping[str, Array],
-    path: ParameterPath,
+    mixer_path: ParameterPath,
+    mlp_path: ParameterPath,
+    mixer_key: str,
+    mlp_key: str,
+    pre_mixer_norm_key: str,
+    pre_mlp_norm_key: str,
+    up_proj_key: str,
+    gate_proj_key: str,
+    down_proj_key: str,
 ) -> DecoderLayer:
     pre_attention_norm = load_rmsnorm(
-        module.pre_attention_norm,
+        module.pre_mixer_norm,
         weights_dict,
-        path / "input_layernorm",
+        mixer_path / pre_mixer_norm_key,
     )
-    attention = load_attention(module.attention, weights_dict, path / "self_attn")
-    if module.post_attention_norm is not None:
+
+    # Load mixer (attention or mamba)
+    if isinstance(module.mixer, Attention):
+        mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
+    elif isinstance(module.mixer, Mamba2):
+        mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key)
+    else:
+        mixer = module.mixer
+
+    if module.post_mixer_norm is not None:
         post_attention_norm = load_rmsnorm(
-            module.post_attention_norm,
+            module.post_mixer_norm,
             weights_dict,
-            path / "post_attention_layernorm",
+            mixer_path / "post_attention_layernorm",
         )
 
         pre_mlp_norm = load_rmsnorm(
             module.pre_mlp_norm,
             weights_dict,
-            path / "pre_feedforward_layernorm",
+            mlp_path / "pre_feedforward_layernorm",
         )
     else:
         post_attention_norm = None
@@ -376,42 +471,44 @@ def load_decoder_layer(
         pre_mlp_norm = load_rmsnorm(
             module.pre_mlp_norm,
             weights_dict,
-            path / "post_attention_layernorm",
+            mlp_path / pre_mlp_norm_key,
         )
 
-    mlp = load_mlp(module.mlp, weights_dict, path / "mlp")
+    mlp = load_mlp(module.mlp, weights_dict, mlp_path / mlp_key, up_proj_key, gate_proj_key, down_proj_key)
+
     if module.post_mlp_norm is not None:
         post_mlp_norm = load_rmsnorm(
             module.post_mlp_norm,
             weights_dict,
-            path / "post_feedforward_layernorm",
+            mlp_path / "post_feedforward_layernorm",
         )
     else:
         post_mlp_norm = None
+
     return load_parameters(
-        lambda m: (m.pre_attention_norm, m.attention, m.post_attention_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
+        lambda m: (m.pre_mixer_norm, m.mixer, m.post_mixer_norm, m.pre_mlp_norm, m.mlp, m.post_mlp_norm),
         module,
-        (pre_attention_norm, attention, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
+        (pre_attention_norm, mixer, post_attention_norm, pre_mlp_norm, mlp, post_mlp_norm),
     )
 
 
 def load_tied_embedding(
     module: TiedEmbedding,
     weights_dict: Mapping[str, Array],
-    decoder_path: ParameterPath,
+    embedding_path: ParameterPath,
 ) -> TiedEmbedding:
-    weights = weights_dict[decoder_path / "embed_tokens" / "weight"]
+    weights = weights_dict[embedding_path / "weight"]
     return load_parameters(lambda m: (m.weights,), module, (weights,))
 
 
 def load_mlx_quantized_tied_embedding(
     module: MLXQuantizedTiedEmbedding,
     weights_dict: Mapping[str, Array],
-    decoder_path: ParameterPath,
+    embedding_path: ParameterPath,
 ) -> MLXQuantizedTiedEmbedding:
-    qweights = weights_dict[decoder_path / "embed_tokens" / "weight"]
-    qscales = weights_dict[decoder_path / "embed_tokens" / "scales"]
-    qbiases = weights_dict[decoder_path / "embed_tokens" / "biases"]
+    qweights = weights_dict[embedding_path / "weight"]
+    qscales = weights_dict[embedding_path / "scales"]
+    qbiases = weights_dict[embedding_path / "biases"]
 
     weights = _process_quantized_tensor(
         qweights,
@@ -425,13 +522,41 @@ def load_mlx_quantized_tied_embedding(
     return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
 
 
+def load_mlx_semi_quantized_untied_embedding(
+    module: MLXSemiQuantizedUntiedEmbedding,
+    weights_dict: Mapping[str, Array],
+    embedding_path: ParameterPath,
+    lm_head_path: ParameterPath,
+) -> MLXSemiQuantizedUntiedEmbedding:
+    input_weights = weights_dict[embedding_path / "weight"]
+
+    output_qweights = weights_dict[lm_head_path / "weight"]
+    output_qscales = weights_dict[lm_head_path / "scales"]
+    output_qbiases = weights_dict[lm_head_path / "biases"]
+
+    output_weights = _process_quantized_tensor(
+        output_qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    output_scales = output_qscales.astype(module.activation_precision)
+    output_biases = output_qbiases.astype(module.activation_precision)
+
+    return load_parameters(
+        lambda m: (m.input_weights, m.output_weights, m.output_scales, m.output_biases),
+        module,
+        (input_weights, output_weights, output_scales, output_biases),
+    )
+
+
 def load_untied_embedding(
     module: UntiedEmbedding,
     weights_dict: Mapping[str, Array],
-    decoder_path: ParameterPath,
+    embedding_path: ParameterPath,
     lm_head_path: ParameterPath,
 ) -> UntiedEmbedding:
-    input_weights = weights_dict[decoder_path / "embed_tokens" / "weight"]
+    input_weights = weights_dict[embedding_path / "weight"]
     output_weights = weights_dict[lm_head_path / "weight"]
     return load_parameters(lambda m: (m.input_weights, m.output_weights), module, (input_weights, output_weights))
 
@@ -445,21 +570,82 @@ def load_huggingface(
     else:
         base_path = ParameterPath()
 
-    decoder_path = base_path / "model"
-    lm_head_path = base_path / "lm_head"
+    is_llamba_full_precision = any(key.startswith("backbone.") for key in weights_dict)
+    is_llamba_mlx = any(key.startswith("embedding.encoder.") for key in weights_dict)
+    if is_llamba_full_precision:
+        decoder_path = base_path / "backbone"
+        embedding_path = decoder_path / "embedding"
+        pre_mixer_norm_key = "input_layernorm"
+        mixer_key = "mixer"
+        pre_mlp_norm_key = "post_attention_layernorm"
+        mlp_key = "mlp"
+        up_proj_key = "up_proj"
+        gate_proj_key = "gate_proj"
+        down_proj_key = "down_proj"
+        alternating_layers = False
+        norm_key = "final_layernorm"
+        lm_head_path = base_path / "lm_head"
+    elif is_llamba_mlx:
+        decoder_path = base_path / "model"
+        embedding_path = base_path / "embedding.encoder"
+        pre_mixer_norm_key = "norm"
+        mixer_key = "layer"
+        pre_mlp_norm_key = "norm"
+        mlp_key = "layer"
+        up_proj_key = "gate_proj"
+        gate_proj_key = "in_proj"
+        down_proj_key = "out_proj"
+        alternating_layers = True
+        norm_key = "norm"
+        lm_head_path = base_path / "head.linear"
+    else:
+        decoder_path = base_path / "model"
+        embedding_path = decoder_path / "embed_tokens"
+        pre_mixer_norm_key = "input_layernorm"
+        mixer_key = "self_attn"
+        pre_mlp_norm_key = "post_attention_layernorm"
+        mlp_key = "mlp"
+        up_proj_key = "up_proj"
+        gate_proj_key = "gate_proj"
+        down_proj_key = "down_proj"
+        alternating_layers = False
+        norm_key = "norm"
+        lm_head_path = base_path / "lm_head"
 
     if isinstance(module.embedding, TiedEmbedding):
-        embedding = load_tied_embedding(module.embedding, weights_dict, decoder_path)
+        embedding = load_tied_embedding(module.embedding, weights_dict, embedding_path)
     elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
-        embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, decoder_path)
+        embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, embedding_path)
+    elif isinstance(module.embedding, MLXSemiQuantizedUntiedEmbedding):
+        embedding = load_mlx_semi_quantized_untied_embedding(
+            module.embedding,
+            weights_dict,
+            embedding_path,
+            lm_head_path,
+        )
     elif isinstance(module.embedding, UntiedEmbedding):
-        embedding = load_untied_embedding(module.embedding, weights_dict, decoder_path, lm_head_path)
+        embedding = load_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
+
     decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, decoder_path / "layers" / i) for i, layer in enumerate(module.layers)
+        load_decoder_layer(
+            layer,
+            weights_dict,
+            decoder_path / "layers" / ((i * 2) if alternating_layers else i),
+            decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
+            mixer_key,
+            mlp_key,
+            pre_mixer_norm_key,
+            pre_mlp_norm_key,
+            up_proj_key,
+            gate_proj_key,
+            down_proj_key,
+        )
+        for i, layer in enumerate(module.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, decoder_path / "norm")
+
+    output_norm = load_rmsnorm(module.output_norm, weights_dict, decoder_path / norm_key)
     return load_parameters(
         lambda m: (m.embedding, m.layers, m.output_norm),
         module,

@@ -60,7 +60,7 @@ class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
         assert isinstance(self.output_dims, tuple)
 
     @staticmethod
-    def _get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:
+    def get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:
         result = []
         last_split_point = 0
         for dim in output_dims[:-1]:
@@ -259,7 +259,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         result = self.weights @ inputs
         if self.biases is not None:
             result = result + self.biases
-        return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
+        return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterTree:
         result = dict(weights=self.weights)
@@ -278,12 +278,14 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             biases=weights["biases"] if self.has_biases else None,
         )
 
+
 @dataclass(frozen=True)
 class QuantizedLinearConfigBase(LinearConfigBase):
     group_size: int
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
     activation_precision: DTypeLike
+
 
 class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT]):
     biases: Float[Array, "*components total_out_channels"] | None
@@ -306,7 +308,8 @@ class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT
         result = self._apply_weights(inputs)
         if self.biases is not None:
             result = result + self.biases
-        return tuple(jnp.split(result, self._get_split_points(self.output_dims)))
+        return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
+
 
 @dataclass(frozen=True)
 class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
@@ -1016,7 +1019,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
 
     def _split_biases(self) -> tuple[Float[Array, "*components out_channels"] | None, ...]:
         if self.biases is not None:
-            return tuple(jnp.split(self.biases, self._get_split_points(self.output_dims)))
+            return tuple(jnp.split(self.biases, self.get_split_points(self.output_dims)))
         return (None,) * len(self.output_dims)
 
     def __post_init__(self) -> None:
@@ -1080,10 +1083,10 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
         joint_q_out = self._apply_weights(inputs)
-        q_outs = jnp.split(joint_q_out, self._get_split_points(self.output_dims))
+        q_outs = jnp.split(joint_q_out, self.get_split_points(self.output_dims))
 
         joint_lora_hidden = inputs @ self.lora_down_weights
-        lora_hiddens = jnp.split(joint_lora_hidden, self._get_split_points([self.config.lora_rank] * self.num_outputs))
+        lora_hiddens = jnp.split(joint_lora_hidden, self.get_split_points([self.config.lora_rank] * self.num_outputs))
         lora_outs = [
             lora_hidden @ lora_up_weight
             for lora_up_weight, lora_hidden in zip(self.lora_up_weights, lora_hiddens, strict=True)
@@ -1123,4 +1126,4 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig
 
 
-register_config_union(LinearConfig)
+register_config_union(LinearConfig)  # type: ignore (pyright bug)

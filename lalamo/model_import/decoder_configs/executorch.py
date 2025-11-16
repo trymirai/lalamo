@@ -51,6 +51,12 @@ class LoraConfig:
 
 @dataclass(frozen=True)
 class ExecutorchConfig(ForeignConfig):
+    eos_token_id: int | list[int]
+
+    @property
+    def eos_token_ids(self) -> list[int]:
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+
     @property
     def default_precision(self) -> DTypeLike:
         return jnp.bfloat16
@@ -89,6 +95,7 @@ class ETLlamaConfig(ExecutorchConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.lora_args is None:
             raise ValueError("We only support QLoRA models for now.")
@@ -136,6 +143,12 @@ class ETLlamaConfig(ExecutorchConfig):
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,
+            num_heads=self.n_heads,
+            num_groups=self.n_kv_heads,
+            head_dim=self.dim // self.n_heads,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
         )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -146,9 +159,9 @@ class ETLlamaConfig(ExecutorchConfig):
             gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
@@ -157,16 +170,10 @@ class ETLlamaConfig(ExecutorchConfig):
             embedding_config=embedding_config,
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=(decoder_layer_config,) * self.n_layers,
             output_norm_config=rmsnorm_config,
             vocab_size=self.vocab_size,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),
-            num_heads=self.n_heads,
-            num_groups=self.n_kv_heads,
-            head_dim=self.dim // self.n_heads,
-            attention_scale=None,
-            num_layers=self.n_layers,
-            sliding_window_sizes=None,
             context_length=context_length or MAX_SEQUENCE_LENGTH,
         )

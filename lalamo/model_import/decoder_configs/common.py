@@ -19,11 +19,9 @@ class ForeignConfig(RegistryABC):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
-    eos_token_id: int | list[int]
-
     @property
     def eos_token_ids(self) -> list[int]:
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+        raise NotImplementedError
 
     @property
     @abstractmethod
@@ -41,6 +39,7 @@ class ForeignConfig(RegistryABC):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         raise NotImplementedError
 
@@ -58,7 +57,8 @@ class ForeignConfig(RegistryABC):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
+        metadata_dict: Mapping[str, str],
     ) -> Decoder:
-        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision)
+        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision, metadata_dict)
         model = config.empty()
         return self._load_weights(model, weights_dict)

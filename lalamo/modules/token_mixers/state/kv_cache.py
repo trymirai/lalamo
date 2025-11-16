@@ -4,15 +4,16 @@ from typing import Self
 import equinox as eqx
 import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
-from jax.tree_util import register_pytree_node_class
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-__all__ = ["DynamicKVCacheLayer", "KVCache", "KVCacheLayer", "StaticKVCacheLayer"]
+from .common import StateLayerBase
+
+__all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
 
-class KVCacheLayer(eqx.Module):
+class KVCacheLayer(StateLayerBase):
     has_sinks: bool = eqx.field(static=True)
     keys: Float[Array, "*batch tokens groups head_channels"]
     values: Float[Array, "*batch tokens groups head_channels"]
@@ -56,18 +57,6 @@ class KVCacheLayer(eqx.Module):
             keys=self.keys,
             values=self.values,
         )
-
-
-@register_pytree_node_class
-class KVCache(tuple[KVCacheLayer, ...]):
-    __slots__ = ()
-
-    def tree_flatten(self) -> tuple[tuple[KVCacheLayer, ...], None]:
-        return (tuple(self), None)
-
-    @classmethod
-    def tree_unflatten(cls, aux_data: None, children: tuple[KVCacheLayer, ...]) -> Self:  # noqa: ARG003
-        return cls(children)
 
 
 class DynamicKVCacheLayer(KVCacheLayer):
@@ -224,7 +213,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         )
 
     @classmethod
-    def empty(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
+    def init(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
         return cls(
             has_sinks=has_sinks,
             keys=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),

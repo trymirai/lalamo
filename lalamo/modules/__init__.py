@@ -1,6 +1,5 @@
-from .activations import GELU, Activation, SiLU
-from .attention import Attention, AttentionConfig
-from .common import AttentionType, ForwardPassMode, LalamoModule, config_converter
+from .activations import GELU, Activation, Identity, SiLU
+from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector, config_converter
 from .decoder import Decoder, DecoderActivationTrace, DecoderConfig, DecoderForwardPassConfig, DecoderResult
 from .decoder_layer import (
     DecoderLayer,
@@ -14,6 +13,8 @@ from .embedding import (
     EmbeddingConfig,
     MLXQuantizedTiedEmbedding,
     MLXQuantizedTiedEmbeddingConfig,
+    MLXSemiQuantizedUntiedEmbedding,
+    MLXSemiQuantizedUntiedEmbeddingConfig,
     QuantizedTiedEmbedding,
     QuantizedTiedEmbeddingConfig,
     TiedEmbedding,
@@ -21,7 +22,6 @@ from .embedding import (
     UntiedEmbedding,
     UntiedEmbeddingConfig,
 )
-from .kv_cache import DynamicKVCacheLayer, KVCache, KVCacheLayer, StaticKVCacheLayer
 from .linear import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -55,13 +55,24 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
+from .token_mixers import (
+    Attention,
+    AttentionConfig,
+    DynamicKVCacheLayer,
+    KVCacheLayer,
+    Mamba2,
+    Mamba2Config,
+    SeparableCausalConv,
+    SeparableCausalConvConfig,
+    State,
+    StaticKVCacheLayer,
+)
 
 __all__ = [
     "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
-    "AttentionType",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -82,7 +93,7 @@ __all__ = [
     "FullPrecisionLinearConfig",
     "GroupQuantizedLinear",
     "GroupQuantizedLinearConfig",
-    "KVCache",
+    "Identity",
     "KVCacheLayer",
     "LalamoModule",
     "LinearBase",
@@ -96,8 +107,13 @@ __all__ = [
     "MLXQuantizedLinearConfig",
     "MLXQuantizedTiedEmbedding",
     "MLXQuantizedTiedEmbeddingConfig",
+    "MLXSemiQuantizedUntiedEmbedding",
+    "MLXSemiQuantizedUntiedEmbeddingConfig",
+    "Mamba2",
+    "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",
@@ -108,8 +124,11 @@ __all__ = [
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
+    "SeparableCausalConv",
+    "SeparableCausalConvConfig",
     "SiLU",
     "SoftmaxRouting",
+    "State",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",

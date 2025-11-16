@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -12,13 +13,13 @@ from lalamo.modules import (
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
     RMSNormConfig,
+    SiLU,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
+    UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
 )
-from lalamo.modules.activations import SiLU
-from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
@@ -80,6 +81,7 @@ class HFLlamaConfig(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
@@ -149,6 +151,12 @@ class HFLlamaConfig(HuggingFaceConfig):
             has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=False,
+            num_heads=self.num_attention_heads,
+            num_groups=self.num_key_value_heads,
+            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
         )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -159,9 +167,9 @@ class HFLlamaConfig(HuggingFaceConfig):
             gate_clipping=None,
         )
         decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
+            pre_mixer_norm_config=rmsnorm_config,
+            mixer_config=attention_config,
+            post_mixer_norm_config=None,
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
@@ -170,16 +178,10 @@ class HFLlamaConfig(HuggingFaceConfig):
             embedding_config=embedding_config,
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=(decoder_layer_config,) * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
             vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
-            attention_scale=None,
-            num_layers=self.num_hidden_layers,
-            sliding_window_sizes=None,
             context_length=context_length or self.max_position_embeddings,
         )
