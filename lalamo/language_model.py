@@ -14,8 +14,7 @@ from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
-from lalamo.modules import Decoder, DecoderConfig, KVCache, LalamoModule, config_converter
-from lalamo.modules.common import ForwardPassMode
+from lalamo.modules import Decoder, DecoderConfig, ForwardPassMode, LalamoModule, State, config_converter
 from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
 from lalamo.utils import open_safetensors
@@ -37,13 +36,13 @@ type ForwardPassConfig = DecoderForwardPassConfig
 class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
-    kv_cache: KVCache
+    state: State
 
 
 class DecodingState(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
-    kv_cache: KVCache
+    state: State
     stop_flags: Bool[Array, " batch"]
 
 
@@ -89,7 +88,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         with open(path / "config.json") as config_file:
             config_json = json.load(config_file)
         config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
-        with open_safetensors(path / "model.safetensors") as weights_dict:
+        with open_safetensors(path / "model.safetensors") as (weights_dict, _):
             weights = unflatten_parameters(weights_dict)
             decoder = config.decoder_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
@@ -124,21 +123,21 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         self,
         token_ids: Int[Array, "batch tokens"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        kv_cache_capacity: int | None = None,
+        state_capacity: int | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
         token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
-        if kv_cache_capacity is not None:
-            kv_cache = self.decoder.init_static_kv_cache(batch_size, kv_cache_capacity)
+        if state_capacity is not None:
+            state = self.decoder.init_static_state(batch_size, state_capacity)
         else:
-            kv_cache = None
+            state = None
 
         decoder_outputs = self.decoder(
             token_ids,
             token_positions,
-            kv_cache,
-            return_updated_kv_cache=True,
+            state,
+            return_updated_state=True,
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=forward_pass_config,
@@ -151,11 +150,11 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
 
         last_token_logits = vmap(lambda logits, index: logits[index])(decoder_outputs.logits, last_logits_indices)
 
-        assert decoder_outputs.updated_kv_cache is not None
+        assert decoder_outputs.updated_state is not None
         return PrefillResults(
             last_token_logits=last_token_logits,
             last_token_indices=last_logits_indices,
-            kv_cache=decoder_outputs.updated_kv_cache,
+            state=decoder_outputs.updated_state,
         )
 
     @eqx.filter_jit
@@ -187,7 +186,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         initial_state = DecodingState(
             prefill_results.last_token_logits,
             prefill_results.last_token_indices,
-            prefill_results.kv_cache,
+            prefill_results.state,
             jnp.zeros(batch_size, dtype=jnp.bool),
         )
 
@@ -224,16 +223,16 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 decoder_outputs = self.decoder(
                     next_token_ids[:, None],
                     next_token_indices[:, None],
-                    state.kv_cache,
-                    return_updated_kv_cache=True,
+                    state.state,
+                    return_updated_state=True,
                     forward_pass_mode=forward_pass_mode,
                     forward_pass_config=forward_pass_config,
                 )
-                assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
+                assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
                     decoder_outputs.logits.squeeze(1),
                     next_token_indices,
-                    decoder_outputs.updated_kv_cache,
+                    decoder_outputs.updated_state,
                     stop_flags,
                 )
                 return new_state, GenerationStepResults(next_token_ids, next_top_k_token_ids, next_top_k_token_logits)
@@ -338,7 +337,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         state = DecodingState(
             prefill_results.last_token_logits,
             prefill_results.last_token_indices,
-            prefill_results.kv_cache,
+            prefill_results.state,
             jnp.array([0], dtype=jnp.bool),
         )
 
@@ -356,14 +355,14 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             decoder_outputs = self.decoder(
                 next_token_id.reshape(1, 1),
                 next_token_indices.reshape(1, 1),
-                state.kv_cache,
-                return_updated_kv_cache=True,
+                state.state,
+                return_updated_state=True,
                 forward_pass_config=forward_pass_config,
             )
-            assert decoder_outputs.updated_kv_cache is not None, "updated_kv_cache should not be None"
+            assert decoder_outputs.updated_state is not None, "updated_state should not be None"
             state = DecodingState(
                 decoder_outputs.logits.squeeze(1),
                 next_token_indices,
-                decoder_outputs.updated_kv_cache,
+                decoder_outputs.updated_state,
                 state.stop_flags,
             )

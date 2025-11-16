@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
@@ -28,6 +29,7 @@ __all__ = ["HFQwen3Config"]
 
 @dataclass(frozen=True)
 class HFQwen3Config(HuggingFaceConfig):
+    eos_token_id: int | list[int]
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     attention_bias: bool
     hidden_act: Literal["silu"]
@@ -69,6 +71,7 @@ class HFQwen3Config(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if isinstance(self.quantization_config, MLXQuantizationConfig):
             assert self.tie_word_embeddings, "only tied embeddings are supported"
@@ -122,16 +125,6 @@ class HFQwen3Config(HuggingFaceConfig):
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=rmsnorm_config,
-            key_norm_config=rmsnorm_config,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=self.attention_bias,
-            has_out_biases=self.attention_bias,
-        )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),
@@ -140,28 +133,43 @@ class HFQwen3Config(HuggingFaceConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
-            pre_attention_norm_config=rmsnorm_config,
-            attention_config=attention_config,
-            post_attention_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-        )
+
+        sliding_window_sizes = self._get_sliding_window_sizes()
+        layer_configs = []
+        for sliding_window_size in sliding_window_sizes:
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=rmsnorm_config,
+                key_norm_config=rmsnorm_config,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkv_biases=self.attention_bias,
+                has_out_biases=self.attention_bias,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=self.head_dim,
+                is_causal=True,
+                scale=None,
+                sliding_window_size=sliding_window_size,
+            )
+            decoder_layer_config = DecoderLayerConfig(
+                pre_mixer_norm_config=rmsnorm_config,
+                mixer_config=attention_config,
+                post_mixer_norm_config=None,
+                pre_mlp_norm_config=rmsnorm_config,
+                mlp_config=mlp_config,
+                post_mlp_norm_config=None,
+            )
+            layer_configs.append(decoder_layer_config)
         return DecoderConfig(
             embedding_config=embedding_config,
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_config=decoder_layer_config,
+            layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim,
-            attention_scale=None,
-            num_layers=self.num_hidden_layers,
-            sliding_window_sizes=self._get_sliding_window_sizes(),
             context_length=context_length or self.max_position_embeddings,
         )

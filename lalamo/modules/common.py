@@ -2,7 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
-from typing import Self
+from typing import Any, Self
 
 import equinox as eqx
 from cattrs import Converter
@@ -12,18 +12,19 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterTree
 
 __all__ = [
-    "AttentionType",
     "DummyUnionMember",
     "ForwardPassMode",
     "LalamoModule",
+    "PositionalEmbeddingSelector",
     "config_converter",
     "register_config_union",
 ]
 
 
-class AttentionType(Enum):
+class PositionalEmbeddingSelector(Enum):
     GLOBAL = "global"
-    SLIDING_WINDOW = "sliding_window"
+    LOCAL = "sliding_window"
+    NONE = "none"
 
 
 class ForwardPassMode(Enum):
@@ -128,4 +129,8 @@ def register_config_union(union_type: UnionType) -> None:
 
 @dataclass
 class DummyUnionMember:
-    pass
+    def __getattribute__(self, name: str, /) -> Any:  # noqa: ANN401
+        raise NotImplementedError
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        raise NotImplementedError

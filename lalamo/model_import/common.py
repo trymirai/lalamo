@@ -1,4 +1,5 @@
 import importlib.metadata
+import json
 from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -14,6 +15,7 @@ from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.model_import.model_specs.common import JSONFieldSpec
 from lalamo.quantization import QuantizationMode
 
 from .huggingface_generation_config import HFGenerationConfig
@@ -130,10 +132,17 @@ def import_message_processor(
     )
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
     if tokenizer_config.chat_template is None:
-        if model_spec.configs.chat_template is None:
-            raise ValueError("Missiing chat template.")
-        chat_template_file = download_file(model_spec.configs.chat_template, model_spec.repo, output_dir)
-        prompt_template = chat_template_file.read_text()
+        match model_spec.configs.chat_template:
+            case JSONFieldSpec(file_spec, field_name):
+                json_file = download_file(file_spec, model_spec.repo, output_dir)
+                with open(json_file) as file:
+                    json_dict = json.load(file)
+                prompt_template = json_dict[field_name]
+            case FileSpec(_) as file_spec:
+                chat_template_file = download_file(file_spec, model_spec.repo, output_dir)
+                prompt_template = chat_template_file.read_text()
+            case None:
+                raise ValueError("No chat template specified.")
     else:
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
@@ -180,15 +189,24 @@ def import_model(
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
+        metadata_shards = []
         for weights_path in weights_paths:
-            weights_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
+            weights_shard, metadata_shard = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
             weights_shards.append(weights_shard)
+            metadata_shards.append(metadata_shard)
         weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
+        metadata_dict: ChainMap[str, str] = ChainMap(*metadata_shards)
 
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        decoder = foreign_decoder_config.load_decoder(context_length, precision, accumulation_precision, weights_dict)
+        decoder = foreign_decoder_config.load_decoder(
+            context_length,
+            precision,
+            accumulation_precision,
+            weights_dict,
+            metadata_dict,
+        )
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())

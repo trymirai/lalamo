@@ -37,7 +37,7 @@ class DType(Enum):
 
     @property
     def mlx_dtype(self) -> "mx.Dtype":
-        return getattr(mx, self.value) # type: ignore
+        return getattr(mx, self.value)  # type: ignore
 
     @property
     def jax_dtype(self) -> jnp.dtype:
@@ -134,6 +134,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.global_positional_embeddings
 
+        if llm_results is None:
+            return
+
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
         ref_native_cosines, ref_native_sines = self.global_rope(ref_x, ref_position_ids)
@@ -163,6 +166,9 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.local_positional_embeddings
+
+        if llm_results is None:
+            return
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
@@ -256,15 +262,17 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         ref_pre_attention_norm = self.layer_pre_attention_norm(ref_layer)
         self.match_rmsnorm(
             activation_trace.inputs,
-            activation_trace.pre_attention_norm,
+            activation_trace.pre_mixer_norm,
             ref_pre_attention_norm,
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
 
+        assert activation_trace.positional_embeddings is not None
+
         ref_attention = self.layer_attention(ref_layer)
         self.match_attention(
-            activation_trace.pre_attention_norm,
-            activation_trace.attention,
+            activation_trace.pre_mixer_norm,
+            activation_trace.mixer,
             ref_attention,
             (activation_trace.positional_embeddings.cosines, activation_trace.positional_embeddings.sines),
             f"Layer {layer_index} Attention",
@@ -272,10 +280,10 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         ref_post_attention_norm = self.layer_post_attention_norm(ref_layer)
         if ref_post_attention_norm is not None:
-            assert activation_trace.post_attention_norm is not None
+            assert activation_trace.post_mixer_norm is not None
             self.match_rmsnorm(
-                activation_trace.attention,
-                activation_trace.post_attention_norm,
+                activation_trace.mixer,
+                activation_trace.post_mixer_norm,
                 ref_post_attention_norm,
                 f"Layer {layer_index} Post Attention RMSNorm",
             )
@@ -305,6 +313,8 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
                 ref_post_mlp_norm,
                 f"Layer {layer_index} Post MLP RMSNorm",
             )
+
+        assert activation_trace.positional_embeddings is not None
 
         # Test full decoder layer
         ref_inputs = self.from_jax(activation_trace.inputs)
@@ -435,7 +445,7 @@ def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -
         err, llm_result = checkify_forward(llm_model.decoder)(
             token_ids=token_ids,
             token_positions=token_positions,
-            return_updated_kv_cache=True,
+            return_updated_state=True,
             return_activation_trace=True,
         )
         err.throw()

@@ -75,7 +75,7 @@ def test_eager_generation(
         num_top_logits_to_return=num_top_logits_to_return,
     )
     token_ids = result.token_ids.squeeze(0)
-    response_text = tokenizer.decode(token_ids)
+    response_text = tokenizer.decode(token_ids)  # type: ignore
     assert "<|im_end|>" in response_text
 
     if num_top_logits_to_return is not None:
@@ -114,7 +114,7 @@ def test_padding(language_model: LanguageModel, tokenizer: PreTrainedTokenizer) 
         prompt_lengths_without_padding=jnp.array([0], dtype=jnp.int32),
         max_output_length=32,
     ).token_ids.squeeze(0)
-    response_text = tokenizer.decode(response_token_ids)
+    response_text = tokenizer.decode(response_token_ids)  # type: ignore
     assert "elephants" not in response_text.lower()
 
     response_token_ids = language_model.generate_tokens(
@@ -122,7 +122,7 @@ def test_padding(language_model: LanguageModel, tokenizer: PreTrainedTokenizer) 
         prompt_lengths_without_padding=jnp.array([token_ids.size]),
         max_output_length=32,
     ).token_ids.squeeze(0)
-    response_text = tokenizer.decode(response_token_ids)
+    response_text = tokenizer.decode(response_token_ids)  # type: ignore
     assert "elephants" in response_text.lower()
 
 
@@ -166,7 +166,7 @@ def test_streaming_generation(
 ) -> None:
     token_stream = language_model.stream_tokens(generation_input.token_ids, max_output_length=32)
     response_token_ids = jnp.array(list(token_stream))
-    response_text = tokenizer.decode(response_token_ids)
+    response_text = tokenizer.decode(response_token_ids)  # type: ignore
     assert "<|im_end|>" in response_text
 
 

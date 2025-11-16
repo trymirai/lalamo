@@ -262,7 +262,7 @@ def convert(
             result = model.decoder(
                 token_ids,
                 token_positions,
-                return_updated_kv_cache=True,
+                return_updated_state=True,
                 return_activation_trace=True,
             )
             traces = flatten_parameters(result.export())
@@ -497,7 +497,6 @@ def train(
             TimeRemainingColumn(),
         ) as progress:
             inference_task = progress.add_task("🔮 [cyan]Training speculator...[/cyan]", total=subsample_size)
-
 
             def progress_callback(event: SpeculatorTrainingEvent) -> None:
                 progress.update(inference_task, completed=event.trained_tokens)

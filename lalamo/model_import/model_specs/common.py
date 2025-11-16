@@ -20,6 +20,7 @@ from lalamo.utils import MapDictValues, open_safetensors
 __all__ = [
     "ConfigMap",
     "FileSpec",
+    "JSONFieldSpec",
     "ModelSpec",
     "UseCase",
     "WeightsType",
@@ -39,17 +40,21 @@ class WeightsType(Enum):
     TORCH = "torch"
 
     @contextmanager
-    def load(self, filename: Path | str, float_dtype: DTypeLike) -> Iterator[Mapping[str, jnp.ndarray]]:
+    def load(
+        self,
+        filename: Path | str,
+        float_dtype: DTypeLike,
+    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
         if self == WeightsType.SAFETENSORS:
-            with open_safetensors(filename) as weights_dict:
-                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict)
+            with open_safetensors(filename) as (weights_dict, metadata_dict):
+                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
             import torch
 
             from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-            yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights)
+            yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
 
 
 class UseCase(Enum):
@@ -63,12 +68,18 @@ class FileSpec:
 
 
 @dataclass(frozen=True)
+class JSONFieldSpec:
+    file_spec: FileSpec
+    field_name: str
+
+
+@dataclass(frozen=True)
 class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
     tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | None = field(default=FileSpec("generation_config.json"))
-    chat_template: FileSpec | None = None
+    chat_template: FileSpec | JSONFieldSpec | None = None
 
 
 def _is_foreign_config_type(t: object) -> bool:
