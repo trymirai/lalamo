@@ -12,6 +12,7 @@ from lalamo.modules import (
     Identity,
     Mamba2Config,
     MLXQuantizedLinearConfig,
+    MLXSemiQuantizedUntiedEmbeddingConfig,
     RMSNormConfig,
     SeparableCausalConvConfig,
     SiLU,
@@ -68,7 +69,16 @@ class HFLlambaConfig(HuggingFaceConfig):
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        if self.tie_embeddings:
+        if "quantization_kwargs.group_size" in metadata_dict:
+            embedding_config = MLXSemiQuantizedUntiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
+                embedding_quantization_mode=QuantizationMode.from_num_bits(int(metadata_dict["quantization_kwargs.bits"])),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+        elif self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
@@ -92,9 +102,7 @@ class HFLlambaConfig(HuggingFaceConfig):
         if "quantization_kwargs.group_size" in metadata_dict:
             linear_config = MLXQuantizedLinearConfig(
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"]),
-                ),
+                weight_quantization_mode=QuantizationMode.from_num_bits(int(metadata_dict["quantization_kwargs.bits"])),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )

@@ -17,6 +17,7 @@ from lalamo.modules import (
     Mamba2,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
+    MLXSemiQuantizedUntiedEmbedding,
     RMSNorm,
     SeparableCausalConv,
     TiedEmbedding,
@@ -521,6 +522,34 @@ def load_mlx_quantized_tied_embedding(
     return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
 
 
+def load_mlx_semi_quantized_untied_embedding(
+    module: MLXSemiQuantizedUntiedEmbedding,
+    weights_dict: Mapping[str, Array],
+    embedding_path: ParameterPath,
+    lm_head_path: ParameterPath,
+) -> MLXSemiQuantizedUntiedEmbedding:
+    input_weights = weights_dict[embedding_path / "weight"]
+
+    output_qweights = weights_dict[lm_head_path / "weight"]
+    output_qscales = weights_dict[lm_head_path / "scales"]
+    output_qbiases = weights_dict[lm_head_path / "biases"]
+
+    output_weights = _process_quantized_tensor(
+        output_qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    output_scales = output_qscales.astype(module.activation_precision)
+    output_biases = output_qbiases.astype(module.activation_precision)
+
+    return load_parameters(
+        lambda m: (m.input_weights, m.output_weights, m.output_scales, m.output_biases),
+        module,
+        (input_weights, output_weights, output_scales, output_biases),
+    )
+
+
 def load_untied_embedding(
     module: UntiedEmbedding,
     weights_dict: Mapping[str, Array],
@@ -555,6 +584,7 @@ def load_huggingface(
         down_proj_key = "down_proj"
         alternating_layers = False
         norm_key = "final_layernorm"
+        lm_head_path = base_path / "lm_head"
     elif is_llamba_mlx:
         decoder_path = base_path / "model"
         embedding_path = base_path / "embedding.encoder"
@@ -567,6 +597,7 @@ def load_huggingface(
         down_proj_key = "out_proj"
         alternating_layers = True
         norm_key = "norm"
+        lm_head_path = base_path / "head.linear"
     else:
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
@@ -579,13 +610,19 @@ def load_huggingface(
         down_proj_key = "down_proj"
         alternating_layers = False
         norm_key = "norm"
-
-    lm_head_path = base_path / "lm_head"
+        lm_head_path = base_path / "lm_head"
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(module.embedding, weights_dict, embedding_path)
     elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
         embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, embedding_path)
+    elif isinstance(module.embedding, MLXSemiQuantizedUntiedEmbedding):
+        embedding = load_mlx_semi_quantized_untied_embedding(
+            module.embedding,
+            weights_dict,
+            embedding_path,
+            lm_head_path,
+        )
     elif isinstance(module.embedding, UntiedEmbedding):
         embedding = load_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
     else:
