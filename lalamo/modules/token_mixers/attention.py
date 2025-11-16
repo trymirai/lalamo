@@ -14,10 +14,10 @@ from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import RMSNorm, RMSNormConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 from lalamo.modules.utils import apply_soft_capping
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
@@ -407,7 +407,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
     def init_static_state(self, capacity: int) -> StaticKVCacheLayer:
-        return StaticKVCacheLayer.empty(
+        return StaticKVCacheLayer.init(
             self.has_sinks,
             capacity,
             self.num_groups,

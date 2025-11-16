@@ -131,3 +131,6 @@ def register_config_union(union_type: UnionType) -> None:
 class DummyUnionMember:
     def __getattribute__(self, name: str, /) -> Any:  # noqa: ANN401
         raise NotImplementedError
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+        raise NotImplementedError

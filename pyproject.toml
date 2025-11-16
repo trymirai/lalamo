@@ -63,7 +63,6 @@ namespaces = false
 [tool.setuptools.dynamic]
 version = { attr = "lalamo.__version__" }
 
-
 [tool.uv]
 package = true
 

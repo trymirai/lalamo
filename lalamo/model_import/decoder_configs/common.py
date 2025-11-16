@@ -20,6 +20,10 @@ class ForeignConfig(RegistryABC):
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @property
+    def eos_token_ids(self) -> list[int]:
+        raise NotImplementedError
+
+    @property
     @abstractmethod
     def default_precision(self) -> DTypeLike: ...
 

@@ -136,8 +136,12 @@ def chat(
         messages.append(user_message)
 
         console.print("[red]assistant> [/red]", end="")
-        model_response_text = model.reply(messages, max_output_length=128).response
-        console.print(model_response_text)
+        model_response_tokens = []
+        for token in model.stream_reply_text(messages):
+            console.print(token, end="")
+            model_response_tokens.append(token)
+        console.print()
+        model_response_text = "".join(model_response_tokens)
         messages.append(model.message_processor.parse_response(model_response_text))
 
 

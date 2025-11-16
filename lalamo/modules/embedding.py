@@ -495,4 +495,4 @@ EmbeddingConfig = (
 )
 
 
-register_config_union(EmbeddingConfig)
+register_config_union(EmbeddingConfig)  # type: ignore (pyright bug)

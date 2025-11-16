@@ -71,7 +71,7 @@ class HFQwen3Config(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if isinstance(self.quantization_config, MLXQuantizationConfig):
             assert self.tie_word_embeddings, "only tied embeddings are supported"

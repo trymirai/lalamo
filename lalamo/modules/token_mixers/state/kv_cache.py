@@ -213,7 +213,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         )
 
     @classmethod
-    def empty(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
+    def init(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
         return cls(
             has_sinks=has_sinks,
             keys=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),

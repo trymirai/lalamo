@@ -281,4 +281,4 @@ class LinearScalingRoPEConfig(RoPEConfigBase):
 
 RoPEConfig = UnscaledRoPEConfig | LlamaRoPEConfig | YARNRoPEConfig | LinearScalingRoPEConfig
 
-register_config_union(RoPEConfig)
+register_config_union(RoPEConfig)  # type: ignore (pyright bug)

@@ -8,14 +8,13 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
-from lalamo.modules.token_mixers import AttentionConfig
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .decoder_layer import DecoderLayer, DecoderLayerConfig, DecoderLayerForwardPassConfig, DecoderLayerResult
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .normalization import RMSNorm, RMSNormConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .state import State
+from .token_mixers import AttentionConfig, State
 from .utils import vmap_twice
 
 __all__ = [

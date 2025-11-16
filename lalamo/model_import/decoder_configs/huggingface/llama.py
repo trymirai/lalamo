@@ -13,13 +13,13 @@ from lalamo.modules import (
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
     RMSNormConfig,
+    SiLU,
     TiedEmbeddingConfig,
     UnscaledRoPEConfig,
+    UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
 )
-from lalamo.modules.activations import SiLU
-from lalamo.modules.embedding import UntiedEmbeddingConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
@@ -81,7 +81,7 @@ class HFLlamaConfig(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(

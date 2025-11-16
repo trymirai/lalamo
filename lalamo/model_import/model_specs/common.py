@@ -47,7 +47,7 @@ class WeightsType(Enum):
     ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
         if self == WeightsType.SAFETENSORS:
             with open_safetensors(filename) as (weights_dict, metadata_dict):
-                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict
+                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
             import torch
 

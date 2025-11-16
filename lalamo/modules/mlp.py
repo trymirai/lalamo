@@ -273,7 +273,7 @@ class SoftmaxRouting(RoutingFunctionBase):
 RoutingFunction = SoftmaxRouting | DummyUnionMember
 
 
-register_config_union(RoutingFunction)
+register_config_union(RoutingFunction)  # type: ignore (pyright bug)
 
 
 @dataclass(frozen=True)
@@ -480,4 +480,4 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 MLPConfig = DenseMLPConfig | MixtureOfExpertsConfig
 
 
-register_config_union(MLPConfig)
+register_config_union(MLPConfig)  # type: ignore (pyright bug)

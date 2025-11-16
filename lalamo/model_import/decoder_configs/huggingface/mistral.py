@@ -25,7 +25,6 @@ __all__ = ["HFMistralConfig"]
 
 @dataclass(frozen=True)
 class HFMistralConfig(HuggingFaceConfig):
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["MistralForCausalLM"]]
     attention_dropout: float
     bos_token_id: int
@@ -54,7 +53,7 @@ class HFMistralConfig(HuggingFaceConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(

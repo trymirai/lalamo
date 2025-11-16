@@ -62,7 +62,9 @@ class MLXQuantizationConfig:
     group_size: int
     bits: int
 
+
 QuantizationConfigType = AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig | None
+
 
 def _structure_quantization_config(v: object, _: object) -> QuantizationConfigType:
     match v:
@@ -81,6 +83,7 @@ def _structure_quantization_config(v: object, _: object) -> QuantizationConfigTy
         case _:
             raise RuntimeError(f"Cannot structure {v}field")
 
+
 @dataclass(frozen=True)
 class HuggingFaceConfig(ForeignConfig):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
@@ -92,7 +95,7 @@ class HuggingFaceConfig(ForeignConfig):
         if not hasattr(self, "eos_token_id"):
             raise RuntimeError("model doesn't havve eos_token_id, override eos_token_ids in model config")
 
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id  # type: ignore  (This is a bug in pyright)
 
     @property
     def default_precision(self) -> DTypeLike:

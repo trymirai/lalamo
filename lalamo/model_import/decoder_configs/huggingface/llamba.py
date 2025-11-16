@@ -5,7 +5,6 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    CausalConv1dConfig,
     DecoderConfig,
     DecoderLayerConfig,
     DenseMLPConfig,
@@ -14,6 +13,7 @@ from lalamo.modules import (
     Mamba2Config,
     MLXQuantizedLinearConfig,
     RMSNormConfig,
+    SeparableCausalConvConfig,
     SiLU,
     TiedEmbeddingConfig,
     UntiedEmbeddingConfig,
@@ -92,7 +92,9 @@ class HFLlambaConfig(HuggingFaceConfig):
         if "quantization_kwargs.group_size" in metadata_dict:
             linear_config = MLXQuantizedLinearConfig(
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                weight_quantization_mode=QuantizationMode.from_num_bits(int(metadata_dict["quantization_kwargs.bits"])),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    int(metadata_dict["quantization_kwargs.bits"]),
+                ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -123,17 +125,17 @@ class HFLlambaConfig(HuggingFaceConfig):
         mamba_config = Mamba2Config(
             in_projection_config=linear_config,
             out_projection_config=linear_config,
-            conv_config=CausalConv1dConfig(
-                kernel_size=self.ssm_cfg.d_conv,
-                activation=activation,
+            conv_config=SeparableCausalConvConfig(
                 precision=activation_precision,
                 has_biases=self.ssm_cfg.conv_bias,
             ),
-            num_value_heads=self.ssm_cfg.n_v_heads,
+            activation=activation,
+            kernel_size=self.ssm_cfg.d_conv,
+            num_heads=self.ssm_cfg.n_v_heads,
             num_groups=self.ssm_cfg.n_qk_heads,
             head_dim=head_dim,
             state_dim=self.ssm_cfg.d_state,
-            expand=self.ssm_cfg.expand,
+            expansion_factor=self.ssm_cfg.expand,
             has_in_biases=self.ssm_cfg.bias,
             has_out_biases=self.ssm_cfg.bias,
         )

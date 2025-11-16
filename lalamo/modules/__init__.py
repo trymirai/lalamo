@@ -53,16 +53,24 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
-from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
-from .token_mixers import Attention, AttentionConfig, CausalConv1d, CausalConv1dConfig, Mamba2, Mamba2Config
+from .token_mixers import (
+    Attention,
+    AttentionConfig,
+    DynamicKVCacheLayer,
+    KVCacheLayer,
+    Mamba2,
+    Mamba2Config,
+    SeparableCausalConv,
+    SeparableCausalConvConfig,
+    State,
+    StaticKVCacheLayer,
+)
 
 __all__ = [
     "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
-    "CausalConv1d",
-    "CausalConv1dConfig",
     "Decoder",
     "DecoderActivationTrace",
     "DecoderConfig",
@@ -112,6 +120,8 @@ __all__ = [
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
+    "SeparableCausalConv",
+    "SeparableCausalConvConfig",
     "SiLU",
     "SoftmaxRouting",
     "State",

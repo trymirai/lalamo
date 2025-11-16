@@ -95,7 +95,7 @@ class ETLlamaConfig(ExecutorchConfig):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.lora_args is None:
             raise ValueError("We only support QLoRA models for now.")
