@@ -18,6 +18,8 @@ from .embedding import (
     EmbeddingConfig,
     MLXQuantizedTiedEmbedding,
     MLXQuantizedTiedEmbeddingConfig,
+    MLXSemiQuantizedUntiedEmbedding,
+    MLXSemiQuantizedUntiedEmbeddingConfig,
     QuantizedTiedEmbedding,
     QuantizedTiedEmbeddingConfig,
     TiedEmbedding,
@@ -58,14 +60,17 @@ from .rope import (
     UnscaledRoPEConfig,
     YARNRoPEConfig,
 )
-from .state import DynamicKVCacheLayer, KVCacheLayer, State, StaticKVCacheLayer
 from .token_mixers import (
     Attention,
     AttentionConfig,
-    CausalConv1d,
-    CausalConv1dConfig,
+    DynamicKVCacheLayer,
+    KVCacheLayer,
     Mamba2,
     Mamba2Config,
+    SeparableCausalConv,
+    SeparableCausalConvConfig,
+    State,
+    StaticKVCacheLayer,
 )
 from .transformer import Transformer, TransformerConfig
 from .transformer_layer import (
@@ -81,8 +86,6 @@ __all__ = [
     "Activation",
     "Attention",
     "AttentionConfig",
-    "CausalConv1d",
-    "CausalConv1dConfig",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
@@ -114,6 +117,8 @@ __all__ = [
     "MLXQuantizedLinearConfig",
     "MLXQuantizedTiedEmbedding",
     "MLXQuantizedTiedEmbeddingConfig",
+    "MLXSemiQuantizedUntiedEmbedding",
+    "MLXSemiQuantizedUntiedEmbeddingConfig",
     "Mamba2",
     "Mamba2Config",
     "MixtureOfExperts",
@@ -129,6 +134,8 @@ __all__ = [
     "RoPE",
     "RoPEConfig",
     "RoutingFunction",
+    "SeparableCausalConv",
+    "SeparableCausalConvConfig",
     "SiLU",
     "SoftmaxRouting",
     "State",

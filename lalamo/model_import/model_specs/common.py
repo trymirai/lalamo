@@ -55,7 +55,7 @@ class WeightsType(Enum):
             with open_safetensors(filename) as (weights_dict, metadata_dict):
                 yield MapDictValues(
                     lambda v: cast_if_float(v, float_dtype), weights_dict
-                ), metadata_dict
+                ), metadata_dict or {}
         else:
             import torch
             from lalamo.modules.torch_interop import torch_to_jax

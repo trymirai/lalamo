@@ -6,7 +6,8 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.state.common import StateLayerBase
+
+from .state.common import StateLayerBase
 
 __all__ = [
     "TokenMixerBase",

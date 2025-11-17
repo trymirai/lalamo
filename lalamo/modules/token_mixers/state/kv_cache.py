@@ -231,7 +231,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         )
 
     @classmethod
-    def empty(
+    def init(
         cls,
         has_sinks: bool,
         capacity: int,

@@ -69,7 +69,7 @@ class HFGemma3TextConfigRaw:
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         input_scale = _round_to_bfloat16(self.hidden_size**0.5)
         attention_scale = self.query_pre_attn_scalar**-0.5

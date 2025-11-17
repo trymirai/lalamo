@@ -210,7 +210,7 @@ def _import_language_model(
             weights_shards.append(weights_shard)
             metadata_shards.append(metadata_shard)
         weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
-        metadata_dict: ChainMap[str, Array] = ChainMap(*metadata_shards)
+        metadata_dict: ChainMap[str, str] = ChainMap(*metadata_shards)
 
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())

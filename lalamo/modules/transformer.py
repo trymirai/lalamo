@@ -14,7 +14,7 @@ from lalamo.modules.utils import vmap_twice
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .state import State
+from .token_mixers import State
 from .transformer_layer import (
     TransformerLayer,
     TransformerLayerConfig,

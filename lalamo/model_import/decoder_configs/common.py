@@ -20,6 +20,10 @@ class ForeignConfig(RegistryABC):
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @property
+    def eos_token_ids(self) -> list[int]:
+        raise NotImplementedError
+
+    @property
     def default_precision(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 

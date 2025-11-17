@@ -148,6 +148,9 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         llm_results = activation_trace.global_positional_embeddings
         assert llm_results is not None
 
+        if llm_results is None:
+            return
+
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
         ref_native_cosines, ref_native_sines = self.global_rope(ref_x, ref_position_ids)
@@ -178,6 +181,9 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.local_positional_embeddings
         assert llm_results is not None
+
+        if llm_results is None:
+            return
 
         ref_x = self.from_jax(jnp.array((), jnp.float32))
         ref_position_ids = self.from_jax(activation_trace.token_positions)
@@ -280,6 +286,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
 
+        assert activation_trace.positional_embeddings is not None
+
         ref_attention = self.layer_attention(ref_layer)
         assert activation_trace.positional_embeddings is not None
         self.match_attention(
@@ -328,6 +336,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
                 ref_post_mlp_norm,
                 f"Layer {layer_index} Post MLP RMSNorm",
             )
+
+        assert activation_trace.positional_embeddings is not None
 
         # Test full decoder layer
         ref_inputs = self.from_jax(activation_trace.inputs)

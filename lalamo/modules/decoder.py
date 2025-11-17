@@ -12,7 +12,7 @@ from lalamo.common import ParameterTree
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
-from .state import State
+from .token_mixers import State
 from .transformer import (
     Transformer,
     TransformerConfig,

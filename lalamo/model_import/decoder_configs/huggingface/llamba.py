@@ -5,14 +5,15 @@ from typing import Literal
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    CausalConv1dConfig,
     DecoderConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     Identity,
     Mamba2Config,
     MLXQuantizedLinearConfig,
+    MLXSemiQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
+    SeparableCausalConvConfig,
     SiLU,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -69,7 +70,18 @@ class HFLlambaConfig(HuggingFaceLMConfig):
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        if self.tie_embeddings:
+        if "quantization_kwargs.group_size" in metadata_dict:
+            embedding_config = MLXSemiQuantizedUntiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
+                embedding_quantization_mode=QuantizationMode.from_num_bits(
+                    int(metadata_dict["quantization_kwargs.bits"])
+                ),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+        elif self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
@@ -127,17 +139,17 @@ class HFLlambaConfig(HuggingFaceLMConfig):
         mamba_config = Mamba2Config(
             in_projection_config=linear_config,
             out_projection_config=linear_config,
-            conv_config=CausalConv1dConfig(
-                kernel_size=self.ssm_cfg.d_conv,
-                activation=activation,
+            conv_config=SeparableCausalConvConfig(
                 precision=activation_precision,
                 has_biases=self.ssm_cfg.conv_bias,
             ),
-            num_value_heads=self.ssm_cfg.n_v_heads,
+            activation=activation,
+            kernel_size=self.ssm_cfg.d_conv,
+            num_heads=self.ssm_cfg.n_v_heads,
             num_groups=self.ssm_cfg.n_qk_heads,
             head_dim=head_dim,
             state_dim=self.ssm_cfg.d_state,
-            expand=self.ssm_cfg.expand,
+            expansion_factor=self.ssm_cfg.expand,
             has_in_biases=self.ssm_cfg.bias,
             has_out_biases=self.ssm_cfg.bias,
         )
