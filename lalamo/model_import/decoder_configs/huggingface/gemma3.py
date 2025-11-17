@@ -1,5 +1,5 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 import jax.numpy as jnp
@@ -159,6 +159,7 @@ class HFGemma3TextConfigRaw:
 @dataclass(frozen=True)
 class HFGemma3TextConfig(HFGemma3TextConfigRaw, HuggingFaceConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+    eos_token_id: int | list[int] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
