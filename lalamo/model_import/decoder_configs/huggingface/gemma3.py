@@ -152,16 +152,6 @@ class HFGemma3TextConfigRaw:
             context_length=context_length or self.max_position_embeddings,
         )
 
-        # return DecoderConfig(
-        #     embedding_config=embedding_config,
-        #     global_rope_config=global_rope_config,
-        #     local_rope_config=local_rope_config,
-        #     layer_configs=tuple(layer_configs),
-        #     output_norm_config=rms_norm_config,
-        #     model_dim=self.hidden_size,
-        #     hidden_dim=self.intermediate_size,
-        #     context_length=context_length or self.max_position_embeddings,
-        # )
         return DecoderConfig(
             embedding_config=embedding_config,
             transformer_config=transformer_config,

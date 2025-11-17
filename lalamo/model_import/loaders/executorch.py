@@ -272,7 +272,7 @@ def load_executorch(module: Decoder, weights_dict: Mapping[str, Array]) -> Decod
     embedding = load_embedding(
         module.embedding, weights_dict, root_path / "tok_embeddings"
     )
-    decoder_layers = tuple(
+    transformer_layers = tuple(
         load_transformer_layer(layer, weights_dict, root_path / f"layers.{i}")
         for i, layer in enumerate(module.transformer.layers)
     )
@@ -282,5 +282,5 @@ def load_executorch(module: Decoder, weights_dict: Mapping[str, Array]) -> Decod
     return load_parameters(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
-        (embedding, decoder_layers, output_norm),
+        (embedding, transformer_layers, output_norm),
     )

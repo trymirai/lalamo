@@ -173,7 +173,7 @@ def classify(
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
         model = RouterModel.load(model_path)
         progress.remove_task(loading_task)
-        warmup_task = progress.add_task("🔥 Warming up compilation cache...")
+        warmup_task = progress.add_task("🔥 Warming up...")
         model.classify(UserMessage(content="warmup message"))
         progress.remove_task(warmup_task)
     console.print(f"🤖 Classifying input with [blue]{model_path}[/blue]:")

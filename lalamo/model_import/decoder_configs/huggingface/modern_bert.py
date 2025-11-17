@@ -33,15 +33,6 @@ __all__ = ["ModernBERTConfig"]
 
 
 @dataclass(frozen=True)
-class LlamaRopeScalingConfig:
-    factor: float
-    high_freq_factor: float
-    low_freq_factor: float
-    original_max_position_embeddings: int
-    rope_type: Literal["llama3"]
-
-
-@dataclass(frozen=True)
 class ModernBERTConfig(HuggingFaceClassifierConfig):
     architectures: list[Literal["ModernBertForSequenceClassification"]]
     attention_bias: bool

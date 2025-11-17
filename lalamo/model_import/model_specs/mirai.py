@@ -8,7 +8,7 @@ MIRAI_ROUTER_MODELS = [
     ModelSpec(
         vendor="trymirai",
         family="ModernBERT",
-        name="ModernBERT-base",
+        name="ModernBERT-Chat-Moderation",
         size="0.15B",
         quantization=None,
         repo="trymirai/chat-moderation-router",
