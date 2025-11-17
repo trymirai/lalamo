@@ -37,7 +37,6 @@ class GemmaRoPEScalingConfig:
 
 @dataclass(frozen=True)
 class HFGemma3TextConfigRaw:
-    eos_token_id: int | list[int]
     hidden_size: int
     intermediate_size: int
     model_type: Literal["gemma3_text"]
