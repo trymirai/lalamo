@@ -10,7 +10,7 @@ from lalamo.message_processor import (
 )
 from lalamo.model_import import ModelSpec, import_model
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = [
     "AssistantMessage",
