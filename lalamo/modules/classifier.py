@@ -67,9 +67,7 @@ class PredictionHeadConfig:
             has_biases=self.use_dense_bias,
         )
         norm = self.normalization_config.empty(input_size)
-        final_linear = self.final_linear_config.empty(
-            input_dim=input_size, output_dims=(num_labels,), has_biases=True
-        )
+        final_linear = self.final_linear_config.empty(input_dim=input_size, output_dims=(num_labels,), has_biases=True)
 
         return PredictionHead(
             config=self,
@@ -79,9 +77,7 @@ class PredictionHeadConfig:
             final_linear=final_linear,
         )
 
-    def random_init(
-        self, input_size: int, num_labels: int, key: PRNGKeyArray
-    ) -> "PredictionHead":
+    def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
         dense_key, final_linear_key = jax.random.split(key)
         dense_layer = self.dense_config.random_init(
             input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key
@@ -109,9 +105,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     norm: Normalization
     final_linear: LinearBase
 
-    def __call__(
-        self, inner_features: Float[Array, "batch in_channels"]
-    ) -> Float[Array, "batch n_logits"]:
+    def __call__(self, inner_features: Float[Array, "batch in_channels"]) -> Float[Array, "batch n_logits"]:
         return vmap(self.call_unbatched)(inner_features)
 
     def call_unbatched(
@@ -171,9 +165,7 @@ class ClassifierActivationTrace(eqx.Module):
             token_positions=self.token_positions,
             local_positional_embeddings=self.local_positional_embeddings.export(),
             global_positional_embeddings=self.global_positional_embeddings.export(),
-            layer_results=[
-                layer_result.export() for layer_result in self.layer_results
-            ],
+            layer_results=[layer_result.export() for layer_result in self.layer_results],
             output_norm=self.output_norm,
             output_pooling=self.output_pooling,
             logits=self.logits,
@@ -222,9 +214,7 @@ class ClassifierConfig:
         *,
         key: PRNGKeyArray,
     ) -> "Classifier":
-        embedding_key, transformer_key, prediction_head_key = jax.random.split(
-            key, num=3
-        )
+        embedding_key, transformer_key, prediction_head_key = jax.random.split(key, num=3)
         embedding = self.embedding_config.random_init(
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
@@ -278,17 +268,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return self.embedding.activation_precision
 
     def __post_init__(self) -> None:
-        if (
-            self.config.output_labels is not None
-            and len(self.config.output_labels) != self.config.num_labels
-        ):
-            raise ValueError(
-                "Number of output logits is different from provided list of labels"
-            )
+        if self.config.output_labels is not None and len(self.config.output_labels) != self.config.num_labels:
+            raise ValueError("Number of output logits is different from provided list of labels")
 
-    def label_output_logits(
-        self, logits: Float[Array, " logits"]
-    ) -> Mapping[str, Float]:
+    def label_output_logits(self, logits: Float[Array, " logits"]) -> Mapping[str, Float]:
         labels = (
             self.config.output_labels
             if self.config.output_labels is not None
@@ -297,9 +280,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
 
         n_labels = len(labels)
         if n_labels != logits.shape[0]:
-            raise ValueError(
-                "Number of output logits is different from provided list of labels"
-            )
+            raise ValueError("Number of output logits is different from provided list of labels")
 
         sigmoids: Array = jax.nn.sigmoid(logits)
         return {labels[idx]: sigmoids[idx] for idx in range(n_labels)}
@@ -332,16 +313,10 @@ class Classifier(LalamoModule[ClassifierConfig]):
         if self.config.classifier_pooling == PoolingType.CLS:
             pooled_output = transformer_result.outputs[:, 0, :]
         elif self.config.classifier_pooling == PoolingType.MEAN:
-            attention_mask = jnp.ones(
-                (*token_ids.shape, 1), dtype=transformer_result.outputs.dtype
-            )
-            pooled_output = (transformer_result.outputs * attention_mask).sum(
-                axis=1
-            ) / attention_mask.sum(axis=1)
+            attention_mask = jnp.ones((*token_ids.shape, 1), dtype=transformer_result.outputs.dtype)
+            pooled_output = (transformer_result.outputs * attention_mask).sum(axis=1) / attention_mask.sum(axis=1)
         else:
-            raise TypeError(
-                f"classifier_pooling of unknown type: {self.config.classifier_pooling}"
-            )
+            raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
 
         logits = self.prediction_head(pooled_output)
 
@@ -364,9 +339,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             activation_trace = None
 
         batch_size, _ = logits.shape
-        labels = [
-            self.label_output_logits(logits[batch]) for batch in range(batch_size)
-        ]
+        labels = [self.label_output_logits(logits[batch]) for batch in range(batch_size)]
 
         return ClassifierResult(
             logits=logits,
@@ -395,11 +368,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return replace(
             self,
             embedding=self.embedding.import_weights(weights["embedding"]),
-            embedding_norm=self.embedding_norm.import_weights(
-                weights["embedding_norm"]
-            ),
+            embedding_norm=self.embedding_norm.import_weights(weights["embedding_norm"]),
             transformer=self.transformer.import_weights(weights["transformer"]),
-            prediction_head=self.prediction_head.import_weights(
-                weights["prediction_head"]
-            ),
+            prediction_head=self.prediction_head.import_weights(weights["prediction_head"]),
         )

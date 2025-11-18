@@ -66,9 +66,7 @@ def get_qlora_linear_params(
 
     lora_down_weights = weights_dict[path / "adaptor" / "A" / "weight"]
     lora_up_weights = (weights_dict[path / "adaptor" / "B" / "weight"],)
-    return QLoRALinearParams(
-        weights, scales, zero_points, lora_down_weights, lora_up_weights
-    )
+    return QLoRALinearParams(weights, scales, zero_points, lora_down_weights, lora_up_weights)
 
 
 def merge_linear_params(params_list: Iterable[QLoRALinearParams]) -> QLoRALinearParams:
@@ -76,43 +74,25 @@ def merge_linear_params(params_list: Iterable[QLoRALinearParams]) -> QLoRALinear
     weights = jnp.concatenate([p.weights for p in params_list], axis=0)
     scales = jnp.concatenate([p.scales for p in params_list], axis=0)
     zero_points = jnp.concatenate([p.zero_points for p in params_list], axis=0)
-    lora_down_weights = jnp.concatenate(
-        [p.lora_down_weights for p in params_list], axis=0
-    )
+    lora_down_weights = jnp.concatenate([p.lora_down_weights for p in params_list], axis=0)
     lora_up_weights = tuple(w for p in params_list for w in p.lora_up_weights)
-    return QLoRALinearParams(
-        weights, scales, zero_points, lora_down_weights, lora_up_weights
-    )
+    return QLoRALinearParams(weights, scales, zero_points, lora_down_weights, lora_up_weights)
 
 
-def load_linear(
-    module: QLoRALinear, weights_dict: dict[str, Array], path: ParameterPath
-) -> QLoRALinear:
+def load_linear(module: QLoRALinear, weights_dict: dict[str, Array], path: ParameterPath) -> QLoRALinear:
     params = get_qlora_linear_params(weights_dict, path, module.weights.dtype)
     return load_parameters(params_selector, module, params)
 
 
-def load_mlp(
-    module: DenseMLP, weights_dict: Mapping[str, Array], path: ParameterPath
-) -> DenseMLP:
+def load_mlp(module: DenseMLP, weights_dict: Mapping[str, Array], path: ParameterPath) -> DenseMLP:
     if not isinstance(module.up_projection, QLoRALinear):
-        raise TypeError(
-            f"Expected up_projection to be QLoRALinear, got {type(module.up_projection)}"
-        )
+        raise TypeError(f"Expected up_projection to be QLoRALinear, got {type(module.up_projection)}")
     if not isinstance(module.down_projection, QLoRALinear):
-        raise TypeError(
-            f"Expected down_projection to be QLoRALinear, got {type(module.down_projection)}"
-        )
+        raise TypeError(f"Expected down_projection to be QLoRALinear, got {type(module.down_projection)}")
 
-    up_proj_params = get_qlora_linear_params(
-        weights_dict, path / "w3", module.up_projection.weights.dtype
-    )
-    gate_proj_params = get_qlora_linear_params(
-        weights_dict, path / "w1", module.down_projection.weights.dtype
-    )
-    down_proj_params = get_qlora_linear_params(
-        weights_dict, path / "w2", module.down_projection.weights.dtype
-    )
+    up_proj_params = get_qlora_linear_params(weights_dict, path / "w3", module.up_projection.weights.dtype)
+    gate_proj_params = get_qlora_linear_params(weights_dict, path / "w1", module.down_projection.weights.dtype)
+    down_proj_params = get_qlora_linear_params(weights_dict, path / "w2", module.down_projection.weights.dtype)
 
     fused_up_gate_params = merge_linear_params([up_proj_params, gate_proj_params])
 
@@ -123,17 +103,11 @@ def load_mlp(
     )
 
 
-def load_rmsnorm(
-    module: Normalization, weights_dict: Mapping[str, Array], path: ParameterPath
-) -> Normalization:
-    return load_parameters(
-        lambda m: (m.scales,), module, (weights_dict[path / "weight"],)
-    )
+def load_rmsnorm(module: Normalization, weights_dict: Mapping[str, Array], path: ParameterPath) -> Normalization:
+    return load_parameters(lambda m: (m.scales,), module, (weights_dict[path / "weight"],))
 
 
-def permute_qk_weights(
-    weights: Array, input_dim: int, num_heads: int, head_dim: int
-) -> Array:
+def permute_qk_weights(weights: Array, input_dim: int, num_heads: int, head_dim: int) -> Array:
     # Reference: https://github.com/huggingface/transformers/blob/15bd3e61f8d3680ca472c9314ad07584d20f7b81/src/transformers/models/llama/convert_llama_weights_to_hf.py#L222
     return rearrange(
         weights,
@@ -158,13 +132,8 @@ def permute_qk_params(
     return replace(
         params,
         weights=permute_qk_weights(params.weights, model_dim, num_heads, head_dim),
-        scales=permute_qk_weights(
-            params.scales, model_dim // quantization_group_size, num_heads, head_dim
-        ),
-        lora_up_weights=tuple(
-            permute_qk_weights(w, lora_rank, num_heads, head_dim)
-            for w in params.lora_up_weights
-        ),
+        scales=permute_qk_weights(params.scales, model_dim // quantization_group_size, num_heads, head_dim),
+        lora_up_weights=tuple(permute_qk_weights(w, lora_rank, num_heads, head_dim) for w in params.lora_up_weights),
     )
 
 
@@ -174,9 +143,7 @@ def load_attention(
     path: ParameterPath,
 ) -> Attention:
     if not isinstance(module.qkv_projection, QLoRALinear):
-        raise TypeError(
-            f"Expected qkv_projection to be QLoRALinear, got {type(module.qkv_projection)}"
-        )
+        raise TypeError(f"Expected qkv_projection to be QLoRALinear, got {type(module.qkv_projection)}")
 
     model_dim = module.model_dim
     num_heads = module.num_heads
@@ -184,9 +151,7 @@ def load_attention(
     head_dim = module.head_dim
     lora_rank = module.qkv_projection.config.lora_rank
 
-    q_params = get_qlora_linear_params(
-        weights_dict, path / "wq", module.qkv_projection.weights.dtype
-    )
+    q_params = get_qlora_linear_params(weights_dict, path / "wq", module.qkv_projection.weights.dtype)
     q_params = permute_qk_params(
         params=q_params,
         model_dim=model_dim,
@@ -196,9 +161,7 @@ def load_attention(
         lora_rank=lora_rank,
     )
 
-    k_params = get_qlora_linear_params(
-        weights_dict, path / "wk", module.qkv_projection.weights.dtype
-    )
+    k_params = get_qlora_linear_params(weights_dict, path / "wk", module.qkv_projection.weights.dtype)
     k_params = permute_qk_params(
         params=k_params,
         model_dim=model_dim,
@@ -208,13 +171,9 @@ def load_attention(
         lora_rank=lora_rank,
     )
 
-    v_params = get_qlora_linear_params(
-        weights_dict, path / "wv", module.qkv_projection.weights.dtype
-    )
+    v_params = get_qlora_linear_params(weights_dict, path / "wv", module.qkv_projection.weights.dtype)
 
-    out_params = get_qlora_linear_params(
-        weights_dict, path / "wo", module.qkv_projection.weights.dtype
-    )
+    out_params = get_qlora_linear_params(weights_dict, path / "wo", module.qkv_projection.weights.dtype)
 
     qkv_params = merge_linear_params([q_params, k_params, v_params])
     return load_parameters(
@@ -234,9 +193,7 @@ def load_transformer_layer(
     if module.post_mlp_norm is not None:
         raise ValueError("Post MLP normalization is not supported")
     if module.pre_mixer_norm is not None:
-        attention_norm = load_rmsnorm(
-            module.pre_mixer_norm, weights_dict, path / "attention_norm"
-        )
+        attention_norm = load_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attention_norm")
     else:
         attention_norm = None
     assert isinstance(module.mixer, Attention)
@@ -265,20 +222,14 @@ def load_embedding(
 def load_executorch(module: Decoder, weights_dict: Mapping[str, Array]) -> Decoder:
     root_path = ParameterPath()
     if not isinstance(module.embedding, QuantizedTiedEmbedding):
-        raise TypeError(
-            f"Expected embedding to be QuantizedTiedEmbedding, got {type(module.embedding)}"
-        )
+        raise TypeError(f"Expected embedding to be QuantizedTiedEmbedding, got {type(module.embedding)}")
 
-    embedding = load_embedding(
-        module.embedding, weights_dict, root_path / "tok_embeddings"
-    )
+    embedding = load_embedding(module.embedding, weights_dict, root_path / "tok_embeddings")
     transformer_layers = tuple(
         load_transformer_layer(layer, weights_dict, root_path / f"layers.{i}")
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(
-        module.transformer.output_norm, weights_dict, root_path / "norm"
-    )
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, root_path / "norm")
     return load_parameters(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,

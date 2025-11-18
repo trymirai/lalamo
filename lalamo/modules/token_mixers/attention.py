@@ -50,12 +50,8 @@ def _soft_capped_attention_kernel(
     group_size = num_heads // num_groups
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
-    queries_head_first = rearrange(
-        queries, "dst_tokens heads channels -> heads dst_tokens channels"
-    )
-    keys_head_first = rearrange(
-        keys, "src_tokens heads channels -> heads src_tokens channels"
-    )
+    queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
+    keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
     attention_logits = einsum(
         queries_head_first,
         keys_head_first,
@@ -148,9 +144,7 @@ class AttentionConfig(TokenMixerConfigBase):
             key_norm = None
 
         if self.has_sinks:
-            sinks = jnp.zeros(
-                (self.num_heads,), dtype=qkv_projection.activation_precision
-            )
+            sinks = jnp.zeros((self.num_heads,), dtype=qkv_projection.activation_precision)
         else:
             sinks = None
 
@@ -360,20 +354,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             keys = vmap(vmap(self.key_norm))(keys)
 
         if positional_embeddings is not None:
-            apply_positional_embeddings = vmap(
-                positional_embeddings.apply, in_axes=1, out_axes=1
-            )
+            apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
             queries = apply_positional_embeddings(queries)
             keys = apply_positional_embeddings(keys)
 
         if state is None:
-            updated_state = DynamicKVCacheLayer.init(
-                self.has_sinks, keys, values, length=length_without_padding
-            )
+            updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
         else:
-            updated_state = state.extend(
-                keys, values, added_length=length_without_padding
-            )
+            updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
         mask = updated_state.attention_mask(
@@ -469,12 +457,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             sinks = None
         return replace(
             self,
-            qkv_projection=self.qkv_projection.import_weights(
-                weights["qkv_projection"]
-            ),
-            out_projection=self.out_projection.import_weights(
-                weights["out_projection"]
-            ),
+            qkv_projection=self.qkv_projection.import_weights(weights["qkv_projection"]),
+            out_projection=self.out_projection.import_weights(weights["out_projection"]),
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,

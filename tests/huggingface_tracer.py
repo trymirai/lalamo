@@ -179,9 +179,7 @@ class HFModelForSequenceClassification(Protocol):
     ) -> SequenceClassifierOutputWithPast: ...
 
 
-def _build_hf_attention_mask(
-    hidden_states: Tensor, hf_attention: HFAttention | Gemma3Attention
-) -> Tensor:
+def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention | Gemma3Attention) -> Tensor:
     batch, seqlen, _ = hidden_states.shape
     q_len = seqlen
     k_len = seqlen
@@ -189,15 +187,10 @@ def _build_hf_attention_mask(
     dtype = hidden_states.dtype
 
     # Causal mask: mask j > i
-    causal = torch.triu(
-        torch.ones((q_len, k_len), device=device, dtype=torch.bool), diagonal=1
-    )
+    causal = torch.triu(torch.ones((q_len, k_len), device=device, dtype=torch.bool), diagonal=1)
 
     # Sliding window mask for GPT-OSS when enabled on this layer
-    if (
-        isinstance(hf_attention, GptOssAttention)
-        and hf_attention.sliding_window is not None
-    ):
+    if isinstance(hf_attention, GptOssAttention) and hf_attention.sliding_window is not None:
         sliding_window: int = int(hf_attention.sliding_window)
         if sliding_window < 1:
             raise ValueError(f"Invalid sliding_window={sliding_window}")
@@ -247,17 +240,11 @@ class HFDecoderTracer(
     def embedding(self, token_ids: torch.Tensor) -> torch.Tensor:
         return self.hf_model.model.embed_tokens.forward(token_ids)
 
-    def global_rope(
-        self, x: torch.Tensor, position_ids: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    def global_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         return self.hf_model.model.rotary_emb.forward(x, position_ids)
 
-    def local_rope(
-        self, x: torch.Tensor, position_ids: torch.Tensor
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        hf_rope = getattr(
-            self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb
-        )
+    def local_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
         return hf_rope.forward(x, position_ids)
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
@@ -304,40 +291,30 @@ class HFDecoderTracer(
 
         return torch_outputs
 
-    def layer_pre_attention_norm(
-        self, layer: HFTransformerLayer | Gemma3DecoderLayer
-    ) -> HFRMSNorm:
+    def layer_pre_attention_norm(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFRMSNorm:
         return layer.input_layernorm
 
     # Gemma and Llama/Qwen confusingly have very different naming conventions.
 
-    def layer_post_attention_norm(
-        self, layer: HFTransformerLayer | Gemma3DecoderLayer
-    ) -> HFRMSNorm | None:
+    def layer_post_attention_norm(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFRMSNorm | None:
         if hasattr(layer, "post_feedforward_layernorm"):
             return layer.post_attention_layernorm
 
         return None
 
-    def layer_pre_mlp_norm(
-        self, layer: HFTransformerLayer | Gemma3DecoderLayer
-    ) -> HFRMSNorm:
+    def layer_pre_mlp_norm(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFRMSNorm:
         if hasattr(layer, "post_feedforward_layernorm"):
             return layer.pre_feedforward_layernorm  # type: ignore
 
         return layer.post_attention_layernorm
 
-    def layer_attention(
-        self, layer: HFTransformerLayer | Gemma3DecoderLayer
-    ) -> HFAttention | Gemma3Attention:
+    def layer_attention(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFAttention | Gemma3Attention:
         return layer.self_attn
 
     def layer_mlp(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFMLP:
         return layer.mlp
 
-    def layer_post_mlp_norm(
-        self, layer: HFTransformerLayer | Gemma3DecoderLayer
-    ) -> HFRMSNorm | None:
+    def layer_post_mlp_norm(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFRMSNorm | None:
         return getattr(layer, "post_feedforward_layernorm", None)
 
     def iterate_layers(self) -> Iterable[HFTransformerLayer | Gemma3DecoderLayer]:
@@ -396,7 +373,6 @@ class HFDecoderTracer(
 
 @dataclass(frozen=True)
 class HFClassifierTracer(ModelTracer):
-
     hf_model: HFModelForSequenceClassification
     device: torch.device
 
@@ -424,16 +400,12 @@ class HFClassifierTracer(ModelTracer):
         activation_trace = layer_result.activation_trace
         assert activation_trace is not None
 
-        use_global_attention = (
-            layer_index % hf_layer.config.global_attn_every_n_layers == 0
-        )
+        use_global_attention = layer_index % hf_layer.config.global_attn_every_n_layers == 0
 
         hf_pre_attention_norm = hf_layer.attn_norm
         hf_pre_mlp_norm = hf_layer.mlp_norm
 
-        attention_mask = torch.ones(
-            activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool
-        )
+        attention_mask = torch.ones(activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool)
 
         attention_mask, sliding_window = self.hf_model.model._update_attention_mask(
             attention_mask, output_attentions=False
@@ -517,9 +489,7 @@ class HFClassifierTracer(ModelTracer):
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rmsnorm(
-        self, llm_inputs: Array, llm_outputs: Array, hf_layer: HFRMSNorm, name: str
-    ) -> None:
+    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
         torch_outputs = hf_layer.forward(ref_inputs)
         ref_outputs = torch_to_jax(torch_outputs)
@@ -555,9 +525,7 @@ class HFClassifierTracer(ModelTracer):
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_mlp(
-        self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str
-    ) -> None:
+    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
         torch_outputs = hf_mlp.forward(ref_inputs)
         if isinstance(torch_outputs, tuple):
@@ -601,9 +569,7 @@ class HFClassifierTracer(ModelTracer):
                 strict=True,
             ),
         ):
-            self.match_layer(
-                layer_result, result.activation_trace.token_positions, hf_layer, i
-            )
+            self.match_layer(layer_result, result.activation_trace.token_positions, hf_layer, i)
 
         self.match_rmsnorm(
             result.activation_trace.layer_results[-1].outputs,
@@ -613,9 +579,7 @@ class HFClassifierTracer(ModelTracer):
         )
 
         hf_input_ids = jax_to_torch(result.activation_trace.token_ids).to(self.device)
-        hf_token_positions = jax_to_torch(result.activation_trace.token_positions).to(
-            self.device
-        )
+        hf_token_positions = jax_to_torch(result.activation_trace.token_positions).to(self.device)
         hf_outputs = self.hf_model.forward(
             input_ids=hf_input_ids,
             position_ids=hf_token_positions,
@@ -641,9 +605,7 @@ class HFClassifierTracer(ModelTracer):
         # NOTE: Because of how layers outputs are saved in ModernBert we will only see
         # non-normalized per-layer outputs in the 'hidden_states'
         last_norm_output = result.activation_trace.output_norm
-        ref_last_norm_output = torch_to_jax(
-            self.hf_model.model.final_norm.forward(hf_last_non_norm_output)
-        )
+        ref_last_norm_output = torch_to_jax(self.hf_model.model.final_norm.forward(hf_last_non_norm_output))
         assert_close(
             result=last_norm_output,
             reference=ref_last_norm_output,
@@ -672,7 +634,6 @@ class HFClassifierTracer(ModelTracer):
 
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
-
         if torch.cuda.is_available():
             device = torch.device("cuda")
         else:

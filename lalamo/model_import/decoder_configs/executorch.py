@@ -56,11 +56,7 @@ class ExecutorchConfig(ForeignConfig):
 
     @property
     def eos_token_ids(self) -> list[int]:
-        return (
-            [self.eos_token_id]
-            if isinstance(self.eos_token_id, int)
-            else self.eos_token_id
-        )
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
 
     @property
     def default_precision(self) -> DTypeLike:

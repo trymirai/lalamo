@@ -124,9 +124,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     def readout(self, x: ArrayT) -> ArrayT: ...
 
     @abstractmethod
-    def forward(
-        self, input_ids: ArrayT, position_ids: ArrayT
-    ) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
+    def forward(self, input_ids: ArrayT, position_ids: ArrayT) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
 
     def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
@@ -212,9 +210,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rmsnorm(
-        self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str
-    ) -> None:
+    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, ref_layer: RMSNormT, name: str) -> None:
         ref_inputs = self.from_jax(llm_inputs)
         torch_outputs = self.rmsnorm(ref_layer, ref_inputs)
         ref_outputs = self.to_jax(torch_outputs)
@@ -256,9 +252,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_mlp(
-        self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str
-    ) -> None:
+    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, ref_mlp: MlpT, name: str) -> None:
         ref_inputs = self.from_jax(llm_inputs)
         ref_native_outputs = self.mlp(ref_mlp, ref_inputs)
         ref_outputs = self.to_jax(ref_native_outputs)
@@ -365,9 +359,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         llm_logits = result.logits
 
-        ref_normalized_outputs = self.from_jax(
-            result.activation_trace.output_norm[None, ...]
-        )
+        ref_normalized_outputs = self.from_jax(result.activation_trace.output_norm[None, ...])
         ref_native_logits = self.readout(ref_normalized_outputs)
         ref_logits = self.to_jax(ref_native_logits).squeeze(0)
 
@@ -404,9 +396,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         hf_input_ids = self.from_jax(result.activation_trace.token_ids)
         hf_token_positions = self.from_jax(result.activation_trace.token_positions)
-        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(
-            hf_input_ids, hf_token_positions
-        )
+        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
 
         for i, (hf_layer_inputs, layer_result) in enumerate(
             zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),

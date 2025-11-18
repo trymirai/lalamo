@@ -17,4 +17,4 @@ MODEL_LIST = [
 @unittest.skipUnless(MLX_AVAILABLE, "requires mlx")
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
 def test_mlx_model(test_spec: ModelTestSpec) -> None:
-    _test_model(test_spec, MLXDecoderTracer) # type: ignore
+    _test_model(test_spec, MLXDecoderTracer)  # type: ignore

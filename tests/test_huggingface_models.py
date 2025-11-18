@@ -27,9 +27,7 @@ CLASSIFIER_MODEL_LIST = [
 ]
 
 
-@pytest.mark.parametrize(
-    "test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST]
-)
+@pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
 def test_hf_lm_models(test_spec: ModelTestSpec) -> None:
     _test_model(test_spec, HFDecoderTracer)
 

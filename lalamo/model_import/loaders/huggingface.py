@@ -49,9 +49,7 @@ def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
         pack_factor=pack_factor,
     )
     array_reordered = array_reshaped[..., reverse_order]
-    return rearrange(
-        array_reordered, "... group pack_factor -> ... (group pack_factor)"
-    )
+    return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
 
 
 def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
@@ -63,9 +61,7 @@ def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
 
     shifts = jnp.arange(0, 32, mode.bits)
     mask = (2**mode.bits) - 1
-    unpacked = jnp.bitwise_and(
-        jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask
-    )
+    unpacked = jnp.bitwise_and(jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask)
     unpacked = rearrange(
         unpacked,
         "out_channels packed_groups packed_values -> out_channels (packed_groups packed_values)",
@@ -82,9 +78,7 @@ def _process_quantized_tensor(
 ) -> Array:
     unpacked = unpack_int32(quantized, weight_quantization)
     if reverse_order is not None:
-        assert (
-            weight_quantization == QuantizationMode.UINT4
-        ), "reverse order only supported on uint4 quant type"
+        assert weight_quantization == QuantizationMode.UINT4, "reverse order only supported on uint4 quant type"
         unpacked = _reverse_uint4_order(unpacked, reverse_order)
 
     return unpacked.astype(activation_precision)
@@ -98,9 +92,7 @@ def _fuse_full_precision_weights(
     if sublayers_to_fuse is None:
         return weights_dict[path / "weight"]
 
-    weights = [
-        weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse
-    ]
+    weights = [weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse]
     return jnp.concatenate(weights, axis=0)
 
 
@@ -112,12 +104,8 @@ class QuantizedParamLayout:
     transposed: bool
 
 
-AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout(
-    "qweight", "scales", "qzeros", transposed=True
-)
-MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout(
-    "weight", "scales", "biases", transposed=False
-)
+AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros", transposed=True)
+MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
 
 
 def _fuse_quantized_weights(
@@ -134,22 +122,11 @@ def _fuse_quantized_weights(
         scales = weights_dict[path / quantized_param_layout.scale]
         return qweights, qzeros, scales
 
-    qweights = [
-        weights_dict[path / layer_name / quantized_param_layout.weight]
-        for layer_name in sublayers_to_fuse
-    ]
-    qzeros = [
-        weights_dict[path / layer_name / quantized_param_layout.bias]
-        for layer_name in sublayers_to_fuse
-    ]
-    scales = [
-        weights_dict[path / layer_name / quantized_param_layout.scale]
-        for layer_name in sublayers_to_fuse
-    ]
+    qweights = [weights_dict[path / layer_name / quantized_param_layout.weight] for layer_name in sublayers_to_fuse]
+    qzeros = [weights_dict[path / layer_name / quantized_param_layout.bias] for layer_name in sublayers_to_fuse]
+    scales = [weights_dict[path / layer_name / quantized_param_layout.scale] for layer_name in sublayers_to_fuse]
 
-    fused_qweights = jnp.concatenate(
-        qweights, axis=int(quantized_param_layout.transposed)
-    )
+    fused_qweights = jnp.concatenate(qweights, axis=int(quantized_param_layout.transposed))
     fused_qzeros = jnp.concatenate(qzeros, axis=int(quantized_param_layout.transposed))
     fused_scales = jnp.concatenate(scales, axis=int(quantized_param_layout.transposed))
 
@@ -170,18 +147,13 @@ def load_linear(
             paths_to_check = path / "bias"
         for p in paths_to_check:
             if p in weights_dict:
-                raise ValueError(
-                    f"Bias tensor found at {p} but module does not support it."
-                )
+                raise ValueError(f"Bias tensor found at {p} but module does not support it.")
         bias = None
     elif sublayers_to_fuse is None:
         bias = weights_dict[path / "bias"]
     else:
         bias = jnp.concatenate(
-            [
-                weights_dict[path / proj_name / "bias"]
-                for proj_name in sublayers_to_fuse
-            ],
+            [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
             axis=0,
         )
 
@@ -268,9 +240,7 @@ def load_mlp(
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
-        down_projection = load_linear(
-            module.down_projection, weights_dict, path / down_proj_key
-        )
+        down_projection = load_linear(module.down_projection, weights_dict, path / down_proj_key)
         return load_parameters(
             lambda m: (m.up_projection, m.down_projection),
             module,
@@ -283,9 +253,7 @@ def load_mlp(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
-def load_moe(
-    module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath
-) -> MixtureOfExperts:
+def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:
     # Load router via the standard linear loader
     router = load_linear(module.router, weights_dict, path / "router")
 
@@ -600,9 +568,7 @@ def load_mlx_quantized_tied_embedding(
     scales = qscales.astype(module.activation_precision)
     biases = qbiases.astype(module.activation_precision)
 
-    return load_parameters(
-        lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases)
-    )
+    return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
 
 
 def load_mlx_semi_quantized_untied_embedding(
@@ -730,9 +696,7 @@ def load_huggingface_decoder(
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(module.embedding, weights_dict, embedding_path)
     elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
-        embedding = load_mlx_quantized_tied_embedding(
-            module.embedding, weights_dict, embedding_path
-        )
+        embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, embedding_path)
     elif isinstance(module.embedding, MLXSemiQuantizedUntiedEmbedding):
         embedding = load_mlx_semi_quantized_untied_embedding(
             module.embedding,
@@ -741,9 +705,7 @@ def load_huggingface_decoder(
             lm_head_path,
         )
     elif isinstance(module.embedding, UntiedEmbedding):
-        embedding = load_untied_embedding(
-            module.embedding, weights_dict, embedding_path, lm_head_path
-        )
+        embedding = load_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
     else:
         raise TypeError(f"Unsupported embedding type: {type(module.embedding)}")
 
@@ -763,9 +725,7 @@ def load_huggingface_decoder(
         )
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(
-        module.transformer.output_norm, weights_dict, decoder_path / norm_key
-    )
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / norm_key)
     return load_parameters(
         lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
@@ -782,9 +742,7 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         decoder_path: ParameterPath,
     ) -> TiedEmbedding:
-        input_weights = weights_dict[
-            decoder_path / "embeddings" / "tok_embeddings" / "weight"
-        ]
+        input_weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
         return load_parameters(lambda m: (m.weights,), module, (input_weights,))
 
     def load_attention_local(
@@ -816,9 +774,7 @@ def load_huggingface_classifier(
             (qkv_projection, out_projection, query_norm, key_norm),
         )
 
-    def load_mlp_local(
-        module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath
-    ) -> MLPBase:
+    def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
         assert isinstance(module, DenseMLP)
         up_projection = load_linear(
             module.up_projection,
@@ -905,26 +861,16 @@ def load_huggingface_classifier(
     classifier_path = base_path / "classifier"
     assert isinstance(module.embedding, TiedEmbedding)
     embedding = load_tied_embedding_local(module.embedding, weights_dict, decoder_path)
-    embedding_norm = load_rmsnorm(
-        module.embedding_norm, weights_dict, base_path / "model" / "embeddings" / "norm"
-    )
+    embedding_norm = load_rmsnorm(module.embedding_norm, weights_dict, base_path / "model" / "embeddings" / "norm")
 
     decoder_layers = tuple(
         load_transformer_layer_local(layer, weights_dict, decoder_path / "layers" / i)
         for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(
-        module.transformer.output_norm, weights_dict, decoder_path / "final_norm"
-    )
-    head_dense = load_linear(
-        module.prediction_head.dense, weights_dict, head_path / "dense"
-    )
-    head_norm = load_rmsnorm(
-        module.prediction_head.norm, weights_dict, head_path / "norm"
-    )
-    head_final_linear = load_linear(
-        module.prediction_head.final_linear, weights_dict, classifier_path
-    )
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
+    head_dense = load_linear(module.prediction_head.dense, weights_dict, head_path / "dense")
+    head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path / "norm")
+    head_final_linear = load_linear(module.prediction_head.final_linear, weights_dict, classifier_path)
     return load_parameters(
         lambda m: (
             m.embedding,

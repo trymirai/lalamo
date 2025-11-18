@@ -55,9 +55,7 @@ def temporary_directory() -> Generator[Path, Any, None]:
             shutil.rmtree(temp_dir)
 
 
-@pytest.mark.parametrize(
-    "test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST]
-)
+@pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
 def test_model_conversion(test_spec: ModelTestSpec) -> None:
     """
     Test the conversion -> export -> import flow for a given model.

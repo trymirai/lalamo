@@ -78,13 +78,9 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
     def __post_init__(self) -> None:
         if len(self.label2id) != len(self.id2label):
-            raise ValueError(
-                "Legnth of label2id and id2label is expected to be the same"
-            )
+            raise ValueError("Legnth of label2id and id2label is expected to be the same")
 
-    def calculate_sliding_windows(
-        self, num_layers: int, global_attn_every_n_layers: int
-    ) -> tuple[None, ...]:
+    def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[None, ...]:
         result = [None] * num_layers
         for index in range(len(result)):
             if index % global_attn_every_n_layers != 0:
@@ -124,9 +120,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        sliding_window_sizes = self.calculate_sliding_windows(
-            self.num_hidden_layers, self.global_attn_every_n_layers
-        )
+        sliding_window_sizes = self.calculate_sliding_windows(self.num_hidden_layers, self.global_attn_every_n_layers)
 
         transformer_norm_config = NormalizationConfig(
             scale_precision=activation_precision,
@@ -152,15 +146,10 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         )
 
         # In ModernBERT architecture first Transformer layer has no pre-attention normalization
-        pre_attn_configs = [
-            transformer_norm_config if i > 0 else None
-            for i in range(self.num_hidden_layers)
-        ]
+        pre_attn_configs = [transformer_norm_config if i > 0 else None for i in range(self.num_hidden_layers)]
 
         transformer_layer_configs = []
-        for sliding_window_size, pre_attn_config in zip(
-            sliding_window_sizes, pre_attn_configs, strict=True
-        ):
+        for sliding_window_size, pre_attn_config in zip(sliding_window_sizes, pre_attn_configs, strict=True):
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,

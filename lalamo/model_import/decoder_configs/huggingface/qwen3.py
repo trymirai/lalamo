@@ -80,9 +80,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
                 input_scale=None,
                 logit_soft_cap=None,
                 group_size=self.quantization_config.group_size,
-                embedding_quantization_mode=QuantizationMode.from_num_bits(
-                    self.quantization_config.bits
-                ),
+                embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -118,18 +116,14 @@ class HFQwen3Config(HuggingFaceLMConfig):
         elif isinstance(self.quantization_config, MLXQuantizationConfig):
             linear_config = MLXQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    self.quantization_config.bits
-                ),
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    self.quantization_config.bits
-                ),
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )

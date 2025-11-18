@@ -89,9 +89,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: (
-            Int[Array, ""] | int | None
-        ) = None,  # noqa: ARG002
+        suffix_length_without_padding: (Int[Array, ""] | int | None) = None,  # noqa: ARG002
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
@@ -132,15 +130,9 @@ class DynamicKVCacheLayer(KVCacheLayer):
             old_num_tokens, _, _ = self.keys.shape
             old_padding_mask = jnp.ones(old_num_tokens, dtype=jnp.bool)
 
-        added_padding_mask = (
-            jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
-        )
-        updated_padding_mask = jnp.concatenate(
-            [old_padding_mask, added_padding_mask], axis=0
-        )
-        return DynamicKVCacheLayer(
-            self.has_sinks, updated_keys, updated_values, updated_padding_mask
-        )
+        added_padding_mask = jnp.arange(added_padded_length, dtype=jnp.int32) < added_length
+        updated_padding_mask = jnp.concatenate([old_padding_mask, added_padding_mask], axis=0)
+        return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
 
 
 class StaticKVCacheLayer(KVCacheLayer):
@@ -157,10 +149,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
         if is_causal:
-            query_offsets = (
-                jnp.arange(0, suffix_length, dtype=jnp.int32)
-                - suffix_length_without_padding
-            )
+            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
         else:
             query_offsets = jnp.zeros(suffix_length, dtype=jnp.int32)
 
@@ -169,9 +158,7 @@ class StaticKVCacheLayer(KVCacheLayer):
 
         result = query_indices[:, None] >= key_indices[None, :]
         if sliding_window_size is not None:
-            swa_mask = query_indices[:, None] < (
-                key_indices[None, :] + sliding_window_size
-            )
+            swa_mask = query_indices[:, None] < (key_indices[None, :] + sliding_window_size)
             result = result & swa_mask
         if self.has_sinks:
             result = result.at[:, 0].set(True)
@@ -201,9 +188,7 @@ class StaticKVCacheLayer(KVCacheLayer):
         num_added_tokens, new_num_groups, new_head_dim = added_keys.shape
         _, old_num_groups, old_head_dim = self.keys.shape
         if new_num_groups != old_num_groups or new_head_dim != old_head_dim:
-            raise ValueError(
-                "New keys and values must have the same number of groups and head dimensions"
-            )
+            raise ValueError("New keys and values must have the same number of groups and head dimensions")
 
         if added_length is None:
             added_length = num_added_tokens

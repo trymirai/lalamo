@@ -53,17 +53,13 @@ class WeightsType(Enum):
     ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
         if self == WeightsType.SAFETENSORS:
             with open_safetensors(filename) as (weights_dict, metadata_dict):
-                yield MapDictValues(
-                    lambda v: cast_if_float(v, float_dtype), weights_dict
-                ), metadata_dict or {}
+                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
             import torch
             from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-            yield MapDictValues(
-                lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights
-            ), {}
+            yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
 
 
 class UseCase(Enum):
@@ -87,21 +83,14 @@ class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
     tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
-    generation_config: FileSpec | None = field(
-        default=FileSpec("generation_config.json")
-    )
+    generation_config: FileSpec | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | None = None
 
 
 def _is_foreign_config_type(t: object) -> bool:
     origin = get_origin(t)
     args = get_args(t)
-    return (
-        origin is type
-        and len(args) == 1
-        and isinstance(args[0], type)
-        and issubclass(args[0], ForeignConfig)
-    )
+    return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
 
 
 def _structure_foreign_config_factory(
@@ -118,9 +107,7 @@ def _structure_foreign_config_factory(
     return _hook
 
 
-def _unstructure_foreign_config_factory(
-    t: object, c: cattrs.Converter
-) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
+def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
     def _hook(v: type[ForeignConfig]) -> str:
         return v.__name__
 
@@ -131,12 +118,8 @@ def _unstructure_foreign_config_factory(
 class ModelSpec:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
-    _converter.register_structure_hook_factory(
-        _is_foreign_config_type, _structure_foreign_config_factory
-    )
-    _converter.register_unstructure_hook_factory(
-        _is_foreign_config_type, _unstructure_foreign_config_factory
-    )
+    _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
+    _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
 
     vendor: str
     family: str

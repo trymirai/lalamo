@@ -105,9 +105,7 @@ class HFQwen2Config(HuggingFaceLMConfig):
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    self.quantization_config.bits
-                ),
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )

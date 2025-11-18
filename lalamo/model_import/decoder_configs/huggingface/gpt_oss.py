@@ -141,9 +141,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         )
         moe_config = MixtureOfExpertsConfig(
             mixture_size=self.num_local_experts,
-            num_experts_per_token=(
-                self.num_experts_per_tok or self.experts_per_token or 1
-            ),
+            num_experts_per_token=(self.num_experts_per_tok or self.experts_per_token or 1),
             routing_function=SoftmaxRouting(),
             router_config=linear_config,
             router_has_biases=True,
@@ -151,13 +149,9 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         )
 
         # Per-layer sliding-window
-        if (
-            self.layer_types is not None
-            and len(self.layer_types) == self.num_hidden_layers
-        ):
+        if self.layer_types is not None and len(self.layer_types) == self.num_hidden_layers:
             sliding_window_sizes = [
-                self.sliding_window if layer_type == "sliding_attention" else None
-                for layer_type in self.layer_types
+                self.sliding_window if layer_type == "sliding_attention" else None for layer_type in self.layer_types
             ]
         else:
             # Fallback: apply the same sliding window to all layers if provided
@@ -167,11 +161,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 else [None] * self.num_hidden_layers
             )
 
-        head_dim = (
-            self.head_dim
-            if self.head_dim is not None
-            else self.hidden_size // self.num_attention_heads
-        )
+        head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
 
         layer_configs = []
         for sliding_window_size in sliding_window_sizes:

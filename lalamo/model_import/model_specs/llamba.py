@@ -16,12 +16,8 @@ LLAMBA_MODELS = [
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "meta-llama/Llama-3.2-1B-Instruct"),
-            tokenizer_config=FileSpec(
-                "tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"
-            ),
-            generation_config=FileSpec(
-                "generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"
-            ),
+            tokenizer_config=FileSpec("tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
+            generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
         ),
         use_cases=tuple(),
     ),
@@ -36,12 +32,8 @@ LLAMBA_MODELS = [
         configs=ConfigMap(
             model_config=FileSpec("config.json", "cartesia-ai/Llamba-1B"),
             tokenizer=FileSpec("tokenizer.json", "meta-llama/Llama-3.2-1B-Instruct"),
-            tokenizer_config=FileSpec(
-                "tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"
-            ),
-            generation_config=FileSpec(
-                "generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"
-            ),
+            tokenizer_config=FileSpec("tokenizer_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
+            generation_config=FileSpec("generation_config.json", "meta-llama/Llama-3.2-1B-Instruct"),
         ),
         use_cases=tuple(),
     ),

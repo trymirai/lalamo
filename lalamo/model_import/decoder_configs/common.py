@@ -48,11 +48,7 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
 
     @property
     def eos_token_ids(self) -> list[int]:
-        return (
-            [self.eos_token_id]
-            if isinstance(self.eos_token_id, int)
-            else self.eos_token_id
-        )
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
 
     @classmethod
     def _load_decoder_weights(
@@ -70,9 +66,7 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
         weights_dict: Mapping[str, Array],
         metadata_dict: Mapping[str, str],
     ) -> Decoder:
-        config = self.to_decoder_config(
-            context_length, activation_precision, accumulation_precision, metadata_dict
-        )
+        config = self.to_decoder_config(context_length, activation_precision, accumulation_precision, metadata_dict)
         model = config.empty()
         return self._load_decoder_weights(model, weights_dict)
 
@@ -102,8 +96,6 @@ class ForeignClassifierConfig(ForeignConfig, RegistryABC):
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
     ) -> Classifier:
-        config = self.to_classifier_config(
-            context_length, activation_precision, accumulation_precision
-        )
+        config = self.to_classifier_config(context_length, activation_precision, accumulation_precision)
         model = config.empty()
         return self._load_classifier_weights(model, weights_dict)

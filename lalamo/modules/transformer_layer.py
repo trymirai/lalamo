@@ -178,20 +178,13 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return self.mixer.positional_embedding_selector
 
     def __post_init__(self) -> None:
-        model_dim = (
-            self.pre_mixer_norm.input_dim
-            if self.pre_mixer_norm is not None
-            else self.mixer.model_dim
-        )
+        model_dim = self.pre_mixer_norm.input_dim if self.pre_mixer_norm is not None else self.mixer.model_dim
         if self.mixer.model_dim != model_dim:
             raise ValueError(
                 f"Attention model dim {self.mixer.model_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
             )
-        if (
-            self.post_mixer_norm is not None
-            and self.post_mixer_norm.input_dim != model_dim
-        ):
+        if self.post_mixer_norm is not None and self.post_mixer_norm.input_dim != model_dim:
             raise ValueError(
                 f"Post mixer normalization dim {self.post_mixer_norm.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
@@ -229,9 +222,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             normalized_mixer_inputs = inputs
 
-        batched_mixer_fn = vmap(
-            partial(self.mixer, return_updated_state=return_updated_state)
-        )
+        batched_mixer_fn = vmap(partial(self.mixer, return_updated_state=return_updated_state))
         mixer_outputs, updated_state = batched_mixer_fn(
             normalized_mixer_inputs,
             positional_embeddings,
@@ -323,9 +314,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             post_mlp_norm = None
         if self.pre_mixer_norm is not None:
             assert isinstance(weights["pre_mixer_norm"], Mapping)
-            pre_mixer_norm = self.pre_mixer_norm.import_weights(
-                weights["pre_mixer_norm"]
-            )
+            pre_mixer_norm = self.pre_mixer_norm.import_weights(weights["pre_mixer_norm"])
         else:
             pre_mixer_norm = None
         return replace(

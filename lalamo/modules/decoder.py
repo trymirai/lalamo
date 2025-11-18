@@ -49,21 +49,15 @@ class DecoderActivationTrace(eqx.Module):
         result: dict[str, ParameterTree | Array] = dict(
             token_ids=self.token_ids,
             token_positions=self.token_positions,
-            layer_results=[
-                layer_result.export() for layer_result in self.layer_results
-            ],
+            layer_results=[layer_result.export() for layer_result in self.layer_results],
             output_norm=self.output_norm,
         )
         if self.state is not None:
             result["state"] = [state_layer.export() for state_layer in self.state]
         if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = (
-                self.local_positional_embeddings.export()
-            )
+            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
         if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = (
-                self.global_positional_embeddings.export()
-            )
+            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
         return result
 
 
@@ -77,9 +71,7 @@ class DecoderResult(eqx.Module):
             logits=self.logits,
         )
         if self.updated_state is not None:
-            result["updated_state"] = [
-                state_layer.export() for state_layer in self.updated_state
-            ]
+            result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
         if self.activation_trace is not None:
             result["activation_trace"] = self.activation_trace.export()
         return result

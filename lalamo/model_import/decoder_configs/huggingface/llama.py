@@ -140,9 +140,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    self.quantization_config.bits
-                ),
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -157,11 +155,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             has_out_biases=False,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=(
-                self.head_dim
-                if self.head_dim is not None
-                else self.hidden_size // self.num_attention_heads
-            ),
+            head_dim=(self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads),
             is_causal=True,
             scale=None,
             sliding_window_size=None,

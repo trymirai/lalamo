@@ -44,21 +44,13 @@ class TransformerResult(eqx.Module):
             outputs=self.outputs,
         )
         if self.updated_state is not None:
-            result["updated_state"] = [
-                state_layer.export() for state_layer in self.updated_state
-            ]
+            result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
         if self.layer_results is not None:
-            result["layer_results"] = [
-                layer_result.export() for layer_result in self.layer_results
-            ]
+            result["layer_results"] = [layer_result.export() for layer_result in self.layer_results]
         if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = (
-                self.global_positional_embeddings.export()
-            )
+            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
         if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = (
-                self.local_positional_embeddings.export()
-            )
+            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
         return result
 
 
@@ -76,7 +68,6 @@ class TransformerConfig:
         pass  # for now ...
 
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-
         first_layer_config, *_ = self.layer_configs
 
         if self.global_rope_config:
@@ -108,9 +99,7 @@ class TransformerConfig:
                 hidden_dim=self.hidden_dim,
                 key=layer_key,
             )
-            for layer_key, layer_config in zip(
-                layers_keys, self.layer_configs, strict=True
-            )
+            for layer_key, layer_config in zip(layers_keys, self.layer_configs, strict=True)
         )
         output_norm = self.output_norm_config.init(self.model_dim)
 
@@ -233,22 +222,14 @@ class Transformer(LalamoModule[TransformerConfig]):
 
         return TransformerResult(
             outputs=normalized_outputs,
-            updated_state=(
-                State(updated_state_layers) if return_updated_state else None
-            ),
+            updated_state=(State(updated_state_layers) if return_updated_state else None),
             layer_results=tuple(layer_results) if return_layer_results else None,
-            global_positional_embeddings=(
-                global_positional_embeddings if return_positional_embeddings else None
-            ),
-            local_positional_embeddings=(
-                local_positional_embeddings if return_positional_embeddings else None
-            ),
+            global_positional_embeddings=(global_positional_embeddings if return_positional_embeddings else None),
+            local_positional_embeddings=(local_positional_embeddings if return_positional_embeddings else None),
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return State(
-            layer.init_static_state(batch_size, capacity) for layer in self.layers
-        )
+        return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
 
     def export_weights(self) -> ParameterTree:
         result = dict(

@@ -69,9 +69,7 @@ class MLXQuantizationConfig:
     bits: int
 
 
-QuantizationConfigType = (
-    AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig | None
-)
+QuantizationConfigType = AWQQuantizationConfig | GPTQQuantizationConfig | MLXQuantizationConfig | None
 
 
 def _structure_quantization_config(v: object, _: object) -> QuantizationConfigType:
@@ -96,22 +94,14 @@ def _structure_quantization_config(v: object, _: object) -> QuantizationConfigTy
 class HuggingFaceLMConfig(ForeignLMConfig):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
-    _converter.register_structure_hook(
-        QuantizationConfigType, _structure_quantization_config
-    )
+    _converter.register_structure_hook(QuantizationConfigType, _structure_quantization_config)
 
     @property
     def eos_token_ids(self) -> list[int]:
         if not hasattr(self, "eos_token_id"):
-            raise RuntimeError(
-                "model doesn't havve eos_token_id, override eos_token_ids in model config"
-            )
+            raise RuntimeError("model doesn't havve eos_token_id, override eos_token_ids in model config")
 
-        return (
-            [self.eos_token_id]
-            if isinstance(self.eos_token_id, int)
-            else self.eos_token_id
-        )
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
 
     @property
     def default_precision(self) -> DTypeLike:
@@ -128,7 +118,6 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
 @dataclass(frozen=True)
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
-
     @classmethod
     def _load_classifier_weights(
         cls,

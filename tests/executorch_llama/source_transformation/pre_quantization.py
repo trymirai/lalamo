@@ -12,7 +12,7 @@ from typing import Any
 
 import torch
 from torch import nn
-from torchao.quantization.GPTQ import Int8DynActInt4WeightLinear, _check_linear_int4_k    # type: ignore
+from torchao.quantization.GPTQ import Int8DynActInt4WeightLinear, _check_linear_int4_k  # type: ignore
 from torchao.quantization.quant_api import _replace_with_custom_fn_if_matches_filter
 
 from .quantize import Int8DynActInt8WeightLinear, QuantizedGroupEmbedding

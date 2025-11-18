@@ -79,9 +79,7 @@ app = Typer(
 class ModelParser(ParamType):
     name: str = "Huggingface Model Repo"
 
-    def convert(
-        self, value: str, param: ClickParameter | None, ctx: ClickContext | None
-    ) -> ModelSpec:
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
         result = REPO_TO_MODEL.get(value)
         if result is None:
             closest_repo = _closest_repo(value)
@@ -110,9 +108,7 @@ def _closest_repo(query: str, min_score: float = 80) -> str | None:
 
 
 def _error(message: str) -> None:
-    panel = Panel(
-        message, box=box.ROUNDED, title="Error", title_align="left", border_style="red"
-    )
+    panel = Panel(message, box=box.ROUNDED, title="Error", title_align="left", border_style="red")
     err_console.print(panel)
     raise Exit(1)
 
@@ -246,9 +242,7 @@ def convert(
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 
-    conversion_strs = [
-        f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan]"
-    ]
+    conversion_strs = [f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan]"]
     if precision is not None:
         conversion_strs.append(
             f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
@@ -279,9 +273,7 @@ def convert(
         def progress_callback(event: StatusEvent) -> None:
             match event:
                 case DownloadingFileEvent(file_spec):
-                    event_to_task[event] = progress.add_task(
-                        f"Retrieving {file_spec.filename}..."
-                    )
+                    event_to_task[event] = progress.add_task(f"Retrieving {file_spec.filename}...")
                 case FinishedDownloadingFileEvent(file_spec):
                     progress.remove_task(event_to_task[event])
                 case InitializingModelEvent():
@@ -305,9 +297,7 @@ def convert(
             num_tokens = 512
             token_stride = 8
             token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)[None, :]
-            token_positions = jnp.arange(
-                0, num_tokens * token_stride, token_stride, dtype=jnp.int32
-            )[None, :]
+            token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)[None, :]
             if metadata.model_type == ModelType.LANGUAGE_MODEL:
                 assert isinstance(model, LanguageModel)
                 result = model.decoder(
@@ -324,9 +314,7 @@ def convert(
                     return_activation_trace=True,
                 )
             else:
-                raise ValueError(
-                    f"Unknow type of model imported: {metadata.model_type}"
-                )
+                raise ValueError(f"Unknow type of model imported: {metadata.model_type}")
             traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
             progress.remove_task(trace_task)
@@ -343,9 +331,7 @@ def convert(
             json.dump(config_json, file, indent=4)
         progress.remove_task(save_task)
 
-    console.print(
-        f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!"
-    )
+    console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
 
 
 def _model_size_string_to_int(
@@ -414,9 +400,7 @@ speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
 
 
-@speculator_app.command(
-    help="Run model inference and collect traces for speculator training"
-)
+@speculator_app.command(help="Run model inference and collect traces for speculator training")
 def collect_traces(
     model_path: Annotated[
         Path,
@@ -445,9 +429,7 @@ def collect_traces(
     ] = 8,
     max_input_length: Annotated[
         int,
-        Option(
-            help="Filter prompts that have more than this number of tokens in context"
-        ),
+        Option(help="Filter prompts that have more than this number of tokens in context"),
     ] = 1024,
     max_output_length: Annotated[
         int,
@@ -477,13 +459,9 @@ def collect_traces(
             model = LanguageModel.load(model_path)
             progress.remove_task(loading_model_task)
 
-            loading_dataset_task = progress.add_task(
-                "🗂️ [cyan]Loading dataset...[/cyan]"
-            )
+            loading_dataset_task = progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
             dataset = iter(import_hf_parquet(dataset_path))
-            dataset = chain(
-                [next(dataset)], dataset
-            )  # iterator is lazy, force it to actually open the file
+            dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
             progress.remove_task(loading_dataset_task)
 
         with Progress(
@@ -495,9 +473,7 @@ def collect_traces(
             disable=True,
         ) as progress:
             live.update(progress, refresh=True)
-            inference_task = progress.add_task(
-                "🔮 [cyan]Running inference...[/cyan]", total=num_tokens_to_generate
-            )
+            inference_task = progress.add_task("🔮 [cyan]Running inference...[/cyan]", total=num_tokens_to_generate)
 
             def progress_callback(event: CollectTracesEvent) -> None:
                 progress.update(inference_task, completed=event.tokens_generated)
@@ -561,9 +537,7 @@ def train(
     with open(trace_path, "rb") as trace_fd:
         traces = LalamoCompletion.deserialize_many(trace_fd)
 
-        speculator = NGramSpeculator.new(
-            hashtable_size, num_logits_per_token, ngram_size
-        )
+        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, ngram_size)
 
         with Progress(
             SpinnerColumn(),
@@ -572,9 +546,7 @@ def train(
             TimeElapsedColumn(),
             TimeRemainingColumn(),
         ) as progress:
-            inference_task = progress.add_task(
-                "🔮 [cyan]Training speculator...[/cyan]", total=subsample_size
-            )
+            inference_task = progress.add_task("🔮 [cyan]Training speculator...[/cyan]", total=subsample_size)
 
             def progress_callback(event: SpeculatorTrainingEvent) -> None:
                 progress.update(inference_task, completed=event.trained_tokens)
