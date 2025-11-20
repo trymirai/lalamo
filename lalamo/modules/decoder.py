@@ -165,8 +165,6 @@ class Decoder(LalamoModule[DecoderConfig]):
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
-            assert transformer_result.global_positional_embeddings is not None
-            assert transformer_result.local_positional_embeddings is not None
 
             activation_trace = DecoderActivationTrace(
                 token_ids=token_ids,

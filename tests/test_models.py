@@ -1,5 +1,6 @@
 import functools
 import gc
+import importlib.util
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import Self
 
 import jax
 import jax.numpy as jnp
+import torch
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
@@ -21,13 +23,9 @@ from lalamo.modules.decoder import (
 from lalamo.router_model import RouterModel
 from tests.common import assert_close, checkify_forward
 
-try:
+MLX_AVAILABLE = importlib.util.find_spec("mlx")
+if MLX_AVAILABLE:
     import mlx.core as mx
-
-    MLX_AVAILABLE = True
-except ImportError:
-    MLX_AVAILABLE = False
-import torch
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
@@ -82,7 +80,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         self,
         attention: AttentionT,
         hidden_states: ArrayT,
-        position_embeddings: tuple[ArrayT, ArrayT],
+        position_embeddings: tuple[ArrayT, ArrayT] | None,
     ) -> ArrayT: ...
 
     @abstractmethod
@@ -93,7 +91,7 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         self,
         layer: LayerT,
         hidden_states: ArrayT,
-        position_embeddings: tuple[ArrayT, ArrayT],
+        position_embeddings: tuple[ArrayT, ArrayT] | None,
     ) -> ArrayT: ...
 
     @abstractmethod
@@ -227,22 +225,24 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         llm_inputs: Array,
         llm_outputs: Array,
         ref_attention: AttentionT,
-        position_embeddings: tuple[Array, Array],
+        position_embeddings: tuple[Array, Array] | None,
         name: str,
     ) -> None:
         ref_inputs = self.from_jax(llm_inputs)
 
-        jax_cosines, jax_sines = position_embeddings
-        head_dim = jax_cosines.shape[-1] // 2
+        if position_embeddings is not None:
+            jax_cosines, jax_sines = position_embeddings
+            head_dim = jax_cosines.shape[-1] // 2
 
-        if isinstance(ref_attention, GptOssAttention):
-            jax_cosines = jax_cosines[:, :, :head_dim]
-            jax_sines = jax_sines[:, :, :head_dim]
+            if isinstance(ref_attention, GptOssAttention):
+                jax_cosines = jax_cosines[:, :, :head_dim]
+                jax_sines = jax_sines[:, :, :head_dim]
 
-        cosines = self.from_jax(jax_cosines)
-        sines = self.from_jax(jax_sines)
+            ref_position_embeddings = (self.from_jax(jax_cosines), self.from_jax(jax_sines))
+        else:
+            ref_position_embeddings = None
 
-        ref_native_outputs = self.attention(ref_attention, ref_inputs, (cosines, sines))
+        ref_native_outputs = self.attention(ref_attention, ref_inputs, ref_position_embeddings)
         ref_outputs = self.to_jax(ref_native_outputs)
 
         assert_close(
@@ -280,18 +280,19 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             f"Layer {layer_index} Pre Attention RMSNorm",
         )
 
-        assert activation_trace.positional_embeddings is not None
-
         ref_attention = self.layer_attention(ref_layer)
-        assert activation_trace.positional_embeddings is not None
+        if activation_trace.positional_embeddings is not None:
+            position_embeddings = (
+                activation_trace.positional_embeddings.cosines,
+                activation_trace.positional_embeddings.sines,
+            )
+        else:
+            position_embeddings = None
         self.match_attention(
             activation_trace.pre_mixer_norm,
             activation_trace.mixer,
             ref_attention,
-            (
-                activation_trace.positional_embeddings.cosines,
-                activation_trace.positional_embeddings.sines,
-            ),
+            position_embeddings,
             f"Layer {layer_index} Attention",
         )
 
@@ -331,14 +332,17 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
                 f"Layer {layer_index} Post MLP RMSNorm",
             )
 
-        assert activation_trace.positional_embeddings is not None
-
         # Test full decoder layer
         ref_inputs = self.from_jax(activation_trace.inputs)
-        cosines = self.from_jax(activation_trace.positional_embeddings.cosines)
-        sines = self.from_jax(activation_trace.positional_embeddings.sines)
+        if activation_trace.positional_embeddings is not None:
+            ref_position_embeddings = (
+                self.from_jax(activation_trace.positional_embeddings.cosines),
+                self.from_jax(activation_trace.positional_embeddings.sines),
+            )
+        else:
+            ref_position_embeddings = None
 
-        ref_native_outputs = self.layer(ref_layer, ref_inputs, (cosines, sines))
+        ref_native_outputs = self.layer(ref_layer, ref_inputs, ref_position_embeddings)
 
         ref_outputs = self.to_jax(ref_native_outputs)
 

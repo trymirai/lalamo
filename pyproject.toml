@@ -35,6 +35,8 @@ dev = [
     "accelerate>=1.7.0",
     "autoawq>=0.2.9; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "beartype>=0.19.0",
+    "cartesia-metal ; sys_platform == 'darwin'",
+    "cartesia-mlx ; sys_platform == 'darwin'",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
     "kernels>=0.10.2",
@@ -88,6 +90,8 @@ torch = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
 ]
+cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-metal" }
+cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-mlx" }
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
