@@ -13,13 +13,7 @@ from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
-from lalamo.message_processor import (
-    AssistantMessage,
-    Message,
-    MessageProcessor,
-    MessageProcessorConfig,
-    tokenize_message,
-)
+from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
@@ -383,9 +377,11 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 state.stop_flags,
             )
 
-    def record_trace(self, message: Message | None = None) -> DecoderResult:
-        if message:
-            token_ids, token_positions = tokenize_message(self.message_processor, message)
+    def record_trace(self, messages: Iterable[Message] | None = None) -> DecoderResult:
+        if messages:
+            token_ids, token_positions = self.message_processor.tokenize_request(messages)
+            token_ids = jnp.array(token_ids)[None, :]
+            token_positions = jnp.array(token_positions)[None, :]
         else:
             token_ids, token_positions = get_dummy_tokens()
         return self.decoder(token_ids=token_ids, token_positions=token_positions)

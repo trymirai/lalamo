@@ -4,10 +4,9 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from re import Pattern
-from typing import NotRequired, TypedDict
+from typing import NamedTuple, NotRequired, TypedDict
 
-from jax import Array
-from jax import numpy as jnp
+import numpy as np
 from jinja2 import Template
 from tokenizers import Tokenizer
 
@@ -29,6 +28,11 @@ type Image = None  # WIP
 
 def _strftime_now(format_string: str) -> str:
     return datetime.now().strftime(format_string)  # noqa: DTZ005
+
+
+class TokenizeRequestResult(NamedTuple):
+    token_ids: list[int]
+    token_positions: list[int]
 
 
 class HuggingFaceMessage(TypedDict):
@@ -161,10 +165,11 @@ class MessageProcessor:
     def tokenize(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
-    def tokenize_request(self, messages: Iterable[Message]) -> list[int]:
+    def tokenize_request(self, messages: Iterable[Message]) -> TokenizeRequestResult:
         rendered = self.render_request(messages)
         tokenized = self.tokenize(rendered)
-        return tokenized
+        tokenized_positions = np.arange(len(tokenized)).tolist()
+        return TokenizeRequestResult(tokenized, tokenized_positions)
 
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
@@ -180,12 +185,3 @@ class MessageProcessor:
             for group_name in required_fields:
                 if group_name not in named_groups:
                     raise ValueError(f"Missing required output field: {group_name}")
-
-
-def tokenize_message(message_processor: MessageProcessor, message: Message) -> tuple[Array, Array]:
-    formatted_messages = message_processor.render_request(messages=[message])
-    token_ids = jnp.array(message_processor.tokenize(formatted_messages), dtype=jnp.int32)[None, :]
-    batch_size, sequence_length = token_ids.shape
-    token_positions = jnp.tile(jnp.arange(sequence_length, dtype=jnp.int32), (batch_size, 1))
-
-    return token_ids, token_positions

@@ -270,7 +270,7 @@ def convert(
             console.print("Exiting...")
             raise Exit
 
-    message = None if message_for_trace is None else UserMessage(content=message_for_trace)
+    message = None if message_for_trace is None else [UserMessage(content=message_for_trace)]
 
     with Progress(
         SpinnerColumn(),
