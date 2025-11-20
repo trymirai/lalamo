@@ -85,7 +85,6 @@ class DenseMLPConfig(MLPConfigBase):
     has_down_biases: bool
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
-    activation_to_gate: bool = True
 
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
         up_key, down_key = jax.random.split(key)
@@ -232,12 +231,8 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             gate = jnp.clip(gate, *self.config.gate_clipping)
         if self.config.up_clipping:
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
-        if self.config.activation_to_gate:
-            gate = self.config.activation(gate)
-            (result,) = self.down_projection(up_proj * gate)
-        else:
-            up_proj = self.config.activation(up_proj)
-            (result,) = self.down_projection(up_proj * gate)
+        gate = self.config.activation(gate)
+        (result,) = self.down_projection(up_proj * gate)
 
         return result
 

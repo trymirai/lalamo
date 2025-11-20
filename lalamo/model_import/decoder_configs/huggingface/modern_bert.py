@@ -155,7 +155,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             has_down_biases=False,
             up_clipping=None,
             gate_clipping=None,
-            activation_to_gate=False,
         )
 
         # In ModernBERT architecture first Transformer layer has no pre-attention normalization

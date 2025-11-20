@@ -745,6 +745,20 @@ def load_huggingface_classifier(
         input_weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
         return load_parameters(lambda m: (m.weights,), module, (input_weights,))
 
+    def load_linear_with_reshufling(
+        module: LinearBase,
+        weights_dict: Mapping[str, Array],
+        path: ParameterPath,
+    ) -> LinearBase:
+        """Loads a linear layer, optionally fusing weights from sublayers."""
+        assert not module.has_biases, "Expecting no biases in FullPrecisionLinear"
+
+        assert isinstance(module, FullPrecisionLinear), "Expecting FullPrecisionLinear module as input"
+        weights = weights_dict[path / "weight"]
+        rows, _ = weights.shape
+        shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
+        return load_parameters(lambda m: (m.weights, m.biases), module, (shuffled_weights, None))
+
     def load_attention_local(
         module: Attention,
         weights_dict: Mapping[str, Array],
@@ -776,11 +790,10 @@ def load_huggingface_classifier(
 
     def load_mlp_local(module: MLPBase, weights_dict: Mapping[str, Array], path: ParameterPath) -> MLPBase:
         assert isinstance(module, DenseMLP)
-        up_projection = load_linear(
+        up_projection = load_linear_with_reshufling(
             module.up_projection,
             weights_dict,
             path / "Wi",
-            sublayers_to_fuse=None,
         )
         down_projection = load_linear(module.down_projection, weights_dict, path / "Wo")
         return load_parameters(
