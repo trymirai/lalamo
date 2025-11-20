@@ -750,10 +750,12 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
     ) -> LinearBase:
-        """Loads a linear layer, optionally fusing weights from sublayers."""
-        assert not module.has_biases, "Expecting no biases in FullPrecisionLinear"
+        """Loads a linear layer and reshufle some weights in resulting matrix to meet
+        requirements of downstream 'split' in MLP layer in attention."""
 
+        assert not module.has_biases, "Expecting no biases in FullPrecisionLinear"
         assert isinstance(module, FullPrecisionLinear), "Expecting FullPrecisionLinear module as input"
+
         weights = weights_dict[path / "weight"]
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))

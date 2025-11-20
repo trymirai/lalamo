@@ -14,6 +14,7 @@ from lalamo.model_import.loaders import (
 )
 from lalamo.modules import Decoder
 from lalamo.modules.classifier import Classifier
+from lalamo.modules.common import LalamoModule
 
 __all__ = [
     "AWQQuantizationConfig",
@@ -107,21 +108,21 @@ class HuggingFaceLMConfig(ForeignLMConfig):
     def default_precision(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
-    @classmethod
-    def _load_decoder_weights(
-        cls,
-        model: Decoder,
+    def _load_weights(
+        self,
+        model: LalamoModule,
         weights_dict: Mapping[str, Array],
-    ) -> Decoder:
+    ) -> LalamoModule:
+        assert isinstance(model, Decoder)
         return load_huggingface_decoder(model, weights_dict)
 
 
 @dataclass(frozen=True)
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
-    @classmethod
-    def _load_classifier_weights(
-        cls,
-        model: Classifier,
+    def _load_weights(
+        self,
+        model: LalamoModule,
         weights_dict: Mapping[str, Array],
-    ) -> Classifier:
+    ) -> LalamoModule:
+        assert isinstance(model, Classifier)
         return load_huggingface_classifier(model, weights_dict)

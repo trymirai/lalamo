@@ -184,9 +184,6 @@ class ClassifierConfig:
     vocab_size: int
     model_dim: int
     hidden_dim: int
-    num_heads: int
-    num_groups: int  # NOTE: this one seem to be not used in ModertBert attention
-    head_dim: int
     attention_scale: float | None
     num_layers: int
     context_length: int

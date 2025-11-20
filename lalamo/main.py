@@ -300,23 +300,22 @@ def convert(
             token_stride = 8
             token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)[None, :]
             token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)[None, :]
-            if metadata.model_type == ModelType.LANGUAGE_MODEL:
-                assert isinstance(model, LanguageModel)
-                result = model.decoder(
-                    token_ids,
-                    token_positions,
-                    return_updated_state=True,
-                    return_activation_trace=True,
-                )
-            elif metadata.model_type == ModelType.ROUTER_MODEL:
-                assert isinstance(model, RouterModel)
-                result = model.classifier(
-                    token_ids,
-                    token_positions,
-                    return_activation_trace=True,
-                )
-            else:
-                raise ValueError(f"Unknow type of model imported: {metadata.model_type}")
+            match metadata.model_type:
+                case ModelType.LANGUAGE_MODEL:
+                    assert isinstance(model, LanguageModel)
+                    result = model.decoder(
+                        token_ids,
+                        token_positions,
+                        return_updated_state=True,
+                        return_activation_trace=True,
+                    )
+                case ModelType.ROUTER_MODEL:
+                    assert isinstance(model, RouterModel)
+                    result = model.classifier(
+                        token_ids,
+                        token_positions,
+                        return_activation_trace=True,
+                    )
             traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
             progress.remove_task(trace_task)

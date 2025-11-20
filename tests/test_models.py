@@ -469,24 +469,25 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
     with jax.disable_jit():
         inference_results = None
 
-        if model_metadata.model_type == ModelType.LANGUAGE_MODEL:
-            assert isinstance(model, LanguageModel)
-            err, inference_results = checkify_forward(model.decoder)(
-                token_ids=token_ids,
-                token_positions=token_positions,
-                return_updated_state=True,
-                return_activation_trace=True,
-            )
-            err.throw()
+        match model_metadata.model_type:
+            case ModelType.LANGUAGE_MODEL:
+                assert isinstance(model, LanguageModel)
+                err, inference_results = checkify_forward(model.decoder)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_updated_state=True,
+                    return_activation_trace=True,
+                )
+                err.throw()
 
-        elif model_metadata.model_type == ModelType.ROUTER_MODEL:
-            assert isinstance(model, RouterModel)
-            err, inference_results = checkify_forward(model.classifier)(
-                token_ids=token_ids,
-                token_positions=token_positions,
-                return_activation_trace=True,
-            )
-            err.throw()
+            case ModelType.ROUTER_MODEL:
+                assert isinstance(model, RouterModel)
+                err, inference_results = checkify_forward(model.classifier)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_activation_trace=True,
+                )
+                err.throw()
 
     del model
     gc.collect()

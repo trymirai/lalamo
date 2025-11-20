@@ -15,14 +15,15 @@ from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.model_import.model_specs.common import JSONFieldSpec
-from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignLMConfig
+from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignConfig
+from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
 from lalamo.router_model import RouterConfig, RouterModel
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
+from .model_specs.common import JSONFieldSpec
 
 __all__ = [
     "REPO_TO_MODEL",
@@ -170,20 +171,14 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
-def _import_language_model(
+def _load_main_processing_module(
     model_spec: ModelSpec,
-    *,
-    context_length: int | None = None,
-    precision: DTypeLike | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
+    precision: DTypeLike,
+    foreign_config: ForeignConfig,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[LanguageModel, LanguageModelConfig]:
-    foreign_decoder_config_file = download_config_file(model_spec)
-    foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
-
-    if precision is None:
-        precision = foreign_decoder_config.default_precision
-
+    context_length: int | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+) -> LalamoModule:
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
@@ -198,14 +193,30 @@ def _import_language_model(
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        assert isinstance(foreign_decoder_config, ForeignLMConfig)
-        decoder = foreign_decoder_config.load_decoder(
-            context_length,
-            precision,
-            accumulation_precision,
-            weights_dict,
-            metadata_dict,
+        processing_module = foreign_config.load(
+            context_length, precision, accumulation_precision, weights_dict, metadata_dict
         )
+
+    return processing_module
+
+
+def _import_language_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[LanguageModel, LanguageModelConfig]:
+    foreign_decoder_config_file = download_config_file(model_spec)
+    foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
+
+    if precision is None:
+        precision = foreign_decoder_config.default_precision
+    decoder = _load_main_processing_module(
+        model_spec, precision, foreign_decoder_config, progress_callback, context_length, accumulation_precision
+    )
+    assert isinstance(decoder, Decoder)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
@@ -253,28 +264,15 @@ def _import_router_model(
 ) -> tuple[RouterModel, RouterConfig]:
     foreign_classifier_config_file = download_config_file(model_spec)
     foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
+    assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
 
     if precision is None:
         precision = foreign_classifier_config.default_precision
 
-    weights_paths = download_weights(model_spec, progress_callback=progress_callback)
-    with ExitStack() as stack:
-        weights_shards = []
-        for weights_path in weights_paths:
-            weights_shard, _ = stack.enter_context(model_spec.weights_type.load(weights_path, precision))
-            weights_shards.append(weights_shard)
-        weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
-
-        if progress_callback is not None:
-            progress_callback(InitializingModelEvent())
-
-        assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
-        classifier = foreign_classifier_config.load_classifier(
-            context_length,
-            precision,
-            accumulation_precision,
-            weights_dict,
-        )
+    classifier = _load_main_processing_module(
+        model_spec, precision, foreign_classifier_config, progress_callback, context_length, accumulation_precision
+    )
+    assert isinstance(classifier, Classifier)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
@@ -303,24 +301,23 @@ def import_model(
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    if model_spec.model_type == ModelType.LANGUAGE_MODEL:
-        model, config = _import_language_model(
-            model_spec,
-            context_length=context_length,
-            precision=precision,
-            accumulation_precision=accumulation_precision,
-            progress_callback=progress_callback,
-        )
-    elif model_spec.model_type == ModelType.ROUTER_MODEL:
-        model, config = _import_router_model(
-            model_spec,
-            context_length=context_length,
-            precision=precision,
-            accumulation_precision=accumulation_precision,
-            progress_callback=progress_callback,
-        )
-    else:
-        raise ValueError(f"Unknown type of model in provided model spec: {model_spec.model_type}")
+    match model_spec.model_type:
+        case ModelType.LANGUAGE_MODEL:
+            model, config = _import_language_model(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                accumulation_precision=accumulation_precision,
+                progress_callback=progress_callback,
+            )
+        case ModelType.ROUTER_MODEL:
+            model, config = _import_router_model(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                accumulation_precision=accumulation_precision,
+                progress_callback=progress_callback,
+            )
 
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,
