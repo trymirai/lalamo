@@ -1,4 +1,5 @@
 import json
+import pathlib
 import shutil
 import tempfile
 from collections.abc import Generator
@@ -56,40 +57,40 @@ def temporary_directory() -> Generator[Path, Any, None]:
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
-def test_model_conversion(test_spec: ModelTestSpec) -> None:
+def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> None:
     """
     Test the conversion -> export -> import flow for a given model.
+    NOTE: Using tmp_path fixture provided by pytest runtime environment.
     """
 
     model_repo_name = test_spec.model_repo
     model_dtype = test_spec.dtype
     assert model_dtype is not None
 
-    with temporary_directory() as temp_dir:
-        model_repo = REPO_TO_MODEL.get(model_repo_name)
-        assert model_repo, f"Unknown model specified: {model_repo_name}"
+    model_repo = REPO_TO_MODEL.get(model_repo_name)
+    assert model_repo, f"Unknown model specified: {model_repo_name}"
 
-        # Step 1: Import model from HF format
-        model, metadata = import_model(
-            model_spec=model_repo,
-            precision=model_dtype.jax_dtype,
-        )
+    # Step 1: Import model from HF format
+    model, metadata = import_model(
+        model_spec=model_repo,
+        precision=model_dtype.jax_dtype,
+    )
 
-        # Step 2: Export model
-        model.message_processor.tokenizer.save(str(temp_dir / "tokenizer.json"))
-        weights = flatten_parameters(model.export_weights())
-        del model
-        save_file(weights, temp_dir / "model.safetensors")
-        config_json = config_converter.unstructure(metadata, ModelMetadata)
-        with open(temp_dir / "config.json", "w") as file:
-            json.dump(config_json, file, indent=4)
+    # Step 2: Export model
+    model.message_processor.tokenizer.save(str(tmp_path / "tokenizer.json"))
+    weights = flatten_parameters(model.export_weights())
+    del model
+    save_file(weights, tmp_path / "model.safetensors")
+    config_json = config_converter.unstructure(metadata, ModelMetadata)
+    with open(tmp_path / "config.json", "w") as file:
+        json.dump(config_json, file, indent=4)
 
-        # Step 3: Re-import model from Lalamo format
-        model = None
-        match metadata.model_type:
-            case ModelType.LANGUAGE_MODEL:
-                model = LanguageModel.load(temp_dir)
-            case ModelType.ROUTER_MODEL:
-                model = RouterModel.load(temp_dir)
-        assert model is not None, f"Failed to load model {model_repo_name}"
-        del model
+    # Step 3: Re-import model from Lalamo format
+    model = None
+    match metadata.model_type:
+        case ModelType.LANGUAGE_MODEL:
+            model = LanguageModel.load(tmp_path)
+        case ModelType.ROUTER_MODEL:
+            model = RouterModel.load(tmp_path)
+    assert model is not None, f"Failed to load model {model_repo_name}"
+    del model

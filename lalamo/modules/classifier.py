@@ -10,6 +10,7 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
+from lalamo.modules import Activation
 from lalamo.modules.normalization import NormalizationConfig
 from lalamo.modules.transformer import (
     Normalization,
@@ -19,7 +20,6 @@ from lalamo.modules.transformer import (
 )
 from lalamo.modules.utils import vmap_twice
 
-from .activations import GELU, Activation, SiLU
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
@@ -39,25 +39,12 @@ class PoolingType(StrEnum):
     MEAN = "mean"
 
 
-def activation_from_str(activation: str) -> type[Activation]:
-    supported_activations = {
-        "silu": SiLU,
-        "gelu": GELU,
-    }
-    if activation in supported_activations:
-        return supported_activations[activation]
-
-    raise ValueError(
-        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}"
-    )
-
-
 @dataclass(frozen=True)
 class PredictionHeadConfig:
     dense_config: LinearConfig
     activation: Activation
     normalization_config: NormalizationConfig
-    final_linear_config: LinearConfig
+    readout_config: LinearConfig
     use_dense_bias: bool
 
     def empty(self, input_size: int, num_labels: int) -> "PredictionHead":
@@ -67,27 +54,27 @@ class PredictionHeadConfig:
             has_biases=self.use_dense_bias,
         )
         norm = self.normalization_config.empty(input_size)
-        final_linear = self.final_linear_config.empty(input_dim=input_size, output_dims=(num_labels,), has_biases=True)
+        readout = self.readout_config.empty(input_dim=input_size, output_dims=(num_labels,), has_biases=True)
 
         return PredictionHead(
             config=self,
             dense=dense_layer,
             activation=self.activation,
             norm=norm,
-            final_linear=final_linear,
+            readout=readout,
         )
 
     def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
-        dense_key, final_linear_key = jax.random.split(key)
+        dense_key, readout_key = jax.random.split(key)
         dense_layer = self.dense_config.random_init(
             input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key
         )
         norm = self.normalization_config.empty(input_size)
-        final_linear = self.final_linear_config.random_init(
+        readout = self.readout_config.random_init(
             input_dim=input_size,
             output_dims=(num_labels,),
             has_biases=True,
-            key=final_linear_key,
+            key=readout_key,
         )
 
         return PredictionHead(
@@ -95,7 +82,7 @@ class PredictionHeadConfig:
             dense=dense_layer,
             activation=self.activation,
             norm=norm,
-            final_linear=final_linear,
+            readout=readout,
         )
 
 
@@ -103,9 +90,9 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     dense: LinearBase
     activation: Activation
     norm: Normalization
-    final_linear: LinearBase
+    readout: LinearBase
 
-    def __call__(self, inner_features: Float[Array, "batch in_channels"]) -> Float[Array, "batch n_logits"]:
+    def __call__(self, inner_features: Float[Array, "batch channels"]) -> Float[Array, "batch logits"]:
         return vmap(self.call_unbatched)(inner_features)
 
     def call_unbatched(
@@ -115,7 +102,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         (dense_outs,) = self.dense(inner_features)
         dense_outs = self.activation(dense_outs)
         norm_outs = self.norm(dense_outs)
-        (result,) = self.final_linear(norm_outs)
+        (result,) = self.readout(norm_outs)
         return result
 
     @property
@@ -126,7 +113,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         result = dict(
             dense=self.dense.export_weights(),
             norm=self.norm.export_weights(),
-            final_linear=self.final_linear.export_weights(),
+            readout=self.readout.export_weights(),
         )
         return result
 
@@ -137,12 +124,12 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         assert isinstance(weights, Mapping)
         assert isinstance(weights["dense"], Mapping)
         assert isinstance(weights["norm"], Mapping)
-        assert isinstance(weights["final_linear"], Mapping)
+        assert isinstance(weights["readout"], Mapping)
         return replace(
             self,
             dense=self.dense.import_weights(weights["dense"]),
             norm=self.norm.import_weights(weights["norm"]),
-            final_linear=self.final_linear.import_weights(weights["final_linear"]),
+            readout=self.readout.import_weights(weights["readout"]),
         )
 
 
@@ -157,7 +144,7 @@ class ClassifierActivationTrace(eqx.Module):
     layer_results: tuple[TransformerLayerResult, ...]
     output_norm: Float[Array, "batch tokens channels"]
     output_pooling: Float[Array, "batch channels"]
-    logits: Float[Array, "batch n_labels"]
+    logits: Float[Array, "batch logits"]
 
     def export(self) -> ParameterTree:
         result = dict(
@@ -175,7 +162,6 @@ class ClassifierActivationTrace(eqx.Module):
 
 class ClassifierResult(eqx.Module):
     logits: Float[Array, "batch logits"]
-    labels: list[Mapping[str, Float]]
     activation_trace: ClassifierActivationTrace | None = None
 
     def export(self) -> ParameterTree:
@@ -193,7 +179,7 @@ class ClassifierConfig:
     embedding_norm_config: NormalizationConfig
     transformer_config: TransformerConfig
     prediction_head_config: PredictionHeadConfig
-    final_linear_config: LinearConfig
+    readout_config: LinearConfig
 
     vocab_size: int
     model_dim: int
@@ -271,20 +257,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
         if self.config.output_labels is not None and len(self.config.output_labels) != self.config.num_labels:
             raise ValueError("Number of output logits is different from provided list of labels")
 
-    def label_output_logits(self, logits: Float[Array, " logits"]) -> Mapping[str, Float]:
-        labels = (
-            self.config.output_labels
-            if self.config.output_labels is not None
-            else [f"class_{idx}" for idx in range(self.config.num_labels)]
-        )
-
-        n_labels = len(labels)
-        if n_labels != logits.shape[0]:
-            raise ValueError("Number of output logits is different from provided list of labels")
-
-        sigmoids: Array = jax.nn.sigmoid(logits)
-        return {labels[idx]: sigmoids[idx] for idx in range(n_labels)}
-
     @eqx.filter_jit
     def __call__(
         self,
@@ -338,12 +310,8 @@ class Classifier(LalamoModule[ClassifierConfig]):
         else:
             activation_trace = None
 
-        batch_size, _ = logits.shape
-        labels = [self.label_output_logits(logits[batch]) for batch in range(batch_size)]
-
         return ClassifierResult(
             logits=logits,
-            labels=labels,
             activation_trace=activation_trace,
         )
 

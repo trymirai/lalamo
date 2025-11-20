@@ -870,7 +870,7 @@ def load_huggingface_classifier(
     output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, decoder_path / "final_norm")
     head_dense = load_linear(module.prediction_head.dense, weights_dict, head_path / "dense")
     head_norm = load_rmsnorm(module.prediction_head.norm, weights_dict, head_path / "norm")
-    head_final_linear = load_linear(module.prediction_head.final_linear, weights_dict, classifier_path)
+    head_readout = load_linear(module.prediction_head.readout, weights_dict, classifier_path)
     return load_parameters(
         lambda m: (
             m.embedding,
@@ -879,7 +879,7 @@ def load_huggingface_classifier(
             m.transformer.output_norm,
             m.prediction_head.dense,
             m.prediction_head.norm,
-            m.prediction_head.final_linear,
+            m.prediction_head.readout,
         ),
         module,
         (
@@ -889,6 +889,6 @@ def load_huggingface_classifier(
             output_norm,
             head_dense,
             head_norm,
-            head_final_linear,
+            head_readout,
         ),
     )

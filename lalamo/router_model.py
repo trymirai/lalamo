@@ -1,9 +1,10 @@
 import json
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Self
 
+import jax
+import numpy as np
 from jax import Array
 from jax import numpy as jnp
 from jaxtyping import Float
@@ -17,7 +18,7 @@ from lalamo.utils import open_safetensors
 
 @dataclass
 class RouterResult:
-    message_labels: Mapping[str, Float]
+    message_labels: list[dict[str, float]]
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,22 @@ class RouterModel(LalamoModule[RouterConfig]):
             classifier=self.classifier.import_weights(weights),
         )
 
+    def label_output_logits(self, jax_logits: Float[Array, " logits"]) -> dict[str, float]:
+        config = self.classifier.config
+        sigmoids = np.asarray(jax.nn.sigmoid(jax_logits))
+
+        labels = (
+            config.output_labels
+            if config.output_labels is not None
+            else [f"class_{idx}" for idx in range(config.num_labels)]
+        )
+
+        n_labels = len(labels)
+        if n_labels != sigmoids.shape[0]:
+            raise ValueError("Number of output logits is different from provided list of labels")
+
+        return {labels[idx]: sigmoids[idx] for idx in range(n_labels)}
+
     @classmethod
     def load(cls, path: Path | str) -> Self:
         if isinstance(path, str):
@@ -71,6 +88,6 @@ class RouterModel(LalamoModule[RouterConfig]):
         token_positions = jnp.tile(jnp.arange(sequence_length, dtype=jnp.int32), (batch_size, 1))
         classifier_output = self.classifier(token_ids=token_ids, token_positions=token_positions)
 
-        if len(classifier_output.labels) > 1:
-            raise ValueError("Expecting to have only single output batch")
-        return RouterResult(message_labels=classifier_output.labels[0])
+        labels = [self.label_output_logits(classifier_output.logits[batch]) for batch in range(batch_size)]
+
+        return RouterResult(message_labels=labels)

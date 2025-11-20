@@ -179,8 +179,10 @@ def classify(
 
         console.print("[red]assistant> [/red]", end="")
         result = model.classify(user_message)
-        for label, confidence in result.message_labels.items():
-            console.print(f"{label} : {confidence}", end="\n")
+        for batch_index, labels in enumerate(result.message_labels):
+            console.print(f"\n== batch item: {batch_index}\nClassification confidences:")
+            for label, confidence in labels.items():
+                console.print(f"{label} : {confidence}", end="")
         console.print()
 
 

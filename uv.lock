@@ -1088,7 +1088,6 @@ dependencies = [
     { name = "optax" },
     { name = "polars" },
     { name = "rich" },
-    { name = "ruff" },
     { name = "safetensors" },
     { name = "thefuzz" },
     { name = "tokenizers" },
@@ -1119,6 +1118,7 @@ dev = [
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
     { name = "pytest" },
     { name = "pytest-env" },
+    { name = "ruff" },
     { name = "torch", version = "2.9.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.9.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
     { name = "torch", version = "2.9.1+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
@@ -1144,7 +1144,6 @@ requires-dist = [
     { name = "optax", specifier = ">=0.2.4" },
     { name = "polars", specifier = ">=1.33.1" },
     { name = "rich", specifier = ">=14.0.0" },
-    { name = "ruff", specifier = "==0.14.0" },
     { name = "safetensors", specifier = ">=0.6.2" },
     { name = "thefuzz", specifier = ">=0.22.1" },
     { name = "tokenizers", specifier = ">=0.21.2" },
@@ -1165,6 +1164,7 @@ dev = [
     { name = "mlx-lm", marker = "sys_platform == 'darwin'", specifier = ">=0.28.3" },
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-env", specifier = ">=1.1.5" },
+    { name = "ruff", specifier = "==0.14.0" },
     { name = "torch", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cu129" },
     { name = "torchao", specifier = ">=0.7.0" },
@@ -1398,12 +1398,12 @@ name = "mlx-lm"
 version = "0.28.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "jinja2", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
+    { name = "jinja2", marker = "sys_platform == 'darwin'" },
     { name = "mlx", marker = "sys_platform == 'darwin'" },
-    { name = "numpy", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
-    { name = "protobuf", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
-    { name = "pyyaml", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
-    { name = "transformers", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'" },
+    { name = "numpy", marker = "sys_platform == 'darwin'" },
+    { name = "protobuf", marker = "sys_platform == 'darwin'" },
+    { name = "pyyaml", marker = "sys_platform == 'darwin'" },
+    { name = "transformers", marker = "sys_platform == 'darwin'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/51/f6/15e002d52c28d8c544ec3aaf9053677468333e6ef0e76ea68579fd77b76d/mlx_lm-0.28.3.tar.gz", hash = "sha256:75df2b925d343ebaf50b63008dede4fe98cd3b02b1b24b7da71ebeb198d674f0", size = 214455, upload-time = "2025-10-17T21:44:33.921Z" }
 wheels = [

@@ -64,9 +64,6 @@ class TransformerConfig:
     hidden_dim: int
     context_length: int
 
-    def __post_init__(self) -> None:
-        pass  # for now ...
-
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
         first_layer_config, *_ = self.layer_configs
 

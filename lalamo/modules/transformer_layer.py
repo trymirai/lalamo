@@ -101,17 +101,17 @@ class TransformerLayerConfig:
     ) -> "TransformerLayer":
         attention_key, mlp_key = jax.random.split(key)
         if self.pre_mixer_norm_config is not None:
-            pre_attention_norm = self.pre_mixer_norm_config.init(model_dim)
+            pre_mixer_norm = self.pre_mixer_norm_config.init(model_dim)
         else:
-            pre_attention_norm = None
+            pre_mixer_norm = None
         mixer = self.mixer_config.random_init(
             model_dim=model_dim,
             key=attention_key,
         )
         if self.post_mixer_norm_config is not None:
-            post_attention_norm = self.post_mixer_norm_config.init(model_dim)
+            post_mixer_norm = self.post_mixer_norm_config.init(model_dim)
         else:
-            post_attention_norm = None
+            post_mixer_norm = None
         pre_mlp_norm = self.pre_mlp_norm_config.init(model_dim)
         mlp = self.mlp_config.random_init(model_dim, hidden_dim, key=mlp_key)
         if self.post_mlp_norm_config is not None:
@@ -120,9 +120,9 @@ class TransformerLayerConfig:
             post_mlp_norm = None
         return TransformerLayer(
             config=self,
-            pre_mixer_norm=pre_attention_norm,
+            pre_mixer_norm=pre_mixer_norm,
             mixer=mixer,
-            post_mixer_norm=post_attention_norm,
+            post_mixer_norm=post_mixer_norm,
             pre_mlp_norm=pre_mlp_norm,
             mlp=mlp,
             post_mlp_norm=post_mlp_norm,
@@ -134,16 +134,16 @@ class TransformerLayerConfig:
         hidden_dim: int,
     ) -> "TransformerLayer":
         if self.pre_mixer_norm_config is not None:
-            pre_attention_norm = self.pre_mixer_norm_config.empty(model_dim)
+            pre_mixer_norm = self.pre_mixer_norm_config.empty(model_dim)
         else:
-            pre_attention_norm = None
+            pre_mixer_norm = None
         attention = self.mixer_config.empty(
             model_dim=model_dim,
         )
         if self.post_mixer_norm_config is not None:
-            post_attention_norm = self.post_mixer_norm_config.empty(model_dim)
+            post_mixer_norm = self.post_mixer_norm_config.empty(model_dim)
         else:
-            post_attention_norm = None
+            post_mixer_norm = None
         pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
         mlp = self.mlp_config.empty(model_dim, hidden_dim)
         if self.post_mlp_norm_config is not None:
@@ -152,9 +152,9 @@ class TransformerLayerConfig:
             post_mlp_norm = None
         return TransformerLayer(
             config=self,
-            pre_mixer_norm=pre_attention_norm,
+            pre_mixer_norm=pre_mixer_norm,
             mixer=attention,
-            post_mixer_norm=post_attention_norm,
+            post_mixer_norm=post_mixer_norm,
             pre_mlp_norm=pre_mlp_norm,
             mlp=mlp,
             post_mlp_norm=post_mlp_norm,

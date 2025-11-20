@@ -5,6 +5,7 @@ import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
+    Activation,
     AttentionConfig,
     ClassifierConfig,
     DenseMLPConfig,
@@ -19,7 +20,6 @@ from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.classifier import (
     PoolingType,
     PredictionHeadConfig,
-    activation_from_str,
 )
 from lalamo.modules.embedding import TiedEmbeddingConfig
 
@@ -30,6 +30,19 @@ from .common import (
 )
 
 __all__ = ["ModernBERTConfig"]
+
+
+def activation_from_str(activation: str) -> type[Activation]:
+    supported_activations = {
+        "silu": SiLU,
+        "gelu": GELU,
+    }
+    if activation in supported_activations:
+        return supported_activations[activation]
+
+    raise ValueError(
+        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}"
+    )
 
 
 @dataclass(frozen=True)
@@ -198,14 +211,14 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             subtract_mean=True,
         )
         prediction_head_activation = activation_from_str(self.classifier_activation)
-        prediction_head_final_linear_config = FullPrecisionLinearConfig(
+        prediction_head_readout_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
             activation=prediction_head_activation(),
             normalization_config=prediction_head_norm_config,
-            final_linear_config=prediction_head_final_linear_config,
+            readout_config=prediction_head_readout_config,
             use_dense_bias=self.classifier_bias,
         )
 
@@ -216,7 +229,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             embedding_norm_config=embedding_norm_config,
             transformer_config=transformer_config,
             prediction_head_config=prediction_head_config,
-            final_linear_config=prediction_head_final_linear_config,
+            readout_config=prediction_head_readout_config,
             vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.hidden_size,
