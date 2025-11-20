@@ -43,7 +43,6 @@ from lalamo.model_import.common import (
     FinishedDownloadingFileEvent,
     FinishedInitializingModelEvent,
     InitializingModelEvent,
-    ModelType,
     StatusEvent,
 )
 from lalamo.modules import config_converter
@@ -235,6 +234,12 @@ def convert(
             help="Overwrite existing model files.",
         ),
     ] = False,
+    message_for_trace: Annotated[
+        str | None,
+        Option(
+            help="Text message to use as prompt when recording trace",
+        ),
+    ] = None,
 ) -> None:
     if precision is not None:
         precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
@@ -264,6 +269,8 @@ def convert(
         else:
             console.print("Exiting...")
             raise Exit
+
+    message = None if message_for_trace is None else UserMessage(content=message_for_trace)
 
     with Progress(
         SpinnerColumn(),
@@ -295,27 +302,7 @@ def convert(
 
         if include_traces:
             trace_task = progress.add_task("🚁 Generating traces...")
-
-            num_tokens = 512
-            token_stride = 8
-            token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)[None, :]
-            token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)[None, :]
-            match metadata.model_type:
-                case ModelType.LANGUAGE_MODEL:
-                    assert isinstance(model, LanguageModel)
-                    result = model.decoder(
-                        token_ids,
-                        token_positions,
-                        return_updated_state=True,
-                        return_activation_trace=True,
-                    )
-                case ModelType.ROUTER_MODEL:
-                    assert isinstance(model, RouterModel)
-                    result = model.classifier(
-                        token_ids,
-                        token_positions,
-                        return_activation_trace=True,
-                    )
+            result = model.record_trace(message)
             traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
             progress.remove_task(trace_task)

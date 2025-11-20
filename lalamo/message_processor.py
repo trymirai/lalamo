@@ -6,6 +6,8 @@ from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
 
+from jax import Array
+from jax import numpy as jnp
 from jinja2 import Template
 from tokenizers import Tokenizer
 
@@ -178,3 +180,12 @@ class MessageProcessor:
             for group_name in required_fields:
                 if group_name not in named_groups:
                     raise ValueError(f"Missing required output field: {group_name}")
+
+
+def tokenize_message(message_processor: MessageProcessor, message: Message) -> tuple[Array, Array]:
+    formatted_messages = message_processor.render_request(messages=[message])
+    token_ids = jnp.array(message_processor.tokenize(formatted_messages), dtype=jnp.int32)[None, :]
+    batch_size, sequence_length = token_ids.shape
+    token_positions = jnp.tile(jnp.arange(sequence_length, dtype=jnp.int32), (batch_size, 1))
+
+    return token_ids, token_positions

@@ -11,9 +11,12 @@ from jaxtyping import Float
 from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
-from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig
+from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, tokenize_message
 from lalamo.modules import Classifier, ClassifierConfig, LalamoModule, config_converter
+from lalamo.modules.classifier import ClassifierResult
 from lalamo.utils import open_safetensors
+
+from .utils import get_dummy_tokens
 
 
 @dataclass
@@ -91,3 +94,10 @@ class RouterModel(LalamoModule[RouterConfig]):
         labels = [self.label_output_logits(classifier_output.logits[batch]) for batch in range(batch_size)]
 
         return RouterResult(message_labels=labels)
+
+    def record_trace(self, message: Message | None = None) -> ClassifierResult:
+        if message:
+            token_ids, token_positions = tokenize_message(self.message_processor, message)
+        else:
+            token_ids, token_positions = get_dummy_tokens()
+        return self.classifier(token_ids=token_ids, token_positions=token_positions)
