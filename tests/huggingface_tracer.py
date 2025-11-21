@@ -5,7 +5,7 @@ from typing import Protocol, Self
 import jax
 import torch
 from jaxtyping import Array
-from torch import Tensor, nn
+from torch import LongTensor, Tensor, nn
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
@@ -19,16 +19,15 @@ from transformers.models.gemma3.modeling_gemma3 import (
     Gemma3DecoderLayer,
 )
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
+from transformers.models.modernbert.modeling_modernbert import ModernBertEncoderLayer
+from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
 from transformers.processing_utils import Unpack
 
 from lalamo.modules import TransformerLayerResult
-
-# TODO(pglushkov): ModernBERT per-layer tracing, remove once refactoring finished
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
-from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
-from tests.test_models import DType, ModelTracer
+from tests.test_models import ActivationTrace, DType, InferenceResult, ModelTracer
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
@@ -113,29 +112,11 @@ class HFTextModel(Protocol):
 
 class HFClassificationModel(Protocol):
     embeddings: HFWordEmbedding
-    layers: Sequence[HFTransformerLayer]
-    final_norm: HFRMSNorm
-
+    layers: Sequence[ModernBertEncoderLayer]
+    final_norm: nn.LayerNorm
     head: HFPredictionHead
 
-    def forward(
-        self,
-        input_ids: Tensor | None = None,
-        attention_mask: Tensor | None = None,
-        sliding_window_mask: Tensor | None = None,
-        position_ids: Tensor | None = None,
-        inputs_embeds: Tensor | None = None,
-        labels: Tensor | None = None,
-        indices: Tensor | None = None,
-        cu_seqlens: Tensor | None = None,
-        max_seqlen: int | None = None,
-        batch_size: int | None = None,
-        seq_len: int | None = None,
-        output_attentions: bool | None = None,
-        output_hidden_states: bool | None = None,
-        return_dict: bool | None = None,
-        **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> BaseModelOutputWithPast: ...
+    def _update_attention_mask(self, mask: Tensor, output_attentions: bool) -> tuple[Tensor, Tensor]: ...
 
 
 class HFModelForCausalLM(Protocol):
@@ -345,7 +326,7 @@ class HFDecoderTracer(
         return (tuple(hf_hidden_states), hf_last_norm_output, hf_outputs.logits)
 
     @torch.no_grad()
-    def match_activations(self, result: DecoderResult) -> None:
+    def match_activations(self, result: InferenceResult) -> None:
         return super().match_activations(result)
 
     @classmethod
@@ -372,11 +353,29 @@ class HFDecoderTracer(
 
 
 @dataclass(frozen=True)
-class HFClassifierTracer(ModelTracer):
+class HFClassifierTracer(
+    ModelTracer[torch.Tensor, ModernBertEncoderLayer, nn.LayerNorm, ModernBertAttention, ModernBertMLP]
+):
     hf_model: HFModelForSequenceClassification
     device: torch.device
 
-    def match_embedding(self, activation_trace: ClassifierActivationTrace) -> None:
+    def rmsnorm(self, rmsnorm: nn.LayerNorm, x: torch.Tensor) -> torch.Tensor:
+        return rmsnorm.forward(x)
+
+    def mlp(self, mlp: ModernBertMLP, x: torch.Tensor) -> torch.Tensor:
+        forward_outputs = mlp.forward(x)
+        if isinstance(forward_outputs, tuple):
+            forward_outputs, _ = forward_outputs
+        return forward_outputs
+
+    def from_jax(self, array: Array) -> torch.Tensor:
+        return jax_to_torch(array).to(self.device)
+
+    def to_jax(self, array: torch.Tensor) -> Array:
+        return torch_to_jax(array)
+
+    def match_embedding_custom(self, activation_trace: ActivationTrace) -> None:
+        assert isinstance(activation_trace, ClassifierActivationTrace)
         lalamo_embeddings = activation_trace.embedding_norm_output
         hf_embedding = self.hf_model.model.embeddings
 
@@ -390,11 +389,11 @@ class HFClassifierTracer(ModelTracer):
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_layer(
+    def match_layer_custom(
         self,
         layer_result: TransformerLayerResult,
         position_ids: Array,
-        hf_layer: HFTransformerLayer,
+        hf_layer: ModernBertEncoderLayer,
         layer_index: int,
     ) -> None:
         activation_trace = layer_result.activation_trace
@@ -407,12 +406,13 @@ class HFClassifierTracer(ModelTracer):
 
         attention_mask = torch.ones(activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool)
 
-        attention_mask, sliding_window = self.hf_model.model._update_attention_mask(
+        attention_mask, sliding_window = self.hf_model.model._update_attention_mask(  # noqa: SLF001
             attention_mask,
             output_attentions=False,
         )
 
         if layer_index > 0:
+            assert isinstance(hf_pre_attention_norm, nn.LayerNorm)
             self.match_rmsnorm(
                 activation_trace.inputs,
                 activation_trace.pre_mixer_norm,
@@ -420,11 +420,11 @@ class HFClassifierTracer(ModelTracer):
                 f"Layer {layer_index} Pre Attention RMSNorm",
             )
 
-        self.match_attention(
+        self.match_attention_custom(
             activation_trace.pre_mixer_norm,
-            position_ids,
             activation_trace.mixer,
             hf_layer.attn,  # type: ignore
+            position_ids,
             attention_mask,
             sliding_window,
             f"Layer {layer_index} Attention",
@@ -440,7 +440,7 @@ class HFClassifierTracer(ModelTracer):
         self.match_mlp(
             activation_trace.pre_mlp_norm,
             activation_trace.mlp,
-            hf_layer.mlp,
+            hf_layer.mlp,  # type: ignore
             f"Layer {layer_index} MLP",
         )
 
@@ -466,16 +466,18 @@ class HFClassifierTracer(ModelTracer):
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-        # Test full decoder layer
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
         assert ref_inputs.ndim == 3
 
         if not use_global_attention:
             hf_layer.attn.local_attention = (1, 1)
 
+        # NOTE: exception will occur without this cast
+        position_ids_long = LongTensor(jax_to_torch(position_ids).type(torch.long))
+
         torch_outputs, *_ = hf_layer.forward(
             hidden_states=ref_inputs,
-            position_ids=jax_to_torch(position_ids),
+            position_ids=position_ids_long,
             sliding_window_mask=sliding_window,
         )
 
@@ -490,47 +492,23 @@ class HFClassifierTracer(ModelTracer):
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_rmsnorm(self, llm_inputs: Array, llm_outputs: Array, hf_layer: HFRMSNorm, name: str) -> None:
-        ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        torch_outputs = hf_layer.forward(ref_inputs)
-        ref_outputs = torch_to_jax(torch_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_attention(
+    def match_attention_custom(
         self,
         llm_inputs: Array,
-        position_ids: Array,
         llm_outputs: Array,
-        hf_attention: HFAttention,
+        ref_attention: ModernBertAttention,
+        position_ids: Array,
         attention_mask: torch.Tensor,
         sliding_window_mask: torch.Tensor,
         name: str,
     ) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        (torch_outputs,) = hf_attention.forward(
+        (torch_outputs,) = ref_attention.forward(
             hidden_states=ref_inputs,
             attention_mask=attention_mask,
             sliding_window_mask=sliding_window_mask,
             position_ids=torch.Tensor(position_ids.tolist()),
         )
-        ref_outputs = torch_to_jax(torch_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    def match_mlp(self, llm_inputs: Array, llm_outputs: Array, hf_mlp: HFMLP, name: str) -> None:
-        ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        torch_outputs = hf_mlp.forward(ref_inputs)
-        if isinstance(torch_outputs, tuple):
-            torch_outputs, _ = torch_outputs
         ref_outputs = torch_to_jax(torch_outputs)
         assert_close(
             result=llm_outputs,
@@ -559,9 +537,10 @@ class HFClassifierTracer(ModelTracer):
         )
 
     @torch.no_grad()
-    def match_activations(self, result: ClassifierResult) -> None:
+    def match_activations(self, result: InferenceResult) -> None:
+        assert isinstance(result, ClassifierResult)
         assert result.activation_trace is not None
-        self.match_embedding(result.activation_trace)
+        self.match_embedding_custom(result.activation_trace)
 
         for i, (hf_layer, layer_result) in enumerate(
             zip(
@@ -570,7 +549,7 @@ class HFClassifierTracer(ModelTracer):
                 strict=True,
             ),
         ):
-            self.match_layer(layer_result, result.activation_trace.token_positions, hf_layer, i)
+            self.match_layer_custom(layer_result, result.activation_trace.token_positions, hf_layer, i)
 
         self.match_rmsnorm(
             result.activation_trace.layer_results[-1].outputs,

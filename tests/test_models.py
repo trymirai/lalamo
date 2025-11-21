@@ -15,6 +15,7 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import LanguageModel, Router, import_model
 from lalamo.model_import.common import ModelType
+from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
     DecoderResult,
@@ -53,6 +54,10 @@ class ModelTestSpec:
     dtype: DType | None = None
     num_tokens: int = 512
     token_stride: int = 64
+
+
+ActivationTrace = ClassifierActivationTrace | DecoderActivationTrace
+InferenceResult = ClassifierResult | DecoderResult
 
 
 class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
@@ -123,7 +128,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     @abstractmethod
     def forward(self, input_ids: ArrayT, position_ids: ArrayT) -> tuple[tuple[ArrayT, ...], ArrayT, ArrayT]: ...
 
-    def match_embedding(self, activation_trace: DecoderActivationTrace) -> None:
+    def match_embedding(self, activation_trace: ActivationTrace) -> None:
+        assert isinstance(activation_trace, DecoderActivationTrace)
         first_layer_results, *_ = activation_trace.layer_results
         assert first_layer_results.activation_trace is not None
         llm_results = first_layer_results.activation_trace.inputs
@@ -373,7 +379,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_activations(self, result: DecoderResult) -> None:
+    def match_activations(self, result: InferenceResult) -> None:
+        assert isinstance(result, DecoderResult)
         assert result.activation_trace is not None
         self.match_global_rope(result.activation_trace)
         self.match_local_rope(result.activation_trace)
