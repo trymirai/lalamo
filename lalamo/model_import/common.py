@@ -15,12 +15,15 @@ from tokenizers import Tokenizer
 
 from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.model_import.model_specs.common import JSONFieldSpec
+from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignConfig
+from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
+from lalamo.router_model import RouterConfig, RouterModel
 
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
-from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, UseCase
+from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
+from .model_specs.common import JSONFieldSpec
 
 __all__ = [
     "REPO_TO_MODEL",
@@ -29,6 +32,7 @@ __all__ = [
     "InitializingModelEvent",
     "ModelMetadata",
     "ModelSpec",
+    "ModelType",
     "StatusEvent",
     "import_model",
 ]
@@ -68,7 +72,8 @@ class ModelMetadata:
     quantization: QuantizationMode | None
     repo: str
     use_cases: tuple[UseCase, ...]
-    model_config: LanguageModelConfig
+    model_type: ModelType
+    model_config: LanguageModelConfig | RouterConfig
 
 
 def download_file(
@@ -114,7 +119,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel
+    model: LanguageModel | RouterModel
     metadata: ModelMetadata
 
 
@@ -166,26 +171,14 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
-def import_model(
-    model_spec: ModelSpec | str,
-    *,
-    context_length: int | None = None,
-    precision: DTypeLike | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
+def _load_main_processing_module(
+    model_spec: ModelSpec,
+    precision: DTypeLike,
+    foreign_config: ForeignConfig,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> ImportResults:
-    if isinstance(model_spec, str):
-        try:
-            model_spec = REPO_TO_MODEL[model_spec]
-        except KeyError as e:
-            raise ValueError(f"Unknown model: {model_spec}") from e
-
-    foreign_decoder_config_file = download_config_file(model_spec)
-    foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
-
-    if precision is None:
-        precision = foreign_decoder_config.default_precision
-
+    context_length: int | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+) -> LalamoModule:
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
@@ -200,13 +193,30 @@ def import_model(
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        decoder = foreign_decoder_config.load_decoder(
-            context_length,
-            precision,
-            accumulation_precision,
-            weights_dict,
-            metadata_dict,
+        processing_module = foreign_config.load(
+            context_length, precision, accumulation_precision, weights_dict, metadata_dict
         )
+
+    return processing_module
+
+
+def _import_language_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[LanguageModel, LanguageModelConfig]:
+    foreign_decoder_config_file = download_config_file(model_spec)
+    foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
+
+    if precision is None:
+        precision = foreign_decoder_config.default_precision
+    decoder = _load_main_processing_module(
+        model_spec, precision, foreign_decoder_config, progress_callback, context_length, accumulation_precision
+    )
+    assert isinstance(decoder, Decoder)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
@@ -241,6 +251,74 @@ def import_model(
     )
 
     language_model = LanguageModel(language_model_config, decoder, message_processor)
+    return language_model, language_model_config
+
+
+def _import_router_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[RouterModel, RouterConfig]:
+    foreign_classifier_config_file = download_config_file(model_spec)
+    foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
+    assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
+
+    if precision is None:
+        precision = foreign_classifier_config.default_precision
+
+    classifier = _load_main_processing_module(
+        model_spec, precision, foreign_classifier_config, progress_callback, context_length, accumulation_precision
+    )
+    assert isinstance(classifier, Classifier)
+
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
+    message_processor = import_message_processor(model_spec)
+
+    router_model_config = RouterConfig(
+        classifier_config=classifier.config,
+        message_processor_config=message_processor.config,
+    )
+    router_model = RouterModel(router_model_config, classifier=classifier, message_processor=message_processor)
+    return router_model, router_model_config
+
+
+def import_model(
+    model_spec: ModelSpec | str,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> ImportResults:
+    if isinstance(model_spec, str):
+        try:
+            model_spec = REPO_TO_MODEL[model_spec]
+        except KeyError as e:
+            raise ValueError(f"Unknown model: {model_spec}") from e
+
+    match model_spec.model_type:
+        case ModelType.LANGUAGE_MODEL:
+            model, config = _import_language_model(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                accumulation_precision=accumulation_precision,
+                progress_callback=progress_callback,
+            )
+        case ModelType.ROUTER_MODEL:
+            model, config = _import_router_model(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                accumulation_precision=accumulation_precision,
+                progress_callback=progress_callback,
+            )
+
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,
         vendor=model_spec.vendor,
@@ -250,6 +328,7 @@ def import_model(
         quantization=model_spec.quantization,
         repo=model_spec.repo,
         use_cases=model_spec.use_cases,
-        model_config=language_model_config,
+        model_type=model_spec.model_type,
+        model_config=config,
     )
-    return ImportResults(language_model, metadata)
+    return ImportResults(model, metadata)

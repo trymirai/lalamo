@@ -10,11 +10,11 @@ from mlx import nn
 
 from lalamo.modules.decoder import DecoderActivationTrace
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.test_models import DecoderTracer, DType
+from tests.test_models import DType, ModelTracer
 
 
 @dataclass(frozen=True)
-class CartesiaMLXDecoderTracer(DecoderTracer[mx.array, tuple[nn.Module, nn.Module], nn.RMSNorm, nn.Module, nn.Module]):
+class CartesiaMLXDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.RMSNorm, nn.Module, nn.Module]):
     model: nn.Module
 
     def from_jax(self, array: Array) -> mx.array:

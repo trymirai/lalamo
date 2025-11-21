@@ -89,7 +89,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
+        suffix_length_without_padding: (Int[Array, ""] | int | None) = None,  # noqa: ARG002
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
@@ -97,8 +97,11 @@ class DynamicKVCacheLayer(KVCacheLayer):
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
             result = jnp.tril(result, k=total_num_tokens - suffix_length)
-        if sliding_window_size is not None:
-            result = jnp.triu(result, k=1 - sliding_window_size)
+            if sliding_window_size is not None:
+                result = jnp.triu(result, k=1 - sliding_window_size)
+        elif sliding_window_size is not None:
+            top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
+            result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
@@ -213,7 +216,14 @@ class StaticKVCacheLayer(KVCacheLayer):
         )
 
     @classmethod
-    def init(cls, has_sinks: bool, capacity: int, num_groups: int, head_dim: int, dtype: DTypeLike) -> Self:
+    def init(
+        cls,
+        has_sinks: bool,
+        capacity: int,
+        num_groups: int,
+        head_dim: int,
+        dtype: DTypeLike,
+    ) -> Self:
         return cls(
             has_sinks=has_sinks,
             keys=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),

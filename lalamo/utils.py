@@ -159,3 +159,10 @@ def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
     )
 
     return unpacked.astype(jnp.uint4)
+
+
+def get_dummy_tokens(num_tokens: int = 512, token_stride: int = 8) -> tuple[Array, Array]:
+    token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)[None, :]
+    token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)[None, :]
+
+    return token_ids, token_positions

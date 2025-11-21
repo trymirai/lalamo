@@ -12,7 +12,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import dummy_array
 from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
-from lalamo.modules.normalization import RMSNorm, RMSNormConfig
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import apply_soft_capping
 
@@ -58,7 +58,11 @@ def _soft_capped_attention_kernel(
         "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
     )
     if mask is not None:
-        attention_logits = jnp.where(mask, attention_logits, jnp.array(float("-inf"), dtype=attention_logits.dtype))
+        attention_logits = jnp.where(
+            mask,
+            attention_logits,
+            jnp.array(float("-inf"), dtype=attention_logits.dtype),
+        )
 
     if scale is None:
         scale_val = head_dim**-0.5
@@ -82,8 +86,8 @@ class AttentionConfig(TokenMixerConfigBase):
     qkv_projection_config: LinearConfig
     out_projection_config: LinearConfig
 
-    query_norm_config: RMSNormConfig | None
-    key_norm_config: RMSNormConfig | None
+    query_norm_config: NormalizationConfig | None
+    key_norm_config: NormalizationConfig | None
 
     num_heads: int
     num_groups: int
@@ -217,8 +221,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     qkv_projection: LinearBase
     out_projection: LinearBase
 
-    query_norm: RMSNorm | None
-    key_norm: RMSNorm | None
+    query_norm: Normalization | None
+    key_norm: Normalization | None
 
     sinks: Float[Array, " heads"] | None
 

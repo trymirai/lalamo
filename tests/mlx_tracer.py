@@ -10,7 +10,7 @@ from mlx_lm.utils import load
 
 from lalamo.modules.decoder import DecoderActivationTrace
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.test_models import DecoderTracer, DType
+from tests.test_models import ModelTracer, DType
 
 
 def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
@@ -22,7 +22,7 @@ def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
 
 
 @dataclass(frozen=True)
-class MLXDecoderTracer(DecoderTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, nn.Module]):
+class MLXDecoderTracer(ModelTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, nn.Module]):
     mlx_model: nn.Module
     mlx_tokenizer: TokenizerWrapper
 

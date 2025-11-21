@@ -6,23 +6,24 @@ from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     Identity,
     Mamba2Config,
     MLXQuantizedLinearConfig,
     MLXSemiQuantizedUntiedEmbeddingConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     SeparableCausalConvConfig,
     SiLU,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
 )
 from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 
 @dataclass(frozen=True)
@@ -45,7 +46,7 @@ class HFLlambaSsmConfig:
 
 
 @dataclass(frozen=True)
-class HFLlambaConfig(HuggingFaceConfig):
+class HFLlambaConfig(HuggingFaceLMConfig):
     model_type: Literal["llamba"]
     vocab_size: int
     tie_embeddings: bool
@@ -74,7 +75,9 @@ class HFLlambaConfig(HuggingFaceConfig):
                 input_scale=None,
                 logit_soft_cap=None,
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                embedding_quantization_mode=QuantizationMode.from_num_bits(int(metadata_dict["quantization_kwargs.bits"])),
+                embedding_quantization_mode=QuantizationMode.from_num_bits(
+                    int(metadata_dict["quantization_kwargs.bits"])
+                ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -91,18 +94,21 @@ class HFLlambaConfig(HuggingFaceConfig):
                 precision=activation_precision,
             )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.norm_epsilon,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
 
-        if "quantization_kwargs.group_size" in metadata_dict:
+        if metadata_dict and "quantization_kwargs.group_size" in metadata_dict:
             linear_config = MLXQuantizedLinearConfig(
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                weight_quantization_mode=QuantizationMode.from_num_bits(int(metadata_dict["quantization_kwargs.bits"])),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    int(metadata_dict["quantization_kwargs.bits"])
+                ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -148,7 +154,7 @@ class HFLlambaConfig(HuggingFaceConfig):
             has_out_biases=self.ssm_cfg.bias,
         )
 
-        decoder_layer_config = DecoderLayerConfig(
+        transformer_layer_config = TransformerLayerConfig(
             pre_mixer_norm_config=rmsnorm_config,
             mixer_config=mamba_config,
             post_mixer_norm_config=None,
@@ -156,15 +162,18 @@ class HFLlambaConfig(HuggingFaceConfig):
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
         )
-
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=None,
             local_rope_config=None,
-            layer_configs=(decoder_layer_config,) * self.n_layer,
+            layer_configs=(transformer_layer_config,) * self.n_layer,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.d_model,
             hidden_dim=self.mlp_cfg.intermediate_size,
             context_length=context_length or 4096,
+        )
+
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

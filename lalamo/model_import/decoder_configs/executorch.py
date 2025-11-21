@@ -9,12 +9,13 @@ from lalamo.modules import (
     AttentionConfig,
     Decoder,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     LlamaRoPEConfig,
+    NormalizationConfig,
     QLoRALinearConfig,
     QuantizedTiedEmbeddingConfig,
-    RMSNormConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
@@ -62,7 +63,7 @@ class ExecutorchConfig(ForeignConfig):
         return jnp.bfloat16
 
     @classmethod
-    def _load_weights(
+    def _load_decoder_weights(
         cls,
         model: Decoder,
         weights_dict: Mapping[str, Array],
@@ -119,12 +120,13 @@ class ETLlamaConfig(ExecutorchConfig):
             low_frequency_factor=LOW_FREQ_FACTOR,
             high_frequency_factor=HIGH_FREQ_FACTOR,
         )
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         linear_config = QLoRALinearConfig(
             group_size=self.quantization_args.group_size,
@@ -158,7 +160,7 @@ class ETLlamaConfig(ExecutorchConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        tranformer_layer_config = TransformerLayerConfig(
             pre_mixer_norm_config=rmsnorm_config,
             mixer_config=attention_config,
             post_mixer_norm_config=None,
@@ -166,14 +168,17 @@ class ETLlamaConfig(ExecutorchConfig):
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_configs=(decoder_layer_config,) * self.n_layers,
+            layer_configs=(tranformer_layer_config,) * self.n_layers,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),
             context_length=context_length or MAX_SEQUENCE_LENGTH,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

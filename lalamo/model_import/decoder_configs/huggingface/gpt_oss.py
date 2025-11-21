@@ -7,20 +7,21 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     MixtureOfExpertsConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     SoftmaxRouting,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
     YARNRoPEConfig,
 )
 from lalamo.modules.activations import SiLU
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGPTOssConfig"]
 
@@ -36,7 +37,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFGPTOssConfig(HuggingFaceConfig):
+class HFGPTOssConfig(HuggingFaceLMConfig):
     # Core HF fields
     architectures: list[Literal["GptOssForCausalLM"]]
     attention_bias: bool
@@ -115,12 +116,13 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 truncate=True,
             )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=False,
         )
 
         # Linear layers
@@ -179,7 +181,7 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 scale=None,
                 sliding_window_size=sliding_window_size,
             )
-            decoder_layer_config = DecoderLayerConfig(
+            transformer_layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=rmsnorm_config,
                 mixer_config=attention_config,
                 post_mixer_norm_config=None,
@@ -187,16 +189,20 @@ class HFGPTOssConfig(HuggingFaceConfig):
                 mlp_config=moe_config,
                 post_mlp_norm_config=None,
             )
-            layer_configs.append(decoder_layer_config)
+            layer_configs.append(transformer_layer_config)
 
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             context_length=context_length or self.max_position_embeddings,
+        )
+
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

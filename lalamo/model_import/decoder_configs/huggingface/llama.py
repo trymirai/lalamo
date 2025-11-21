@@ -7,14 +7,15 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     SiLU,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
@@ -22,7 +23,7 @@ from lalamo.modules import (
 )
 from lalamo.quantization import QuantizationMode
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceConfig
+from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
 
 __all__ = ["HFLlamaConfig"]
 
@@ -47,7 +48,7 @@ class YarnRopeScalingConfig:
 
 
 @dataclass(frozen=True)
-class HFLlamaConfig(HuggingFaceConfig):
+class HFLlamaConfig(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["LlamaForCausalLM"]]
     attention_bias: bool
@@ -124,12 +125,13 @@ class HFLlamaConfig(HuggingFaceConfig):
             )
         else:
             raise ValueError("Unsupported rope_scaling configuration")
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         if self.quantization_config is None:
             linear_config = FullPrecisionLinearConfig(
@@ -153,7 +155,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             has_out_biases=False,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads,
+            head_dim=(self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads),
             is_causal=True,
             scale=None,
             sliding_window_size=None,
@@ -166,7 +168,7 @@ class HFLlamaConfig(HuggingFaceConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        decoder_layer_config = DecoderLayerConfig(
+        transformer_layer_config = TransformerLayerConfig(
             pre_mixer_norm_config=rmsnorm_config,
             mixer_config=attention_config,
             post_mixer_norm_config=None,
@@ -174,14 +176,17 @@ class HFLlamaConfig(HuggingFaceConfig):
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
         )
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_configs=(decoder_layer_config,) * self.num_hidden_layers,
+            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

@@ -5,7 +5,7 @@ from collections.abc import (
 )
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import Enum, StrEnum
 from pathlib import Path
 from typing import ClassVar, cast, get_args, get_origin
 
@@ -22,11 +22,17 @@ __all__ = [
     "FileSpec",
     "JSONFieldSpec",
     "ModelSpec",
+    "ModelType",
     "UseCase",
     "WeightsType",
     "awq_model_spec",
     "build_quantized_models",
 ]
+
+
+class ModelType(StrEnum):
+    LANGUAGE_MODEL = "language_model"
+    ROUTER_MODEL = "router_model"
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
@@ -50,7 +56,6 @@ class WeightsType(Enum):
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
             import torch
-
             from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
@@ -129,6 +134,7 @@ class ModelSpec:
     assistant_role_name: str = "assistant"
     tool_role_name: str = "tool"
     weights_type: WeightsType = WeightsType.SAFETENSORS
+    model_type: ModelType = ModelType.LANGUAGE_MODEL
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
 

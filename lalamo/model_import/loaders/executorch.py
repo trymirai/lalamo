@@ -6,7 +6,15 @@ from einops import rearrange
 from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterPath
-from lalamo.modules import Attention, Decoder, DecoderLayer, DenseMLP, QLoRALinear, QuantizedTiedEmbedding, RMSNorm
+from lalamo.modules import (
+    Attention,
+    Decoder,
+    DenseMLP,
+    Normalization,
+    QLoRALinear,
+    QuantizedTiedEmbedding,
+    TransformerLayer,
+)
 
 from .common import load_parameters
 
@@ -95,7 +103,7 @@ def load_mlp(module: DenseMLP, weights_dict: Mapping[str, Array], path: Paramete
     )
 
 
-def load_rmsnorm(module: RMSNorm, weights_dict: Mapping[str, Array], path: ParameterPath) -> RMSNorm:
+def load_rmsnorm(module: Normalization, weights_dict: Mapping[str, Array], path: ParameterPath) -> Normalization:
     return load_parameters(lambda m: (m.scales,), module, (weights_dict[path / "weight"],))
 
 
@@ -175,18 +183,21 @@ def load_attention(
     )
 
 
-def load_decoder_layer(
-    module: DecoderLayer,
+def load_transformer_layer(
+    module: TransformerLayer,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> DecoderLayer:
+) -> TransformerLayer:
     if module.post_mixer_norm is not None:
         raise ValueError("Post attention normalization is not supported")
     if module.post_mlp_norm is not None:
         raise ValueError("Post MLP normalization is not supported")
-    attention_norm = load_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attention_norm")
+    if module.pre_mixer_norm is not None:
+        attention_norm = load_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attention_norm")
+    else:
+        attention_norm = None
     assert isinstance(module.mixer, Attention)
-    attention = load_attention(module.mixer, weights_dict, path / "attention")
+    attention = load_attention(module.mixer, weights_dict, path / "mixer")
     mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
     assert isinstance(module.mlp, DenseMLP)
     mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward")
@@ -214,12 +225,13 @@ def load_executorch(module: Decoder, weights_dict: Mapping[str, Array]) -> Decod
         raise TypeError(f"Expected embedding to be QuantizedTiedEmbedding, got {type(module.embedding)}")
 
     embedding = load_embedding(module.embedding, weights_dict, root_path / "tok_embeddings")
-    decoder_layers = tuple(
-        load_decoder_layer(layer, weights_dict, root_path / f"layers.{i}") for i, layer in enumerate(module.layers)
+    transformer_layers = tuple(
+        load_transformer_layer(layer, weights_dict, root_path / f"layers.{i}")
+        for i, layer in enumerate(module.transformer.layers)
     )
-    output_norm = load_rmsnorm(module.output_norm, weights_dict, root_path / "norm")
+    output_norm = load_rmsnorm(module.transformer.output_norm, weights_dict, root_path / "norm")
     return load_parameters(
-        lambda m: (m.embedding, m.layers, m.output_norm),
+        lambda m: (m.embedding, m.transformer.layers, m.transformer.output_norm),
         module,
-        (embedding, decoder_layers, output_norm),
+        (embedding, transformer_layers, output_norm),
     )

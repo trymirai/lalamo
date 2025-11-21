@@ -13,8 +13,14 @@ import torch
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import import_model
-from lalamo.modules.decoder import DecoderActivationTrace, DecoderLayerResult, DecoderResult
+from lalamo import LanguageModel, import_model
+from lalamo.model_import.common import ModelType
+from lalamo.modules.decoder import (
+    DecoderActivationTrace,
+    DecoderResult,
+    TransformerLayerResult,
+)
+from lalamo.router_model import RouterModel
 from tests.common import assert_close, checkify_forward
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx")
@@ -50,7 +56,7 @@ class ModelTestSpec:
     token_stride: int = 64
 
 
-class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
+class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
     @abstractmethod
     def from_jax(self, array: Array) -> ArrayT: ...
 
@@ -136,6 +142,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.global_positional_embeddings
+        assert llm_results is not None
 
         if llm_results is None:
             return
@@ -169,6 +176,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
         llm_results = activation_trace.local_positional_embeddings
+        assert llm_results is not None
 
         if llm_results is None:
             return
@@ -257,7 +265,7 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_layer(
         self,
-        layer_result: DecoderLayerResult,
+        layer_result: TransformerLayerResult,
         ref_layer: LayerT,
         layer_index: int,
     ) -> None:
@@ -373,7 +381,11 @@ class DecoderTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
         self.match_embedding(result.activation_trace)
 
         for i, (ref_layer, layer_result) in enumerate(
-            zip(self.iterate_layers(), result.activation_trace.layer_results, strict=True),
+            zip(
+                self.iterate_layers(),
+                result.activation_trace.layer_results,
+                strict=True,
+            ),
         ):
             self.match_layer(layer_result, ref_layer, i)
 
@@ -433,18 +445,8 @@ def configure_precision_for_tests() -> None:
     torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
-def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -> None:
+def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> None:
     configure_precision_for_tests()
-
-    llm_model, *_ = import_model(
-        test_spec.model_repo,
-        context_length=test_spec.num_tokens * test_spec.token_stride,
-        precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
-    )
-    tracer = decoder_tracer.load(
-        test_spec.model_repo,
-        dtype=test_spec.dtype,
-    )
 
     token_ids = jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :]
     token_positions = jnp.arange(
@@ -454,16 +456,40 @@ def _test_model(test_spec: ModelTestSpec, decoder_tracer: type[DecoderTracer]) -
         dtype=jnp.int32,
     )[None, :]
 
-    with jax.disable_jit():
-        err, llm_result = checkify_forward(llm_model.decoder)(
-            token_ids=token_ids,
-            token_positions=token_positions,
-            return_updated_state=True,
-            return_activation_trace=True,
-        )
-        err.throw()
+    tracer = model_tracer.load(
+        test_spec.model_repo,
+        dtype=test_spec.dtype,
+    )
 
-    del llm_model
+    model, model_metadata = import_model(
+        test_spec.model_repo,
+        context_length=test_spec.num_tokens * test_spec.token_stride,
+        precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
+    )
+    with jax.disable_jit():
+        inference_results = None
+
+        match model_metadata.model_type:
+            case ModelType.LANGUAGE_MODEL:
+                assert isinstance(model, LanguageModel)
+                err, inference_results = checkify_forward(model.decoder)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_updated_state=True,
+                    return_activation_trace=True,
+                )
+                err.throw()
+
+            case ModelType.ROUTER_MODEL:
+                assert isinstance(model, RouterModel)
+                err, inference_results = checkify_forward(model.classifier)(
+                    token_ids=token_ids,
+                    token_positions=token_positions,
+                    return_activation_trace=True,
+                )
+                err.throw()
+
+    del model
     gc.collect()
 
-    tracer.match_activations(llm_result)
+    tracer.match_activations(inference_results)

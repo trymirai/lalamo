@@ -48,7 +48,9 @@ def another_generation_input(tokenizer: PreTrainedTokenizer) -> GenerationInput:
 
 @pytest.fixture
 def language_model() -> LanguageModel:
-    return import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
+    model = import_model(REPO_TO_MODEL["Qwen/Qwen3-0.6B"]).model
+    assert isinstance(model, LanguageModel)
+    return model
 
 
 @pytest.fixture
@@ -67,7 +69,7 @@ def test_eager_generation(
     language_model: LanguageModel,
     tokenizer: PreTrainedTokenizer,
     generation_input: GenerationInput,
-    num_top_logits_to_return: int|None,
+    num_top_logits_to_return: int | None,
 ) -> None:
     result = language_model.generate_tokens(
         generation_input.token_ids[None, :],

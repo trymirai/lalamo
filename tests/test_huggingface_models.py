@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.huggingface_tracer import HFDecoderTracer
+from tests.huggingface_tracer import HFClassifierTracer, HFDecoderTracer
 from tests.test_models import DType, ModelTestSpec, _test_model
 
 MODEL_LIST = [
@@ -13,12 +13,29 @@ MODEL_LIST = [
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
 ]
 
-MODEL_LIST += [
-    ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16),
-    ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16),
-] if torch.cuda.is_available() else []
+MODEL_LIST += (
+    [
+        ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16),
+        ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16),
+    ]
+    if torch.cuda.is_available()
+    else []
+)
+
+CLASSIFIER_MODEL_LIST = [
+    ModelTestSpec("trymirai/chat-moderation-router", DType.FLOAT32),
+]
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
-def test_hf_model(test_spec: ModelTestSpec) -> None:
+def test_hf_lm_models(test_spec: ModelTestSpec) -> None:
     _test_model(test_spec, HFDecoderTracer)
+
+
+@pytest.mark.parametrize(
+    "test_spec",
+    CLASSIFIER_MODEL_LIST,
+    ids=[m.model_repo for m in CLASSIFIER_MODEL_LIST],
+)
+def test_hf_classifier_models(test_spec: ModelTestSpec) -> None:
+    _test_model(test_spec, HFClassifierTracer)

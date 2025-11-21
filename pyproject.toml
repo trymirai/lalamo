@@ -48,6 +48,7 @@ dev = [
     "torchao>=0.7.0",
     "transformers>=4.56.0",
     "twine>=6.1.0",
+    "ruff==0.14.0",
 ]
 
 [project.scripts]

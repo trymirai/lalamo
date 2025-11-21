@@ -16,7 +16,12 @@ from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
-from .common import DummyUnionMember, ForwardPassMode, LalamoModule, register_config_union
+from .common import (
+    DummyUnionMember,
+    ForwardPassMode,
+    LalamoModule,
+    register_config_union,
+)
 from .linear import LinearBase, LinearConfig
 
 __all__ = [
@@ -192,7 +197,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
                 f" the gate output dimension {gate_output_dim}",
             )
         (down_output_dim,) = self.down_projection.output_dims
-        if (self.up_projection.input_dim, up_output_dim) != (down_output_dim, self.down_projection.input_dim):
+        if (self.up_projection.input_dim, up_output_dim) != (
+            down_output_dim,
+            self.down_projection.input_dim,
+        ):
             raise ValueError(
                 f"Down projection dimensions {self.down_projection.input_dim, down_output_dim} do not match"
                 f" the up projection output dimensions {self.up_projection.input_dim, up_output_dim}",
@@ -209,7 +217,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         return vmap_twice(self.call_unbatched)(inputs)
 
     @eqx.filter_jit
-    def call_unbatched(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+    def call_unbatched(
+        self,
+        inputs: Float[Array, " channels"],
+    ) -> Float[Array, " channels"]:
         if self.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly."
@@ -222,6 +233,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
         gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
+
         return result
 
     def export_weights(self) -> ParameterTree:
@@ -450,10 +462,21 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     mode="drop",
                 )
 
-            return jax.lax.cond(jnp.any(token_indices_for_chunk != _SENTINEL), inner, lambda: accumulator), None
+            return (
+                jax.lax.cond(
+                    jnp.any(token_indices_for_chunk != _SENTINEL),
+                    inner,
+                    lambda: accumulator,
+                ),
+                None,
+            )
 
         result, _ = jax.lax.scan(loop_iteration, jnp.zeros_like(flattened_inputs), chunked_token_indices)
-        return rearrange(result, "(batch suffix_tokens) channels -> batch suffix_tokens channels", batch=batch_size)
+        return rearrange(
+            result,
+            "(batch suffix_tokens) channels -> batch suffix_tokens channels",
+            batch=batch_size,
+        )
 
     def export_weights(
         self,

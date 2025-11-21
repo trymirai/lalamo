@@ -1,4 +1,8 @@
-from lalamo.model_import.decoder_configs import HFGemma2Config, HFGemma3Config, HFGemma3TextConfig
+from lalamo.model_import.decoder_configs import (
+    HFGemma2Config,
+    HFGemma3Config,
+    HFGemma3TextConfig,
+)
 
 from .common import ModelSpec, WeightsType
 

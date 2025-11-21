@@ -14,10 +14,20 @@ from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
-from lalamo.modules import Decoder, DecoderConfig, ForwardPassMode, LalamoModule, State, config_converter
+from lalamo.modules import (
+    Decoder,
+    DecoderConfig,
+    DecoderResult,
+    ForwardPassMode,
+    LalamoModule,
+    State,
+    config_converter,
+)
 from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
 from lalamo.utils import open_safetensors
+
+from .utils import get_dummy_tokens
 
 __all__ = [
     "ForwardPassConfig",
@@ -366,3 +376,12 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 decoder_outputs.updated_state,
                 state.stop_flags,
             )
+
+    def record_trace(self, messages: Iterable[Message] | None = None) -> DecoderResult:
+        if messages:
+            token_ids, token_positions = self.message_processor.tokenize_request(messages)
+            token_ids = jnp.array(token_ids)[None, :]
+            token_positions = jnp.array(token_positions)[None, :]
+        else:
+            token_ids, token_positions = get_dummy_tokens()
+        return self.decoder(token_ids=token_ids, token_positions=token_positions)

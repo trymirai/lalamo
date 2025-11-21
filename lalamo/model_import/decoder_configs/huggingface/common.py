@@ -6,15 +6,22 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.decoder_configs import ForeignConfig
-from lalamo.model_import.loaders import load_huggingface
+from lalamo.model_import.decoder_configs import ForeignLMConfig
+from lalamo.model_import.decoder_configs.common import ForeignClassifierConfig
+from lalamo.model_import.loaders import (
+    load_huggingface_classifier,
+    load_huggingface_decoder,
+)
 from lalamo.modules import Decoder
+from lalamo.modules.classifier import Classifier
+from lalamo.modules.common import LalamoModule
 
 __all__ = [
     "AWQQuantizationConfig",
     "GPTQMetaConfig",
     "GPTQQuantizationConfig",
-    "HuggingFaceConfig",
+    "HuggingFaceClassifierConfig",
+    "HuggingFaceLMConfig",
 ]
 
 
@@ -85,7 +92,7 @@ def _structure_quantization_config(v: object, _: object) -> QuantizationConfigTy
 
 
 @dataclass(frozen=True)
-class HuggingFaceConfig(ForeignConfig):
+class HuggingFaceLMConfig(ForeignLMConfig):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
     _converter.register_structure_hook(QuantizationConfigType, _structure_quantization_config)
@@ -95,16 +102,27 @@ class HuggingFaceConfig(ForeignConfig):
         if not hasattr(self, "eos_token_id"):
             raise RuntimeError("model doesn't havve eos_token_id, override eos_token_ids in model config")
 
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id  # type: ignore  (This is a bug in pyright)
+        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
 
     @property
     def default_precision(self) -> DTypeLike:
         return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
 
-    @classmethod
     def _load_weights(
-        cls,
-        model: Decoder,
+        self,
+        model: LalamoModule,
         weights_dict: Mapping[str, Array],
-    ) -> Decoder:
-        return load_huggingface(model, weights_dict)
+    ) -> LalamoModule:
+        assert isinstance(model, Decoder)
+        return load_huggingface_decoder(model, weights_dict)
+
+
+@dataclass(frozen=True)
+class HuggingFaceClassifierConfig(ForeignClassifierConfig):
+    def _load_weights(
+        self,
+        model: LalamoModule,
+        weights_dict: Mapping[str, Array],
+    ) -> LalamoModule:
+        assert isinstance(model, Classifier)
+        return load_huggingface_classifier(model, weights_dict)

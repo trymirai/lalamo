@@ -7,12 +7,13 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
@@ -22,13 +23,13 @@ from lalamo.modules.embedding import MLXQuantizedTiedEmbeddingConfig
 from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceConfig, MLXQuantizationConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFQwen3Config"]
 
 
 @dataclass(frozen=True)
-class HFQwen3Config(HuggingFaceConfig):
+class HFQwen3Config(HuggingFaceLMConfig):
     eos_token_id: int | list[int]
     torch_dtype: Literal["bfloat16", "float16", "float32"]
     attention_bias: bool
@@ -100,12 +101,13 @@ class HFQwen3Config(HuggingFaceConfig):
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
         if self.quantization_config is None:
             linear_config = FullPrecisionLinearConfig(
@@ -153,7 +155,7 @@ class HFQwen3Config(HuggingFaceConfig):
                 scale=None,
                 sliding_window_size=sliding_window_size,
             )
-            decoder_layer_config = DecoderLayerConfig(
+            transformer_layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=rmsnorm_config,
                 mixer_config=attention_config,
                 post_mixer_norm_config=None,
@@ -161,15 +163,18 @@ class HFQwen3Config(HuggingFaceConfig):
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
             )
-            layer_configs.append(decoder_layer_config)
-        return DecoderConfig(
-            embedding_config=embedding_config,
+            layer_configs.append(transformer_layer_config)
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             context_length=context_length or self.max_position_embeddings,
+        )
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )

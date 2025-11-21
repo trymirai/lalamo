@@ -46,9 +46,14 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.modules import config_converter
+from lalamo.router_model import RouterModel
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import SpeculatorTrainingEvent, test_speculator, train_speculator
+from lalamo.speculator.utils import (
+    SpeculatorTrainingEvent,
+    test_speculator,
+    train_speculator,
+)
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -145,6 +150,41 @@ def chat(
         messages.append(model.message_processor.parse_response(model_response_text))
 
 
+@app.command(help="Classify given message with a Router type of model.")
+def classify(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+) -> None:
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+        model = RouterModel.load(model_path)
+        progress.remove_task(loading_task)
+        warmup_task = progress.add_task("🔥 Warming up...")
+        model.classify(UserMessage(content="warmup message"))
+        progress.remove_task(warmup_task)
+    console.print(f"🤖 Classifying input with [blue]{model_path}[/blue]:")
+    while True:
+        user_text = console.input("[cyan]user> [/cyan]")
+        user_message = UserMessage(user_text)
+
+        console.print("[red]assistant> [/red]", end="")
+        result = model.classify(user_message)
+        for batch_index, labels in enumerate(result.message_labels):
+            console.print(f"\n== batch item: {batch_index}\nClassification confidences:")
+            for label, confidence in labels.items():
+                console.print(f"{label} : {confidence}", end="")
+        console.print()
+
+
 @app.command(help="Convert the model for use with the Uzu inference engine.")
 def convert(
     model_repo: Annotated[
@@ -194,6 +234,12 @@ def convert(
             help="Overwrite existing model files.",
         ),
     ] = False,
+    message_for_trace: Annotated[
+        str | None,
+        Option(
+            help="Text message to use as prompt when recording trace",
+        ),
+    ] = None,
 ) -> None:
     if precision is not None:
         precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
@@ -223,6 +269,8 @@ def convert(
         else:
             console.print("Exiting...")
             raise Exit
+
+    message = None if message_for_trace is None else [UserMessage(content=message_for_trace)]
 
     with Progress(
         SpinnerColumn(),
@@ -254,17 +302,7 @@ def convert(
 
         if include_traces:
             trace_task = progress.add_task("🚁 Generating traces...")
-
-            num_tokens = 512
-            token_stride = 8
-            token_ids = jnp.arange(0, num_tokens, dtype=jnp.int32)[None, :]
-            token_positions = jnp.arange(0, num_tokens * token_stride, token_stride, dtype=jnp.int32)[None, :]
-            result = model.decoder(
-                token_ids,
-                token_positions,
-                return_updated_state=True,
-                return_activation_trace=True,
-            )
+            result = model.record_trace(message)
             traces = flatten_parameters(result.export())
             save_file(traces, output_dir / "traces.safetensors")
             progress.remove_task(trace_task)

@@ -7,24 +7,25 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
-    DecoderLayerConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
-    RMSNormConfig,
+    NormalizationConfig,
     TiedEmbeddingConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.normalization import UpcastMode
 
-from .common import HuggingFaceConfig
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFMistralConfig"]
 
 
 @dataclass(frozen=True)
-class HFMistralConfig(HuggingFaceConfig):
+class HFMistralConfig(HuggingFaceLMConfig):
     architectures: list[Literal["MistralForCausalLM"]]
     attention_dropout: float
     bos_token_id: int
@@ -42,7 +43,6 @@ class HFMistralConfig(HuggingFaceConfig):
     rope_theta: float
     sliding_window: int | None
     tie_word_embeddings: bool
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     transformers_version: str
     use_cache: bool
     vocab_size: int
@@ -74,12 +74,13 @@ class HFMistralConfig(HuggingFaceConfig):
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        rmsnorm_config = RMSNormConfig(
+        rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
         )
 
         linear_config = FullPrecisionLinearConfig(
@@ -116,7 +117,7 @@ class HFMistralConfig(HuggingFaceConfig):
                 sliding_window_size=self.sliding_window,
             )
 
-            decoder_layer_config = DecoderLayerConfig(
+            transformer_layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=rmsnorm_config,
                 mixer_config=attention_config,
                 post_mixer_norm_config=None,
@@ -124,16 +125,20 @@ class HFMistralConfig(HuggingFaceConfig):
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
             )
-            layer_configs.append(decoder_layer_config)
+            layer_configs.append(transformer_layer_config)
 
-        return DecoderConfig(
-            embedding_config=embedding_config,
+        transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
-            vocab_size=self.vocab_size,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             context_length=context_length or self.max_position_embeddings,
+        )
+
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=transformer_config,
+            vocab_size=self.vocab_size,
         )
