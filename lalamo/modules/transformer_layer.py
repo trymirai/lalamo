@@ -222,7 +222,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             normalized_mixer_inputs = inputs
 
-        batched_mixer_fn = vmap(partial(self.mixer, return_updated_state=return_updated_state))
+        batched_mixer_fn = vmap(
+            partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace),
+        )
         mixer_outputs, updated_state = batched_mixer_fn(
             normalized_mixer_inputs,
             positional_embeddings,

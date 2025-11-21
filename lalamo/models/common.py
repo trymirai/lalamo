@@ -78,4 +78,4 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
         token_ids = jnp.array(self.message_processor.tokenize_request(messages))[None:]
         _, num_tokens = token_ids.shape
         token_positions = jnp.arange(num_tokens)[None, :]
-        return self.model(token_ids=token_ids, token_positions=token_positions)
+        return self.model(token_ids=token_ids, token_positions=token_positions, return_activation_trace=True)
