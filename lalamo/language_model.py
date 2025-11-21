@@ -384,4 +384,9 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
             token_positions = jnp.array(token_positions)[None, :]
         else:
             token_ids, token_positions = get_dummy_tokens()
-        return self.decoder(token_ids=token_ids, token_positions=token_positions)
+        return self.decoder(
+            token_ids=token_ids,
+            token_positions=token_positions,
+            return_activation_trace=True,
+            return_updated_state=True,
+        )

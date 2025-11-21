@@ -103,4 +103,4 @@ class RouterModel(LalamoModule[RouterConfig]):
             token_positions = jnp.array(token_positions)[None, :]
         else:
             token_ids, token_positions = get_dummy_tokens()
-        return self.classifier(token_ids=token_ids, token_positions=token_positions)
+        return self.classifier(token_ids=token_ids, token_positions=token_positions, return_activation_trace=True)
