@@ -376,7 +376,7 @@ class HFClassifierTracer(ModelTracer):
     hf_model: HFModelForSequenceClassification
     device: torch.device
 
-    def match_embedding(self, activation_trace: DecoderActivationTrace | ClassifierActivationTrace) -> None:
+    def match_embedding(self, activation_trace: ClassifierActivationTrace) -> None:
         lalamo_embeddings = activation_trace.embedding_norm_output
         hf_embedding = self.hf_model.model.embeddings
 
