@@ -123,6 +123,10 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
 @dataclass(frozen=True)
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
+    @property
+    def default_precision(self) -> DTypeLike:
+        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
+
     def _load_weights(
         self,
         model: LalamoModule,
