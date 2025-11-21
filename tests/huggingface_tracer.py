@@ -4,7 +4,7 @@ from typing import Protocol, Self
 
 import jax
 import torch
-from jaxtyping import Array, Bool
+from jaxtyping import Array
 from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
@@ -254,7 +254,7 @@ class HFDecoderTracer(
         self,
         attention: HFAttention | Gemma3Attention,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
     ) -> torch.Tensor:
         attention_mask = _build_hf_attention_mask(hidden_states, attention)
 
@@ -275,7 +275,7 @@ class HFDecoderTracer(
         self,
         layer: HFTransformerLayer | Gemma3DecoderLayer,
         hidden_states: torch.Tensor,
-        position_embeddings: tuple[torch.Tensor, torch.Tensor],
+        position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
     ) -> torch.Tensor:
         if isinstance(layer, Gemma3DecoderLayer):
             torch_outputs, *_ = layer.forward(
@@ -376,7 +376,7 @@ class HFClassifierTracer(ModelTracer):
     hf_model: HFModelForSequenceClassification
     device: torch.device
 
-    def match_embedding(self, activation_trace: ClassifierActivationTrace) -> None:
+    def match_embedding(self, activation_trace: DecoderActivationTrace | ClassifierActivationTrace) -> None:
         lalamo_embeddings = activation_trace.embedding_norm_output
         hf_embedding = self.hf_model.model.embeddings
 
@@ -408,7 +408,8 @@ class HFClassifierTracer(ModelTracer):
         attention_mask = torch.ones(activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool)
 
         attention_mask, sliding_window = self.hf_model.model._update_attention_mask(
-            attention_mask, output_attentions=False
+            attention_mask,
+            output_attentions=False,
         )
 
         if layer_index > 0:

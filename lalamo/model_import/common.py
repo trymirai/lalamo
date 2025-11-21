@@ -13,13 +13,12 @@ from jax import Array
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
-from lalamo.language_model import GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.model_import.decoder_configs import ForeignClassifierConfig, ForeignConfig
+from lalamo.models import GenerationConfig, LanguageModel, LanguageModelConfig, Router, RouterConfig
 from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
-from lalamo.router_model import RouterConfig, RouterModel
 
+from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .huggingface_generation_config import HFGenerationConfig
 from .huggingface_tokenizer_config import HFTokenizerConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
@@ -119,7 +118,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel | RouterModel
+    model: LanguageModel | Router
     metadata: ModelMetadata
 
 
@@ -194,7 +193,11 @@ def _load_main_processing_module(
             progress_callback(InitializingModelEvent())
 
         processing_module = foreign_config.load(
-            context_length, precision, accumulation_precision, weights_dict, metadata_dict
+            context_length,
+            precision,
+            accumulation_precision,
+            weights_dict,
+            metadata_dict,
         )
 
     return processing_module
@@ -210,11 +213,17 @@ def _import_language_model(
 ) -> tuple[LanguageModel, LanguageModelConfig]:
     foreign_decoder_config_file = download_config_file(model_spec)
     foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
+    assert isinstance(foreign_decoder_config, ForeignLMConfig)
 
     if precision is None:
         precision = foreign_decoder_config.default_precision
     decoder = _load_main_processing_module(
-        model_spec, precision, foreign_decoder_config, progress_callback, context_length, accumulation_precision
+        model_spec,
+        precision,
+        foreign_decoder_config,
+        progress_callback,
+        context_length,
+        accumulation_precision,
     )
     assert isinstance(decoder, Decoder)
 
@@ -245,7 +254,7 @@ def _import_language_model(
         )
 
     language_model_config = LanguageModelConfig(
-        decoder_config=decoder.config,
+        model_config=decoder.config,
         message_processor_config=message_processor.config,
         generation_config=generation_config,
     )
@@ -254,14 +263,14 @@ def _import_language_model(
     return language_model, language_model_config
 
 
-def _import_router_model(
+def _import_router(
     model_spec: ModelSpec,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[RouterModel, RouterConfig]:
+) -> tuple[Router, RouterConfig]:
     foreign_classifier_config_file = download_config_file(model_spec)
     foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
     assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
@@ -270,7 +279,12 @@ def _import_router_model(
         precision = foreign_classifier_config.default_precision
 
     classifier = _load_main_processing_module(
-        model_spec, precision, foreign_classifier_config, progress_callback, context_length, accumulation_precision
+        model_spec,
+        precision,
+        foreign_classifier_config,
+        progress_callback,
+        context_length,
+        accumulation_precision,
     )
     assert isinstance(classifier, Classifier)
 
@@ -279,12 +293,12 @@ def _import_router_model(
 
     message_processor = import_message_processor(model_spec)
 
-    router_model_config = RouterConfig(
-        classifier_config=classifier.config,
+    router_config = RouterConfig(
+        model_config=classifier.config,
         message_processor_config=message_processor.config,
     )
-    router_model = RouterModel(router_model_config, classifier=classifier, message_processor=message_processor)
-    return router_model, router_model_config
+    router_model = Router(router_config, classifier, message_processor)
+    return router_model, router_config
 
 
 def import_model(
@@ -311,7 +325,7 @@ def import_model(
                 progress_callback=progress_callback,
             )
         case ModelType.ROUTER_MODEL:
-            model, config = _import_router_model(
+            model, config = _import_router(
                 model_spec,
                 context_length=context_length,
                 precision=precision,

@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Annotated
 
 import jax
-import jax.numpy as jnp
 import jax.profiler
 import thefuzz.process
 from click import Context as ClickContext
@@ -35,7 +34,6 @@ from typer import Argument, Context, Exit, Option, Typer
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.language_model import LanguageModel
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -45,8 +43,8 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
+from lalamo.models import LanguageModelConfig, RouterConfig
 from lalamo.modules import config_converter
-from lalamo.router_model import RouterModel
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import (
@@ -128,7 +126,7 @@ def chat(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = LanguageModel.load(model_path)
+        model = LanguageModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         list(model.stream_reply_text([UserMessage("")], max_output_length=1))
@@ -166,10 +164,10 @@ def classify(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = RouterModel.load(model_path)
+        model = RouterConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up...")
-        model.classify(UserMessage(content="warmup message"))
+        model.classify_chat([UserMessage(content="warmup message")])
         progress.remove_task(warmup_task)
     console.print(f"🤖 Classifying input with [blue]{model_path}[/blue]:")
     while True:
@@ -177,11 +175,9 @@ def classify(
         user_message = UserMessage(user_text)
 
         console.print("[red]assistant> [/red]", end="")
-        result = model.classify(user_message)
-        for batch_index, labels in enumerate(result.message_labels):
-            console.print(f"\n== batch item: {batch_index}\nClassification confidences:")
-            for label, confidence in labels.items():
-                console.print(f"{label} : {confidence}", end="")
+        result = model.classify_chat([user_message])
+        for label, confidence in result.items():
+            console.print(f"{label} : {confidence}", end="")
         console.print()
 
 
@@ -444,7 +440,7 @@ def collect_traces(
         ) as progress:
             live.update(progress, refresh=True)
             loading_model_task = progress.add_task("🧠 [cyan]Loading model...[/cyan]")
-            model = LanguageModel.load(model_path)
+            model = LanguageModelConfig.load_model(model_path)
             progress.remove_task(loading_model_task)
 
             loading_dataset_task = progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
@@ -573,7 +569,7 @@ def test(
         Option(help="Number of sequences to generate"),
     ] = 8,
 ) -> None:
-    model = LanguageModel.load(model_path)
+    model = LanguageModelConfig.load_model(model_path)
 
     with open(speculator_path, "rb") as fd:
         speculator = NGramSpeculator.deserialize(fd.read())

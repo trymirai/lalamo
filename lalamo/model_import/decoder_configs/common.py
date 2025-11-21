@@ -1,17 +1,16 @@
-from abc import abstractmethod
 import json
+from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
-from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.modules import Classifier, ClassifierConfig, Decoder, DecoderConfig
-from lalamo.registry_abc import RegistryABC
+from lalamo.modules import ClassifierConfig, DecoderConfig
 from lalamo.modules.common import LalamoModule
+from lalamo.registry_abc import RegistryABC
 
 __all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
 
@@ -22,12 +21,8 @@ class ForeignConfig[ConfigT: DecoderConfig | ClassifierConfig](RegistryABC):
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
     @property
-    def eos_token_ids(self) -> list[int]:
-        raise NotImplementedError
-
-    @property
-    def default_precision(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
+    @abstractmethod
+    def default_precision(self) -> DTypeLike: ...
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:
@@ -41,8 +36,7 @@ class ForeignConfig[ConfigT: DecoderConfig | ClassifierConfig](RegistryABC):
         self,
         model: LalamoModule,
         weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        raise NotImplementedError
+    ) -> LalamoModule: ...
 
     @abstractmethod
     def to_lalamo_config(
@@ -51,8 +45,7 @@ class ForeignConfig[ConfigT: DecoderConfig | ClassifierConfig](RegistryABC):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
-    ) -> ConfigT:
-        raise NotImplementedError
+    ) -> ConfigT: ...
 
     def load(
         self,
@@ -69,18 +62,18 @@ class ForeignConfig[ConfigT: DecoderConfig | ClassifierConfig](RegistryABC):
 
 @dataclass(frozen=True)
 class ForeignLMConfig(ForeignConfig, RegistryABC):
+    @abstractmethod
     def to_decoder_config(
         self,
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig:
-        raise NotImplementedError
+    ) -> DecoderConfig: ...
 
     @property
-    def eos_token_ids(self) -> list[int]:
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+    @abstractmethod
+    def eos_token_ids(self) -> list[int]: ...
 
     def to_lalamo_config(
         self,
@@ -94,19 +87,19 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
 
 @dataclass(frozen=True)
 class ForeignClassifierConfig(ForeignConfig, RegistryABC):
+    @abstractmethod
     def to_classifier_config(
         self,
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-    ) -> ClassifierConfig:
-        raise NotImplementedError
+    ) -> ClassifierConfig: ...
 
     def to_lalamo_config(
         self,
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> ClassifierConfig:
         return self.to_classifier_config(context_length, activation_precision, accumulation_precision)

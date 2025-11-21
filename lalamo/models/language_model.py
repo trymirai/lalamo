@@ -1,8 +1,7 @@
-import json
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -10,24 +9,19 @@ import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
-from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
-from lalamo.message_processor import AssistantMessage, Message, MessageProcessor, MessageProcessorConfig
+from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
-    DecoderResult,
+    DecoderForwardPassConfig,
     ForwardPassMode,
     LalamoModule,
     State,
-    config_converter,
 )
-from lalamo.modules.decoder import DecoderForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
-from lalamo.utils import open_safetensors
 
-from .utils import get_dummy_tokens
+from .common import TextModel, TextModelConfig
 
 __all__ = [
     "ForwardPassConfig",
@@ -81,46 +75,25 @@ class GenerationConfig:
 
 
 @dataclass(frozen=True)
-class LanguageModelConfig:
-    decoder_config: DecoderConfig
-    message_processor_config: MessageProcessorConfig
+class LanguageModelConfig(TextModelConfig[DecoderConfig]):
     generation_config: GenerationConfig
 
-
-class LanguageModel(LalamoModule[LanguageModelConfig]):
-    decoder: Decoder
-    message_processor: MessageProcessor = eqx.field(static=True)
+    def init(
+        self,
+        model: LalamoModule,
+        message_processor: MessageProcessor,
+    ) -> "LanguageModel":
+        assert isinstance(model, Decoder)
+        return LanguageModel(self, model, message_processor)
 
     @classmethod
-    def load(cls, path: Path | str) -> Self:
-        if isinstance(path, str):
-            path = Path(path)
-        with open(path / "config.json") as config_file:
-            config_json = json.load(config_file)
-        config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
-        with open_safetensors(path / "model.safetensors") as (weights_dict, _):
-            weights = unflatten_parameters(weights_dict)
-            decoder = config.decoder_config.empty().import_weights(weights)
-        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
-        message_processor = MessageProcessor(config.message_processor_config, tokenizer)
-        return cls(config, decoder, message_processor)
+    def load_model(cls, path: Path | str) -> "LanguageModel":
+        result = super().load_model(path)
+        assert isinstance(result, LanguageModel)
+        return result
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.decoder.activation_precision
 
-    def export_weights(self) -> ParameterTree:
-        return self.decoder.export_weights()
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        return replace(
-            self,
-            decoder=self.decoder.import_weights(weights),
-        )
-
+class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     @property
     def stop_token_ids(self) -> tuple[int, ...]:
         return self.config.generation_config.stop_token_ids
@@ -139,11 +112,11 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         batch_size, sequence_length = token_ids.shape
         token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
         if state_capacity is not None:
-            state = self.decoder.init_static_state(batch_size, state_capacity)
+            state = self.model.init_static_state(batch_size, state_capacity)
         else:
             state = None
 
-        decoder_outputs = self.decoder(
+        decoder_outputs = self.model(
             token_ids,
             token_positions,
             state,
@@ -230,7 +203,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 else:
                     forward_pass_mode = ForwardPassMode.MULTI_TOKEN
 
-                decoder_outputs = self.decoder(
+                decoder_outputs = self.model(
                     next_token_ids[:, None],
                     next_token_indices[:, None],
                     state.state,
@@ -282,7 +255,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
         formatted_messages = self.message_processor.render_request(messages)
-        token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)[None, :]
+        token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
         response_ids = self.generate_tokens(
             token_ids,
             sampling_policy,
@@ -302,7 +275,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
         key: PRNGKeyArray | None = None,
     ) -> Iterable[str]:
         formatted_messages = self.message_processor.render_request(messages)
-        token_ids = jnp.array(self.message_processor.tokenize(formatted_messages), dtype=jnp.int32)
+        token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)
         for token_id in self.stream_tokens(
             token_ids,
             sampling_policy,
@@ -362,7 +335,7 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 return
 
             next_token_indices = state.last_token_indices + 1
-            decoder_outputs = self.decoder(
+            decoder_outputs = self.model(
                 next_token_id.reshape(1, 1),
                 next_token_indices.reshape(1, 1),
                 state.state,
@@ -376,12 +349,3 @@ class LanguageModel(LalamoModule[LanguageModelConfig]):
                 decoder_outputs.updated_state,
                 state.stop_flags,
             )
-
-    def record_trace(self, messages: Iterable[Message] | None = None) -> DecoderResult:
-        if messages:
-            token_ids, token_positions = self.message_processor.tokenize_request(messages)
-            token_ids = jnp.array(token_ids)[None, :]
-            token_positions = jnp.array(token_positions)[None, :]
-        else:
-            token_ids, token_positions = get_dummy_tokens()
-        return self.decoder(token_ids=token_ids, token_positions=token_positions)

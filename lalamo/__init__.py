@@ -1,4 +1,3 @@
-from lalamo.language_model import LanguageModel
 from lalamo.message_processor import (
     AssistantMessage,
     ContentBlock,
@@ -9,6 +8,7 @@ from lalamo.message_processor import (
     UserMessage,
 )
 from lalamo.model_import import ModelSpec, import_model
+from lalamo.models import LanguageModel, Router
 
 __version__ = "0.5.2"
 
@@ -19,6 +19,7 @@ __all__ = [
     "LanguageModel",
     "Message",
     "ModelSpec",
+    "Router",
     "SystemMessage",
     "ToolSchema",
     "UserMessage",

@@ -13,7 +13,8 @@ from safetensors.flax import save_file
 
 from lalamo.common import flatten_parameters
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, import_model
-from lalamo.model_import.common import LanguageModel, ModelType, RouterModel
+from lalamo.model_import.model_specs import ModelType
+from lalamo.models import LanguageModelConfig, RouterConfig
 from lalamo.modules import config_converter
 from tests.test_models import DType, ModelTestSpec
 
@@ -89,8 +90,8 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
     model = None
     match metadata.model_type:
         case ModelType.LANGUAGE_MODEL:
-            model = LanguageModel.load(tmp_path)
+            model = LanguageModelConfig.load_model(tmp_path)
         case ModelType.ROUTER_MODEL:
-            model = RouterModel.load(tmp_path)
+            model = RouterConfig.load_model(tmp_path)
     assert model is not None, f"Failed to load model {model_repo_name}"
     del model

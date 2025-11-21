@@ -6,8 +6,8 @@ import jax.numpy as jnp
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
-from lalamo.language_model import LanguageModel
 from lalamo.message_processor import Message
+from lalamo.models import LanguageModel
 
 
 class CollectTracesEvent(NamedTuple):
@@ -28,7 +28,7 @@ def inference_collect_traces(
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
 
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
-    filtered_prefixes = filter(lambda conv: len(conv.token_ids) <= max_input_length, tokenized_prefixes)
+    filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
 
     tokens_generated, sequences_processed = 0, 0
 
@@ -63,7 +63,7 @@ def inference_collect_traces(
                 for keys, values in zip(token_logits_ids, token_logits_values, strict=True)
             ]
 
-            yield LalamoCompletion(batch[conv_idx].token_ids, token_ids, token_logits)
+            yield LalamoCompletion(batch[conv_idx], token_ids, token_logits)
 
             if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
                 break

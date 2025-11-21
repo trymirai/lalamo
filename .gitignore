@@ -20,16 +20,16 @@ wheels/
 .pyright/
 
 # Notebooks
-notebooks/
+/notebooks/
 
 # Downloads
-downloads/
+/downloads/
 
 # Converted models
-models/
+/models/
 
 # Inference traces
-traces/
+/traces/
 
 # IDE
 .idea/

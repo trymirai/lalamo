@@ -2,7 +2,7 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
-from typing import Any, Self
+from typing import Any, Generic, Self, TypeVar
 
 import equinox as eqx
 from cattrs import Converter
@@ -32,8 +32,11 @@ class ForwardPassMode(Enum):
     SINGLE_TOKEN = "single_token"
 
 
-class LalamoModule[ConfigT](eqx.Module):
-    config: ConfigT = eqx.field(static=True)
+ConfigT_co = TypeVar("ConfigT_co", covariant=True)
+
+
+class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
+    config: ConfigT_co = eqx.field(static=True)
 
     @property
     @abstractmethod

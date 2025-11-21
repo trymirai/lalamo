@@ -7,8 +7,8 @@ from jaxtyping import Array, Int
 from transformers import AutoTokenizer
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from lalamo.language_model import LanguageModel
 from lalamo.model_import import REPO_TO_MODEL, import_model
+from lalamo.models import LanguageModel
 from lalamo.sampling import GreedyPolicy
 
 
@@ -59,7 +59,7 @@ def tokenizer() -> PreTrainedTokenizer:
 
 
 def test_tokenizer(language_model: LanguageModel, generation_input: GenerationInput) -> None:
-    token_ids = language_model.message_processor.tokenize(generation_input.prompt)
+    token_ids = language_model.message_processor.tokenize_text(generation_input.prompt)
     ref_token_ids = generation_input.token_ids.tolist()
     assert token_ids == ref_token_ids
 

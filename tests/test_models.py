@@ -13,14 +13,13 @@ import torch
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import LanguageModel, import_model
+from lalamo import LanguageModel, Router, import_model
 from lalamo.model_import.common import ModelType
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
     DecoderResult,
     TransformerLayerResult,
 )
-from lalamo.router_model import RouterModel
 from tests.common import assert_close, checkify_forward
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx")
@@ -472,7 +471,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         match model_metadata.model_type:
             case ModelType.LANGUAGE_MODEL:
                 assert isinstance(model, LanguageModel)
-                err, inference_results = checkify_forward(model.decoder)(
+                err, inference_results = checkify_forward(model.model)(
                     token_ids=token_ids,
                     token_positions=token_positions,
                     return_updated_state=True,
@@ -481,8 +480,8 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
                 err.throw()
 
             case ModelType.ROUTER_MODEL:
-                assert isinstance(model, RouterModel)
-                err, inference_results = checkify_forward(model.classifier)(
+                assert isinstance(model, Router)
+                err, inference_results = checkify_forward(model.model)(
                     token_ids=token_ids,
                     token_positions=token_positions,
                     return_activation_trace=True,

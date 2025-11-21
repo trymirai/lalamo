@@ -599,34 +599,6 @@ def load_mlx_semi_quantized_untied_embedding(
     )
 
 
-def load_mlx_semi_quantized_untied_embedding(
-    module: MLXSemiQuantizedUntiedEmbedding,
-    weights_dict: Mapping[str, Array],
-    embedding_path: ParameterPath,
-    lm_head_path: ParameterPath,
-) -> MLXSemiQuantizedUntiedEmbedding:
-    input_weights = weights_dict[embedding_path / "weight"]
-
-    output_qweights = weights_dict[lm_head_path / "weight"]
-    output_qscales = weights_dict[lm_head_path / "scales"]
-    output_qbiases = weights_dict[lm_head_path / "biases"]
-
-    output_weights = _process_quantized_tensor(
-        output_qweights,
-        module.config.embedding_quantization_mode,
-        module.activation_precision,
-        None,
-    )
-    output_scales = output_qscales.astype(module.activation_precision)
-    output_biases = output_qbiases.astype(module.activation_precision)
-
-    return load_parameters(
-        lambda m: (m.input_weights, m.output_weights, m.output_scales, m.output_biases),
-        module,
-        (input_weights, output_weights, output_scales, output_biases),
-    )
-
-
 def load_untied_embedding(
     module: UntiedEmbedding,
     weights_dict: Mapping[str, Array],

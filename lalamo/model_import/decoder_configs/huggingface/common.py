@@ -99,10 +99,14 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
     @property
     def eos_token_ids(self) -> list[int]:
-        if not hasattr(self, "eos_token_id"):
-            raise RuntimeError("model doesn't havve eos_token_id, override eos_token_ids in model config")
+        result = getattr(self, "eos_token_id", None)
+        if result is None:
+            raise RuntimeError("model doesn't have eos_token_id, override eos_token_ids in model config")
 
-        return [self.eos_token_id] if isinstance(self.eos_token_id, int) else self.eos_token_id
+        if isinstance(result, int):
+            result = [result]
+
+        return result
 
     @property
     def default_precision(self) -> DTypeLike:

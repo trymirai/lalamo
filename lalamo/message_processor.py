@@ -4,9 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from functools import cached_property
 from re import Pattern
-from typing import NamedTuple, NotRequired, TypedDict
+from typing import NotRequired, TypedDict
 
-import numpy as np
 from jinja2 import Template
 from tokenizers import Tokenizer
 
@@ -28,11 +27,6 @@ type Image = None  # WIP
 
 def _strftime_now(format_string: str) -> str:
     return datetime.now().strftime(format_string)  # noqa: DTZ005
-
-
-class TokenizeRequestResult(NamedTuple):
-    token_ids: list[int]
-    token_positions: list[int]
 
 
 class HuggingFaceMessage(TypedDict):
@@ -162,14 +156,12 @@ class MessageProcessor:
             raise ValueError(f"Invalid response format: {response}")
         return AssistantMessage(**match.groupdict())
 
-    def tokenize(self, text: str) -> list[int]:
+    def tokenize_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
 
-    def tokenize_request(self, messages: Iterable[Message]) -> TokenizeRequestResult:
+    def tokenize_request(self, messages: Iterable[Message]) -> list[int]:
         rendered = self.render_request(messages)
-        tokenized = self.tokenize(rendered)
-        tokenized_positions = np.arange(len(tokenized)).tolist()
-        return TokenizeRequestResult(tokenized, tokenized_positions)
+        return self.tokenize_text(rendered)
 
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
