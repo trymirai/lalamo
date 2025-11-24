@@ -81,11 +81,14 @@ from .transformer_layer import (
     TransformerLayerResult,
 )
 
+from .audio_codecs import AudioDecoder, Vocoder
+
 __all__ = [
     "GELU",
     "Activation",
     "Attention",
     "AttentionConfig",
+    "AudioDecoder",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
@@ -153,6 +156,7 @@ __all__ = [
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
+    "Vocoder",
     "YARNRoPEConfig",
     "config_converter",
 ]
