@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from enum import Enum
-from itertools import chain
+from itertools import chain, islice
 from pathlib import Path
 from typing import Annotated
 
@@ -480,6 +480,48 @@ def collect_traces(
                     output_fd.write(blob)
 
             progress.update(inference_task, description="✅ Completed")
+
+@speculator_app.command(help="View model inference traces")
+def view_traces(
+    trace_path: Annotated[
+        Path,
+        Argument(
+            help="File of inference traces to view.",
+            metavar="TRACE_PATH",
+        ),
+    ],
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory for detokenization.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    num_completions: Annotated[
+        int | None,
+        Option(
+            help="Number of completions to show.",
+        ),
+    ] = None,
+) -> None:
+    model = LanguageModelConfig.load_model(model_path)
+
+    with open(trace_path, "rb") as trace_fd:
+        traces = LalamoCompletion.deserialize_many(trace_fd)
+
+        table = Table(
+            show_lines=True,
+            box=box.ROUNDED,
+        )
+        table.add_column("Prefix")
+        table.add_column("Completion")
+
+        for completion in islice(traces, num_completions):
+            detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
+            detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
+            table.add_row(detokenized_prefix, detokenized_completion)
+
+        console.print(table)
 
 
 @speculator_app.command(help="Train a speculator from inference traces")
