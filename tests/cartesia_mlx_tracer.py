@@ -8,9 +8,9 @@ import mlx.core as mx
 from jaxtyping import Array
 from mlx import nn
 
-from lalamo.modules.decoder import DecoderActivationTrace
+from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.test_models import DType, ModelTracer
+from tests.test_models import ActivationTrace, DType, InferenceResult, ModelTracer
 
 
 @dataclass(frozen=True)
@@ -29,10 +29,10 @@ class CartesiaMLXDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module]
         return self.model.embedding(token_ids)
 
     # no ropes
-    def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
+    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
         pass
 
-    def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
+    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
         pass
 
     def rmsnorm(self, rmsnorm: nn.Module, x: mx.array) -> mx.array:
@@ -120,6 +120,11 @@ class CartesiaMLXDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module]
         output_logits = self.model.head(last_norm_output)
 
         return (tuple(hidden_states[:-1]), last_norm_output, output_logits)
+
+    def normalized_output(self, result: InferenceResult) -> mx.array:
+        assert result.activation_trace is not None
+        assert isinstance(result, DecoderResult)
+        return self.from_jax(result.activation_trace.output_norm[None, ...])
 
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:

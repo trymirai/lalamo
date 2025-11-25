@@ -1,6 +1,6 @@
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Protocol, Self
+from typing import Any, Protocol, Self
 
 import jax
 import torch
@@ -23,8 +23,8 @@ from transformers.models.modernbert.modeling_modernbert import ModernBertEncoder
 from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
 from transformers.processing_utils import Unpack
 
-from lalamo.modules import TransformerLayerResult
-from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
+from lalamo.modules import DecoderResult
+from lalamo.modules.classifier import ClassifierResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
 from tests.test_models import ActivationTrace, DType, InferenceResult, ModelTracer
@@ -142,6 +142,7 @@ class HFModelForCausalLM(Protocol):
 
 class HFModelForSequenceClassification(Protocol):
     model: HFClassificationModel
+    classifier: nn.Linear
 
     def forward(
         self,
@@ -158,6 +159,23 @@ class HFModelForSequenceClassification(Protocol):
         logits_to_keep: int | Tensor = 0,
         **kwargs: Unpack[FlashAttentionKwargs],
     ) -> SequenceClassifierOutputWithPast: ...
+
+
+def _load_hf_model(
+    model_type: type[AutoModelForCausalLM | AutoModelForSequenceClassification], model_repo: str, dtype: DType | None
+) -> tuple[Any, torch.device]:
+    if torch.cuda.is_available():
+        device = torch.device("cuda")
+    else:
+        device = torch.device("cpu")
+
+    model = model_type.from_pretrained(
+        model_repo,
+        dtype=dtype.torch_dtype if dtype is not None else None,
+        device_map=device,
+    )
+
+    return model, device
 
 
 def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention | Gemma3Attention) -> Tensor:
@@ -329,18 +347,14 @@ class HFDecoderTracer(
     def match_activations(self, result: InferenceResult) -> None:
         return super().match_activations(result)
 
+    def normalized_output(self, result: InferenceResult) -> Tensor:
+        assert result.activation_trace is not None
+        assert isinstance(result, DecoderResult)
+        return self.from_jax(result.activation_trace.output_norm[None, ...])
+
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-
-        hf_model = AutoModelForCausalLM.from_pretrained(
-            model_repo,
-            dtype=dtype.torch_dtype if dtype is not None else None,
-            device_map=device,
-        )
+        hf_model, device = _load_hf_model(AutoModelForCausalLM, model_repo, dtype)
 
         # Correct the bug in the HF Gemma implementation
         # See https://github.com/huggingface/transformers/issues/38702
@@ -353,7 +367,7 @@ class HFDecoderTracer(
 
 
 @dataclass(frozen=True)
-class HFClassifierTracer(
+class ModernBertTracer(
     ModelTracer[torch.Tensor, ModernBertEncoderLayer, nn.LayerNorm, ModernBertAttention, ModernBertMLP]
 ):
     hf_model: HFModelForSequenceClassification
@@ -368,44 +382,40 @@ class HFClassifierTracer(
             forward_outputs, _ = forward_outputs
         return forward_outputs
 
+    def embedding(self, token_ids: torch.Tensor) -> torch.Tensor:
+        return self.hf_model.model.embeddings.forward(token_ids)
+
     def from_jax(self, array: Array) -> torch.Tensor:
         return jax_to_torch(array).to(self.device)
 
     def to_jax(self, array: torch.Tensor) -> Array:
         return torch_to_jax(array)
 
-    def match_embedding_custom(self, activation_trace: ActivationTrace) -> None:
-        assert isinstance(activation_trace, ClassifierActivationTrace)
-        lalamo_embeddings = activation_trace.embedding_norm_output
-        hf_embedding = self.hf_model.model.embeddings
+    def readout(self, x: torch.Tensor) -> torch.Tensor:
+        return self.hf_model.classifier(x)
 
-        ref_input = jax_to_torch(activation_trace.token_ids)[None, ...].to(self.device)
-        torch_embedding = hf_embedding.forward(ref_input)
-        ref_embedding = torch_to_jax(torch_embedding).squeeze(0)
-        assert_close(
-            result=lalamo_embeddings,
-            reference=ref_embedding,
-            operation_name="Embedding",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
+    def normalized_output(self, result: InferenceResult) -> Tensor:
+        assert result.activation_trace is not None
+        assert isinstance(result, ClassifierResult)
+        return self.from_jax(result.activation_trace.output_pooling[None, ...])
 
-    def match_layer_custom(
+    def match_layer(
         self,
-        layer_result: TransformerLayerResult,
-        position_ids: Array,
-        hf_layer: ModernBertEncoderLayer,
+        ref_layer: ModernBertEncoderLayer,
         layer_index: int,
+        full_activation_trace: ActivationTrace,
     ) -> None:
+        layer_result = full_activation_trace.layer_results[layer_index]
+        position_ids = full_activation_trace.token_positions
         activation_trace = layer_result.activation_trace
         assert activation_trace is not None
 
-        use_global_attention = layer_index % hf_layer.config.global_attn_every_n_layers == 0
+        use_global_attention = layer_index % ref_layer.config.global_attn_every_n_layers == 0
 
-        hf_pre_attention_norm = hf_layer.attn_norm
-        hf_pre_mlp_norm = hf_layer.mlp_norm
+        hf_pre_attention_norm = ref_layer.attn_norm
+        hf_pre_mlp_norm = ref_layer.mlp_norm
 
         attention_mask = torch.ones(activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool)
-
         attention_mask, sliding_window = self.hf_model.model._update_attention_mask(  # noqa: SLF001
             attention_mask,
             output_attentions=False,
@@ -423,7 +433,7 @@ class HFClassifierTracer(
         self.match_attention_custom(
             activation_trace.pre_mixer_norm,
             activation_trace.mixer,
-            hf_layer.attn,  # type: ignore
+            ref_layer.attn,  # type: ignore
             position_ids,
             attention_mask,
             sliding_window,
@@ -440,7 +450,7 @@ class HFClassifierTracer(
         self.match_mlp(
             activation_trace.pre_mlp_norm,
             activation_trace.mlp,
-            hf_layer.mlp,  # type: ignore
+            ref_layer.mlp,  # type: ignore
             f"Layer {layer_index} MLP",
         )
 
@@ -452,7 +462,7 @@ class HFClassifierTracer(
         # NOTE: first argument to 'rotary_emb' should be qkv tensor but it is only used
         # for its dtype and device, actual values are irrelevant.
         fake_qkv = torch.ones(1, dtype=torch.float32, device=self.device)
-        ref_cosines, ref_sines = hf_layer.attn.rotary_emb(fake_qkv, torch_pos_ids)
+        ref_cosines, ref_sines = ref_layer.attn.rotary_emb(fake_qkv, torch_pos_ids)
         assert_close(
             result=sines,
             reference=torch_to_jax(ref_sines),
@@ -469,13 +479,12 @@ class HFClassifierTracer(
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
         assert ref_inputs.ndim == 3
 
+        # NOTE: ugly, but this mimics the internal logic of ModernBERT
         if not use_global_attention:
-            hf_layer.attn.local_attention = (1, 1)
-
-        # NOTE: exception will occur without this cast
+            ref_layer.attn.local_attention = (1, 1)
+        # NOTE: exception will occur in torch without this cast
         position_ids_long = LongTensor(jax_to_torch(position_ids).type(torch.long))
-
-        torch_outputs, *_ = hf_layer.forward(
+        torch_outputs, *_ = ref_layer.forward(
             hidden_states=ref_inputs,
             position_ids=position_ids_long,
             sliding_window_mask=sliding_window,
@@ -517,112 +526,46 @@ class HFClassifierTracer(
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_prediction_head(
+    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
+        # NOTE: currently in ModernBERT rope's are compared in per-layer tracing function
+        pass
+
+    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
+        # NOTE: currently in ModernBERT rope's are compared in per-layer tracing function
+        pass
+
+    def iterate_layers(self) -> Iterable[ModernBertEncoderLayer]:
+        return self.hf_model.model.layers
+
+    def output_norm(self) -> nn.LayerNorm:
+        return self.hf_model.model.final_norm
+
+    def forward(
         self,
-        llm_inputs: Array,
-        llm_outputs: Array,
-        hf_head: HFPredictionHead,
-        name: str,
-    ) -> None:
-        ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        torch_outputs = hf_head.forward(ref_inputs)
-        if isinstance(torch_outputs, tuple):
-            torch_outputs, _ = torch_outputs
-        ref_outputs = torch_to_jax(torch_outputs)
-        assert_close(
-            result=llm_outputs,
-            reference=ref_outputs,
-            operation_name=name,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
-
-    @torch.no_grad()
-    def match_activations(self, result: InferenceResult) -> None:
-        assert isinstance(result, ClassifierResult)
-        assert result.activation_trace is not None
-        self.match_embedding_custom(result.activation_trace)
-
-        for i, (hf_layer, layer_result) in enumerate(
-            zip(
-                self.hf_model.model.layers,
-                result.activation_trace.layer_results,
-                strict=True,
-            ),
-        ):
-            self.match_layer_custom(layer_result, result.activation_trace.token_positions, hf_layer, i)
-
-        self.match_rmsnorm(
-            result.activation_trace.layer_results[-1].outputs,
-            result.activation_trace.output_norm,
-            self.hf_model.model.final_norm,
-            "Output RMSNorm",
-        )
-
-        hf_input_ids = jax_to_torch(result.activation_trace.token_ids).to(self.device)
-        hf_token_positions = jax_to_torch(result.activation_trace.token_positions).to(self.device)
+        input_ids: torch.Tensor,
+        position_ids: torch.Tensor,
+    ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
         hf_outputs = self.hf_model.forward(
-            input_ids=hf_input_ids,
-            position_ids=hf_token_positions,
+            input_ids=input_ids,
+            position_ids=position_ids,
             output_hidden_states=True,
         )
         assert hf_outputs.hidden_states is not None
 
         *hf_hidden_states, hf_last_non_norm_output = hf_outputs.hidden_states
 
-        for i, (hf_layer_inputs, layer_result) in enumerate(
-            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
-        ):
-            layer_activation_trace = layer_result.activation_trace
-            assert layer_activation_trace is not None
-            ref_layer_inputs = torch_to_jax(hf_layer_inputs)
-            assert_close(
-                result=layer_activation_trace.inputs,
-                reference=ref_layer_inputs,
-                fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-                operation_name=f"End2End Layer {i} inputs",
-            )
-
         # NOTE: Because of how layers outputs are saved in ModernBert we will only see
-        # non-normalized per-layer outputs in the 'hidden_states'
-        last_norm_output = result.activation_trace.output_norm
-        ref_last_norm_output = torch_to_jax(self.hf_model.model.final_norm.forward(hf_last_non_norm_output))
-        assert_close(
-            result=last_norm_output,
-            reference=ref_last_norm_output,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Output Normalized",
-        )
-
-        # NOTE: logits used to be compared in 'match_readout' but after moving
-        # final classification layer into PredictionHead it becomes awkward.
-        # Instead we just compare logits at the output of full HF model with ours.
+        # non-normalized per-layer outputs in the 'hidden_states' and need to apply
+        # normalization manually
+        hf_last_norm_output = self.hf_model.model.final_norm.forward(hf_last_non_norm_output)
         assert hf_outputs.logits is not None
-        assert_close(
-            result=result.logits,
-            reference=torch_to_jax(hf_outputs.logits),
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Logits",
-        )
-        ref_probas = jax.nn.softmax(torch_to_jax(hf_outputs.logits), axis=-1)
-        llm_probas = jax.nn.softmax(result.logits, axis=-1)
-        assert_close(
-            result=llm_probas,
-            reference=ref_probas,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Token Probabilities",
-        )
+        return (tuple(hf_hidden_states), hf_last_norm_output, hf_outputs.logits)
+
+    @torch.no_grad()
+    def match_activations(self, result: InferenceResult) -> None:
+        super().match_activations(result)
 
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
-        if torch.cuda.is_available():
-            device = torch.device("cuda")
-        else:
-            device = torch.device("cpu")
-
-        hf_model = AutoModelForSequenceClassification.from_pretrained(
-            model_repo,
-            dtype=dtype.torch_dtype if dtype is not None else None,
-            device_map=device,
-        )
-
+        hf_model, device = _load_hf_model(AutoModelForSequenceClassification, model_repo, dtype)
         return cls(hf_model, device)

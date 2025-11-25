@@ -1,7 +1,7 @@
 import pytest
 import torch
 
-from tests.huggingface_tracer import HFClassifierTracer, HFDecoderTracer
+from tests.huggingface_tracer import HFDecoderTracer, ModernBertTracer
 from tests.test_models import DType, ModelTestSpec, _test_model
 
 MODEL_LIST = [
@@ -38,4 +38,4 @@ def test_hf_lm_models(test_spec: ModelTestSpec) -> None:
     ids=[m.model_repo for m in CLASSIFIER_MODEL_LIST],
 )
 def test_hf_classifier_models(test_spec: ModelTestSpec) -> None:
-    _test_model(test_spec, HFClassifierTracer)
+    _test_model(test_spec, ModernBertTracer)
