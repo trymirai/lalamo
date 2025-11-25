@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from enum import Enum
-from itertools import chain
+from itertools import chain, islice
 from pathlib import Path
 from typing import Annotated
 
@@ -45,6 +45,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.models import LanguageModelConfig, RouterConfig
 from lalamo.modules import config_converter
+from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import (
@@ -384,6 +385,77 @@ speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
 
 
+@speculator_app.command(help="Estimate maximum batch size at which a model can be run.")
+def estimate_batchsize(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    max_input_length: Annotated[
+        int,
+        Option(help="Max input length of a model."),
+    ] = 1024,
+    max_output_length: Annotated[
+        int,
+        Option(help="Max output length of a model."),
+    ] = 1024,
+    num_logits_per_token: Annotated[
+        int,
+        Option(help="Number of top logits that will be recorded."),
+    ] = 8,
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum vram size in gb allowed.",
+            show_default="max on default device",
+        ),
+    ] = None,
+) -> None:
+    if vram_gb is not None:
+        mem = vram_gb * 1024 * 1024 * 1024
+    else:
+        memory_stats = jax.local_devices()[0].memory_stats()
+        if memory_stats is None:
+            err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+            raise Exit(1)
+        if "bytes_limit" not in memory_stats:
+            err_console.print("Cannot get the default device's bytes limit, use --vram-gb")
+            raise Exit(1)
+        mem = memory_stats["bytes_limit"]
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        loading_model_task = progress.add_task("[cyan]Loading model...[/cyan]")
+        model = LanguageModelConfig.load_model(model_path)
+        progress.remove_task(loading_model_task)
+
+        estimating_batchsize_task = progress.add_task("[cyan]Estimating batch size...[/cyan]")
+
+        def progress_callback(event: EstimateBatchsizeFromMemoryEvent) -> None:
+            lo = str(event.lo)
+            hi = str(event.hi) if event.hi is not None else "?"
+            description = f"[cyan]Estimating batch size... ({lo}..{hi})[/cyan]"
+            progress.update(estimating_batchsize_task, description=description)
+
+        bs = estimate_batchsize_from_memory(
+            model,
+            max_input_length,
+            max_output_length,
+            num_logits_per_token,
+            mem,
+            progress_callback,
+        )
+        progress.remove_task(estimating_batchsize_task)
+
+    console.print(f"Found maximum batch size: [cyan]{bs}[/cyan]")
+
+
 @speculator_app.command(help="Run model inference and collect traces for speculator training")
 def collect_traces(
     model_path: Annotated[
@@ -480,6 +552,49 @@ def collect_traces(
                     output_fd.write(blob)
 
             progress.update(inference_task, description="✅ Completed")
+
+
+@speculator_app.command(help="View model inference traces")
+def view_traces(
+    trace_path: Annotated[
+        Path,
+        Argument(
+            help="File of inference traces to view.",
+            metavar="TRACE_PATH",
+        ),
+    ],
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory for detokenization.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    num_completions: Annotated[
+        int | None,
+        Option(
+            help="Number of completions to show.",
+        ),
+    ] = None,
+) -> None:
+    model = LanguageModelConfig.load_model(model_path)
+
+    with open(trace_path, "rb") as trace_fd:
+        traces = LalamoCompletion.deserialize_many(trace_fd)
+
+        table = Table(
+            show_lines=True,
+            box=box.ROUNDED,
+        )
+        table.add_column("Prefix")
+        table.add_column("Completion")
+
+        for completion in islice(traces, num_completions):
+            detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
+            detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
+            table.add_row(detokenized_prefix, detokenized_completion)
+
+        console.print(table)
 
 
 @speculator_app.command(help="Train a speculator from inference traces")
