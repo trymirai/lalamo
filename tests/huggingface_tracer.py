@@ -482,7 +482,6 @@ class ModernBertTracer(
         # NOTE: ugly, but this mimics the internal logic of ModernBERT
         if not use_global_attention:
             ref_layer.attn.local_attention = (1, 1)
-        # NOTE: exception will occur in torch without this cast
         position_ids_long = LongTensor(jax_to_torch(position_ids).type(torch.long))
         torch_outputs, *_ = ref_layer.forward(
             hidden_states=ref_inputs,
