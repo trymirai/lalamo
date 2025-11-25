@@ -1,7 +1,9 @@
+import functools
 from collections.abc import Callable, Iterable
 from itertools import batched, chain
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -25,6 +27,21 @@ def inference_collect_traces(
     tokens_to_generate: int | None = None,
     progress_callback: Callable[[CollectTracesEvent], None] | None = None,
 ) -> Iterable[LalamoCompletion]:
+    generate_tokens_compiled = (
+        jax.jit(
+            functools.partial(
+                model.generate_tokens,
+                max_output_length=max_output_length,
+                num_top_logits_to_return=num_top_logits_to_collect,
+            ),
+        )
+        .lower(
+            prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
+            prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
+        )
+        .compile()
+    )
+
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
 
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
@@ -32,22 +49,24 @@ def inference_collect_traces(
 
     tokens_generated, sequences_processed = 0, 0
 
-    for batch in batched(filtered_prefixes, n=batch_size):
+    for real_batch in batched(filtered_prefixes, n=batch_size):
+        batch_padding = batch_size - len(real_batch)
+        batch = (*real_batch, *(([0],) * batch_padding))
+
         length_without_padding = jnp.array(list(map(len, batch)))
-        max_len = max(map(len, batch))
 
         padded = jnp.array(
-            [jnp.pad(jnp.array(tokens), (0, max_len - len(tokens)), constant_values=0) for tokens in batch],
+            [jnp.pad(jnp.array(tokens), (0, max_input_length - len(tokens)), constant_values=0) for tokens in batch],
         )
 
-        generated = model.generate_tokens(
-            padded,
+        generated = generate_tokens_compiled(
+            prompt_token_ids=padded,
             prompt_lengths_without_padding=length_without_padding,
-            max_output_length=max_output_length,
-            num_top_logits_to_return=num_top_logits_to_collect,
         )
+
         assert generated.top_k_token_ids is not None and generated.top_k_token_logits is not None
-        for conv_idx in range(batch_size):
+
+        for conv_idx in range(len(real_batch)):
             token_ids = generated.token_ids[conv_idx].tolist()
             seqlen = next((i + 1 for i, t in enumerate(token_ids) if t in model.stop_token_ids), len(token_ids))
             if tokens_to_generate is not None:
