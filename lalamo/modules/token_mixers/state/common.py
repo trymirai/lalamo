@@ -1,17 +1,13 @@
-from abc import abstractmethod
 from typing import Self
 
 import equinox as eqx
 from jax.tree_util import register_pytree_node_class
 
-from lalamo.common import ParameterTree
-
 __all__ = ["State", "StateLayerBase"]
 
 
 class StateLayerBase(eqx.Module):
-    @abstractmethod
-    def export(self) -> ParameterTree: ...
+    pass
 
 
 @register_pytree_node_class

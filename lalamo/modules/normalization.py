@@ -1,14 +1,12 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
-from typing import Self
 
 import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import dummy_array
 
 from .common import LalamoModule
 
@@ -87,13 +85,3 @@ class Normalization(LalamoModule[NormalizationConfig]):
 
         result = normalized_x * adjusted_scales
         return result.astype(inputs.dtype)
-
-    def export_weights(self) -> ParameterTree:
-        return {"scales": self.scales}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(self, scales=weights["scales"])

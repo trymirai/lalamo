@@ -3,8 +3,6 @@ from typing import Self
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree
-
 from .common import StateLayerBase
 
 __all__ = ["Mamba2StateLayer"]
@@ -42,10 +40,4 @@ class Mamba2StateLayer(StateLayerBase):
         return cls(
             conv_state=jnp.zeros((kernel_size - 1, inner_dim + 2 * num_groups * state_dim), dtype=dtype),
             ssm_state=jnp.zeros((num_heads, head_dim, state_dim), dtype=dtype),
-        )
-
-    def export(self) -> ParameterTree:
-        return dict(
-            conv_state=self.conv_state,
-            ssm_state=self.ssm_state,
         )

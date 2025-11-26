@@ -1,15 +1,11 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
-from typing import Self
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
-
-from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
@@ -43,40 +39,11 @@ class TransformerLayerActivationTrace(eqx.Module):
     mlp: Float[Array, "batch suffix_tokens channels"]
     post_mlp_norm: Float[Array, "batch suffix_tokens channels"] | None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            inputs=self.inputs,
-            mlp_inputs=self.mlp_inputs,
-            pre_mixer_norm=self.pre_mixer_norm,
-            mixer=self.mixer,
-            pre_mlp_norm=self.pre_mlp_norm,
-            mlp=self.mlp,
-        )
-        if self.positional_embeddings is not None:
-            result["positional_embeddings"] = self.positional_embeddings.export()
-        if self.state is not None:
-            result["state"] = self.state.export()
-        if self.post_mixer_norm is not None:
-            result["post_mixer_norm"] = self.post_mixer_norm
-        if self.post_mlp_norm is not None:
-            result["post_mlp_norm"] = self.post_mlp_norm
-        return result
-
 
 class TransformerLayerResult(eqx.Module):
     outputs: Float[Array, "batch tokens channels"]
     updated_state: KVCacheLayer | None
     activation_trace: TransformerLayerActivationTrace | None
-
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            outputs=self.outputs,
-        )
-        if self.updated_state is not None:
-            result["updated_state"] = self.updated_state.export()
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
 
 
 @dataclass(frozen=True)
@@ -209,6 +176,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
+        num_suffix_tokens_to_return: int | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig | None = None,
     ) -> TransformerLayerResult:
@@ -231,6 +199,18 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             state=state,
             length_without_padding=lengths_without_padding,
         )
+
+        if num_suffix_tokens_to_return is not None:
+            if lengths_without_padding is None:
+                mixer_outputs = mixer_outputs[:, -num_suffix_tokens_to_return:, :]
+            else:
+                mixer_outputs = jax.lax.dynamic_slice_in_dim(
+                    mixer_outputs,
+                    start_index=lengths_without_padding - num_suffix_tokens_to_return,
+                    slice_size=num_suffix_tokens_to_return,
+                    axis=1,
+                )
+
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs
@@ -277,54 +257,4 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return jax.tree.map(
             lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
             self.mixer.init_static_state(capacity),
-        )
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            mixer=self.mixer.export_weights(),
-            pre_mlp_norm=self.pre_mlp_norm.export_weights(),
-            mlp=self.mlp.export_weights(),
-        )
-        if self.pre_mixer_norm is not None:
-            result["pre_mixer_norm"] = self.pre_mixer_norm.export_weights()
-        if self.post_mixer_norm is not None:
-            result["post_mixer_norm"] = self.post_mixer_norm.export_weights()
-        if self.post_mlp_norm is not None:
-            result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["mixer"], Mapping)
-        assert isinstance(weights["mlp"], Mapping)
-        assert isinstance(weights["pre_mlp_norm"], Mapping)
-
-        if self.post_mixer_norm is not None:
-            assert isinstance(weights["post_mixer_norm"], Mapping)
-            post_mixer_norm = self.post_mixer_norm.import_weights(
-                weights["post_mixer_norm"],
-            )
-        else:
-            post_mixer_norm = None
-        if self.post_mlp_norm is not None:
-            assert isinstance(weights["post_mlp_norm"], Mapping)
-            post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"])
-        else:
-            post_mlp_norm = None
-        if self.pre_mixer_norm is not None:
-            assert isinstance(weights["pre_mixer_norm"], Mapping)
-            pre_mixer_norm = self.pre_mixer_norm.import_weights(weights["pre_mixer_norm"])
-        else:
-            pre_mixer_norm = None
-        return replace(
-            self,
-            pre_mixer_norm=pre_mixer_norm,
-            mixer=self.mixer.import_weights(weights["mixer"]),
-            post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"]),
-            mlp=self.mlp.import_weights(weights["mlp"]),
-            post_mlp_norm=post_mlp_norm,
         )

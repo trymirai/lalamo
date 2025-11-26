@@ -1,10 +1,11 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
+from lalamo.common import RegistryABC
+from lalamo.modules.common import LalamoConfig, LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
@@ -22,7 +23,7 @@ class TokenMixerResult[StateLayerT](NamedTuple):
 
 
 @dataclass(frozen=True)
-class TokenMixerConfigBase(ABC):
+class TokenMixerConfigBase(LalamoConfig, RegistryABC):
     @property
     @abstractmethod
     def rope_dim(self) -> int: ...
@@ -42,7 +43,7 @@ class TokenMixerConfigBase(ABC):
     ) -> "TokenMixerBase": ...
 
 
-class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
+class TokenMixerBase[ConfigT: LalamoConfig, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
@@ -67,12 +68,3 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
 
     @abstractmethod
     def init_static_state(self, capacity: int) -> StateLayerT: ...
-
-    @abstractmethod
-    def export_weights(self) -> ParameterTree: ...
-
-    @abstractmethod
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self: ...

@@ -1,9 +1,7 @@
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
-from typing import Self
 
 import equinox as eqx
 import jax
@@ -12,7 +10,6 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
@@ -236,25 +233,6 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
         return result
 
-    def export_weights(self) -> ParameterTree:
-        return {
-            "up_projection": self.up_projection.export_weights(),
-            "down_projection": self.down_projection.export_weights(),
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["up_projection"], Mapping)
-        assert isinstance(weights["down_projection"], Mapping)
-        return replace(
-            self,
-            up_projection=self.up_projection.import_weights(weights["up_projection"]),
-            down_projection=self.down_projection.import_weights(weights["down_projection"]),
-        )
-
 
 class RoutingMap(eqx.Module):
     expert_mask: Bool[Array, "*batch_tokens experts"]
@@ -476,27 +454,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             result,
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
-        )
-
-    def export_weights(
-        self,
-    ) -> ParameterTree[Array]:
-        return {
-            "router": self.router.export_weights(),
-            "experts": self.experts.export_weights(),
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["router"], Mapping)
-        assert isinstance(weights["experts"], Mapping)
-        return replace(
-            self,
-            router=self.router.import_weights(weights["router"]),
-            experts=self.experts.import_weights(weights["experts"]),
         )
 
 

@@ -1,13 +1,10 @@
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
@@ -17,9 +14,9 @@ from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
 from .transformer_layer import (
     TransformerLayer,
+    TransformerLayerActivationTrace,
     TransformerLayerConfig,
     TransformerLayerForwardPassConfig,
-    TransformerLayerResult,
 )
 
 __all__ = [
@@ -32,26 +29,16 @@ __all__ = [
 type TransformerForwardPassConfig = TransformerLayerForwardPassConfig
 
 
-class TransformerResult(eqx.Module):
-    outputs: Float[Array, "batch suffix_tokens channels"]
-    updated_state: State | None = None
-    layer_results: tuple[TransformerLayerResult, ...] | None = None
+class TransformerActivationTrace(eqx.Module):
+    layer_activation_trace: tuple[TransformerLayerActivationTrace, ...]
     global_positional_embeddings: PositionalEmbeddings | None = None
     local_positional_embeddings: PositionalEmbeddings | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            outputs=self.outputs,
-        )
-        if self.updated_state is not None:
-            result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
-        if self.layer_results is not None:
-            result["layer_results"] = [layer_result.export() for layer_result in self.layer_results]
-        if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
-        if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
-        return result
+
+class TransformerResult(eqx.Module):
+    outputs: Float[Array, "batch suffix_tokens channels"]
+    updated_state: State | None = None
+    activation_trace: TransformerActivationTrace | None = None
 
 
 @dataclass(frozen=True)
@@ -162,15 +149,17 @@ class Transformer(LalamoModule[TransformerConfig]):
         token_positions: Int[Array, "batch suffix_tokens"],
         state: State | None,
         return_updated_state: bool,
-        return_layer_results: bool,
+        return_activation_trace: bool,
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
-        forward_pass_mode: ForwardPassMode,
-        forward_pass_config: TransformerForwardPassConfig | None,
+        num_suffix_tokens_to_return: int | None = None,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        forward_pass_config: TransformerForwardPassConfig | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
-                f"inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim), got {inner_features.shape}",
+                f"inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim),"
+                f" got {inner_features.shape}",
             )
         if token_positions.ndim != 2:
             raise ValueError(
@@ -190,9 +179,9 @@ class Transformer(LalamoModule[TransformerConfig]):
             local_positional_embeddings = global_positional_embeddings
 
         updated_state_layers = []
-        layer_results = []
+        activation_traces = []
 
-        for layer, state_layer in zip(self.layers, maybe_state, strict=True):
+        for i, (layer, state_layer) in enumerate(zip(self.layers, maybe_state, strict=True)):
             match layer.positional_embedding_selector:
                 case PositionalEmbeddingSelector.LOCAL:
                     positional_embeddings_to_use = local_positional_embeddings
@@ -201,18 +190,24 @@ class Transformer(LalamoModule[TransformerConfig]):
                 case PositionalEmbeddingSelector.NONE:
                     positional_embeddings_to_use = None
 
+            if i == len(self.layers) - 1:
+                layer_num_suffix_tokens_to_return = num_suffix_tokens_to_return
+            else:
+                layer_num_suffix_tokens_to_return = None
+
             layer_result = layer(
                 inner_features,
                 positional_embeddings_to_use,
                 state=state_layer,
                 return_updated_state=return_updated_state,
-                return_activation_trace=return_layer_results,
+                return_activation_trace=return_activation_trace,
                 lengths_without_padding=lengths_without_padding,
+                num_suffix_tokens_to_return=layer_num_suffix_tokens_to_return,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config,
             )
             inner_features = layer_result.outputs
-            layer_results.append(layer_result)
+            activation_traces.append(layer_result.activation_trace)
             updated_state_layers.append(layer_result.updated_state)
 
         normalized_outputs = vmap_twice(self.output_norm)(inner_features)
@@ -220,54 +215,10 @@ class Transformer(LalamoModule[TransformerConfig]):
         return TransformerResult(
             outputs=normalized_outputs,
             updated_state=(State(updated_state_layers) if return_updated_state else None),
-            layer_results=tuple(layer_results) if return_layer_results else None,
+            activation_trace=tuple(activation_traces) if return_activation_trace else None,
             global_positional_embeddings=(global_positional_embeddings if return_positional_embeddings else None),
             local_positional_embeddings=(local_positional_embeddings if return_positional_embeddings else None),
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            layers=[layer.export_weights() for layer in self.layers],
-            output_norm=self.output_norm.export_weights(),
-        )
-        if self.global_rope:
-            result["global_rope"] = self.global_rope.export_weights()
-        if self.local_rope:
-            result["local_rope"] = self.local_rope.export_weights()
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["layers"], Sequence)
-        assert isinstance(weights["output_norm"], Mapping)
-
-        if self.global_rope:
-            assert isinstance(weights["global_rope"], Mapping)
-            global_rope = self.global_rope.import_weights(weights["global_rope"])
-        else:
-            global_rope = None
-
-        if self.local_rope:
-            assert isinstance(weights["local_rope"], Mapping)
-            local_rope = self.local_rope.import_weights(weights["local_rope"])
-        else:
-            local_rope = None
-
-        layers = []
-        for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
-            assert isinstance(layer_weights, Mapping)
-            layers.append(layer.import_weights(layer_weights))
-
-        return replace(
-            self,
-            global_rope=global_rope,
-            layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(weights["output_norm"]),
-            local_rope=local_rope,
-        )

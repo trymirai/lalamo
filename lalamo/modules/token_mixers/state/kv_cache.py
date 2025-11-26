@@ -6,8 +6,6 @@ import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree
-
 from .common import StateLayerBase
 
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
@@ -51,12 +49,6 @@ class KVCacheLayer(StateLayerBase):
         added_values: Float[Array, "new_tokens groups head_channels"],
         added_length: Int[Array, ""] | int | None = None,
     ) -> Self: ...
-
-    def export(self) -> ParameterTree:
-        return dict(
-            keys=self.keys,
-            values=self.values,
-        )
 
 
 class DynamicKVCacheLayer(KVCacheLayer):

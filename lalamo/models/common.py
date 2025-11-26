@@ -1,18 +1,17 @@
 import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
 import equinox as eqx
-from jax import Array
 from jax import numpy as jnp
 from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
+from lalamo.common import DTypeLike, unflatten_parameters
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
-from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
+from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.utils import open_safetensors
@@ -58,18 +57,6 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     @property
     def activation_precision(self) -> DTypeLike:
         return self.model.activation_precision
-
-    def export_weights(self) -> ParameterTree:
-        return self.model.export_weights()
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        return replace(
-            self,
-            model=self.model.import_weights(weights),
-        )
 
     def record_trace(self, messages: Iterable[Message] | None = None) -> ClassifierResult | DecoderResult:
         if messages is None:

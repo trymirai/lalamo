@@ -1,7 +1,5 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
-from typing import Self
 
 import equinox as eqx
 import jax
@@ -9,22 +7,20 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
-from lalamo.modules import Activation
-from lalamo.modules.normalization import NormalizationConfig
-from lalamo.modules.transformer import (
+from .activations import ActivationBase
+from .common import ForwardPassMode, LalamoConfig, LalamoModule
+from .embedding import EmbeddingBase, EmbeddingConfig
+from .linear import LinearBase, LinearConfig
+from .normalization import NormalizationConfig
+from .rope import PositionalEmbeddings
+from .transformer import (
     Normalization,
     Transformer,
     TransformerConfig,
     TransformerForwardPassConfig,
 )
-from lalamo.modules.utils import vmap_twice
-
-from .common import ForwardPassMode, LalamoModule
-from .embedding import EmbeddingBase, EmbeddingConfig
-from .linear import LinearBase, LinearConfig
-from .rope import PositionalEmbeddings
 from .transformer_layer import TransformerLayerResult
+from .utils import vmap_twice
 
 __all__ = [
     "Classifier",
@@ -40,9 +36,9 @@ class PoolingType(StrEnum):
 
 
 @dataclass(frozen=True)
-class PredictionHeadConfig:
+class PredictionHeadConfig(LalamoConfig):
     dense_config: LinearConfig
-    activation: Activation
+    activation: ActivationBase
     normalization_config: NormalizationConfig
     readout_config: LinearConfig
     use_dense_bias: bool
@@ -67,7 +63,10 @@ class PredictionHeadConfig:
     def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
         dense_key, readout_key = jax.random.split(key)
         dense_layer = self.dense_config.random_init(
-            input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key
+            input_size,
+            (input_size,),
+            has_biases=self.use_dense_bias,
+            key=dense_key,
         )
         norm = self.normalization_config.empty(input_size)
         readout = self.readout_config.random_init(
@@ -88,7 +87,7 @@ class PredictionHeadConfig:
 
 class PredictionHead(LalamoModule[PredictionHeadConfig]):
     dense: LinearBase
-    activation: Activation
+    activation: ActivationBase
     norm: Normalization
     readout: LinearBase
 
@@ -109,29 +108,6 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.dense.activation_precision
 
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            dense=self.dense.export_weights(),
-            norm=self.norm.export_weights(),
-            readout=self.readout.export_weights(),
-        )
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["dense"], Mapping)
-        assert isinstance(weights["norm"], Mapping)
-        assert isinstance(weights["readout"], Mapping)
-        return replace(
-            self,
-            dense=self.dense.import_weights(weights["dense"]),
-            norm=self.norm.import_weights(weights["norm"]),
-            readout=self.readout.import_weights(weights["readout"]),
-        )
-
 
 class ClassifierActivationTrace(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
@@ -146,35 +122,14 @@ class ClassifierActivationTrace(eqx.Module):
     output_pooling: Float[Array, "batch channels"]
     logits: Float[Array, "batch logits"]
 
-    def export(self) -> ParameterTree:
-        result = dict(
-            token_ids=self.token_ids,
-            token_positions=self.token_positions,
-            local_positional_embeddings=self.local_positional_embeddings.export(),
-            global_positional_embeddings=self.global_positional_embeddings.export(),
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
-            output_norm=self.output_norm,
-            output_pooling=self.output_pooling,
-            logits=self.logits,
-        )
-        return result
-
 
 class ClassifierResult(eqx.Module):
     logits: Float[Array, "batch logits"]
     activation_trace: ClassifierActivationTrace | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            logits=self.logits,
-        )
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
-
 
 @dataclass(frozen=True)
-class ClassifierConfig:
+class ClassifierConfig(LalamoConfig):
     embedding_config: EmbeddingConfig
     embedding_norm_config: NormalizationConfig
     transformer_config: TransformerConfig
@@ -272,7 +227,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             token_positions=token_positions,
             state=None,
             return_updated_state=False,
-            return_layer_results=return_activation_trace,
+            return_activation_trace=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
@@ -310,30 +265,4 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return ClassifierResult(
             logits=logits,
             activation_trace=activation_trace,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            embedding=self.embedding.export_weights(),
-            embedding_norm=self.embedding_norm.export_weights(),
-            transformer=self.transformer.export_weights(),
-            prediction_head=self.prediction_head.export_weights(),
-        )
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["embedding"], Mapping)
-        assert isinstance(weights["embedding_norm"], Mapping)
-        assert isinstance(weights["transformer"], Mapping)
-        assert isinstance(weights["prediction_head"], Mapping)
-        return replace(
-            self,
-            embedding=self.embedding.import_weights(weights["embedding"]),
-            embedding_norm=self.embedding_norm.import_weights(weights["embedding_norm"]),
-            transformer=self.transformer.import_weights(weights["transformer"]),
-            prediction_head=self.prediction_head.import_weights(weights["prediction_head"]),
         )

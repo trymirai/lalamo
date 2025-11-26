@@ -1,10 +1,10 @@
-from .activations import GELU, Activation, Identity, SiLU
+from .activations import GELU, ActivationBase, Identity, SiLU
 from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
+    LalamoConfig,
     LalamoModule,
     PositionalEmbeddingSelector,
-    config_converter,
 )
 from .decoder import (
     Decoder,
@@ -83,7 +83,7 @@ from .transformer_layer import (
 
 __all__ = [
     "GELU",
-    "Activation",
+    "ActivationBase",
     "Attention",
     "AttentionConfig",
     "Classifier",
@@ -105,6 +105,7 @@ __all__ = [
     "GroupQuantizedLinearConfig",
     "Identity",
     "KVCacheLayer",
+    "LalamoConfig",
     "LalamoModule",
     "LinearBase",
     "LinearConfig",
@@ -154,5 +155,4 @@ __all__ = [
     "UntiedEmbeddingConfig",
     "UpcastMode",
     "YARNRoPEConfig",
-    "config_converter",
 ]

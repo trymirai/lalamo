@@ -122,6 +122,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             state,
             return_updated_state=True,
             lengths_without_padding=lengths_without_padding,
+            num_suffix_tokens_to_return=1,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
             forward_pass_config=forward_pass_config,
         )
@@ -131,7 +132,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         else:
             last_logits_indices = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
 
-        last_token_logits = vmap(lambda logits, index: logits[index])(decoder_outputs.logits, last_logits_indices)
+        last_token_logits = decoder_outputs.logits.squeeze(1)
 
         assert decoder_outputs.updated_state is not None
         return PrefillResults(

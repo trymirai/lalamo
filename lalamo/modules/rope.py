@@ -16,14 +16,11 @@
 # limitations under the License.
 
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
-
-from lalamo.common import ParameterTree
 
 from .common import LalamoModule, register_config_union
 
@@ -56,12 +53,6 @@ class PositionalEmbeddings(eqx.Module):
 
     def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
         return heads * self.cosines + self.rotate_half(heads) * self.sines
-
-    def export(self) -> ParameterTree:
-        return dict(
-            cosines=self.cosines,
-            sines=self.sines,
-        )
 
 
 @dataclass(frozen=True)
@@ -142,19 +133,6 @@ class RoPE(LalamoModule[RoPEConfigBase]):
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "cosines": self.cosines,
-            "sines": self.sines,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> "RoPE":
-        assert isinstance(weights, Mapping)
-        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
 
 
 class UnscaledRoPEConfig(RoPEConfigBase):

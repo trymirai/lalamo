@@ -5,18 +5,18 @@ import jax.numpy as jnp
 from attr import dataclass
 from jaxtyping import Array, Float
 
-from lalamo.modules.common import register_config_union
+from lalamo.modules.common import LalamoConfig, RegistryABC
 
 __all__ = [
     "GELU",
-    "Activation",
+    "ActivationBase",
     "Identity",
     "SiLU",
 ]
 
 
 @dataclass(frozen=True)
-class ActivationBase:
+class ActivationBase(LalamoConfig, RegistryABC):
     @abstractmethod
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]: ...
 
@@ -39,9 +39,3 @@ class GELU(ActivationBase):
 class Identity(ActivationBase):
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
         return x
-
-
-Activation = SiLU | GELU | Identity
-
-
-register_config_union(Activation)  # type: ignore (pyright bug)

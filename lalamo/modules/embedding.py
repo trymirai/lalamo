@@ -1,7 +1,5 @@
 from abc import abstractmethod
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -9,19 +7,19 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import RegistryABC, dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.utils import jax_uint4_to_packed_uint8
 
 from .common import (
+    LalamoConfig,
     LalamoModule,
-    register_config_union,
 )
 from .utils import apply_soft_capping
 
 __all__ = [
     "EmbeddingBase",
-    "EmbeddingConfig",
+    "EmbeddingConfigBase",
     "MLXQuantizedTiedEmbedding",
     "MLXQuantizedTiedEmbeddingConfig",
     "MLXSemiQuantizedUntiedEmbedding",
@@ -36,7 +34,7 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class EmbeddingConfigBase:
+class EmbeddingConfigBase(LalamoConfig, RegistryABC):
     input_scale: float | None
     logit_soft_cap: float | None
 
@@ -139,16 +137,6 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
 
-    def export_weights(self) -> ParameterTree:
-        return {"weights": self.weights}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(self, weights=weights["weights"])
-
 
 @dataclass(frozen=True)
 class UntiedEmbeddingConfig(EmbeddingConfigBase):
@@ -229,23 +217,6 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.output_weights
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "input_weights": self.input_weights,
-            "output_weights": self.output_weights,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(
-            self,
-            input_weights=weights["input_weights"],
-            output_weights=weights["output_weights"],
-        )
 
 
 @dataclass(frozen=True)
@@ -347,29 +318,6 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
-    def export_weights(self) -> ParameterTree:
-        return {
-            "weights": self.int_weights,
-            "scales": self.scales,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        stored_weights = weights["weights"]
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            stored_weights = jax_uint8_to_unpacked_uint4(stored_weights)
-
-        return replace(
-            self,
-            weights=stored_weights.astype(self.weights.dtype),
-            scales=weights["scales"],
-        )
-
 
 @dataclass(frozen=True)
 class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
@@ -462,34 +410,6 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "weights": self.int_weights,
-            "scales": self.scales,
-            "biases": self.biases,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        assert isinstance(weights["scales"], Array)
-        assert isinstance(weights["biases"], Array)
-
-        unpacked_weights = weights["weights"]
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(weights["weights"])
-
-        return replace(
-            self,
-            weights=unpacked_weights.astype(self.weights.dtype),
-            scales=weights["scales"],
-            biases=weights["biases"],
-        )
 
 
 @dataclass(frozen=True)
@@ -588,46 +508,3 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "input_weights": self.input_weights,
-            "output_weights": self.int_output_weights,
-            "output_scales": self.output_scales,
-            "output_biases": self.output_biases,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["input_weights"], Array)
-        assert isinstance(weights["output_weights"], Array)
-        assert isinstance(weights["output_scales"], Array)
-        assert isinstance(weights["output_biases"], Array)
-
-        unpacked_output_weights = weights["output_weights"]
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(weights["output_weights"])
-
-        return replace(
-            self,
-            input_weights=weights["input_weights"],
-            output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=weights["output_scales"],
-            output_biases=weights["output_biases"],
-        )
-
-
-EmbeddingConfig = (
-    TiedEmbeddingConfig
-    | UntiedEmbeddingConfig
-    | QuantizedTiedEmbeddingConfig
-    | MLXQuantizedTiedEmbeddingConfig
-    | MLXSemiQuantizedUntiedEmbeddingConfig
-)
-
-
-register_config_union(EmbeddingConfig)  # type: ignore (pyright bug)

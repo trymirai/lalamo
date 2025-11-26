@@ -1,7 +1,6 @@
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import NamedTuple, Self
+from dataclasses import dataclass
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -10,9 +9,9 @@ from einops import einsum, rearrange
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
-from lalamo.modules.activations import Activation
-from lalamo.modules.common import LalamoModule, PositionalEmbeddingSelector
+from lalamo.common import dummy_array
+from lalamo.modules.activations import ActivationBase
+from lalamo.modules.common import LalamoConfig, LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
@@ -37,7 +36,7 @@ class CausalConvResult(NamedTuple):
 
 
 @dataclass(frozen=True)
-class SeparableCausalConvConfig:
+class SeparableCausalConvConfig(LalamoConfig):
     precision: DTypeLike
     has_biases: bool
 
@@ -141,33 +140,13 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
             (inputs_with_history if return_updated_state else None),
         )
 
-    def export_weights(self) -> ParameterTree:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "SeparableCausalConv":
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=weights["weights"],
-            biases=biases,
-        )
-
 
 @dataclass(frozen=True)
 class Mamba2Config(TokenMixerConfigBase):
     in_projection_config: LinearConfig
     out_projection_config: LinearConfig
     conv_config: SeparableCausalConvConfig
-    activation: Activation
+    activation: ActivationBase
 
     kernel_size: int
     num_heads: int
@@ -521,33 +500,4 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             self.head_dim,
             self.state_dim,
             self.activation_precision,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "in_projection": self.in_projection.export_weights(),
-            "out_projection": self.out_projection.export_weights(),
-            "conv": self.conv.export_weights(),
-            "skip_connection_weight": self.skip_connection_weight,
-            "gate_bias": self.gate_bias,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["in_projection"], Mapping)
-        assert isinstance(weights["out_projection"], Mapping)
-        assert isinstance(weights["conv"], Mapping)
-        assert isinstance(weights["skip_connection_weight"], Array)
-        assert isinstance(weights["gate_bias"], Array)
-
-        return replace(
-            self,
-            in_projection=self.in_projection.import_weights(weights["in_projection"]),
-            out_projection=self.out_projection.import_weights(weights["out_projection"]),
-            conv=self.conv.import_weights(weights["conv"]),
-            skip_connection_weight=weights["skip_connection_weight"],
-            gate_bias=weights["gate_bias"],
         )

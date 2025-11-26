@@ -1,16 +1,12 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
-
-from .common import ForwardPassMode, LalamoModule
-from .embedding import EmbeddingBase, EmbeddingConfig
+from .common import ForwardPassMode, LalamoConfig, LalamoModule
+from .embedding import EmbeddingBase, EmbeddingConfigBase
 from .rope import PositionalEmbeddings
 from .token_mixers import State
 from .transformer import (
@@ -45,41 +41,16 @@ class DecoderActivationTrace(eqx.Module):
 
     output_norm: Float[Array, "batch suffix_tokens channels"]
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            token_ids=self.token_ids,
-            token_positions=self.token_positions,
-            layer_results=[layer_result.export() for layer_result in self.layer_results],
-            output_norm=self.output_norm,
-        )
-        if self.state is not None:
-            result["state"] = [state_layer.export() for state_layer in self.state]
-        if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
-        if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
-        return result
-
 
 class DecoderResult(eqx.Module):
     logits: Float[Array, "batch suffix_tokens channels"]
     updated_state: State | None = None
     activation_trace: DecoderActivationTrace | None = None
 
-    def export(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
-            logits=self.logits,
-        )
-        if self.updated_state is not None:
-            result["updated_state"] = [state_layer.export() for state_layer in self.updated_state]
-        if self.activation_trace is not None:
-            result["activation_trace"] = self.activation_trace.export()
-        return result
-
 
 @dataclass(frozen=True)
-class DecoderConfig:
-    embedding_config: EmbeddingConfig
+class DecoderConfig(LalamoConfig):
+    embedding_config: EmbeddingConfigBase
     transformer_config: TransformerConfig
 
     vocab_size: int
@@ -126,7 +97,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.embedding.activation_precision
 
     @eqx.filter_jit
-    def __call__(  # noqa: PLR0912
+    def __call__(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],
@@ -134,6 +105,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
+        num_suffix_tokens_to_return: int | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderForwardPassConfig | None = None,
     ) -> DecoderResult:
@@ -154,9 +126,10 @@ class Decoder(LalamoModule[DecoderConfig]):
             token_positions=token_positions,
             state=state,
             return_updated_state=return_updated_state,
-            return_layer_results=return_activation_trace,
+            return_activation_trace=return_activation_trace,
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
+            num_suffix_tokens_to_return=num_suffix_tokens_to_return,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
         )
@@ -186,23 +159,3 @@ class Decoder(LalamoModule[DecoderConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         return self.transformer.init_static_state(batch_size, capacity)
-
-    def export_weights(self) -> ParameterTree:
-        return dict(
-            embedding=self.embedding.export_weights(),
-            transformer=self.transformer.export_weights(),
-        )
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["embedding"], Mapping)
-        assert isinstance(weights["transformer"], Mapping)
-
-        return replace(
-            self,
-            embedding=self.embedding.import_weights(weights["embedding"]),
-            transformer=self.transformer.import_weights(weights["transformer"]),
-        )
