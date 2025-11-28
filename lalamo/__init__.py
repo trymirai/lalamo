@@ -1,3 +1,4 @@
+from lalamo.main import collect_traces, convert, estimate_batchsize, train
 from lalamo.message_processor import (
     AssistantMessage,
     ContentBlock,
@@ -7,14 +8,11 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
-from lalamo.model_import import ModelSpec, import_model
+from lalamo.model_import import ModelSpec
 from lalamo.models import LanguageModel, Router
 from lalamo.speculator import (
     CollectTracesEvent,
     SpeculatorTrainingEvent,
-    estimate_batchsize_from_memory,
-    inference_collect_traces,
-    train_speculator,
 )
 
 __version__ = "0.5.4"
@@ -32,8 +30,8 @@ __all__ = [
     "SystemMessage",
     "ToolSchema",
     "UserMessage",
-    "estimate_batchsize_from_memory",
-    "import_model",
-    "inference_collect_traces",
-    "train_speculator",
+    "collect_traces",
+    "convert",
+    "estimate_batchsize",
+    "train",
 ]
