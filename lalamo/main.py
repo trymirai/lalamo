@@ -443,7 +443,7 @@ def estimate_batchsize(
             description = f"[cyan]Estimating batch size... ({lo}..{hi})[/cyan]"
             progress.update(estimating_batchsize_task, description=description)
 
-        bs = estimate_batchsize_from_memory(
+        estimate = estimate_batchsize_from_memory(
             model,
             max_input_length,
             max_output_length,
@@ -453,7 +453,7 @@ def estimate_batchsize(
         )
         progress.remove_task(estimating_batchsize_task)
 
-    console.print(f"Found maximum batch size: [cyan]{bs}[/cyan]")
+    console.print(f"Found maximum batch size: [cyan]{estimate.lo}[/cyan]")
 
 
 @speculator_app.command(help="Run model inference and collect traces for speculator training")

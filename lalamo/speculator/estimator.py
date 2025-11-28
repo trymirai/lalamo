@@ -49,6 +49,11 @@ class EstimateBatchsizeFromMemoryEvent(NamedTuple):
     hi: int | None
 
 
+class BatchsizeEstimate(NamedTuple):
+    lo: int
+    hi: int
+
+
 def estimate_batchsize_from_memory(
     model: LanguageModel,
     max_input_length: int,
@@ -56,7 +61,7 @@ def estimate_batchsize_from_memory(
     num_logits_per_token: int,
     target_mem: int,
     progress: Callable[[EstimateBatchsizeFromMemoryEvent], None] | None = None,
-) -> int:
+) -> BatchsizeEstimate:
     mem_for_bs = functools.cache(
         functools.partial(
             estimate_memory_from_batchsize,
@@ -88,4 +93,4 @@ def estimate_batchsize_from_memory(
         else:
             lo = mid
 
-    return lo
+    return BatchsizeEstimate(lo, hi)
