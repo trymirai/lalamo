@@ -17,7 +17,7 @@ from lalamo.speculator import (
     train_speculator,
 )
 
-__version__ = "0.5.3"
+__version__ = "0.5.4"
 
 __all__ = [
     "AssistantMessage",
