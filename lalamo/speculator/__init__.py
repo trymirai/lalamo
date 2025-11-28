@@ -1,11 +1,10 @@
 from .common import Speculator
-from .estimator import BatchsizeEstimate, estimate_batchsize_from_memory
+from .estimator import estimate_batchsize_from_memory
 from .inference import CollectTracesEvent, inference_collect_traces
 from .ngram import NGramSpeculator
 from .utils import SpeculatorTrainingEvent, train_speculator
 
 __all__ = [
-    "BatchsizeEstimate",
     "CollectTracesEvent",
     "NGramSpeculator",
     "Speculator",

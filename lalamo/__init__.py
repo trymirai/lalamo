@@ -10,7 +10,6 @@ from lalamo.message_processor import (
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.models import LanguageModel, Router
 from lalamo.speculator import (
-    BatchsizeEstimate,
     CollectTracesEvent,
     SpeculatorTrainingEvent,
     estimate_batchsize_from_memory,
@@ -22,7 +21,6 @@ __version__ = "0.5.3"
 
 __all__ = [
     "AssistantMessage",
-    "BatchsizeEstimate",
     "CollectTracesEvent",
     "ContentBlock",
     "Image",
