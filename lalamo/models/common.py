@@ -75,7 +75,7 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
         if messages is None:
             messages = [UserMessage("Tell me about London")]
 
-        token_ids = jnp.array(self.message_processor.tokenize_request(messages))[None:]
+        token_ids = jnp.array(self.message_processor.tokenize_request(messages))[None, :]
         _, num_tokens = token_ids.shape
         token_positions = jnp.arange(num_tokens)[None, :]
         return self.model(token_ids=token_ids, token_positions=token_positions, return_activation_trace=True)
