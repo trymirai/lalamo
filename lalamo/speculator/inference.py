@@ -30,12 +30,13 @@ def inference_collect_traces(
     generate_tokens_compiled = (
         jax.jit(
             functools.partial(
-                model.generate_tokens,
+                LanguageModel.generate_tokens,
                 max_output_length=max_output_length,
                 num_top_logits_to_return=num_top_logits_to_collect,
             ),
         )
         .lower(
+            model,
             prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
             prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
         )
@@ -60,6 +61,7 @@ def inference_collect_traces(
         )
 
         generated = generate_tokens_compiled(
+            model,
             prompt_token_ids=padded,
             prompt_lengths_without_padding=length_without_padding,
         )

@@ -19,13 +19,14 @@ def estimate_memory_from_batchsize(
     memory_analysis = (
         jax.jit(
             functools.partial(
-                model.generate_tokens,
+                LanguageModel.generate_tokens,
                 max_output_length=max_output_length,
                 num_top_logits_to_return=num_logits_per_token,
             ),
             backend="cpu", # cuda backend tries to allocate in .compile() and ooms
         )
         .lower(
+            model,
             prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
             prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
         )
