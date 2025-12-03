@@ -154,6 +154,7 @@ class ModelSpec:
     model_type: ModelType = ModelType.LANGUAGE_MODEL
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
+    grammar_start_tokens: tuple[str, ...] = tuple()
 
     @classmethod
     def from_json(cls, json_data: dict) -> "ModelSpec":
@@ -179,6 +180,7 @@ def awq_model_spec(
         configs=model_spec.configs,
         weights_type=model_spec.weights_type,
         use_cases=model_spec.use_cases,
+        grammar_start_tokens=model_spec.grammar_start_tokens,
     )
 
 

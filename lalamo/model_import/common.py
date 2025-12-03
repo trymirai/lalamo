@@ -73,6 +73,7 @@ class ModelMetadata:
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
     model_config: LanguageModelConfig | RouterConfig
+    grammar_start_tokens: tuple[str, ...]
 
 
 def download_file(
@@ -346,5 +347,6 @@ def import_model(
         use_cases=model_spec.use_cases,
         model_type=model_spec.model_type,
         model_config=config,
+        grammar_start_tokens=model_spec.grammar_start_tokens,
     )
     return ImportResults(model, metadata)
