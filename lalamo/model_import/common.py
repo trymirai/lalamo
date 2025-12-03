@@ -145,6 +145,8 @@ def import_message_processor(
             case FileSpec(_) as file_spec:
                 chat_template_file = download_file(file_spec, model_spec.repo, output_dir)
                 prompt_template = chat_template_file.read_text()
+            case str() as template_string:
+                prompt_template = template_string
             case None:
                 raise ValueError("No chat template specified.")
     else:
