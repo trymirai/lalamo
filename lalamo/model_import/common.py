@@ -73,6 +73,7 @@ class ModelMetadata:
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
     model_config: LanguageModelConfig | RouterConfig
+    grammar_start_tokens: tuple[str, ...]
 
 
 def download_file(
@@ -145,6 +146,8 @@ def import_message_processor(
             case FileSpec(_) as file_spec:
                 chat_template_file = download_file(file_spec, model_spec.repo, output_dir)
                 prompt_template = chat_template_file.read_text()
+            case str() as template_string:
+                prompt_template = template_string
             case None:
                 raise ValueError("No chat template specified.")
     else:
@@ -344,5 +347,6 @@ def import_model(
         use_cases=model_spec.use_cases,
         model_type=model_spec.model_type,
         model_config=config,
+        grammar_start_tokens=model_spec.grammar_start_tokens,
     )
     return ImportResults(model, metadata)
