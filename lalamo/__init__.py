@@ -8,8 +8,8 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
-from lalamo.model_import import ModelSpec
-from lalamo.models import LanguageModel, Router
+from lalamo.model_import import ModelSpec, import_model
+from lalamo.models import ClassifierModel, LanguageModel
 from lalamo.speculator import (
     CollectTracesEvent,
     SpeculatorTrainingEvent,
@@ -19,13 +19,13 @@ __version__ = "0.5.7"
 
 __all__ = [
     "AssistantMessage",
+    "ClassifierModel",
     "CollectTracesEvent",
     "ContentBlock",
     "Image",
     "LanguageModel",
     "Message",
     "ModelSpec",
-    "Router",
     "SpeculatorTrainingEvent",
     "SystemMessage",
     "ToolSchema",
@@ -33,5 +33,6 @@ __all__ = [
     "collect_traces",
     "convert",
     "estimate_batchsize",
+    "import_model",
     "train",
 ]
