@@ -43,7 +43,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.models import LanguageModelConfig, RouterConfig
+from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
@@ -149,7 +149,7 @@ def chat(
         messages.append(model.message_processor.parse_response(model_response_text))
 
 
-@app.command(help="Classify given message with a Router type of model.")
+@app.command(help="Classify given message with a Classifier type of model.")
 def classify(
     model_path: Annotated[
         Path,
@@ -165,7 +165,7 @@ def classify(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = RouterConfig.load_model(model_path)
+        model = ClassifierModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up...")
         model.classify_chat([UserMessage(content="warmup message")])
