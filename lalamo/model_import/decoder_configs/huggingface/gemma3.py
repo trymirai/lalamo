@@ -19,9 +19,6 @@ from .common import HuggingFaceLMConfig
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
 
-NUM_SLIDING_WINDOW_LAYERS_PER_FULL_ATTENTION_LAYER = 6
-
-
 def _round_to_bfloat16(x: float) -> float:
     return jnp.asarray(x).astype(jnp.bfloat16).item()
 
@@ -49,6 +46,7 @@ class HFGemma3TextConfigRaw:
     model_type: Literal["gemma3_text"]
     num_hidden_layers: int
     sliding_window: int
+    sliding_window_pattern: int
     rms_norm_eps: float = 1e-06
     query_pre_attn_scalar: float = 256.0
     attention_bias: bool = False
@@ -67,7 +65,7 @@ class HFGemma3TextConfigRaw:
     def sliding_window_sizes(self) -> list[int | None]:
         result = []
         for i in range(self.num_hidden_layers):
-            if (i + 1) % NUM_SLIDING_WINDOW_LAYERS_PER_FULL_ATTENTION_LAYER == 0:
+            if (i + 1) % self.sliding_window_pattern == 0:
                 result.append(None)
             else:
                 result.append(self.sliding_window)
