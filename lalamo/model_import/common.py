@@ -17,6 +17,7 @@ from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.models import ClassifierModel, ClassifierModelConfig, GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
+from lalamo.utils import process_chat_template
 
 from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .huggingface_generation_config import HFGenerationConfig
@@ -154,6 +155,7 @@ def import_message_processor(
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
+    prompt_template = process_chat_template(prompt_template)
     tokenizer = Tokenizer.from_file(str(tokenizer_file))
 
     added_tokens = tokenizer_config.added_tokens()

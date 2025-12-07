@@ -1,5 +1,6 @@
 from .common import FileSpec, ModelSpec, ModelType, UseCase, build_quantized_models
 from .deepseek import DEEPSEEK_MODELS
+from .essential_ai import RNJ_MODELS
 from .gemma import GEMMA_MODELS
 from .gpt_oss import GPT_OSS_MODELS
 from .huggingface import HUGGINGFACE_MODELS
@@ -36,6 +37,7 @@ ALL_MODEL_LISTS = [
     QWEN_MODELS,
     REKA_MODELS,
     MIRAI_CLASSIFIER_MODELS,
+    RNJ_MODELS,
 ]
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]

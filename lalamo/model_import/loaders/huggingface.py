@@ -300,7 +300,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
         down_b = weights_dict[experts_path / "down_proj_bias"]
         if down_b.ndim == 1:
-            down_b = jnp.broadcast_to(down_b, down_w.shape[:-1] + (down_b.shape[0],))
+            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
 
         down_projection = load_parameters(
             lambda m: (m.weights, m.biases),  # type: ignore

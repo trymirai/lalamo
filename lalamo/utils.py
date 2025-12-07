@@ -24,6 +24,7 @@ __all__ = [
     "MapSequence",
     "jax_uint4_to_packed_uint8",
     "open_safetensors",
+    "process_chat_template",
 ]
 
 
@@ -159,3 +160,9 @@ def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
     )
 
     return unpacked.astype(jnp.uint4)
+
+
+def process_chat_template(template: str) -> str:
+    template = template.replace("{% generation %}", "")
+    template = template.replace("{%- endgeneration -%}", "")
+    return template

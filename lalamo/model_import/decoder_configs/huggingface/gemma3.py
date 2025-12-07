@@ -36,7 +36,7 @@ class YarnRopeScalingConfig:
     beta_slow: float
     original_max_position_embeddings: int
     rope_type: Literal["yarn"]
-    truncate: bool
+    truncate: bool = False
 
 
 @dataclass(frozen=True)
