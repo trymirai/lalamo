@@ -2,7 +2,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, Self
 
-import jax
 import torch
 from jaxtyping import Array
 from torch import LongTensor, Tensor, nn
@@ -162,7 +161,9 @@ class HFModelForSequenceClassification(Protocol):
 
 
 def _load_hf_model(
-    model_type: type[AutoModelForCausalLM | AutoModelForSequenceClassification], model_repo: str, dtype: DType | None
+    model_type: type[AutoModelForCausalLM | AutoModelForSequenceClassification],
+    model_repo: str,
+    dtype: DType | None,
 ) -> tuple[Any, torch.device]:
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -368,7 +369,7 @@ class HFDecoderTracer(
 
 @dataclass(frozen=True)
 class ModernBertTracer(
-    ModelTracer[torch.Tensor, ModernBertEncoderLayer, nn.LayerNorm, ModernBertAttention, ModernBertMLP]
+    ModelTracer[torch.Tensor, ModernBertEncoderLayer, nn.LayerNorm, ModernBertAttention, ModernBertMLP],
 ):
     hf_model: HFModelForSequenceClassification
     device: torch.device

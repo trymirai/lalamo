@@ -10,7 +10,7 @@ from lalamo.modules.activations import GELU
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig
+from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
@@ -33,6 +33,16 @@ class GemmaRoPEScalingConfig:
 
 
 @dataclass(frozen=True)
+class YarnRopeScalingConfig:
+    factor: float
+    beta_fast: float
+    beta_slow: float
+    original_max_position_embeddings: int
+    rope_type: Literal["yarn"]
+    truncate: bool
+
+
+@dataclass(frozen=True)
 class HFGemma3TextConfigRaw:
     hidden_size: int
     intermediate_size: int
@@ -49,7 +59,7 @@ class HFGemma3TextConfigRaw:
     max_position_embeddings: int = 131072
     rope_theta: float = 1000000.0
     rope_local_base_freq: float = 10000.0
-    rope_scaling: GemmaRoPEScalingConfig | None = None
+    rope_scaling: GemmaRoPEScalingConfig | YarnRopeScalingConfig | None = None
     final_logit_softcapping: float | None = None
     vocab_size: int = 262208
 
@@ -74,7 +84,7 @@ class HFGemma3TextConfigRaw:
         attention_scale = self.query_pre_attn_scalar**-0.5
         embedding_config = TiedEmbeddingConfig(
             input_scale=input_scale,
-            logit_soft_cap=None,
+            logit_soft_cap=self.final_logit_softcapping,
             precision=activation_precision,
         )
         rms_norm_config = NormalizationConfig(
@@ -86,19 +96,33 @@ class HFGemma3TextConfigRaw:
             subtract_mean=False,
         )
 
-        if self.rope_scaling is not None:
+        if isinstance(self.rope_scaling, GemmaRoPEScalingConfig):
             global_rope_config = LinearScalingRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
             )
-        else:
+        elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
+            global_rope_config = YARNRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                scaling_factor=self.rope_scaling.factor,
+                max_sequence_length=self.max_position_embeddings,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
+                beta_fast=self.rope_scaling.beta_fast,
+                beta_slow=self.rope_scaling.beta_slow,
+                truncate=self.rope_scaling.truncate,
+            )
+        elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
             )
+        else:
+            raise ValueError("Invalid rope scaling configuration")
+
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_local_base_freq,
