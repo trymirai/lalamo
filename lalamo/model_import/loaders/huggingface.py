@@ -18,6 +18,7 @@ from lalamo.modules import (
     Mamba2Config,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
+    MLXQuantizedTiedEmbeddingConfig,
     MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
@@ -411,6 +412,7 @@ def _load_conv(
     conv_module: SeparableCausalConv,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    permute_conv: bool,
 ) -> SeparableCausalConv:
     weight_path = path / "conv1d" / "weight"
     if weight_path not in weights_dict:
@@ -422,6 +424,8 @@ def _load_conv(
 
     if weight_path is not None:
         raw = weights_dict[weight_path]
+        if permute_conv:
+            raw = jnp.matrix_transpose(raw)
         conv_weight = raw.squeeze(1) if raw.ndim == 3 else raw
     else:
         conv_weight = conv_module.weights
@@ -450,10 +454,11 @@ def load_mamba2(
     module: Mamba2,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    permute_conv: bool,
 ) -> Mamba2:
     in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
     out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
-    conv = _load_conv(module.conv, weights_dict, path)
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
 
     skip_connection_weight_path = path / "D"
     if skip_connection_weight_path in weights_dict:
@@ -484,10 +489,11 @@ def load_short_conv(
     module: ShortConv,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    permute_conv: bool,
 ) -> ShortConv:
     in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
     out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
-    conv = _load_conv(module.conv, weights_dict, path)
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
 
     return load_parameters(
         lambda m: (m.in_projection, m.out_projection, m.conv),
@@ -508,6 +514,7 @@ def load_transformer_layer(
     up_proj_key: str,
     gate_proj_key: str,
     down_proj_key: str,
+    permute_conv: bool,
 ) -> TransformerLayer:
     if module.pre_mixer_norm is not None:
         pre_attention_norm = load_rmsnorm(
@@ -522,9 +529,9 @@ def load_transformer_layer(
     if isinstance(module.mixer, Attention):
         mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
     elif isinstance(module.mixer, Mamba2):
-        mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key)
+        mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, ShortConv):
-        mixer = load_short_conv(module.mixer, weights_dict, mixer_path / mixer_key)
+        mixer = load_short_conv(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     else:
         mixer = module.mixer
 
@@ -678,6 +685,7 @@ def load_huggingface_decoder(
         embedding_path = decoder_path / "embedding"
         pre_mixer_norm_key = "input_layernorm"
         mixer_key = {Mamba2Config: "mixer"}
+        permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
         up_proj_key = "up_proj"
@@ -691,6 +699,7 @@ def load_huggingface_decoder(
         embedding_path = base_path / "embedding.encoder"
         pre_mixer_norm_key = "norm"
         mixer_key = {Mamba2Config: "layer"}
+        permute_conv = False
         pre_mlp_norm_key = "norm"
         mlp_key = "layer"
         up_proj_key = "gate_proj"
@@ -704,6 +713,7 @@ def load_huggingface_decoder(
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "operator_norm"
         mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
+        permute_conv = isinstance(module.config.embedding_config, MLXQuantizedTiedEmbeddingConfig)
         pre_mlp_norm_key = "ffn_norm"
         mlp_key = "feed_forward"
         up_proj_key = "w3"
@@ -717,6 +727,7 @@ def load_huggingface_decoder(
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
         mixer_key = {AttentionConfig: "self_attn"}
+        permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
         up_proj_key = "up_proj"
@@ -755,6 +766,7 @@ def load_huggingface_decoder(
             up_proj_key,
             gate_proj_key,
             down_proj_key,
+            permute_conv,
         )
         for i, layer in enumerate(module.transformer.layers)
     )

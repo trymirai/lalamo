@@ -14,6 +14,7 @@ from safetensors.flax import save_file
 from lalamo.common import flatten_parameters
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, import_model
 from lalamo.model_import.model_specs import ModelType
+from lalamo.model_import.model_specs.lfm2 import LFM2_MODELS
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.modules import config_converter
 from tests.test_models import DType, ModelTestSpec
@@ -27,7 +28,8 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
     ModelTestSpec("cartesia-ai/Llamba-1B", DType.FLOAT32),
     ModelTestSpec("cartesia-ai/Llamba-1B-4bit-mlx", DType.FLOAT32),
-]
+] + \
+[ModelTestSpec(model.repo, DType.FLOAT32) for model in LFM2_MODELS]
 
 MODEL_LIST += (
     [

@@ -1,11 +1,10 @@
 import pytest
 
+from lalamo.model_import.model_specs.lfm2 import LFM2_MODELS
 from tests.lfm2_tracer import LFM2DecoderTracer
 from tests.test_models import DType, ModelTestSpec, _test_model
 
-MODEL_LIST = [
-    ModelTestSpec("LiquidAI/LFM2-2.6B", DType.FLOAT32),
-]
+MODEL_LIST = [ModelTestSpec(model.repo, DType.FLOAT32) for model in LFM2_MODELS if model.quantization is None]
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
