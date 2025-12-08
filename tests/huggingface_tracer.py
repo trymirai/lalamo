@@ -2,7 +2,6 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, Self
 
-import jax
 import torch
 from jaxtyping import Array
 from torch import LongTensor, Tensor, nn

@@ -8,17 +8,21 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
+    AttentionConfig,
     Decoder,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
     Mamba2,
+    Mamba2Config,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
     MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
+    ShortConv,
+    ShortConvConfig,
     TiedEmbedding,
     TransformerLayer,
     UntiedEmbedding,
@@ -345,21 +349,42 @@ def load_attention(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Attention:
+    if (path / "o_proj.weight") in weights_dict:
+        o_proj_name = "o_proj"
+    elif (path / "out_proj.weight") in weights_dict:
+        o_proj_name = "out_proj"
+    else:
+        raise NotImplementedError("Can't determine attention output projection name")
+
     qkv_projection = load_linear(
         module.qkv_projection,
         weights_dict,
         path,
         sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
     )
-    out_projection = load_linear(module.out_projection, weights_dict, path / "o_proj")
+    out_projection = load_linear(module.out_projection, weights_dict, path / o_proj_name)
 
     if module.query_norm is not None:
-        query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+        if (path / "q_norm.weight") in weights_dict:
+            q_norm_name = "q_norm"
+        elif (path / "q_layernorm.weight") in weights_dict:
+            q_norm_name = "q_layernorm"
+        else:
+            raise NotImplementedError("Can't determine attention query projection parameter name")
+
+        query_norm = load_rmsnorm(module.query_norm, weights_dict, path / q_norm_name)
     else:
         query_norm = None
 
     if module.key_norm is not None:
-        key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+        if (path / "k_norm.weight") in weights_dict:
+            k_norm_name = "k_norm"
+        elif (path / "k_layernorm.weight") in weights_dict:
+            k_norm_name = "k_layernorm"
+        else:
+            raise NotImplementedError("Can't determine attention key projection parameter name")
+
+        key_norm = load_rmsnorm(module.key_norm, weights_dict, path / k_norm_name)
     else:
         key_norm = None
 
@@ -382,7 +407,7 @@ def load_attention(
     )
 
 
-def _load_mamba_conv(
+def _load_conv(
     conv_module: SeparableCausalConv,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -390,6 +415,8 @@ def _load_mamba_conv(
     weight_path = path / "conv1d" / "weight"
     if weight_path not in weights_dict:
         weight_path = path / "conv_weight"
+    if weight_path not in weights_dict:
+        weight_path = path / "conv.weight"
     if weight_path not in weights_dict:
         weight_path = None
 
@@ -402,6 +429,8 @@ def _load_mamba_conv(
     bias_path = path / "conv1d" / "bias"
     if bias_path not in weights_dict:
         bias_path = path / "conv_bias"
+    if bias_path not in weights_dict:
+        bias_path = path / "conv.bias"
     if bias_path not in weights_dict:
         bias_path = None
 
@@ -424,7 +453,7 @@ def load_mamba2(
 ) -> Mamba2:
     in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
     out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
-    conv = _load_mamba_conv(module.conv, weights_dict, path)
+    conv = _load_conv(module.conv, weights_dict, path)
 
     skip_connection_weight_path = path / "D"
     if skip_connection_weight_path in weights_dict:
@@ -448,6 +477,22 @@ def load_mamba2(
         ),
         module,
         (in_projection, out_projection, conv, skip_connection_weight, gate_bias),
+    )
+
+
+def load_short_conv(
+    module: ShortConv,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> ShortConv:
+    in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
+    out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
+    conv = _load_conv(module.conv, weights_dict, path)
+
+    return load_parameters(
+        lambda m: (m.in_projection, m.out_projection, m.conv),
+        module,
+        (in_projection, out_projection, conv),
     )
 
 
@@ -478,6 +523,8 @@ def load_transformer_layer(
         mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
     elif isinstance(module.mixer, Mamba2):
         mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key)
+    elif isinstance(module.mixer, ShortConv):
+        mixer = load_short_conv(module.mixer, weights_dict, mixer_path / mixer_key)
     else:
         mixer = module.mixer
 
@@ -625,11 +672,12 @@ def load_huggingface_decoder(
 
     is_llamba_full_precision = any(key.startswith("backbone.") for key in weights_dict)
     is_llamba_mlx = any(key.startswith("embedding.encoder.") for key in weights_dict)
+    is_lfm2 = any(key.startswith("model.layers.0.operator_norm.weight") for key in weights_dict)
     if is_llamba_full_precision:
         decoder_path = base_path / "backbone"
         embedding_path = decoder_path / "embedding"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = "mixer"
+        mixer_key = {Mamba2Config: "mixer"}
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
         up_proj_key = "up_proj"
@@ -642,7 +690,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = base_path / "embedding.encoder"
         pre_mixer_norm_key = "norm"
-        mixer_key = "layer"
+        mixer_key = {Mamba2Config: "layer"}
         pre_mlp_norm_key = "norm"
         mlp_key = "layer"
         up_proj_key = "gate_proj"
@@ -651,11 +699,24 @@ def load_huggingface_decoder(
         alternating_layers = True
         norm_key = "norm"
         lm_head_path = base_path / "head.linear"
+    elif is_lfm2:
+        decoder_path = base_path / "model"
+        embedding_path = decoder_path / "embed_tokens"
+        pre_mixer_norm_key = "operator_norm"
+        mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
+        pre_mlp_norm_key = "ffn_norm"
+        mlp_key = "feed_forward"
+        up_proj_key = "w3"
+        gate_proj_key = "w1"
+        down_proj_key = "w2"
+        alternating_layers = False
+        norm_key = "embedding_norm"
+        lm_head_path = base_path / "lm_head"
     else:
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = "self_attn"
+        mixer_key = {AttentionConfig: "self_attn"}
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
         up_proj_key = "up_proj"
@@ -687,7 +748,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key,
+            mixer_key[type(layer.config.mixer_config)], # type: ignore
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,
