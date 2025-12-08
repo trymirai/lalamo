@@ -65,17 +65,23 @@ class TransformerConfig:
     context_length: int
 
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-        first_layer_config, *_ = self.layer_configs
+        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
+        rope_dim = next(rope_dims, None)
+        assert all(d == rope_dim for d in rope_dims)
 
         if self.global_rope_config:
+            assert rope_dim is not None
+
             global_rope = self.global_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
         else:
             global_rope = None
 
         if self.local_rope_config:
+            assert rope_dim is not None
+
             max_sliding_window_size = max(
                 layer_config.mixer_config.sliding_window_size or 0
                 for layer_config in self.layer_configs
@@ -83,7 +89,7 @@ class TransformerConfig:
             )
 
             local_rope = self.local_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=max(max_sliding_window_size, self.context_length),
             )
         else:
@@ -109,19 +115,25 @@ class TransformerConfig:
         )
 
     def empty(self) -> "Transformer":
-        first_layer_config, *_ = self.layer_configs
+        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
+        rope_dim = next(rope_dims, None)
+        assert all(d == rope_dim for d in rope_dims)
 
         if self.global_rope_config:
+            assert rope_dim is not None
+
             global_rope = self.global_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
         else:
             global_rope = None
 
         if self.local_rope_config:
+            assert rope_dim is not None
+
             local_rope = self.local_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
         else:
