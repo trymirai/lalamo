@@ -350,9 +350,9 @@ def load_attention(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Attention:
-    if (path / "o_proj.weight") in weights_dict:
+    if (path / "o_proj.weight") in weights_dict or (path / "o_proj.qweight") in weights_dict:
         o_proj_name = "o_proj"
-    elif (path / "out_proj.weight") in weights_dict:
+    elif (path / "out_proj.weight") in weights_dict or (path / "out_proj.qweight") in weights_dict:
         o_proj_name = "out_proj"
     else:
         raise NotImplementedError("Can't determine attention output projection name")
