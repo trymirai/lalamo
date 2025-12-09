@@ -22,6 +22,7 @@ from tests.test_models import DType, ModelTestSpec
 MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("trymirai/chat-moderation-router", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
+    ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
     ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
