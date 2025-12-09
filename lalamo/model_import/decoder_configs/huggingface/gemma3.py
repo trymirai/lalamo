@@ -5,7 +5,13 @@ from typing import Literal
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.modules import DecoderConfig, TiedEmbeddingConfig, TransformerConfig
+from lalamo.modules import (
+    DecoderConfig,
+    MLXQuantizedLinearConfig,
+    MLXQuantizedTiedEmbeddingConfig,
+    TiedEmbeddingConfig,
+    TransformerConfig,
+)
 from lalamo.modules.activations import GELU
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
@@ -13,8 +19,9 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
+from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFGemma3Config", "HFGemma3TextConfig"]
 
@@ -61,6 +68,9 @@ class HFGemma3TextConfigRaw:
     final_logit_softcapping: float | None = None
     vocab_size: int = 262208
 
+    quantization: QuantizationConfigType = None
+    quantization_config: QuantizationConfigType = None
+
     @property
     def sliding_window_sizes(self) -> list[int | None]:
         result = []
@@ -77,14 +87,28 @@ class HFGemma3TextConfigRaw:
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
+        fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
+        quantization = self.quantization or self.quantization_config or fallback_quantization
         input_scale = _round_to_bfloat16(self.hidden_size**0.5)
         attention_scale = self.query_pre_attn_scalar**-0.5
-        embedding_config = TiedEmbeddingConfig(
-            input_scale=input_scale,
-            logit_soft_cap=self.final_logit_softcapping,
-            precision=activation_precision,
-        )
+        if quantization is None:
+            embedding_config = TiedEmbeddingConfig(
+                input_scale=input_scale,
+                logit_soft_cap=self.final_logit_softcapping,
+                precision=activation_precision,
+            )
+        elif isinstance(quantization, MLXQuantizationConfig):
+            embedding_config = MLXQuantizedTiedEmbeddingConfig(
+                input_scale=input_scale,
+                logit_soft_cap=self.final_logit_softcapping,
+                group_size=quantization.group_size,
+                embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+        else:
+            raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
         rms_norm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
@@ -127,7 +151,17 @@ class HFGemma3TextConfigRaw:
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        linear_config = FullPrecisionLinearConfig(precision=activation_precision)
+        if quantization is None:
+            linear_config = FullPrecisionLinearConfig(precision=activation_precision)
+        elif isinstance(quantization, MLXQuantizationConfig):
+            linear_config = MLXQuantizedLinearConfig(
+                group_size=quantization.group_size,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+        else:
+            raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),
@@ -214,6 +248,9 @@ class HFGemma3Config(HuggingFaceLMConfig):
     transformers_version: str
     vision_config: HFGemma3VisionConfig
 
+    quantization: QuantizationConfigType = None
+    quantization_config: QuantizationConfigType = None
+
     def to_decoder_config(
         self,
         context_length: int | None,
@@ -221,9 +258,11 @@ class HFGemma3Config(HuggingFaceLMConfig):
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
+        quantization = self.quantization or self.quantization_config
         return self.text_config.to_decoder_config(
             context_length=context_length,
             activation_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             metadata_dict=metadata_dict,
+            fallback_quantization=quantization,
         )
