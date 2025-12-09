@@ -25,6 +25,7 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
     ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
+    ModelTestSpec("google/gemma-3-4b-it", DType.FLOAT32),
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
     ModelTestSpec("cartesia-ai/Llamba-1B", DType.FLOAT32),

@@ -46,7 +46,6 @@ class HFGemma3TextConfigRaw:
     model_type: Literal["gemma3_text"]
     num_hidden_layers: int
     sliding_window: int
-    sliding_window_pattern: int
     rms_norm_eps: float = 1e-06
     query_pre_attn_scalar: float = 256.0
     attention_bias: bool = False
@@ -55,6 +54,7 @@ class HFGemma3TextConfigRaw:
     attn_logit_softcapping: float | None = None
     head_dim: int = 256
     max_position_embeddings: int = 131072
+    sliding_window_pattern: int = 6
     rope_theta: float = 1000000.0
     rope_local_base_freq: float = 10000.0
     rope_scaling: GemmaRoPEScalingConfig | YarnRopeScalingConfig | None = None
