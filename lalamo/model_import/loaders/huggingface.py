@@ -29,6 +29,7 @@ from lalamo.modules import (
     UntiedEmbedding,
 )
 from lalamo.modules.classifier import Classifier
+from lalamo.modules.embedding import MLXQuantizedUntiedEmbedding
 from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
@@ -625,6 +626,51 @@ def load_mlx_quantized_tied_embedding(
     return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
 
 
+def load_mlx_quantized_untied_embedding(
+    module: MLXQuantizedUntiedEmbedding,
+    weights_dict: Mapping[str, Array],
+    embedding_path: ParameterPath,
+    lm_head_path: ParameterPath,
+) -> MLXQuantizedUntiedEmbedding:
+    input_qweights = weights_dict[embedding_path / "weight"]
+    input_qscales = weights_dict[embedding_path / "scales"]
+    input_qbiases = weights_dict[embedding_path / "biases"]
+    output_qweights = weights_dict[lm_head_path / "weight"]
+    output_qscales = weights_dict[lm_head_path / "scales"]
+    output_qbiases = weights_dict[lm_head_path / "biases"]
+
+    input_weights = _process_quantized_tensor(
+        input_qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    input_scales = input_qscales.astype(module.activation_precision)
+    input_biases = input_qbiases.astype(module.activation_precision)
+
+    output_weights = _process_quantized_tensor(
+        output_qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    output_scales = output_qscales.astype(module.activation_precision)
+    output_biases = output_qbiases.astype(module.activation_precision)
+
+    return load_parameters(
+        lambda m: (
+            m.input_weights,
+            m.input_scales,
+            m.input_biases,
+            m.output_weights,
+            m.output_scales,
+            m.output_biases,
+        ),
+        module,
+        (input_weights, input_scales, input_biases, output_weights, output_scales, output_biases),
+    )
+
+
 def load_mlx_semi_quantized_untied_embedding(
     module: MLXSemiQuantizedUntiedEmbedding,
     weights_dict: Mapping[str, Array],
@@ -741,6 +787,8 @@ def load_huggingface_decoder(
         embedding = load_tied_embedding(module.embedding, weights_dict, embedding_path)
     elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
         embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, embedding_path)
+    elif isinstance(module.embedding, MLXQuantizedUntiedEmbedding):
+        embedding = load_mlx_quantized_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
     elif isinstance(module.embedding, MLXSemiQuantizedUntiedEmbedding):
         embedding = load_mlx_semi_quantized_untied_embedding(
             module.embedding,
@@ -759,7 +807,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key[type(layer.config.mixer_config)], # type: ignore
+            mixer_key[type(layer.config.mixer_config)],  # type: ignore
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,
