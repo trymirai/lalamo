@@ -15,7 +15,7 @@ from lalamo.speculator import (
     SpeculatorTrainingEvent,
 )
 
-__version__ = "0.5.14"
+__version__ = "0.5.15"
 
 __all__ = [
     "AssistantMessage",
