@@ -8,7 +8,7 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub[hf-transfer]>=0.27.1",
-    "jax>=0.7.2",
+    "jax>=0.8.1",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
@@ -26,9 +26,9 @@ readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
 
 [project.optional-dependencies]
-cpu = ["jax[cpu]>=0.7.2"]
-cuda = ["jax[cuda]>=0.7.2"]
-tpu = ["jax[tpu]>=0.7.2"]
+cpu = ["jax[cpu]>=0.8.1"]
+cuda = ["jax[cuda]>=0.8.1"]
+tpu = ["jax[tpu]>=0.8.1"]
 
 [dependency-groups]
 dev = [
