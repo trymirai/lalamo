@@ -13,6 +13,7 @@ from lalamo.modules import (
     LlamaRoPEConfig,
     MLXQuantizedLinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
+    MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
     SiLU,
     TiedEmbeddingConfig,
@@ -89,27 +90,37 @@ class HFLlamaConfig(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         quantization = self.quantization or self.quantization_config
         if isinstance(quantization, MLXQuantizationConfig):
-            assert self.tie_word_embeddings, "only tied embeddings are supported"
-            embedding_config = MLXQuantizedTiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                group_size=quantization.group_size,
-                embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
-            )
-        elif self.tie_word_embeddings:
-            embedding_config = TiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                precision=activation_precision,
-            )
-        else:
-            embedding_config = UntiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                precision=activation_precision,
-            )
+            if self.tie_word_embeddings:
+                embedding_config = MLXQuantizedTiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    group_size=quantization.group_size,
+                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    activation_quantization_mode=None,
+                    activation_precision=activation_precision,
+                )
+            else:
+                embedding_config = MLXQuantizedUntiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    group_size=quantization.group_size,
+                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    activation_quantization_mode=None,
+                    activation_precision=activation_precision,
+                )
+        else: # noqa: PLR5501
+            if self.tie_word_embeddings:
+                embedding_config = TiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    precision=activation_precision,
+                )
+            else:
+                embedding_config = UntiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    precision=activation_precision,
+                )
         if self.rope_scaling is None:
             rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
