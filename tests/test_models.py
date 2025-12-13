@@ -53,6 +53,11 @@ class ModelTestSpec:
     dtype: DType | None = None
     num_tokens: int = 512
     token_stride: int = 64
+    convert_memory_limit: int | None = None
+
+    @property
+    def test_id(self) -> str:
+        return f"{self.model_repo}{(f'/{self.dtype.value}' if self.dtype is not None else '')}"
 
 
 ActivationTrace = ClassifierActivationTrace | DecoderActivationTrace
