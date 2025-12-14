@@ -15,6 +15,16 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             }
-        }
+        },
+        {
+            "name": "Run Fish Audio",
+            "type": "debugpy",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "${workspaceFolder}/sandbox/fish_audio_sandbox.py",
+            "console": "integratedTerminal",
+            "args" : [
+            ]
+        },
     ]
 }

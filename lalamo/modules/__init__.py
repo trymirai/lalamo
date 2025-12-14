@@ -1,4 +1,5 @@
 from .activations import GELU, Activation, Identity, SiLU
+from .audio import AudioDecoder, NoopVocoder, Vocoder, VocoderConfig
 from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
@@ -81,8 +82,6 @@ from .transformer_layer import (
     TransformerLayerResult,
 )
 
-from .audio_codecs import AudioDecoder, Vocoder
-
 __all__ = [
     "GELU",
     "Activation",
@@ -126,6 +125,7 @@ __all__ = [
     "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
     "PositionalEmbeddingSelector",
@@ -157,6 +157,7 @@ __all__ = [
     "UntiedEmbeddingConfig",
     "UpcastMode",
     "Vocoder",
+    "VocoderConfig",
     "YARNRoPEConfig",
     "config_converter",
 ]

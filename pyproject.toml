@@ -21,6 +21,13 @@ dependencies = [
     "polars>=1.33.1",
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
+    "fishaudio>=0.0.5",
+    "fish_speech>=0.1.0",
+    
+    # this one requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
+    "pyaudio>=0.2.0",
+    "tiktoken",
+    "blobfile"
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
@@ -29,6 +36,11 @@ dynamic = ["version"]
 cpu = ["jax[cpu]>=0.7.2"]
 cuda = ["jax[cuda]>=0.7.2"]
 tpu = ["jax[tpu]>=0.7.2"]
+fishaudio = ["fishaudio>=0.0.5"]
+fishspeech = ["fish_speech>=0.1.0"]
+blobfile = ["blobfile"]
+tiktoken = ["tiktoken"]
+
 
 [dependency-groups]
 dev = [
@@ -68,6 +80,11 @@ version = { attr = "lalamo.__version__" }
 
 [tool.uv]
 package = true
+override-dependencies = [
+    "numpy>=1.0,<3.0",
+    "datasets>=2.0,<3.0"
+]
+
 
 [[tool.uv.index]]
 name = "torch-cpu"

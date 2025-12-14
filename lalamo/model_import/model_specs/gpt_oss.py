@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs import HFGPTOssConfig
+from lalamo.model_import.model_configs import HFGPTOssConfig
 
 from .common import ConfigMap, FileSpec, ModelSpec, WeightsType
 

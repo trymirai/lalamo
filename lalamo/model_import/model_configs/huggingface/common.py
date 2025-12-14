@@ -6,8 +6,8 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.decoder_configs import ForeignLMConfig
-from lalamo.model_import.decoder_configs.common import ForeignClassifierConfig
+from lalamo.model_import.model_configs import ForeignLMConfig
+from lalamo.model_import.model_configs import ForeignClassifierConfig
 from lalamo.model_import.loaders import (
     load_huggingface_classifier,
     load_huggingface_decoder,

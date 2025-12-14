@@ -13,7 +13,7 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.decoder_configs import ForeignConfig
+from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import MapDictValues, open_safetensors
 

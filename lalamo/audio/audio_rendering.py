@@ -1,7 +1,7 @@
 from enum import StrEnum
-from attr import dataclass
 
 import numpy as np
+from attr import dataclass
 
 
 class AudioEncoding(StrEnum):

@@ -31,6 +31,7 @@ from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Context, Exit, Option, Typer
 
+from lalamo.audio import utils as audio_utils
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -43,7 +44,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.models import LanguageModelConfig, RouterConfig
+from lalamo.models import ForeignTTSModel, LanguageModelConfig, RouterConfig, TTSConfig, TTSGenerator
 from lalamo.modules import config_converter
 from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
@@ -179,6 +180,86 @@ def classify(
         result = model.classify_chat([user_message])
         for label, confidence in result.items():
             console.print(f"{label} : {confidence}", end="")
+        console.print()
+
+
+@app.command(help="Synthesize speech from given text utterance")
+def tts(
+    model_path: Annotated[
+        Path | None,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ] = None,
+    foreign_model: Annotated[
+        ForeignTTSModel | None,
+        Argument(
+            help="Type of forerign model to use.",
+        ),
+    ] = None,
+    foreign_chkpt_path: Annotated[
+        Path | None,
+        Argument(
+            help="Path to directory with foreign model checkpoints.",
+        ),
+    ] = None,
+    output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech")] = None,
+    replay: Annotated[
+        bool,
+        Option(
+            help="Render synthesized speech into default audio interface.",
+        ),
+    ] = False,
+) -> None:
+    if model_path is None and foreign_model is None:
+        err_console.print("Either path to Lalalo TTS model or type of foreign TTS model has to be specified")
+        raise Exit
+    if output_file is None:
+        output_file = Path.cwd() / "generated_speech.wav"
+        console.print(f"Will save output to file {output_file}")
+
+    model = None
+    if model_path is not None:
+        console.print("🤖 Current method is not supported yet, use --foreigh_model mode instead.")
+        raise Exit
+
+    if foreign_model:
+        if foreign_chkpt_path is None:
+            err_console.print("You must specify path to checkpoint directory when using foreign model.")
+            raise Exit
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+            model = TTSConfig.load_model_from_foreign_model_preset(foreign_model, foreign_chkpt_path)
+        progress.remove_task(loading_task)
+        console.print(f"🤖 Synthesizing speech with [blue]{model_path}[/blue]:")
+
+    assert model is not None
+    while True:
+        user_text = console.input("[cyan]user> [/cyan]")
+        user_message = UserMessage(user_text)
+
+        result = model.generate_speech([user_message])
+
+        if replay:
+            audio_utils.play_audio(result[0], audio_utils.DEFAULT_SAMPLERATE)
+
+        if output_file.exists():
+            answer = console.input(
+                rf"⚠️ Output file [cyan]{output_file}[/cyan] already exists."
+                r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
+            )
+            while answer.lower() not in ["y", "n", "yes", "no"]:
+                answer = console.input("Please enter 'y' or 'n': ")
+            if answer.lower() in ["y", "yes"]:
+                Path.unlink(output_file)
+            else:
+                console.print("Continue without saving the result")
+
         console.print()
 
 

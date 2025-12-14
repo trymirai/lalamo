@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs.huggingface import ModernBERTConfig
+from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 
 from .common import ConfigMap, FileSpec, ModelSpec, ModelType
 

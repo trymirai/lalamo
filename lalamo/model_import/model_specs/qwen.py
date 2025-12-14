@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs import HFQwen2Config, HFQwen3Config
+from lalamo.model_import.model_configs import HFQwen2Config, HFQwen3Config
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType

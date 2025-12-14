@@ -144,7 +144,10 @@ class TransformerLayerConfig:
             post_mixer_norm = self.post_mixer_norm_config.empty(model_dim)
         else:
             post_mixer_norm = None
-        pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
+        if self.pre_mlp_norm_config is not None:
+            pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
+        else:
+            pre_mlp_norm = None
         mlp = self.mlp_config.empty(model_dim, hidden_dim)
         if self.post_mlp_norm_config is not None:
             post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
@@ -189,7 +192,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Post mixer normalization dim {self.post_mixer_norm.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
             )
-        if self.pre_mlp_norm.input_dim != model_dim:
+        if self.pre_mlp_norm and self.pre_mlp_norm.input_dim != model_dim:
             raise ValueError(
                 f"Pre MLP normalization dim {self.pre_mlp_norm.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
