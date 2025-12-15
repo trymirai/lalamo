@@ -9,6 +9,13 @@ import jax.numpy as jnp
 from lalamo.models import LanguageModel
 
 
+def get_default_device_memory() -> int | None:
+    memory_stats = jax.local_devices()[0].memory_stats()
+    if memory_stats is None or "bytes_limit" not in memory_stats:
+        return None
+    return memory_stats["bytes_limit"]
+
+
 def estimate_memory_from_batchsize(
     model: LanguageModel,
     max_input_length: int,
@@ -23,7 +30,7 @@ def estimate_memory_from_batchsize(
                 max_output_length=max_output_length,
                 num_top_logits_to_return=num_logits_per_token,
             ),
-            backend="cpu", # cuda backend tries to allocate in .compile() and ooms
+            backend="cpu",  # cuda backend tries to allocate in .compile() and ooms
         )
         .lower(
             model,
@@ -41,7 +48,7 @@ def estimate_memory_from_batchsize(
     return (
         memory_analysis.argument_size_in_bytes  # type: ignore (pyright bug)
         + memory_analysis.output_size_in_bytes  # type: ignore (pyright bug)
-        + memory_analysis.temp_size_in_bytes    # type: ignore (pyright bug)
+        + memory_analysis.temp_size_in_bytes  # type: ignore (pyright bug)
     )
 
 
