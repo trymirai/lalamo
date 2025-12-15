@@ -21,13 +21,6 @@ dependencies = [
     "polars>=1.33.1",
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
-    "fishaudio>=0.0.5",
-    "fish_speech>=0.1.0",
-    
-    # this one requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
-    "pyaudio>=0.2.0",
-    "tiktoken",
-    "blobfile"
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
@@ -61,6 +54,14 @@ dev = [
     "transformers>=4.56.0",
     "twine>=6.1.0",
     "ruff==0.14.0",
+    "fishaudio>=0.0.5",
+    "fish_speech>=0.1.0",
+    
+    # this one requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
+    "pyaudio>=0.2.0",
+
+    "tiktoken",
+    "blobfile"
 ]
 
 [project.scripts]
