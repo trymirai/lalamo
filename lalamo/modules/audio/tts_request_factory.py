@@ -32,6 +32,9 @@ class TTSRequest(TypedDict):
 class TTSRequestFactoryConfig:
     prompt_template: str
 
+    # TODO(peter.glushkov): find a better way to handle opening new-line symbol
+    drop_initial_newline: bool = True
+
     def init(self, tokenizer: Tokenizer) -> "TTSRequestFactory":
         return TTSRequestFactory(
             self,
@@ -56,7 +59,10 @@ class TTSRequestFactory:
 
     def render_request(self, messages: Iterable[TTSMessage]) -> str:
         request_dict = self.request_to_dict(messages)
-        return self.prompt_template.render({**request_dict})
+        prompt_text = self.prompt_template.render({**request_dict})
+        if self.config.drop_initial_newline and prompt_text.startswith("\n"):
+            prompt_text = prompt_text[1:]
+        return prompt_text
 
     def tokenize_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids

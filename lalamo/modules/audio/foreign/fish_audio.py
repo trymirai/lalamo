@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Self
 
 import equinox as eqx
+import jax
 import torch
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
@@ -15,7 +16,7 @@ from fish_speech.models.text2semantic.llama import (
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
@@ -46,6 +47,7 @@ from lalamo.modules.audio.text_decoder import TextDecoderConfig
 from lalamo.modules.rope import RoPEConfigBase
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from lalamo.modules.utils import vmap_twice
+from lalamo.sampling import CompositePolicy, TemperaturePolicy, TopPPolicy
 from lalamo.utils import MapDictValues
 
 
@@ -62,54 +64,49 @@ def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
 
 
 def logits_to_probs(
-    logits,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    repetition_penalty: torch.Tensor,
-    previous_tokens: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    # Apply repetition penalty
-    if previous_tokens is not None:
-        previous_tokens = previous_tokens.long()
-        score = torch.gather(logits, dim=-1, index=previous_tokens)
-        score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
-        logits.scatter_(dim=-1, index=previous_tokens, src=score)
+    logits: Float[Array, " vocabulary"],
+    temperature: float,
+    top_p: float,
+    repetition_penalty: float = 1.0,
+    previous_tokens: Optional[Int[Array, " tokens"]] = None,
+) -> Float[Array, " vocabulary"]:
+    # NOTE: repetition_penalty is not implemented yet - stub for API compatibility
+    policies = []
+    if top_p > 0 and top_p < 1.0:
+        policies.append(TopPPolicy(p=top_p))
+    if temperature > 0:
+        policies.append(TemperaturePolicy(temperature=max(temperature, 1e-5)))
 
-    # Apply top-p sampling
-    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-    cum_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
-    sorted_indices_to_remove = cum_probs > top_p
-    sorted_indices_to_remove[0] = False  # keep at least one option
-    indices_to_remove = sorted_indices_to_remove.scatter(dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
-    logits = logits.masked_fill(indices_to_remove, -float("Inf"))
-    logits = logits / torch.clip(temperature, min=1e-5)
+    if policies:
+        policy = CompositePolicy(tuple(policies))
+        processed_logits = policy.process_logits(logits)
+    else:
+        processed_logits = logits
 
-    probs = torch.nn.functional.softmax(logits, dim=-1)
+    probs = jax.nn.softmax(processed_logits)
     return probs
 
 
-def multinomial_sample_one_no_sync(
-    probs_sort,
-):  # Does multinomial sampling without a cuda synchronization
-    q = torch.empty_like(probs_sort).exponential_(1)
-    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
-
-
 def sample(
-    logits,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    repetition_penalty: torch.Tensor,
-    previous_tokens: Optional[torch.Tensor] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
+    logits: Float[Array, "batch tokens vocabulary"],
+    key: PRNGKeyArray,
+    temperature: float,
+    top_p: float,
+    repetition_penalty: float = 1.0,
+    previous_tokens: Optional[Int[Array, " tokens"]] = None,
+) -> tuple[Int[Array, ""], Float[Array, " vocabulary"]]:
+    # Take the last token's logits from first batch
+    last_logits = logits[0, -1]
+
     probs = logits_to_probs(
-        logits=logits[0, -1],
+        logits=last_logits,
         temperature=temperature,
         top_p=top_p,
         repetition_penalty=repetition_penalty,
         previous_tokens=previous_tokens,
     )
-    idx_next = multinomial_sample_one_no_sync(probs)
+
+    idx_next = jax.random.categorical(key, jnp.log(probs + 1e-10))
     return idx_next, probs
 
 
@@ -131,7 +128,6 @@ def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) ->
         attention_qkv_bias=fish_transformer_config.fast_attention_qkv_bias,
         attention_o_bias=fish_transformer_config.fast_attention_o_bias,
         attention_qk_norm=fish_transformer_config.fast_attention_qk_norm,
-        # Codebook configs
         codebook_size=fish_transformer_config.codebook_size,
         num_codebooks=fish_transformer_config.num_codebooks,
     )
@@ -140,7 +136,6 @@ def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) ->
 def lalamo_transformer_cfg_from_fish(
     config: BaseModelArgs, precision: DTypeLike
 ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-    # NOTE: UnscaledRoPEConfig does not work here at all
     global_rope_config = RoPEConfigFishAudio(
         precision=precision,
         base=config.rope_base,
@@ -320,22 +315,22 @@ class PositionalEmbeddingsFishAudio(eqx.Module):
 
 @dataclass
 class FishAudioTextDecoderResult:
-    codes_per_token: Float[Array, "batch tokens codes"]
+    token_codes: Float[Array, "batch codes"]
     hidden_states: Array | None
     state: State | None
 
 
 @dataclass(frozen=True)
 class FishAudioTextDecoderConfig(TextDecoderConfig):
-    slow_embeddings_config: EmbeddingConfig
+    slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
     slow_readout_config: FullPrecisionLinearConfig
 
-    fast_embeddings_config: EmbeddingConfig
+    fast_embeddings_config: TiedEmbeddingConfig
     fast_model_config: TransformerConfig
     fast_readout_config: FullPrecisionLinearConfig
 
-    codebook_embeddings_config: EmbeddingConfig
+    codebook_embeddings_config: TiedEmbeddingConfig
     fast_model_projection_config: FullPrecisionLinearConfig | None
 
     semantic_token_begin_id: int
@@ -349,6 +344,10 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
     scale_codebook_embeddings: bool
 
     precision: DTypeLike
+
+    # NOTE: magic constants from FishAudio code
+    short_logits_size: int = 1024
+    repeat_window_size: int = 16
 
     @classmethod
     def from_fish_audio_config(
@@ -520,9 +519,11 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
         return self.config.precision
 
     def export_weights(self) -> ParameterTree[Array]:
+        # TODO(peter.glushkov): implement me
         return {}
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        # TODO(peter.glushkov): implement me
         return self
 
     @property
@@ -546,6 +547,7 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
         argmax_decoding: bool = False,
+        key: PRNGKeyArray | None = None,
     ) -> FishAudioTextDecoderResult:
         batch_size, seq_length = text_tokens.shape
         if input_pos is None:
@@ -559,7 +561,7 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
         embeddings = self.embed(text_and_codebooks)
-        codes, updated_state = decode_one_token_lalamo(
+        codes, updated_state = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=state,
@@ -569,8 +571,9 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
             repetition_penalty=0,
             previous_tokens=None,
             argmax_decoding=argmax_decoding,
+            key=key,
         )
-        return FishAudioTextDecoderResult(codes_per_token=codes, hidden_states=None, state=updated_state)
+        return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
 
     def embed(
         self, inp: Int[Array, "batch codebooks tokens"], apply_codebook_embeddings: bool = False
@@ -604,17 +607,20 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
 
 
 @torch.no_grad
-def decode_one_token_lalamo(
+def decode_next_token(
     model: FishAudioTextDecoder,
     x: Array,
-    state_slow: State | None,  # using DynamicKVCacheLayer
+    state_slow: State | None,
     input_pos: Array,
     temperature: float,
     top_p: float,
     repetition_penalty: float,
     previous_tokens: Array | None = None,
-    argmax_decoding=False,
-) -> tuple[Array, State | None]:
+    argmax_decoding: bool = False,
+    key: PRNGKeyArray | None = None,
+) -> tuple[Int[Array, "batch codes"], State | None]:
+    assert argmax_decoding or key is not None
+
     slow_forward_result = model.transformer_slow(
         inner_features=x,
         token_positions=input_pos,
@@ -633,25 +639,19 @@ def decode_one_token_lalamo(
 
     (logits,) = vmap_twice(model.readout_slow)(slow_forward_result.outputs)
 
-    temperature_torch = torch.tensor(temperature)
-    top_p_torch = torch.tensor(top_p)
-    repetition_penalty_torch = torch.tensor(repetition_penalty)
-
-    codebooks = [
-        sample(
-            jax_to_torch(logits),
-            temperature=temperature_torch,
-            top_p=top_p_torch,
-            repetition_penalty=repetition_penalty_torch,
-            previous_tokens=(jax_to_torch(previous_tokens[:, 0]) if previous_tokens is not None else None),
-        )[0]
-    ]
-
-    # NOTE: this is how it was in the original, but instead we just use fresh KV-Cache
-    # in fast model
-    #     assert isinstance(layer.mixer, Attention)
-    #     layer.kv_cache.k_cache.fill_(0)
-    #     layer.kv_cache.v_cache.fill_(0)
+    if argmax_decoding:
+        codebooks = [logits[:, -1].argmax(axis=-1)]
+    else:
+        codebooks = [
+            sample(
+                logits,
+                key,
+                temperature,
+                top_p,
+                repetition_penalty,
+                previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
+            )[0].reshape(1)
+        ]
 
     batch_size, *_ = x.shape
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
@@ -667,9 +667,9 @@ def decode_one_token_lalamo(
         forward_pass_config=None,
     )
     state_fast = fast_first_result.updated_state
-    a = codebooks[0] - model.semantic_begin_id  # model.tokenizer.semantic_begin_id
-    a[a < 0] = 0
-    hidden_states = model.embeddings_fast.embed(torch_to_jax(a))
+    a = codebooks[0] - model.semantic_begin_id
+    a = a.at[a < 0].set(0)
+    hidden_states = model.embeddings_fast.embed(a)
     codebooks.append(a)
 
     for codebook_idx in range(1, model.num_codebooks):
@@ -689,25 +689,23 @@ def decode_one_token_lalamo(
         (fast_logits,) = vmap_twice(model.readout_fast)(fast_result.outputs)
         state_fast = fast_result.updated_state
 
-        short_logits = fast_logits[:, :, :1024]
+        short_logits = fast_logits[:, :, : model.config.short_logits_size]
 
-        # Convert logits to probs
         if argmax_decoding:
-            a = jax_to_torch(short_logits).argmax(dim=2)[0]
+            a = short_logits[:, -1].argmax(axis=-1)
         else:
             a = sample(
-                jax_to_torch(short_logits),
-                temperature=temperature_torch,
-                top_p=top_p_torch,
-                repetition_penalty=repetition_penalty_torch,
-                previous_tokens=(
-                    jax_to_torch(previous_tokens[codebook_idx + 1]) if previous_tokens is not None else None
-                ),
-            )[0]
+                short_logits,
+                key,
+                temperature,
+                top_p,
+                repetition_penalty,
+                previous_tokens=(previous_tokens[codebook_idx + 1] if previous_tokens is not None else None),
+            )[0].reshape(1)
 
-        hidden_states = model.embeddings_fast.embed(torch_to_jax(a))
+        hidden_states = model.embeddings_fast.embed(a)
         codebooks.append(a)
 
-    codebooks = torch.stack(codebooks, dim=1)
+    codebooks = jnp.stack(codebooks, axis=1)
 
-    return (torch_to_jax(codebooks), slow_forward_result.updated_state)
+    return codebooks, slow_forward_result.updated_state

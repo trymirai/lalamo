@@ -183,15 +183,18 @@ def decode_one_token_ar_fishaudio(
     logits = forward_result.logits  # [:, -1:]
     hidden_states = forward_result.hidden_states  # [:, -1:]
 
-    codebooks = [
-        sample(
-            logits,
-            temperature=temperature,
-            top_p=top_p,
-            repetition_penalty=repetition_penalty,
-            previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
-        )[0]
-    ]
+    if argmax_decoding:
+        codebooks = [logits.argmax(dim=2)[0]]
+    else:
+        codebooks = [
+            sample(
+                logits,
+                temperature=temperature,
+                top_p=top_p,
+                repetition_penalty=repetition_penalty,
+                previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
+            )[0]
+        ]
 
     # Only clear cache for fast_layers, avoid clearing main model cache
     for layer in model.fast_layers:
@@ -243,6 +246,7 @@ def decode_n_tokens(
     temperature: torch.Tensor,
     top_p: torch.Tensor,
     repetition_penalty: torch.Tensor,
+    argmax_decoding: bool = False,
 ):
     previous_tokens = torch.zeros(
         (model.config.num_codebooks + 1, model.config.max_seq_len),
@@ -270,6 +274,7 @@ def decode_n_tokens(
                 temperature=temperature,
                 top_p=top_p,
                 repetition_penalty=repetition_penalty,
+                argmax_decoding=argmax_decoding,
             ).clone()
 
         input_pos += 1
@@ -293,6 +298,7 @@ def generate(
     prompt: torch.Tensor,
     max_new_tokens: int,
     num_samples: int = 1,
+    argmax_decoding: bool = False,
     **sampling_kwargs,
 ):
     """
@@ -363,6 +369,7 @@ def generate(
         temperature,
         top_p,
         repetition_penalty,
+        argmax_decoding=argmax_decoding,
     )
     seq[:, T : T + 1] = first_token
 
@@ -377,6 +384,7 @@ def generate(
         temperature=temperature,
         top_p=top_p,
         repetition_penalty=repetition_penalty,
+        argmax_decoding=argmax_decoding,
     )
     seq = seq[:, : T + 1 + x.size(1)]
     seq[:, T + 1 :] = x
@@ -459,8 +467,55 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
     fish_model: DualARTransformer
 
     def __call__(
-        self, text_tokens: Int[Array, "batch tokens"], input_pos: Int[Array, "batch tokens"] | None = None
+        self,
+        text_tokens: Int[Array, "batch tokens"],
+        input_pos: Int[Array, "batch tokens"] | None = None,
+        argmax_decoding: bool = False,
     ) -> Float[Array, "batch_size tokens hidden_size"]:
+        text_tokens_torch = jax_to_torch(text_tokens)
+
+        batch_size, n_tokens = text_tokens_torch.shape
+
+        assert isinstance(self.config, FishAudioTextDecoderConfig_Foreign)
+        values = torch.zeros((batch_size, self.config.fish_config.num_codebooks + 1, n_tokens), dtype=torch.int)
+        values[:, 0] = text_tokens_torch
+
+        self.fish_model.setup_caches(
+            max_batch_size=1,
+            max_seq_len=self.fish_model.config.max_seq_len,
+            dtype=next(self.fish_model.parameters()).dtype,
+        )
+
+        temperature = torch.tensor(0.8008, device=values.device, dtype=torch.bfloat16)
+        top_p = torch.tensor(0.8008, device=values.device, dtype=torch.bfloat16)
+        repetition_penalty = torch.tensor(1.1016, device=values.device, dtype=torch.bfloat16)
+
+        if input_pos is not None:
+            input_pos_torch = jax_to_torch(input_pos)
+        else:
+            input_pos_torch = torch.arange(0, n_tokens, device=values.device, dtype=torch.long)
+
+        new_token_codes = decode_one_token_ar_fishaudio(
+            self.fish_model,
+            values,
+            input_pos_torch,
+            temperature,
+            top_p,
+            repetition_penalty,
+            None,
+            argmax_decoding=argmax_decoding,
+        )
+
+        return torch_to_jax(new_token_codes)
+
+    def decode_utterance(
+        self,
+        text_tokens: Int[Array, "batch tokens"],
+        argmax_decoding: bool = False,
+        temperature: float = 0.8008,
+        top_p: float = 0.8008,
+        repetition_penalty: float = 1.1016,
+    ) -> Int[Array, "batch_size tokens codes"]:
         text_tokens_torch = jax_to_torch(text_tokens)
 
         _, n_tokens = text_tokens_torch.shape
@@ -468,9 +523,6 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
         assert isinstance(self.config, FishAudioTextDecoderConfig_Foreign)
         values = torch.zeros((self.config.fish_config.num_codebooks + 1, n_tokens), dtype=torch.int)
         values[0] = text_tokens_torch
-
-        time_steps = text_tokens_torch.shape[1]
-        # input_pos = torch.arange(0, time_steps, device=text_tokens_torch.device)
 
         self.fish_model.setup_caches(
             max_batch_size=1,
@@ -480,17 +532,18 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
 
         prompt_length = values.size(1)
 
-        temperature = torch.tensor(0.8008, device=values.device, dtype=torch.bfloat16)
-        top_p = torch.tensor(0.8008, device=values.device, dtype=torch.bfloat16)
-        repetition_penalty = torch.tensor(1.1016, device=values.device, dtype=torch.bfloat16)
+        temperature_tensor = torch.tensor(temperature, device=values.device, dtype=torch.bfloat16)
+        top_p_tensor = torch.tensor(top_p, device=values.device, dtype=torch.bfloat16)
+        repetition_penalty_tensor = torch.tensor(repetition_penalty, device=values.device, dtype=torch.bfloat16)
 
         y = generate(
             model=self.fish_model,
             prompt=values,
             max_new_tokens=0,
-            temperature=temperature,  # 0.8008,
-            top_p=top_p,  # 0.8008,
-            repetition_penalty=repetition_penalty,  # 1.1016,
+            argmax_decoding=argmax_decoding,
+            temperature=temperature_tensor,
+            top_p=top_p_tensor,
+            repetition_penalty=repetition_penalty_tensor,
         )
 
         codes = y[1:, prompt_length:-1].clone()
