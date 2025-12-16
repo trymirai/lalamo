@@ -28,7 +28,6 @@ from rich.progress import (
     TimeRemainingColumn,
 )
 from rich.table import Table
-from safetensors.flax import save_file
 from typer import Argument, Context, Exit, Option, Typer
 
 from lalamo.common import flatten_parameters
@@ -45,6 +44,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.modules import config_converter
+from lalamo.safetensors import safe_write
 from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
@@ -301,7 +301,8 @@ def convert(
             trace_task = progress.add_task("🚁 Generating traces...")
             result = model.record_trace(message)
             traces = flatten_parameters(result.export())
-            save_file(traces, output_dir / "traces.safetensors")
+            with Path(output_dir / "traces.safetensors").open("wb") as fd:
+                safe_write(fd, traces)
             progress.remove_task(trace_task)
         progress.remove_task(main_task)
 
@@ -309,7 +310,8 @@ def convert(
         weights = flatten_parameters(model.export_weights())
         del model
 
-        save_file(weights, output_dir / "model.safetensors")
+        with Path(output_dir / "model.safetensors").open("wb") as fd:
+            safe_write(fd, weights)
 
         config_json = config_converter.unstructure(metadata, ModelMetadata)
         with open(output_dir / "config.json", "w") as file:
@@ -546,7 +548,7 @@ def collect_traces(
             )
 
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, "wb+") as output_fd:
+            with open(output_path, "wb") as output_fd:
                 for trace in traces:
                     blob = trace.serialize()
                     output_fd.write(blob)
@@ -655,7 +657,7 @@ def train(
             progress.update(inference_task, description="✅ Completed")
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb+") as fd:
+    with open(output_path, "wb") as fd:
         fd.write(speculator.serialize())
 
 

@@ -15,7 +15,8 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import MapDictValues, open_safetensors
+from lalamo.safetensors import safe_read
+from lalamo.utils import MapDictValues
 
 __all__ = [
     "ConfigMap",
@@ -52,7 +53,8 @@ class WeightsType(Enum):
         float_dtype: DTypeLike,
     ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
         if self == WeightsType.SAFETENSORS:
-            with open_safetensors(filename) as (weights_dict, metadata_dict):
+            with Path(filename).open("rb") as fd:
+                (metadata_dict, weights_dict) = safe_read(fd)
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
             import torch

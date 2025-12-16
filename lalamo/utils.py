@@ -9,21 +9,17 @@ from collections.abc import (
     Sequence,
     ValuesView,
 )
-from contextlib import contextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import overload
 
 import einops
 import jax.numpy as jnp
 from jaxtyping import Array
-from safetensors import safe_open
 
 __all__ = [
     "MapDictValues",
     "MapSequence",
     "jax_uint4_to_packed_uint8",
-    "open_safetensors",
     "process_chat_template",
 ]
 
@@ -43,15 +39,6 @@ class LazyDict[K, V](Mapping[K, V]):
 
     def __len__(self) -> int:
         return len(self.stored_keys)
-
-
-@contextmanager
-def open_safetensors(filename: Path | str) -> Iterator[tuple[Mapping[str, Array], Mapping[str, str]]]:
-    with safe_open(filename, framework="flax") as safetensors_nonsense:
-        yield (
-            LazyDict(set(safetensors_nonsense.keys()), safetensors_nonsense.get_tensor),
-            safetensors_nonsense.metadata(),
-        )
 
 
 @dataclass(frozen=True)
