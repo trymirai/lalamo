@@ -18,10 +18,12 @@ from tokenizers import Tokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
+from lalamo import sampling
 from lalamo.modules import (
     AudioDecoder,
 )
 from lalamo.modules.audio.audio_decoder import AudioDecoderConfig
+from .fish_audio import FishAudioSamplingParams
 from lalamo.modules.audio.text_decoder import TextDecoder, TextDecoderConfig
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
@@ -113,286 +115,294 @@ def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
         shutil.rmtree(output_temp_dir)
 
 
-def logits_to_probs(
-    logits,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    repetition_penalty: torch.Tensor,
-    previous_tokens: Optional[torch.Tensor] = None,
-) -> torch.Tensor:
-    # Apply repetition penalty
-    if previous_tokens is not None:
-        previous_tokens = previous_tokens.long()
-        score = torch.gather(logits, dim=-1, index=previous_tokens)
-        score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
-        logits.scatter_(dim=-1, index=previous_tokens, src=score)
+class FromFishAudioRepo:
+    """
+    Current class contains code taken from FishAudio repo with minor cosmetic changes
+    https://github.com/fishaudio/fish-speech/blob/main/fish_speech/models/text2semantic/inference.py
+    """
 
-    # Apply top-p sampling
-    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
-    cum_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
-    sorted_indices_to_remove = cum_probs > top_p
-    sorted_indices_to_remove[0] = False  # keep at least one option
-    indices_to_remove = sorted_indices_to_remove.scatter(dim=-1, index=sorted_indices, src=sorted_indices_to_remove)
-    logits = logits.masked_fill(indices_to_remove, -float("Inf"))
-    logits = logits / torch.clip(temperature, min=1e-5)
+    @staticmethod
+    def logits_to_probs(
+        logits,
+        temperature: torch.Tensor,
+        top_p: torch.Tensor,
+        repetition_penalty: torch.Tensor,
+        previous_tokens: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        # Apply repetition penalty
+        if previous_tokens is not None:
+            previous_tokens = previous_tokens.long()
+            score = torch.gather(logits, dim=-1, index=previous_tokens)
+            score = torch.where(score < 0, score * repetition_penalty, score / repetition_penalty)
+            logits.scatter_(dim=-1, index=previous_tokens, src=score)
 
-    probs = torch.nn.functional.softmax(logits, dim=-1)
-    return probs
+        # Apply top-p sampling
+        sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+        cum_probs = torch.cumsum(torch.nn.functional.softmax(sorted_logits, dim=-1), dim=-1)
+        sorted_indices_to_remove = cum_probs > top_p
+        sorted_indices_to_remove[0] = False  # keep at least one option
+        indices_to_remove = sorted_indices_to_remove.scatter(
+            dim=-1, index=sorted_indices, src=sorted_indices_to_remove
+        )
+        logits = logits.masked_fill(indices_to_remove, -float("Inf"))
+        logits = logits / torch.clip(temperature, min=1e-5)
 
+        probs = torch.nn.functional.softmax(logits, dim=-1)
+        return probs
 
-def multinomial_sample_one_no_sync(
-    probs_sort,
-):  # Does multinomial sampling without a cuda synchronization
-    q = torch.empty_like(probs_sort).exponential_(1)
-    return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
+    @staticmethod
+    def multinomial_sample_one_no_sync(
+        probs_sort,
+    ):  # Does multinomial sampling without a cuda synchronization
+        q = torch.empty_like(probs_sort).exponential_(1)
+        return torch.argmax(probs_sort / q, dim=-1, keepdim=True).to(dtype=torch.int)
 
+    @staticmethod
+    def sample(
+        logits,
+        temperature: torch.Tensor,
+        top_p: torch.Tensor,
+        repetition_penalty: torch.Tensor,
+        previous_tokens: Optional[torch.Tensor] = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        probs = FromFishAudioRepo.logits_to_probs(
+            logits=logits[0, -1],
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            previous_tokens=previous_tokens,
+        )
+        idx_next = FromFishAudioRepo.multinomial_sample_one_no_sync(probs)
+        return idx_next, probs
 
-def sample(
-    logits,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    repetition_penalty: torch.Tensor,
-    previous_tokens: Optional[torch.Tensor] = None,
-) -> tuple[torch.Tensor, torch.Tensor]:
-    probs = logits_to_probs(
-        logits=logits[0, -1],
-        temperature=temperature,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-        previous_tokens=previous_tokens,
-    )
-    idx_next = multinomial_sample_one_no_sync(probs)
-    return idx_next, probs
+    @staticmethod
+    def decode_one_token_ar_fishaudio(
+        model: DualARTransformer,
+        x: torch.Tensor,
+        input_pos: torch.Tensor,
+        temperature: torch.Tensor,
+        top_p: torch.Tensor,
+        repetition_penalty: torch.Tensor,
+        previous_tokens: Optional[torch.Tensor] = None,
+        argmax_decoding=False,
+    ) -> torch.Tensor:
+        forward_result = model.forward_generate(
+            x,
+            input_pos,
+        )
+        logits = forward_result.logits  # [:, -1:]
+        hidden_states = forward_result.hidden_states  # [:, -1:]
 
-
-def decode_one_token_ar_fishaudio(
-    model: DualARTransformer,
-    x: torch.Tensor,
-    input_pos: torch.Tensor,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    repetition_penalty: torch.Tensor,
-    previous_tokens: Optional[torch.Tensor] = None,
-    argmax_decoding=False,
-) -> torch.Tensor:
-    # print(x, torch.count_nonzero(vq_masks))
-    forward_result = model.forward_generate(
-        x,
-        input_pos,
-    )
-    logits = forward_result.logits  # [:, -1:]
-    hidden_states = forward_result.hidden_states  # [:, -1:]
-
-    if argmax_decoding:
-        codebooks = [logits.argmax(dim=2)[0]]
-    else:
-        codebooks = [
-            sample(
-                logits,
-                temperature=temperature,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
-            )[0]
-        ]
-
-    # Only clear cache for fast_layers, avoid clearing main model cache
-    for layer in model.fast_layers:
-        if hasattr(layer, "attention") and hasattr(layer.attention, "kv_cache"):
-            layer.attention.kv_cache.k_cache.fill_(0)
-            layer.attention.kv_cache.v_cache.fill_(0)
-
-    input_pos = torch.tensor([0], device=hidden_states.device, dtype=torch.long)
-    model.forward_generate_fast(hidden_states, input_pos)
-    a = codebooks[0] - model.tokenizer.semantic_begin_id
-    a[a < 0] = 0
-    hidden_states = model.fast_embeddings(a)
-    codebooks.append(a)
-
-    for codebook_idx in range(1, model.config.num_codebooks):
-        input_pos = torch.tensor([codebook_idx], device=hidden_states.device, dtype=torch.long)
-        logits = model.forward_generate_fast(hidden_states, input_pos)
-
-        short_logits = logits[:, :, :1024]
-
-        # Convert logits to probs
         if argmax_decoding:
-            a = short_logits.argmax(dim=2)[0]
+            codebooks = [logits.argmax(dim=2)[0]]
         else:
-            a = sample(
-                short_logits,
-                temperature=temperature,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                previous_tokens=(previous_tokens[codebook_idx + 1] if previous_tokens is not None else None),
-            )[0]
+            codebooks = [
+                FromFishAudioRepo.sample(
+                    logits,
+                    temperature=temperature,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
+                )[0]
+            ]
 
+        # Only clear cache for fast_layers, avoid clearing main model cache
+        for layer in model.fast_layers:
+            if hasattr(layer, "attention") and hasattr(layer.attention, "kv_cache"):
+                layer.attention.kv_cache.k_cache.fill_(0)
+                layer.attention.kv_cache.v_cache.fill_(0)
+
+        input_pos = torch.tensor([0], device=hidden_states.device, dtype=torch.long)
+        model.forward_generate_fast(hidden_states, input_pos)
+        a = codebooks[0] - model.tokenizer.semantic_begin_id
+        a[a < 0] = 0
         hidden_states = model.fast_embeddings(a)
         codebooks.append(a)
 
-    codebooks = torch.stack(codebooks, dim=1)
+        for codebook_idx in range(1, model.config.num_codebooks):
+            input_pos = torch.tensor([codebook_idx], device=hidden_states.device, dtype=torch.long)
+            logits = model.forward_generate_fast(hidden_states, input_pos)
 
-    # Only delete references, let Python GC handle cleanup
-    del logits, hidden_states, forward_result
+            short_logits = logits[:, :, :1024]
 
-    return codebooks.T
+            # Convert logits to probs
+            if argmax_decoding:
+                a = short_logits.argmax(dim=2)[0]
+            else:
+                a = FromFishAudioRepo.sample(
+                    short_logits,
+                    temperature=temperature,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    previous_tokens=(previous_tokens[codebook_idx + 1] if previous_tokens is not None else None),
+                )[0]
 
+            hidden_states = model.fast_embeddings(a)
+            codebooks.append(a)
 
-def decode_n_tokens(
-    model: DualARTransformer,
-    cur_token: torch.Tensor,
-    input_pos: torch.Tensor,
-    num_new_tokens: int,
-    temperature: torch.Tensor,
-    top_p: torch.Tensor,
-    repetition_penalty: torch.Tensor,
-    argmax_decoding: bool = False,
-):
-    previous_tokens = torch.zeros(
-        (model.config.num_codebooks + 1, model.config.max_seq_len),
-        dtype=torch.int,
-        device=cur_token.device,
-    )
+        codebooks = torch.stack(codebooks, dim=1)
 
-    for i in range(num_new_tokens):
-        # MY_DBG
-        print(f"generating token {i}")
+        # Only delete references, let Python GC handle cleanup
+        del logits, hidden_states, forward_result
 
-        # We need to get windowed repeat penalty
-        win_size = 16
-        if i < win_size:
-            window = previous_tokens[:, :win_size]
+        return codebooks.T
+
+    @staticmethod
+    def decode_n_tokens(
+        model: DualARTransformer,
+        cur_token: torch.Tensor,
+        input_pos: torch.Tensor,
+        num_new_tokens: int,
+        temperature: torch.Tensor,
+        top_p: torch.Tensor,
+        repetition_penalty: torch.Tensor,
+        argmax_decoding: bool = False,
+    ):
+        previous_tokens = torch.zeros(
+            (model.config.num_codebooks + 1, model.config.max_seq_len),
+            dtype=torch.int,
+            device=cur_token.device,
+        )
+
+        for i in range(num_new_tokens):
+            # MY_DBG
+            print(f"generating token {i}")
+
+            # We need to get windowed repeat penalty
+            win_size = 16
+            if i < win_size:
+                window = previous_tokens[:, :win_size]
+            else:
+                window = previous_tokens[:, i - win_size : i]
+
+            with sdpa_kernel(SDPBackend.MATH):  # Actually better for Inductor to codegen attention here
+                next_token = FromFishAudioRepo.decode_one_token_ar_fishaudio(
+                    model=model,
+                    x=cur_token,
+                    input_pos=input_pos,
+                    previous_tokens=window,
+                    temperature=temperature,
+                    top_p=top_p,
+                    repetition_penalty=repetition_penalty,
+                    argmax_decoding=argmax_decoding,
+                ).clone()
+
+            input_pos += 1
+            cur_token = next_token.view(1, model.config.num_codebooks + 1, -1)
+            previous_tokens[:, i : i + 1] = next_token.view(model.config.num_codebooks + 1, -1)
+
+            if cur_token[0, 0, -1] == model.tokenizer.get_token_id(IM_END_TOKEN):
+                break
+
+        # Only clean up the large tensor
+        del cur_token
+
+        return previous_tokens[:, : i + 1]
+
+    @staticmethod
+    @torch.no_grad()
+    @torch.inference_mode()
+    def generate(
+        *,
+        model: DualARTransformer,
+        prompt: torch.Tensor,
+        max_new_tokens: int,
+        num_samples: int = 1,
+        argmax_decoding: bool = False,
+        **sampling_kwargs,
+    ):
+        """
+        Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
+        """
+
+        # create an empty tensor of the expected final shape and fill in the current tokens
+        T = prompt.size(1)
+        prompt = prompt[None].repeat(num_samples, 1, 1)
+
+        if T >= model.config.max_seq_len:
+            raise ValueError(f"Input sequence length {T} exceeds max_seq_len {model.config.max_seq_len}")
+
+        if max_new_tokens:
+            if T + max_new_tokens > model.config.max_seq_len:
+                max_new_tokens = model.config.max_seq_len - T
+
+            T_new = T + max_new_tokens
         else:
-            window = previous_tokens[:, i - win_size : i]
+            T_new = model.config.max_seq_len
+            max_new_tokens = T_new - T
 
-        with sdpa_kernel(SDPBackend.MATH):  # Actually better for Inductor to codegen attention here
-            next_token = decode_one_token_ar_fishaudio(
-                model=model,
-                x=cur_token,
-                input_pos=input_pos,
-                previous_tokens=window,
-                temperature=temperature,
-                top_p=top_p,
-                repetition_penalty=repetition_penalty,
-                argmax_decoding=argmax_decoding,
-            ).clone()
+        device, dtype = prompt.device, prompt.dtype
 
-        input_pos += 1
-        cur_token = next_token.view(1, model.config.num_codebooks + 1, -1)
-        previous_tokens[:, i : i + 1] = next_token.view(model.config.num_codebooks + 1, -1)
+        # Critical fix: Only set up cache on first run or when necessary
+        if not hasattr(model, "_cache_setup_done") or not model._cache_setup_done:
+            with torch.device(device):
+                model.setup_caches(
+                    max_batch_size=1,  # Fixed to 1, avoid dynamic changes
+                    max_seq_len=model.config.max_seq_len,
+                    dtype=next(model.parameters()).dtype,
+                )
+            model._cache_setup_done = True
 
-        if cur_token[0, 0, -1] == model.tokenizer.get_token_id(IM_END_TOKEN):
-            break
+        codebook_dim = 1 + model.config.num_codebooks
 
-    # Only clean up the large tensor
-    del cur_token
+        # Create new tensor each time, but try to reuse memory
+        input_pos = torch.arange(0, T, device=device, dtype=torch.long)
+        empty = torch.empty((codebook_dim, model.config.max_seq_len), dtype=dtype, device=device)
+        empty[:, :T] = prompt
+        seq = empty
 
-    return previous_tokens[:, : i + 1]
+        # Use pre-created fixed parameter tensors
+        temperature = getattr(model, "fixed_temperature", torch.tensor(0.8, device=device, dtype=torch.float))
+        top_p = getattr(model, "fixed_top_p", torch.tensor(0.8, device=device, dtype=torch.float))
+        repetition_penalty = getattr(
+            model,
+            "fixed_repetition_penalty",
+            torch.tensor(1.1, device=device, dtype=torch.float),
+        )
 
+        # If different parameter values are needed, directly modify existing tensors
+        temp_val = sampling_kwargs.get("temperature", 0.7)
+        top_p_val = sampling_kwargs.get("top_p", 0.7)
+        rep_val = sampling_kwargs.get("repetition_penalty", 1.5)
 
-@torch.no_grad()
-@torch.inference_mode()
-def generate(
-    *,
-    model: DualARTransformer,
-    prompt: torch.Tensor,
-    max_new_tokens: int,
-    num_samples: int = 1,
-    argmax_decoding: bool = False,
-    **sampling_kwargs,
-):
-    """
-    Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
-    """
+        if abs(temperature.item() - temp_val) > 1e-6:
+            temperature.fill_(temp_val)
+        if abs(top_p.item() - top_p_val) > 1e-6:
+            top_p.fill_(top_p_val)
+        if abs(repetition_penalty.item() - rep_val) > 1e-6:
+            repetition_penalty.fill_(rep_val)
 
-    # create an empty tensor of the expected final shape and fill in the current tokens
-    T = prompt.size(1)
-    prompt = prompt[None].repeat(num_samples, 1, 1)
+        first_token = FromFishAudioRepo.decode_one_token_ar_fishaudio(
+            model,
+            prompt.view(1, codebook_dim, -1),
+            input_pos,
+            temperature,
+            top_p,
+            repetition_penalty,
+            argmax_decoding=argmax_decoding,
+        )
+        seq[:, T : T + 1] = first_token
 
-    if T >= model.config.max_seq_len:
-        raise ValueError(f"Input sequence length {T} exceeds max_seq_len {model.config.max_seq_len}")
+        # Recreate input_pos
+        input_pos = torch.tensor([T], device=device, dtype=torch.int)
 
-    if max_new_tokens:
-        if T + max_new_tokens > model.config.max_seq_len:
-            max_new_tokens = model.config.max_seq_len - T
+        x = FromFishAudioRepo.decode_n_tokens(
+            model,
+            first_token.view(1, codebook_dim, -1),
+            input_pos,
+            max_new_tokens - 1,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            argmax_decoding=argmax_decoding,
+        )
+        seq = seq[:, : T + 1 + x.size(1)]
+        seq[:, T + 1 :] = x
 
-        T_new = T + max_new_tokens
-    else:
-        T_new = model.config.max_seq_len
-        max_new_tokens = T_new - T
+        # Clean up temporary variables
+        del first_token, x, prompt, empty, input_pos
 
-    device, dtype = prompt.device, prompt.dtype
-
-    # Critical fix: Only set up cache on first run or when necessary
-    if not hasattr(model, "_cache_setup_done") or not model._cache_setup_done:
-        with torch.device(device):
-            model.setup_caches(
-                max_batch_size=1,  # Fixed to 1, avoid dynamic changes
-                max_seq_len=model.config.max_seq_len,
-                dtype=next(model.parameters()).dtype,
-            )
-        model._cache_setup_done = True
-
-    codebook_dim = 1 + model.config.num_codebooks
-
-    # Create new tensor each time, but try to reuse memory
-    input_pos = torch.arange(0, T, device=device, dtype=torch.long)
-    empty = torch.empty((codebook_dim, model.config.max_seq_len), dtype=dtype, device=device)
-    empty[:, :T] = prompt
-    seq = empty
-
-    # Use pre-created fixed parameter tensors
-    temperature = getattr(model, "fixed_temperature", torch.tensor(0.8, device=device, dtype=torch.float))
-    top_p = getattr(model, "fixed_top_p", torch.tensor(0.8, device=device, dtype=torch.float))
-    repetition_penalty = getattr(
-        model,
-        "fixed_repetition_penalty",
-        torch.tensor(1.1, device=device, dtype=torch.float),
-    )
-
-    # If different parameter values are needed, directly modify existing tensors
-    temp_val = sampling_kwargs.get("temperature", 0.7)
-    top_p_val = sampling_kwargs.get("top_p", 0.7)
-    rep_val = sampling_kwargs.get("repetition_penalty", 1.5)
-
-    if abs(temperature.item() - temp_val) > 1e-6:
-        temperature.fill_(temp_val)
-    if abs(top_p.item() - top_p_val) > 1e-6:
-        top_p.fill_(top_p_val)
-    if abs(repetition_penalty.item() - rep_val) > 1e-6:
-        repetition_penalty.fill_(rep_val)
-
-    first_token = decode_one_token_ar_fishaudio(
-        model,
-        prompt.view(1, codebook_dim, -1),
-        input_pos,
-        temperature,
-        top_p,
-        repetition_penalty,
-        argmax_decoding=argmax_decoding,
-    )
-    seq[:, T : T + 1] = first_token
-
-    # Recreate input_pos
-    input_pos = torch.tensor([T], device=device, dtype=torch.int)
-
-    x = decode_n_tokens(
-        model,
-        first_token.view(1, codebook_dim, -1),
-        input_pos,
-        max_new_tokens - 1,
-        temperature=temperature,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
-        argmax_decoding=argmax_decoding,
-    )
-    seq = seq[:, : T + 1 + x.size(1)]
-    seq[:, T + 1 :] = x
-
-    # Clean up temporary variables
-    del first_token, x, prompt, empty, input_pos
-
-    return seq
+        return seq
 
 
 def default_fish_audio_audio_decoder_config() -> "FishAudioAudioDecoderConfig":
@@ -470,7 +480,7 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
         self,
         text_tokens: Int[Array, "batch tokens"],
         input_pos: Int[Array, "batch tokens"] | None = None,
-        argmax_decoding: bool = False,
+        sampling_params: FishAudioSamplingParams | None = None,
     ) -> Float[Array, "batch_size tokens hidden_size"]:
         text_tokens_torch = jax_to_torch(text_tokens)
 
@@ -486,16 +496,23 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
             dtype=next(self.fish_model.parameters()).dtype,
         )
 
-        temperature = torch.tensor(0.8008, device=values.device, dtype=torch.bfloat16)
-        top_p = torch.tensor(0.8008, device=values.device, dtype=torch.bfloat16)
-        repetition_penalty = torch.tensor(1.1016, device=values.device, dtype=torch.bfloat16)
+        if sampling_params is None:
+            sampling_params = FishAudioSamplingParams(
+                temperature=0.8008, top_p=0.8008, repetition_penalty=1.1016, argmax_decoding=True
+            )
+
+        temperature = torch.tensor(sampling_params.temperature, device=values.device, dtype=torch.bfloat16)
+        top_p = torch.tensor(sampling_params.top_p, device=values.device, dtype=torch.bfloat16)
+        repetition_penalty = torch.tensor(
+            sampling_params.repetition_penalty, device=values.device, dtype=torch.bfloat16
+        )
 
         if input_pos is not None:
             input_pos_torch = jax_to_torch(input_pos)
         else:
             input_pos_torch = torch.arange(0, n_tokens, device=values.device, dtype=torch.long)
 
-        new_token_codes = decode_one_token_ar_fishaudio(
+        new_token_codes = FromFishAudioRepo.decode_one_token_ar_fishaudio(
             self.fish_model,
             values,
             input_pos_torch,
@@ -503,7 +520,7 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
             top_p,
             repetition_penalty,
             None,
-            argmax_decoding=argmax_decoding,
+            argmax_decoding=sampling_params.argmax_decoding,
         )
 
         return torch_to_jax(new_token_codes)
@@ -511,10 +528,7 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        argmax_decoding: bool = False,
-        temperature: float = 0.8008,
-        top_p: float = 0.8008,
-        repetition_penalty: float = 1.1016,
+        sampling_params: FishAudioSamplingParams,
     ) -> Int[Array, "batch_size tokens codes"]:
         text_tokens_torch = jax_to_torch(text_tokens)
 
@@ -532,15 +546,17 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
 
         prompt_length = values.size(1)
 
-        temperature_tensor = torch.tensor(temperature, device=values.device, dtype=torch.bfloat16)
-        top_p_tensor = torch.tensor(top_p, device=values.device, dtype=torch.bfloat16)
-        repetition_penalty_tensor = torch.tensor(repetition_penalty, device=values.device, dtype=torch.bfloat16)
+        temperature_tensor = torch.tensor(sampling_params.temperature, device=values.device, dtype=torch.bfloat16)
+        top_p_tensor = torch.tensor(sampling_params.top_p, device=values.device, dtype=torch.bfloat16)
+        repetition_penalty_tensor = torch.tensor(
+            sampling_params.repetition_penalty, device=values.device, dtype=torch.bfloat16
+        )
 
-        y = generate(
+        y = FromFishAudioRepo.generate(
             model=self.fish_model,
             prompt=values,
             max_new_tokens=0,
-            argmax_decoding=argmax_decoding,
+            argmax_decoding=sampling_params.argmax_decoding,
             temperature=temperature_tensor,
             top_p=top_p_tensor,
             repetition_penalty=repetition_penalty_tensor,

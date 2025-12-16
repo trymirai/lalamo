@@ -14,7 +14,7 @@ from jaxtyping import DTypeLike, Float
 
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import AudioDecoder, LalamoModule, NoopVocoder, Vocoder, VocoderConfig
-from lalamo.modules.audio.foreign.fish_audio import load_tokenizer_from_fish_audio
+from lalamo.modules.audio.foreign.fish_audio import FishAudioSamplingParams, load_tokenizer_from_fish_audio
 from lalamo.modules.audio.foreign.fish_audio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
     FishAudioTextDecoderConfig_Foreign,
@@ -104,7 +104,14 @@ class TTSGenerator(LalamoModule[TTSConfig]):
 class FishAudioTTSGenerator_Foreign(TTSGenerator):
     def decode_text(self, text_tokens: Array) -> Array:
         assert isinstance(self.text_decoder, FishAudioTextDecoder_Foreign)
-        return self.text_decoder.decode_utterance(text_tokens)
+
+        # TODO (peter.glushkov): think how to handle it better, either get them from
+        # config or make it part of 'decode_text' interface somehow
+        sampling_params = FishAudioSamplingParams(
+            argmax_decoding=False, temperature=0.8008, top_p=0.8008, repetition_penalty=1.1016
+        )
+
+        return self.text_decoder.decode_utterance(text_tokens, sampling_params=sampling_params)
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
         return jnp.ones(semantic_tokens.shape)

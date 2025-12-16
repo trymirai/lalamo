@@ -1,7 +1,9 @@
 import json
+from re import I
 import shutil
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Optional, Self
 
@@ -13,7 +15,7 @@ from fish_speech.models.text2semantic.llama import (
     DualARModelArgs,
     DualARTransformer,
 )
-from fish_speech.tokenizer import FishTokenizer
+from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
@@ -27,7 +29,6 @@ from lalamo.model_import.model_specs.common import cast_if_float
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
-    EmbeddingConfig,
     ForwardPassMode,
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
@@ -51,6 +52,14 @@ from lalamo.sampling import CompositePolicy, TemperaturePolicy, TopPPolicy
 from lalamo.utils import MapDictValues
 
 
+@dataclass(frozen=True)
+class FishAudioSamplingParams:
+    argmax_decoding: bool
+    top_p: float
+    temperature: float
+    repetition_penalty: float
+
+
 def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
     output_temp_dir = tempfile.mkdtemp()
     try:
@@ -65,9 +74,8 @@ def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
 
 def logits_to_probs(
     logits: Float[Array, " vocabulary"],
-    temperature: float,
     top_p: float,
-    repetition_penalty: float = 1.0,
+    temperature: float,
     previous_tokens: Optional[Int[Array, " tokens"]] = None,
 ) -> Float[Array, " vocabulary"]:
     # NOTE: repetition_penalty is not implemented yet - stub for API compatibility
@@ -90,9 +98,7 @@ def logits_to_probs(
 def sample(
     logits: Float[Array, "batch tokens vocabulary"],
     key: PRNGKeyArray,
-    temperature: float,
-    top_p: float,
-    repetition_penalty: float = 1.0,
+    sampling_params: FishAudioSamplingParams,
     previous_tokens: Optional[Int[Array, " tokens"]] = None,
 ) -> tuple[Int[Array, ""], Float[Array, " vocabulary"]]:
     # Take the last token's logits from first batch
@@ -100,9 +106,8 @@ def sample(
 
     probs = logits_to_probs(
         logits=last_logits,
-        temperature=temperature,
-        top_p=top_p,
-        repetition_penalty=repetition_penalty,
+        top_p=sampling_params.top_p,
+        temperature=sampling_params.temperature,
         previous_tokens=previous_tokens,
     )
 
@@ -264,9 +269,7 @@ class RoPEConfigFishAudio(RoPEConfigBase):
         return RoPEFishAudio(config=self, cosines=cosines_cis, sines=sines_cis)
 
 
-@dataclass
-class RoPEFishAudio:
-    config: RoPEConfigBase
+class RoPEFishAudio(LalamoModule[RoPEConfigBase]):
     sines: Float[Array, "tokens head_channels"]
     cosines: Float[Array, "tokens head_channels"]
 
@@ -290,6 +293,19 @@ class RoPEFishAudio:
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "cosines": self.cosines,
+            "sines": self.sines,
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+    ) -> "RoPEFishAudio":
+        assert isinstance(weights, Mapping)
+        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
 
 
 class PositionalEmbeddingsFishAudio(eqx.Module):
@@ -335,11 +351,13 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
 
     semantic_token_begin_id: int
     semantic_token_end_id: int
+    im_end_token_id: int
     codebook_size: int
     vocab_size: int
     slow_model_dim: int
     fast_model_dim: int
     num_codebooks: int
+    max_seq_len: int
 
     scale_codebook_embeddings: bool
 
@@ -381,12 +399,14 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
             fast_model_projection_config=fast_model_projection_config,
             semantic_token_begin_id=tokenizer.semantic_begin_id,
             semantic_token_end_id=tokenizer.semantic_end_id,
+            im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
             codebook_size=fish_audio_cfg.codebook_size,
             precision=precision,
             vocab_size=fish_audio_cfg.vocab_size,
             slow_model_dim=fish_audio_cfg.dim,
             fast_model_dim=fish_audio_cfg.fast_dim,
             num_codebooks=fish_audio_cfg.num_codebooks,
+            max_seq_len=fish_audio_cfg.max_seq_len,
             scale_codebook_embeddings=fish_audio_cfg.scale_codebook_embeddings,
         )
 
@@ -546,7 +566,7 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
         text_tokens: Int[Array, "batch tokens"],
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
-        argmax_decoding: bool = False,
+        sampling_params: FishAudioSamplingParams | None = None,
         key: PRNGKeyArray | None = None,
     ) -> FishAudioTextDecoderResult:
         batch_size, seq_length = text_tokens.shape
@@ -560,17 +580,18 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
         # ignore it for now
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
+        if sampling_params is None:
+            sampling_params = FishAudioSamplingParams(
+                temperature=0.808, top_p=0.808, repetition_penalty=1.1016, argmax_decoding=True
+            )
         embeddings = self.embed(text_and_codebooks)
         codes, updated_state = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=state,
             input_pos=input_pos,
-            temperature=0,
-            top_p=0,
-            repetition_penalty=0,
+            sampling_params=sampling_params,
             previous_tokens=None,
-            argmax_decoding=argmax_decoding,
             key=key,
         )
         return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
@@ -605,6 +626,124 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
 
         return embeddings
 
+    def decode_utterance(
+        self,
+        text_tokens: Int[Array, "batch tokens"],
+        sampling_params: FishAudioSamplingParams,
+        key: PRNGKeyArray | None = None,
+    ) -> Int[Array, "num_codebooks tokens"]:
+        """
+        Generate semantic tokens for a full utterance given text tokens.
+
+        This function implements the autoregressive generation loop, processing text tokens
+        through the slow transformer and generating codebook tokens until the end token
+        is reached or max sequence length is exceeded.
+
+        Args:
+            text_tokens: Input text tokens with shape (batch, tokens). Currently only batch=1 is supported.
+            sampling_params: Sampling parameters including temperature, top_p, and argmax_decoding flag.
+            key: Optional PRNG key for sampling. Required if argmax_decoding is False.
+
+        Returns:
+            Generated codebook tokens with shape (num_codebooks, generated_tokens).
+        """
+        assert sampling_params.argmax_decoding or key is not None, "PRNG key required for non-argmax decoding"
+
+        batch_size, prompt_length = text_tokens.shape
+        assert batch_size == 1, "Only batch_size=1 is supported"
+
+        codebook_dim = 1 + self.config.num_codebooks
+        max_seq_len = self.config.max_seq_len
+
+        if prompt_length >= max_seq_len:
+            raise ValueError(f"Input sequence length {prompt_length} exceeds max_seq_len {max_seq_len}")
+
+        max_new_tokens = max_seq_len - prompt_length
+
+        # Prepare prompt: text tokens in first row, zeros for codebook rows
+        prompt = jnp.zeros((batch_size, codebook_dim, prompt_length), dtype=text_tokens.dtype)
+        prompt = prompt.at[:, 0, :].set(text_tokens)
+
+        # Initialize sequence buffer to store generated tokens
+        seq = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
+        seq = seq.at[:, :prompt_length].set(prompt[0])
+
+        # Track previous tokens for repetition penalty (windowed)
+        previous_tokens = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
+
+        # Embed and generate first token
+        input_pos = jnp.arange(prompt_length)[None, :]
+        embeddings = self.embed(prompt)
+
+        first_codes, state_slow = decode_next_token(
+            model=self,
+            x=embeddings,
+            state_slow=None,
+            input_pos=input_pos,
+            sampling_params=sampling_params,
+            previous_tokens=None,
+            key=key,
+        )
+
+        seq = seq.at[:, prompt_length].set(first_codes[0])
+        previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
+
+        # Check for early termination
+        if first_codes[0, 0] == self.config.im_end_token_id:
+            codes = seq[1:, prompt_length : prompt_length + 1]
+            return codes
+
+        # Generate remaining tokens
+        cur_token = first_codes
+        generated_count = 1
+
+        for i in range(1, max_new_tokens):
+            # print(f" ### MY_DBG: decoding token {i}")
+
+            # Prepare current token for embedding
+            cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
+
+            # Get windowed previous tokens for repetition penalty
+            win_size = self.config.repeat_window_size
+            if i < win_size:
+                window = previous_tokens[:, :win_size]
+            else:
+                window = previous_tokens[:, i - win_size : i]
+
+            embeddings = self.embed(cur_token_expanded)
+
+            input_pos = jnp.array([[prompt_length + i - 1]])
+
+            if key is not None:
+                key, subkey = jax.random.split(key)
+            else:
+                subkey = None
+
+            next_codes, state_slow = decode_next_token(
+                model=self,
+                x=embeddings,
+                state_slow=state_slow,
+                input_pos=input_pos,
+                sampling_params=sampling_params,
+                previous_tokens=window,
+                key=subkey,
+            )
+
+            seq = seq.at[:, prompt_length + i].set(next_codes[0])
+            previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
+            generated_count += 1
+
+            if next_codes[0, 0] == self.config.im_end_token_id:
+                break
+
+            cur_token = next_codes
+
+        # Extract codebook codes (exclude text token row and prompt, exclude last token which is end token)
+        codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
+        assert jnp.all(codes >= 0), "Negative code found"
+
+        return codes
+
 
 @torch.no_grad
 def decode_next_token(
@@ -612,16 +751,13 @@ def decode_next_token(
     x: Array,
     state_slow: State | None,
     input_pos: Array,
-    temperature: float,
-    top_p: float,
-    repetition_penalty: float,
+    sampling_params: FishAudioSamplingParams,
     previous_tokens: Array | None = None,
-    argmax_decoding: bool = False,
     key: PRNGKeyArray | None = None,
 ) -> tuple[Int[Array, "batch codes"], State | None]:
-    assert argmax_decoding or key is not None
+    assert sampling_params.argmax_decoding or key is not None
 
-    slow_forward_result = model.transformer_slow(
+    slow_model_result = model.transformer_slow(
         inner_features=x,
         token_positions=input_pos,
         state=state_slow,
@@ -632,25 +768,23 @@ def decode_next_token(
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
         forward_pass_config=None,
     )
-    assert slow_forward_result.layer_results is not None
-    hidden_states = slow_forward_result.layer_results[-1].outputs[:, -1:]
+    assert slow_model_result.layer_results is not None
+    hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
     (hidden_states,) = vmap(model.fast_model_projection)(hidden_states)
     hidden_states = hidden_states.reshape(hidden_states.shape[0], 1, -1)
 
-    (logits,) = vmap_twice(model.readout_slow)(slow_forward_result.outputs)
+    (logits,) = vmap_twice(model.readout_slow)(slow_model_result.outputs)
 
-    if argmax_decoding:
+    if sampling_params.argmax_decoding:
         codebooks = [logits[:, -1].argmax(axis=-1)]
     else:
         codebooks = [
             sample(
                 logits,
                 key,
-                temperature,
-                top_p,
-                repetition_penalty,
+                sampling_params,
                 previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
-            )[0].reshape(1)
+            )[0].reshape(1)  # NOTE: reshaping to ensure its tensor, not scalar
         ]
 
     batch_size, *_ = x.shape
@@ -667,10 +801,11 @@ def decode_next_token(
         forward_pass_config=None,
     )
     state_fast = fast_first_result.updated_state
-    a = codebooks[0] - model.semantic_begin_id
-    a = a.at[a < 0].set(0)
-    hidden_states = model.embeddings_fast.embed(a)
-    codebooks.append(a)
+    first_code = codebooks[0] - model.semantic_begin_id
+    first_code = first_code.at[first_code < 0].set(0)
+    codebooks.append(first_code)
+
+    hidden_states = model.embeddings_fast.embed(first_code)
 
     for codebook_idx in range(1, model.num_codebooks):
         hidden_states = hidden_states.reshape(hidden_states.shape[0], 1, -1)
@@ -691,21 +826,19 @@ def decode_next_token(
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
 
-        if argmax_decoding:
-            a = short_logits[:, -1].argmax(axis=-1)
+        if sampling_params.argmax_decoding:
+            code = short_logits[:, -1].argmax(axis=-1)
         else:
-            a = sample(
+            code = sample(
                 short_logits,
                 key,
-                temperature,
-                top_p,
-                repetition_penalty,
+                sampling_params,
                 previous_tokens=(previous_tokens[codebook_idx + 1] if previous_tokens is not None else None),
-            )[0].reshape(1)
+            )[0].reshape(1)  # NOTE: reshaping to ensure its tensor, not scalar
 
-        hidden_states = model.embeddings_fast.embed(a)
-        codebooks.append(a)
+        hidden_states = model.embeddings_fast.embed(code)
+        codebooks.append(code)
 
     codebooks = jnp.stack(codebooks, axis=1)
 
-    return codebooks, slow_forward_result.updated_state
+    return codebooks, slow_model_result.updated_state

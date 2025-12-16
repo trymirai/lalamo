@@ -17,11 +17,21 @@
             }
         },
         {
-            "name": "Run Fish Audio",
+            "name": "Run Fish Audio [TEXT]",
             "type": "debugpy",
             "request": "launch",
             "justMyCode": false,
-            "program": "${workspaceFolder}/sandbox/fish_audio_sandbox.py",
+            "program": "${workspaceFolder}/sandbox/fish_audio_sandbox_text.py",
+            "console": "integratedTerminal",
+            "args" : [
+            ]
+        },
+        {
+            "name": "Run Fish Audio [AUDIO]",
+            "type": "debugpy",
+            "request": "launch",
+            "justMyCode": false,
+            "program": "${workspaceFolder}/sandbox/fish_audio_sandbox_audio.py",
             "console": "integratedTerminal",
             "args" : [
             ]
