@@ -1,0 +1,76 @@
+name: "Tests"
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    # For pipefail - https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#exit-codes-and-error-action-preference
+    shell: bash
+
+jobs:
+  linters:
+    name: Linters
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - id: setup
+        uses: ./.github/actions/setup
+
+      - name: Run pyright
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        run: |
+          basedpyright lalamo
+
+      - name: Run ruff
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        run: |
+          ruff check lalamo
+
+      - name: Check that uv.lock is up-to-date
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        run: |
+          uv lock --check
+          git diff --exit-code -- uv.lock
+
+  unit:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+
+      - name: Run pytest
+        run: |
+          pytest tests/unit
+
+  cli:
+    name: CLI
+    runs-on: ubuntu-latest
+
+    env:
+      MODEL: Qwen/Qwen2.5-0.5B-Instruct
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+
+      - name: lalamo list-models
+        run: |
+          lalamo list-models | grep " ${MODEL} "
+          lalamo list-models --plain | grep -x "${MODEL}"
+          lalamo list-models --no-plain | grep " ${MODEL} "
+
+      - name: lalamo convert
+        run: |
+          lalamo convert "${MODEL}"
+
+      - name: lalamo chat
+        run: |
+          lalamo chat models/* --message "What is 2 + 2? Reply with a single number, nothing else." | grep -x "4<|im_end|>"

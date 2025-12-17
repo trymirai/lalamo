@@ -182,7 +182,8 @@ class Transformer(LalamoModule[TransformerConfig]):
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
-                f"inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim), got {inner_features.shape}",
+                "inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim),"
+                f" got {inner_features.shape}",
             )
         if token_positions.ndim != 2:
             raise ValueError(

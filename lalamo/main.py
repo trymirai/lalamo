@@ -113,10 +113,18 @@ def chat(
             metavar="MODEL_PATH",
         ),
     ],
+    message: Annotated[
+        str | None,
+        Option(
+            help="Message for non-interactive mode",
+            show_default="None, run interactively",
+        ),
+    ] = None,
 ) -> None:
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        console=err_console,
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
@@ -125,21 +133,28 @@ def chat(
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         list(model.stream_reply_text([UserMessage("")], max_output_length=1))
         progress.remove_task(warmup_task)
-    console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
-    messages = []
-    while True:
-        user_text = console.input("[cyan]user> [/cyan]")
-        user_message = UserMessage(user_text)
-        messages.append(user_message)
 
-        console.print("[red]assistant> [/red]", end="")
-        model_response_tokens = []
-        for token in model.stream_reply_text(messages):
+    if message is None:
+        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
+
+        messages = []
+        while True:
+            user_text = console.input("[cyan]user> [/cyan]")
+            user_message = UserMessage(user_text)
+            messages.append(user_message)
+
+            console.print("[red]assistant> [/red]", end="")
+            model_response_tokens = []
+            for token in model.stream_reply_text(messages):
+                console.print(token, end="")
+                model_response_tokens.append(token)
+            console.print()
+            model_response_text = "".join(model_response_tokens)
+            messages.append(model.message_processor.parse_response(model_response_text))
+    else:
+        for token in model.stream_reply_text([UserMessage(message)]):
             console.print(token, end="")
-            model_response_tokens.append(token)
         console.print()
-        model_response_text = "".join(model_response_tokens)
-        messages.append(model.message_processor.parse_response(model_response_text))
 
 
 @app.command(help="Classify given message with a Classifier type of model.")

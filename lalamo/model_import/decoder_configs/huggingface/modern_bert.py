@@ -41,7 +41,7 @@ def activation_from_str(activation: str) -> type[Activation]:
         return supported_activations[activation]
 
     raise ValueError(
-        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}"
+        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}",
     )
 
 

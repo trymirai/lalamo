@@ -1,0 +1,23 @@
+name: setup
+description: Setup dependencies
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    - uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    - run: uv sync --frozen --dev
+      shell: bash
+
+    - run: |
+        echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+        echo "HF_XET_HIGH_PERFORMANCE=1" >> "$GITHUB_ENV"
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+      shell: bash

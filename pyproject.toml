@@ -48,6 +48,8 @@ dev = [
     "transformers>=4.56.0",
     "twine>=6.1.0",
     "ruff==0.14.0",
+    "pytest-xdist>=3.8.0",
+    "basedpyright>=1.36.1",
 ]
 
 [project.scripts]
@@ -95,6 +97,7 @@ cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
 # addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
+addopts = ["--dist=loadgroup"]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
@@ -121,12 +124,16 @@ ignore = [
     "D",
     "EM101",
     "EM102",
+    "ERA001",
+    "FIX002",
     "F722",
     "FBT001",
     "FBT002",
     "N812",
     "PD008",
     "PGH003",
+    "PLC0415",
+    "PLR0912",
     "PLR0913",
     "PLR0915",
     "PLR2004",
@@ -134,6 +141,7 @@ ignore = [
     "PTH123",
     "RET503",
     "RET504",
+    "RUF005",
     "S",
     "SIM108",
     "T20",

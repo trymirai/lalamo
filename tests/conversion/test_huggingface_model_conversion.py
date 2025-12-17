@@ -17,7 +17,7 @@ from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
 from tests.helpers import limit_memory, unsi
-from tests.test_models import DType, ModelTestSpec
+from tests.tracer.tracer import DType, ModelTestSpec
 
 MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("trymirai/chat-moderation-router", convert_memory_limit=unsi("400 M")),

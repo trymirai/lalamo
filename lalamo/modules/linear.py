@@ -464,7 +464,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
 
         return packed
 
-    def __post_init__(self) -> None:  # noqa: PLR0912
+    def __post_init__(self) -> None:
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
@@ -740,7 +740,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
 
         return packed
 
-    def __post_init__(self) -> None:  # noqa: PLR0912
+    def __post_init__(self) -> None:
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
