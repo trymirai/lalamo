@@ -1,5 +1,5 @@
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from itertools import chain
@@ -10,7 +10,7 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.message_processor import UserMessage
+from lalamo.message_processor import Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -41,8 +41,6 @@ class ConversionCallbacks:
     output_dir: Path
     precision: Precision | None
     context_length: int | None
-    include_traces: bool
-    message_for_trace: str | None
 
     def started(self) -> None:
         pass
@@ -74,16 +72,12 @@ def convert(
     output_dir: Path,
     precision: Precision | None = None,
     context_length: int | None = None,
-    include_traces: bool = False,
-    message_for_trace: str | None = None,
     callbacks_type: Callable[
         [
             ModelSpec,
             Path,
             Precision | None,
             int | None,
-            bool,
-            str | None,
         ],
         ConversionCallbacks,
     ] = ConversionCallbacks,
@@ -93,8 +87,6 @@ def convert(
         output_dir,
         precision,
         context_length,
-        include_traces,
-        message_for_trace,
     )
 
     if precision is not None:
@@ -127,13 +119,6 @@ def convert(
     callbacks.saving_model()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    if include_traces:
-        message = None if message_for_trace is None else [UserMessage(content=message_for_trace)]
-        result = model.record_trace(message)
-        traces = flatten_parameters(result.export())
-        with Path(output_dir / "traces.safetensors").open("wb") as fd:
-            safe_write(fd, traces)
-
     model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
     weights = flatten_parameters(model.export_weights())
     del model
@@ -146,6 +131,73 @@ def convert(
         json.dump(config_json, file, indent=4)
 
     callbacks.finished_saving_model()
+
+
+@dataclass
+class TraceCallbacks:
+    model_path: Path
+    output_path: Path
+    messages: Iterable[Message] | None
+
+    def output_exists(self) -> None:
+        raise RuntimeError(f"{self.output_path=} already exists, refusing to overwrite!")
+
+    def started(self) -> None:
+        pass
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def tracing_model(self) -> None:
+        pass
+
+    def finished_tracing_model(self) -> None:
+        pass
+
+    def saving_trace(self) -> None:
+        pass
+
+    def finished_saving_trace(self) -> None:
+        pass
+
+
+def trace(
+    model_path: Path,
+    output_path: Path,
+    messages: Iterable[Message] | None = None,
+    callbacks_type: Callable[
+        [
+            Path,
+            Path,
+            Iterable[Message] | None,
+        ],
+        TraceCallbacks,
+    ] = TraceCallbacks,
+) -> None:
+    callbacks = callbacks_type(model_path, output_path, messages)
+
+    if output_path.exists():
+        callbacks.output_exists()
+
+    callbacks.started()
+
+    callbacks.loading_model()
+    model = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
+
+    callbacks.tracing_model()
+    result = model.record_trace(messages)
+    callbacks.finished_tracing_model()
+
+    callbacks.saving_trace()
+    traces = flatten_parameters(result.export())
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with Path(output_path).open("wb") as fd:
+        safe_write(fd, traces)
+    callbacks.finished_saving_trace()
 
 
 @dataclass
