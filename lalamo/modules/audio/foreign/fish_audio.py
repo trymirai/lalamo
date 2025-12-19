@@ -1,5 +1,4 @@
 import json
-from re import I
 import shutil
 import tempfile
 from collections.abc import Mapping
@@ -10,6 +9,7 @@ from typing import Optional, Self
 import equinox as eqx
 import jax
 import torch
+from fish_speech.models.dac.modded_dac import ModelArgs
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
     DualARModelArgs,
@@ -23,7 +23,7 @@ from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterPath, ParameterTree
-from lalamo.model_import.loaders.fish_audio_loaders import load_fish_audio_transformer
+from lalamo.model_import.loaders.fish_audio_loaders import load_fish_audio_text_decoding_modules
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.model_import.model_specs.common import cast_if_float
 from lalamo.modules import (
@@ -50,6 +50,196 @@ from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from lalamo.modules.utils import vmap_twice
 from lalamo.sampling import CompositePolicy, TemperaturePolicy, TopPPolicy
 from lalamo.utils import MapDictValues
+
+
+@dataclass(frozen=True)
+class VectorQuantizeConfig:
+    """Configuration for VectorQuantize module (decoding path only).
+
+    This implements the decoding portion of VQ similar to DAC/VQGAN:
+    - Factorized codes: Perform nearest neighbor lookup in low-dimensional space
+    - L2-normalized codes: Converts euclidean distance to cosine similarity
+    """
+
+    precision: DTypeLike
+    input_dim: int
+    codebook_size: int
+    codebook_dim: int
+
+    def empty(self) -> "VectorQuantize":
+        codebook_config = TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=self.precision,
+        )
+        codebook = codebook_config.empty(self.codebook_size, self.codebook_dim)
+        assert isinstance(codebook, TiedEmbedding)
+
+        out_proj_config = FullPrecisionLinearConfig(precision=self.precision)
+        out_proj = out_proj_config.empty(
+            input_dim=self.codebook_dim,
+            output_dims=(self.input_dim,),
+            has_biases=True,
+        )
+        assert isinstance(out_proj, FullPrecisionLinear)
+
+        return VectorQuantize(
+            config=self,
+            codebook=codebook,
+            out_proj=out_proj,
+        )
+
+
+class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
+    """Vector Quantization module (decoding path only).
+
+    Decodes codebook indices back to input space by:
+    1. Looking up codebook vectors
+    2. Projecting from codebook_dim to input_dim via out_proj
+    """
+
+    codebook: TiedEmbedding
+    out_proj: FullPrecisionLinear
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    @property
+    def codebook_size(self) -> int:
+        return self.codebook.vocab_size
+
+    @property
+    def codebook_dim(self) -> int:
+        return self.codebook.model_dim
+
+    @property
+    def input_dim(self) -> int:
+        return self.config.input_dim
+
+    def decode_code(self, embed_id: Int[Array, " tokens"]) -> Float[Array, "tokens input_dim"]:
+        """Decode codebook indices to input space.
+
+        Args:
+            embed_id: Codebook indices with shape (tokens,)
+
+        Returns:
+            Decoded vectors with shape (tokens, input_dim)
+        """
+        z_p = self.codebook.embed(embed_id)
+        (z_q,) = vmap(self.out_proj)(z_p)
+        return z_q
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "codebook": self.codebook.export_weights(),
+            "out_proj": self.out_proj.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        codebook_weights = weights["codebook"]
+        out_proj_weights = weights["out_proj"]
+        assert isinstance(codebook_weights, Mapping)
+        assert isinstance(out_proj_weights, Mapping)
+        return replace(
+            self,
+            codebook=self.codebook.import_weights(codebook_weights),
+            out_proj=self.out_proj.import_weights(out_proj_weights),
+        )
+
+
+@dataclass(frozen=True)
+class ResidualVectorQuantizeConfig:
+    """Configuration for ResidualVectorQuantize module (decoding path only).
+
+    Implements residual vector quantization from SoundStream.
+    """
+
+    precision: DTypeLike
+    input_dim: int
+    n_codebooks: int
+    codebook_size: int
+    codebook_dim: int | list[int]
+
+    def empty(self) -> "ResidualVectorQuantize":
+        if isinstance(self.codebook_dim, int):
+            codebook_dims = [self.codebook_dim] * self.n_codebooks
+        else:
+            codebook_dims = self.codebook_dim
+
+        quantizers = []
+        for i in range(self.n_codebooks):
+            vq_config = VectorQuantizeConfig(
+                precision=self.precision,
+                input_dim=self.input_dim,
+                codebook_size=self.codebook_size,
+                codebook_dim=codebook_dims[i],
+            )
+            quantizers.append(vq_config.empty())
+
+        return ResidualVectorQuantize(
+            config=self,
+            quantizers=tuple(quantizers),
+        )
+
+
+class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
+    """Residual Vector Quantization module (decoding path only).
+
+    Decodes codes from multiple codebooks by summing their decoded outputs.
+    """
+
+    quantizers: tuple[VectorQuantize, ...]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    @property
+    def n_codebooks(self) -> int:
+        return len(self.quantizers)
+
+    def from_codes(self, codes: Int[Array, "n_codebooks tokens"]) -> Float[Array, "tokens input_dim"]:
+        """Decode codes from all codebooks and sum the results.
+
+        Args:
+            codes: Codebook indices with shape (n_codebooks, tokens)
+
+        Returns:
+            Decoded vectors with shape (tokens, input_dim)
+        """
+        n_codebooks = codes.shape[0]
+        z_q = self.quantizers[0].decode_code(codes[0])
+        for i in range(1, n_codebooks):
+            z_q = z_q + self.quantizers[i].decode_code(codes[i])
+        return z_q
+
+    def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens input_dim"]:
+        """Decode batched codes from all codebooks.
+
+        Args:
+            codes: Codebook indices with shape (batch, n_codebooks, tokens)
+
+        Returns:
+            Decoded vectors with shape (batch, tokens, input_dim)
+        """
+        return vmap(self.from_codes)(codes)
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "quantizers": [q.export_weights() for q in self.quantizers],
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        quantizer_weights = weights["quantizers"]
+        assert isinstance(quantizer_weights, list)
+        new_quantizers = []
+        for q, w in zip(self.quantizers, quantizer_weights, strict=True):
+            assert isinstance(w, Mapping)
+            new_quantizers.append(q.import_weights(w))
+        return replace(self, quantizers=tuple(new_quantizers))
 
 
 @dataclass(frozen=True)
@@ -138,7 +328,7 @@ def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) ->
     )
 
 
-def lalamo_transformer_cfg_from_fish(
+def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
     config: BaseModelArgs, precision: DTypeLike
 ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
     global_rope_config = RoPEConfigFishAudio(
@@ -217,6 +407,86 @@ def lalamo_transformer_cfg_from_fish(
     linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
 
     return (transformer_cfg, linear_out_cfg)
+
+
+def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+    config: ModelArgs, precision: DTypeLike, window_size: int, input_dim: int
+) -> TransformerConfig:
+    global_rope_config = RoPEConfigFishAudio(
+        precision=precision,
+        base=config.rope_base,
+        max_sequence_length=config.block_size,
+    )
+    local_rope_config = None
+
+    norm_config = NormalizationConfig(
+        scale_precision=precision,
+        accumulation_precision=precision,
+        epsilon=config.norm_eps,
+        scale_offset=None,
+        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False,
+    )
+
+    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
+    out_projection_config = FullPrecisionLinearConfig(precision=precision)
+    mixer_config = AttentionConfig(
+        qkv_projection_config=qkv_projection_config,
+        out_projection_config=out_projection_config,
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=config.n_head,
+        num_groups=config.n_local_heads,
+        head_dim=config.head_dim,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=window_size,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkv_biases=False,
+        has_out_biases=False,
+    )
+
+    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
+    mlp_use_up_biases = False
+    mlp_use_down_biases = False
+    mlp_config = DenseMLPConfig(
+        linear_config=mlp_linear_config,
+        activation=SiLU(),
+        has_up_biases=mlp_use_up_biases,
+        has_down_biases=mlp_use_down_biases,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+
+    pre_mixer_norm_config = norm_config
+    post_mixer_norm_config = None
+    pre_mlp_norm_config = norm_config
+    post_mlp_norm_config = None
+
+    layer_config = TransformerLayerConfig(
+        pre_mixer_norm_config=pre_mixer_norm_config,
+        mixer_config=mixer_config,
+        post_mixer_norm_config=post_mixer_norm_config,
+        pre_mlp_norm_config=pre_mlp_norm_config,
+        mlp_config=mlp_config,
+        post_mlp_norm_config=post_mlp_norm_config,
+    )
+    model_dim = config.dim
+    hidden_dim = config.intermediate_size
+    context_length = config.block_size
+
+    transformer_cfg = TransformerConfig(
+        global_rope_config=global_rope_config,
+        local_rope_config=local_rope_config,
+        layer_configs=tuple([layer_config] * config.n_layer),
+        output_norm_config=norm_config,
+        model_dim=input_dim,
+        hidden_dim=hidden_dim,
+        context_length=context_length,
+    )
+
+    return transformer_cfg
 
 
 @dataclass(frozen=True)
@@ -374,9 +644,13 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
         tokenizer: FishTokenizer,
         precision: DTypeLike,
     ) -> "FishAudioTextDecoderConfig":
-        slow_transformer_cfg, slow_readout_cfg = lalamo_transformer_cfg_from_fish(fish_audio_cfg, precision)
+        slow_transformer_cfg, slow_readout_cfg = lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+            fish_audio_cfg, precision
+        )
         fast_fish_cfg = extract_fast_transformer_params(fish_audio_cfg)
-        fast_transformer_cfg, fast_readout_cfg = lalamo_transformer_cfg_from_fish(fast_fish_cfg, precision)
+        fast_transformer_cfg, fast_readout_cfg = lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+            fast_fish_cfg, precision
+        )
 
         slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
         fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
@@ -460,7 +734,7 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
         config = cls.from_fish_audio_config(fish_model_cfg, fish_tokenizer, precision)
         weights_mapping = dict(MapDictValues(lambda v: cast_if_float(torch_to_jax(v), precision), fish_model_dict))
 
-        transformer_slow, readout_slow = load_fish_audio_transformer(
+        transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
             config.slow_model_config.empty(),
             config.slow_readout_config.empty(
                 input_dim=config.slow_model_dim,
@@ -470,7 +744,7 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
             weights_mapping,
             fast=False,
         )
-        transformer_fast, readout_fast = load_fish_audio_transformer(
+        transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
             config.fast_model_config.empty(),
             config.fast_readout_config.empty(
                 input_dim=config.fast_model_dim, output_dims=(config.codebook_size,), has_biases=False

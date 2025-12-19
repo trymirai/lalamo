@@ -14,7 +14,7 @@ class AudioEncoding(StrEnum):
 class AudioRenderingConfig:
     samplerate: int
     output_channels: int
-    bitrate: int
+    bitwidth: int
     encoding: AudioEncoding
 
     def init(self) -> "AudioRenderer":
@@ -32,3 +32,8 @@ class AudioRenderer:
 
     def play(self, audio: np.ndarray) -> None:
         pass
+
+    def condition_signal(
+        self, generated_audio: np.ndarray, generated_audio_properties: AudioRenderingConfig
+    ) -> np.ndarray:
+        return generated_audio

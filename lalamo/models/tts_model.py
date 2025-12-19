@@ -3,22 +3,23 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, Optional
 
 import equinox as eqx
 import numpy as np
 import torch
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float
+from jaxtyping import DTypeLike, Float, Int
 
-from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig, audio_rendering
 from lalamo.modules import AudioDecoder, LalamoModule, NoopVocoder, Vocoder, VocoderConfig
 from lalamo.modules.audio.foreign.fish_audio import FishAudioSamplingParams, load_tokenizer_from_fish_audio
 from lalamo.modules.audio.foreign.fish_audio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
     FishAudioTextDecoderConfig_Foreign,
     load_fish_audio_audio_decoder,
+    try_locate_fish_audio_model_path,
 )
 from lalamo.modules.audio.text_decoder import TextDecoder
 from lalamo.modules.audio.tts_request_factory import TTSMessage, TTSRequestFactory, TTSRequestFactoryConfig
@@ -50,6 +51,18 @@ class TTSConfig:
             case ForeignTTSModel.FISH_AUDIO:
                 return _build_foreign_fish_audio_model(path_to_checkpoints)
 
+    @classmethod
+    def try_locate_audio_model_path(cls, preset: ForeignTTSModel) -> Optional[Path]:
+        match preset:
+            case ForeignTTSModel.FISH_AUDIO:
+                return try_locate_fish_audio_model_path()
+
+
+@dataclass
+class TTSGenerationResult:
+    audio: np.ndarray
+    audio_params: AudioRenderingConfig
+
 
 class TTSGenerator(LalamoModule[TTSConfig]):
     config: TTSConfig
@@ -79,7 +92,7 @@ class TTSGenerator(LalamoModule[TTSConfig]):
     ) -> Self:
         return self
 
-    def tokenize_text(self, messages: Iterable[TTSMessage]) -> Float[Array, " batch tokens"]:
+    def tokenize_text(self, messages: Iterable[TTSMessage]) -> Int[Array, " batch tokens"]:
         text_tokens = self.message_processor.tokenize_request(messages)
         return jnp.asarray(text_tokens)[None, :]
 
@@ -92,13 +105,24 @@ class TTSGenerator(LalamoModule[TTSConfig]):
     @abstractmethod
     def generate_waveform(self, audio_features: Array) -> Array: ...
 
-    def generate_speech(self, messages: Iterable[TTSMessage]) -> np.ndarray:
-        # 1. Process messages with .message_processor to get text tokens
-        # 2. Encode text tokens into semantic tokens using .text_decoder
-        # 3. Generate audio features from text tokens using .audio_decoder
-        # 4. Generate final waveform from audio features using .vocoder
-        # 5. Condition final audio waveform as required with .audio_renderer
-        return np.zeros(5000)
+    @abstractmethod
+    def get_generated_audio_params(self) -> AudioRenderingConfig: ...
+
+    def generate_speech(self, messages: Iterable[TTSMessage]) -> TTSGenerationResult:
+        text_tokens = self.tokenize_text(messages)
+
+        semantic_tokens = self.decode_text(text_tokens)
+
+        audio_features = self.audio_decoder(semantic_tokens)
+
+        audio_waveform = self.vocoder(audio_features)
+
+        audio_waveform = self.audio_renderer.condition_signal(
+            generated_audio=np.array(audio_waveform),
+            generated_audio_properties=self.get_generated_audio_params(),
+        )
+
+        return TTSGenerationResult(audio=audio_waveform, audio_params=self.audio_renderer.config)
 
 
 class FishAudioTTSGenerator_Foreign(TTSGenerator):
@@ -114,10 +138,19 @@ class FishAudioTTSGenerator_Foreign(TTSGenerator):
         return self.text_decoder.decode_utterance(text_tokens, sampling_params=sampling_params)
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
-        return jnp.ones(semantic_tokens.shape)
+        return self.audio_decoder(semantic_tokens)
 
     def generate_waveform(self, audio_features: Array) -> Array:
-        return jnp.arange(audio_features.size)
+        return self.vocoder(audio_features)
+
+    def get_generated_audio_params(self) -> AudioRenderingConfig:
+        # NOTE: mb this could be moved to config level
+        return AudioRenderingConfig(
+            samplerate=self.audio_decoder.dac_model.sample_rate,
+            output_channels=1,
+            bitwidth=16,
+            encoding=AudioEncoding.pcm,
+        )
 
 
 def _build_foreign_fish_audio_model(

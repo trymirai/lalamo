@@ -10,6 +10,7 @@ from typing import Annotated
 
 import jax
 import jax.profiler
+import soundfile as sf
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -46,6 +47,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.models import ForeignTTSModel, LanguageModelConfig, RouterConfig, TTSConfig, TTSGenerator
 from lalamo.modules import config_converter
+from lalamo.modules.audio.tts_request_factory import TTSMessage
 from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
@@ -187,20 +189,20 @@ def classify(
 def tts(
     model_path: Annotated[
         Path | None,
-        Argument(
+        Option(
             help="Path to the model directory.",
             metavar="MODEL_PATH",
         ),
     ] = None,
     foreign_model: Annotated[
         ForeignTTSModel | None,
-        Argument(
+        Option(
             help="Type of forerign model to use.",
         ),
     ] = None,
     foreign_chkpt_path: Annotated[
         Path | None,
-        Argument(
+        Option(
             help="Path to directory with foreign model checkpoints.",
         ),
     ] = None,
@@ -226,8 +228,11 @@ def tts(
 
     if foreign_model:
         if foreign_chkpt_path is None:
-            err_console.print("You must specify path to checkpoint directory when using foreign model.")
-            raise Exit
+            console.print("Path to checkpoint not specified, will try to find it from HuggingFace cache.")
+            foreign_chkpt_path = TTSConfig.try_locate_audio_model_path(foreign_model)
+            if foreign_chkpt_path is None:
+                err_console.print(f"Failed to locate checkpoint directory for model {foreign_model}")
+                raise Exit
         with Progress(
             SpinnerColumn(),
             TextColumn("[progress.description]{task.description}"),
@@ -239,14 +244,21 @@ def tts(
         console.print(f"🤖 Synthesizing speech with [blue]{model_path}[/blue]:")
 
     assert model is not None
+    _stop_word = "/stop"
     while True:
-        user_text = console.input("[cyan]user> [/cyan]")
-        user_message = UserMessage(user_text)
+        user_text = console.input(f"[cyan]text to generate ({_stop_word} to exit)> [/cyan]")
+        if user_text == _stop_word:
+            console.print("[green] Goodbye! [/green]")
+            break
+        if user_text == "":
+            continue
 
-        result = model.generate_speech([user_message])
+        user_message = TTSMessage.simple_message(user_text)
+
+        tts_result = model.generate_speech([user_message])
 
         if replay:
-            audio_utils.play_audio(result[0], audio_utils.DEFAULT_SAMPLERATE)
+            audio_utils.play_audio(tts_result.audio, audio_utils.DEFAULT_SAMPLERATE)
 
         if output_file.exists():
             answer = console.input(
@@ -259,6 +271,10 @@ def tts(
                 Path.unlink(output_file)
             else:
                 console.print("Continue without saving the result")
+                continue
+
+        sf.write(str(output_file), tts_result.audio, tts_result.audio_params.samplerate)
+        console.print(f"[green] ... saved generated audio to {output_file}[/green]")
 
         console.print()
 

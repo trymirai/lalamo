@@ -70,9 +70,7 @@ def load_rmsnorm(
     return load_parameters(lambda m: (m.scales,), module, (scales,))
 
 
-def load_fish_audio_transformer(
-    module: Transformer, output: FullPrecisionLinear, weights_dict: Mapping[str, Array], fast: bool = False
-) -> tuple[Transformer, FullPrecisionLinear]:
+def load_transformer_block(module: Transformer, weights_dict: Mapping[str, Array], fast: bool = False) -> Transformer:
     def load_attention_local(
         module: Attention,
         weights_dict: Mapping[str, Array],
@@ -174,7 +172,6 @@ def load_fish_audio_transformer(
 
     layers_name = "layers" if not fast else "fast_layers"
     norm_name = "norm" if not fast else "fast_norm"
-    output_linear_name = "output" if not fast else "fast_output"
 
     transformer_layers = tuple(
         load_transformer_layer_local(layer, weights_dict, base_path / layers_name / i)
@@ -182,7 +179,6 @@ def load_fish_audio_transformer(
     )
     output_norm = load_rmsnorm(module.output_norm, weights_dict, base_path / norm_name)
 
-    output_linear = load_linear(output, weights_dict, base_path / output_linear_name)
     module = load_parameters(
         lambda m: (
             m.layers,
@@ -194,10 +190,22 @@ def load_fish_audio_transformer(
             output_norm,
         ),
     )
+
+    return module
+
+
+def load_fish_audio_text_decoding_modules(
+    transformer: Transformer, output: FullPrecisionLinear, weights_dict: Mapping[str, Array], fast: bool = False
+) -> tuple[Transformer, FullPrecisionLinear]:
+    transformer = load_transformer_block(transformer, weights_dict=weights_dict, fast=fast)
+
+    base_path = ParameterPath()
+    output_linear_name = "output" if not fast else "fast_output"
+    output_linear = load_linear(output, weights_dict, base_path / output_linear_name)
     output = load_parameters(
         lambda m: (m,),
         output,
         (output_linear,),
     )
 
-    return (module, output)
+    return (transformer, output)

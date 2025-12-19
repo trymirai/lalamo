@@ -24,6 +24,8 @@ from lalamo.modules.audio.foreign.fish_audio import (
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
     FishAudioTextDecoderResult,
+    ResidualVectorQuantizeConfig,
+    VectorQuantizeConfig,
     logits_to_probs,
     sample,
 )
@@ -50,7 +52,7 @@ def fish_audio_local_model_path() -> Path:
 
 
 def get_tts_message() -> TTSMessage:
-    test_text = "text"
+    test_text = "this is a test message with speaker 0"
     return TTSMessage(content=test_text, speaker_id="speaker:0", style="interleave")
 
 
@@ -291,7 +293,7 @@ def test_sample_jax_vs_pytorch_distribution_similarity() -> None:
     assert torch_counts[0] == min(torch_counts), f"PyTorch sampled token 0 too often: {torch_counts}"
 
 
-@pytest.mark.skip(reason="skipped by default")
+@pytest.mark.skip(reason="Temporary test used for full utterance synthesis")
 @torch.no_grad
 def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
     tts_message = get_tts_message()
@@ -317,3 +319,156 @@ def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
 
     np.save("fish_codes.npy", np.array(fishaudio_wrapper_semantic_tokens))
     np.save("lalamo_codes.npy", np.array(lalamo_semantic_tokens))
+
+
+@torch.no_grad
+def test_vector_quantize_decode_code() -> None:
+    """Test that Lalamo VectorQuantize decode_code matches DAC's implementation."""
+    from dac.nn.quantize import VectorQuantize as DACVectorQuantize
+
+    # Test parameters
+    input_dim = 512
+    codebook_size = 1024
+    codebook_dim = 8
+    num_tokens = 10
+    batch_size = 2
+
+    # Create DAC VectorQuantize
+    dac_vq = DACVectorQuantize(input_dim=input_dim, codebook_size=codebook_size, codebook_dim=codebook_dim)
+    dac_vq.eval()
+
+    # Create Lalamo VectorQuantize with same config
+    lalamo_vq_config = VectorQuantizeConfig(
+        precision=jnp.float32,
+        input_dim=input_dim,
+        codebook_size=codebook_size,
+        codebook_dim=codebook_dim,
+    )
+    lalamo_vq = lalamo_vq_config.empty()
+
+    # Extract weights from DAC and load into Lalamo
+    # DAC codebook: nn.Embedding(codebook_size, codebook_dim)
+    dac_codebook_weights = dac_vq.codebook.weight.detach()  # (codebook_size, codebook_dim)
+
+    # DAC out_proj: WNConv1d(codebook_dim, input_dim, kernel_size=1)
+    # WNConv1d with kernel_size=1 is essentially a linear layer
+    # Weight shape for Conv1d: (out_channels, in_channels, kernel_size) = (input_dim, codebook_dim, 1)
+    dac_out_proj_weight = dac_vq.out_proj.weight.detach().squeeze(-1)  # (input_dim, codebook_dim)
+    assert dac_vq.out_proj.bias is not None
+    dac_out_proj_bias = dac_vq.out_proj.bias.detach()  # (input_dim,)
+
+    # Convert to JAX and load into Lalamo
+    lalamo_weights = {
+        "codebook": {"weights": torch_to_jax(dac_codebook_weights)},
+        "out_proj": {
+            "weights": torch_to_jax(dac_out_proj_weight),
+            "biases": torch_to_jax(dac_out_proj_bias),
+        },
+    }
+    lalamo_vq = lalamo_vq.import_weights(lalamo_weights)
+
+    # Create test indices
+    torch.manual_seed(42)
+    test_indices_torch = torch.randint(0, codebook_size, (batch_size, num_tokens))
+    test_indices_jax = torch_to_jax(test_indices_torch).astype(jnp.int32)
+
+    # DAC decode_code: returns (B, D, T) - just embedding + transpose, no out_proj
+    # Then out_proj is applied: (B, input_dim, T)
+    dac_embedded = dac_vq.decode_code(test_indices_torch)  # (B, codebook_dim, T)
+    dac_output = dac_vq.out_proj(dac_embedded)  # (B, input_dim, T)
+    dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
+
+    # Lalamo decode_code: applies out_proj and returns (tokens, input_dim)
+    # Need to vmap over batch
+    from jax import vmap
+
+    lalamo_output = vmap(lalamo_vq.decode_code)(test_indices_jax)  # (B, T, input_dim)
+
+    # Compare outputs
+    dac_output_jax = torch_to_jax(dac_output)
+
+    _testlog.info(f"DAC output shape: {dac_output.shape}")
+    _testlog.info(f"Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Max difference: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}")
+
+    assert jnp.allclose(dac_output_jax, lalamo_output, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}"
+    )
+
+
+@torch.no_grad
+def test_residual_vector_quantize_from_codes() -> None:
+    """Test that Lalamo ResidualVectorQuantize from_codes matches DAC's implementation."""
+    from dac.nn.quantize import ResidualVectorQuantize as DACResidualVectorQuantize
+
+    # Test parameters
+    input_dim = 512
+    n_codebooks = 9
+    codebook_size = 1024
+    codebook_dim = 8
+    num_tokens = 10
+    batch_size = 2
+
+    # Create DAC ResidualVectorQuantize
+    dac_rvq = DACResidualVectorQuantize(
+        input_dim=input_dim,
+        n_codebooks=n_codebooks,
+        codebook_size=codebook_size,
+        codebook_dim=codebook_dim,
+    )
+    dac_rvq.eval()
+
+    # Create Lalamo ResidualVectorQuantize with same config
+    lalamo_rvq_config = ResidualVectorQuantizeConfig(
+        precision=jnp.float32,
+        input_dim=input_dim,
+        n_codebooks=n_codebooks,
+        codebook_size=codebook_size,
+        codebook_dim=codebook_dim,
+    )
+    lalamo_rvq = lalamo_rvq_config.empty()
+
+    # Extract weights from DAC and load into Lalamo
+    lalamo_quantizer_weights = []
+    for dac_q in dac_rvq.quantizers:
+        dac_codebook_weights = dac_q.codebook.weight.detach()
+        dac_out_proj_weight = dac_q.out_proj.weight.detach().squeeze(-1)
+        assert dac_q.out_proj.bias is not None
+        dac_out_proj_bias = dac_q.out_proj.bias.detach()
+
+        lalamo_quantizer_weights.append(
+            {
+                "codebook": {"weights": torch_to_jax(dac_codebook_weights)},
+                "out_proj": {
+                    "weights": torch_to_jax(dac_out_proj_weight),
+                    "biases": torch_to_jax(dac_out_proj_bias),
+                },
+            }
+        )
+
+    lalamo_weights = {"quantizers": lalamo_quantizer_weights}
+    lalamo_rvq = lalamo_rvq.import_weights(lalamo_weights)
+
+    # Create test codes: (B, N, T) for DAC
+    torch.manual_seed(42)
+    test_codes_torch = torch.randint(0, codebook_size, (batch_size, n_codebooks, num_tokens))
+    # Lalamo expects (N, T) per batch item
+    test_codes_jax = torch_to_jax(test_codes_torch).astype(jnp.int32)
+
+    # DAC from_codes returns (z_q, z_p, codes) where z_q is (B, input_dim, T)
+    dac_output, _, _ = dac_rvq.from_codes(test_codes_torch)
+    dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
+
+    # Lalamo __call__ handles batching internally via vmap
+    lalamo_output = lalamo_rvq(test_codes_jax)  # (B, T, input_dim)
+
+    # Compare outputs
+    dac_output_jax = torch_to_jax(dac_output)
+
+    _testlog.info(f"DAC RVQ output shape: {dac_output.shape}")
+    _testlog.info(f"Lalamo RVQ output shape: {lalamo_output.shape}")
+    _testlog.info(f"Max difference: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}")
+
+    assert jnp.allclose(dac_output_jax, lalamo_output, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}"
+    )

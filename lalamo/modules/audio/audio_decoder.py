@@ -27,5 +27,5 @@ class AudioDecoder(LalamoModule[AudioDecoderConfig]):
     ) -> Self:
         return self
 
-    def __call__(self, text_tokens: Float[Array, "batch tokens"]) -> Float[Array, "batch tokens hidden_dim"]:
+    def __call__(self, text_tokens: Array) -> Array:
         return jnp.zeros((1, 2, 3))

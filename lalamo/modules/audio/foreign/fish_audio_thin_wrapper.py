@@ -3,9 +3,11 @@ import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Self
 
+import huggingface_hub
 import torch
+from fish_speech.models.dac.modded_dac import DAC
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
     DualARModelArgs,
@@ -13,94 +15,111 @@ from fish_speech.models.text2semantic.llama import (
     NaiveModelArgs,
 )
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
-from jaxtyping import Array, Float, Int
+from hydra.utils import instantiate
+from jaxtyping import Array, DTypeLike, Float, Int
+from omegaconf import DictConfig
 from tokenizers import Tokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo import sampling
-from lalamo.modules import (
-    AudioDecoder,
-)
+from lalamo.common import ParameterTree
+from lalamo.modules import AudioDecoder
 from lalamo.modules.audio.audio_decoder import AudioDecoderConfig
-from .fish_audio import FishAudioSamplingParams
 from lalamo.modules.audio.text_decoder import TextDecoder, TextDecoderConfig
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
-dac_config = {
+from .fish_audio import FishAudioSamplingParams
+
+_default_audio_codec_config = {
     "_target_": "fish_speech.models.dac.modded_dac.DAC",
-    "decoder_dim": 1536,
-    "decoder_rates": [8, 8, 4, 2],
-    "decoder_transformer_layers": [4, 0, 0, 0],
+    "sample_rate": 44100,
     "encoder_dim": 64,
     "encoder_rates": [2, 4, 8, 8],
+    "decoder_dim": 1536,
+    "decoder_rates": [8, 8, 4, 2],
     "encoder_transformer_layers": [0, 0, 0, 4],
+    "decoder_transformer_layers": [4, 0, 0, 0],
+    "transformer_general_config": {
+        "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+        "_partial_": True,
+        "block_size": 16384,
+        "n_local_heads": -1,
+        "head_dim": 64,
+        "rope_base": 10000,
+        "norm_eps": 1e-5,
+        "dropout_rate": 0.1,
+        "attn_dropout_rate": 0.1,
+        "channels_first": True,
+    },
     "quantizer": {
         "_target_": "fish_speech.models.dac.rvq.DownsampleResidualVectorQuantize",
-        "codebook_dim": 8,
-        "codebook_size": 1024,
-        "downsample_factor": [2, 2],
         "input_dim": 1024,
         "n_codebooks": 9,
+        "codebook_size": 1024,
+        "codebook_dim": 8,
+        "quantizer_dropout": 0.5,
+        "downsample_factor": [2, 2],
         "post_module": {
             "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
             "causal": True,
+            "window_size": 128,
+            "input_dim": 1024,
             "config": {
                 "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
-                "attn_dropout_rate": 0.1,
                 "block_size": 4096,
-                "channels_first": True,
-                "dim": 1024,
-                "dropout_rate": 0.1,
-                "head_dim": 64,
-                "intermediate_size": 3072,
-                "n_head": 16,
                 "n_layer": 8,
+                "n_head": 16,
+                "dim": 1024,
+                "intermediate_size": 3072,
                 "n_local_heads": -1,
-                "norm_eps": "1e-5",
+                "head_dim": 64,
                 "rope_base": 10000,
+                "norm_eps": 1e-5,
+                "dropout_rate": 0.1,
+                "attn_dropout_rate": 0.1,
+                "channels_first": True,
             },
-            "input_dim": 1024,
-            "window_size": 128,
         },
         "pre_module": {
             "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
             "causal": True,
+            "window_size": 128,
+            "input_dim": 1024,
             "config": {
                 "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
-                "attn_dropout_rate": 0.1,
                 "block_size": 4096,
-                "channels_first": True,
-                "dim": 1024,
-                "dropout_rate": 0.1,
-                "head_dim": 64,
-                "intermediate_size": 3072,
-                "n_head": 16,
                 "n_layer": 8,
+                "n_head": 16,
+                "dim": 1024,
+                "intermediate_size": 3072,
                 "n_local_heads": -1,
-                "norm_eps": "1e-5",
+                "head_dim": 64,
                 "rope_base": 10000,
+                "norm_eps": 1e-5,
+                "dropout_rate": 0.1,
+                "attn_dropout_rate": 0.1,
+                "channels_first": True,
             },
-            "input_dim": 1024,
-            "window_size": 128,
         },
-        "quantizer_dropout": 0.5,
         "semantic_codebook_size": 4096,
     },
-    "sample_rate": 44100,
-    "transformer_general_config": {
-        "_partial_": True,
-        "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
-        "attn_dropout_rate": 0.1,
-        "block_size": 16384,
-        "channels_first": True,
-        "dropout_rate": 0.1,
-        "head_dim": 64,
-        "n_local_heads": -1,
-        "norm_eps": "1e-5",
-        "rope_base": 10000,
-    },
 }
+
+
+def try_locate_fish_audio_model_path() -> Optional[Path]:
+    # TODO: (peter.glushkov) replace this one with actual ModelSpec
+    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
+
+    repos = huggingface_hub.scan_cache_dir().repos
+    try:
+        fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+
+        api = huggingface_hub.HfApi()
+        cache_info = api.model_info(fish_audiod_repo_id)
+        commit_hash = cache_info.sha
+        return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    except StopIteration:
+        return None
 
 
 def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
@@ -405,26 +424,63 @@ class FromFishAudioRepo:
         return seq
 
 
-def default_fish_audio_audio_decoder_config() -> "FishAudioAudioDecoderConfig":
-    return FishAudioAudioDecoderConfig()
+def default_fish_audio_audio_decoder_config() -> "FishAudioAudioDecoderConfig_Foreign":
+    return FishAudioAudioDecoderConfig_Foreign(dac_config=DictConfig(_default_audio_codec_config))
 
 
-def load_fish_audio_audio_decoder(
-    chkpt_path: str | Path,
-) -> "FishAudioAudioDecoder":
+def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "FishAudioAudioDecoder_Foreign":
     config = default_fish_audio_audio_decoder_config()
-    decoder = FishAudioAudioDecoder(config)
+    dac_model = instantiate(config.dac_config)
+    assert isinstance(dac_model, DAC)
+    state_dict = torch.load(chkpt_path / "codec.pth", map_location=device, mmap=True, weights_only=True)
+    if "state_dict" in state_dict:
+        state_dict = state_dict["state_dict"]
+
+    if any("generator" in k for k in state_dict):
+        state_dict = {k.replace("generator.", ""): v for k, v in state_dict.items() if "generator." in k}
+
+    dac_model.load_state_dict(state_dict, strict=False, assign=True)
+    dac_model.eval()
+    dac_model.to(device)
+
+    decoder = FishAudioAudioDecoder_Foreign(config=config, dac_model=dac_model)
 
     return decoder
 
 
 @dataclass(frozen=True)
-class FishAudioAudioDecoderConfig(AudioDecoderConfig):
-    pass
+class FishAudioAudioDecoderConfig_Foreign(AudioDecoderConfig):
+    dac_config: DictConfig
 
 
-class FishAudioAudioDecoder(AudioDecoder):
-    pass
+class FishAudioAudioDecoder_Foreign(AudioDecoder):
+    dac_model: DAC
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.dac_model.quantizer.semantic_quantizer.quantizers[0].codebook.weight.dtype
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],  # noqa: ARG002
+    ) -> Self:
+        return self
+
+    def __call__(self, rvq_codes: Int[Array, " codes tokens"]) -> Array:
+        device = self.dac_model.device
+        indices = jax_to_torch(rvq_codes).to(device).long()
+        if len(indices.shape) != 2:
+            raise ValueError(f"Unexpected input shape {indices.shape}")
+        indices_lens = torch.tensor([indices.shape[1]], device=device, dtype=torch.long)
+
+        # Restore
+        fake_audios, _ = self.dac_model.decode(indices, indices_lens)
+
+        fake_audio = torch_to_jax(fake_audios[0, 0])
+        return fake_audio
 
 
 @dataclass(frozen=True)
