@@ -14,9 +14,10 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.models import GenerationConfig, LanguageModel, LanguageModelConfig, Router, RouterConfig
+from lalamo.models import ClassifierModel, ClassifierModelConfig, GenerationConfig, LanguageModel, LanguageModelConfig
 from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
+from lalamo.utils import process_chat_template
 
 from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .huggingface_generation_config import HFGenerationConfig
@@ -72,7 +73,8 @@ class ModelMetadata:
     repo: str
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
-    model_config: LanguageModelConfig | RouterConfig
+    model_config: LanguageModelConfig | ClassifierModelConfig
+    grammar_start_tokens: tuple[str, ...]
 
 
 def download_file(
@@ -118,7 +120,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel | Router
+    model: LanguageModel | ClassifierModel
     metadata: ModelMetadata
 
 
@@ -145,12 +147,15 @@ def import_message_processor(
             case FileSpec(_) as file_spec:
                 chat_template_file = download_file(file_spec, model_spec.repo, output_dir)
                 prompt_template = chat_template_file.read_text()
+            case str() as template_string:
+                prompt_template = template_string
             case None:
                 raise ValueError("No chat template specified.")
     else:
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
+    prompt_template = process_chat_template(prompt_template)
     tokenizer = Tokenizer.from_file(str(tokenizer_file))
 
     added_tokens = tokenizer_config.added_tokens()
@@ -263,14 +268,14 @@ def _import_language_model(
     return language_model, language_model_config
 
 
-def _import_router(
+def _import_classifier(
     model_spec: ModelSpec,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[Router, RouterConfig]:
+) -> tuple[ClassifierModel, ClassifierModelConfig]:
     foreign_classifier_config_file = download_config_file(model_spec)
     foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
     assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
@@ -293,12 +298,12 @@ def _import_router(
 
     message_processor = import_message_processor(model_spec)
 
-    router_config = RouterConfig(
+    classifier_model_config = ClassifierModelConfig(
         model_config=classifier.config,
         message_processor_config=message_processor.config,
     )
-    router_model = Router(router_config, classifier, message_processor)
-    return router_model, router_config
+    classifier_model = ClassifierModel(classifier_model_config, classifier, message_processor)
+    return classifier_model, classifier_model_config
 
 
 def import_model(
@@ -324,8 +329,8 @@ def import_model(
                 accumulation_precision=accumulation_precision,
                 progress_callback=progress_callback,
             )
-        case ModelType.ROUTER_MODEL:
-            model, config = _import_router(
+        case ModelType.CLASSIFIER_MODEL:
+            model, config = _import_classifier(
                 model_spec,
                 context_length=context_length,
                 precision=precision,
@@ -344,5 +349,6 @@ def import_model(
         use_cases=model_spec.use_cases,
         model_type=model_spec.model_type,
         model_config=config,
+        grammar_start_tokens=model_spec.grammar_start_tokens,
     )
     return ImportResults(model, metadata)

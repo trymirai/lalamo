@@ -11,6 +11,9 @@ from lalamo.modules import (
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
     LlamaRoPEConfig,
+    MLXQuantizedLinearConfig,
+    MLXQuantizedTiedEmbeddingConfig,
+    MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
     SiLU,
     TiedEmbeddingConfig,
@@ -23,7 +26,7 @@ from lalamo.modules import (
 )
 from lalamo.quantization import QuantizationMode
 
-from .common import AWQQuantizationConfig, GPTQQuantizationConfig, HuggingFaceLMConfig
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFLlamaConfig"]
 
@@ -75,7 +78,8 @@ class HFLlamaConfig(HuggingFaceLMConfig):
     vocab_size: int
     head_dim: int | None = None
 
-    quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
+    quantization: QuantizationConfigType = None
+    quantization_config: QuantizationConfigType = None
 
     def to_decoder_config(
         self,
@@ -84,18 +88,39 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        if self.tie_word_embeddings:
-            embedding_config = TiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                precision=activation_precision,
-            )
-        else:
-            embedding_config = UntiedEmbeddingConfig(
-                input_scale=None,
-                logit_soft_cap=None,
-                precision=activation_precision,
-            )
+        quantization = self.quantization or self.quantization_config
+        if isinstance(quantization, MLXQuantizationConfig):
+            if self.tie_word_embeddings:
+                embedding_config = MLXQuantizedTiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    group_size=quantization.group_size,
+                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    activation_quantization_mode=None,
+                    activation_precision=activation_precision,
+                )
+            else:
+                embedding_config = MLXQuantizedUntiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    group_size=quantization.group_size,
+                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    activation_quantization_mode=None,
+                    activation_precision=activation_precision,
+                )
+        else: # noqa: PLR5501
+            if self.tie_word_embeddings:
+                embedding_config = TiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    precision=activation_precision,
+                )
+            else:
+                embedding_config = UntiedEmbeddingConfig(
+                    input_scale=None,
+                    logit_soft_cap=None,
+                    precision=activation_precision,
+                )
         if self.rope_scaling is None:
             rope_config = UnscaledRoPEConfig(
                 precision=activation_precision,
@@ -133,14 +158,21 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        if self.quantization_config is None:
+        if quantization is None:
             linear_config = FullPrecisionLinearConfig(
                 precision=activation_precision,
             )
+        elif isinstance(quantization, MLXQuantizationConfig):
+            linear_config = MLXQuantizedLinearConfig(
+                group_size=quantization.group_size,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
         else:
             linear_config = GroupQuantizedLinearConfig(
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                group_size=quantization.group_size,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )

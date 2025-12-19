@@ -8,9 +8,9 @@ from mlx import nn
 from mlx_lm.tokenizer_utils import TokenizerWrapper
 from mlx_lm.utils import load
 
-from lalamo.modules.decoder import DecoderActivationTrace
+from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.test_models import DType, ModelTracer
+from tests.test_models import ActivationTrace, DType, InferenceResult, ModelTracer
 
 
 def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:
@@ -38,10 +38,10 @@ class MLXDecoderTracer(ModelTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, n
         return self.mlx_model.model.embed_tokens(token_ids)
 
     # mlx rope isn't precomputed, just skip
-    def match_global_rope(self, activation_trace: DecoderActivationTrace) -> None:
+    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
         pass
 
-    def match_local_rope(self, activation_trace: DecoderActivationTrace) -> None:
+    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
         pass
 
     def rmsnorm(self, rmsnorm: nn.Module, x: mx.array) -> mx.array:
@@ -128,6 +128,11 @@ class MLXDecoderTracer(ModelTracer[mx.array, nn.Module, nn.RMSNorm, nn.Module, n
         output_logits = self.mlx_model(input_ids)
 
         return (tuple(hidden_states[:-1]), last_norm_output, output_logits)
+
+    def normalized_output(self, result: InferenceResult) -> mx.array:
+        assert result.activation_trace is not None
+        assert isinstance(result, DecoderResult)
+        return self.from_jax(result.activation_trace.output_norm[None, ...])
 
     @classmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self:

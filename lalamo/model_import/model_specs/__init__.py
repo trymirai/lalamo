@@ -1,11 +1,13 @@
 from .common import FileSpec, ModelSpec, ModelType, UseCase, build_quantized_models
 from .deepseek import DEEPSEEK_MODELS
+from .essential_ai import RNJ_MODELS
 from .gemma import GEMMA_MODELS
 from .gpt_oss import GPT_OSS_MODELS
 from .huggingface import HUGGINGFACE_MODELS
+from .lfm2 import LFM2_MODELS
 from .llama import LLAMA_MODELS
 from .llamba import LLAMBA_MODELS
-from .mirai import MIRAI_ROUTER_MODELS
+from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
 
 # from .pleias import PLEIAS_MODELS
@@ -24,6 +26,7 @@ __all__ = [
 
 
 ALL_MODEL_LISTS = [
+    LFM2_MODELS,
     LLAMA_MODELS,
     LLAMBA_MODELS,
     DEEPSEEK_MODELS,
@@ -35,7 +38,8 @@ ALL_MODEL_LISTS = [
     POLARIS_MODELS,
     QWEN_MODELS,
     REKA_MODELS,
-    MIRAI_ROUTER_MODELS,
+    MIRAI_CLASSIFIER_MODELS,
+    RNJ_MODELS,
 ]
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]

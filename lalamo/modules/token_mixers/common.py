@@ -26,7 +26,7 @@ class TokenMixerResult[StateLayerT](NamedTuple):
 class TokenMixerConfigBase(LalamoConfig, RegistryABC):
     @property
     @abstractmethod
-    def rope_dim(self) -> int: ...
+    def rope_dim(self) -> int | None: ...
 
     @abstractmethod
     def random_init(

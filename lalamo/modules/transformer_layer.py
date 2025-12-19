@@ -56,7 +56,7 @@ class TransformerLayerConfig:
     post_mlp_norm_config: NormalizationConfig | None
 
     @property
-    def rope_dim(self) -> int:
+    def rope_dim(self) -> int | None:
         return self.mixer_config.rope_dim
 
     def random_init(

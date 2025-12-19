@@ -163,8 +163,8 @@ class Mamba2Config(TokenMixerConfigBase):
         return self.num_heads * self.head_dim
 
     @property
-    def rope_dim(self) -> int:
-        return self.head_dim
+    def rope_dim(self) -> None:
+        return None
 
     def random_init(
         self,

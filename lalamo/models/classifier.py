@@ -13,29 +13,29 @@ from lalamo.modules import Classifier, ClassifierConfig, LalamoModule
 from .common import TextModel, TextModelConfig
 
 __all__ = [
-    "Router",
-    "RouterConfig",
+    "ClassifierModel",
+    "ClassifierModelConfig",
 ]
 
 
 @dataclass(frozen=True)
-class RouterConfig(TextModelConfig[ClassifierConfig]):
+class ClassifierModelConfig(TextModelConfig[ClassifierConfig]):
     def init(
         self,
         model: LalamoModule,
         message_processor: MessageProcessor,
-    ) -> "Router":
+    ) -> "ClassifierModel":
         assert isinstance(model, Classifier)
-        return Router(self, model, message_processor)
+        return ClassifierModel(self, model, message_processor)
 
     @classmethod
-    def load_model(cls, path: Path | str) -> "Router":
+    def load_model(cls, path: Path | str) -> "ClassifierModel":
         result = super().load_model(path)
-        assert isinstance(result, Router)
+        assert isinstance(result, ClassifierModel)
         return result
 
 
-class Router(TextModel[RouterConfig, Classifier]):
+class ClassifierModel(TextModel[ClassifierModelConfig, Classifier]):
     def label_output_logits(self, logits: Float[Array, "batch logits"]) -> dict[str, Float[Array, " batch"]]:
         output_labels = self.model.config.output_labels
         probabilities = jax.nn.sigmoid(logits)

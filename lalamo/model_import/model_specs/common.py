@@ -15,7 +15,8 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.utils import MapDictValues, open_safetensors
+from lalamo.safetensors import safe_read
+from lalamo.utils import MapDictValues
 
 __all__ = [
     "ConfigMap",
@@ -32,7 +33,7 @@ __all__ = [
 
 class ModelType(StrEnum):
     LANGUAGE_MODEL = "language_model"
-    ROUTER_MODEL = "router_model"
+    CLASSIFIER_MODEL = "classifier_model"
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
@@ -52,10 +53,12 @@ class WeightsType(Enum):
         float_dtype: DTypeLike,
     ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
         if self == WeightsType.SAFETENSORS:
-            with open_safetensors(filename) as (weights_dict, metadata_dict):
+            with Path(filename).open("rb") as fd:
+                (metadata_dict, weights_dict) = safe_read(fd)
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
             import torch
+
             from lalamo.modules.torch_interop import torch_to_jax
 
             torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
@@ -84,7 +87,7 @@ class ConfigMap:
     tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | None = field(default=FileSpec("generation_config.json"))
-    chat_template: FileSpec | JSONFieldSpec | None = None
+    chat_template: FileSpec | JSONFieldSpec | str | None = None
 
 
 def _is_foreign_config_type(t: object) -> bool:
@@ -114,12 +117,29 @@ def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Calla
     return _hook
 
 
+def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFieldSpec | str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        if "file_spec" in value and "field_name" in value:
+            return JSONFieldSpec(
+                file_spec=FileSpec(**value["file_spec"]),
+                field_name=value["field_name"],
+            )
+        if "filename" in value:
+            return FileSpec(**value)
+    raise ValueError(f"Invalid chat_template value: {value}")
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
 
     _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
     _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
+    _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
 
     vendor: str
     family: str
@@ -137,6 +157,7 @@ class ModelSpec:
     model_type: ModelType = ModelType.LANGUAGE_MODEL
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
+    grammar_start_tokens: tuple[str, ...] = tuple()
 
     @classmethod
     def from_json(cls, json_data: dict) -> "ModelSpec":
@@ -162,6 +183,7 @@ def awq_model_spec(
         configs=model_spec.configs,
         weights_type=model_spec.weights_type,
         use_cases=model_spec.use_cases,
+        grammar_start_tokens=model_spec.grammar_start_tokens,
     )
 
 

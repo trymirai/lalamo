@@ -1,20 +1,19 @@
-import json
 import random
 import re
 import shutil
 import sys
-from enum import Enum
-from itertools import chain, islice
+from contextlib import ExitStack
+from dataclasses import dataclass, field
+from functools import partial
+from itertools import islice
 from pathlib import Path
 from typing import Annotated
 
-import jax
 import jax.profiler
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
-from jaxtyping import DTypeLike
 from rich import box
 from rich.console import Console
 from rich.live import Live
@@ -23,45 +22,38 @@ from rich.progress import (
     MofNCompleteColumn,
     Progress,
     SpinnerColumn,
+    TaskID,
     TextColumn,
     TimeElapsedColumn,
     TimeRemainingColumn,
 )
+from rich.prompt import Confirm
 from rich.table import Table
-from safetensors.flax import save_file
 from typer import Argument, Context, Exit, Option, Typer
 
-from lalamo.common import flatten_parameters
-from lalamo.data import import_hf_parquet
+from lalamo.commands import (
+    CollectTracesCallbacks,
+    ConversionCallbacks,
+    EstimateBatchsizeCallbacks,
+    Precision,
+    TrainCallbacks,
+)
+from lalamo.commands import collect_traces as _collect_traces
+from lalamo.commands import convert as _convert
+from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import train as _train
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
-from lalamo.model_import.common import (
-    DownloadingFileEvent,
-    FinishedDownloadingFileEvent,
-    FinishedInitializingModelEvent,
-    InitializingModelEvent,
-    StatusEvent,
-)
-from lalamo.models import LanguageModelConfig, RouterConfig
-from lalamo.modules import config_converter
-from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
+from lalamo.model_import import REPO_TO_MODEL, ModelSpec
+from lalamo.model_import.common import FileSpec
+from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import (
-    SpeculatorTrainingEvent,
-    test_speculator,
-    train_speculator,
-)
+from lalamo.speculator.utils import test_speculator
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
 DEFAULT_OUTPUT_DIR = Path("models")
-
-
-class Precision(Enum):
-    FLOAT32 = "float32"
-    FLOAT16 = "float16"
-    BFLOAT16 = "bfloat16"
 
 
 console = Console()
@@ -148,7 +140,7 @@ def chat(
         messages.append(model.message_processor.parse_response(model_response_text))
 
 
-@app.command(help="Classify given message with a Router type of model.")
+@app.command(help="Classify given message with a Classifier type of model.")
 def classify(
     model_path: Annotated[
         Path,
@@ -164,7 +156,7 @@ def classify(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = RouterConfig.load_model(model_path)
+        model = ClassifierModelConfig.load_model(model_path)
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up...")
         model.classify_chat([UserMessage(content="warmup message")])
@@ -179,6 +171,68 @@ def classify(
         for label, confidence in result.items():
             console.print(f"{label} : {confidence}", end="")
         console.print()
+
+
+@dataclass
+class CliConversionCallbacks(ConversionCallbacks):
+    overwrite: bool = False
+
+    stack: ExitStack = field(default_factory=ExitStack)
+    downloading_tasks: dict[FileSpec, TaskID] = field(default_factory=dict)
+    initializing_task: TaskID | None = None
+    saving_task: TaskID | None = None
+
+    def started(self) -> None:
+        conversion_strs = [
+            f"🚀 Converting [cyan]{self.model_spec.name}[/cyan] by [cyan]{self.model_spec.vendor}[/cyan]",
+        ]
+        if self.precision is not None:
+            conversion_strs.append(
+                f" and converting floating-point weights into [cyan]{self.precision.name.lower()}[/cyan] precision",
+            )
+        conversion_strs.append(".")
+        console.print("".join(conversion_strs))
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        shutil.rmtree(self.output_dir)
+
+    def downloading(self, file_spec: FileSpec) -> None:
+        self.downloading_tasks[file_spec] = self.progress.add_task(f"Retrieving {file_spec.filename}...")
+
+    def finished_downloading(self, file_spec: FileSpec) -> None:
+        self.progress.remove_task(self.downloading_tasks[file_spec])
+
+    def initializing_model(self) -> None:
+        self.initializing_task = self.progress.add_task("Initializing model...")
+
+    def finished_initializing_model(self) -> None:
+        assert self.initializing_task is not None
+
+        self.progress.remove_task(self.initializing_task)
+
+    def saving_model(self) -> None:
+        self.saving_task = self.progress.add_task(f"💾 Saving the model to {self.output_dir}")
+
+    def finished_saving_model(self) -> None:
+        assert self.saving_task is not None
+
+        self.progress.remove_task(self.saving_task)
+        self.stack.close()
+        console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
@@ -237,85 +291,18 @@ def convert(
         ),
     ] = None,
 ) -> None:
-    if precision is not None:
-        precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
-    else:
-        precision_dtype = None
-
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 
-    conversion_strs = [f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan]"]
-    if precision is not None:
-        conversion_strs.append(
-            f" and converting floating-point weights into [cyan]{precision.name.lower()}[/cyan] precision",
-        )
-    conversion_strs.append(".")
-    console.print("".join(conversion_strs))
-
-    if output_dir.exists() and not overwrite:
-        answer = console.input(
-            rf"⚠️ Output directory [cyan]{output_dir}[/cyan] already exists."
-            r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
-        )
-        while answer.lower() not in ["y", "n", "yes", "no"]:
-            answer = console.input("Please enter 'y' or 'n': ")
-        if answer.lower() in ["y", "yes"]:
-            shutil.rmtree(output_dir)
-        else:
-            console.print("Exiting...")
-            raise Exit
-
-    message = None if message_for_trace is None else [UserMessage(content=message_for_trace)]
-
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,
-    ) as progress:
-        event_to_task = {}
-
-        def progress_callback(event: StatusEvent) -> None:
-            match event:
-                case DownloadingFileEvent(file_spec):
-                    event_to_task[event] = progress.add_task(f"Retrieving {file_spec.filename}...")
-                case FinishedDownloadingFileEvent(file_spec):
-                    progress.remove_task(event_to_task[event])
-                case InitializingModelEvent():
-                    event_to_task[event] = progress.add_task("Initializing model...")
-                case FinishedInitializingModelEvent():
-                    progress.remove_task(event_to_task[event])
-
-        main_task = progress.add_task("👨‍🍳 Cooking...")
-        model, metadata = import_model(
-            model_repo,
-            precision=precision_dtype,
-            context_length=context_length,
-            progress_callback=progress_callback,
-        )
-        save_task = progress.add_task(f"💾 Saving the model to {output_dir}")
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        if include_traces:
-            trace_task = progress.add_task("🚁 Generating traces...")
-            result = model.record_trace(message)
-            traces = flatten_parameters(result.export())
-            save_file(traces, output_dir / "traces.safetensors")
-            progress.remove_task(trace_task)
-        progress.remove_task(main_task)
-
-        model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-        weights = flatten_parameters(model.export_weights())
-        del model
-
-        save_file(weights, output_dir / "model.safetensors")
-
-        config_json = config_converter.unstructure(metadata, ModelMetadata)
-        with open(output_dir / "config.json", "w") as file:
-            json.dump(config_json, file, indent=4)
-        progress.remove_task(save_task)
-
-    console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{output_dir}`[/cyan]!")
+    _convert(
+        model_repo,
+        output_dir,
+        precision,
+        context_length,
+        include_traces,
+        message_for_trace,
+        partial(CliConversionCallbacks, overwrite=overwrite),
+    )
 
 
 def _model_size_string_to_int(
@@ -384,6 +371,132 @@ speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
 
 
+@dataclass
+class CliEstimateBatchsizeCallbacks(EstimateBatchsizeCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    loading_task: TaskID | None = None
+    estimating_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+        self.loading_task = self.progress.add_task("[cyan]Loading model...[/cyan]")
+
+    def finished_loading_model(self) -> None:
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def estimating_batchsize(self, lo: int, hi: int | None) -> None:
+        hi_str = str(hi) if hi is not None else "?"
+        description = f"[cyan]Estimating batch size... ({lo}..{hi_str})[/cyan]"
+        if self.estimating_task is None:
+            self.estimating_task = self.progress.add_task(description)
+        else:
+            self.progress.update(self.estimating_task, description=description)
+
+    def finished_estimating_batchsize(self, batchsize: int) -> None:
+        if self.estimating_task is not None:
+            self.progress.remove_task(self.estimating_task)
+        self.stack.close()
+        console.print(f"Found maximum batch size: [cyan]{batchsize}[/cyan]")
+
+
+@speculator_app.command(help="Estimate maximum batch size at which a model can be run.")
+def estimate_batchsize(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    max_input_length: Annotated[
+        int,
+        Option(help="Max input length of a model."),
+    ] = 1024,
+    max_output_length: Annotated[
+        int,
+        Option(help="Max output length of a model."),
+    ] = 1024,
+    num_logits_per_token: Annotated[
+        int,
+        Option(help="Number of top logits that will be recorded."),
+    ] = 8,
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum vram size in gb allowed.",
+            show_default="max on default device",
+        ),
+    ] = None,
+) -> None:
+    if vram_gb is not None:
+        mem = vram_gb * 1024 * 1024 * 1024
+    elif (mem := get_default_device_memory()) is None:
+        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+        raise Exit(1)
+
+    callbacks_type = CliEstimateBatchsizeCallbacks
+
+    _estimate_batchsize(model_path, mem, max_input_length, max_output_length, num_logits_per_token, callbacks_type)
+
+
+@dataclass
+class CliCollectTracesCallbacks(CollectTracesCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    live: Live | None = None
+    loading_task: TaskID | None = None
+    inference_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.live = self.stack.enter_context(Live(refresh_per_second=10))
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        )
+        self.live.update(self.progress, refresh=True)
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]")
+
+    def finished_loading_model(self) -> None:
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def loading_dataset(self) -> None:
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
+
+    def finished_loading_dataset(self) -> None:
+        assert self.loading_task is not None
+        assert self.live is not None
+        self.progress.remove_task(self.loading_task)
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        )
+        self.live.update(self.progress, refresh=True)
+        self.inference_task = self.progress.add_task(
+            "🔮 [cyan]Running inference...[/cyan]",
+            total=self.num_tokens_to_generate,
+        )
+
+    def inference_progress(self, tokens_generated: int) -> None:
+        assert self.inference_task is not None
+        self.progress.update(self.inference_task, completed=tokens_generated)
+
+    def finished_inference(self) -> None:
+        assert self.inference_task is not None
+        self.progress.update(self.inference_task, description="✅ Completed")
+        self.stack.close()
+
+
 @speculator_app.command(help="Run model inference and collect traces for speculator training")
 def collect_traces(
     model_path: Annotated[
@@ -431,55 +544,18 @@ def collect_traces(
         ),
     ] = None,
 ) -> None:
-    with Live(refresh_per_second=10) as live:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True,
-            disable=True,
-        ) as progress:
-            live.update(progress, refresh=True)
-            loading_model_task = progress.add_task("🧠 [cyan]Loading model...[/cyan]")
-            model = LanguageModelConfig.load_model(model_path)
-            progress.remove_task(loading_model_task)
+    _collect_traces(
+        model_path,
+        dataset_path,
+        output_path,
+        num_logits_per_token,
+        max_input_length,
+        max_output_length,
+        batch_size,
+        num_tokens_to_generate,
+        CliCollectTracesCallbacks,
+    )
 
-            loading_dataset_task = progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
-            dataset = iter(import_hf_parquet(dataset_path))
-            dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
-            progress.remove_task(loading_dataset_task)
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-            disable=True,
-        ) as progress:
-            live.update(progress, refresh=True)
-            inference_task = progress.add_task("🔮 [cyan]Running inference...[/cyan]", total=num_tokens_to_generate)
-
-            def progress_callback(event: CollectTracesEvent) -> None:
-                progress.update(inference_task, completed=event.tokens_generated)
-
-            traces = inference_collect_traces(
-                model,
-                dataset,
-                num_logits_per_token,
-                batch_size,
-                max_input_length,
-                max_output_length,
-                num_tokens_to_generate,
-                progress_callback,
-            )
-
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(output_path, "wb+") as output_fd:
-                for trace in traces:
-                    blob = trace.serialize()
-                    output_fd.write(blob)
-
-            progress.update(inference_task, description="✅ Completed")
 
 @speculator_app.command(help="View model inference traces")
 def view_traces(
@@ -524,6 +600,43 @@ def view_traces(
         console.print(table)
 
 
+@dataclass
+class CliTrainCallbacks(TrainCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    training_task: TaskID | None = None
+
+    def started(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ),
+        )
+        self.training_task = self.progress.add_task(
+            "🔮 [cyan]Training speculator...[/cyan]",
+            total=self.subsample_size,
+        )
+
+    def training_progress(self, trained_tokens: int) -> None:
+        assert self.training_task is not None
+        self.progress.update(self.training_task, completed=trained_tokens)
+
+    def finished_training(self) -> None:
+        assert self.training_task is not None
+        self.progress.update(self.training_task, description="✅ Completed")
+        self.progress.remove_task(self.training_task)
+        self.stack.close()
+
+    def saving_speculator(self) -> None:
+        pass
+
+    def finished_saving_speculator(self) -> None:
+        console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
+
+
 @speculator_app.command(help="Train a speculator from inference traces")
 def train(
     trace_path: Annotated[
@@ -560,30 +673,15 @@ def train(
         ),
     ] = None,
 ) -> None:
-    with open(trace_path, "rb") as trace_fd:
-        traces = LalamoCompletion.deserialize_many(trace_fd)
-
-        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, ngram_size)
-
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            MofNCompleteColumn(),
-            TimeElapsedColumn(),
-            TimeRemainingColumn(),
-        ) as progress:
-            inference_task = progress.add_task("🔮 [cyan]Training speculator...[/cyan]", total=subsample_size)
-
-            def progress_callback(event: SpeculatorTrainingEvent) -> None:
-                progress.update(inference_task, completed=event.trained_tokens)
-
-            train_speculator(speculator, traces, subsample_size, progress_callback)
-
-            progress.update(inference_task, description="✅ Completed")
-
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb+") as fd:
-        fd.write(speculator.serialize())
+    _train(
+        trace_path,
+        output_path,
+        hashtable_size,
+        num_logits_per_token,
+        ngram_size,
+        subsample_size,
+        CliTrainCallbacks,
+    )
 
 
 @speculator_app.command(help="Run speculator as an autoregressive llm")
