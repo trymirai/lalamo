@@ -103,12 +103,6 @@ JAX_TRACEBACK_FILTERING = "off"
 XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
 TORCH_COMPILE_DISABLE = "1"
 
-[tool.pyright]
-venv = "."
-venvPath = ".venv"
-pythonVersion = "3.12"
-typeCheckingMode = "standard"
-
 [tool.ruff]
 target-version = "py312"
 line-length = 119
