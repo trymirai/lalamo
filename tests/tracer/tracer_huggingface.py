@@ -26,7 +26,7 @@ from lalamo.modules import DecoderResult
 from lalamo.modules.classifier import ClassifierResult
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from tests.common import assert_close
-from tests.test_models import ActivationTrace, DType, InferenceResult, ModelTracer
+from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
 
 FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 

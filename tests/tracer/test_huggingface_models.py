@@ -1,8 +1,8 @@
 import pytest
 import torch
 
-from tests.huggingface_tracer import HFDecoderTracer, ModernBertTracer
-from tests.test_models import DType, ModelTestSpec, _test_model
+from tests.tracer.tracer import DType, ModelTestSpec, _test_model
+from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
 MODEL_LIST = [
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),

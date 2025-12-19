@@ -10,7 +10,7 @@ from mlx_lm.utils import load
 
 from lalamo.modules.decoder import DecoderResult
 from lalamo.modules.mlx_interop import jax_to_mlx, mlx_to_jax
-from tests.test_models import ActivationTrace, DType, InferenceResult, ModelTracer
+from tests.tracer.tracer import ActivationTrace, DType, InferenceResult, ModelTracer
 
 
 def _build_mlx_attention_mask(hidden_states: mx.array) -> mx.array:

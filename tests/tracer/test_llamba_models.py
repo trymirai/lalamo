@@ -3,12 +3,12 @@ import unittest
 
 import pytest
 
-from tests.test_models import DType, ModelTestSpec, _test_model
+from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 
 CMX_AVAILABLE = importlib.util.find_spec("cartesia_mlx")
 
 if CMX_AVAILABLE:
-    from tests.cartesia_mlx_tracer import CartesiaMLXDecoderTracer
+    from tests.tracer.tracer_llamba import LlambaDecoderTracer
 
 MODEL_LIST = [
     ModelTestSpec("cartesia-ai/Llamba-1B-4bit-mlx", DType.FLOAT32, token_stride=1),
@@ -17,6 +17,6 @@ MODEL_LIST = [
 
 @unittest.skipUnless(CMX_AVAILABLE, "requires mlx")
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
-def test_cartesia_mlx_model(test_spec: ModelTestSpec) -> None:
-    _test_model(test_spec, CartesiaMLXDecoderTracer) # type: ignore
+def test_llamba_models(test_spec: ModelTestSpec) -> None:
+    _test_model(test_spec, LlambaDecoderTracer) # type: ignore
 

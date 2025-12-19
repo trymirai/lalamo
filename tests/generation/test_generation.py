@@ -196,3 +196,5 @@ def test_streaming_vs_eager_consistency(
         eager_token_ids.squeeze().tolist(),
         streaming_token_ids.squeeze().tolist(),
     )
+
+pytestmark = pytest.mark.xdist_group("heavy")

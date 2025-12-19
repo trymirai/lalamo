@@ -126,7 +126,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.embedding.activation_precision
 
     @eqx.filter_jit
-    def __call__(  # noqa: PLR0912
+    def __call__(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],

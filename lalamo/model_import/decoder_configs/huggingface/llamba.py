@@ -76,7 +76,7 @@ class HFLlambaConfig(HuggingFaceLMConfig):
                 logit_soft_cap=None,
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
                 embedding_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"])
+                    int(metadata_dict["quantization_kwargs.bits"]),
                 ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
@@ -107,7 +107,7 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             linear_config = MLXQuantizedLinearConfig(
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
                 weight_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"])
+                    int(metadata_dict["quantization_kwargs.bits"]),
                 ),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,

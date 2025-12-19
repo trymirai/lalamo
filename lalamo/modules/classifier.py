@@ -67,7 +67,7 @@ class PredictionHeadConfig:
     def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
         dense_key, readout_key = jax.random.split(key)
         dense_layer = self.dense_config.random_init(
-            input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key
+            input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key,
         )
         norm = self.normalization_config.empty(input_size)
         readout = self.readout_config.random_init(

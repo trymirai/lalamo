@@ -1,8 +1,8 @@
 import pytest
 
 from lalamo.model_import.model_specs.lfm2 import LFM2_MODELS
-from tests.lfm2_tracer import LFM2DecoderTracer
-from tests.test_models import DType, ModelTestSpec, _test_model
+from tests.tracer.tracer import DType, ModelTestSpec, _test_model
+from tests.tracer.tracer_lfm2 import LFM2DecoderTracer
 
 MODEL_LIST = [ModelTestSpec(model.repo, DType.FLOAT32) for model in LFM2_MODELS if model.quantization is None]
 
