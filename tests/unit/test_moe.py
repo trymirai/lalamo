@@ -9,8 +9,7 @@ from lalamo.modules import (
     MixtureOfExpertsConfig,
     SoftmaxRouting,
 )
-
-from .common import assert_close
+from tests.common import assert_close
 
 
 def test_moe_prefill_vs_decode_match() -> None:

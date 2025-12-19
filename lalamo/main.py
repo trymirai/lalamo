@@ -36,11 +36,13 @@ from lalamo.commands import (
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
     Precision,
+    TraceCallbacks,
     TrainCallbacks,
 )
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
@@ -111,10 +113,18 @@ def chat(
             metavar="MODEL_PATH",
         ),
     ],
+    message: Annotated[
+        str | None,
+        Option(
+            help="Message for non-interactive mode",
+            show_default="None, run interactively",
+        ),
+    ] = None,
 ) -> None:
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
+        console=err_console,
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
@@ -123,21 +133,28 @@ def chat(
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         list(model.stream_reply_text([UserMessage("")], max_output_length=1))
         progress.remove_task(warmup_task)
-    console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
-    messages = []
-    while True:
-        user_text = console.input("[cyan]user> [/cyan]")
-        user_message = UserMessage(user_text)
-        messages.append(user_message)
 
-        console.print("[red]assistant> [/red]", end="")
-        model_response_tokens = []
-        for token in model.stream_reply_text(messages):
+    if message is None:
+        console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
+
+        messages = []
+        while True:
+            user_text = console.input("[cyan]user> [/cyan]")
+            user_message = UserMessage(user_text)
+            messages.append(user_message)
+
+            console.print("[red]assistant> [/red]", end="")
+            model_response_tokens = []
+            for token in model.stream_reply_text(messages):
+                console.print(token, end="")
+                model_response_tokens.append(token)
+            console.print()
+            model_response_text = "".join(model_response_tokens)
+            messages.append(model.message_processor.parse_response(model_response_text))
+    else:
+        for token in model.stream_reply_text([UserMessage(message)]):
             console.print(token, end="")
-            model_response_tokens.append(token)
         console.print()
-        model_response_text = "".join(model_response_tokens)
-        messages.append(model.message_processor.parse_response(model_response_text))
 
 
 @app.command(help="Classify given message with a Classifier type of model.")
@@ -178,6 +195,7 @@ class CliConversionCallbacks(ConversionCallbacks):
     overwrite: bool = False
 
     stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
     downloading_tasks: dict[FileSpec, TaskID] = field(default_factory=dict)
     initializing_task: TaskID | None = None
     saving_task: TaskID | None = None
@@ -211,23 +229,33 @@ class CliConversionCallbacks(ConversionCallbacks):
         shutil.rmtree(self.output_dir)
 
     def downloading(self, file_spec: FileSpec) -> None:
+        assert self.progress is not None
+
         self.downloading_tasks[file_spec] = self.progress.add_task(f"Retrieving {file_spec.filename}...")
 
     def finished_downloading(self, file_spec: FileSpec) -> None:
+        assert self.progress is not None
+
         self.progress.remove_task(self.downloading_tasks[file_spec])
 
     def initializing_model(self) -> None:
+        assert self.progress is not None
+
         self.initializing_task = self.progress.add_task("Initializing model...")
 
     def finished_initializing_model(self) -> None:
+        assert self.progress is not None
         assert self.initializing_task is not None
 
         self.progress.remove_task(self.initializing_task)
 
     def saving_model(self) -> None:
+        assert self.progress is not None
+
         self.saving_task = self.progress.add_task(f"💾 Saving the model to {self.output_dir}")
 
     def finished_saving_model(self) -> None:
+        assert self.progress is not None
         assert self.saving_task is not None
 
         self.progress.remove_task(self.saving_task)
@@ -272,24 +300,12 @@ def convert(
             show_default="Model's native maximum context length.",
         ),
     ] = None,
-    include_traces: Annotated[
-        bool,
-        Option(
-            help="Export activation traces for debugging purposes.",
-        ),
-    ] = False,
     overwrite: Annotated[
         bool,
         Option(
             help="Overwrite existing model files.",
         ),
     ] = False,
-    message_for_trace: Annotated[
-        str | None,
-        Option(
-            help="Text message to use as prompt when recording trace",
-        ),
-    ] = None,
 ) -> None:
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
@@ -299,9 +315,114 @@ def convert(
         output_dir,
         precision,
         context_length,
-        include_traces,
-        message_for_trace,
         partial(CliConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@dataclass
+class CliTraceCallbacks(TraceCallbacks):
+    overwrite: bool = False
+
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    tracing_task: TaskID | None = None
+    saving_task: TaskID | None = None
+
+    def output_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output [cyan]{self.output_path}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        self.output_path.unlink()
+
+    def started(self) -> None:
+        console.print(f"🔍 Tracing [cyan]{self.model_path}[/cyan]")
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def loading_model(self) -> None:
+        assert self.progress is not None
+
+        self.loading_task = self.progress.add_task("🧠 Loading model...")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+
+        self.progress.remove_task(self.loading_task)
+
+    def tracing_model(self) -> None:
+        assert self.progress is not None
+
+        self.tracing_task = self.progress.add_task("🔍 Recording trace...")
+
+    def finished_tracing_model(self) -> None:
+        assert self.progress is not None
+        assert self.tracing_task is not None
+
+        self.progress.remove_task(self.tracing_task)
+
+    def saving_trace(self) -> None:
+        assert self.progress is not None
+
+        self.saving_task = self.progress.add_task(f"💾 Saving trace to {self.output_path}")
+
+    def finished_saving_trace(self) -> None:
+        assert self.progress is not None
+        assert self.saving_task is not None
+
+        self.progress.remove_task(self.saving_task)
+        self.stack.close()
+        console.print(f"💾 Trace saved to [cyan]{self.output_path}[/cyan]")
+
+@app.command(help="Trace a model.")
+def trace(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path | None,
+        Option(
+            help="Path to save the trace to.",
+            show_default="${MODEL_PATH}/traces.safetensors",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing trace file.",
+        ),
+    ] = False,
+    message: Annotated[
+        str | None,
+        Option(
+            help="Text message to use as prompt when recording trace",
+        ),
+    ] = None,
+) -> None:
+    if output_path is None:
+        output_path = model_path / "traces.safetensors"
+
+    messages = None if message is None else [UserMessage(content=message)]
+
+    _trace(
+        model_path,
+        output_path,
+        messages,
+        partial(CliTraceCallbacks, overwrite=overwrite),
     )
 
 

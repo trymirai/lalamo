@@ -2,10 +2,10 @@ import unittest
 
 import pytest
 
-from tests.test_models import MLX_AVAILABLE, DType, ModelTestSpec, _test_model
+from tests.tracer.tracer import MLX_AVAILABLE, DType, ModelTestSpec, _test_model
 
 if MLX_AVAILABLE:
-    from tests.mlx_tracer import MLXDecoderTracer
+    from tests.tracer.tracer_mlx import MLXDecoderTracer
 
 # token_stride=1 is required because mlx doesn't accept token positions
 MODEL_LIST = [
