@@ -22,7 +22,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.common import ParameterPath, ParameterTree
+from lalamo.common import ParameterPath, ParameterTree, dummy_array
 from lalamo.model_import.loaders.fish_audio_loaders import load_fish_audio_text_decoding_modules
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.model_import.model_specs.common import cast_if_float
@@ -34,6 +34,7 @@ from lalamo.modules import (
     FullPrecisionLinearConfig,
     Identity,
     LalamoModule,
+    LayerNormConfig,
     NormalizationConfig,
     SiLU,
     State,
@@ -54,13 +55,6 @@ from lalamo.utils import MapDictValues
 
 @dataclass(frozen=True)
 class VectorQuantizeConfig:
-    """Configuration for VectorQuantize module (decoding path only).
-
-    This implements the decoding portion of VQ similar to DAC/VQGAN:
-    - Factorized codes: Perform nearest neighbor lookup in low-dimensional space
-    - L2-normalized codes: Converts euclidean distance to cosine similarity
-    """
-
     precision: DTypeLike
     input_dim: int
     codebook_size: int
@@ -118,14 +112,6 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         return self.config.input_dim
 
     def decode_code(self, embed_id: Int[Array, " tokens"]) -> Float[Array, "tokens input_dim"]:
-        """Decode codebook indices to input space.
-
-        Args:
-            embed_id: Codebook indices with shape (tokens,)
-
-        Returns:
-            Decoded vectors with shape (tokens, input_dim)
-        """
         z_p = self.codebook.embed(embed_id)
         (z_q,) = vmap(self.out_proj)(z_p)
         return z_q
@@ -151,11 +137,6 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
 
 @dataclass(frozen=True)
 class ResidualVectorQuantizeConfig:
-    """Configuration for ResidualVectorQuantize module (decoding path only).
-
-    Implements residual vector quantization from SoundStream.
-    """
-
     precision: DTypeLike
     input_dim: int
     n_codebooks: int
@@ -186,7 +167,6 @@ class ResidualVectorQuantizeConfig:
 
 class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
     """Residual Vector Quantization module (decoding path only).
-
     Decodes codes from multiple codebooks by summing their decoded outputs.
     """
 
@@ -201,14 +181,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         return len(self.quantizers)
 
     def from_codes(self, codes: Int[Array, "n_codebooks tokens"]) -> Float[Array, "tokens input_dim"]:
-        """Decode codes from all codebooks and sum the results.
-
-        Args:
-            codes: Codebook indices with shape (n_codebooks, tokens)
-
-        Returns:
-            Decoded vectors with shape (tokens, input_dim)
-        """
         n_codebooks = codes.shape[0]
         z_q = self.quantizers[0].decode_code(codes[0])
         for i in range(1, n_codebooks):
@@ -216,14 +188,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
         return z_q
 
     def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens input_dim"]:
-        """Decode batched codes from all codebooks.
-
-        Args:
-            codes: Codebook indices with shape (batch, n_codebooks, tokens)
-
-        Returns:
-            Decoded vectors with shape (batch, tokens, input_dim)
-        """
         return vmap(self.from_codes)(codes)
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -419,7 +383,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     )
     local_rope_config = None
 
-    norm_config = NormalizationConfig(
+    norm_config_pre = NormalizationConfig(
         scale_precision=precision,
         accumulation_precision=precision,
         epsilon=config.norm_eps,
@@ -427,6 +391,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
+    norm_config_post = LayerNormConfig(scale_precision=precision)
 
     qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
     out_projection_config = FullPrecisionLinearConfig(precision=precision)
@@ -459,10 +424,10 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         up_clipping=None,
     )
 
-    pre_mixer_norm_config = norm_config
-    post_mixer_norm_config = None
-    pre_mlp_norm_config = norm_config
-    post_mlp_norm_config = None
+    pre_mixer_norm_config = norm_config_pre
+    post_mixer_norm_config = norm_config_post
+    pre_mlp_norm_config = norm_config_pre
+    post_mlp_norm_config = norm_config_post
 
     layer_config = TransformerLayerConfig(
         pre_mixer_norm_config=pre_mixer_norm_config,
@@ -472,7 +437,6 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         mlp_config=mlp_config,
         post_mlp_norm_config=post_mlp_norm_config,
     )
-    model_dim = config.dim
     hidden_dim = config.intermediate_size
     context_length = config.block_size
 
@@ -480,7 +444,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         global_rope_config=global_rope_config,
         local_rope_config=local_rope_config,
         layer_configs=tuple([layer_config] * config.n_layer),
-        output_norm_config=norm_config,
+        output_norm_config=norm_config_pre,
         model_dim=input_dim,
         hidden_dim=hidden_dim,
         context_length=context_length,

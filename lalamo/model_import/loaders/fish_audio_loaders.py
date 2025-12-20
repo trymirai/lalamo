@@ -8,6 +8,7 @@ from lalamo.modules import (
     Attention,
     DenseMLP,
     FullPrecisionLinear,
+    LayerNorm,
     LinearBase,
     MLPBase,
     Normalization,
@@ -70,6 +71,15 @@ def load_rmsnorm(
     return load_parameters(lambda m: (m.scales,), module, (scales,))
 
 
+def load_layer_norm(
+    module: LayerNorm,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> LayerNorm:
+    scales = weights_dict[path / "gamma"]
+    return load_parameters(lambda m: (m.scales,), module, (scales,))
+
+
 def load_transformer_block(module: Transformer, weights_dict: Mapping[str, Array], fast: bool = False) -> Transformer:
     def load_attention_local(
         module: Attention,
@@ -129,13 +139,18 @@ def load_transformer_block(module: Transformer, weights_dict: Mapping[str, Array
         path: ParameterPath,
     ) -> TransformerLayer:
         if module.pre_mixer_norm is not None:
-            pre_attention_norm = load_rmsnorm(
+            pre_mixer_norm = load_rmsnorm(
                 module.pre_mixer_norm,
                 weights_dict,
                 path / "attention_norm",
             )
         else:
-            pre_attention_norm = None
+            pre_mixer_norm = None
+
+        if module.post_mixer_norm is not None:
+            post_mixer_norm = load_layer_norm(module.post_mixer_norm, weights_dict, path / "attention_layer_scale")
+        else:
+            post_mixer_norm = None
 
         assert isinstance(module.mixer, Attention)
         attention = load_attention_local(module.mixer, weights_dict, path / "attention")
@@ -145,6 +160,10 @@ def load_transformer_block(module: Transformer, weights_dict: Mapping[str, Array
             weights_dict,
             path / "ffn_norm",
         )
+        if module.post_mlp_norm is not None:
+            post_mlp_norm = load_layer_norm(module.post_mlp_norm, weights_dict, path / "ffn_layer_scale")
+        else:
+            post_mlp_norm = None
 
         mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward", "w3", "w1", "w2")
 
@@ -159,12 +178,12 @@ def load_transformer_block(module: Transformer, weights_dict: Mapping[str, Array
             ),
             module,
             (
-                pre_attention_norm,
+                pre_mixer_norm,
                 attention,
-                None,
+                post_mixer_norm,
                 pre_mlp_norm,
                 mlp,
-                None,
+                post_mlp_norm,
             ),
         )
 

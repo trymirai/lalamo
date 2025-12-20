@@ -223,7 +223,7 @@ def tts(
 
     model = None
     if model_path is not None:
-        console.print("🤖 Current method is not supported yet, use --foreigh_model mode instead.")
+        console.print("🤖 Current method is not supported yet, use --foreign_model mode instead.")
         raise Exit
 
     if foreign_model:
@@ -241,7 +241,7 @@ def tts(
             loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
             model = TTSConfig.load_model_from_foreign_model_preset(foreign_model, foreign_chkpt_path)
         progress.remove_task(loading_task)
-        console.print(f"🤖 Synthesizing speech with [blue]{model_path}[/blue]:")
+        console.print(f"🤖 Synthesizing speech with [blue]{foreign_model}[/blue]:")
 
     assert model is not None
     _stop_word = "/stop"
@@ -258,7 +258,7 @@ def tts(
         tts_result = model.generate_speech([user_message])
 
         if replay:
-            audio_utils.play_audio(tts_result.audio, audio_utils.DEFAULT_SAMPLERATE)
+            audio_utils.play_audio(tts_result.audio, tts_result.audio_params.samplerate)
 
         if output_file.exists():
             answer = console.input(

@@ -51,7 +51,7 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import Normalization, NormalizationConfig, UpcastMode
+from .normalization import LayerNorm, LayerNormConfig, Normalization, NormalizationConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -108,6 +108,8 @@ __all__ = [
     "Identity",
     "KVCacheLayer",
     "LalamoModule",
+    "LayerNorm",
+    "LayerNormConfig",
     "LinearBase",
     "LinearConfig",
     "LinearScalingRoPEConfig",
