@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import ParameterTree, dummy_array, require_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
@@ -355,21 +355,15 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
             "scales": self.scales,
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        stored_weights = weights["weights"]
-
+        stored_weights = require_array(weights["weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             stored_weights = jax_uint8_to_unpacked_uint4(stored_weights)
-
         return replace(
             self,
             weights=stored_weights.astype(self.weights.dtype),
-            scales=weights["scales"],
+            scales=require_array(weights["scales"]),
         )
 
 
@@ -472,25 +466,16 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
             "biases": self.biases,
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        assert isinstance(weights["scales"], Array)
-        assert isinstance(weights["biases"], Array)
-
-        unpacked_weights = weights["weights"]
-
+        unpacked_weights = require_array(weights["weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(weights["weights"])
-
+            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=weights["scales"],
-            biases=weights["biases"],
+            scales=require_array(weights["scales"]),
+            biases=require_array(weights["biases"]),
         )
 
 
@@ -630,33 +615,21 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
             "output_biases": self.output_biases,
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["input_weights"], Array)
-        assert isinstance(weights["input_scales"], Array)
-        assert isinstance(weights["input_biases"], Array)
-        assert isinstance(weights["output_weights"], Array)
-        assert isinstance(weights["output_scales"], Array)
-        assert isinstance(weights["output_biases"], Array)
-
-        unpacked_input_weights = weights["input_weights"]
-        unpacked_output_weights = weights["output_weights"]
-
+        unpacked_input_weights = require_array(weights["input_weights"])
+        unpacked_output_weights = require_array(weights["output_weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_input_weights = jax_uint8_to_unpacked_uint4(weights["input_weights"])
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(weights["output_weights"])
-
+            unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
+            unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
         return replace(
             self,
             input_weights=unpacked_input_weights.astype(self.input_weights.dtype),
-            input_scales=weights["input_scales"],
-            input_biases=weights["input_biases"],
+            input_scales=require_array(weights["input_scales"]),
+            input_biases=require_array(weights["input_biases"]),
             output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=weights["output_scales"],
-            output_biases=weights["output_biases"],
+            output_scales=require_array(weights["output_scales"]),
+            output_biases=require_array(weights["output_biases"]),
         )
 
 
@@ -765,27 +738,17 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
             "output_biases": self.output_biases,
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["input_weights"], Array)
-        assert isinstance(weights["output_weights"], Array)
-        assert isinstance(weights["output_scales"], Array)
-        assert isinstance(weights["output_biases"], Array)
-
-        unpacked_output_weights = weights["output_weights"]
-
+        unpacked_output_weights = require_array(weights["output_weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(weights["output_weights"])
-
+            unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
         return replace(
             self,
-            input_weights=weights["input_weights"],
+            input_weights=require_array(weights["input_weights"]),
             output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=weights["output_scales"],
-            output_biases=weights["output_biases"],
+            output_scales=require_array(weights["output_scales"]),
+            output_biases=require_array(weights["output_biases"]),
         )
 
 
@@ -799,4 +762,4 @@ EmbeddingConfig = (
 )
 
 
-register_config_union(EmbeddingConfig)  # type: ignore (pyright bug)
+register_config_union(EmbeddingConfig)

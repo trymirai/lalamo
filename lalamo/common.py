@@ -15,6 +15,8 @@ __all__ = [
     "ParameterTree",
     "dummy_array",
     "flatten_parameters",
+    "require_array",
+    "require_tree",
     "unflatten_parameters",
 ]
 
@@ -29,6 +31,16 @@ type ParameterTree[ArrayType: ArrayLike] = (
 )
 
 
+def require_array[ArrayType: ArrayLike](value: ArrayType | ParameterTree[ArrayType]) -> ArrayType:
+    assert not isinstance(value, (Mapping, Sequence))
+    return value
+
+
+def require_tree[ArrayType: ArrayLike](value: ArrayType | ParameterTree[ArrayType]) -> ParameterTree[ArrayType]:
+    assert not isinstance(value, (Array, ShapeDtypeStruct))
+    return value
+
+
 def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
     if isinstance(shape, int):
         shape = (shape,)
@@ -40,9 +52,10 @@ def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[Ar
     if not isinstance(nested_parameters, Mapping):
         nested_parameters = {str(i): value for i, value in enumerate(nested_parameters)}
     for key, value in nested_parameters.items():
+        value = cast("ArrayType | ParameterTree[ArrayType]", value)
         key_path = ParameterPath(key)
         if isinstance(value, (Array, ShapeDtypeStruct)):
-            result[key_path] = value
+            result[key_path] = cast("ArrayType", value)
         else:
             update: dict[str, ArrayType] = {
                 str(key_path / subkey): subvalue for subkey, subvalue in flatten_parameters(value).items()

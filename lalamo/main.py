@@ -85,7 +85,7 @@ class ModelParser(ParamType):
                 f"\n\nUse the `{SCRIPT_NAME} list-models` command to see the list of currently supported models.",
             )
             error_message = "".join(error_message_parts)
-            self.fail(error_message, param, ctx)
+            return self.fail(error_message, param, ctx)
         return result
 
 

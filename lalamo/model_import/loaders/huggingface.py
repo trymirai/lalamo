@@ -289,7 +289,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
 
         up_projection = load_parameters(
-            lambda m: (m.weights, m.biases),  # type: ignore
+            lambda m: (m.weights, m.biases),
             module.experts.up_projection,
             (combined_up_gate_w, combined_up_gate_b),
         )
@@ -309,7 +309,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
 
         down_projection = load_parameters(
-            lambda m: (m.weights, m.biases),  # type: ignore
+            lambda m: (m.weights, m.biases),
             module.experts.down_projection,
             (down_w, down_b),
         )
@@ -807,7 +807,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key[type(layer.config.mixer_config)],  # type: ignore
+            mixer_key[type(layer.config.mixer_config)],
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,

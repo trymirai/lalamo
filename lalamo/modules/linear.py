@@ -2,7 +2,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Self, cast
 
 import equinox as eqx
 import jax
@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import ParameterTree, dummy_array, require_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
@@ -572,26 +572,19 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
             result["biases"] = self.biases
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        assert isinstance(weights["zero_points"], Array)
-        unpacked_weights = weights["weights"]
-        unpacked_zero_points = weights["zero_points"]
-
+        unpacked_weights = require_array(weights["weights"])
+        unpacked_zero_points = require_array(weights["zero_points"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(weights["weights"])
-            unpacked_zero_points = jax_uint8_to_unpacked_uint4(weights["zero_points"])
-
+            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
+            unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=weights["scales"],
+            scales=require_array(weights["scales"]),
             zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
-            biases=weights["biases"] if self.has_biases else None,
+            biases=require_array(weights["biases"]) if self.has_biases else None,
         )
 
 
@@ -847,24 +840,17 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             result["biases"] = self.biases
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-
-        unpacked_weights = weights["weights"]
-
+        unpacked_weights = require_array(weights["weights"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(weights["weights"])
-
+            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=weights["scales"],
-            deq_biases=weights["deq_biases"],
-            biases=weights["biases"] if self.has_biases else None,
+            scales=require_array(weights["scales"]),
+            deq_biases=require_array(weights["deq_biases"]),
+            biases=require_array(weights["biases"]) if self.has_biases else None,
         )
 
 
@@ -1113,7 +1099,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        base = super().import_weights(weights)
+        base = cast("Self", super().import_weights(weights)) # ty bug
         assert isinstance(weights, Mapping)
         assert isinstance(weights["up_weights"], Sequence)
         return replace(
@@ -1126,4 +1112,4 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig
 
 
-register_config_union(LinearConfig)  # type: ignore (pyright bug)
+register_config_union(LinearConfig)

@@ -22,10 +22,10 @@ jobs:
       - id: setup
         uses: ./.github/actions/setup
 
-      - name: Run pyright
+      - name: Run ty
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
-          basedpyright lalamo
+          ty check lalamo
 
       - name: Run ruff
         if: ${{ always() && steps.setup.outcome == 'success' }}

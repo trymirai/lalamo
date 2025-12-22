@@ -97,7 +97,7 @@ def load_mlp(module: DenseMLP, weights_dict: Mapping[str, Array], path: Paramete
     fused_up_gate_params = merge_linear_params([up_proj_params, gate_proj_params])
 
     return load_parameters(
-        lambda m: (*params_selector(m.up_projection), *params_selector(m.down_projection)),  # type: ignore
+        lambda m: (*params_selector(m.up_projection), *params_selector(m.down_projection)),
         module,
         (*fused_up_gate_params, *down_proj_params),
     )
@@ -177,7 +177,7 @@ def load_attention(
 
     qkv_params = merge_linear_params([q_params, k_params, v_params])
     return load_parameters(
-        lambda m: (*params_selector(m.qkv_projection), *params_selector(m.out_projection)),  # type: ignore
+        lambda m: (*params_selector(m.qkv_projection), *params_selector(m.out_projection)),
         module,
         (*qkv_params, *out_params),
     )
