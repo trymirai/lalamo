@@ -6,7 +6,7 @@ import equinox as eqx
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -151,18 +151,11 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
             "out_projection": self.out_projection.export_weights(),
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["in_projection"], Mapping)
-        assert isinstance(weights["conv"], Mapping)
-        assert isinstance(weights["out_projection"], Mapping)
-
         return replace(
             self,
-            in_projection=self.in_projection.import_weights(weights["in_projection"]),
-            conv=self.conv.import_weights(weights["conv"]),
-            out_projection=self.out_projection.import_weights(weights["out_projection"]),
+            in_projection=self.in_projection.import_weights(require_tree(weights["in_projection"])),
+            conv=self.conv.import_weights(require_tree(weights["conv"])),
+            out_projection=self.out_projection.import_weights(require_tree(weights["out_projection"])),
         )

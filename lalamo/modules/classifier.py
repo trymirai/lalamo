@@ -9,7 +9,7 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules import Activation
 from lalamo.modules.normalization import NormalizationConfig
 from lalamo.modules.transformer import (
@@ -117,19 +117,13 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         )
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["dense"], Mapping)
-        assert isinstance(weights["norm"], Mapping)
-        assert isinstance(weights["readout"], Mapping)
         return replace(
             self,
-            dense=self.dense.import_weights(weights["dense"]),
-            norm=self.norm.import_weights(weights["norm"]),
-            readout=self.readout.import_weights(weights["readout"]),
+            dense=self.dense.import_weights(require_tree(weights["dense"])),
+            norm=self.norm.import_weights(require_tree(weights["norm"])),
+            readout=self.readout.import_weights(require_tree(weights["readout"])),
         )
 
 
@@ -321,19 +315,12 @@ class Classifier(LalamoModule[ClassifierConfig]):
         )
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["embedding"], Mapping)
-        assert isinstance(weights["embedding_norm"], Mapping)
-        assert isinstance(weights["transformer"], Mapping)
-        assert isinstance(weights["prediction_head"], Mapping)
         return replace(
             self,
-            embedding=self.embedding.import_weights(weights["embedding"]),
-            embedding_norm=self.embedding_norm.import_weights(weights["embedding_norm"]),
-            transformer=self.transformer.import_weights(weights["transformer"]),
-            prediction_head=self.prediction_head.import_weights(weights["prediction_head"]),
+            embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
+            embedding_norm=self.embedding_norm.import_weights(require_tree(weights["embedding_norm"])),
+            transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
+            prediction_head=self.prediction_head.import_weights(require_tree(weights["prediction_head"])),
         )

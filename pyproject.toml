@@ -48,8 +48,8 @@ dev = [
     "transformers>=4.56.0",
     "twine>=6.1.0",
     "ruff==0.14.0",
+    "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
-    "basedpyright>=1.36.1",
 ]
 
 [project.scripts]

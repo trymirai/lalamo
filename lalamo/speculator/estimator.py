@@ -46,9 +46,9 @@ def estimate_memory_from_batchsize(
     assert hasattr(memory_analysis, "temp_size_in_bytes")
 
     return (
-        memory_analysis.argument_size_in_bytes  # type: ignore (pyright bug)
-        + memory_analysis.output_size_in_bytes  # type: ignore (pyright bug)
-        + memory_analysis.temp_size_in_bytes  # type: ignore (pyright bug)
+        memory_analysis.argument_size_in_bytes
+        + memory_analysis.output_size_in_bytes
+        + memory_analysis.temp_size_in_bytes
     )
 
 

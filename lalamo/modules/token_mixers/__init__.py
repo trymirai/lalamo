@@ -16,7 +16,7 @@ from .state import (
 
 TokenMixerConfig = AttentionConfig | Mamba2Config | ShortConvConfig
 
-register_config_union(TokenMixerConfig)  # type: ignore (pyright bug)
+register_config_union(TokenMixerConfig)
 
 __all__ = [
     "Attention",

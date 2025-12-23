@@ -7,7 +7,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
@@ -252,35 +252,24 @@ class Transformer(LalamoModule[TransformerConfig]):
             result["local_rope"] = self.local_rope.export_weights()
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["layers"], Sequence)
-        assert isinstance(weights["output_norm"], Mapping)
-
         if self.global_rope:
-            assert isinstance(weights["global_rope"], Mapping)
-            global_rope = self.global_rope.import_weights(weights["global_rope"])
+            global_rope = self.global_rope.import_weights(require_tree(weights["global_rope"]))
         else:
             global_rope = None
-
         if self.local_rope:
-            assert isinstance(weights["local_rope"], Mapping)
-            local_rope = self.local_rope.import_weights(weights["local_rope"])
+            local_rope = self.local_rope.import_weights(require_tree(weights["local_rope"]))
         else:
             local_rope = None
-
-        layers = []
-        for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
-            assert isinstance(layer_weights, Mapping)
-            layers.append(layer.import_weights(layer_weights))
-
+        layers = [
+            layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
+        ]
         return replace(
             self,
             global_rope=global_rope,
             layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(weights["output_norm"]),
+            output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
             local_rope=local_rope,
         )

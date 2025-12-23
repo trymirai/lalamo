@@ -169,7 +169,10 @@ class MessageProcessor:
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:
             all_fields = AssistantMessage.__dataclass_fields__
-            required_fields = {k: v for k, v in all_fields.items() if v.type == v.type | None}
+            # NOTE: str type annotations are assumed to be required
+            required_fields = {
+                k: v for k, v in all_fields.items() if isinstance(v.type, str) or v.type == (v.type | None)
+            }
             named_groups = self.output_parser_regex.groupindex
             invalid_groups = set(named_groups) - set(all_fields)
             if invalid_groups:

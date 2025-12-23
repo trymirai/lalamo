@@ -9,15 +9,18 @@ from cattrs import Converter
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_array, require_tree
 
 __all__ = [
     "DummyUnionMember",
     "ForwardPassMode",
     "LalamoModule",
+    "ParameterTree",
     "PositionalEmbeddingSelector",
     "config_converter",
     "register_config_union",
+    "require_array",
+    "require_tree",
 ]
 
 

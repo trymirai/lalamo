@@ -10,7 +10,7 @@ from einops import einsum, rearrange
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import ParameterTree, dummy_array, require_array, require_tree
 from lalamo.modules.activations import Activation
 from lalamo.modules.common import LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
@@ -149,16 +149,10 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
 
     def import_weights(self, weights: ParameterTree[Array]) -> "SeparableCausalConv":
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
         return replace(
             self,
-            weights=weights["weights"],
-            biases=biases,
+            weights=require_array(weights["weights"]),
+            biases=require_array(weights["biases"]) if self.biases is not None else None,
         )
 
 
@@ -532,22 +526,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             "gate_bias": self.gate_bias,
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["in_projection"], Mapping)
-        assert isinstance(weights["out_projection"], Mapping)
-        assert isinstance(weights["conv"], Mapping)
-        assert isinstance(weights["skip_connection_weight"], Array)
-        assert isinstance(weights["gate_bias"], Array)
-
         return replace(
             self,
-            in_projection=self.in_projection.import_weights(weights["in_projection"]),
-            out_projection=self.out_projection.import_weights(weights["out_projection"]),
-            conv=self.conv.import_weights(weights["conv"]),
-            skip_connection_weight=weights["skip_connection_weight"],
-            gate_bias=weights["gate_bias"],
+            in_projection=self.in_projection.import_weights(require_tree(weights["in_projection"])),
+            out_projection=self.out_projection.import_weights(require_tree(weights["out_projection"])),
+            conv=self.conv.import_weights(require_tree(weights["conv"])),
+            skip_connection_weight=require_array(weights["skip_connection_weight"]),
+            gate_bias=require_array(weights["gate_bias"]),
         )
