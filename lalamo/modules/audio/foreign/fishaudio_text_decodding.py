@@ -9,7 +9,6 @@ from typing import Optional, Self
 import equinox as eqx
 import jax
 import torch
-from fish_speech.models.dac.modded_dac import ModelArgs
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
     DualARModelArgs,
@@ -22,7 +21,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.common import ParameterPath, ParameterTree, dummy_array
+from lalamo.common import ParameterPath, ParameterTree
 from lalamo.model_import.loaders.fish_audio_loaders import load_fish_audio_text_decoding_modules
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.model_import.model_specs.common import cast_if_float
@@ -34,7 +33,6 @@ from lalamo.modules import (
     FullPrecisionLinearConfig,
     Identity,
     LalamoModule,
-    LayerNormConfig,
     NormalizationConfig,
     SiLU,
     State,
@@ -46,172 +44,12 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.audio.text_decoder import TextDecoderConfig
-from lalamo.modules.rope import RoPEConfigBase
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.modules.utils import vmap_twice
-from lalamo.sampling import CompositePolicy, TemperaturePolicy, TopPPolicy
 from lalamo.utils import MapDictValues
 
-
-@dataclass(frozen=True)
-class VectorQuantizeConfig:
-    precision: DTypeLike
-    input_dim: int
-    codebook_size: int
-    codebook_dim: int
-
-    def empty(self) -> "VectorQuantize":
-        codebook_config = TiedEmbeddingConfig(
-            input_scale=None,
-            logit_soft_cap=None,
-            precision=self.precision,
-        )
-        codebook = codebook_config.empty(self.codebook_size, self.codebook_dim)
-        assert isinstance(codebook, TiedEmbedding)
-
-        out_proj_config = FullPrecisionLinearConfig(precision=self.precision)
-        out_proj = out_proj_config.empty(
-            input_dim=self.codebook_dim,
-            output_dims=(self.input_dim,),
-            has_biases=True,
-        )
-        assert isinstance(out_proj, FullPrecisionLinear)
-
-        return VectorQuantize(
-            config=self,
-            codebook=codebook,
-            out_proj=out_proj,
-        )
-
-
-class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
-    """Vector Quantization module (decoding path only).
-
-    Decodes codebook indices back to input space by:
-    1. Looking up codebook vectors
-    2. Projecting from codebook_dim to input_dim via out_proj
-    """
-
-    codebook: TiedEmbedding
-    out_proj: FullPrecisionLinear
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def codebook_size(self) -> int:
-        return self.codebook.vocab_size
-
-    @property
-    def codebook_dim(self) -> int:
-        return self.codebook.model_dim
-
-    @property
-    def input_dim(self) -> int:
-        return self.config.input_dim
-
-    def decode_code(self, embed_id: Int[Array, " tokens"]) -> Float[Array, "tokens input_dim"]:
-        z_p = self.codebook.embed(embed_id)
-        (z_q,) = vmap(self.out_proj)(z_p)
-        return z_q
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "codebook": self.codebook.export_weights(),
-            "out_proj": self.out_proj.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        codebook_weights = weights["codebook"]
-        out_proj_weights = weights["out_proj"]
-        assert isinstance(codebook_weights, Mapping)
-        assert isinstance(out_proj_weights, Mapping)
-        return replace(
-            self,
-            codebook=self.codebook.import_weights(codebook_weights),
-            out_proj=self.out_proj.import_weights(out_proj_weights),
-        )
-
-
-@dataclass(frozen=True)
-class ResidualVectorQuantizeConfig:
-    precision: DTypeLike
-    input_dim: int
-    n_codebooks: int
-    codebook_size: int
-    codebook_dim: int | list[int]
-
-    def empty(self) -> "ResidualVectorQuantize":
-        if isinstance(self.codebook_dim, int):
-            codebook_dims = [self.codebook_dim] * self.n_codebooks
-        else:
-            codebook_dims = self.codebook_dim
-
-        quantizers = []
-        for i in range(self.n_codebooks):
-            vq_config = VectorQuantizeConfig(
-                precision=self.precision,
-                input_dim=self.input_dim,
-                codebook_size=self.codebook_size,
-                codebook_dim=codebook_dims[i],
-            )
-            quantizers.append(vq_config.empty())
-
-        return ResidualVectorQuantize(
-            config=self,
-            quantizers=tuple(quantizers),
-        )
-
-
-class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
-    """Residual Vector Quantization module (decoding path only).
-    Decodes codes from multiple codebooks by summing their decoded outputs.
-    """
-
-    quantizers: tuple[VectorQuantize, ...]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def n_codebooks(self) -> int:
-        return len(self.quantizers)
-
-    def from_codes(self, codes: Int[Array, "n_codebooks tokens"]) -> Float[Array, "tokens input_dim"]:
-        n_codebooks = codes.shape[0]
-        z_q = self.quantizers[0].decode_code(codes[0])
-        for i in range(1, n_codebooks):
-            z_q = z_q + self.quantizers[i].decode_code(codes[i])
-        return z_q
-
-    def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens input_dim"]:
-        return vmap(self.from_codes)(codes)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizers": [q.export_weights() for q in self.quantizers],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        quantizer_weights = weights["quantizers"]
-        assert isinstance(quantizer_weights, list)
-        new_quantizers = []
-        for q, w in zip(self.quantizers, quantizer_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_quantizers.append(q.import_weights(w))
-        return replace(self, quantizers=tuple(new_quantizers))
-
-
-@dataclass(frozen=True)
-class FishAudioSamplingParams:
-    argmax_decoding: bool
-    top_p: float
-    temperature: float
-    repetition_penalty: float
+from .fishaudio_common import RoPEConfigFishAudio
+from .fishaudio_sampling import FishAudioSamplingParams, sample
 
 
 def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
@@ -224,49 +62,6 @@ def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
         return tokenizer
     finally:
         shutil.rmtree(output_temp_dir)
-
-
-def logits_to_probs(
-    logits: Float[Array, " vocabulary"],
-    top_p: float,
-    temperature: float,
-    previous_tokens: Optional[Int[Array, " tokens"]] = None,
-) -> Float[Array, " vocabulary"]:
-    # NOTE: repetition_penalty is not implemented yet - stub for API compatibility
-    policies = []
-    if top_p > 0 and top_p < 1.0:
-        policies.append(TopPPolicy(p=top_p))
-    if temperature > 0:
-        policies.append(TemperaturePolicy(temperature=max(temperature, 1e-5)))
-
-    if policies:
-        policy = CompositePolicy(tuple(policies))
-        processed_logits = policy.process_logits(logits)
-    else:
-        processed_logits = logits
-
-    probs = jax.nn.softmax(processed_logits)
-    return probs
-
-
-def sample(
-    logits: Float[Array, "batch tokens vocabulary"],
-    key: PRNGKeyArray,
-    sampling_params: FishAudioSamplingParams,
-    previous_tokens: Optional[Int[Array, " tokens"]] = None,
-) -> tuple[Int[Array, ""], Float[Array, " vocabulary"]]:
-    # Take the last token's logits from first batch
-    last_logits = logits[0, -1]
-
-    probs = logits_to_probs(
-        logits=last_logits,
-        top_p=sampling_params.top_p,
-        temperature=sampling_params.temperature,
-        previous_tokens=previous_tokens,
-    )
-
-    idx_next = jax.random.categorical(key, jnp.log(probs + 1e-10))
-    return idx_next, probs
 
 
 def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
@@ -371,196 +166,6 @@ def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
     linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
 
     return (transformer_cfg, linear_out_cfg)
-
-
-def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
-    config: ModelArgs, precision: DTypeLike, window_size: int, input_dim: int
-) -> TransformerConfig:
-    global_rope_config = RoPEConfigFishAudio(
-        precision=precision,
-        base=config.rope_base,
-        max_sequence_length=config.block_size,
-    )
-    local_rope_config = None
-
-    norm_config_pre = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
-        epsilon=config.norm_eps,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
-    norm_config_post = LayerNormConfig(scale_precision=precision)
-
-    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-    out_projection_config = FullPrecisionLinearConfig(precision=precision)
-    mixer_config = AttentionConfig(
-        qkv_projection_config=qkv_projection_config,
-        out_projection_config=out_projection_config,
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=config.n_head,
-        num_groups=config.n_local_heads,
-        head_dim=config.head_dim,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=window_size,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkv_biases=False,
-        has_out_biases=False,
-    )
-
-    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-    mlp_use_up_biases = False
-    mlp_use_down_biases = False
-    mlp_config = DenseMLPConfig(
-        linear_config=mlp_linear_config,
-        activation=SiLU(),
-        has_up_biases=mlp_use_up_biases,
-        has_down_biases=mlp_use_down_biases,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-
-    pre_mixer_norm_config = norm_config_pre
-    post_mixer_norm_config = norm_config_post
-    pre_mlp_norm_config = norm_config_pre
-    post_mlp_norm_config = norm_config_post
-
-    layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=pre_mixer_norm_config,
-        mixer_config=mixer_config,
-        post_mixer_norm_config=post_mixer_norm_config,
-        pre_mlp_norm_config=pre_mlp_norm_config,
-        mlp_config=mlp_config,
-        post_mlp_norm_config=post_mlp_norm_config,
-    )
-    hidden_dim = config.intermediate_size
-    context_length = config.block_size
-
-    transformer_cfg = TransformerConfig(
-        global_rope_config=global_rope_config,
-        local_rope_config=local_rope_config,
-        layer_configs=tuple([layer_config] * config.n_layer),
-        output_norm_config=norm_config_pre,
-        model_dim=input_dim,
-        hidden_dim=hidden_dim,
-        context_length=context_length,
-    )
-
-    return transformer_cfg
-
-
-@dataclass(frozen=True)
-class RoPEConfigFishAudio(RoPEConfigBase):
-    @property
-    def _attention_scaling_factor(self) -> float:
-        return super()._attention_scaling_factor
-
-    def _precompute_freqs_cis_orig(
-        self, head_dim: int, seq_len: int
-    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
-        time_steps = jnp.arange(0, head_dim // 2).astype(jnp.bfloat16) * 2 / head_dim
-        freqs = 1.0 / (self.base**time_steps)
-        t = jnp.arange(seq_len, device=freqs.device)
-        freqs = jnp.outer(t, freqs)
-        return (jnp.cos(freqs), jnp.sin(freqs))
-
-    def init_orig(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPEFishAudio":
-        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
-        cosines = jnp.zeros((num_timesteps, head_dim), self.precision)
-        sines = jnp.zeros((num_timesteps, head_dim), self.precision)
-        for k in range(num_timesteps):
-            cosines = cosines.at[k, 0::2].set(cosines_cis[k])
-            cosines = cosines.at[k, 1::2].set(cosines_cis[k])
-            sines = sines.at[k, 0::2].set(sines_cis[k])
-            sines = sines.at[k, 1::2].set(sines_cis[k])
-
-        return RoPEFishAudio(config=self, cosines=cosines, sines=sines)
-
-    def _precompute_freqs_cis(
-        self, head_dim: int, seq_len: int
-    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
-        # time_steps = jnp.arange(0, head_dim, 2).astype(jnp.bfloat16)[: (head_dim // 2)] / head_dim
-        time_steps = jnp.repeat(jnp.arange(0, head_dim // 2).astype(jnp.bfloat16) * 2 / head_dim, 2)
-        freqs = 1.0 / (self.base**time_steps)
-        t = jnp.arange(seq_len, device=freqs.device)
-        freqs = jnp.outer(t, freqs)
-        return (jnp.cos(freqs), jnp.sin(freqs))
-
-    def init(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPEFishAudio":
-        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
-        return RoPEFishAudio(config=self, cosines=cosines_cis, sines=sines_cis)
-
-
-class RoPEFishAudio(LalamoModule[RoPEConfigBase]):
-    sines: Float[Array, "tokens head_channels"]
-    cosines: Float[Array, "tokens head_channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def head_dim(self) -> int:
-        _, result = self.sines.shape
-        return result
-
-    @property
-    def max_sequence_length(self) -> int:
-        result, _ = self.sines.shape
-        return result
-
-    # @eqx.filter_jit
-    def __call__(self, timesteps: Int[Array, " tokens"]) -> "PositionalEmbeddingsFishAudio":
-        return PositionalEmbeddingsFishAudio(
-            cosines=self.cosines[timesteps],
-            sines=self.sines[timesteps],
-        )
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "cosines": self.cosines,
-            "sines": self.sines,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> "RoPEFishAudio":
-        assert isinstance(weights, Mapping)
-        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
-
-
-class PositionalEmbeddingsFishAudio(eqx.Module):
-    cosines: Float[Array, "*batch tokens head_channels"]
-    sines: Float[Array, "*batch tokens head_channels"]
-
-    @property
-    def head_dim(self) -> int:
-        return self.cosines.shape[-1]
-
-    def interleave_for_cis_rope(
-        self,
-        heads: Float[Array, "*batch tokens head_channels"],
-    ) -> Float[Array, "*batch tokens head_channels"]:
-        interleaved = jnp.zeros(heads.shape, dtype=heads.dtype)
-        interleaved = interleaved.at[..., 0::2].set(-heads[..., 1::2])
-        interleaved = interleaved.at[..., 1::2].set(heads[..., 0::2])
-        return interleaved
-
-    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
-        return heads * self.cosines + self.interleave_for_cis_rope(heads) * self.sines
 
 
 @dataclass

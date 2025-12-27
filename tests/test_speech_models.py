@@ -1,11 +1,11 @@
 import os
-from pathlib import Path
 import sys
 
 # TODO(peter.glushkov): dont forget to remove this after debuggin done
 sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), ".."))
 
 import logging
+from pathlib import Path
 
 import huggingface_hub
 import jax
@@ -16,20 +16,32 @@ from fish_speech.models.text2semantic import inference as fish_inference
 from fish_speech.tokenizer import FishTokenizer
 from huggingface_hub import HfApi
 from jax import numpy as jnp
+from jax import vmap
 from pytest import fixture
 
 from lalamo.models import ForeignTTSModel, TTSConfig
-from lalamo.modules.audio.foreign.fish_audio import (
-    FishAudioSamplingParams,
+from lalamo.modules import GELU
+from lalamo.modules.audio.foreign.fishaudio import (
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
     FishAudioTextDecoderResult,
-    ResidualVectorQuantizeConfig,
-    VectorQuantizeConfig,
-    logits_to_probs,
-    sample,
 )
-from lalamo.modules.audio.foreign.fish_audio_thin_wrapper import FishAudioTextDecoder_Foreign
+from lalamo.modules.audio.foreign.fishaudio_audio_decodding import (
+    CausalConv1dConfig,
+    CausalTransposeConv1dConfig,
+    ConvNeXtBlockConfig,
+    ConvNeXtSpatialParams,
+    ResidualVectorQuantizeConfig,
+    TransposeConvSpatialParams,
+    UpsamplerConfig,
+    UpsamplingBlockConfig,
+    VectorQuantizeConfig,
+)
+from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams, logits_to_probs, sample
+from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
+    FishAudioTextDecoder_Foreign,
+    _default_audio_codec_config,
+)
 from lalamo.modules.audio.tts_request_factory import TTSMessage
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
@@ -323,7 +335,6 @@ def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
 
 @torch.no_grad
 def test_vector_quantize_decode_code() -> None:
-    """Test that Lalamo VectorQuantize decode_code matches DAC's implementation."""
     from dac.nn.quantize import VectorQuantize as DACVectorQuantize
 
     # Test parameters
@@ -338,13 +349,12 @@ def test_vector_quantize_decode_code() -> None:
     dac_vq.eval()
 
     # Create Lalamo VectorQuantize with same config
-    lalamo_vq_config = VectorQuantizeConfig(
-        precision=jnp.float32,
+    lalamo_vq_config = VectorQuantizeConfig(precision=jnp.float32)
+    lalamo_vq = lalamo_vq_config.empty(
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=codebook_dim,
     )
-    lalamo_vq = lalamo_vq_config.empty()
 
     # Extract weights from DAC and load into Lalamo
     # DAC codebook: nn.Embedding(codebook_size, codebook_dim)
@@ -357,7 +367,6 @@ def test_vector_quantize_decode_code() -> None:
     assert dac_vq.out_proj.bias is not None
     dac_out_proj_bias = dac_vq.out_proj.bias.detach()  # (input_dim,)
 
-    # Convert to JAX and load into Lalamo
     lalamo_weights = {
         "codebook": {"weights": torch_to_jax(dac_codebook_weights)},
         "out_proj": {
@@ -367,24 +376,20 @@ def test_vector_quantize_decode_code() -> None:
     }
     lalamo_vq = lalamo_vq.import_weights(lalamo_weights)
 
-    # Create test indices
     torch.manual_seed(42)
     test_indices_torch = torch.randint(0, codebook_size, (batch_size, num_tokens))
     test_indices_jax = torch_to_jax(test_indices_torch).astype(jnp.int32)
 
-    # DAC decode_code: returns (B, D, T) - just embedding + transpose, no out_proj
-    # Then out_proj is applied: (B, input_dim, T)
+    # DAC decode_code:
+    # returns (B, D, T) - just embedding + transpose, no out_proj Then out_proj is applied: (B, input_dim, T)
     dac_embedded = dac_vq.decode_code(test_indices_torch)  # (B, codebook_dim, T)
     dac_output = dac_vq.out_proj(dac_embedded)  # (B, input_dim, T)
     dac_output = dac_output.permute(0, 2, 1)  # (B, T, input_dim) for comparison
 
-    # Lalamo decode_code: applies out_proj and returns (tokens, input_dim)
-    # Need to vmap over batch
-    from jax import vmap
-
+    # Lalamo decode_code:
+    # applies out_proj and returns (tokens, input_dim)
     lalamo_output = vmap(lalamo_vq.decode_code)(test_indices_jax)  # (B, T, input_dim)
 
-    # Compare outputs
     dac_output_jax = torch_to_jax(dac_output)
 
     _testlog.info(f"DAC output shape: {dac_output.shape}")
@@ -398,10 +403,8 @@ def test_vector_quantize_decode_code() -> None:
 
 @torch.no_grad
 def test_residual_vector_quantize_from_codes() -> None:
-    """Test that Lalamo ResidualVectorQuantize from_codes matches DAC's implementation."""
     from dac.nn.quantize import ResidualVectorQuantize as DACResidualVectorQuantize
 
-    # Test parameters
     input_dim = 512
     n_codebooks = 9
     codebook_size = 1024
@@ -409,7 +412,6 @@ def test_residual_vector_quantize_from_codes() -> None:
     num_tokens = 10
     batch_size = 2
 
-    # Create DAC ResidualVectorQuantize
     dac_rvq = DACResidualVectorQuantize(
         input_dim=input_dim,
         n_codebooks=n_codebooks,
@@ -418,15 +420,12 @@ def test_residual_vector_quantize_from_codes() -> None:
     )
     dac_rvq.eval()
 
-    # Create Lalamo ResidualVectorQuantize with same config
-    lalamo_rvq_config = ResidualVectorQuantizeConfig(
-        precision=jnp.float32,
-        input_dim=input_dim,
-        n_codebooks=n_codebooks,
+    lalamo_rvq_config = ResidualVectorQuantizeConfig(precision=jnp.float32)
+    lalamo_rvq = lalamo_rvq_config.empty(
+        code_size=input_dim,
         codebook_size=codebook_size,
-        codebook_dim=codebook_dim,
+        codebook_dim=[codebook_dim] * n_codebooks,
     )
-    lalamo_rvq = lalamo_rvq_config.empty()
 
     # Extract weights from DAC and load into Lalamo
     lalamo_quantizer_weights = []
@@ -449,10 +448,8 @@ def test_residual_vector_quantize_from_codes() -> None:
     lalamo_weights = {"quantizers": lalamo_quantizer_weights}
     lalamo_rvq = lalamo_rvq.import_weights(lalamo_weights)
 
-    # Create test codes: (B, N, T) for DAC
     torch.manual_seed(42)
     test_codes_torch = torch.randint(0, codebook_size, (batch_size, n_codebooks, num_tokens))
-    # Lalamo expects (N, T) per batch item
     test_codes_jax = torch_to_jax(test_codes_torch).astype(jnp.int32)
 
     # DAC from_codes returns (z_q, z_p, codes) where z_q is (B, input_dim, T)
@@ -471,4 +468,807 @@ def test_residual_vector_quantize_from_codes() -> None:
 
     assert jnp.allclose(dac_output_jax, lalamo_output, atol=1e-5), (
         f"Outputs don't match. Max diff: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}"
+    )
+
+
+@torch.no_grad
+def test_causal_conv1d_matches_pytorch() -> None:
+    """Test that Lalamo CausalConv1d matches PyTorch CausalConvNet."""
+    from fish_speech.models.dac.rvq import CausalConvNet
+
+    # Test parameters
+    batch_size = 2
+    in_channels = 64
+    out_channels = 128
+    kernel_size = 4
+    stride = 2
+    dilation = 1
+    groups = 1
+    seq_length = 100
+
+    # Create PyTorch module
+    torch_conv = CausalConvNet(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        groups=groups,
+    )
+    torch_conv.eval()
+
+    # Create Lalamo module with same config
+    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        groups=groups,
+    )
+
+    # Extract weights from PyTorch and load into Lalamo
+    torch_weights = torch_conv.conv.weight.detach()  # (out_channels, in_channels/groups, kernel_size)
+    torch_biases = torch_conv.conv.bias.detach()  # (out_channels,)
+
+    lalamo_weights = {
+        "weights": torch_to_jax(torch_weights),
+        "biases": torch_to_jax(torch_biases),
+    }
+    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+
+    # Create test input: PyTorch uses (batch, channels, sequence)
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, in_channels, seq_length)
+    # JAX module uses (batch, sequence, channels) - transpose for JAX
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both implementations
+    torch_output = torch_conv(test_input_torch)
+    lalamo_output = lalamo_conv(test_input_jax)
+
+    # Compare outputs - transpose JAX output back to (batch, channels, sequence) for comparison
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"PyTorch CausalConvNet output shape: {torch_output.shape}")
+    _testlog.info(f"Lalamo CausalConv1d output shape: {lalamo_output.shape}")
+    _testlog.info(f"Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_causal_conv1d_with_dilation() -> None:
+    """Test CausalConv1d with dilation > 1."""
+    from fish_speech.models.dac.rvq import CausalConvNet
+
+    batch_size = 2
+    in_channels = 32
+    out_channels = 32
+    kernel_size = 3
+    stride = 1
+    dilation = 2
+    groups = 1
+    seq_length = 50
+
+    torch_conv = CausalConvNet(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        groups=groups,
+    )
+    torch_conv.eval()
+
+    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        groups=groups,
+    )
+
+    torch_weights = torch_conv.conv.weight.detach()
+    torch_biases = torch_conv.conv.bias.detach()
+
+    lalamo_weights = {
+        "weights": torch_to_jax(torch_weights),
+        "biases": torch_to_jax(torch_biases),
+    }
+    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+
+    torch.manual_seed(123)
+    test_input_torch = torch.randn(batch_size, in_channels, seq_length)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    torch_output = torch_conv(test_input_torch)
+    lalamo_output = lalamo_conv(test_input_jax)
+
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"Dilated conv - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"Dilated conv - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Dilated conv - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5)
+
+
+@torch.no_grad
+def test_causal_conv1d_grouped() -> None:
+    """Test CausalConv1d with grouped convolution (depthwise)."""
+    from fish_speech.models.dac.rvq import CausalConvNet
+
+    batch_size = 2
+    channels = 64
+    kernel_size = 7
+    stride = 1
+    dilation = 1
+    groups = channels  # Depthwise convolution
+    seq_length = 100
+
+    torch_conv = CausalConvNet(
+        in_channels=channels,
+        out_channels=channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        groups=groups,
+    )
+    torch_conv.eval()
+
+    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
+        in_channels=channels,
+        out_channels=channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+        groups=groups,
+    )
+
+    torch_weights = torch_conv.conv.weight.detach()
+    torch_biases = torch_conv.conv.bias.detach()
+
+    lalamo_weights = {
+        "weights": torch_to_jax(torch_weights),
+        "biases": torch_to_jax(torch_biases),
+    }
+    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+
+    torch.manual_seed(456)
+    test_input_torch = torch.randn(batch_size, channels, seq_length)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    torch_output = torch_conv(test_input_torch)
+    lalamo_output = lalamo_conv(test_input_jax)
+
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"Grouped conv - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"Grouped conv - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Grouped conv - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5)
+
+
+@torch.no_grad
+def test_causal_transpose_conv1d_matches_pytorch() -> None:
+    """Test that Lalamo CausalTransposeConv1d matches PyTorch CausalTransConvNet."""
+    from fish_speech.models.dac.rvq import CausalTransConvNet
+
+    # Test parameters
+    batch_size = 2
+    in_channels = 128
+    out_channels = 64
+    kernel_size = 4
+    stride = 2
+    dilation = 1
+    seq_length = 50
+
+    # Create PyTorch module
+    torch_conv = CausalTransConvNet(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+    )
+    torch_conv.eval()
+
+    # Create Lalamo module with same config
+    lalamo_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
+        dilation=dilation,
+    )
+
+    # Extract weights from PyTorch and load into Lalamo
+    # PyTorch ConvTranspose1d weight shape: (in_channels, out_channels, kernel_size)
+    torch_weights = torch_conv.conv.weight.detach()
+    torch_biases = torch_conv.conv.bias.detach()
+
+    lalamo_weights = {
+        "weights": torch_to_jax(torch_weights),
+        "biases": torch_to_jax(torch_biases),
+    }
+    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+
+    # Create test input: PyTorch uses (batch, channels, sequence)
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, in_channels, seq_length)
+    # JAX module uses (batch, sequence, channels) - transpose for JAX
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both implementations
+    torch_output = torch_conv(test_input_torch)
+    lalamo_output = lalamo_conv(test_input_jax)
+
+    # Compare outputs - transpose JAX output back to (batch, channels, sequence) for comparison
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"PyTorch CausalTransConvNet output shape: {torch_output.shape}")
+    _testlog.info(f"Lalamo CausalTransposeConv1d output shape: {lalamo_output.shape}")
+    _testlog.info(f"Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_causal_transpose_conv1d_various_strides() -> None:
+    """Test CausalTransposeConv1d with various stride values."""
+    from fish_speech.models.dac.rvq import CausalTransConvNet
+
+    batch_size = 2
+    in_channels = 64
+    out_channels = 32
+    seq_length = 25
+
+    for kernel_size, stride in [(2, 2), (4, 2), (4, 4), (8, 4)]:
+        torch_conv = CausalTransConvNet(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=1,
+        )
+        torch_conv.eval()
+
+        lalamo_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+        lalamo_conv = lalamo_config.empty(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=kernel_size,
+            stride=stride,
+            dilation=1,
+        )
+
+        torch_weights = torch_conv.conv.weight.detach()
+        torch_biases = torch_conv.conv.bias.detach()
+
+        lalamo_weights = {
+            "weights": torch_to_jax(torch_weights),
+            "biases": torch_to_jax(torch_biases),
+        }
+        lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+
+        torch.manual_seed(42)
+        test_input_torch = torch.randn(batch_size, in_channels, seq_length)
+        test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+        torch_output = torch_conv(test_input_torch)
+        lalamo_output = lalamo_conv(test_input_jax)
+
+        torch_output_jax = torch_to_jax(torch_output)
+        lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+        _testlog.info(
+            f"TransConv kernel={kernel_size}, stride={stride} - shapes: {torch_output.shape} vs {lalamo_output.shape}"
+        )
+        _testlog.info(
+            f"TransConv kernel={kernel_size}, stride={stride} - "
+            f"max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+        )
+
+        assert torch_output_jax.shape == lalamo_output_nct.shape, (
+            f"Shape mismatch for kernel={kernel_size}, stride={stride}: "
+            f"PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+        )
+        assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
+            f"Output mismatch for kernel={kernel_size}, stride={stride}. "
+            f"Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+        )
+
+
+@torch.no_grad
+def test_causal_conv_transpose_roundtrip() -> None:
+    """Test that conv followed by transpose conv produces expected output length."""
+    from fish_speech.models.dac.rvq import CausalConvNet, CausalTransConvNet
+
+    batch_size = 2
+    channels = 64
+    kernel_size = 4
+    stride = 2
+    seq_length = 100
+
+    # PyTorch roundtrip
+    torch_conv = CausalConvNet(channels, channels, kernel_size, stride=stride)
+    torch_trans = CausalTransConvNet(channels, channels, kernel_size, stride=stride)
+    torch_conv.eval()
+    torch_trans.eval()
+
+    # Lalamo roundtrip
+    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    trans_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+
+    lalamo_conv = conv_config.empty(channels, channels, kernel_size, stride=stride)
+    lalamo_trans = trans_config.empty(channels, channels, kernel_size, stride=stride)
+
+    # Load weights
+    lalamo_conv = lalamo_conv.import_weights(
+        {
+            "weights": torch_to_jax(torch_conv.conv.weight.detach()),
+            "biases": torch_to_jax(torch_conv.conv.bias.detach()),
+        }
+    )
+    lalamo_trans = lalamo_trans.import_weights(
+        {
+            "weights": torch_to_jax(torch_trans.conv.weight.detach()),
+            "biases": torch_to_jax(torch_trans.conv.bias.detach()),
+        }
+    )
+
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, channels, seq_length)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Forward pass through both
+    torch_down = torch_conv(test_input_torch)
+    torch_up = torch_trans(torch_down)
+
+    lalamo_down = lalamo_conv(test_input_jax)
+    lalamo_up = lalamo_trans(lalamo_down)
+
+    # Compare intermediate and final outputs - transpose JAX outputs for comparison
+    torch_down_jax = torch_to_jax(torch_down)
+    torch_up_jax = torch_to_jax(torch_up)
+    lalamo_down_nct = lalamo_down.transpose(0, 2, 1)
+    lalamo_up_nct = lalamo_up.transpose(0, 2, 1)
+
+    _testlog.info(f"Roundtrip - Input shape: {test_input_torch.shape}")
+    _testlog.info(f"Roundtrip - After conv: PyTorch {torch_down.shape}, Lalamo {lalamo_down.shape}")
+    _testlog.info(f"Roundtrip - After trans: PyTorch {torch_up.shape}, Lalamo {lalamo_up.shape}")
+
+    assert torch_down_jax.shape == lalamo_down_nct.shape
+    assert torch_up_jax.shape == lalamo_up_nct.shape
+    assert jnp.allclose(torch_down_jax, lalamo_down_nct, atol=1e-5)
+    assert jnp.allclose(torch_up_jax, lalamo_up_nct, atol=1e-5)
+
+
+@torch.no_grad
+def test_convnext_block_matches_pytorch() -> None:
+    """Test that Lalamo ConvNeXtBlock matches PyTorch ConvNeXtBlock."""
+    from fish_speech.models.dac.rvq import ConvNeXtBlock as PyTorchConvNeXtBlock
+
+    batch_size = 2
+    dim = 64
+    kernel_size = 7
+    dilation = 1
+    mlp_ratio = 4.0
+    layer_scale_init_value = 1e-6
+    seq_length = 50
+
+    # Create PyTorch module
+    torch_block = PyTorchConvNeXtBlock(
+        dim=dim,
+        layer_scale_init_value=layer_scale_init_value,
+        mlp_ratio=mlp_ratio,
+        kernel_size=kernel_size,
+        dilation=dilation,
+    )
+    torch_block.eval()
+
+    # Create Lalamo module
+    lalamo_config = ConvNeXtBlockConfig(
+        precision=jnp.float32,
+        activation=GELU(),
+    )
+    spatial_params = ConvNeXtSpatialParams(
+        mlp_ratio=mlp_ratio,
+        kernel_size=kernel_size,
+        dilation=dilation,
+        layer_scale_init_value=layer_scale_init_value,
+    )
+    lalamo_block = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
+
+    # Extract weights from PyTorch and map to Lalamo format
+    # dwconv weights: (out_channels, in_channels/groups, kernel_size)
+    dwconv_weights = torch_block.dwconv.conv.weight.detach()
+    dwconv_biases = torch_block.dwconv.conv.bias.detach()
+
+    # LayerNorm: weight (Lalamo LayerNorm only does element-wise mult, uses "scales")
+    # Note: PyTorch LayerNorm bias is not used in Lalamo's simplified LayerNorm
+    norm_scale = torch_block.norm.weight.detach()
+    norm_bias = torch_block.norm.bias.detach()
+
+    # pwconv1: Linear (dim -> hidden_dim)
+    pwconv1_weights = torch_block.pwconv1.weight.detach()  # (hidden_dim, dim)
+    pwconv1_biases = torch_block.pwconv1.bias.detach()
+
+    # pwconv2: Linear (hidden_dim -> dim)
+    pwconv2_weights = torch_block.pwconv2.weight.detach()  # (dim, hidden_dim)
+    pwconv2_biases = torch_block.pwconv2.bias.detach()
+
+    # gamma (layer scale) - Lalamo uses LayerNorm with "scales" key
+    gamma = torch_block.gamma.detach() if torch_block.gamma is not None else None
+
+    lalamo_weights = {
+        "dwconv": {
+            "weights": torch_to_jax(dwconv_weights),
+            "biases": torch_to_jax(dwconv_biases),
+        },
+        "norm": {"scales": torch_to_jax(norm_scale), "bias": torch_to_jax(norm_bias)},
+        "pwconv1": {
+            "weights": torch_to_jax(pwconv1_weights),
+            "biases": torch_to_jax(pwconv1_biases),
+        },
+        "pwconv2": {
+            "weights": torch_to_jax(pwconv2_weights),
+            "biases": torch_to_jax(pwconv2_biases),
+        },
+    }
+    if gamma is not None:
+        lalamo_weights["gamma"] = {"scales": torch_to_jax(gamma)}
+
+    lalamo_block = lalamo_block.import_weights(lalamo_weights)
+
+    # Create test input: PyTorch uses (batch, channels, sequence)
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, dim, seq_length)
+    # JAX uses (batch, sequence, channels)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both
+    torch_output = torch_block(test_input_torch, apply_residual=True)
+    lalamo_output = lalamo_block(test_input_jax, apply_residual=True)
+
+    # Compare - transpose JAX output back for comparison
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"ConvNeXtBlock - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"ConvNeXtBlock - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"ConvNeXtBlock - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_upsampling_block_matches_pytorch() -> None:
+    """Test that Lalamo UpsamplingBlock matches PyTorch upsampling block from DAC model.
+
+    This test loads a real DAC model checkpoint, extracts the first upsampling block,
+    transfers weights to the Lalamo implementation, and compares outputs.
+    """
+    from fish_speech.models.dac import inference as fish_dac_inference
+    from fish_speech.models.dac.modded_dac import DAC
+
+    # Load DAC model
+    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
+    repos = huggingface_hub.scan_cache_dir().repos
+    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+
+    api = HfApi()
+    cache_info = api.model_info(fish_audiod_repo_id)
+    commit_hash = cache_info.sha
+
+    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    audio_chkpt_path = model_path / "codec.pth"
+    config_name = "modded_dac_vq"
+    device = "cpu"
+
+    model = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
+    assert isinstance(model, DAC)
+
+    # Get model configuration from _default_audio_codec_config
+    config = _default_audio_codec_config
+    input_dim = config["quantizer"]["input_dim"]
+    downsample_factor = config["quantizer"]["downsample_factor"]
+    downsample_dims = config["quantizer"].get("downsample_dims") or [input_dim] * len(downsample_factor)
+
+    # Build all_dims: (input_dim,) + tuple(downsample_dims)
+    all_dims = (input_dim,) + tuple(downsample_dims)
+
+    # Extract the first upsampling block from the quantizer.
+    # Upsample blocks are in reversed order of downsample factors.
+    fish_upsampler_block = model.quantizer.upsample[0]
+
+    # Determine dimensions for the first upsample block
+    reversed_indices = list(reversed(list(enumerate(downsample_factor))))
+    idx, factor = reversed_indices[0]
+    in_channels = all_dims[idx + 1]
+    out_channels = all_dims[idx]
+    upsample_kernel_size = factor
+    upsample_stride = factor
+
+    _testlog.info(f"UpsamplingBlock config: in={in_channels}, out={out_channels}, kernel={upsample_kernel_size}")
+
+    # Create Lalamo UpsamplingBlock
+    lalamo_config = UpsamplingBlockConfig(precision=jnp.float32)
+    trans_conv_params = TransposeConvSpatialParams(
+        in_channels=in_channels,
+        out_channels=out_channels,
+        upsample_kernel_size=upsample_kernel_size,
+        upsample_stride=upsample_stride,
+    )
+    convnext_spatial_params = ConvNeXtSpatialParams(
+        mlp_ratio=4.0,
+        kernel_size=7,
+        dilation=1,
+        layer_scale_init_value=1e-6,
+    )
+    lalamo_block = lalamo_config.empty(
+        trans_conv_params=trans_conv_params,
+        convnext_spatial_params=convnext_spatial_params,
+    )
+
+    # Extract weights from PyTorch upsampler block (Sequential of CausalTransConvNet, ConvNeXtBlock)
+    torch_trans_conv = fish_upsampler_block[0]
+    torch_convnext = fish_upsampler_block[1]
+
+    # Trans conv weights
+    trans_conv_weights = torch_trans_conv.conv.weight.detach()
+    trans_conv_biases = torch_trans_conv.conv.bias.detach()
+
+    # ConvNeXt weights
+    dwconv_weights = torch_convnext.dwconv.conv.weight.detach()
+    dwconv_biases = torch_convnext.dwconv.conv.bias.detach()
+    norm_scale = torch_convnext.norm.weight.detach()
+    norm_bias = torch_convnext.norm.bias.detach()
+    pwconv1_weights = torch_convnext.pwconv1.weight.detach()
+    pwconv1_biases = torch_convnext.pwconv1.bias.detach()
+    pwconv2_weights = torch_convnext.pwconv2.weight.detach()
+    pwconv2_biases = torch_convnext.pwconv2.bias.detach()
+    gamma = torch_convnext.gamma.detach() if torch_convnext.gamma is not None else None
+
+    lalamo_weights = {
+        "trans_conv": {
+            "weights": torch_to_jax(trans_conv_weights),
+            "biases": torch_to_jax(trans_conv_biases),
+        },
+        "convnext": {
+            "dwconv": {
+                "weights": torch_to_jax(dwconv_weights),
+                "biases": torch_to_jax(dwconv_biases),
+            },
+            "norm": {"scales": torch_to_jax(norm_scale), "bias": torch_to_jax(norm_bias)},
+            "pwconv1": {
+                "weights": torch_to_jax(pwconv1_weights),
+                "biases": torch_to_jax(pwconv1_biases),
+            },
+            "pwconv2": {
+                "weights": torch_to_jax(pwconv2_weights),
+                "biases": torch_to_jax(pwconv2_biases),
+            },
+        },
+    }
+    if gamma is not None:
+        lalamo_weights["convnext"]["gamma"] = {"scales": torch_to_jax(gamma)}
+
+    # Create test input
+    batch_size = 1
+    seq_length = 10
+
+    torch.manual_seed(42)
+    # PyTorch uses (batch, channels, sequence)
+    test_input_torch = torch.randn(batch_size, in_channels, seq_length)
+    # JAX uses (batch, sequence, channels)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both
+    torch_output = fish_upsampler_block(test_input_torch)
+    with jax.disable_jit():
+        lalamo_block = lalamo_block.import_weights(lalamo_weights)
+        lalamo_output = lalamo_block(test_input_jax)
+
+    # Compare - transpose JAX output back for comparison
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"UpsamplingBlock - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"UpsamplingBlock - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"UpsamplingBlock - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_upsampler_matches_pytorch() -> None:
+    """Test that Lalamo Upsampler matches the full DAC quantizer upsampler.
+
+    This test loads a real DAC model checkpoint, extracts all upsampling blocks,
+    transfers weights to the Lalamo Upsampler, and compares outputs.
+    """
+    from fish_speech.models.dac import inference as fish_dac_inference
+    from fish_speech.models.dac.modded_dac import DAC
+
+    # Load DAC model
+    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
+    repos = huggingface_hub.scan_cache_dir().repos
+    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+
+    api = HfApi()
+    cache_info = api.model_info(fish_audiod_repo_id)
+    commit_hash = cache_info.sha
+
+    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    audio_chkpt_path = model_path / "codec.pth"
+    config_name = "modded_dac_vq"
+    device = "cpu"
+
+    model = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
+    assert isinstance(model, DAC)
+
+    # Get model configuration from _default_audio_codec_config
+    config = _default_audio_codec_config
+    input_dim = config["quantizer"]["input_dim"]
+    downsample_factor = config["quantizer"]["downsample_factor"]
+    downsample_dims = config["quantizer"].get("downsample_dims") or [input_dim] * len(downsample_factor)
+
+    # Build all_dims: (input_dim,) + tuple(downsample_dims)
+    all_dims = (input_dim,) + tuple(downsample_dims)
+
+    # Get the full upsampler from DAC
+    fish_upsampler = model.quantizer.upsample
+    num_blocks = len(fish_upsampler)
+
+    _testlog.info(f"Upsampler has {num_blocks} blocks")
+
+    # Build block parameters in the same order as PyTorch
+    # upsample is built with reversed(enumerate(downsample_factor))
+    reversed_indices = list(reversed(list(enumerate(downsample_factor))))
+    block_params: list[TransposeConvSpatialParams] = []
+    for idx, factor in reversed_indices:
+        in_channels = all_dims[idx + 1]
+        out_channels = all_dims[idx]
+        kernel_size = factor
+        stride = factor
+        block_params.append(
+            TransposeConvSpatialParams(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                upsample_kernel_size=kernel_size,
+                upsample_stride=stride,
+            ),
+        )
+        _testlog.info(
+            f"Block {len(block_params) - 1}: in={in_channels}, out={out_channels}, k={kernel_size}, s={stride}"
+        )
+
+    # Create Lalamo Upsampler config - one UpsamplingBlockConfig per block
+    block_configs = tuple(UpsamplingBlockConfig(precision=jnp.float32) for _ in range(num_blocks))
+    convnext_spatial_params = ConvNeXtSpatialParams(
+        mlp_ratio=4.0,
+        kernel_size=7,
+        dilation=1,
+        layer_scale_init_value=1e-6,
+    )
+    upsampler_config = UpsamplerConfig(block_configs=block_configs)
+    lalamo_upsampler = upsampler_config.empty(
+        trans_conv_params_per_block=tuple(block_params),
+        convnext_spatial_params=convnext_spatial_params,
+    )
+
+    # Extract weights from all PyTorch upsampler blocks
+    blocks_weights = []
+    for fish_block in fish_upsampler:
+        torch_trans_conv = fish_block[0]
+        torch_convnext = fish_block[1]
+
+        # Trans conv weights
+        trans_conv_weights = torch_trans_conv.conv.weight.detach()
+        trans_conv_biases = torch_trans_conv.conv.bias.detach()
+
+        # ConvNeXt weights
+        dwconv_weights = torch_convnext.dwconv.conv.weight.detach()
+        dwconv_biases = torch_convnext.dwconv.conv.bias.detach()
+        norm_scale = torch_convnext.norm.weight.detach()
+        norm_bias = torch_convnext.norm.bias.detach()
+        pwconv1_weights = torch_convnext.pwconv1.weight.detach()
+        pwconv1_biases = torch_convnext.pwconv1.bias.detach()
+        pwconv2_weights = torch_convnext.pwconv2.weight.detach()
+        pwconv2_biases = torch_convnext.pwconv2.bias.detach()
+        gamma = torch_convnext.gamma.detach() if torch_convnext.gamma is not None else None
+
+        block_weight = {
+            "trans_conv": {
+                "weights": torch_to_jax(trans_conv_weights),
+                "biases": torch_to_jax(trans_conv_biases),
+            },
+            "convnext": {
+                "dwconv": {
+                    "weights": torch_to_jax(dwconv_weights),
+                    "biases": torch_to_jax(dwconv_biases),
+                },
+                "norm": {"scales": torch_to_jax(norm_scale), "bias": torch_to_jax(norm_bias)},
+                "pwconv1": {
+                    "weights": torch_to_jax(pwconv1_weights),
+                    "biases": torch_to_jax(pwconv1_biases),
+                },
+                "pwconv2": {
+                    "weights": torch_to_jax(pwconv2_weights),
+                    "biases": torch_to_jax(pwconv2_biases),
+                },
+            },
+        }
+        if gamma is not None:
+            block_weight["convnext"]["gamma"] = {"scales": torch_to_jax(gamma)}
+
+        blocks_weights.append(block_weight)
+
+    lalamo_weights = {"blocks": blocks_weights}
+
+    # Create test input - use the input dimension of the first block (deepest level)
+    batch_size = 1
+    seq_length = 10
+    first_in_channels = block_params[0].in_channels
+
+    torch.manual_seed(42)
+    # PyTorch uses (batch, channels, sequence)
+    test_input_torch = torch.randn(batch_size, first_in_channels, seq_length)
+    # JAX uses (batch, sequence, channels)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both
+    torch_output = fish_upsampler(test_input_torch)
+
+    with jax.disable_jit():
+        lalamo_upsampler = lalamo_upsampler.import_weights(lalamo_weights)
+        lalamo_output = lalamo_upsampler(test_input_jax)
+
+    # Compare - transpose JAX output back for comparison
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"Upsampler - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"Upsampler - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Upsampler - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-3), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
     )

@@ -8,13 +8,14 @@ from lalamo.modules import (
     Attention,
     DenseMLP,
     FullPrecisionLinear,
-    LayerNorm,
+    LayerScale,
     LinearBase,
     MLPBase,
     Normalization,
     Transformer,
     TransformerLayer,
 )
+from lalamo.modules.audio.foreign.fishaudio_audio_decodding import UpsamplingBlock
 
 from .common import load_parameters
 
@@ -72,10 +73,10 @@ def load_rmsnorm(
 
 
 def load_layer_norm(
-    module: LayerNorm,
+    module: LayerScale,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> LayerNorm:
+) -> LayerScale:
     scales = weights_dict[path / "gamma"]
     return load_parameters(lambda m: (m.scales,), module, (scales,))
 
@@ -228,3 +229,8 @@ def load_fish_audio_text_decoding_modules(
     )
 
     return (transformer, output)
+
+
+def load_upsampling_block(upsampling_block: UpsamplingBlock, weights_dict: Mapping[str, Array]) -> UpsamplingBlock:
+    # TODO(peter.glushkov): work in progress
+    return upsampling_block

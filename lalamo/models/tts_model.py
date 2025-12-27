@@ -3,19 +3,20 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self, Optional
+from typing import Any, Optional, Self
 
 import equinox as eqx
 import numpy as np
 import torch
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int
+from jaxtyping import DTypeLike, Int
 
-from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig, audio_rendering
+from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import AudioDecoder, LalamoModule, NoopVocoder, Vocoder, VocoderConfig
-from lalamo.modules.audio.foreign.fish_audio import FishAudioSamplingParams, load_tokenizer_from_fish_audio
-from lalamo.modules.audio.foreign.fish_audio_thin_wrapper import (
+from lalamo.modules.audio.foreign.fishaudio import load_tokenizer_from_fish_audio
+from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams
+from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
     FishAudioTextDecoderConfig_Foreign,
     load_fish_audio_audio_decoder,

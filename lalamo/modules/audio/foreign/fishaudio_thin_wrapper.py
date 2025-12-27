@@ -25,10 +25,9 @@ from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 from lalamo.common import ParameterTree
 from lalamo.modules import AudioDecoder
 from lalamo.modules.audio.audio_decoder import AudioDecoderConfig
+from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams
 from lalamo.modules.audio.text_decoder import TextDecoder, TextDecoderConfig
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-
-from .fish_audio import FishAudioSamplingParams
 
 _default_audio_codec_config = {
     "_target_": "fish_speech.models.dac.modded_dac.DAC",
