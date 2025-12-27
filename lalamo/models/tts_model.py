@@ -14,7 +14,7 @@ from jaxtyping import DTypeLike, Int
 
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import AudioDecoder, LalamoModule, NoopVocoder, Vocoder, VocoderConfig
-from lalamo.modules.audio.foreign.fishaudio import load_tokenizer_from_fish_audio
+from lalamo.modules.audio.foreign.fishaudio_text_decodding import load_tokenizer_from_fish_audio
 from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams
 from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,

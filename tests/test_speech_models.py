@@ -21,7 +21,7 @@ from pytest import fixture
 
 from lalamo.models import ForeignTTSModel, TTSConfig
 from lalamo.modules import GELU
-from lalamo.modules.audio.foreign.fishaudio import (
+from lalamo.modules.audio.foreign.fishaudio_text_decodding import (
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
     FishAudioTextDecoderResult,
