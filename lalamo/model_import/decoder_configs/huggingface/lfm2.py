@@ -2,6 +2,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
+import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
@@ -64,12 +65,13 @@ class HFLFM2Config(HuggingFaceLMConfig):
     num_key_value_heads: int
     pad_token_id: int
     rope_theta: float
-    torch_dtype: Literal["bfloat16"]
     transformers_version: str
     use_cache: bool
     use_pos_enc: bool
     vocab_size: int
 
+    dtype: Literal["bfloat16", "float16", "float32"] | None = None
+    torch_dtype: Literal["bfloat16", "float16", "float32"] | None = None
     intermediate_size: int | None = None
     layer_types: list[Literal["conv", "full_attention"]] | None = None
     full_attn_idxs: list[int] | None = None
@@ -78,6 +80,14 @@ class HFLFM2Config(HuggingFaceLMConfig):
 
     quantization: QuantizationConfig | None = None
     quantization_config: QuantizationConfig | None = None
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        assert self.dtype is not None or self.torch_dtype is not None, (
+            "at least one of dtype or torch_dtype must be specified"
+        )
+
+        return jnp.dtype(self.dtype or self.torch_dtype)
 
     def to_decoder_config(
         self,

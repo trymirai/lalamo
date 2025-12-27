@@ -28,4 +28,18 @@ LFM2_MODELS = [
     )
     for size in ["350M", "700M", "1.2B", "2.6B"]
     for quantization in [None, *([QuantizationMode.UINT4, QuantizationMode.UINT8] if size != "2.6B" else [])]
+] + [
+    ModelSpec(
+        vendor="LiquidAI",
+        family="LFM2",
+        name="LFM2-2.6B-Exp",
+        size="2.6B",
+        repo="LiquidAI/LFM2-2.6B-Exp",
+        config_type=HFLFM2Config,
+        quantization=None,
+        configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
+        ),
+        use_cases=tuple(),
+    ),
 ]
