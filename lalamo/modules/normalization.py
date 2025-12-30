@@ -39,7 +39,11 @@ class NormalizationConfig:
 
     def init(self, input_dim: int) -> "Normalization":
         scales = jnp.ones(input_dim, dtype=self.scale_precision)
-        return Normalization(self, scales=scales)
+        if self.use_bias:
+            bias = jnp.zeros(input_dim, dtype=self.scale_precision)
+        else:
+            bias = None
+        return Normalization(self, scales=scales, bias=bias)
 
     def empty(self, input_dim: int) -> "Normalization":
         if self.use_bias:

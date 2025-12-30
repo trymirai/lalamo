@@ -1,9 +1,3 @@
-import os
-import sys
-
-# TODO(peter.glushkov): dont forget to remove this after debuggin done
-sys.path.append(os.path.join(os.path.abspath(os.path.dirname(__file__)), ".."))
-
 import logging
 from pathlib import Path
 
@@ -21,23 +15,32 @@ from pytest import fixture
 
 from lalamo.models import ForeignTTSModel, TTSConfig
 from lalamo.modules import GELU
-from lalamo.modules.audio.foreign.fishaudio_text_decodding import (
-    FishAudioTextDecoder,
-    FishAudioTextDecoderConfig,
-    FishAudioTextDecoderResult,
-)
-from lalamo.modules.audio.foreign.fishaudio_audio_decodding import (
+from lalamo.modules.audio.foreign.fishaudio_audio_decoding import (
+    AudioDecoderConfig,
+    AudioDecoderSpatialParams,
     CausalConv1dConfig,
     CausalTransposeConv1dConfig,
     ConvNeXtBlockConfig,
     ConvNeXtSpatialParams,
+    AudioDecoderBlockConfig,
+    AudioDecoderBlockSpatialParams,
+    DAC,
+    DACConfig,
+    ResidualUnitConfig,
+    ResidualUnitSpatialParams,
     ResidualVectorQuantizeConfig,
+    Snake1dConfig,
     TransposeConvSpatialParams,
     UpsamplerConfig,
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
 from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams, logits_to_probs, sample
+from lalamo.modules.audio.foreign.fishaudio_text_decoding import (
+    FishAudioTextDecoder,
+    FishAudioTextDecoderConfig,
+    FishAudioTextDecoderResult,
+)
 from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
     _default_audio_codec_config,
@@ -422,7 +425,7 @@ def test_residual_vector_quantize_from_codes() -> None:
 
     lalamo_rvq_config = ResidualVectorQuantizeConfig(precision=jnp.float32)
     lalamo_rvq = lalamo_rvq_config.empty(
-        code_size=input_dim,
+        input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=[codebook_dim] * n_codebooks,
     )
@@ -1271,4 +1274,445 @@ def test_upsampler_matches_pytorch() -> None:
     )
     assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-3), (
         f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_snake1d_matches_pytorch() -> None:
+    """Test that Lalamo Snake1d matches PyTorch Snake1d."""
+    from dac.nn.layers import Snake1d as PyTorchSnake1d
+
+    batch_size = 2
+    channels = 64
+    seq_length = 100
+
+    # Create PyTorch module
+    torch_snake = PyTorchSnake1d(channels)
+    torch_snake.eval()
+
+    # Create Lalamo module
+    lalamo_config = Snake1dConfig(precision=jnp.float32)
+    lalamo_snake = lalamo_config.empty(channels)
+
+    # Extract weights from PyTorch: alpha is (1, channels, 1) in PyTorch
+    torch_alpha = torch_snake.alpha.detach().squeeze()  # (channels,)
+
+    lalamo_weights = {"alpha": torch_to_jax(torch_alpha)}
+    lalamo_snake = lalamo_snake.import_weights(lalamo_weights)
+
+    # Create test input: PyTorch uses (batch, channels, sequence)
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, channels, seq_length)
+    # JAX uses (batch, sequence, channels)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both
+    torch_output = torch_snake(test_input_torch)
+    lalamo_output = lalamo_snake(test_input_jax)
+
+    # Compare - transpose JAX output back for comparison
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"Snake1d - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"Snake1d - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Snake1d - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_residual_unit_matches_pytorch() -> None:
+    """Test that Lalamo ResidualUnit matches PyTorch ResidualUnit."""
+    from fish_speech.models.dac.modded_dac import ResidualUnit as PyTorchResidualUnit
+
+    batch_size = 2
+    dim = 64
+    dilation = 3
+    seq_length = 100
+
+    # Create PyTorch module (causal=True)
+    torch_res_unit = PyTorchResidualUnit(dim=dim, dilation=dilation, causal=True)
+    torch_res_unit.eval()
+
+    # Create Lalamo module
+    lalamo_config = ResidualUnitConfig(precision=jnp.float32, causal=True)
+    spatial_params = ResidualUnitSpatialParams(dilation=dilation, kernel_size=7)
+    lalamo_res_unit = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
+
+    # Extract weights from PyTorch
+    # block is Sequential(Snake1d, Conv, Snake1d, Conv)
+    torch_block = torch_res_unit.block
+
+    # Snake1d weights
+    snake1_alpha = torch_block[0].alpha.detach().squeeze()  # (channels,)
+    snake2_alpha = torch_block[2].alpha.detach().squeeze()  # (channels,)
+
+    # Conv weights (CausalWNConv1d wraps nn.Conv1d)
+    conv1_weights = torch_block[1].conv.weight.detach()
+    conv1_biases = torch_block[1].conv.bias.detach()
+    conv2_weights = torch_block[3].conv.weight.detach()
+    conv2_biases = torch_block[3].conv.bias.detach()
+
+    lalamo_weights = {
+        "snake1": {"alpha": torch_to_jax(snake1_alpha)},
+        "conv1": {
+            "weights": torch_to_jax(conv1_weights),
+            "biases": torch_to_jax(conv1_biases),
+        },
+        "snake2": {"alpha": torch_to_jax(snake2_alpha)},
+        "conv2": {
+            "weights": torch_to_jax(conv2_weights),
+            "biases": torch_to_jax(conv2_biases),
+        },
+    }
+    lalamo_res_unit = lalamo_res_unit.import_weights(lalamo_weights)
+
+    # Create test input
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, dim, seq_length)
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+    # Run both
+    torch_output = torch_res_unit(test_input_torch)
+    lalamo_output = lalamo_res_unit(test_input_jax)
+
+    # Compare
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"ResidualUnit - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"ResidualUnit - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"ResidualUnit - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_decoder_block_matches_pytorch() -> None:
+    """Test that Lalamo DecoderBlock matches PyTorch DecoderBlock."""
+    from fish_speech.models.dac.modded_dac import DecoderBlock as PyTorchDecoderBlock
+
+    batch_size = 2
+    input_dim = 128
+    output_dim = 64
+    stride = 4
+    seq_length = 25
+
+    # Create PyTorch module (causal=True)
+    torch_decoder_block = PyTorchDecoderBlock(
+        input_dim=input_dim,
+        output_dim=output_dim,
+        stride=stride,
+        causal=True,
+        n_t_layer=0,  # No transformer
+    )
+    torch_decoder_block.eval()
+
+    # Create Lalamo module
+    lalamo_config = AudioDecoderBlockConfig(precision=jnp.float32, causal=True)
+    spatial_params = AudioDecoderBlockSpatialParams(
+        input_dim=input_dim,
+        output_dim=output_dim,
+        stride=stride,
+    )
+    lalamo_decoder_block = lalamo_config.empty(spatial_params=spatial_params)
+
+    # Extract weights from PyTorch
+    # block is Sequential(Snake1d, TransConv, ResUnit, ResUnit, ResUnit)
+    torch_block = torch_decoder_block.block
+
+    # Snake weights
+    snake_alpha = torch_block[0].alpha.detach().squeeze()
+
+    # TransConv weights
+    trans_conv_weights = torch_block[1].conv.weight.detach()
+    trans_conv_biases = torch_block[1].conv.bias.detach()
+
+    def extract_res_unit_weights(res_unit):
+        block = res_unit.block
+        return {
+            "snake1": {"alpha": torch_to_jax(block[0].alpha.detach().squeeze())},
+            "conv1": {
+                "weights": torch_to_jax(block[1].conv.weight.detach()),
+                "biases": torch_to_jax(block[1].conv.bias.detach()),
+            },
+            "snake2": {"alpha": torch_to_jax(block[2].alpha.detach().squeeze())},
+            "conv2": {
+                "weights": torch_to_jax(block[3].conv.weight.detach()),
+                "biases": torch_to_jax(block[3].conv.bias.detach()),
+            },
+        }
+
+    lalamo_weights = {
+        "snake": {"alpha": torch_to_jax(snake_alpha)},
+        "trans_conv": {
+            "weights": torch_to_jax(trans_conv_weights),
+            "biases": torch_to_jax(trans_conv_biases),
+        },
+        "res_unit1": extract_res_unit_weights(torch_block[2]),
+        "res_unit2": extract_res_unit_weights(torch_block[3]),
+        "res_unit3": extract_res_unit_weights(torch_block[4]),
+    }
+
+    with jax.disable_jit():
+        lalamo_decoder_block = lalamo_decoder_block.import_weights(lalamo_weights)
+
+        # Create test input
+        torch.manual_seed(42)
+        test_input_torch = torch.randn(batch_size, input_dim, seq_length)
+        test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+        # Run both
+        torch_output = torch_decoder_block(test_input_torch)
+        lalamo_output = lalamo_decoder_block(test_input_jax)
+
+    # Compare
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"DecoderBlock - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"DecoderBlock - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"DecoderBlock - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_audio_decoder_matches_pytorch() -> None:
+    """Test that Lalamo AudioDecoder matches PyTorch Decoder."""
+    from fish_speech.models.dac.modded_dac import Decoder as PyTorchDecoder
+
+    batch_size = 1
+    input_channel = 512  # latent dim from quantizer
+    channels = 1536  # decoder_dim
+    rates = (8, 8, 4, 2)  # upsampling rates
+    d_out = 1
+    seq_length = 10  # Short sequence for testing
+
+    # Create PyTorch module (causal=True, no transformers)
+    torch_decoder = PyTorchDecoder(
+        input_channel=input_channel,
+        channels=channels,
+        rates=list(rates),
+        d_out=d_out,
+        causal=True,
+        n_transformer_layers=[0, 0, 0, 0],
+    )
+    torch_decoder.eval()
+
+    # Create Lalamo module
+    lalamo_config = AudioDecoderConfig(precision=jnp.float32, causal=True)
+    spatial_params = AudioDecoderSpatialParams(
+        input_channel=input_channel,
+        channels=channels,
+        rates=rates,
+        d_out=d_out,
+    )
+    lalamo_decoder = lalamo_config.empty(spatial_params=spatial_params)
+
+    # Extract weights from PyTorch Decoder
+    # The model is a Sequential: [first_conv, DecoderBlock..., final_snake, final_conv, Tanh]
+    torch_model = torch_decoder.model
+
+    # First conv (index 0)
+    first_conv_weights = torch_model[0].conv.weight.detach()
+    first_conv_biases = torch_model[0].conv.bias.detach()
+
+    # DecoderBlocks (indices 1 to len(rates))
+    def extract_decoder_block_weights(decoder_block):
+        block = decoder_block.block
+        # block is Sequential(Snake1d, TransConv, ResUnit, ResUnit, ResUnit)
+        snake_alpha = block[0].alpha.detach().squeeze()
+        trans_conv_weights = block[1].conv.weight.detach()
+        trans_conv_biases = block[1].conv.bias.detach()
+
+        def extract_res_unit_weights(res_unit):
+            res_block = res_unit.block
+            return {
+                "snake1": {"alpha": torch_to_jax(res_block[0].alpha.detach().squeeze())},
+                "conv1": {
+                    "weights": torch_to_jax(res_block[1].conv.weight.detach()),
+                    "biases": torch_to_jax(res_block[1].conv.bias.detach()),
+                },
+                "snake2": {"alpha": torch_to_jax(res_block[2].alpha.detach().squeeze())},
+                "conv2": {
+                    "weights": torch_to_jax(res_block[3].conv.weight.detach()),
+                    "biases": torch_to_jax(res_block[3].conv.bias.detach()),
+                },
+            }
+
+        return {
+            "snake": {"alpha": torch_to_jax(snake_alpha)},
+            "trans_conv": {
+                "weights": torch_to_jax(trans_conv_weights),
+                "biases": torch_to_jax(trans_conv_biases),
+            },
+            "res_unit1": extract_res_unit_weights(block[2]),
+            "res_unit2": extract_res_unit_weights(block[3]),
+            "res_unit3": extract_res_unit_weights(block[4]),
+        }
+
+    decoder_blocks_weights = []
+    for i in range(len(rates)):
+        decoder_blocks_weights.append(extract_decoder_block_weights(torch_model[1 + i]))
+
+    # Final snake (index 1 + len(rates))
+    final_snake_alpha = torch_model[1 + len(rates)].alpha.detach().squeeze()
+
+    # Final conv (index 2 + len(rates))
+    final_conv_weights = torch_model[2 + len(rates)].conv.weight.detach()
+    final_conv_biases = torch_model[2 + len(rates)].conv.bias.detach()
+
+    lalamo_weights = {
+        "first_conv": {
+            "weights": torch_to_jax(first_conv_weights),
+            "biases": torch_to_jax(first_conv_biases),
+        },
+        "decoder_blocks": decoder_blocks_weights,
+        "final_snake": {"alpha": torch_to_jax(final_snake_alpha)},
+        "final_conv": {
+            "weights": torch_to_jax(final_conv_weights),
+            "biases": torch_to_jax(final_conv_biases),
+        },
+    }
+
+    with jax.disable_jit():
+        lalamo_decoder = lalamo_decoder.import_weights(lalamo_weights)
+
+        # Create test input
+        torch.manual_seed(42)
+        test_input_torch = torch.randn(batch_size, input_channel, seq_length)
+        test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)
+
+        # Run both
+        torch_output = torch_decoder(test_input_torch)
+        lalamo_output = lalamo_decoder(test_input_jax)
+
+    # Compare
+    torch_output_jax = torch_to_jax(torch_output)
+    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+
+    _testlog.info(f"AudioDecoder - PyTorch output shape: {torch_output.shape}")
+    _testlog.info(f"AudioDecoder - Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"AudioDecoder - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
+
+    assert torch_output_jax.shape == lalamo_output_nct.shape, (
+        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
+    )
+    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_dac_matches_pytorch() -> None:
+    """Test that Lalamo DAC matches PyTorch DAC from FishAudio.
+
+    This test loads a real DAC model checkpoint, creates a Lalamo DAC module,
+    loads the weights using the loader functions, and compares full inference
+    (codes -> audio) between both implementations.
+    """
+    from fish_speech.models.dac import inference as fish_dac_inference
+    from fish_speech.models.dac.modded_dac import DAC as FishDAC
+
+    from lalamo.model_import.loaders.fishaudio_loaders import load_dac
+    from lalamo.model_import.model_specs.common import cast_if_float
+    from lalamo.utils import MapDictValues
+
+    # Load FishAudio DAC model
+    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
+    repos = huggingface_hub.scan_cache_dir().repos
+    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+
+    api = HfApi()
+    cache_info = api.model_info(fish_audiod_repo_id)
+    commit_hash = cache_info.sha
+
+    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    audio_chkpt_path = model_path / "codec.pth"
+    config_name = "modded_dac_vq"
+    device = "cpu"
+
+    fish_dac = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
+    assert isinstance(fish_dac, FishDAC)
+    fish_dac.eval()
+
+    # Create Lalamo DAC from FishAudio config
+    fish_dac_omega_config = _default_audio_codec_config
+    lalamo_dac: DAC = DACConfig.from_fishaudio_config(fish_dac_omega_config)
+
+    # Convert entire state_dict to JAX arrays and load into Lalamo DAC
+    precision = jnp.float32
+    weights_dict = dict(
+        MapDictValues(
+            lambda v: cast_if_float(torch_to_jax(v), precision),
+            fish_dac.state_dict(),
+        )
+    )
+    lalamo_dac = load_dac(lalamo_dac, weights_dict)
+
+    # Create test input: random codes
+    torch.manual_seed(42)
+    fish_quantizer_config = fish_dac_omega_config["quantizer"]
+    codebook_size = fish_quantizer_config["codebook_size"]
+    batch_size = 1
+    num_tokens = 10
+    n_codebooks = fish_quantizer_config["n_codebooks"]
+    test_codes_torch = torch.randint(0, codebook_size, (batch_size, n_codebooks, num_tokens))
+    test_codes_jax = torch_to_jax(test_codes_torch).astype(jnp.int32)
+
+    _testlog.info(f"Test codes shape: {test_codes_torch.shape}")
+
+    # Run FishAudio DAC inference (quantizer.decode + decoder)
+    z_fish = fish_dac.quantizer.decode(test_codes_torch)  # (batch, latent_dim, tokens_upsampled)
+    audio_fish = fish_dac.decoder(z_fish)  # (batch, 1, audio_samples)
+
+    _testlog.info(f"FishAudio z shape: {z_fish.shape}")
+    _testlog.info(f"FishAudio audio shape: {audio_fish.shape}")
+
+    # Run Lalamo DAC inference
+    audio_lalamo = lalamo_dac(test_codes_jax)  # (batch, audio_samples, 1) - NTC format
+
+    _testlog.info(f"Lalamo audio shape: {audio_lalamo.shape}")
+
+    # Convert for comparison (both to NTC format)
+    audio_fish_ntc = torch_to_jax(audio_fish).transpose(0, 2, 1)  # NCT -> NTC
+
+    # Compare final audio outputs
+    audio_diff = audio_lalamo - audio_fish_ntc
+
+    _testlog.info(
+        f"DAC - Fish audio: shape={audio_fish.shape}, max={audio_fish.max():.6f}, "
+        f"min={audio_fish.min():.6f}, avg={audio_fish.mean():.6f}"
+    )
+    _testlog.info(
+        f"DAC - Lalamo audio: shape={audio_lalamo.shape}, max={audio_lalamo.max():.6f}, "
+        f"min={audio_lalamo.min():.6f}, avg={audio_lalamo.mean():.6f}"
+    )
+    _testlog.info(
+        f"DAC - audio diff: max={jnp.abs(audio_diff).max():.6f}, "
+        f"avg={audio_diff.mean():.6f}, std={audio_diff.std():.6f}"
+    )
+
+    assert audio_fish_ntc.shape == audio_lalamo.shape, (
+        f"Shape mismatch: FishAudio {audio_fish_ntc.shape} vs Lalamo {audio_lalamo.shape}"
+    )
+    assert jnp.allclose(audio_fish_ntc, audio_lalamo, atol=1e-3), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(audio_diff))}"
     )

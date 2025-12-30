@@ -22,7 +22,7 @@ from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterPath, ParameterTree
-from lalamo.model_import.loaders.fish_audio_loaders import load_fish_audio_text_decoding_modules
+from lalamo.model_import.loaders.fishaudio_loaders import load_fish_audio_text_decoding_modules
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.model_import.model_specs.common import cast_if_float
 from lalamo.modules import (
@@ -64,108 +64,110 @@ def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
         shutil.rmtree(output_temp_dir)
 
 
-def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
-    return BaseModelArgs(
-        model_type=fish_transformer_config.model_type,
-        vocab_size=fish_transformer_config.vocab_size,
-        n_layer=fish_transformer_config.n_fast_layer,
-        n_head=fish_transformer_config.fast_n_head,
-        dim=fish_transformer_config.fast_dim,
-        intermediate_size=fish_transformer_config.fast_intermediate_size,
-        n_local_heads=fish_transformer_config.fast_n_local_heads,
-        head_dim=fish_transformer_config.fast_head_dim,
-        rope_base=fish_transformer_config.rope_base,
-        norm_eps=fish_transformer_config.norm_eps,
-        max_seq_len=fish_transformer_config.max_seq_len,
-        dropout=fish_transformer_config.dropout,
-        tie_word_embeddings=fish_transformer_config.tie_word_embeddings,
-        attention_qkv_bias=fish_transformer_config.fast_attention_qkv_bias,
-        attention_o_bias=fish_transformer_config.fast_attention_o_bias,
-        attention_qk_norm=fish_transformer_config.fast_attention_qk_norm,
-        codebook_size=fish_transformer_config.codebook_size,
-        num_codebooks=fish_transformer_config.num_codebooks,
-    )
+class ConfigMapping:
+    @staticmethod
+    def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
+        return BaseModelArgs(
+            model_type=fish_transformer_config.model_type,
+            vocab_size=fish_transformer_config.vocab_size,
+            n_layer=fish_transformer_config.n_fast_layer,
+            n_head=fish_transformer_config.fast_n_head,
+            dim=fish_transformer_config.fast_dim,
+            intermediate_size=fish_transformer_config.fast_intermediate_size,
+            n_local_heads=fish_transformer_config.fast_n_local_heads,
+            head_dim=fish_transformer_config.fast_head_dim,
+            rope_base=fish_transformer_config.rope_base,
+            norm_eps=fish_transformer_config.norm_eps,
+            max_seq_len=fish_transformer_config.max_seq_len,
+            dropout=fish_transformer_config.dropout,
+            tie_word_embeddings=fish_transformer_config.tie_word_embeddings,
+            attention_qkv_bias=fish_transformer_config.fast_attention_qkv_bias,
+            attention_o_bias=fish_transformer_config.fast_attention_o_bias,
+            attention_qk_norm=fish_transformer_config.fast_attention_qk_norm,
+            codebook_size=fish_transformer_config.codebook_size,
+            num_codebooks=fish_transformer_config.num_codebooks,
+        )
 
+    @staticmethod
+    def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+        config: BaseModelArgs, precision: DTypeLike
+    ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
+        global_rope_config = RoPEConfigFishAudio(
+            precision=precision,
+            base=config.rope_base,
+            max_sequence_length=config.max_seq_len,
+        )
+        local_rope_config = None
 
-def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-    config: BaseModelArgs, precision: DTypeLike
-) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-    global_rope_config = RoPEConfigFishAudio(
-        precision=precision,
-        base=config.rope_base,
-        max_sequence_length=config.max_seq_len,
-    )
-    local_rope_config = None
+        norm_config = NormalizationConfig(
+            scale_precision=precision,
+            accumulation_precision=precision,
+            epsilon=config.norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
+        )
 
-    norm_config = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
-        epsilon=config.norm_eps,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
+        qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
+        out_projection_config = FullPrecisionLinearConfig(precision=precision)
+        mixer_config = AttentionConfig(
+            qkv_projection_config=qkv_projection_config,
+            out_projection_config=out_projection_config,
+            query_norm_config=norm_config if config.attention_qk_norm else None,
+            key_norm_config=norm_config if config.attention_qk_norm else None,
+            num_heads=config.n_head,
+            num_groups=config.n_local_heads,
+            head_dim=config.head_dim,
+            is_causal=True,
+            scale=None,
+            sliding_window_size=None,
+            logit_soft_cap=None,
+            has_sinks=False,
+            has_qkv_biases=False,
+            has_out_biases=False,
+        )
 
-    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-    out_projection_config = FullPrecisionLinearConfig(precision=precision)
-    mixer_config = AttentionConfig(
-        qkv_projection_config=qkv_projection_config,
-        out_projection_config=out_projection_config,
-        query_norm_config=norm_config if config.attention_qk_norm else None,
-        key_norm_config=norm_config if config.attention_qk_norm else None,
-        num_heads=config.n_head,
-        num_groups=config.n_local_heads,
-        head_dim=config.head_dim,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=None,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkv_biases=False,
-        has_out_biases=False,
-    )
+        mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
+        mlp_use_up_biases = False
+        mlp_use_down_biases = False
+        mlp_config = DenseMLPConfig(
+            linear_config=mlp_linear_config,
+            activation=SiLU(),
+            has_up_biases=mlp_use_up_biases,
+            has_down_biases=mlp_use_down_biases,
+            gate_clipping=None,
+            up_clipping=None,
+        )
 
-    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-    mlp_use_up_biases = False
-    mlp_use_down_biases = False
-    mlp_config = DenseMLPConfig(
-        linear_config=mlp_linear_config,
-        activation=SiLU(),
-        has_up_biases=mlp_use_up_biases,
-        has_down_biases=mlp_use_down_biases,
-        gate_clipping=None,
-        up_clipping=None,
-    )
+        pre_mixer_norm_config = norm_config
+        post_mixer_norm_config = None
+        pre_mlp_norm_config = norm_config
+        post_mlp_norm_config = None
 
-    pre_mixer_norm_config = norm_config
-    post_mixer_norm_config = None
-    pre_mlp_norm_config = norm_config
-    post_mlp_norm_config = None
+        layer_config = TransformerLayerConfig(
+            pre_mixer_norm_config=pre_mixer_norm_config,
+            mixer_config=mixer_config,
+            post_mixer_norm_config=post_mixer_norm_config,
+            pre_mlp_norm_config=pre_mlp_norm_config,
+            mlp_config=mlp_config,
+            post_mlp_norm_config=post_mlp_norm_config,
+        )
+        model_dim = config.dim
+        hidden_dim = config.intermediate_size
+        context_length = config.max_seq_len
 
-    layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=pre_mixer_norm_config,
-        mixer_config=mixer_config,
-        post_mixer_norm_config=post_mixer_norm_config,
-        pre_mlp_norm_config=pre_mlp_norm_config,
-        mlp_config=mlp_config,
-        post_mlp_norm_config=post_mlp_norm_config,
-    )
-    model_dim = config.dim
-    hidden_dim = config.intermediate_size
-    context_length = config.max_seq_len
+        transformer_cfg = TransformerConfig(
+            global_rope_config=global_rope_config,
+            local_rope_config=local_rope_config,
+            layer_configs=tuple([layer_config] * config.n_layer),
+            output_norm_config=norm_config,
+            model_dim=model_dim,
+            hidden_dim=hidden_dim,
+            context_length=context_length,
+        )
+        linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
 
-    transformer_cfg = TransformerConfig(
-        global_rope_config=global_rope_config,
-        local_rope_config=local_rope_config,
-        layer_configs=tuple([layer_config] * config.n_layer),
-        output_norm_config=norm_config,
-        model_dim=model_dim,
-        hidden_dim=hidden_dim,
-        context_length=context_length,
-    )
-    linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
-
-    return (transformer_cfg, linear_out_cfg)
+        return (transformer_cfg, linear_out_cfg)
 
 
 @dataclass
@@ -213,11 +215,11 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
         tokenizer: FishTokenizer,
         precision: DTypeLike,
     ) -> "FishAudioTextDecoderConfig":
-        slow_transformer_cfg, slow_readout_cfg = lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+        slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
             fish_audio_cfg, precision
         )
-        fast_fish_cfg = extract_fast_transformer_params(fish_audio_cfg)
-        fast_transformer_cfg, fast_readout_cfg = lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+        fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
+        fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
             fast_fish_cfg, precision
         )
 
