@@ -44,6 +44,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
+from lalamo.model_import.huggingface_tokenizer_config import HFTokenizerConfig
 from lalamo.models import ForeignTTSModel, LanguageModelConfig, RouterConfig, TTSConfig, TTSGenerator
 from lalamo.modules import config_converter
 from lalamo.modules.audio.tts_request_factory import TTSMessage
@@ -424,14 +425,51 @@ def convert(
 
         # Ensure tokenizer artifacts are present in the converted folder.
         # Some HF repos ship SentencePiece `tokenizer.model` (no `tokenizer.json`).
-        download_file(model_repo.configs.tokenizer, model_repo.repo, output_dir=output_dir)
-        download_file(model_repo.configs.tokenizer_config, model_repo.repo, output_dir=output_dir)
+        tokenizer_src = download_file(model_repo.configs.tokenizer, model_repo.repo, output_dir=output_dir)
+        tokenizer_config_src = download_file(
+            model_repo.configs.tokenizer_config,
+            model_repo.repo,
+            output_dir=output_dir,
+        )
 
         # If we have a fast tokenizers-backed tokenizer, also save it as `tokenizer.json`
         # (this is the preferred format for fully self-contained converted models).
         tokenizer_obj = model.message_processor.tokenizer
         if hasattr(tokenizer_obj, "save"):
             tokenizer_obj.save(str(output_dir / "tokenizer.json"))
+        elif tokenizer_src.suffix == ".model" and not (output_dir / "tokenizer.json").exists():
+            # UZU currently expects `tokenizer.json`. For SentencePiece-only repos, try to
+            # generate it using Transformers' SentencePiece->tokenizers converter (Llama).
+            #
+            # This requires optional deps: `transformers` + `sentencepiece`.
+            try:
+                from transformers import LlamaTokenizer  # type: ignore
+                from transformers.convert_slow_tokenizer import convert_slow_tokenizer  # type: ignore
+            except ModuleNotFoundError:
+                console.print(
+                    "[yellow]Warning:[/yellow] This model ships `tokenizer.model` but no `tokenizer.json` was produced."
+                    " Install `transformers` and `sentencepiece` (or rerun with `uv run --with transformers --with"
+                    " sentencepiece`) to generate `tokenizer.json` for UZU compatibility.",
+                )
+            else:
+                hf_tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_src)
+                llama_tok = LlamaTokenizer(vocab_file=str(tokenizer_src), add_bos_token=False, add_eos_token=False)
+                backend = convert_slow_tokenizer(llama_tok)
+
+                if hf_tokenizer_config.added_tokens_decoder is not None:
+                    for _tok_id_str, hf_added in sorted(
+                        hf_tokenizer_config.added_tokens_decoder.items(),
+                        key=lambda kv: int(kv[0]),
+                    ):
+                        added = hf_added.to_added_token()
+                        if backend.token_to_id(added.content) is not None:
+                            continue
+                        if added.special:
+                            backend.add_special_tokens([added])
+                        else:
+                            backend.add_tokens([added])
+
+                backend.save(str(output_dir / "tokenizer.json"))
         weights = flatten_parameters(model.export_weights())
         del model
 
