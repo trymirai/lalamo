@@ -1,5 +1,8 @@
 import numpy as np
-import pyaudio
+try:
+    import pyaudio  # type: ignore
+except ModuleNotFoundError:  # pragma: no cover
+    pyaudio = None  # type: ignore[assignment]
 
 __all__ = ["play_audio"]
 
@@ -7,6 +10,11 @@ DEFAULT_SAMPLERATE: int = 44100
 
 
 def play_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 1024) -> None:
+    if pyaudio is None:
+        raise ModuleNotFoundError(
+            "Optional dependency `pyaudio` is not installed (and PortAudio headers may be missing). "
+            "Install PortAudio (e.g. `brew install portaudio`) and then install `pyaudio` to use audio replay."
+        )
     if audio.dtype not in [np.float32, np.float16, np.float64]:
         raise ValueError("Input audio datatype is expected to be a floating point")
     (n_samples,) = audio.shape

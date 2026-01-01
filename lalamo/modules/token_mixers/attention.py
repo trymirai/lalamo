@@ -100,6 +100,9 @@ class AttentionConfig(TokenMixerConfigBase):
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
+    # Optional symmetric clipping applied to the projected Q/K/V tensors.
+    # This is used by some HF architectures (e.g. IQuestCoder/OLMo-style stability).
+    qkv_clipping: tuple[float | None, float | None] | None = None
 
     @property
     def rope_dim(self) -> int:
@@ -347,6 +350,11 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             groups=self.num_groups,
             head_channels=self.head_dim,
         )
+
+        if self.config.qkv_clipping is not None:
+            queries = jnp.clip(queries, *self.config.qkv_clipping)
+            keys = jnp.clip(keys, *self.config.qkv_clipping)
+            values = jnp.clip(values, *self.config.qkv_clipping)
 
         if self.query_norm is not None:
             queries = vmap(vmap(self.query_norm))(queries)

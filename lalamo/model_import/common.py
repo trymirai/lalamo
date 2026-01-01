@@ -15,6 +15,7 @@ from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.models import GenerationConfig, LanguageModel, LanguageModelConfig, Router, RouterConfig
+from lalamo.tokenizer_compat import SentencePieceTokenizer
 from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
 
@@ -151,13 +152,26 @@ def import_message_processor(
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
-    tokenizer = Tokenizer.from_file(str(tokenizer_file))
 
-    added_tokens = tokenizer_config.added_tokens()
-    added_special_tokens = [token for token in added_tokens if token.special]
-    added_not_special_tokens = [token for token in added_tokens if not token.special]
-    tokenizer.add_special_tokens(added_special_tokens)
-    tokenizer.add_tokens(added_not_special_tokens)
+    match tokenizer_file.suffix:
+        case ".json":
+            tokenizer = Tokenizer.from_file(str(tokenizer_file))
+            # Add tokens in ID order (if missing) to keep IDs aligned with HF configs.
+            if tokenizer_config.added_tokens_decoder is not None:
+                for _tok_id_str, hf_added in sorted(
+                    tokenizer_config.added_tokens_decoder.items(),
+                    key=lambda kv: int(kv[0]),
+                ):
+                    added = hf_added.to_added_token()
+                    if tokenizer.token_to_id(added.content) is None:
+                        if added.special:
+                            tokenizer.add_special_tokens([added])
+                        else:
+                            tokenizer.add_tokens([added])
+        case ".model":
+            tokenizer = SentencePieceTokenizer(tokenizer_file, tokenizer_config)
+        case _:
+            raise ValueError(f"Unsupported tokenizer file type: {tokenizer_file.name}")
 
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,

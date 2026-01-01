@@ -3,6 +3,7 @@ from .deepseek import DEEPSEEK_MODELS
 from .gemma import GEMMA_MODELS
 from .gpt_oss import GPT_OSS_MODELS
 from .huggingface import HUGGINGFACE_MODELS
+from .iquestcoder import IQUESTCODER_MODELS
 from .llama import LLAMA_MODELS
 from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_ROUTER_MODELS
@@ -29,6 +30,7 @@ ALL_MODEL_LISTS = [
     DEEPSEEK_MODELS,
     GEMMA_MODELS,
     HUGGINGFACE_MODELS,
+    IQUESTCODER_MODELS,
     GPT_OSS_MODELS,
     MISTRAL_MODELS,
     # PLEIAS_MODELS,  # TODO(norpadon): Add chat template

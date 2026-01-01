@@ -10,7 +10,6 @@ from typing import Annotated
 
 import jax
 import jax.profiler
-import soundfile as sf
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -32,7 +31,6 @@ from rich.table import Table
 from safetensors.flax import save_file
 from typer import Argument, Context, Exit, Option, Typer
 
-from lalamo.audio import utils as audio_utils
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -40,6 +38,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
+    download_file,
     FinishedDownloadingFileEvent,
     FinishedInitializingModelEvent,
     InitializingModelEvent,
@@ -124,6 +123,12 @@ def chat(
         ),
     ],
 ) -> None:
+    if not (model_path / "config.json").exists():
+        _error(
+            f"Converted model not found at `{model_path}`.\n\n"
+            f"- If you're still converting, wait for it to finish.\n"
+            f"- Otherwise, run: `{SCRIPT_NAME} convert <MODEL_REPO>` and then retry.\n",
+        )
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -138,7 +143,11 @@ def chat(
     console.print(f"🤖 Chatting with [blue]{model_path}[/blue]:")
     messages = []
     while True:
-        user_text = console.input("[cyan]user> [/cyan]")
+        try:
+            user_text = console.input("[cyan]user> [/cyan]")
+        except (EOFError, KeyboardInterrupt):
+            console.print("\n[green]Bye![/green]")
+            break
         user_message = UserMessage(user_text)
         messages.append(user_message)
 
@@ -214,6 +223,12 @@ def tts(
         ),
     ] = False,
 ) -> None:
+    # Lazy imports so `lalamo convert` / `lalamo chat` work without optional audio deps.
+    try:
+        import soundfile as sf  # type: ignore
+    except ModuleNotFoundError:
+        sf = None  # type: ignore[assignment]
+
     if model_path is None and foreign_model is None:
         err_console.print("Either path to Lalalo TTS model or type of foreign TTS model has to be specified")
         raise Exit
@@ -258,6 +273,8 @@ def tts(
         tts_result = model.generate_speech([user_message])
 
         if replay:
+            from lalamo.audio import utils as audio_utils  # local import (optional dep: pyaudio)
+
             audio_utils.play_audio(tts_result.audio, tts_result.audio_params.samplerate)
 
         if output_file.exists():
@@ -273,6 +290,9 @@ def tts(
                 console.print("Continue without saving the result")
                 continue
 
+        if sf is None:
+            err_console.print("Missing optional dependency `soundfile`. Install it to save generated audio.")
+            raise Exit(1)
         sf.write(str(output_file), tts_result.audio, tts_result.audio_params.samplerate)
         console.print(f"[green] ... saved generated audio to {output_file}[/green]")
 
@@ -402,7 +422,16 @@ def convert(
             progress.remove_task(trace_task)
         progress.remove_task(main_task)
 
-        model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
+        # Ensure tokenizer artifacts are present in the converted folder.
+        # Some HF repos ship SentencePiece `tokenizer.model` (no `tokenizer.json`).
+        download_file(model_repo.configs.tokenizer, model_repo.repo, output_dir=output_dir)
+        download_file(model_repo.configs.tokenizer_config, model_repo.repo, output_dir=output_dir)
+
+        # If we have a fast tokenizers-backed tokenizer, also save it as `tokenizer.json`
+        # (this is the preferred format for fully self-contained converted models).
+        tokenizer_obj = model.message_processor.tokenizer
+        if hasattr(tokenizer_obj, "save"):
+            tokenizer_obj.save(str(output_dir / "tokenizer.json"))
         weights = flatten_parameters(model.export_weights())
         del model
 

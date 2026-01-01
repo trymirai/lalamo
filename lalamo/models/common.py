@@ -12,9 +12,11 @@ from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
+from lalamo.model_import.huggingface_tokenizer_config import HFTokenizerConfig
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
+from lalamo.tokenizer_compat import SentencePieceTokenizer
 from lalamo.utils import open_safetensors
 
 __all__ = [
@@ -46,7 +48,18 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
             weights_dict, _ = open_results
             weights = unflatten_parameters(weights_dict)
             model = config.model_config.empty().import_weights(weights)
-        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
+        tokenizer_json = path / "tokenizer.json"
+        if tokenizer_json.exists():
+            tokenizer = Tokenizer.from_file(str(tokenizer_json))
+        else:
+            tokenizer_model = path / "tokenizer.model"
+            tokenizer_config_json = path / "tokenizer_config.json"
+            if not tokenizer_model.exists():
+                raise FileNotFoundError(f"Missing tokenizer file: {tokenizer_json} or {tokenizer_model}")
+            if not tokenizer_config_json.exists():
+                raise FileNotFoundError(f"Missing tokenizer config file: {tokenizer_config_json}")
+            hf_tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_json)
+            tokenizer = SentencePieceTokenizer(tokenizer_model, hf_tokenizer_config)
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return config.init(model, message_processor)
 

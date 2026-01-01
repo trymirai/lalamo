@@ -1,3 +1,5 @@
+import os
+
 import pytest
 import torch
 
@@ -21,6 +23,17 @@ MODEL_LIST += (
     if torch.cuda.is_available()
     else []
 )
+
+# Very large custom-code model; enable explicitly to avoid accidental OOMs in CI.
+if torch.cuda.is_available() and os.environ.get("LALAMO_TEST_IQUESTCODER") == "1":
+    MODEL_LIST.append(
+        ModelTestSpec(
+            "IQuestLab/IQuest-Coder-V1-40B-Base-Stage1",
+            DType.FLOAT16,
+            num_tokens=64,
+            token_stride=1,
+        ),
+    )
 
 CLASSIFIER_MODEL_LIST = [
     ModelTestSpec("trymirai/chat-moderation-router", DType.FLOAT32),

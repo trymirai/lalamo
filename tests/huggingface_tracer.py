@@ -169,11 +169,20 @@ def _load_hf_model(
     else:
         device = torch.device("cpu")
 
-    model = model_type.from_pretrained(
-        model_repo,
-        dtype=dtype.torch_dtype if dtype is not None else None,
-        device_map=device,
-    )
+    kwargs: dict[str, Any] = {
+        "dtype": dtype.torch_dtype if dtype is not None else None,
+        "device_map": device,
+    }
+
+    # Some models (e.g. custom-code architectures) require `trust_remote_code=True`.
+    try:
+        model = model_type.from_pretrained(model_repo, trust_remote_code=False, **kwargs)
+    except Exception as e:  # noqa: BLE001
+        message = str(e).lower()
+        if "trust_remote_code" in message or "custom code" in message:
+            model = model_type.from_pretrained(model_repo, trust_remote_code=True, **kwargs)
+        else:
+            raise
 
     return model, device
 
