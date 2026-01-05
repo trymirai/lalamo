@@ -64,14 +64,15 @@ class GenerationResults(NamedTuple):
 
 @dataclass(frozen=True)
 class GenerationConfig:
-    stop_token_ids: tuple[int, ...]
-    temperature: float | None
-    top_k: int | None
-    top_p: float | None
-    banned_tokens: tuple[int, ...] | None
+    stop_token_ids: tuple[int, ...] = tuple()
+    temperature: float | None = None
+    top_k: int | None = None
+    top_p: float | None = None
+    min_p: float | None = None
+    banned_tokens: tuple[int, ...] | None = None
 
     def default_policy(self) -> SamplingPolicy:
-        return make_policy(self.temperature, self.top_k, self.top_p, self.banned_tokens)
+        return make_policy(self.temperature, self.top_k, self.top_p, self.min_p, self.banned_tokens)
 
 
 @dataclass(frozen=True)

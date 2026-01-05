@@ -3,7 +3,7 @@ import json
 from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
@@ -20,7 +20,7 @@ from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
 from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
-from .huggingface_generation_config import HFGenerationConfig
+from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
 from .huggingface_tokenizer_config import HFTokenizerConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
 from .model_specs.common import JSONFieldSpec
@@ -34,6 +34,7 @@ __all__ = [
     "ModelSpec",
     "ModelType",
     "StatusEvent",
+    "download_file",
     "import_model",
 ]
 
@@ -239,24 +240,14 @@ def _import_language_model(
 
     stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
 
-    if model_spec.configs.generation_config is not None:
+    if isinstance(model_spec.configs.generation_config, GenerationConfig):
+        generation_config = replace(model_spec.configs.generation_config, stop_token_ids=stop_token_ids)
+    elif isinstance(model_spec.configs.generation_config, FileSpec):
         hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
         hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
-        generation_config = GenerationConfig(
-            stop_token_ids=stop_token_ids,
-            temperature=hf_generation_config.temperature,
-            top_p=hf_generation_config.top_p,
-            top_k=hf_generation_config.top_k,
-            banned_tokens=None,
-        )
+        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids)
     else:
-        generation_config = GenerationConfig(
-            stop_token_ids=stop_token_ids,
-            temperature=None,
-            top_p=None,
-            top_k=None,
-            banned_tokens=None,
-        )
+        generation_config = GenerationConfig(stop_token_ids)
 
     language_model_config = LanguageModelConfig(
         model_config=decoder.config,

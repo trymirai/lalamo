@@ -5,7 +5,9 @@ from typing import ClassVar
 
 import cattrs
 
-__all__ = ["HFGenerationConfig"]
+from lalamo.models import GenerationConfig
+
+__all__ = ["HFGenerationConfig", "_policy_from_hf_config"]
 
 
 @dataclass(frozen=True)
@@ -27,10 +29,11 @@ class HFGenerationConfig:
     cache_implementation: str | None = None  # “hybrid” for Gemma 3/2
 
     # -------- sampling strategy -------------
-    do_sample: bool | None = None
+    do_sample: bool | None = False
     temperature: float | None = None
+    min_p: float | None = None
     top_p: float | None = None
-    top_k: int | None = None
+    top_k: int | None = 50
     repetition_penalty: float | None = None
 
     # -------- length limits -----------------
@@ -42,3 +45,18 @@ class HFGenerationConfig:
         with open(json_path) as f:
             config = json.load(f)
         return cls._converter.structure(config, cls)
+
+
+def _policy_from_hf_config(
+    hf_config: HFGenerationConfig,
+    stop_token_ids: tuple[int, ...] = (),
+    banned_tokens: tuple[int, ...] | None = None,
+) -> GenerationConfig:
+    return GenerationConfig(
+        stop_token_ids=stop_token_ids,
+        temperature=hf_config.temperature,
+        top_k=hf_config.top_k,
+        top_p=hf_config.top_p,
+        min_p=hf_config.min_p,
+        banned_tokens=banned_tokens,
+    )

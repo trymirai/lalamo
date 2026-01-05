@@ -47,8 +47,10 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run pytest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest tests/unit
+          pytest -n=auto tests/unit
 
   cli:
     name: CLI

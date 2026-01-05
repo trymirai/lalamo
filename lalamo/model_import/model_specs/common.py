@@ -14,6 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.decoder_configs import ForeignConfig
+from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_read
 from lalamo.utils import MapDictValues
@@ -86,7 +87,7 @@ class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
     tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
-    generation_config: FileSpec | None = field(default=FileSpec("generation_config.json"))
+    generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None
 
 
