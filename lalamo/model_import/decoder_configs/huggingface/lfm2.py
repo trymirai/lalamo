@@ -51,7 +51,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
     conv_L_cache: int  # noqa: N815
     conv_bias: bool
     conv_dim: int
-    conv_dim_out: int
     conv_use_xavier_init: bool
     eos_token_id: int
     hidden_size: int
@@ -73,6 +72,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
     dtype: Literal["bfloat16", "float16", "float32"] | None = None
     torch_dtype: Literal["bfloat16", "float16", "float32"] | None = None
     intermediate_size: int | None = None
+    conv_dim_out: int | None = None
     layer_types: list[Literal["conv", "full_attention"]] | None = None
     full_attn_idxs: list[int] | None = None
     tie_embedding: bool = True
@@ -210,8 +210,8 @@ class HFLFM2Config(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        if self.intermediate_size is not None:
-            hidden_dim = self.intermediate_size
+        if not self.block_auto_adjust_ff_dim:
+            hidden_dim = self.intermediate_size or self.block_ff_dim
         else:
             hidden_dim_adjusted = self.block_ff_dim * self.block_ffn_dim_multiplier * (2 / 3)
             hidden_dim = int(
