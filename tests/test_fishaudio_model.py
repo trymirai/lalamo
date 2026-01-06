@@ -16,16 +16,18 @@ from pytest import fixture
 from lalamo.models import ForeignTTSModel, TTSConfig
 from lalamo.modules import GELU
 from lalamo.modules.audio.foreign.fishaudio_audio_decoding import (
-    AudioDecoderConfig,
-    AudioDecoderSpatialParams,
+    DescriptAudioCodec,
+    DescriptAudioCodecConfig,
+)
+from lalamo.modules.audio.foreign.fishaudio_modules import (
+    AudioDecoderBlockSpatialParams,
     CausalConv1dConfig,
     CausalTransposeConv1dConfig,
     ConvNeXtBlockConfig,
     ConvNeXtSpatialParams,
-    AudioDecoderBlockConfig,
-    AudioDecoderBlockSpatialParams,
-    DAC,
-    DACConfig,
+    DACDecoderBlockConfig,
+    DACDecoderConfig,
+    DACDecoderSpatialParams,
     ResidualUnitConfig,
     ResidualUnitSpatialParams,
     ResidualVectorQuantizeConfig,
@@ -36,6 +38,7 @@ from lalamo.modules.audio.foreign.fishaudio_audio_decoding import (
     VectorQuantizeConfig,
 )
 from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams, logits_to_probs, sample
+from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.audio.foreign.fishaudio_text_decoding import (
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
@@ -43,8 +46,8 @@ from lalamo.modules.audio.foreign.fishaudio_text_decoding import (
 )
 from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
-    _default_audio_codec_config,
 )
+from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.tts_request_factory import TTSMessage
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
@@ -112,7 +115,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     output_fish = tts_generator.text_decoder(tokenized_text_lalamo, sampling_params=sampling_params)
 
     # -- lalamo model setup and inference
-    lalamo_model: FishAudioTextDecoder = FishAudioTextDecoderConfig.load_model(fish_model, jnp.bfloat16)
+    lalamo_model: FishAudioTextDecoder = FishAudioTextDecoderConfig.from_foreign_model(fish_model, jnp.bfloat16)
     decode_result: FishAudioTextDecoderResult = lalamo_model(
         text_tokens=tokenized_text_lalamo, input_pos=input_pos, sampling_params=sampling_params
     )
@@ -308,7 +311,7 @@ def test_sample_jax_vs_pytorch_distribution_similarity() -> None:
     assert torch_counts[0] == min(torch_counts), f"PyTorch sampled token 0 too often: {torch_counts}"
 
 
-@pytest.mark.skip(reason="Temporary test used for full utterance synthesis")
+@pytest.mark.skip(reason="Temporary test used for full utterance tokens generation")
 @torch.no_grad
 def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
     tts_message = get_tts_message()
@@ -326,7 +329,9 @@ def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
         tokenized_text, sampling_params=sampling_params
     )
 
-    lalamo_text_decoder = FishAudioTextDecoderConfig.load_model(tts_generator.text_decoder.fish_model, jnp.bfloat16)
+    lalamo_text_decoder = FishAudioTextDecoderConfig.from_foreign_model(
+        tts_generator.text_decoder.fish_model, jnp.bfloat16
+    )
     lalamo_semantic_tokens = lalamo_text_decoder.decode_utterance(tokenized_text, sampling_params=sampling_params)
 
     _testlog.info(f"Fishaudio wrapper tokens: {fishaudio_wrapper_semantic_tokens}")
@@ -1000,8 +1005,7 @@ def test_upsampling_block_matches_pytorch() -> None:
     model = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
     assert isinstance(model, DAC)
 
-    # Get model configuration from _default_audio_codec_config
-    config = _default_audio_codec_config
+    config = get_default_fishaudio_dac_config()
     input_dim = config["quantizer"]["input_dim"]
     downsample_factor = config["quantizer"]["downsample_factor"]
     downsample_dims = config["quantizer"].get("downsample_dims") or [input_dim] * len(downsample_factor)
@@ -1144,8 +1148,7 @@ def test_upsampler_matches_pytorch() -> None:
     model = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
     assert isinstance(model, DAC)
 
-    # Get model configuration from _default_audio_codec_config
-    config = _default_audio_codec_config
+    config = get_default_fishaudio_dac_config()
     input_dim = config["quantizer"]["input_dim"]
     downsample_factor = config["quantizer"]["downsample_factor"]
     downsample_dims = config["quantizer"].get("downsample_dims") or [input_dim] * len(downsample_factor)
@@ -1420,7 +1423,7 @@ def test_decoder_block_matches_pytorch() -> None:
     torch_decoder_block.eval()
 
     # Create Lalamo module
-    lalamo_config = AudioDecoderBlockConfig(precision=jnp.float32, causal=True)
+    lalamo_config = DACDecoderBlockConfig(precision=jnp.float32, causal=True)
     spatial_params = AudioDecoderBlockSpatialParams(
         input_dim=input_dim,
         output_dim=output_dim,
@@ -1517,8 +1520,8 @@ def test_audio_decoder_matches_pytorch() -> None:
     torch_decoder.eval()
 
     # Create Lalamo module
-    lalamo_config = AudioDecoderConfig(precision=jnp.float32, causal=True)
-    spatial_params = AudioDecoderSpatialParams(
+    lalamo_config = DACDecoderConfig(precision=jnp.float32, causal=True)
+    spatial_params = DACDecoderSpatialParams(
         input_channel=input_channel,
         channels=channels,
         rates=rates,
@@ -1624,16 +1627,12 @@ def test_audio_decoder_matches_pytorch() -> None:
 def test_dac_matches_pytorch() -> None:
     """Test that Lalamo DAC matches PyTorch DAC from FishAudio.
 
-    This test loads a real DAC model checkpoint, creates a Lalamo DAC module,
-    loads the weights using the loader functions, and compares full inference
-    (codes -> audio) between both implementations.
+    This test loads a real DAC model checkpoint, creates a Lalamo DAC module
+    using from_foreign_model(), and compares full inference (codes -> audio)
+    between both implementations.
     """
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC as FishDAC
-
-    from lalamo.model_import.loaders.fishaudio_loaders import load_dac
-    from lalamo.model_import.model_specs.common import cast_if_float
-    from lalamo.utils import MapDictValues
 
     # Load FishAudio DAC model
     fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
@@ -1653,19 +1652,11 @@ def test_dac_matches_pytorch() -> None:
     assert isinstance(fish_dac, FishDAC)
     fish_dac.eval()
 
-    # Create Lalamo DAC from FishAudio config
-    fish_dac_omega_config = _default_audio_codec_config
-    lalamo_dac: DAC = DACConfig.from_fishaudio_config(fish_dac_omega_config)
-
-    # Convert entire state_dict to JAX arrays and load into Lalamo DAC
+    # Load Lalamo DAC using from_foreign_model
     precision = jnp.float32
-    weights_dict = dict(
-        MapDictValues(
-            lambda v: cast_if_float(torch_to_jax(v), precision),
-            fish_dac.state_dict(),
-        )
-    )
-    lalamo_dac = load_dac(lalamo_dac, weights_dict)
+    lalamo_dac: DescriptAudioCodec = DescriptAudioCodecConfig.from_foreign_model(audio_chkpt_path, precision)
+
+    fish_dac_omega_config = get_default_fishaudio_dac_config()
 
     # Create test input: random codes
     torch.manual_seed(42)
@@ -1716,3 +1707,56 @@ def test_dac_matches_pytorch() -> None:
     assert jnp.allclose(audio_fish_ntc, audio_lalamo, atol=1e-3), (
         f"Outputs don't match. Max diff: {jnp.max(jnp.abs(audio_diff))}"
     )
+
+
+def test_dtype_convert_roundtrip() -> None:
+    """Test that DTypeConvert correctly converts dtypes between JAX and PyTorch."""
+    # Test all supported dtypes: JAX -> PyTorch and back
+    test_cases = [
+        ("float16", torch.float16),
+        ("float32", torch.float32),
+        ("float64", torch.float64),
+        ("bfloat16", torch.bfloat16),
+        ("int8", torch.int8),
+        ("int16", torch.int16),
+        ("int32", torch.int32),
+        ("int64", torch.int64),
+        ("uint8", torch.uint8),
+        ("bool", torch.bool),
+        ("complex64", torch.complex64),
+        ("complex128", torch.complex128),
+    ]
+
+    for dtype_str, torch_dtype in test_cases:
+        jax_dtype = jnp.dtype(dtype_str)
+
+        # Test JAX dtype -> PyTorch
+        assert DTypeConvert.to_torch(jax_dtype) == torch_dtype, f"Failed JAX->Torch for {dtype_str}"
+
+        # Test PyTorch -> JAX
+        assert DTypeConvert.to_jax(torch_dtype) == jax_dtype, f"Failed Torch->JAX for {dtype_str}"
+
+        # Test string -> PyTorch
+        assert DTypeConvert.to_torch(dtype_str) == torch_dtype, f"Failed str->Torch for {dtype_str}"
+
+        # Test string -> JAX
+        assert DTypeConvert.to_jax(dtype_str) == jax_dtype, f"Failed str->JAX for {dtype_str}"
+
+
+@pytest.mark.skip(reason="Temporary test used for e2e TTS with FishAudio")
+def test_fishaudio_lalamo_tts_generation(fish_audio_local_model_path: Path) -> None:
+    """Test TTS generation using FISH_AUDIO_LALAMO preset."""
+    model = TTSConfig.load_model_from_foreign_model_preset(
+        ForeignTTSModel.FISH_AUDIO_LALAMO,
+        fish_audio_local_model_path,
+    )
+
+    tts_message = TTSMessage.simple_message("Some text!")
+    tts_result = model.generate_speech([tts_message])
+
+    _testlog.info(f"Generated audio shape: {tts_result.audio.shape}")
+    _testlog.info(f"Audio sample rate: {tts_result.audio_params.samplerate}")
+
+    assert tts_result.audio is not None
+    assert len(tts_result.audio) > 0
+    assert tts_result.audio_params.samplerate > 0

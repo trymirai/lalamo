@@ -59,6 +59,7 @@ dev = [
     
     # this one requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
     "pyaudio>=0.2.0",
+    "bidict",
 
     "tiktoken",
     "blobfile"

@@ -1,12 +1,10 @@
 import json
 import shutil
 import tempfile
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Self
+from typing import Self
 
-import equinox as eqx
 import jax
 import torch
 from fish_speech.models.text2semantic.llama import (
@@ -18,6 +16,7 @@ from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from numpy import argmax
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
@@ -32,7 +31,6 @@ from lalamo.modules import (
     FullPrecisionLinear,
     FullPrecisionLinearConfig,
     Identity,
-    LalamoModule,
     NormalizationConfig,
     SiLU,
     State,
@@ -43,13 +41,14 @@ from lalamo.modules import (
     TransformerLayerConfig,
     UpcastMode,
 )
-from lalamo.modules.audio.text_decoder import TextDecoderConfig
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.modules.audio.text_decoder import TextDecoder
+from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from lalamo.modules.utils import vmap_twice
 from lalamo.utils import MapDictValues
 
-from .fishaudio_common import RoPEConfigFishAudio
+from .fishaudio_modules import RoPEConfigFishAudio
 from .fishaudio_sampling import FishAudioSamplingParams, sample
+from .fishaudio_thin_wrapper import FromFishAudioRepo
 
 
 def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
@@ -178,7 +177,7 @@ class FishAudioTextDecoderResult:
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig(TextDecoderConfig):
+class FishAudioTextDecoderConfig:
     slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
     slow_readout_config: FullPrecisionLinearConfig
@@ -289,7 +288,9 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
         )
 
     @classmethod
-    def load_model(cls, fish_model_or_path: Path | DualARTransformer, precision: DTypeLike) -> "FishAudioTextDecoder":
+    def from_foreign_model(
+        cls, fish_model_or_path: Path | DualARTransformer, precision: DTypeLike
+    ) -> "FishAudioTextDecoder":
         if isinstance(fish_model_or_path, Path):
             fish_tokenizer = FishTokenizer(str(fish_model_or_path / "tokenizer.tiktoken"))
             with open(file=fish_model_or_path / "config.json") as config_file:
@@ -367,7 +368,8 @@ class FishAudioTextDecoderConfig(TextDecoderConfig):
         )
 
 
-class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
+# class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
+class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
     readout_slow: FullPrecisionLinear
@@ -474,7 +476,7 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_params: FishAudioSamplingParams,
+        sampling_params: FishAudioSamplingParams | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
@@ -492,6 +494,7 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
         Returns:
             Generated codebook tokens with shape (num_codebooks, generated_tokens).
         """
+        assert sampling_params is not None, "sampling_params must always be specified for FishAudioTextDecoder"
         assert sampling_params.argmax_decoding or key is not None, "PRNG key required for non-argmax decoding"
 
         batch_size, prompt_length = text_tokens.shape
@@ -577,6 +580,8 @@ class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
             seq = seq.at[:, prompt_length + i].set(next_codes[0])
             previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
             generated_count += 1
+
+            print(f"{i} : code={next_codes[0]}")
 
             if next_codes[0, 0] == self.config.im_end_token_id:
                 break

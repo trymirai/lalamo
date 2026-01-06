@@ -1,120 +1,81 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-
-import equinox as eqx
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int
-
-from lalamo.common import ParameterTree
-from lalamo.modules import LalamoModule
-from lalamo.modules.rope import RoPEConfigBase
+from omegaconf import DictConfig
 
 
-@dataclass(frozen=True)
-class RoPEConfigFishAudio(RoPEConfigBase):
-    @property
-    def _attention_scaling_factor(self) -> float:
-        return super()._attention_scaling_factor
-
-    def _precompute_freqs_cis_orig(
-        self, head_dim: int, seq_len: int
-    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
-        time_steps = jnp.arange(0, head_dim // 2).astype(jnp.bfloat16) * 2 / head_dim
-        freqs = 1.0 / (self.base**time_steps)
-        t = jnp.arange(seq_len, device=freqs.device)
-        freqs = jnp.outer(t, freqs)
-        return (jnp.cos(freqs), jnp.sin(freqs))
-
-    def init_orig(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPEFishAudio":
-        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
-        cosines = jnp.zeros((num_timesteps, head_dim), self.precision)
-        sines = jnp.zeros((num_timesteps, head_dim), self.precision)
-        for k in range(num_timesteps):
-            cosines = cosines.at[k, 0::2].set(cosines_cis[k])
-            cosines = cosines.at[k, 1::2].set(cosines_cis[k])
-            sines = sines.at[k, 0::2].set(sines_cis[k])
-            sines = sines.at[k, 1::2].set(sines_cis[k])
-
-        return RoPEFishAudio(config=self, cosines=cosines, sines=sines)
-
-    def _precompute_freqs_cis(
-        self, head_dim: int, seq_len: int
-    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
-        # time_steps = jnp.arange(0, head_dim, 2).astype(jnp.bfloat16)[: (head_dim // 2)] / head_dim
-        time_steps = jnp.repeat(jnp.arange(0, head_dim // 2).astype(jnp.bfloat16) * 2 / head_dim, 2)
-        freqs = 1.0 / (self.base**time_steps)
-        t = jnp.arange(seq_len, device=freqs.device)
-        freqs = jnp.outer(t, freqs)
-        return (jnp.cos(freqs), jnp.sin(freqs))
-
-    def init(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPEFishAudio":
-        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
-        return RoPEFishAudio(config=self, cosines=cosines_cis, sines=sines_cis)
-
-
-class RoPEFishAudio(LalamoModule[RoPEConfigBase]):
-    sines: Float[Array, "tokens head_channels"]
-    cosines: Float[Array, "tokens head_channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def head_dim(self) -> int:
-        _, result = self.sines.shape
-        return result
-
-    @property
-    def max_sequence_length(self) -> int:
-        result, _ = self.sines.shape
-        return result
-
-    # @eqx.filter_jit
-    def __call__(self, timesteps: Int[Array, " tokens"]) -> "PositionalEmbeddingsFishAudio":
-        return PositionalEmbeddingsFishAudio(
-            cosines=self.cosines[timesteps],
-            sines=self.sines[timesteps],
-        )
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "cosines": self.cosines,
-            "sines": self.sines,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> "RoPEFishAudio":
-        assert isinstance(weights, Mapping)
-        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
+_default_audio_codec_config = {
+    "_target_": "fish_speech.models.dac.modded_dac.DAC",
+    "sample_rate": 44100,
+    "encoder_dim": 64,
+    "encoder_rates": [2, 4, 8, 8],
+    "decoder_dim": 1536,
+    "decoder_rates": [8, 8, 4, 2],
+    "encoder_transformer_layers": [0, 0, 0, 4],
+    "decoder_transformer_layers": [4, 0, 0, 0],
+    "transformer_general_config": {
+        "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+        "_partial_": True,
+        "block_size": 16384,
+        "n_local_heads": -1,
+        "head_dim": 64,
+        "rope_base": 10000,
+        "norm_eps": 1e-5,
+        "dropout_rate": 0.1,
+        "attn_dropout_rate": 0.1,
+        "channels_first": True,
+    },
+    "quantizer": {
+        "_target_": "fish_speech.models.dac.rvq.DownsampleResidualVectorQuantize",
+        "input_dim": 1024,
+        "n_codebooks": 9,
+        "codebook_size": 1024,
+        "codebook_dim": 8,
+        "quantizer_dropout": 0.5,
+        "downsample_factor": [2, 2],
+        "post_module": {
+            "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
+            "causal": True,
+            "window_size": 128,
+            "input_dim": 1024,
+            "config": {
+                "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+                "block_size": 4096,
+                "n_layer": 8,
+                "n_head": 16,
+                "dim": 1024,
+                "intermediate_size": 3072,
+                "n_local_heads": -1,
+                "head_dim": 64,
+                "rope_base": 10000,
+                "norm_eps": 1e-5,
+                "dropout_rate": 0.1,
+                "attn_dropout_rate": 0.1,
+                "channels_first": True,
+            },
+        },
+        "pre_module": {
+            "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
+            "causal": True,
+            "window_size": 128,
+            "input_dim": 1024,
+            "config": {
+                "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+                "block_size": 4096,
+                "n_layer": 8,
+                "n_head": 16,
+                "dim": 1024,
+                "intermediate_size": 3072,
+                "n_local_heads": -1,
+                "head_dim": 64,
+                "rope_base": 10000,
+                "norm_eps": 1e-5,
+                "dropout_rate": 0.1,
+                "attn_dropout_rate": 0.1,
+                "channels_first": True,
+            },
+        },
+        "semantic_codebook_size": 4096,
+    },
+}
 
 
-class PositionalEmbeddingsFishAudio(eqx.Module):
-    cosines: Float[Array, "*batch tokens head_channels"]
-    sines: Float[Array, "*batch tokens head_channels"]
-
-    @property
-    def head_dim(self) -> int:
-        return self.cosines.shape[-1]
-
-    def interleave_for_cis_rope(
-        self,
-        heads: Float[Array, "*batch tokens head_channels"],
-    ) -> Float[Array, "*batch tokens head_channels"]:
-        interleaved = jnp.zeros(heads.shape, dtype=heads.dtype)
-        interleaved = interleaved.at[..., 0::2].set(-heads[..., 1::2])
-        interleaved = interleaved.at[..., 1::2].set(heads[..., 0::2])
-        return interleaved
-
-    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
-        return heads * self.cosines + self.interleave_for_cis_rope(heads) * self.sines
+def get_default_fishaudio_dac_config() -> DictConfig:
+    return DictConfig(_default_audio_codec_config)

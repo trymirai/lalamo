@@ -20,13 +20,12 @@ from lalamo.modules import (
     Transformer,
     TransformerLayer,
 )
-from lalamo.modules.audio.foreign.fishaudio_audio_decoding import (
-    DAC,
-    AudioDecoder,
-    AudioDecoderBlock,
+from lalamo.modules.audio.foreign.fishaudio_modules import (
     CausalConv1d,
     CausalTransposeConv1d,
     ConvNeXtBlock,
+    DACDecoder,
+    DACDecoderBlock,
     DownsampleResidualVectorQuantize,
     ResidualUnit,
     ResidualVectorQuantize,
@@ -783,10 +782,10 @@ def load_residual_unit(
 
 
 def load_audio_decoder_block(
-    module: AudioDecoderBlock,
+    module: DACDecoderBlock,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> AudioDecoderBlock:
+) -> DACDecoderBlock:
     """Loads an AudioDecoderBlock module from weights.
 
     Expected weight structure at path (PyTorch block is nn.Sequential):
@@ -818,10 +817,10 @@ def load_audio_decoder_block(
 
 
 def load_audio_decoder(
-    module: AudioDecoder,
+    module: DACDecoder,
     weights_dict: Mapping[str, Array],
     path: ParameterPath | None = None,
-) -> AudioDecoder:
+) -> DACDecoder:
     """Loads an AudioDecoder module from weights.
 
     This function handles the complete loading of the DAC-style audio decoder, including:
@@ -882,31 +881,3 @@ def load_audio_decoder(
     )
 
 
-def load_dac(
-    module: DAC,
-    weights_dict: Mapping[str, Array],
-) -> DAC:
-    """Loads a DAC module from weights.
-
-    This function handles the complete loading of the DAC audio codec, including:
-    - quantizer: DownsampleResidualVectorQuantize for decoding codes to latents
-    - decoder: AudioDecoder for converting latents to audio waveform
-
-    Args:
-        module: The DAC module to load weights into.
-        weights_dict: Dictionary with 'quantizer' and 'decoder' keys, each mapping
-            to a dict of parameter paths to weight arrays.
-
-    Returns:
-        DAC module with loaded weights.
-    """
-    quantizer_path = ParameterPath() / "quantizer"
-    decoder_path = ParameterPath() / "decoder"
-    quantizer = load_downsample_rvq(module.quantizer, weights_dict, path=quantizer_path)
-    decoder = load_audio_decoder(module.decoder, weights_dict, path=decoder_path)
-
-    return load_parameters(
-        lambda m: (m.quantizer, m.decoder),
-        module,
-        (quantizer, decoder),
-    )

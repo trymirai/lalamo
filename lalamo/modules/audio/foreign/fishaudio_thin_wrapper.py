@@ -8,15 +8,18 @@ from typing import Optional, Self
 import huggingface_hub
 import torch
 from fish_speech.models.dac.modded_dac import DAC
+from fish_speech.models.dac.rvq import ResidualVectorQuantize
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
+    BaseTransformerForwardResult,
     DualARModelArgs,
     DualARTransformer,
     NaiveModelArgs,
+    TransformerForwardResult,
 )
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from hydra.utils import instantiate
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from omegaconf import DictConfig
 from tokenizers import Tokenizer
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -24,85 +27,11 @@ from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterTree
 from lalamo.modules import AudioDecoder
-from lalamo.modules.audio.audio_decoder import AudioDecoderConfig
+from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams
-from lalamo.modules.audio.text_decoder import TextDecoder, TextDecoderConfig
+from lalamo.modules.audio.text_decoder import TextDecoder
+from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-
-_default_audio_codec_config = {
-    "_target_": "fish_speech.models.dac.modded_dac.DAC",
-    "sample_rate": 44100,
-    "encoder_dim": 64,
-    "encoder_rates": [2, 4, 8, 8],
-    "decoder_dim": 1536,
-    "decoder_rates": [8, 8, 4, 2],
-    "encoder_transformer_layers": [0, 0, 0, 4],
-    "decoder_transformer_layers": [4, 0, 0, 0],
-    "transformer_general_config": {
-        "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
-        "_partial_": True,
-        "block_size": 16384,
-        "n_local_heads": -1,
-        "head_dim": 64,
-        "rope_base": 10000,
-        "norm_eps": 1e-5,
-        "dropout_rate": 0.1,
-        "attn_dropout_rate": 0.1,
-        "channels_first": True,
-    },
-    "quantizer": {
-        "_target_": "fish_speech.models.dac.rvq.DownsampleResidualVectorQuantize",
-        "input_dim": 1024,
-        "n_codebooks": 9,
-        "codebook_size": 1024,
-        "codebook_dim": 8,
-        "quantizer_dropout": 0.5,
-        "downsample_factor": [2, 2],
-        "post_module": {
-            "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
-            "causal": True,
-            "window_size": 128,
-            "input_dim": 1024,
-            "config": {
-                "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
-                "block_size": 4096,
-                "n_layer": 8,
-                "n_head": 16,
-                "dim": 1024,
-                "intermediate_size": 3072,
-                "n_local_heads": -1,
-                "head_dim": 64,
-                "rope_base": 10000,
-                "norm_eps": 1e-5,
-                "dropout_rate": 0.1,
-                "attn_dropout_rate": 0.1,
-                "channels_first": True,
-            },
-        },
-        "pre_module": {
-            "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
-            "causal": True,
-            "window_size": 128,
-            "input_dim": 1024,
-            "config": {
-                "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
-                "block_size": 4096,
-                "n_layer": 8,
-                "n_head": 16,
-                "dim": 1024,
-                "intermediate_size": 3072,
-                "n_local_heads": -1,
-                "head_dim": 64,
-                "rope_base": 10000,
-                "norm_eps": 1e-5,
-                "dropout_rate": 0.1,
-                "attn_dropout_rate": 0.1,
-                "channels_first": True,
-            },
-        },
-        "semantic_codebook_size": 4096,
-    },
-}
 
 
 def try_locate_fish_audio_model_path() -> Optional[Path]:
@@ -204,10 +133,11 @@ class FromFishAudioRepo:
         previous_tokens: Optional[torch.Tensor] = None,
         argmax_decoding=False,
     ) -> torch.Tensor:
-        forward_result = model.forward_generate(
+        forward_result: TransformerForwardResult = model.forward_generate(
             x,
             input_pos,
         )
+        assert isinstance(forward_result, BaseTransformerForwardResult)
         logits = forward_result.logits  # [:, -1:]
         hidden_states = forward_result.hidden_states  # [:, -1:]
 
@@ -282,10 +212,8 @@ class FromFishAudioRepo:
             device=cur_token.device,
         )
 
+        final_idx = 0
         for i in range(num_new_tokens):
-            # MY_DBG
-            print(f"generating token {i}")
-
             # We need to get windowed repeat penalty
             win_size = 16
             if i < win_size:
@@ -308,6 +236,9 @@ class FromFishAudioRepo:
             input_pos += 1
             cur_token = next_token.view(1, model.config.num_codebooks + 1, -1)
             previous_tokens[:, i : i + 1] = next_token.view(model.config.num_codebooks + 1, -1)
+            final_idx = i
+
+            print(f"{i} : code={cur_token[0]}")
 
             if cur_token[0, 0, -1] == model.tokenizer.get_token_id(IM_END_TOKEN):
                 break
@@ -315,7 +246,7 @@ class FromFishAudioRepo:
         # Only clean up the large tensor
         del cur_token
 
-        return previous_tokens[:, : i + 1]
+        return previous_tokens[:, : final_idx + 1]
 
     @staticmethod
     @torch.no_grad()
@@ -424,7 +355,7 @@ class FromFishAudioRepo:
 
 
 def default_fish_audio_audio_decoder_config() -> "FishAudioAudioDecoderConfig_Foreign":
-    return FishAudioAudioDecoderConfig_Foreign(dac_config=DictConfig(_default_audio_codec_config))
+    return FishAudioAudioDecoderConfig_Foreign(dac_config=get_default_fishaudio_dac_config())
 
 
 def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "FishAudioAudioDecoder_Foreign":
@@ -448,16 +379,22 @@ def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "Fis
 
 
 @dataclass(frozen=True)
-class FishAudioAudioDecoderConfig_Foreign(AudioDecoderConfig):
+class FishAudioAudioDecoderConfig_Foreign:
     dac_config: DictConfig
 
 
-class FishAudioAudioDecoder_Foreign(AudioDecoder):
+class FishAudioAudioDecoder_Foreign(AudioDecoder[FishAudioAudioDecoderConfig_Foreign]):
     dac_model: DAC
 
     @property
+    def samplerate(self) -> int:
+        return self.dac_model.sample_rate
+
+    @property
     def activation_precision(self) -> DTypeLike:
-        return self.dac_model.quantizer.semantic_quantizer.quantizers[0].codebook.weight.dtype
+        semantic_quantizer = self.dac_model.quantizer
+        assert isinstance(semantic_quantizer, ResidualVectorQuantize)
+        return DTypeConvert.to_jax(semantic_quantizer.quantizers[0].codebook.weight.dtype)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {}
@@ -476,14 +413,17 @@ class FishAudioAudioDecoder_Foreign(AudioDecoder):
         indices_lens = torch.tensor([indices.shape[1]], device=device, dtype=torch.long)
 
         # Restore
-        fake_audios, _ = self.dac_model.decode(indices, indices_lens)
+        audio_samples, _ = self.dac_model.decode(indices, indices_lens)
 
-        fake_audio = torch_to_jax(fake_audios[0, 0])
-        return fake_audio
+        audio_samples = torch_to_jax(audio_samples[0, 0])
+        return audio_samples
+
+    def audio_from_codes(self, indices: Array) -> Array:
+        return self(indices)
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig_Foreign(TextDecoderConfig):
+class FishAudioTextDecoderConfig_Foreign:
     fish_config: DualARModelArgs
 
     @classmethod
@@ -528,8 +468,21 @@ class FishAudioTextDecoderConfig_Foreign(TextDecoderConfig):
         return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
 
 
-class FishAudioTextDecoder_Foreign(TextDecoder):
+class FishAudioTextDecoder_Foreign(TextDecoder[FishAudioTextDecoderConfig_Foreign]):
     fish_model: DualARTransformer
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return DTypeConvert.to_jax(self.fish_model.embeddings.weight.dtype)
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],  # noqa: ARG002
+    ) -> Self:
+        return self
 
     def __call__(
         self,
@@ -583,8 +536,9 @@ class FishAudioTextDecoder_Foreign(TextDecoder):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_params: FishAudioSamplingParams,
-    ) -> Int[Array, "batch_size tokens codes"]:
+        sampling_params: FishAudioSamplingParams | None = None,
+        key: PRNGKeyArray | None = None,  # noqa: ARG002
+    ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
 
         _, n_tokens = text_tokens_torch.shape
