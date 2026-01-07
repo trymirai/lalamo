@@ -50,6 +50,7 @@ dev = [
     "ruff==0.14.0",
     "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
+    "hypothesis>=6.150.0",
 ]
 
 [project.scripts]
