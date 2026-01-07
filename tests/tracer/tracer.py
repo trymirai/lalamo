@@ -13,7 +13,7 @@ import torch
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
-from lalamo import LanguageModel, Router, import_model
+from lalamo import ClassifierModel, LanguageModel, import_model
 from lalamo.model_import.common import ModelType
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
@@ -53,6 +53,11 @@ class ModelTestSpec:
     dtype: DType | None = None
     num_tokens: int = 512
     token_stride: int = 64
+    convert_memory_limit: int | None = None
+
+    @property
+    def test_id(self) -> str:
+        return f"{self.model_repo}{(f'/{self.dtype.value}' if self.dtype is not None else '')}"
 
 
 ActivationTrace = ClassifierActivationTrace | DecoderActivationTrace
@@ -477,8 +482,8 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
                 )
                 err.throw()
 
-            case ModelType.ROUTER_MODEL:
-                assert isinstance(model, Router)
+            case ModelType.CLASSIFIER_MODEL:
+                assert isinstance(model, ClassifierModel)
                 err, inference_results = checkify_forward(model.model)(
                     token_ids=token_ids,
                     token_positions=token_positions,

@@ -226,6 +226,20 @@ QWEN3 = [
     ModelSpec(
         vendor="Alibaba",
         family="Qwen3",
+        name="Qwen3-8B-MLX-4bit",
+        size="8B",
+        quantization=QuantizationMode.UINT4,
+        repo="Qwen/Qwen3-8B-MLX-4bit",
+        config_type=HFQwen3Config,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-8B"),
+            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-8B"),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-8B"),
+        ),
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3",
         name="Qwen3-14B",
         size="14B",
         quantization=None,

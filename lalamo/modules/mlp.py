@@ -12,7 +12,7 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
@@ -242,17 +242,12 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
             "down_projection": self.down_projection.export_weights(),
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["up_projection"], Mapping)
-        assert isinstance(weights["down_projection"], Mapping)
         return replace(
             self,
-            up_projection=self.up_projection.import_weights(weights["up_projection"]),
-            down_projection=self.down_projection.import_weights(weights["down_projection"]),
+            up_projection=self.up_projection.import_weights(require_tree(weights["up_projection"])),
+            down_projection=self.down_projection.import_weights(require_tree(weights["down_projection"])),
         )
 
 
@@ -285,7 +280,7 @@ class SoftmaxRouting(RoutingFunctionBase):
 RoutingFunction = SoftmaxRouting | DummyUnionMember
 
 
-register_config_union(RoutingFunction)  # type: ignore (pyright bug)
+register_config_union(RoutingFunction)
 
 
 @dataclass(frozen=True)
@@ -486,21 +481,16 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "experts": self.experts.export_weights(),
         }
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["router"], Mapping)
-        assert isinstance(weights["experts"], Mapping)
         return replace(
             self,
-            router=self.router.import_weights(weights["router"]),
-            experts=self.experts.import_weights(weights["experts"]),
+            router=self.router.import_weights(require_tree(weights["router"])),
+            experts=self.experts.import_weights(require_tree(weights["experts"])),
         )
 
 
 MLPConfig = DenseMLPConfig | MixtureOfExpertsConfig
 
 
-register_config_union(MLPConfig)  # type: ignore (pyright bug)
+register_config_union(MLPConfig)

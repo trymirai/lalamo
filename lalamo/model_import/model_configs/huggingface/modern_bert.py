@@ -41,7 +41,7 @@ def activation_from_str(activation: str) -> type[Activation]:
         return supported_activations[activation]
 
     raise ValueError(
-        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}"
+        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}",
     )
 
 
@@ -97,7 +97,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         result = [None] * num_layers
         for index in range(len(result)):
             if index % global_attn_every_n_layers != 0:
-                result[index] = self.local_attention  # type: ignore
+                result[index] = self.local_attention
             else:
                 pass
         return tuple(result)

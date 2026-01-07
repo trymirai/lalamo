@@ -9,6 +9,13 @@ import jax.numpy as jnp
 from lalamo.models import LanguageModel
 
 
+def get_default_device_memory() -> int | None:
+    memory_stats = jax.local_devices()[0].memory_stats()
+    if memory_stats is None or "bytes_limit" not in memory_stats:
+        return None
+    return memory_stats["bytes_limit"]
+
+
 def estimate_memory_from_batchsize(
     model: LanguageModel,
     max_input_length: int,
@@ -19,13 +26,14 @@ def estimate_memory_from_batchsize(
     memory_analysis = (
         jax.jit(
             functools.partial(
-                model.generate_tokens,
+                LanguageModel.generate_tokens,
                 max_output_length=max_output_length,
                 num_top_logits_to_return=num_logits_per_token,
             ),
-            backend="cpu", # cuda backend tries to allocate in .compile() and ooms
+            backend="cpu",  # cuda backend tries to allocate in .compile() and ooms
         )
         .lower(
+            model,
             prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
             prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
         )
@@ -38,9 +46,9 @@ def estimate_memory_from_batchsize(
     assert hasattr(memory_analysis, "temp_size_in_bytes")
 
     return (
-        memory_analysis.argument_size_in_bytes  # type: ignore (pyright bug)
-        + memory_analysis.output_size_in_bytes  # type: ignore (pyright bug)
-        + memory_analysis.temp_size_in_bytes    # type: ignore (pyright bug)
+        memory_analysis.argument_size_in_bytes
+        + memory_analysis.output_size_in_bytes
+        + memory_analysis.temp_size_in_bytes
     )
 
 

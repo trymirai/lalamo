@@ -14,5 +14,5 @@ HUGGINGFACE_MODELS = [
         repo="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         config_type=HFLlamaConfig,
         use_cases=tuple(),
-    )
+    ),
 ]

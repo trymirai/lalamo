@@ -15,7 +15,7 @@ from lalamo.message_processor import Message, MessageProcessor, MessageProcessor
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
-from lalamo.utils import open_safetensors
+from lalamo.safetensors import safe_read
 
 __all__ = [
     "TextModel",
@@ -42,8 +42,8 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         with open(path / "config.json") as config_file:
             config_json = json.load(config_file)
         config = config_converter.structure(config_json["model_config"], cls)
-        with open_safetensors(path / "model.safetensors") as open_results:
-            weights_dict, _ = open_results
+        with Path(path / "model.safetensors").open("rb") as fd:
+            _, weights_dict = safe_read(fd)
             weights = unflatten_parameters(weights_dict)
             model = config.model_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
@@ -54,6 +54,13 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
 class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
+
+    def __post_init__(self) -> None:
+        if self.model.config.vocab_size < self.message_processor.tokenizer.get_vocab_size():
+            raise RuntimeError(
+                f"Model vocab size ({self.model.config.vocab_size}) cannot be smaller than"
+                f" tokenizer vocab size {self.message_processor.tokenizer.get_vocab_size()}",
+            )
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -75,7 +82,7 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
         if messages is None:
             messages = [UserMessage("Tell me about London")]
 
-        token_ids = jnp.array(self.message_processor.tokenize_request(messages))[None:]
+        token_ids = jnp.array(self.message_processor.tokenize_request(messages))[None, :]
         _, num_tokens = token_ids.shape
         token_positions = jnp.arange(num_tokens)[None, :]
         return self.model(token_ids=token_ids, token_positions=token_positions, return_activation_trace=True)

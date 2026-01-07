@@ -1,5 +1,6 @@
 from abc import abstractmethod
 from collections.abc import Iterable
+from math import log
 
 import equinox as eqx
 import jax
@@ -10,6 +11,7 @@ __all__ = [
     "BanTokensPolicy",
     "CompositePolicy",
     "GreedyPolicy",
+    "MinPPolicy",
     "SamplingPolicy",
     "TemperaturePolicy",
     "TopKPolicy",
@@ -64,6 +66,15 @@ class TopPPolicy(SamplingPolicy):
         return jnp.where(to_remove_unsorted, -jnp.inf, logits)
 
 
+class MinPPolicy(SamplingPolicy):
+    p: float = eqx.field(static=True)
+
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        max_logit = jnp.max(logits)
+        logit_cutoff = max_logit + log(self.p)
+        return jnp.where(logits >= logit_cutoff, logits, -jnp.inf)
+
+
 class BanTokensPolicy(SamplingPolicy):
     banned_tokens: tuple[int, ...] = eqx.field(static=True)
 
@@ -85,6 +96,7 @@ def make_policy(
     temperature: float | None = None,
     top_k: int | None = None,
     top_p: float | None = None,
+    min_p: float | None = None,
     banned_tokens: Iterable[int] | None = None,
 ) -> SamplingPolicy:
     policies = []
@@ -96,4 +108,6 @@ def make_policy(
         policies.append(TopKPolicy(top_k))
     if top_p is not None:
         policies.append(TopPPolicy(top_p))
+    if min_p is not None:
+        policies.append(MinPPolicy(min_p))
     return CompositePolicy(tuple(policies))

@@ -7,7 +7,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
@@ -65,17 +65,23 @@ class TransformerConfig:
     context_length: int
 
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-        first_layer_config, *_ = self.layer_configs
+        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
+        rope_dim = next(rope_dims, None)
+        assert all(d == rope_dim for d in rope_dims)
 
         if self.global_rope_config:
+            assert rope_dim is not None
+
             global_rope = self.global_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
         else:
             global_rope = None
 
         if self.local_rope_config:
+            assert rope_dim is not None
+
             max_sliding_window_size = max(
                 layer_config.mixer_config.sliding_window_size or 0
                 for layer_config in self.layer_configs
@@ -83,7 +89,7 @@ class TransformerConfig:
             )
 
             local_rope = self.local_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=max(max_sliding_window_size, self.context_length),
             )
         else:
@@ -109,19 +115,25 @@ class TransformerConfig:
         )
 
     def empty(self) -> "Transformer":
-        first_layer_config, *_ = self.layer_configs
+        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
+        rope_dim = next(rope_dims, None)
+        assert all(d == rope_dim for d in rope_dims)
 
         if self.global_rope_config:
+            assert rope_dim is not None
+
             global_rope = self.global_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
         else:
             global_rope = None
 
         if self.local_rope_config:
+            assert rope_dim is not None
+
             local_rope = self.local_rope_config.init(
-                head_dim=first_layer_config.rope_dim,
+                head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
         else:
@@ -170,7 +182,8 @@ class Transformer(LalamoModule[TransformerConfig]):
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
-                f"inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim), got {inner_features.shape}",
+                "inner_features must be a 3D array of size (batch_size, sequence_length, hidden_dim),"
+                f" got {inner_features.shape}",
             )
         if token_positions.ndim != 2:
             raise ValueError(
@@ -239,35 +252,24 @@ class Transformer(LalamoModule[TransformerConfig]):
             result["local_rope"] = self.local_rope.export_weights()
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["layers"], Sequence)
-        assert isinstance(weights["output_norm"], Mapping)
-
         if self.global_rope:
-            assert isinstance(weights["global_rope"], Mapping)
-            global_rope = self.global_rope.import_weights(weights["global_rope"])
+            global_rope = self.global_rope.import_weights(require_tree(weights["global_rope"]))
         else:
             global_rope = None
-
         if self.local_rope:
-            assert isinstance(weights["local_rope"], Mapping)
-            local_rope = self.local_rope.import_weights(weights["local_rope"])
+            local_rope = self.local_rope.import_weights(require_tree(weights["local_rope"]))
         else:
             local_rope = None
-
-        layers = []
-        for layer, layer_weights in zip(self.layers, weights["layers"], strict=True):
-            assert isinstance(layer_weights, Mapping)
-            layers.append(layer.import_weights(layer_weights))
-
+        layers = [
+            layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
+        ]
         return replace(
             self,
             global_rope=global_rope,
             layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(weights["output_norm"]),
+            output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
             local_rope=local_rope,
         )

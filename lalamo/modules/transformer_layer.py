@@ -9,7 +9,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
@@ -89,7 +89,7 @@ class TransformerLayerConfig:
     post_mlp_norm_config: NormalizationConfig | None
 
     @property
-    def rope_dim(self) -> int:
+    def rope_dim(self) -> int | None:
         return self.mixer_config.rope_dim
 
     def random_init(
@@ -296,38 +296,26 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
         return result
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["mixer"], Mapping)
-        assert isinstance(weights["mlp"], Mapping)
-        assert isinstance(weights["pre_mlp_norm"], Mapping)
-
         if self.post_mixer_norm is not None:
-            assert isinstance(weights["post_mixer_norm"], Mapping)
-            post_mixer_norm = self.post_mixer_norm.import_weights(
-                weights["post_mixer_norm"],
-            )
+            post_mixer_norm = self.post_mixer_norm.import_weights(require_tree(weights["post_mixer_norm"]))
         else:
             post_mixer_norm = None
         if self.post_mlp_norm is not None:
-            assert isinstance(weights["post_mlp_norm"], Mapping)
-            post_mlp_norm = self.post_mlp_norm.import_weights(weights["post_mlp_norm"])
+            post_mlp_norm = self.post_mlp_norm.import_weights(require_tree(weights["post_mlp_norm"]))
         else:
             post_mlp_norm = None
         if self.pre_mixer_norm is not None:
-            assert isinstance(weights["pre_mixer_norm"], Mapping)
-            pre_mixer_norm = self.pre_mixer_norm.import_weights(weights["pre_mixer_norm"])
+            pre_mixer_norm = self.pre_mixer_norm.import_weights(require_tree(weights["pre_mixer_norm"]))
         else:
             pre_mixer_norm = None
         return replace(
             self,
             pre_mixer_norm=pre_mixer_norm,
-            mixer=self.mixer.import_weights(weights["mixer"]),
+            mixer=self.mixer.import_weights(require_tree(weights["mixer"])),
             post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=self.pre_mlp_norm.import_weights(weights["pre_mlp_norm"]),
-            mlp=self.mlp.import_weights(weights["mlp"]),
+            pre_mlp_norm=self.pre_mlp_norm.import_weights(require_tree(weights["pre_mlp_norm"])),
+            mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
             post_mlp_norm=post_mlp_norm,
         )

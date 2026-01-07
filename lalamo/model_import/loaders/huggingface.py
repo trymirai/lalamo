@@ -8,22 +8,28 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
+    AttentionConfig,
     Decoder,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
     Mamba2,
+    Mamba2Config,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
+    MLXQuantizedTiedEmbeddingConfig,
     MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
+    ShortConv,
+    ShortConvConfig,
     TiedEmbedding,
     TransformerLayer,
     UntiedEmbedding,
 )
 from lalamo.modules.classifier import Classifier
+from lalamo.modules.embedding import MLXQuantizedUntiedEmbedding
 from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
@@ -283,7 +289,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
 
         up_projection = load_parameters(
-            lambda m: (m.weights, m.biases),  # type: ignore
+            lambda m: (m.weights, m.biases),
             module.experts.up_projection,
             (combined_up_gate_w, combined_up_gate_b),
         )
@@ -300,10 +306,10 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
         down_b = weights_dict[experts_path / "down_proj_bias"]
         if down_b.ndim == 1:
-            down_b = jnp.broadcast_to(down_b, down_w.shape[:-1] + (down_b.shape[0],))
+            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
 
         down_projection = load_parameters(
-            lambda m: (m.weights, m.biases),  # type: ignore
+            lambda m: (m.weights, m.biases),
             module.experts.down_projection,
             (down_w, down_b),
         )
@@ -345,21 +351,42 @@ def load_attention(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Attention:
+    if (path / "o_proj.weight") in weights_dict or (path / "o_proj.qweight") in weights_dict:
+        o_proj_name = "o_proj"
+    elif (path / "out_proj.weight") in weights_dict or (path / "out_proj.qweight") in weights_dict:
+        o_proj_name = "out_proj"
+    else:
+        raise NotImplementedError("Can't determine attention output projection name")
+
     qkv_projection = load_linear(
         module.qkv_projection,
         weights_dict,
         path,
         sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
     )
-    out_projection = load_linear(module.out_projection, weights_dict, path / "o_proj")
+    out_projection = load_linear(module.out_projection, weights_dict, path / o_proj_name)
 
     if module.query_norm is not None:
-        query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+        if (path / "q_norm.weight") in weights_dict:
+            q_norm_name = "q_norm"
+        elif (path / "q_layernorm.weight") in weights_dict:
+            q_norm_name = "q_layernorm"
+        else:
+            raise NotImplementedError("Can't determine attention query projection parameter name")
+
+        query_norm = load_rmsnorm(module.query_norm, weights_dict, path / q_norm_name)
     else:
         query_norm = None
 
     if module.key_norm is not None:
-        key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+        if (path / "k_norm.weight") in weights_dict:
+            k_norm_name = "k_norm"
+        elif (path / "k_layernorm.weight") in weights_dict:
+            k_norm_name = "k_layernorm"
+        else:
+            raise NotImplementedError("Can't determine attention key projection parameter name")
+
+        key_norm = load_rmsnorm(module.key_norm, weights_dict, path / k_norm_name)
     else:
         key_norm = None
 
@@ -382,19 +409,24 @@ def load_attention(
     )
 
 
-def _load_mamba_conv(
+def _load_conv(
     conv_module: SeparableCausalConv,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    permute_conv: bool,
 ) -> SeparableCausalConv:
     weight_path = path / "conv1d" / "weight"
     if weight_path not in weights_dict:
         weight_path = path / "conv_weight"
     if weight_path not in weights_dict:
+        weight_path = path / "conv.weight"
+    if weight_path not in weights_dict:
         weight_path = None
 
     if weight_path is not None:
         raw = weights_dict[weight_path]
+        if permute_conv:
+            raw = jnp.matrix_transpose(raw)
         conv_weight = raw.squeeze(1) if raw.ndim == 3 else raw
     else:
         conv_weight = conv_module.weights
@@ -402,6 +434,8 @@ def _load_mamba_conv(
     bias_path = path / "conv1d" / "bias"
     if bias_path not in weights_dict:
         bias_path = path / "conv_bias"
+    if bias_path not in weights_dict:
+        bias_path = path / "conv.bias"
     if bias_path not in weights_dict:
         bias_path = None
 
@@ -421,10 +455,11 @@ def load_mamba2(
     module: Mamba2,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    permute_conv: bool,
 ) -> Mamba2:
     in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
     out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
-    conv = _load_mamba_conv(module.conv, weights_dict, path)
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
 
     skip_connection_weight_path = path / "D"
     if skip_connection_weight_path in weights_dict:
@@ -451,6 +486,23 @@ def load_mamba2(
     )
 
 
+def load_short_conv(
+    module: ShortConv,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    permute_conv: bool,
+) -> ShortConv:
+    in_projection = load_linear(module.in_projection, weights_dict, path / "in_proj")
+    out_projection = load_linear(module.out_projection, weights_dict, path / "out_proj")
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
+
+    return load_parameters(
+        lambda m: (m.in_projection, m.out_projection, m.conv),
+        module,
+        (in_projection, out_projection, conv),
+    )
+
+
 def load_transformer_layer(
     module: TransformerLayer,
     weights_dict: Mapping[str, Array],
@@ -463,6 +515,7 @@ def load_transformer_layer(
     up_proj_key: str,
     gate_proj_key: str,
     down_proj_key: str,
+    permute_conv: bool,
 ) -> TransformerLayer:
     if module.pre_mixer_norm is not None:
         pre_attention_norm = load_rmsnorm(
@@ -477,7 +530,9 @@ def load_transformer_layer(
     if isinstance(module.mixer, Attention):
         mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
     elif isinstance(module.mixer, Mamba2):
-        mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key)
+        mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
+    elif isinstance(module.mixer, ShortConv):
+        mixer = load_short_conv(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     else:
         mixer = module.mixer
 
@@ -571,6 +626,51 @@ def load_mlx_quantized_tied_embedding(
     return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
 
 
+def load_mlx_quantized_untied_embedding(
+    module: MLXQuantizedUntiedEmbedding,
+    weights_dict: Mapping[str, Array],
+    embedding_path: ParameterPath,
+    lm_head_path: ParameterPath,
+) -> MLXQuantizedUntiedEmbedding:
+    input_qweights = weights_dict[embedding_path / "weight"]
+    input_qscales = weights_dict[embedding_path / "scales"]
+    input_qbiases = weights_dict[embedding_path / "biases"]
+    output_qweights = weights_dict[lm_head_path / "weight"]
+    output_qscales = weights_dict[lm_head_path / "scales"]
+    output_qbiases = weights_dict[lm_head_path / "biases"]
+
+    input_weights = _process_quantized_tensor(
+        input_qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    input_scales = input_qscales.astype(module.activation_precision)
+    input_biases = input_qbiases.astype(module.activation_precision)
+
+    output_weights = _process_quantized_tensor(
+        output_qweights,
+        module.config.embedding_quantization_mode,
+        module.activation_precision,
+        None,
+    )
+    output_scales = output_qscales.astype(module.activation_precision)
+    output_biases = output_qbiases.astype(module.activation_precision)
+
+    return load_parameters(
+        lambda m: (
+            m.input_weights,
+            m.input_scales,
+            m.input_biases,
+            m.output_weights,
+            m.output_scales,
+            m.output_biases,
+        ),
+        module,
+        (input_weights, input_scales, input_biases, output_weights, output_scales, output_biases),
+    )
+
+
 def load_mlx_semi_quantized_untied_embedding(
     module: MLXSemiQuantizedUntiedEmbedding,
     weights_dict: Mapping[str, Array],
@@ -625,11 +725,13 @@ def load_huggingface_decoder(
 
     is_llamba_full_precision = any(key.startswith("backbone.") for key in weights_dict)
     is_llamba_mlx = any(key.startswith("embedding.encoder.") for key in weights_dict)
+    is_lfm2 = any(key.startswith("model.layers.0.operator_norm.weight") for key in weights_dict)
     if is_llamba_full_precision:
         decoder_path = base_path / "backbone"
         embedding_path = decoder_path / "embedding"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = "mixer"
+        mixer_key = {Mamba2Config: "mixer"}
+        permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
         up_proj_key = "up_proj"
@@ -642,7 +744,8 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = base_path / "embedding.encoder"
         pre_mixer_norm_key = "norm"
-        mixer_key = "layer"
+        mixer_key = {Mamba2Config: "layer"}
+        permute_conv = False
         pre_mlp_norm_key = "norm"
         mlp_key = "layer"
         up_proj_key = "gate_proj"
@@ -651,11 +754,26 @@ def load_huggingface_decoder(
         alternating_layers = True
         norm_key = "norm"
         lm_head_path = base_path / "head.linear"
+    elif is_lfm2:
+        decoder_path = base_path / "model"
+        embedding_path = decoder_path / "embed_tokens"
+        pre_mixer_norm_key = "operator_norm"
+        mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
+        permute_conv = isinstance(module.config.embedding_config, MLXQuantizedTiedEmbeddingConfig)
+        pre_mlp_norm_key = "ffn_norm"
+        mlp_key = "feed_forward"
+        up_proj_key = "w3"
+        gate_proj_key = "w1"
+        down_proj_key = "w2"
+        alternating_layers = False
+        norm_key = "embedding_norm"
+        lm_head_path = base_path / "lm_head"
     else:
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = "self_attn"
+        mixer_key = {AttentionConfig: "self_attn"}
+        permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
         up_proj_key = "up_proj"
@@ -669,6 +787,8 @@ def load_huggingface_decoder(
         embedding = load_tied_embedding(module.embedding, weights_dict, embedding_path)
     elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
         embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, embedding_path)
+    elif isinstance(module.embedding, MLXQuantizedUntiedEmbedding):
+        embedding = load_mlx_quantized_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
     elif isinstance(module.embedding, MLXSemiQuantizedUntiedEmbedding):
         embedding = load_mlx_semi_quantized_untied_embedding(
             module.embedding,
@@ -687,13 +807,14 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key,
+            mixer_key[type(layer.config.mixer_config)],
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,
             up_proj_key,
             gate_proj_key,
             down_proj_key,
+            permute_conv,
         )
         for i, layer in enumerate(module.transformer.layers)
     )

@@ -46,4 +46,4 @@ class Identity(ActivationBase):
 Activation = SiLU | GELU | Identity
 
 
-register_config_union(Activation)  # type: ignore (pyright bug)
+register_config_union(Activation)

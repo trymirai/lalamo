@@ -7,7 +7,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
@@ -126,7 +126,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.embedding.activation_precision
 
     @eqx.filter_jit
-    def __call__(  # noqa: PLR0912
+    def __call__(
         self,
         token_ids: Int[Array, "batch suffix_tokens"],
         token_positions: Int[Array, "batch suffix_tokens"],
@@ -193,16 +193,10 @@ class Decoder(LalamoModule[DecoderConfig]):
             transformer=self.transformer.export_weights(),
         )
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
-        assert isinstance(weights["embedding"], Mapping)
-        assert isinstance(weights["transformer"], Mapping)
-
         return replace(
             self,
-            embedding=self.embedding.import_weights(weights["embedding"]),
-            transformer=self.transformer.import_weights(weights["transformer"]),
+            embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
+            transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
         )

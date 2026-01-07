@@ -3,11 +3,20 @@ from lalamo.modules.common import register_config_union
 from .attention import Attention, AttentionConfig, AttentionResult
 from .common import TokenMixerBase, TokenMixerResult
 from .mamba import Mamba2, Mamba2Config, Mamba2Result, SeparableCausalConv, SeparableCausalConvConfig
-from .state import DynamicKVCacheLayer, KVCacheLayer, Mamba2StateLayer, State, StateLayerBase, StaticKVCacheLayer
+from .short_conv import ShortConv, ShortConvConfig, ShortConvResult
+from .state import (
+    DynamicKVCacheLayer,
+    KVCacheLayer,
+    Mamba2StateLayer,
+    ShortConvStateLayer,
+    State,
+    StateLayerBase,
+    StaticKVCacheLayer,
+)
 
-TokenMixerConfig = AttentionConfig | Mamba2Config
+TokenMixerConfig = AttentionConfig | Mamba2Config | ShortConvConfig
 
-register_config_union(TokenMixerConfig)  # type: ignore (pyright bug)
+register_config_union(TokenMixerConfig)
 
 __all__ = [
     "Attention",
@@ -21,6 +30,10 @@ __all__ = [
     "Mamba2StateLayer",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
+    "ShortConv",
+    "ShortConvConfig",
+    "ShortConvResult",
+    "ShortConvStateLayer",
     "State",
     "StateLayerBase",
     "StaticKVCacheLayer",

@@ -8,7 +8,7 @@ dependencies = [
     "einops>=0.8.0",
     "equinox>=0.11.11",
     "huggingface-hub[hf-transfer]>=0.27.1",
-    "jax>=0.7.2",
+    "jax>=0.8.1",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
@@ -17,7 +17,6 @@ dependencies = [
     "thefuzz>=0.22.1",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
-    "safetensors>=0.6.2",
     "polars>=1.33.1",
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
@@ -26,14 +25,9 @@ readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
 
 [project.optional-dependencies]
-cpu = ["jax[cpu]>=0.7.2"]
-cuda = ["jax[cuda]>=0.7.2"]
-tpu = ["jax[tpu]>=0.7.2"]
-fishaudio = ["fishaudio>=0.0.5"]
-fishspeech = ["fish_speech>=0.1.0"]
-blobfile = ["blobfile"]
-tiktoken = ["tiktoken"]
-
+cpu = ["jax[cpu]>=0.8.1"]
+cuda = ["jax[cuda]>=0.8.1"]
+tpu = ["jax[tpu]>=0.8.1"]
 
 [dependency-groups]
 dev = [
@@ -53,16 +47,18 @@ dev = [
     "torchao>=0.7.0",
     "transformers>=4.56.0",
     "twine>=6.1.0",
-    "ruff==0.14.0",
+    "ruff>=0.14.0",
+    "ty>=0.0.4",
+    "pytest-xdist>=3.8.0",
     "fishaudio>=0.0.5",
     "fish_speech>=0.1.0",
     
     # this one requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
     "pyaudio>=0.2.0",
-    "bidict",
-
-    "tiktoken",
-    "blobfile"
+    
+    "bidict>=0.23.1",
+    "tiktoken>=0.12.0",
+    "blobfile>=3.1.0"
 ]
 
 [project.scripts]
@@ -115,6 +111,7 @@ cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
 # addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
+addopts = ["--dist=loadgroup"]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
@@ -141,12 +138,16 @@ ignore = [
     "D",
     "EM101",
     "EM102",
+    "ERA001",
+    "FIX002",
     "F722",
     "FBT001",
     "FBT002",
     "N812",
     "PD008",
     "PGH003",
+    "PLC0415",
+    "PLR0912",
     "PLR0913",
     "PLR0915",
     "PLR2004",
@@ -154,6 +155,7 @@ ignore = [
     "PTH123",
     "RET503",
     "RET504",
+    "RUF005",
     "S",
     "SIM108",
     "T20",
