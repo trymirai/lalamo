@@ -55,13 +55,6 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
 
-    def __post_init__(self) -> None:
-        if self.model.config.vocab_size < self.message_processor.tokenizer.get_vocab_size():
-            raise RuntimeError(
-                f"Model vocab size ({self.model.config.vocab_size}) cannot be smaller than"
-                f" tokenizer vocab size {self.message_processor.tokenizer.get_vocab_size()}",
-            )
-
     @property
     def activation_precision(self) -> DTypeLike:
         return self.model.activation_precision
