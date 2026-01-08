@@ -1,4 +1,3 @@
-import json
 import shutil
 import tempfile
 from dataclasses import dataclass
@@ -7,16 +6,11 @@ from typing import Self
 
 import jax
 import torch
-from fish_speech.models.text2semantic.llama import (
-    BaseModelArgs,
-    DualARModelArgs,
-    DualARTransformer,
-)
+from fish_speech.models.text2semantic.llama import BaseModelArgs, DualARModelArgs, DualARTransformer, NaiveModelArgs
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
-from numpy import argmax
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
@@ -42,13 +36,13 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.audio.text_decoder import TextDecoder
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.modules.utils import vmap_twice
 from lalamo.utils import MapDictValues
 
 from .fishaudio_modules import RoPEConfigFishAudio
 from .fishaudio_sampling import FishAudioSamplingParams, sample
-from .fishaudio_thin_wrapper import FromFishAudioRepo
+from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
 
 def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
@@ -292,11 +286,14 @@ class FishAudioTextDecoderConfig:
         cls, fish_model_or_path: Path | DualARTransformer, precision: DTypeLike
     ) -> "FishAudioTextDecoder":
         if isinstance(fish_model_or_path, Path):
-            fish_tokenizer = FishTokenizer(str(fish_model_or_path / "tokenizer.tiktoken"))
-            with open(file=fish_model_or_path / "config.json") as config_file:
-                fish_cfg_json = json.load(config_file)
-            fish_model_cfg = DualARModelArgs(**fish_cfg_json)
-            fish_model_dict = torch.load(fish_model_or_path / "model.pth", weights_only=True)
+            fish_tokenizer = FishTokenizer.from_pretrained(str(fish_model_or_path))
+            fish_model_cfg: DualARModelArgs | NaiveModelArgs = BaseModelArgs.from_pretrained(
+                str(fish_model_or_path / "config.json")
+            )
+            assert isinstance(fish_model_cfg, DualARModelArgs)
+
+            fish_model = FishAudioTextDecoderConfig_Foreign._load_fish_model(fish_model_or_path, fish_model_cfg)
+            fish_model_dict = fish_model.state_dict()
         else:
             fish_tokenizer = fish_model_or_path.tokenizer
             fish_model_cfg = fish_model_or_path.config
@@ -368,7 +365,6 @@ class FishAudioTextDecoderConfig:
         )
 
 
-# class FishAudioTextDecoder(LalamoModule[FishAudioTextDecoderConfig]):
 class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
@@ -385,11 +381,24 @@ class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.config.precision
 
-    def export_weights(self) -> ParameterTree[Array]:
-        # TODO(peter.glushkov): implement me
-        return {}
+    def export_weights(self) -> ParameterTree:
+        if isinstance(self.fast_model_projection, Identity):
+            fast_model_proj_weighs = None
+        else:
+            fast_model_proj_weighs = self.fast_model_projection.export_weights()
 
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        return {
+            "embeddings_slow": self.embeddings_slow.export_weights(),
+            "embeddings_fast": self.embeddings_fast.export_weights(),
+            "transformer_slow": self.transformer_slow.export_weights(),
+            "transformer_fast": self.transformer_fast.export_weights(),
+            "readout_slow": self.readout_slow.export_weights(),
+            "readout_fast": self.readout_fast.export_weights(),
+            "codebook_embeddings": self.codebook_embeddings.export_weights(),
+            "fast_model_projection": fast_model_proj_weighs,
+        }
+
+    def import_weights(self, weights: ParameterTree) -> Self:
         # TODO(peter.glushkov): implement me
         return self
 
@@ -533,6 +542,9 @@ class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
             key=key,
         )
 
+        # TODO: remove after debugging is done
+        print(f"{0} : code={first_codes[0]}")
+
         seq = seq.at[:, prompt_length].set(first_codes[0])
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
@@ -581,6 +593,7 @@ class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
             generated_count += 1
 
+            # TODO: remove after debugging is done
             print(f"{i} : code={next_codes[0]}")
 
             if next_codes[0, 0] == self.config.im_end_token_id:

@@ -11,10 +11,10 @@ import numpy as np
 import torch
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Int
+from jaxtyping import DTypeLike, Int, PRNGKeyArray
 
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
-from lalamo.modules import AudioDecoder, LalamoModule, NoopVocoder, Vocoder, VocoderConfig
+from lalamo.modules import AudioDecoder, NoopVocoder, Vocoder, VocoderConfig
 from lalamo.modules.audio.foreign.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from lalamo.modules.audio.foreign.fishaudio_sampling import (
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
@@ -79,16 +79,16 @@ class TTSGenerationResult:
     audio_params: AudioRenderingConfig
 
 
-class TTSGenerator(LalamoModule[TTSConfig]):
+@dataclass
+class TTSGenerator:
     config: TTSConfig
-
-    message_processor: TTSRequestFactory = eqx.field(static=True)
 
     text_decoder: TextDecoder
     audio_decoder: AudioDecoder
     vocoder: Vocoder
 
     audio_renderer: AudioRenderer = eqx.field(static=True)
+    message_processor: TTSRequestFactory = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -146,11 +146,12 @@ class FishAudioTTSGenerator_Foreign(TTSGenerator):
         text_tokens: Array,
         sampling_policy: SamplingPolicy = DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+        random_key: PRNGKeyArray | None = None,
     ) -> Array:
         assert isinstance(self.text_decoder, (FishAudioTextDecoder_Foreign, FishAudioTextDecoder))
 
         sampling_params = sampling_params_from_policy(sampling_policy, repetition_penalty)
-        random_key = jax.random.PRNGKey(42)
+        random_key = jax.random.PRNGKey(123) if random_key is None else random_key
         return self.text_decoder.decode_utterance(text_tokens, sampling_params=sampling_params, key=random_key)
 
     def decode_audio(self, semantic_tokens: Array) -> Array:

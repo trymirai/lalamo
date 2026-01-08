@@ -1,22 +1,20 @@
-"""FishAudio DescriptAudioCodec (DAC) implementation.
-
-This module provides the high-level DescriptAudioCodec class for decoding
-audio codes to waveforms. Internal building blocks are in fishaudio_modules.py.
-"""
-
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
 
 import jax
-from fish_speech.models.dac import inference as fish_dac_inference
+from fish_speech.models.dac.inference import load_model
 from fish_speech.models.dac.modded_dac import DAC
 from hydra.utils import instantiate
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
+from lalamo.model_import.loaders.fishaudio_loaders import (
+    load_audio_decoder,
+    load_downsample_rvq,
+)
 from lalamo.model_import.model_specs.common import cast_if_float
 from lalamo.modules import AudioDecoder
 from lalamo.modules.torch_interop import torch_to_jax
@@ -54,6 +52,7 @@ class DescriptAudioCodecConfig:
     precision: DTypeLike
     quantizer_config: DownsampleResidualVectorQuantizeConfig
     decoder_config: DACDecoderConfig
+    samplerate: int
 
     def empty(
         self,
@@ -153,6 +152,7 @@ class DescriptAudioCodecConfig:
         decoder_dim = fish_dac_config["decoder_dim"]
         decoder_rates = fish_dac_config["decoder_rates"]
         latent_dim = encoder_dim * (2 ** len(encoder_rates))  # 64 * 16 = 1024
+        samplerate = fish_dac_config["sample_rate"]
 
         fish_quantizer_config = fish_dac_config["quantizer"]
 
@@ -221,6 +221,7 @@ class DescriptAudioCodecConfig:
             precision=precision,
             quantizer_config=quantizer_full_config,
             decoder_config=decoder_config,
+            samplerate=samplerate,
         )
 
         return dac_config.random_init(
@@ -243,13 +244,8 @@ class DescriptAudioCodecConfig:
         Returns:
             DescriptAudioCodec module with loaded weights.
         """
-        from lalamo.model_import.loaders.fishaudio_loaders import (
-            load_audio_decoder,
-            load_downsample_rvq,
-        )
-
         # Load FishAudio model
-        fish_dac = fish_dac_inference.load_model("modded_dac_vq", audio_chkpt_path, device="cpu")
+        fish_dac = load_model("modded_dac_vq", audio_chkpt_path, device="cpu")
         assert isinstance(fish_dac, DAC)
 
         # Create empty module structure from config
@@ -284,8 +280,6 @@ class DescriptAudioCodecConfig:
 class DescriptAudioCodec(AudioDecoder[DescriptAudioCodecConfig]):
     """Lalamo implementation of DAC (Descript Audio Codec)
     Original code: https://github.com/descriptinc/descript-audio-codec
-    Input: Integer codes with shape (batch, n_codebooks, tokens)
-    Output: Audio waveform with shape (batch, audio_samples, 1) in range [-1, 1]
     """
 
     quantizer: DownsampleResidualVectorQuantize
@@ -293,7 +287,7 @@ class DescriptAudioCodec(AudioDecoder[DescriptAudioCodecConfig]):
 
     @property
     def samplerate(self) -> int:
-        return 44100  # TODO: retrieve this one from torch DAC when loading
+        return self.config.samplerate
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -311,37 +305,14 @@ class DescriptAudioCodec(AudioDecoder[DescriptAudioCodecConfig]):
     def n_codebooks(self) -> int:
         return 1 + self.quantizer.quantizer.n_codebooks  # 1 semantic + n residual
 
-    def decode(
-        self,
-        indices: Int[Array, "batch n_codebooks tokens"],
-    ) -> Float[Array, "batch audio_samples 1"]:
-        """Decode audio codes to waveform.
-
-        Args:
-            indices: Integer codes with shape (batch, n_codebooks, tokens).
-                     First row (indices[:, 0]) contains semantic codes,
-                     remaining rows (indices[:, 1:]) contain residual codes.
-
-        Returns:
-            Audio waveform with shape (batch, audio_samples, 1) in range [-1, 1].
-        """
-        # Decode codes to continuous latent representation
-        z = self.quantizer.decode(indices)
-
-        # Decode latent to audio waveform
-        audio = self.decoder(z)
-
-        return audio
-
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
     ) -> Float[Array, "batch audio_samples 1"]:
-        """Decode audio codes to waveform.
+        z = self.quantizer.decode(indices)
+        audio = self.decoder(z)
 
-        This is an alias for the decode method.
-        """
-        return self.decode(indices)
+        return audio
 
     def export_weights(self) -> ParameterTree[Array]:
         return {

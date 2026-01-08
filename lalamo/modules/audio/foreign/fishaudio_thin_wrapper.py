@@ -22,6 +22,7 @@ from hydra.utils import instantiate
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from omegaconf import DictConfig
 from tokenizers import Tokenizer
+from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
@@ -238,6 +239,7 @@ class FromFishAudioRepo:
             previous_tokens[:, i : i + 1] = next_token.view(model.config.num_codebooks + 1, -1)
             final_idx = i
 
+            # TODO: remove after debugging is done
             print(f"{i} : code={cur_token[0]}")
 
             if cur_token[0, 0, -1] == model.tokenizer.get_token_id(IM_END_TOKEN):
@@ -259,7 +261,7 @@ class FromFishAudioRepo:
         num_samples: int = 1,
         argmax_decoding: bool = False,
         **sampling_kwargs,
-    ):
+    ) -> Tensor:
         """
         Takes a conditioning sequence (prompt) as input and continues to generate as many tokens as requested.
         """
@@ -432,7 +434,8 @@ class FishAudioTextDecoderConfig_Foreign:
         assert isinstance(config, DualARModelArgs)
         return FishAudioTextDecoderConfig_Foreign(fish_config=config)
 
-    def _load_weights_to_fish_model(self, fish_model: DualARTransformer, path_to_model: str | Path) -> None:
+    @staticmethod
+    def _load_weights_to_fish_model(fish_model: DualARTransformer, path_to_model: str | Path) -> None:
         weights = torch.load(
             Path(path_to_model) / "model.pth",
             map_location="cpu",
@@ -456,15 +459,27 @@ class FishAudioTextDecoderConfig_Foreign:
 
         fish_model.load_state_dict(weights, strict=False, assign=True)
 
+    @staticmethod
+    def _load_fish_model(
+        path_to_model: str | Path,
+        fish_config: DualARModelArgs,
+        device: str = "cpu",
+        precision: torch.dtype = torch.bfloat16,
+    ) -> "DualARTransformer":
+        tokenizer = FishTokenizer.from_pretrained(str(path_to_model))
+        fish_model = DualARTransformer(fish_config, tokenizer)
+        fish_model = fish_model.to(device=device, dtype=precision)
+
+        FishAudioTextDecoderConfig_Foreign._load_weights_to_fish_model(fish_model, path_to_model)
+
+        return fish_model
+
     def load_model(
         self, path_to_model: str | Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16
     ) -> "FishAudioTextDecoder_Foreign":
-        tokenizer = FishTokenizer.from_pretrained(str(path_to_model))
-        fish_model = DualARTransformer(self.fish_config, tokenizer)
-        fish_model = fish_model.to(device=device, dtype=precision)
-
-        self._load_weights_to_fish_model(fish_model, path_to_model)
-
+        fish_model = FishAudioTextDecoderConfig_Foreign._load_fish_model(
+            path_to_model=path_to_model, fish_config=self.fish_config, device=device, precision=precision
+        )
         return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
 
 

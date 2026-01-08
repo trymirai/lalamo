@@ -32,7 +32,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
-from lalamo.audio import utils as audio_utils
+from lalamo.audio import play_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -51,6 +51,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models.tts_model import ForeignTTSModel, TTSConfig, TTSMessage
 from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -338,7 +339,7 @@ def tts(
         tts_result = model.generate_speech([user_message])
 
         if replay:
-            audio_utils.play_audio(tts_result.audio, tts_result.audio_params.samplerate)
+            play_audio(tts_result.audio, tts_result.audio_params.samplerate)
 
         if output_file.exists():
             answer = console.input(

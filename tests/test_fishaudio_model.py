@@ -19,6 +19,7 @@ from lalamo.modules.audio.foreign.fishaudio_audio_decoding import (
     DescriptAudioCodec,
     DescriptAudioCodecConfig,
 )
+from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.foreign.fishaudio_modules import (
     AudioDecoderBlockSpatialParams,
     CausalConv1dConfig,
@@ -38,7 +39,6 @@ from lalamo.modules.audio.foreign.fishaudio_modules import (
     VectorQuantizeConfig,
 )
 from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams, logits_to_probs, sample
-from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.audio.foreign.fishaudio_text_decoding import (
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
@@ -47,8 +47,8 @@ from lalamo.modules.audio.foreign.fishaudio_text_decoding import (
 from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
 )
-from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.tts_request_factory import TTSMessage
+from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
 _testlog = logging.getLogger("tts_test_logger")
