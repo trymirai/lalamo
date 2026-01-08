@@ -13,7 +13,7 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.model_import.decoder_configs import ForeignConfig
+from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_read
@@ -124,7 +124,7 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        value = cast("dict[Any, Any]", value) # ty bug??? Why is just `dict` != `dict[Any, Any]`?
+        value = cast("dict[Any, Any]", value)  # ty bug??? Why is just `dict` != `dict[Any, Any]`?
         if "file_spec" in value and "field_name" in value:
             return JSONFieldSpec(
                 file_spec=FileSpec(**value["file_spec"]),

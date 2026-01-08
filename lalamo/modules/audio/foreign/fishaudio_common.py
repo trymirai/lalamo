@@ -1,0 +1,81 @@
+from omegaconf import DictConfig
+
+
+_default_audio_codec_config = {
+    "_target_": "fish_speech.models.dac.modded_dac.DAC",
+    "sample_rate": 44100,
+    "encoder_dim": 64,
+    "encoder_rates": [2, 4, 8, 8],
+    "decoder_dim": 1536,
+    "decoder_rates": [8, 8, 4, 2],
+    "encoder_transformer_layers": [0, 0, 0, 4],
+    "decoder_transformer_layers": [4, 0, 0, 0],
+    "transformer_general_config": {
+        "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+        "_partial_": True,
+        "block_size": 16384,
+        "n_local_heads": -1,
+        "head_dim": 64,
+        "rope_base": 10000,
+        "norm_eps": 1e-5,
+        "dropout_rate": 0.1,
+        "attn_dropout_rate": 0.1,
+        "channels_first": True,
+    },
+    "quantizer": {
+        "_target_": "fish_speech.models.dac.rvq.DownsampleResidualVectorQuantize",
+        "input_dim": 1024,
+        "n_codebooks": 9,
+        "codebook_size": 1024,
+        "codebook_dim": 8,
+        "quantizer_dropout": 0.5,
+        "downsample_factor": [2, 2],
+        "post_module": {
+            "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
+            "causal": True,
+            "window_size": 128,
+            "input_dim": 1024,
+            "config": {
+                "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+                "block_size": 4096,
+                "n_layer": 8,
+                "n_head": 16,
+                "dim": 1024,
+                "intermediate_size": 3072,
+                "n_local_heads": -1,
+                "head_dim": 64,
+                "rope_base": 10000,
+                "norm_eps": 1e-5,
+                "dropout_rate": 0.1,
+                "attn_dropout_rate": 0.1,
+                "channels_first": True,
+            },
+        },
+        "pre_module": {
+            "_target_": "fish_speech.models.dac.modded_dac.WindowLimitedTransformer",
+            "causal": True,
+            "window_size": 128,
+            "input_dim": 1024,
+            "config": {
+                "_target_": "fish_speech.models.dac.modded_dac.ModelArgs",
+                "block_size": 4096,
+                "n_layer": 8,
+                "n_head": 16,
+                "dim": 1024,
+                "intermediate_size": 3072,
+                "n_local_heads": -1,
+                "head_dim": 64,
+                "rope_base": 10000,
+                "norm_eps": 1e-5,
+                "dropout_rate": 0.1,
+                "attn_dropout_rate": 0.1,
+                "channels_first": True,
+            },
+        },
+        "semantic_codebook_size": 4096,
+    },
+}
+
+
+def get_default_fishaudio_dac_config() -> DictConfig:
+    return DictConfig(_default_audio_codec_config)

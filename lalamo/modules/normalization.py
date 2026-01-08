@@ -1,3 +1,4 @@
+from audioop import bias
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
@@ -13,6 +14,8 @@ from lalamo.common import ParameterTree, dummy_array
 from .common import LalamoModule
 
 __all__ = [
+    "LayerScale",
+    "LayerScaleConfig",
     "Normalization",
     "NormalizationConfig",
     "UpcastMode",
@@ -32,20 +35,27 @@ class NormalizationConfig:
     scale_offset: float | None
     upcast_mode: UpcastMode
     subtract_mean: bool
+    use_bias: bool = False
 
     def init(self, input_dim: int) -> "Normalization":
         scales = jnp.ones(input_dim, dtype=self.scale_precision)
-        return Normalization(self, scales=scales)
+        if self.use_bias:
+            bias = jnp.zeros(input_dim, dtype=self.scale_precision)
+        else:
+            bias = None
+        return Normalization(self, scales=scales, bias=bias)
 
     def empty(self, input_dim: int) -> "Normalization":
-        return Normalization(
-            config=self,
-            scales=dummy_array(input_dim, dtype=self.scale_precision),
-        )
+        if self.use_bias:
+            bias = dummy_array(input_dim, dtype=self.scale_precision)
+        else:
+            bias = None
+        return Normalization(config=self, scales=dummy_array(input_dim, dtype=self.scale_precision), bias=bias)
 
 
 class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
+    bias: Float[Array, " channels"] | None = None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -86,7 +96,70 @@ class Normalization(LalamoModule[NormalizationConfig]):
             adjusted_scales = adjusted_scales + self.config.scale_offset
 
         result = normalized_x * adjusted_scales
+
+        if self.config.use_bias:
+            assert self.bias is not None
+            result += self.bias
         return result.astype(inputs.dtype)
+
+    def export_weights(self) -> ParameterTree:
+        result = {"scales": self.scales}
+        if self.config.use_bias:
+            assert self.bias is not None
+            result["bias"] = self.bias
+        return result
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+    ) -> Self:
+        assert isinstance(weights, Mapping)
+        if self.config.use_bias:
+            assert isinstance(weights["bias"], Array)
+            bias = weights["bias"]
+        else:
+            bias = None
+        return replace(self, scales=weights["scales"], bias=bias)
+
+
+@dataclass(frozen=True)
+class LayerScaleConfig:
+    scale_precision: DTypeLike
+
+    def init(self, input_dim: int) -> "LayerScale":
+        scales = jnp.ones(input_dim, dtype=self.scale_precision)
+        return LayerScale(self, scales=scales)
+
+    def empty(self, input_dim: int) -> "LayerScale":
+        return LayerScale(
+            config=self,
+            scales=dummy_array(input_dim, dtype=self.scale_precision),
+        )
+
+
+class LayerScale(LalamoModule[LayerScaleConfig]):
+    scales: Float[Array, " channels"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.scale_precision
+
+    @property
+    def input_dim(self) -> int:
+        (result,) = self.scales.shape
+        return result
+
+    def __post_init__(self) -> None:
+        if self.config.scale_precision != self.scales.dtype:
+            raise ValueError(
+                f"Scales precision {self.scales.dtype} does not match the"
+                f" specified precision {self.config.scale_precision}",
+            )
+
+    @eqx.filter_jit
+    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
+        result = inputs * self.scales
+        return result
 
     def export_weights(self) -> ParameterTree:
         return {"scales": self.scales}

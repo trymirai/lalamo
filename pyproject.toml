@@ -47,9 +47,18 @@ dev = [
     "torchao>=0.7.0",
     "transformers>=4.56.0",
     "twine>=6.1.0",
-    "ruff==0.14.0",
+    "ruff>=0.14.0",
     "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
+    "fishaudio>=0.0.5",
+    "fish_speech>=0.1.0",
+    
+    # this one requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
+    "pyaudio>=0.2.0",
+    
+    "bidict>=0.23.1",
+    "tiktoken>=0.12.0",
+    "blobfile>=3.1.0"
 ]
 
 [project.scripts]
@@ -69,6 +78,11 @@ version = { attr = "lalamo.__version__" }
 
 [tool.uv]
 package = true
+override-dependencies = [
+    "numpy>=1.0,<3.0",
+    "datasets>=2.0,<3.0"
+]
+
 
 [[tool.uv.index]]
 name = "torch-cpu"

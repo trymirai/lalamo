@@ -1,4 +1,5 @@
 from .activations import GELU, Activation, Identity, SiLU
+from .audio import AudioDecoder, NoopVocoder, Vocoder, VocoderConfig
 from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
@@ -52,7 +53,7 @@ from .mlp import (
     RoutingFunction,
     SoftmaxRouting,
 )
-from .normalization import Normalization, NormalizationConfig, UpcastMode
+from .normalization import LayerScale, LayerScaleConfig, Normalization, NormalizationConfig, UpcastMode
 from .rope import (
     LinearScalingRoPEConfig,
     LlamaRoPEConfig,
@@ -91,6 +92,7 @@ __all__ = [
     "Activation",
     "Attention",
     "AttentionConfig",
+    "AudioDecoder",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
@@ -111,6 +113,8 @@ __all__ = [
     "Identity",
     "KVCacheLayer",
     "LalamoModule",
+    "LayerScale",
+    "LayerScaleConfig",
     "LinearBase",
     "LinearConfig",
     "LinearScalingRoPEConfig",
@@ -130,6 +134,7 @@ __all__ = [
     "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
     "PositionalEmbeddingSelector",
@@ -163,6 +168,8 @@ __all__ = [
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
+    "Vocoder",
+    "VocoderConfig",
     "YARNRoPEConfig",
     "config_converter",
 ]

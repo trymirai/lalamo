@@ -19,9 +19,9 @@ from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
-from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
 from .huggingface_tokenizer_config import HFTokenizerConfig
+from .model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
 from .model_specs.common import JSONFieldSpec
 

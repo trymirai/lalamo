@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import jax.profiler
+import soundfile as sf
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -31,6 +32,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
+from lalamo.audio import play_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -49,6 +51,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models.tts_model import ForeignTTSModel, TTSConfig, TTSMessage
 from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -263,6 +266,100 @@ class CliConversionCallbacks(ConversionCallbacks):
         console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
 
 
+@app.command(help="Synthesize speech from given text utterance")
+def tts(
+    model_path: Annotated[
+        Path | None,
+        Option(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ] = None,
+    foreign_model: Annotated[
+        ForeignTTSModel | None,
+        Option(
+            help="Type of forerign model to use.",
+        ),
+    ] = None,
+    foreign_chkpt_path: Annotated[
+        Path | None,
+        Option(
+            help="Path to directory with foreign model checkpoints.",
+        ),
+    ] = None,
+    output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech")] = None,
+    replay: Annotated[
+        bool,
+        Option(
+            help="Render synthesized speech into default audio interface.",
+        ),
+    ] = False,
+) -> None:
+    if model_path is None and foreign_model is None:
+        err_console.print("Either path to Lalalo TTS model or type of foreign TTS model has to be specified")
+        raise Exit
+    if output_file is None:
+        output_file = Path.cwd() / "generated_speech.wav"
+        console.print(f"Will save output to file {output_file}")
+
+    model = None
+    if model_path is not None:
+        console.print("🤖 Current method is not supported yet, use --foreign_model mode instead.")
+        raise Exit
+
+    if foreign_model:
+        if foreign_chkpt_path is None:
+            console.print("Path to checkpoint not specified, will try to find it from HuggingFace cache.")
+            foreign_chkpt_path = TTSConfig.try_locate_audio_model_path(foreign_model)
+            if foreign_chkpt_path is None:
+                err_console.print(f"Failed to locate checkpoint directory for model {foreign_model}")
+                raise Exit
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            transient=True,
+        ) as progress:
+            loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
+            model = TTSConfig.load_model_from_foreign_model_preset(foreign_model, foreign_chkpt_path)
+        progress.remove_task(loading_task)
+        console.print(f"🤖 Synthesizing speech with [blue]{foreign_model}[/blue]:")
+
+    assert model is not None
+    _stop_word = "/stop"
+    while True:
+        user_text = console.input(f"[cyan]text to generate ({_stop_word} to exit)> [/cyan]")
+        if user_text == _stop_word:
+            console.print("[green] Goodbye! [/green]")
+            break
+        if user_text == "":
+            continue
+
+        user_message = TTSMessage.simple_message(user_text)
+
+        tts_result = model.generate_speech([user_message])
+
+        if replay:
+            play_audio(tts_result.audio, tts_result.audio_params.samplerate)
+
+        if output_file.exists():
+            answer = console.input(
+                rf"⚠️ Output file [cyan]{output_file}[/cyan] already exists."
+                r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
+            )
+            while answer.lower() not in ["y", "n", "yes", "no"]:
+                answer = console.input("Please enter 'y' or 'n': ")
+            if answer.lower() in ["y", "yes"]:
+                Path.unlink(output_file)
+            else:
+                console.print("Continue without saving the result")
+                continue
+
+        sf.write(str(output_file), tts_result.audio, tts_result.audio_params.samplerate)
+        console.print(f"[green] ... saved generated audio to {output_file}[/green]")
+
+        console.print()
+
+
 @app.command(help="Convert the model for use with the Uzu inference engine.")
 def convert(
     model_repo: Annotated[
@@ -383,6 +480,7 @@ class CliTraceCallbacks(TraceCallbacks):
         self.progress.remove_task(self.saving_task)
         self.stack.close()
         console.print(f"💾 Trace saved to [cyan]{self.output_path}[/cyan]")
+
 
 @app.command(help="Trace a model.")
 def trace(
