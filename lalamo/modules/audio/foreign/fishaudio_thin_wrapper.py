@@ -27,10 +27,10 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterTree
-from lalamo.modules import AudioDecoder
+from lalamo.modules import TTSAudioDecoder
 from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams
-from lalamo.modules.audio.text_decoder import TextDecoder
+from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
@@ -385,7 +385,7 @@ class FishAudioAudioDecoderConfig_Foreign:
     dac_config: DictConfig
 
 
-class FishAudioAudioDecoder_Foreign(AudioDecoder[FishAudioAudioDecoderConfig_Foreign]):
+class FishAudioAudioDecoder_Foreign(TTSAudioDecoder[FishAudioAudioDecoderConfig_Foreign]):
     dac_model: DAC
 
     @property
@@ -483,7 +483,7 @@ class FishAudioTextDecoderConfig_Foreign:
         return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
 
 
-class FishAudioTextDecoder_Foreign(TextDecoder[FishAudioTextDecoderConfig_Foreign]):
+class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_Foreign]):
     fish_model: DualARTransformer
 
     @property

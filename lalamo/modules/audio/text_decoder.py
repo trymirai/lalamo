@@ -7,7 +7,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
 
 
-class TextDecoder[ConfigT](LalamoModule[ConfigT]):
+class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...

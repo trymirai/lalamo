@@ -244,18 +244,6 @@ class ConfigMapping:
 
         return transformer_cfg
 
-    @staticmethod
-    def lalamo_residual_vector_quantize_cfg_from_fish_rvq_cfq() -> "ResidualVectorQuantizeConfig":
-        pass
-
-    @staticmethod
-    def lalamo_upsampling_block_cfg_from_fish_audio_dac_cfg() -> "UpsamplingBlockConfig":
-        return UpsamplingBlockConfig(jnp.float32)
-
-    @staticmethod
-    def lalamo_upsampler_cfg_from_fishaudio_cfg() -> "UpsamplerConfig":
-        return None
-
 
 # =============================================================================
 # Helper Functions

@@ -8,7 +8,7 @@ from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
 
 
-class AudioDecoder[ConfigT](LalamoModule[ConfigT]):
+class TTSAudioDecoder[ConfigT](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...

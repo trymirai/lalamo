@@ -17,7 +17,6 @@ from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 from lalamo.common import ParameterPath, ParameterTree
 from lalamo.model_import.loaders.fishaudio_loaders import load_fish_audio_text_decoding_modules
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
-from lalamo.model_import.model_specs.common import cast_if_float
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
@@ -35,11 +34,12 @@ from lalamo.modules import (
     TransformerLayerConfig,
     UpcastMode,
 )
-from lalamo.modules.audio.text_decoder import TextDecoder
+from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.modules.utils import vmap_twice
 from lalamo.utils import MapDictValues
 
+from .fishaudio_common import cast_if_float
 from .fishaudio_modules import RoPEConfigFishAudio
 from .fishaudio_sampling import FishAudioSamplingParams, sample
 from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
@@ -281,6 +281,57 @@ class FishAudioTextDecoderConfig:
             fast_model_projection=fast_model_projection,
         )
 
+    def random_init(self, *, key: PRNGKeyArray) -> "FishAudioTextDecoder":
+        (
+            key_emb_slow,
+            key_transformer_slow,
+            key_readout_slow,
+            key_emb_fast,
+            key_transformer_fast,
+            key_readout_fast,
+            key_emb_codebook,
+            key_fast_proj,
+        ) = jax.random.split(key, 8)
+
+        embeddings_slow = self.slow_embeddings_config.random_init(
+            vocab_size=self.vocab_size, model_dim=self.slow_model_dim, key=key_emb_slow
+        )
+        embeddings_fast = self.fast_embeddings_config.random_init(
+            vocab_size=self.codebook_size, model_dim=self.fast_model_dim, key=key_emb_fast
+        )
+        codebook_embeddings = self.codebook_embeddings_config.random_init(
+            vocab_size=self.codebook_size * self.num_codebooks, model_dim=self.slow_model_dim, key=key_emb_codebook
+        )
+        if self.fast_model_projection_config is not None:
+            fast_model_projection = self.fast_model_projection_config.random_init(
+                input_dim=self.slow_model_dim, output_dims=(self.fast_model_dim,), has_biases=False, key=key_fast_proj
+            )
+        else:
+            fast_model_projection = Identity()
+
+        assert isinstance(embeddings_slow, TiedEmbedding)
+        assert isinstance(embeddings_fast, TiedEmbedding)
+        assert isinstance(codebook_embeddings, TiedEmbedding)
+
+        return FishAudioTextDecoder(
+            self,
+            embeddings_slow=embeddings_slow,
+            transformer_slow=self.slow_model_config.random_init(key=key_transformer_slow),
+            readout_slow=self.slow_readout_config.random_init(
+                input_dim=self.slow_model_dim, output_dims=(self.vocab_size,), has_biases=False, key=key_readout_slow
+            ),
+            embeddings_fast=embeddings_fast,
+            transformer_fast=self.fast_model_config.random_init(key=key_transformer_fast),
+            readout_fast=self.fast_readout_config.random_init(
+                input_dim=self.fast_model_dim,
+                output_dims=(self.codebook_size,),
+                has_biases=False,
+                key=key_readout_fast,
+            ),
+            codebook_embeddings=codebook_embeddings,
+            fast_model_projection=fast_model_projection,
+        )
+
     @classmethod
     def from_foreign_model(
         cls, fish_model_or_path: Path | DualARTransformer, precision: DTypeLike
@@ -365,7 +416,7 @@ class FishAudioTextDecoderConfig:
         )
 
 
-class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
+class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
     readout_slow: FullPrecisionLinear
@@ -383,7 +434,7 @@ class FishAudioTextDecoder(TextDecoder[FishAudioTextDecoderConfig]):
 
     def export_weights(self) -> ParameterTree:
         if isinstance(self.fast_model_projection, Identity):
-            fast_model_proj_weighs = None
+            fast_model_proj_weighs = {}
         else:
             fast_model_proj_weighs = self.fast_model_projection.export_weights()
 

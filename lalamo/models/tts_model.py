@@ -3,7 +3,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Optional, Self
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -14,7 +14,7 @@ from jax import numpy as jnp
 from jaxtyping import DTypeLike, Int, PRNGKeyArray
 
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
-from lalamo.modules import AudioDecoder, NoopVocoder, Vocoder, VocoderConfig
+from lalamo.modules import NoopVocoder, TTSModel, VocoderConfig
 from lalamo.modules.audio.foreign.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from lalamo.modules.audio.foreign.fishaudio_sampling import (
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
@@ -32,44 +32,38 @@ from lalamo.modules.audio.foreign.fishaudio_thin_wrapper import (
     load_fish_audio_audio_decoder,
     try_locate_fish_audio_model_path,
 )
-from lalamo.modules.audio.text_decoder import TextDecoder
-from lalamo.modules.audio.tts_request_factory import TTSMessage, TTSRequestFactory, TTSRequestFactoryConfig
+from lalamo.modules.audio.text_to_speech import TTSConfig, TTSMessage, TTSRequestFactory, TTSRequestFactoryConfig
+from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree
 
-__all__ = [
-    "ForeignTTSModel",
-    "TTSConfig",
-    "TTSGenerator",
-]
+__all__ = ["ForeignTTSModelType", "TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
 
 
-class ForeignTTSModel(Enum):
+class ForeignTTSModelType(Enum):
     FISH_AUDIO = "fishaudio"
     FISH_AUDIO_LALAMO = "fishaudio_lalamo"
 
 
 @dataclass(frozen=True)
-class TTSConfig:
-    text_decoder_config: Any
-    audio_decoder_config: Any
-    vocoder_config: Any
+class TTSGeneratorConfig:
+    tts_config: TTSConfig
 
     @classmethod
     def load_model_from_foreign_model_preset(
-        cls, preset: ForeignTTSModel, path_to_checkpoints: Path
+        cls, preset: ForeignTTSModelType, path_to_checkpoints: Path
     ) -> "TTSGenerator":
         match preset:
-            case ForeignTTSModel.FISH_AUDIO:
+            case ForeignTTSModelType.FISH_AUDIO:
                 return _build_foreign_fish_audio_model(path_to_checkpoints)
-            case ForeignTTSModel.FISH_AUDIO_LALAMO:
+            case ForeignTTSModelType.FISH_AUDIO_LALAMO:
                 return _build_lalamo_model_from_fish_checkpoint(path_to_checkpoints)
 
     @classmethod
-    def try_locate_audio_model_path(cls, preset: ForeignTTSModel) -> Optional[Path]:
+    def try_locate_audio_model_path(cls, preset: ForeignTTSModelType) -> Path | None:
         match preset:
-            case ForeignTTSModel.FISH_AUDIO | ForeignTTSModel.FISH_AUDIO_LALAMO:
+            case ForeignTTSModelType.FISH_AUDIO | ForeignTTSModelType.FISH_AUDIO_LALAMO:
                 return try_locate_fish_audio_model_path()
 
 
@@ -81,24 +75,22 @@ class TTSGenerationResult:
 
 @dataclass
 class TTSGenerator:
-    config: TTSConfig
+    config: TTSGeneratorConfig
 
-    text_decoder: TextDecoder
-    audio_decoder: AudioDecoder
-    vocoder: Vocoder
+    tts_model: TTSModel
 
     audio_renderer: AudioRenderer = eqx.field(static=True)
     message_processor: TTSRequestFactory = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.text_decoder.activation_precision
+        return self.tts_model.text_decoder.activation_precision
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
-            "text_encoder": self.text_decoder.export_weights(),
-            "audio_decoder": self.text_decoder.export_weights(),
-            "vocoder": self.text_decoder.export_weights(),
+            "text_encoder": self.tts_model.text_decoder.export_weights(),
+            "audio_decoder": self.tts_model.audio_decoder.export_weights(),
+            "vocoder": self.tts_model.vocoder.export_weights(),
         }
 
     def import_weights(
@@ -130,7 +122,7 @@ class TTSGenerator:
 
         audio_features = self.decode_audio(semantic_tokens)
 
-        audio_waveform = self.vocoder(audio_features)
+        audio_waveform = self.tts_model.vocoder(audio_features)
 
         audio_waveform = self.audio_renderer.condition_signal(
             generated_audio=np.array(audio_waveform),
@@ -148,22 +140,24 @@ class FishAudioTTSGenerator_Foreign(TTSGenerator):
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
-        assert isinstance(self.text_decoder, (FishAudioTextDecoder_Foreign, FishAudioTextDecoder))
+        assert isinstance(self.tts_model.text_decoder, (FishAudioTextDecoder_Foreign, FishAudioTextDecoder))
 
         sampling_params = sampling_params_from_policy(sampling_policy, repetition_penalty)
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
-        return self.text_decoder.decode_utterance(text_tokens, sampling_params=sampling_params, key=random_key)
+        return self.tts_model.text_decoder.decode_utterance(
+            text_tokens, sampling_params=sampling_params, key=random_key
+        )
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
-        return self.audio_decoder.audio_from_codes(semantic_tokens)
+        return self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
 
     def generate_waveform(self, audio_features: Array) -> Array:
-        return self.vocoder(audio_features)
+        return self.tts_model.vocoder(audio_features)
 
     def get_generated_audio_params(self) -> AudioRenderingConfig:
         # NOTE: mb this could be moved to config level
         return AudioRenderingConfig(
-            samplerate=self.audio_decoder.samplerate,
+            samplerate=self.tts_model.audio_decoder.samplerate,
             output_channels=1,
             bitwidth=16,
             encoding=AudioEncoding.pcm,
@@ -195,15 +189,19 @@ def _build_foreign_fish_audio_model(
         text_decoder.config,
         audio_decoder.config,
         VocoderConfig(),
+        activation_precision=DTypeConvert.to_jax(precision),
     )
 
     audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.pcm)
-
-    return FishAudioTTSGenerator_Foreign(
+    tts_model = TTSModel(
         config=tts_config,
         text_decoder=text_decoder,
         audio_decoder=audio_decoder,
         vocoder=NoopVocoder(tts_config.vocoder_config),
+    )
+    return FishAudioTTSGenerator_Foreign(
+        config=TTSGeneratorConfig(tts_config=tts_config),
+        tts_model=tts_model,
         message_processor=message_processor,
         audio_renderer=AudioRenderer(audio_renderer_config),
     )
@@ -232,13 +230,18 @@ def _build_lalamo_model_from_fish_checkpoint(
         text_decoder.config,
         audio_decoder.config,
         VocoderConfig(),
+        activation_precision=DTypeConvert.to_jax(precision),
     )
     audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.pcm)
-    return FishAudioTTSGenerator_Foreign(
+    tts_model = TTSModel(
         config=tts_config,
-        message_processor=message_processor,
         text_decoder=text_decoder,
         audio_decoder=audio_decoder,
         vocoder=NoopVocoder(tts_config.vocoder_config),
+    )
+    return FishAudioTTSGenerator_Foreign(
+        config=TTSGeneratorConfig(tts_config=tts_config),
+        message_processor=message_processor,
+        tts_model=tts_model,
         audio_renderer=AudioRenderer(audio_renderer_config),
     )

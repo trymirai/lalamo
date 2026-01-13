@@ -1,5 +1,5 @@
 from .activations import GELU, Activation, Identity, SiLU
-from .audio import AudioDecoder, NoopVocoder, Vocoder, VocoderConfig
+from .audio import NoopVocoder, TTSAudioDecoder, TTSConfig, TTSModel, TTSTextDecoder, Vocoder, VocoderConfig
 from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
@@ -92,7 +92,6 @@ __all__ = [
     "Activation",
     "Attention",
     "AttentionConfig",
-    "AudioDecoder",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
@@ -155,6 +154,10 @@ __all__ = [
     "SoftmaxRouting",
     "State",
     "StaticKVCacheLayer",
+    "TTSAudioDecoder",
+    "TTSConfig",
+    "TTSModel",
+    "TTSTextDecoder",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "Transformer",

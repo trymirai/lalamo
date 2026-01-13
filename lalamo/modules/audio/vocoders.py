@@ -10,11 +10,12 @@ from ..common import LalamoModule
 
 
 @dataclass(frozen=True)
-class VocoderConfig:
-    pass
+class NoopVocoderConfig:
+    def empty(self) -> "NoopVocoder":
+        return NoopVocoder(config=self)
 
 
-class NoopVocoder(LalamoModule[VocoderConfig]):
+class NoopVocoder(LalamoModule[NoopVocoderConfig]):
     # Used in models where vocoder is absent and ther is no additional
     # conversion from audio-features space to audio waveform space
 
@@ -37,4 +38,5 @@ class NoopVocoder(LalamoModule[VocoderConfig]):
         return audio_features
 
 
+VocoderConfig = NoopVocoderConfig
 Vocoder = NoopVocoder

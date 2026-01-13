@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, Sequence
 
 import jax
 from fish_speech.models.dac.inference import load_model
@@ -15,12 +15,11 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
     load_audio_decoder,
     load_downsample_rvq,
 )
-from lalamo.model_import.model_specs.common import cast_if_float
-from lalamo.modules import AudioDecoder
+from lalamo.modules import TTSAudioDecoder
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.utils import MapDictValues
 
-from .fishaudio_common import get_default_fishaudio_dac_config
+from .fishaudio_common import cast_if_float, get_default_fishaudio_dac_config
 from .fishaudio_modules import (
     ConfigMapping,
     ConvNeXtSpatialParams,
@@ -54,13 +53,21 @@ class DescriptAudioCodecConfig:
     decoder_config: DACDecoderConfig
     samplerate: int
 
+    # NOTE: these fields are retireved from DAC audio-codec config which is
+    # currently baked into code of fish-speech package as a separate file
+    encoder_dim: int
+    encoder_rates: tuple[int]
+    decoder_dim: int
+    decoder_rates: tuple[int]
+    input_dim: int
+    n_codebooks: int
+    codebook_dim: int
+    downsample_factor: tuple[int]
+    codebook_size: int
+    semantic_codebook_size: int
+
     def empty(
         self,
-        quantizer_upsampler_trans_conv_params: tuple[TransposeConvSpatialParams, ...],
-        quantizer_convnext_spatial_params: ConvNeXtSpatialParams,
-        semantic_quantizer_params: VectorQuantizerParams,
-        quantizer_params: VectorQuantizerParams,
-        decoder_spatial_params: DACDecoderSpatialParams,
     ) -> "DescriptAudioCodec":
         """Create module with uninitialized (dummy) weights.
 
@@ -74,9 +81,28 @@ class DescriptAudioCodecConfig:
         Returns:
             DAC module with dummy weights.
         """
+
+        (
+            semantic_quantizer_params,
+            quantizer_params,
+            convnext_params,
+            upsample_conv_params,
+            decoder_spatial_params,
+        ) = DescriptAudioCodecConfig.create_spatial_parameter_objects(
+            encoder_dim=self.encoder_dim,
+            encoder_rates=self.encoder_rates,
+            decoder_dim=self.decoder_dim,
+            decoder_rates=self.decoder_rates,
+            input_dim=self.input_dim,
+            n_codebooks=self.n_codebooks,
+            codebook_dim=self.codebook_dim,
+            downsample_factor=self.downsample_factor,
+            codebook_size=self.codebook_size,
+            semantic_codebook_size=self.semantic_codebook_size,
+        )
         quantizer = self.quantizer_config.empty(
-            upsampler_trans_conv_params=quantizer_upsampler_trans_conv_params,
-            convnext_spatial_params=quantizer_convnext_spatial_params,
+            upsampler_trans_conv_params=upsample_conv_params,
+            convnext_spatial_params=convnext_params,
             semantic_quantizer_params=semantic_quantizer_params,
             quantizer_params=quantizer_params,
         )
@@ -91,11 +117,6 @@ class DescriptAudioCodecConfig:
 
     def random_init(
         self,
-        quantizer_upsampler_trans_conv_params: tuple[TransposeConvSpatialParams, ...],
-        quantizer_convnext_spatial_params: ConvNeXtSpatialParams,
-        semantic_quantizer_params: VectorQuantizerParams,
-        quantizer_params: VectorQuantizerParams,
-        decoder_spatial_params: DACDecoderSpatialParams,
         *,
         key: PRNGKeyArray,
     ) -> "DescriptAudioCodec":
@@ -114,9 +135,28 @@ class DescriptAudioCodecConfig:
         """
         key1, key2 = jax.random.split(key)
 
+        (
+            semantic_quantizer_params,
+            quantizer_params,
+            convnext_params,
+            upsample_conv_params,
+            decoder_spatial_params,
+        ) = DescriptAudioCodecConfig.create_spatial_parameter_objects(
+            encoder_dim=self.encoder_dim,
+            encoder_rates=self.encoder_rates,
+            decoder_dim=self.decoder_dim,
+            decoder_rates=self.decoder_rates,
+            input_dim=self.input_dim,
+            n_codebooks=self.n_codebooks,
+            codebook_dim=self.codebook_dim,
+            downsample_factor=self.downsample_factor,
+            codebook_size=self.codebook_size,
+            semantic_codebook_size=self.semantic_codebook_size,
+        )
+
         quantizer = self.quantizer_config.random_init(
-            upsampler_trans_conv_params=quantizer_upsampler_trans_conv_params,
-            convnext_spatial_params=quantizer_convnext_spatial_params,
+            upsampler_trans_conv_params=upsample_conv_params,
+            convnext_spatial_params=convnext_params,
             semantic_quantizer_params=semantic_quantizer_params,
             quantizer_params=quantizer_params,
             key=key1,
@@ -131,64 +171,37 @@ class DescriptAudioCodecConfig:
         )
 
     @staticmethod
-    def from_fishaudio_config(
+    def instantiate_config_from_fishaudio_config(
         fish_dac_config: Mapping[Any, Any],
-        key: PRNGKeyArray = jax.random.PRNGKey(123),
-    ) -> "DescriptAudioCodec":
-        """Create DAC module from FishAudio DAC config.
-
-        Args:
-            fish_dac_config: Config dict from FishAudio DAC model.
-            key: PRNG key for random initialization.
-
-        Returns:
-            DAC module configured to match FishAudio DAC structure.
-        """
+    ) -> "DescriptAudioCodecConfig":
         precision = jnp.float32
 
         # Extract config parameters
-        encoder_dim = fish_dac_config["encoder_dim"]
-        encoder_rates = fish_dac_config["encoder_rates"]
-        decoder_dim = fish_dac_config["decoder_dim"]
-        decoder_rates = fish_dac_config["decoder_rates"]
-        latent_dim = encoder_dim * (2 ** len(encoder_rates))  # 64 * 16 = 1024
         samplerate = fish_dac_config["sample_rate"]
 
         fish_quantizer_config = fish_dac_config["quantizer"]
 
         # Build quantizer config using existing helper
         input_dim = fish_quantizer_config["input_dim"]
+        downsample_factor = fish_quantizer_config["downsample_factor"]
+        post_module_config_dict = fish_quantizer_config["post_module"]
+
+        encoder_dim = fish_dac_config["encoder_dim"]
+        encoder_rates = fish_dac_config["encoder_rates"]
+        decoder_dim = fish_dac_config["decoder_dim"]
+        decoder_rates = fish_dac_config["decoder_rates"]
+        fish_quantizer_config = fish_dac_config["quantizer"]
+        input_dim = fish_quantizer_config["input_dim"]
         n_codebooks = fish_quantizer_config["n_codebooks"]
         codebook_dim = fish_quantizer_config["codebook_dim"]
         downsample_factor = fish_quantizer_config["downsample_factor"]
         codebook_size = fish_quantizer_config["codebook_size"]
         semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
-        post_module_config_dict = fish_quantizer_config["post_module"]
-        downsample_dims = [input_dim for _ in range(len(downsample_factor))]
-        all_dims = (input_dim, *downsample_dims)
 
-        semantic_quantizer_params = VectorQuantizerParams(
-            input_dim=input_dim, codebook_size=semantic_codebook_size, codebook_dim=codebook_dim
-        )
-        quantizer_params = VectorQuantizerParams(
-            input_dim=input_dim, codebook_size=codebook_size, codebook_dim=[codebook_dim] * n_codebooks
-        )
-
+        # === Create full DAC config ===
         upsampler_config = UpsamplerConfig(
             block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor))
         )
-        upsample_conv_params = tuple(
-            [
-                TransposeConvSpatialParams(
-                    in_channels=all_dims[idx + 1],
-                    out_channels=all_dims[idx],
-                    upsample_kernel_size=factor,
-                    upsample_stride=factor,
-                )
-                for idx, factor in reversed(list(enumerate(downsample_factor)))
-            ]
-        )
-        convnext_params = ConvNeXtSpatialParams()
         post_module_transformer_foreign = instantiate(post_module_config_dict["config"])
         post_module_config = ConfigMapping.lalamo_transformer_cfg_from_fish_audio_codec_cfg(
             post_module_transformer_foreign,
@@ -206,9 +219,65 @@ class DescriptAudioCodecConfig:
             post_module_config=post_module_config,
             upsampler_config=upsampler_config,
         )
-
-        # Build decoder config
         decoder_config = DACDecoderConfig(precision=precision, causal=True)
+        return DescriptAudioCodecConfig(
+            precision=precision,
+            quantizer_config=quantizer_full_config,
+            decoder_config=decoder_config,
+            samplerate=samplerate,
+            encoder_dim=encoder_dim,
+            encoder_rates=encoder_rates,
+            decoder_dim=decoder_dim,
+            decoder_rates=decoder_rates,
+            input_dim=input_dim,
+            n_codebooks=n_codebooks,
+            codebook_dim=codebook_dim,
+            downsample_factor=downsample_factor,
+            codebook_size=codebook_size,
+            semantic_codebook_size=semantic_codebook_size,
+        )
+
+    @staticmethod
+    def create_spatial_parameter_objects(
+        encoder_dim: int,
+        encoder_rates: Sequence[int],
+        decoder_dim: int,
+        decoder_rates: Sequence[int],
+        input_dim: int,
+        n_codebooks: int,
+        codebook_dim: int,
+        downsample_factor: Sequence[int],
+        codebook_size: int,
+        semantic_codebook_size: int,
+    ) -> tuple[
+        VectorQuantizerParams,
+        VectorQuantizerParams,
+        ConvNeXtSpatialParams,
+        tuple[TransposeConvSpatialParams, ...],
+        DACDecoderSpatialParams,
+    ]:
+        latent_dim = encoder_dim * (2 ** len(encoder_rates))  # 64 * 16 = 1024
+        downsample_dims = [input_dim for _ in range(len(downsample_factor))]
+        all_dims = (input_dim, *downsample_dims)
+
+        semantic_quantizer_params = VectorQuantizerParams(
+            input_dim=input_dim, codebook_size=semantic_codebook_size, codebook_dim=codebook_dim
+        )
+        quantizer_params = VectorQuantizerParams(
+            input_dim=input_dim, codebook_size=codebook_size, codebook_dim=[codebook_dim] * n_codebooks
+        )
+        convnext_params = ConvNeXtSpatialParams()
+        upsample_conv_params = tuple(
+            [
+                TransposeConvSpatialParams(
+                    in_channels=all_dims[idx + 1],
+                    out_channels=all_dims[idx],
+                    upsample_kernel_size=factor,
+                    upsample_stride=factor,
+                )
+                for idx, factor in reversed(list(enumerate(downsample_factor)))
+            ]
+        )
         decoder_spatial_params = DACDecoderSpatialParams(
             input_channel=latent_dim,
             channels=decoder_dim,
@@ -216,20 +285,30 @@ class DescriptAudioCodecConfig:
             d_out=1,
         )
 
-        # Create full DAC config
-        dac_config = DescriptAudioCodecConfig(
-            precision=precision,
-            quantizer_config=quantizer_full_config,
-            decoder_config=decoder_config,
-            samplerate=samplerate,
+        return (
+            semantic_quantizer_params,
+            quantizer_params,
+            convnext_params,
+            upsample_conv_params,
+            decoder_spatial_params,
         )
 
+    @staticmethod
+    def from_fishaudio_config(
+        fish_dac_config: Mapping[Any, Any],
+        key: PRNGKeyArray = jax.random.PRNGKey(123),
+    ) -> "DescriptAudioCodec":
+        """Create DAC module from FishAudio DAC config.
+
+        Args:
+            fish_dac_config: Config dict from FishAudio DAC model.
+            key: PRNG key for random initialization.
+
+        Returns:
+            DAC module configured to match FishAudio DAC structure.
+        """
+        dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(fish_dac_config=fish_dac_config)
         return dac_config.random_init(
-            quantizer_upsampler_trans_conv_params=upsample_conv_params,
-            quantizer_convnext_spatial_params=convnext_params,
-            semantic_quantizer_params=semantic_quantizer_params,
-            quantizer_params=quantizer_params,
-            decoder_spatial_params=decoder_spatial_params,
             key=key,
         )
 
@@ -277,7 +356,7 @@ class DescriptAudioCodecConfig:
         )
 
 
-class DescriptAudioCodec(AudioDecoder[DescriptAudioCodecConfig]):
+class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     """Lalamo implementation of DAC (Descript Audio Codec)
     Original code: https://github.com/descriptinc/descript-audio-codec
     """

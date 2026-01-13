@@ -1,6 +1,41 @@
+import base64
+import json
+import re
+import shutil
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+
+from jax import numpy as jnp
+from jaxtyping import Array, DTypeLike
 from omegaconf import DictConfig
+from tiktoken.core import Encoding as TikokenEncoding
+from tokenizers import Tokenizer
+from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 
+def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
+    if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
+        return array.astype(cast_to)
+    return array
+
+
+# This is copied from fish-speech repo
+FISH_TIKTOKEN_PATTERN = "|".join(
+    [
+        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)",
+        r"\p{P}",
+        r"[^\r\n\p{L}\p{N}]?\p{L}+",
+        r"\p{N}",
+        r" ?[^\s\p{L}\p{N}]+[\r\n]*",
+        r"\s*[\r\n]+",
+        r"\s+(\?!\S)",
+        r"\s+",
+    ]
+)
+IM_END_TOKEN = "<|im_end|>"
+
+# NOTE: copied directly from fish-speech repo where it is held as YAML file
 _default_audio_codec_config = {
     "_target_": "fish_speech.models.dac.modded_dac.DAC",
     "sample_rate": 44100,
@@ -77,5 +112,79 @@ _default_audio_codec_config = {
 }
 
 
+@dataclass(frozen=True)
+class FishAudioSpecialInferenceTokens:
+    semantic_begin_id: int
+    semantic_end_id: int
+    im_end_token_id: int
+
+
 def get_default_fishaudio_dac_config() -> DictConfig:
     return DictConfig(_default_audio_codec_config)
+
+
+def _load_fishaudio_tiktoken_data(
+    tiktoken_path: Path, special_tokens: dict[str, int]
+) -> tuple[TikokenEncoding, FishAudioSpecialInferenceTokens]:
+    def load_tiktoken_bpe(tiktoken_bpe_file: Path) -> dict[bytes, int]:
+        data = {}
+        for line in open(tiktoken_bpe_file).read().splitlines():
+            if not line:
+                continue
+            token, rank = line.split()
+            if token == "=":
+                continue
+            data[base64.b64decode(token)] = int(rank)
+        return data
+
+    mergeable_ranks = load_tiktoken_bpe(tiktoken_path)
+    special_token_begin = len(mergeable_ranks)
+    all_special_tokens_with_ids = {token: special_token_begin + i for i, token in enumerate(special_tokens)}
+
+    semantic_id_to_token_id = {}
+    end_idx = 0
+    for token in special_tokens:
+        if token.startswith("<|semantic:"):
+            idx = int(re.match(r"<\|semantic:(\d+)\|>", token).group(1))
+            semantic_id_to_token_id[idx] = all_special_tokens_with_ids[token]
+            end_idx = max(end_idx, idx)
+
+    semantic_begin_id = semantic_id_to_token_id[0]
+    semantic_end_id = semantic_id_to_token_id[end_idx]
+
+    tkt_model = TikokenEncoding(
+        name=Path(tiktoken_path).stem,
+        pat_str=FISH_TIKTOKEN_PATTERN,
+        mergeable_ranks=mergeable_ranks,
+        special_tokens=all_special_tokens_with_ids,
+    )
+
+    inference_special_tokens = FishAudioSpecialInferenceTokens(
+        semantic_begin_id=semantic_begin_id,
+        semantic_end_id=semantic_end_id,
+        im_end_token_id=all_special_tokens_with_ids[IM_END_TOKEN],
+    )
+
+    return tkt_model, inference_special_tokens
+
+
+def load_tokenizer_from_fishaudio_tiktoken(
+    path_to_tokenizer: Path, path_to_special_tokens: Path
+) -> tuple[Tokenizer, FishAudioSpecialInferenceTokens]:
+    output_temp_dir = tempfile.mkdtemp()
+    try:
+        if path_to_special_tokens.exists():
+            with open(path_to_special_tokens) as f:
+                all_special_tokens_with_ids = json.load(f)
+        else:
+            all_special_tokens_with_ids = {}
+
+        tkt_model, special_inference_tokens = _load_fishaudio_tiktoken_data(
+            path_to_tokenizer, all_special_tokens_with_ids
+        )
+
+        convert_tiktoken_to_fast(tkt_model, output_temp_dir)
+        tokenizer = Tokenizer.from_file(output_temp_dir + "/tokenizer.json")
+        return tokenizer, special_inference_tokens
+    finally:
+        shutil.rmtree(output_temp_dir)

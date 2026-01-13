@@ -8,15 +8,17 @@ from typing import ClassVar, Self
 import cattrs
 from jaxtyping import Array, DTypeLike
 
-from lalamo.modules import ClassifierConfig, DecoderConfig
+from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 
 __all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
 
+SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig
+
 
 @dataclass(frozen=True)
-class ForeignConfig[ConfigT: DecoderConfig | ClassifierConfig](RegistryABC):
+class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
 
@@ -103,3 +105,23 @@ class ForeignClassifierConfig(ForeignConfig, RegistryABC):
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> ClassifierConfig:
         return self.to_classifier_config(context_length, activation_precision, accumulation_precision)
+
+
+@dataclass(frozen=True)
+class ForeignFishAudioTTSConfig(ForeignConfig, RegistryABC):
+    @abstractmethod
+    def to_tts_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+    ) -> TTSConfig: ...
+
+    def to_lalamo_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
+    ) -> TTSConfig:
+        return self.to_tts_config(context_length, activation_precision, accumulation_precision)

@@ -35,6 +35,7 @@ __all__ = [
 class ModelType(StrEnum):
     LANGUAGE_MODEL = "language_model"
     CLASSIFIER_MODEL = "classifier_model"
+    TTS_MODEL = "tts_model"
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:

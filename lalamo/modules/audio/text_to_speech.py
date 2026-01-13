@@ -1,10 +1,20 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 from functools import cached_property
-from typing import TypedDict
+from typing import Any, Self, TypedDict
 
+import jax
+from jaxtyping import Array, DTypeLike, PRNGKeyArray
 from jinja2 import Template
 from tokenizers import Tokenizer
+
+from lalamo.common import ParameterTree
+from lalamo.modules.common import LalamoModule
+
+from .audio_decoder import TTSAudioDecoder
+from .text_decoder import TTSTextDecoder
+from .vocoders import Vocoder
 
 __all__ = ["TTSMessage", "TTSRequestFactory", "TTSRequestFactoryConfig"]
 
@@ -77,3 +87,49 @@ class TTSRequestFactory:
 
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
+
+
+class ForeignTTSModelType(Enum):
+    FISH_AUDIO = "fishaudio"
+    FISH_AUDIO_LALAMO = "fishaudio_lalamo"
+
+
+@dataclass(frozen=True)
+class TTSConfig:
+    text_decoder_config: Any
+    audio_decoder_config: Any
+    vocoder_config: Any
+
+    activation_precision: DTypeLike
+
+    def empty(self) -> "TTSModel":
+        text_decoder = self.text_decoder_config.empty()
+        audio_decoder = self.audio_decoder_config.empty()
+        vocoder = self.vocoder_config.empty()
+        return TTSModel(config=self, text_decoder=text_decoder, audio_decoder=audio_decoder, vocoder=vocoder)
+
+    def random_init(self, key: PRNGKeyArray) -> "TTSModel":
+        key1, key2 = jax.random.split(key)
+        text_decoder = self.text_decoder_config.random_init(key1)
+        audio_decoder = self.audio_decoder_config.random_init(key2)
+        vocoder = self.vocoder_config.empty()
+        return TTSModel(config=self, text_decoder=text_decoder, audio_decoder=audio_decoder, vocoder=vocoder)
+
+
+class TTSModel(LalamoModule[TTSConfig]):
+    text_decoder: TTSTextDecoder
+    audio_decoder: TTSAudioDecoder
+    vocoder: Vocoder
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return TTSConfig.activation_precision
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+    ) -> Self:
+        return self
