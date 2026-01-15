@@ -1,8 +1,8 @@
 import shutil
 import tempfile
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
-from collections.abc import Mapping
 
 import jax
 import torch
@@ -14,8 +14,6 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-# from lalamo.model_import.loaders.fishaudio_loaders import load_fish_audio_text_decoding_modules
-# from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
