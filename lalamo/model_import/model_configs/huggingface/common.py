@@ -11,7 +11,7 @@ from lalamo.model_import.loaders import (
     load_huggingface_classifier,
     load_huggingface_decoder,
 )
-from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignFishAudioTTSConfig, ForeignLMConfig
+from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignLMConfig
 from lalamo.modules import Decoder
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.common import LalamoModule
@@ -21,7 +21,6 @@ __all__ = [
     "GPTQMetaConfig",
     "GPTQQuantizationConfig",
     "HuggingFaceClassifierConfig",
-    "HuggingFaceFishAudioConfig",
     "HuggingFaceLMConfig",
 ]
 
@@ -135,23 +134,3 @@ class HuggingFaceClassifierConfig(ForeignClassifierConfig):
     ) -> LalamoModule:
         assert isinstance(model, Classifier)
         return load_huggingface_classifier(model, weights_dict)
-
-
-@dataclass(frozen=True)
-class HuggingFaceFishAudioConfig(ForeignFishAudioTTSConfig):
-    @property
-    def default_precision(self) -> DTypeLike:
-        # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
-        # Currently lalamo weight manipulation pipeline does not suport such
-        # mixed-model-mixed-weight configuration so we upcast everything to fp32
-        # as temporary solution
-        return jnp.dtype(getattr(self, "torch_dtype", "float32"))
-
-    @abstractmethod
-    def _load_weights(
-        self,
-        model: LalamoModule,
-        weights_dict: Mapping[str, Array],
-    ) -> LalamoModule: ...
-
-    """ NOTE: This one should be defined in each downstream TTS model separately"""

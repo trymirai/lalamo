@@ -11,15 +11,8 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
-from lalamo.model_import.loaders.fishaudio_loaders import (
-    load_audio_decoder,
-    load_downsample_rvq,
-)
 from lalamo.modules import TTSAudioDecoder
-from lalamo.modules.torch_interop import torch_to_jax
-from lalamo.utils import MapDictValues
 
-from .fishaudio_common import cast_if_float, get_default_fishaudio_dac_config
 from .fishaudio_modules import (
     ConfigMapping,
     ConvNeXtSpatialParams,
@@ -56,13 +49,13 @@ class DescriptAudioCodecConfig:
     # NOTE: these fields are retireved from DAC audio-codec config which is
     # currently baked into code of fish-speech package as a separate file
     encoder_dim: int
-    encoder_rates: tuple[int]
+    encoder_rates: tuple[int, ...]
     decoder_dim: int
-    decoder_rates: tuple[int]
+    decoder_rates: tuple[int, ...]
     input_dim: int
     n_codebooks: int
     codebook_dim: int
-    downsample_factor: tuple[int]
+    downsample_factor: tuple[int, ...]
     codebook_size: int
     semantic_codebook_size: int
 
@@ -296,7 +289,7 @@ class DescriptAudioCodecConfig:
     @staticmethod
     def from_fishaudio_config(
         fish_dac_config: Mapping[Any, Any],
-        key: PRNGKeyArray = jax.random.PRNGKey(123),
+        # key: PRNGKeyArray = jax.random.PRNGKey(123),
     ) -> "DescriptAudioCodec":
         """Create DAC module from FishAudio DAC config.
 
@@ -308,51 +301,8 @@ class DescriptAudioCodecConfig:
             DAC module configured to match FishAudio DAC structure.
         """
         dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(fish_dac_config=fish_dac_config)
-        return dac_config.random_init(
-            key=key,
-        )
-
-    @classmethod
-    def from_foreign_model(cls, audio_chkpt_path: Path, precision: DTypeLike) -> "DescriptAudioCodec":
-        """Load a DescriptAudioCodec from a FishAudio DAC checkpoint.
-
-        Args:
-            audio_chkpt_path: Path to the FishAudio DAC checkpoint file.
-            precision: Data type precision for the model weights.
-
-        Returns:
-            DescriptAudioCodec module with loaded weights.
-        """
-        # Load FishAudio model
-        fish_dac = load_model("modded_dac_vq", audio_chkpt_path, device="cpu")
-        assert isinstance(fish_dac, DAC)
-
-        # Create empty module structure from config
-        dac_module = DescriptAudioCodecConfig.from_fishaudio_config(get_default_fishaudio_dac_config())
-
-        # Extract and convert quantizer weights
-        quantizer_weights = dict(
-            MapDictValues(
-                lambda v: cast_if_float(torch_to_jax(v), precision),
-                fish_dac.quantizer.state_dict(),
-            )
-        )
-        loaded_quantizer = load_downsample_rvq(dac_module.quantizer, quantizer_weights)
-
-        # Extract and convert decoder weights
-        decoder_weights = dict(
-            MapDictValues(
-                lambda v: cast_if_float(torch_to_jax(v), precision),
-                fish_dac.decoder.state_dict(),
-            )
-        )
-        loaded_decoder = load_audio_decoder(dac_module.decoder, decoder_weights)
-
-        # Create the final module with loaded components
-        return DescriptAudioCodec(
-            config=dac_module.config,
-            quantizer=loaded_quantizer,
-            decoder=loaded_decoder,
+        return dac_config.empty(
+            # key=key,
         )
 
 

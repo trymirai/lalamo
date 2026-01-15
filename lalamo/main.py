@@ -51,7 +51,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.models.tts_model import ForeignTTSModelType, TTSGeneratorConfig, TTSMessage
+from lalamo.models.tts_model import ForeignTTSModelType, TTSLoader, TTSMessage
 from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -304,13 +304,13 @@ def tts(
 
     model = None
     if model_path is not None:
-        console.print("🤖 Current method is not supported yet, use --foreign_model mode instead.")
-        raise Exit
+        console.print(f"🤖 Loading model from specified path: {model_path}.")
+        model = TTSLoader.load_model(model_path)
 
     if foreign_model:
         if foreign_chkpt_path is None:
             console.print("Path to checkpoint not specified, will try to find it from HuggingFace cache.")
-            foreign_chkpt_path = TTSGeneratorConfig.try_locate_audio_model_path(foreign_model)
+            foreign_chkpt_path = TTSLoader.try_locate_audio_model_path(foreign_model)
             if foreign_chkpt_path is None:
                 err_console.print(f"Failed to locate checkpoint directory for model {foreign_model}")
                 raise Exit
@@ -320,7 +320,7 @@ def tts(
             transient=True,
         ) as progress:
             loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-            model = TTSGeneratorConfig.load_model_from_foreign_model_preset(foreign_model, foreign_chkpt_path)
+            model = TTSLoader.load_model_from_foreign_model_preset(foreign_model, foreign_chkpt_path)
         progress.remove_task(loading_task)
         console.print(f"🤖 Synthesizing speech with [blue]{foreign_model}[/blue]:")
 

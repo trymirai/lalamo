@@ -1,8 +1,10 @@
 from collections.abc import Mapping
+from pathlib import Path
+from typing import Any
 
 import torch
 from jax import numpy as jnp
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
 from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
@@ -13,6 +15,7 @@ from lalamo.modules import (
     Attention,
     DenseMLP,
     FullPrecisionLinear,
+    Identity,
     LayerScale,
     LinearBase,
     MLPBase,
@@ -20,7 +23,14 @@ from lalamo.modules import (
     Transformer,
     TransformerLayer,
 )
-from lalamo.modules.audio.foreign.fishaudio_modules import (
+from lalamo.modules.audio.fishaudio import (
+    DescriptAudioCodec,
+    DescriptAudioCodecConfig,
+    FishAudioTextDecoder,
+    FishAudioTextDecoderConfig,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     CausalConv1d,
     CausalTransposeConv1d,
     ConvNeXtBlock,
@@ -34,8 +44,11 @@ from lalamo.modules.audio.foreign.fishaudio_modules import (
     UpsamplingBlock,
     VectorQuantize,
 )
+from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.utils import MapDictValues
 
 from .common import load_parameters
+from .huggingface import load_tied_embedding
 
 
 def _fuse_full_precision_weights(
@@ -881,3 +894,126 @@ def load_audio_decoder(
     )
 
 
+def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
+    """Load a DescriptAudioCodec from a FishAudio DAC checkpoint.
+
+    Args:
+        audio_chkpt_path: Path to the FishAudio DAC checkpoint file.
+        precision: Data type precision for the model weights.
+
+    Returns:
+        DescriptAudioCodec module with loaded weights.
+    """
+
+    # Create empty module structure from config
+    dac_module = DescriptAudioCodecConfig.from_fishaudio_config(get_default_fishaudio_dac_config())
+
+    loaded_quantizer = load_downsample_rvq(dac_module.quantizer, state_dict, path=ParameterPath("quantizer"))
+
+    loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))
+
+    # Create the final module with loaded components
+    return DescriptAudioCodec(
+        config=dac_module.config,
+        quantizer=loaded_quantizer,
+        decoder=loaded_decoder,
+    )
+
+
+def load_fishaudio_text_decoder(
+    fish_model_or_path: Path | torch.nn.Module, precision: DTypeLike
+) -> FishAudioTextDecoder:
+    from pathlib import Path
+
+    from fish_speech.models.text2semantic.llama import (
+        BaseModelArgs,
+        DualARModelArgs,
+        DualARTransformer,
+        NaiveModelArgs,
+    )
+    from fish_speech.tokenizer import FishTokenizer
+
+    from lalamo.modules.audio.fishaudio.fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
+
+    def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
+        if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
+            return array.astype(cast_to)
+        return array
+
+    if isinstance(fish_model_or_path, Path):
+        fish_tokenizer = FishTokenizer.from_pretrained(str(fish_model_or_path))
+        fish_model_cfg: DualARModelArgs | NaiveModelArgs = BaseModelArgs.from_pretrained(
+            str(fish_model_or_path / "config.json")
+        )
+        assert isinstance(fish_model_cfg, DualARModelArgs)
+
+        fish_model = FishAudioTextDecoderConfig_Foreign._load_fish_model(fish_model_or_path, fish_model_cfg)
+        fish_model_dict = fish_model.state_dict()
+    else:
+        assert isinstance(fish_model_or_path, DualARTransformer)
+        fish_tokenizer = fish_model_or_path.tokenizer
+        fish_model_cfg = fish_model_or_path.config
+        fish_model_dict = fish_model_or_path.state_dict()
+
+    assert isinstance(fish_model_cfg, DualARModelArgs)
+    config = FishAudioTextDecoderConfig.from_fish_audio_config(fish_model_cfg, fish_tokenizer, precision)
+    weights_mapping = dict(MapDictValues(lambda v: cast_if_float(torch_to_jax(v), precision), fish_model_dict))
+
+    transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
+        config.slow_model_config.empty(),
+        config.slow_readout_config.empty(
+            input_dim=config.slow_model_dim,
+            output_dims=(config.vocab_size,),
+            has_biases=False,
+        ),
+        weights_mapping,
+        fast=False,
+    )
+    transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
+        config.fast_model_config.empty(),
+        config.fast_readout_config.empty(
+            input_dim=config.fast_model_dim, output_dims=(config.codebook_size,), has_biases=False
+        ),
+        weights_mapping,
+        fast=True,
+    )
+    embeddings_slow = load_tied_embedding(
+        config.slow_embeddings_config.empty(config.vocab_size, config.slow_model_dim),
+        weights_mapping,
+        ParameterPath("embeddings"),
+    )
+    embeddings_fast = load_tied_embedding(
+        config.fast_embeddings_config.empty(config.codebook_size, config.fast_model_dim),
+        weights_mapping,
+        ParameterPath("fast_embeddings"),
+    )
+
+    codebook_embeddings = load_tied_embedding(
+        config.codebook_embeddings_config.empty(config.codebook_size * config.num_codebooks, config.slow_model_dim),
+        weights_mapping,
+        ParameterPath("codebook_embeddings"),
+    )
+
+    if config.fast_model_projection_config is not None:
+        fast_model_projection = load_linear(
+            config.fast_model_projection_config.empty(
+                input_dim=config.fast_model_dim, output_dims=(config.codebook_size,), has_biases=False
+            ),
+            weights_mapping,
+            ParameterPath("fast_project_in"),
+        )
+        assert isinstance(fast_model_projection, FullPrecisionLinear)
+    else:
+        fast_model_projection = Identity()
+
+    return FishAudioTextDecoder(
+        config=config,
+        embeddings_slow=embeddings_slow,
+        transformer_slow=transformer_slow,
+        readout_slow=readout_slow,
+        embeddings_fast=embeddings_fast,
+        transformer_fast=transformer_fast,
+        readout_fast=readout_fast,
+        codebook_embeddings=codebook_embeddings,
+        fast_model_projection=fast_model_projection,
+    )

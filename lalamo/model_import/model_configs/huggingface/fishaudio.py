@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Self
 
+from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterPath
@@ -14,6 +15,7 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fish_audio_text_decoding_modules,
 )
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
+from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
@@ -31,17 +33,14 @@ from lalamo.modules import (
     UpcastMode,
     VocoderConfig,
 )
-from lalamo.modules.audio import audio_decoder
-from lalamo.modules.audio.foreign import (
+from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
     DescriptAudioCodecConfig,
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
 )
-from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.audio.foreign.fishaudio_modules import RoPEConfigFishAudio
-
-from .common import HuggingFaceFishAudioConfig
+from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.rope import RoPEConfigCis
 
 __all__ = ["FishAudioConfig"]
 
@@ -128,7 +127,7 @@ def load_fishaudio_audio_decoder(
 
 
 @dataclass(frozen=True)
-class FishAudioConfig(HuggingFaceFishAudioConfig):
+class FishAudioConfig(ForeignTTSConfig):
     attention_o_bias: bool
     attention_qk_norm: bool
     attention_qkv_bias: bool
@@ -181,11 +180,7 @@ class FishAudioConfig(HuggingFaceFishAudioConfig):
         attention_o_bias = self.fast_attention_o_bias if fast_module else self.attention_o_bias
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
-        global_rope_config = RoPEConfigFishAudio(
-            precision=precision,
-            base=self.rope_base,
-            max_sequence_length=self.max_seq_len,
-        )
+        global_rope_config = RoPEConfigCis(precision=precision, base=self.rope_base)
         local_rope_config = None
 
         norm_config = NormalizationConfig(
@@ -292,9 +287,9 @@ class FishAudioConfig(HuggingFaceFishAudioConfig):
             fast_readout_config=fast_readout_cfg,
             codebook_embeddings_config=codebook_embeddings_cfg,
             fast_model_projection_config=fast_model_projection_config,
-            semantic_token_begin_id=-1,
-            semantic_token_end_id=-1,
-            im_end_token_id=-1,
+            semantic_token_begin_id=self.semantic_token_begin_id,
+            semantic_token_end_id=self.semantic_token_end_id,
+            im_end_token_id=self.im_end_token_id,
             codebook_size=self.codebook_size,
             vocab_size=self.vocab_size,
             slow_model_dim=self.dim,
@@ -339,3 +334,11 @@ class FishAudioConfig(HuggingFaceFishAudioConfig):
         with open(json_path) as f:
             config = json.load(f)
         return cls(**config)
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
+        # Currently lalamo weight manipulation pipeline does not suport such
+        # mixed-model-mixed-weight configuration so we upcast everything to fp32
+        # as temporary solution
+        return jnp.dtype(getattr(self, "torch_dtype", "float32"))

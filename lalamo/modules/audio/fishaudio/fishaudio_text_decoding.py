@@ -1,12 +1,12 @@
 import shutil
 import tempfile
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, replace
 from typing import Self
+from collections.abc import Mapping
 
 import jax
 import torch
-from fish_speech.models.text2semantic.llama import BaseModelArgs, DualARModelArgs, DualARTransformer, NaiveModelArgs
+from fish_speech.models.text2semantic.llama import BaseModelArgs, DualARModelArgs
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
@@ -14,35 +14,24 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.common import ParameterPath, ParameterTree
-from lalamo.model_import.loaders.fishaudio_loaders import load_fish_audio_text_decoding_modules
-from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
-from lalamo.modules import (
-    AttentionConfig,
-    DenseMLPConfig,
-    ForwardPassMode,
-    FullPrecisionLinear,
-    FullPrecisionLinearConfig,
-    Identity,
-    NormalizationConfig,
-    SiLU,
-    State,
-    TiedEmbedding,
-    TiedEmbeddingConfig,
-    Transformer,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UpcastMode,
-)
+# from lalamo.model_import.loaders.fishaudio_loaders import load_fish_audio_text_decoding_modules
+# from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
+from lalamo.common import ParameterTree, require_tree
+from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.modules.common import ForwardPassMode
+from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.rope import RoPEConfigCis
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.state.common import State
+from lalamo.modules.transformer import Transformer, TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.modules.utils import vmap_twice
-from lalamo.utils import MapDictValues
 
-from .fishaudio_common import cast_if_float
-from .fishaudio_modules import RoPEConfigFishAudio
 from .fishaudio_sampling import FishAudioSamplingParams, sample
-from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
 
 def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
@@ -58,6 +47,7 @@ def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
 
 
 class ConfigMapping:
+    # TODO: move this to tests or remove completely
     @staticmethod
     def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
         return BaseModelArgs(
@@ -85,11 +75,7 @@ class ConfigMapping:
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         config: BaseModelArgs, precision: DTypeLike
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-        global_rope_config = RoPEConfigFishAudio(
-            precision=precision,
-            base=config.rope_base,
-            max_sequence_length=config.max_seq_len,
-        )
+        global_rope_config = RoPEConfigCis(precision=precision, base=config.rope_base)
         local_rope_config = None
 
         norm_config = NormalizationConfig(
@@ -332,89 +318,6 @@ class FishAudioTextDecoderConfig:
             fast_model_projection=fast_model_projection,
         )
 
-    @classmethod
-    def from_foreign_model(
-        cls, fish_model_or_path: Path | DualARTransformer, precision: DTypeLike
-    ) -> "FishAudioTextDecoder":
-        if isinstance(fish_model_or_path, Path):
-            fish_tokenizer = FishTokenizer.from_pretrained(str(fish_model_or_path))
-            fish_model_cfg: DualARModelArgs | NaiveModelArgs = BaseModelArgs.from_pretrained(
-                str(fish_model_or_path / "config.json")
-            )
-            assert isinstance(fish_model_cfg, DualARModelArgs)
-
-            fish_model = FishAudioTextDecoderConfig_Foreign._load_fish_model(fish_model_or_path, fish_model_cfg)
-            fish_model_dict = fish_model.state_dict()
-        else:
-            fish_tokenizer = fish_model_or_path.tokenizer
-            fish_model_cfg = fish_model_or_path.config
-            fish_model_dict = fish_model_or_path.state_dict()
-
-        assert isinstance(fish_model_cfg, DualARModelArgs)
-        config = cls.from_fish_audio_config(fish_model_cfg, fish_tokenizer, precision)
-        weights_mapping = dict(MapDictValues(lambda v: cast_if_float(torch_to_jax(v), precision), fish_model_dict))
-
-        transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
-            config.slow_model_config.empty(),
-            config.slow_readout_config.empty(
-                input_dim=config.slow_model_dim,
-                output_dims=(config.vocab_size,),
-                has_biases=False,
-            ),
-            weights_mapping,
-            fast=False,
-        )
-        transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
-            config.fast_model_config.empty(),
-            config.fast_readout_config.empty(
-                input_dim=config.fast_model_dim, output_dims=(config.codebook_size,), has_biases=False
-            ),
-            weights_mapping,
-            fast=True,
-        )
-        embeddings_slow = load_tied_embedding(
-            config.slow_embeddings_config.empty(config.vocab_size, config.slow_model_dim),
-            weights_mapping,
-            ParameterPath("embeddings"),
-        )
-        embeddings_fast = load_tied_embedding(
-            config.fast_embeddings_config.empty(config.codebook_size, config.fast_model_dim),
-            weights_mapping,
-            ParameterPath("fast_embeddings"),
-        )
-
-        codebook_embeddings = load_tied_embedding(
-            config.codebook_embeddings_config.empty(
-                config.codebook_size * config.num_codebooks, config.slow_model_dim
-            ),
-            weights_mapping,
-            ParameterPath("codebook_embeddings"),
-        )
-
-        if config.fast_model_projection_config is not None:
-            fast_model_projection = load_linear(
-                config.fast_model_projection_config.empty(
-                    input_dim=config.fast_model_dim, output_dims=(config.codebook_size,), has_biases=False
-                ),
-                weights_mapping,
-                ParameterPath("fast_project_in"),
-            )
-            assert isinstance(fast_model_projection, FullPrecisionLinear)
-        else:
-            fast_model_projection = Identity()
-
-        return FishAudioTextDecoder(
-            config=config,
-            embeddings_slow=embeddings_slow,
-            transformer_slow=transformer_slow,
-            readout_slow=readout_slow,
-            embeddings_fast=embeddings_fast,
-            transformer_fast=transformer_fast,
-            readout_fast=readout_fast,
-            codebook_embeddings=codebook_embeddings,
-            fast_model_projection=fast_model_projection,
-        )
-
 
 class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
@@ -450,8 +353,22 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         }
 
     def import_weights(self, weights: ParameterTree) -> Self:
-        # TODO(peter.glushkov): implement me
-        return self
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            embeddings_slow=self.embeddings_slow.import_weights(require_tree(weights["embeddings_slow"])),
+            embeddings_fast=self.embeddings_fast.import_weights(require_tree(weights["embeddings_fast"])),
+            transformer_slow=self.transformer_slow.import_weights(require_tree(weights["transformer_slow"])),
+            transformer_fast=self.transformer_fast.import_weights(require_tree(weights["transformer_fast"])),
+            readout_slow=self.readout_slow.import_weights(require_tree(weights["readout_slow"])),
+            readout_fast=self.readout_fast.import_weights(require_tree(weights["readout_fast"])),
+            codebook_embeddings=self.codebook_embeddings.import_weights(require_tree(weights["codebook_embeddings"])),
+            fast_model_projection=self.fast_model_projection.import_weights(
+                require_tree(weights["fast_model_projection"])
+            )
+            if isinstance(self.fast_model_projection, FullPrecisionLinear)
+            else Identity(),
+        )
 
     @property
     def semantic_begin_id(self) -> int:
@@ -607,6 +524,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # Generate remaining tokens
         cur_token = first_codes
         generated_count = 1
+
+        # MY_DBG
+        max_new_tokens = 30
 
         for i in range(1, max_new_tokens):
             # print(f" ### MY_DBG: decoding token {i}")

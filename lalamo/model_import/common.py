@@ -24,9 +24,9 @@ from lalamo.models import (
     TTSGenerator,
     TTSGeneratorConfig,
 )
-from lalamo.modules import Classifier, Decoder, LalamoModule, TTSConfig, TTSModel
-from lalamo.modules.audio import TTSRequestFactory, TTSRequestFactoryConfig
-from lalamo.modules.audio.foreign.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
+from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
+from lalamo.modules.audio.text_to_speech import TTSRequestFactory, TTSRequestFactoryConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -373,7 +373,8 @@ def _import_tts_model(
     tts_generator_config = TTSGeneratorConfig(
         tts_config=foreign_tts_config.to_lalamo_config(
             context_length=8192, activation_precision=precision, accumulation_precision=precision, metadata_dict={}
-        )
+        ),
+        message_processor_config=message_processor.config,
     )
     tts_generator = TTSGenerator(tts_generator_config, tts_model, audio_renderer, message_processor)
 

@@ -1,4 +1,4 @@
-from .common import ForeignClassifierConfig, ForeignConfig, ForeignFishAudioTTSConfig, ForeignLMConfig
+from .common import ForeignClassifierConfig, ForeignConfig, ForeignTTSConfig, ForeignLMConfig
 
 # from .executorch import ETLlamaConfig
 from .huggingface import (
@@ -17,7 +17,7 @@ from .huggingface import (
 __all__ = [
     "ForeignClassifierConfig",
     "ForeignConfig",
-    "ForeignFishAudioTTSConfig",
+    "ForeignTTSConfig",
     # "ETLlamaConfig",
     "ForeignLMConfig",
     "HFGPTOssConfig",

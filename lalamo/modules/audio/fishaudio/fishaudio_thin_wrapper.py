@@ -27,10 +27,10 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterTree
-from lalamo.modules import TTSAudioDecoder
-from lalamo.modules.audio.foreign.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.audio.foreign.fishaudio_sampling import FishAudioSamplingParams
+from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.audio.fishaudio.fishaudio_sampling import FishAudioSamplingParams
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
+from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 

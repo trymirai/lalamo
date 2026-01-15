@@ -24,139 +24,16 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from omegaconf import DictConfig
 
 from lalamo.common import ParameterTree, dummy_array
-from lalamo.modules import (
-    GELU,
-    Activation,
-    AttentionConfig,
-    DenseMLPConfig,
-    ForwardPassMode,
-    FullPrecisionLinear,
-    FullPrecisionLinearConfig,
-    LalamoModule,
-    LayerScale,
-    LayerScaleConfig,
-    Normalization,
-    NormalizationConfig,
-    SiLU,
-    TiedEmbedding,
-    TiedEmbeddingConfig,
-    Transformer,
-    TransformerConfig,
-    TransformerLayerConfig,
-    UpcastMode,
-)
-from lalamo.modules.rope import RoPEConfigBase
-
-
-@dataclass(frozen=True)
-class RoPEConfigFishAudio(RoPEConfigBase):
-    @property
-    def _attention_scaling_factor(self) -> float:
-        return super()._attention_scaling_factor
-
-    def _precompute_freqs_cis_orig(
-        self, head_dim: int, seq_len: int
-    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
-        time_steps = jnp.arange(0, head_dim // 2).astype(jnp.bfloat16) * 2 / head_dim
-        freqs = 1.0 / (self.base**time_steps)
-        t = jnp.arange(seq_len, device=freqs.device)
-        freqs = jnp.outer(t, freqs)
-        return (jnp.cos(freqs), jnp.sin(freqs))
-
-    def init_orig(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPEFishAudio":
-        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
-        cosines = jnp.zeros((num_timesteps, head_dim), self.precision)
-        sines = jnp.zeros((num_timesteps, head_dim), self.precision)
-        for k in range(num_timesteps):
-            cosines = cosines.at[k, 0::2].set(cosines_cis[k])
-            cosines = cosines.at[k, 1::2].set(cosines_cis[k])
-            sines = sines.at[k, 0::2].set(sines_cis[k])
-            sines = sines.at[k, 1::2].set(sines_cis[k])
-
-        return RoPEFishAudio(config=self, cosines=cosines, sines=sines)
-
-    def _precompute_freqs_cis(
-        self, head_dim: int, seq_len: int
-    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
-        # time_steps = jnp.arange(0, head_dim, 2).astype(jnp.bfloat16)[: (head_dim // 2)] / head_dim
-        time_steps = jnp.repeat(jnp.arange(0, head_dim // 2).astype(jnp.bfloat16) * 2 / head_dim, 2)
-        freqs = 1.0 / (self.base**time_steps)
-        t = jnp.arange(seq_len, device=freqs.device)
-        freqs = jnp.outer(t, freqs)
-        return (jnp.cos(freqs), jnp.sin(freqs))
-
-    def init(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-    ) -> "RoPEFishAudio":
-        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
-        return RoPEFishAudio(config=self, cosines=cosines_cis, sines=sines_cis)
-
-
-class RoPEFishAudio(LalamoModule[RoPEConfigBase]):
-    sines: Float[Array, "tokens head_channels"]
-    cosines: Float[Array, "tokens head_channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def head_dim(self) -> int:
-        _, result = self.sines.shape
-        return result
-
-    @property
-    def max_sequence_length(self) -> int:
-        result, _ = self.sines.shape
-        return result
-
-    # @eqx.filter_jit
-    def __call__(self, timesteps: Int[Array, " tokens"]) -> "PositionalEmbeddingsFishAudio":
-        return PositionalEmbeddingsFishAudio(
-            cosines=self.cosines[timesteps],
-            sines=self.sines[timesteps],
-        )
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "cosines": self.cosines,
-            "sines": self.sines,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> "RoPEFishAudio":
-        assert isinstance(weights, Mapping)
-        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
-
-
-class PositionalEmbeddingsFishAudio(eqx.Module):
-    cosines: Float[Array, "*batch tokens head_channels"]
-    sines: Float[Array, "*batch tokens head_channels"]
-
-    @property
-    def head_dim(self) -> int:
-        return self.cosines.shape[-1]
-
-    def interleave_for_cis_rope(
-        self,
-        heads: Float[Array, "*batch tokens head_channels"],
-    ) -> Float[Array, "*batch tokens head_channels"]:
-        interleaved = jnp.zeros(heads.shape, dtype=heads.dtype)
-        interleaved = interleaved.at[..., 0::2].set(-heads[..., 1::2])
-        interleaved = interleaved.at[..., 1::2].set(heads[..., 0::2])
-        return interleaved
-
-    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
-        return heads * self.cosines + self.interleave_for_cis_rope(heads) * self.sines
-
+from lalamo.modules.activations import GELU, Activation, SiLU
+from lalamo.modules.common import ForwardPassMode, LalamoModule
+from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import LayerScale, LayerScaleConfig, Normalization, NormalizationConfig, UpcastMode
+from lalamo.modules.rope import RoPEConfigCis
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import Transformer, TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 # =============================================================================
 # Configuration Mapping
@@ -168,11 +45,7 @@ class ConfigMapping:
     def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         config, precision: DTypeLike, window_size: int, input_dim: int
     ) -> TransformerConfig:
-        global_rope_config = RoPEConfigFishAudio(
-            precision=precision,
-            base=config.rope_base,
-            max_sequence_length=config.block_size,
-        )
+        global_rope_config = RoPEConfigCis(precision=precision, base=config.rope_base)
         local_rope_config = None
 
         norm_config_pre = NormalizationConfig(
@@ -1310,8 +1183,6 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
     def import_weights(self, weights: ParameterTree[Array]) -> "Upsampler":
         assert isinstance(weights, Mapping)
         block_weights = weights["blocks"]
-        assert isinstance(block_weights, list)
-
         new_blocks = []
         for block, w in zip(self.blocks, block_weights, strict=True):
             assert isinstance(w, Mapping)
@@ -1520,7 +1391,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
         quantizer_weights = weights["quantizers"]
-        assert isinstance(quantizer_weights, list)
         new_quantizers = []
         for q, w in zip(self.quantizers, quantizer_weights, strict=True):
             assert isinstance(w, Mapping)
@@ -2549,7 +2419,6 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
         final_conv_weights = weights["final_conv"]
 
         assert isinstance(first_conv_weights, Mapping)
-        assert isinstance(block_weights, list)
         assert isinstance(final_snake_weights, Mapping)
         assert isinstance(final_conv_weights, Mapping)
 

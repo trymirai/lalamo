@@ -13,8 +13,8 @@ from lalamo.common import ParameterTree, require_tree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import LayerScaleConfig, Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings
+from .normalization import LayerScale, LayerScaleConfig, Normalization, NormalizationConfig
+from .rope import PositionalEmbeddings, PositionalEmbeddingsCis
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
 from .utils import vmap_twice
 
@@ -32,7 +32,7 @@ type TransformerLayerForwardPassConfig = MLPForwardPassConfig
 
 class TransformerLayerActivationTrace(eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
-    positional_embeddings: PositionalEmbeddings | None
+    positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None
     state: StateLayerBase | None
 
     mlp_inputs: Float[Array, "batch suffix_tokens channels"]
@@ -165,12 +165,12 @@ class TransformerLayerConfig:
 
 
 class TransformerLayer(LalamoModule[TransformerLayerConfig]):
-    pre_mixer_norm: Normalization | None
+    pre_mixer_norm: Normalization | LayerScale | None
     mixer: TokenMixerBase
-    post_mixer_norm: Normalization | None
-    pre_mlp_norm: Normalization
+    post_mixer_norm: Normalization | LayerScale | None
+    pre_mlp_norm: Normalization | LayerScale | None
     mlp: MLPBase
-    post_mlp_norm: Normalization | None
+    post_mlp_norm: Normalization | LayerScale | None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -207,7 +207,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | None,
+        positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None,
         state: StateLayerBase | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
@@ -241,7 +241,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
-        normalized_mlp_inputs = vmap_twice(self.pre_mlp_norm)(mlp_inputs)
+        normalized_mlp_inputs = (
+            vmap_twice(self.pre_mlp_norm)(mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
+        )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             forward_pass_mode=forward_pass_mode,
@@ -285,7 +287,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     def export_weights(self) -> ParameterTree:
         result = dict(
             mixer=self.mixer.export_weights(),
-            pre_mlp_norm=self.pre_mlp_norm.export_weights(),
             mlp=self.mlp.export_weights(),
         )
         if self.pre_mixer_norm is not None:
@@ -294,6 +295,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             result["post_mixer_norm"] = self.post_mixer_norm.export_weights()
         if self.post_mlp_norm is not None:
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
+        if self.pre_mlp_norm is not None:
+            result["pre_mlp_norm"] = self.pre_mlp_norm.export_weights()
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
@@ -310,12 +313,16 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             pre_mixer_norm = self.pre_mixer_norm.import_weights(require_tree(weights["pre_mixer_norm"]))
         else:
             pre_mixer_norm = None
+        if self.pre_mlp_norm is not None:
+            pre_mlp_norm = self.pre_mlp_norm.import_weights(require_tree(weights["pre_mlp_norm"]))
+        else:
+            pre_mlp_norm = None
         return replace(
             self,
             pre_mixer_norm=pre_mixer_norm,
             mixer=self.mixer.import_weights(require_tree(weights["mixer"])),
             post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=self.pre_mlp_norm.import_weights(require_tree(weights["pre_mlp_norm"])),
+            pre_mlp_norm=pre_mlp_norm,
             mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
             post_mlp_norm=post_mlp_norm,
         )

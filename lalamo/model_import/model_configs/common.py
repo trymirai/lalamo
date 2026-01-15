@@ -108,7 +108,7 @@ class ForeignClassifierConfig(ForeignConfig, RegistryABC):
 
 
 @dataclass(frozen=True)
-class ForeignFishAudioTTSConfig(ForeignConfig, RegistryABC):
+class ForeignTTSConfig(ForeignConfig, RegistryABC):
     @abstractmethod
     def to_tts_config(
         self,

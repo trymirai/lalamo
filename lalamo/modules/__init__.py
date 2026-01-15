@@ -1,5 +1,8 @@
 from .activations import GELU, Activation, Identity, SiLU
-from .audio import NoopVocoder, TTSAudioDecoder, TTSConfig, TTSModel, TTSTextDecoder, Vocoder, VocoderConfig
+from .audio.audio_decoder import TTSAudioDecoder
+from .audio.text_decoder import TTSTextDecoder
+from .audio.text_to_speech import TTSConfig, TTSModel
+from .audio.vocoders import NoopVocoder, Vocoder, VocoderConfig
 from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,

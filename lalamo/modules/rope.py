@@ -279,6 +279,102 @@ class LinearScalingRoPEConfig(RoPEConfigBase):
         return inverse_frequencies / self.scaling_factor
 
 
+@dataclass(frozen=True)
+class RoPEConfigCis:
+    """
+    more details at https://arxiv.org/pdf/2104.09864
+    """
+
+    precision: DTypeLike
+    base: float
+
+    @property
+    def _attention_scaling_factor(self) -> float:
+        return 1.0
+
+    def _precompute_freqs_cis(
+        self, head_dim: int, seq_len: int
+    ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
+        time_steps = jnp.repeat(jnp.arange(0, head_dim // 2).astype(self.precision) * 2 / head_dim, 2)
+        freqs = 1.0 / (self.base**time_steps)
+        t = jnp.arange(seq_len, device=freqs.device)
+        freqs = jnp.outer(t, freqs)
+        return (jnp.cos(freqs), jnp.sin(freqs))
+
+    def init(
+        self,
+        head_dim: int,
+        num_timesteps: int,
+    ) -> "RoPECis":
+        cosines_cis, sines_cis = self._precompute_freqs_cis(head_dim, num_timesteps)
+        return RoPECis(config=self, cosines=cosines_cis, sines=sines_cis)
+
+
+class RoPECis(LalamoModule[RoPEConfigCis]):
+    sines: Float[Array, "tokens head_channels"]
+    cosines: Float[Array, "tokens head_channels"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    @property
+    def head_dim(self) -> int:
+        _, result = self.sines.shape
+        return result
+
+    @property
+    def max_sequence_length(self) -> int:
+        result, _ = self.sines.shape
+        return result
+
+    def __call__(self, timesteps: Int[Array, " tokens"]) -> "PositionalEmbeddingsCis":
+        return PositionalEmbeddingsCis(
+            cosines=self.cosines[timesteps],
+            sines=self.sines[timesteps],
+        )
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "cosines": self.cosines,
+            "sines": self.sines,
+        }
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],
+    ) -> "RoPECis":
+        assert isinstance(weights, Mapping)
+        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
+
+
+class PositionalEmbeddingsCis(eqx.Module):
+    cosines: Float[Array, "*batch tokens head_channels"]
+    sines: Float[Array, "*batch tokens head_channels"]
+
+    @property
+    def head_dim(self) -> int:
+        return self.cosines.shape[-1]
+
+    def interleave_for_cis_rope(
+        self,
+        heads: Float[Array, "*batch tokens head_channels"],
+    ) -> Float[Array, "*batch tokens head_channels"]:
+        interleaved = jnp.zeros(heads.shape, dtype=heads.dtype)
+        interleaved = interleaved.at[..., 0::2].set(-heads[..., 1::2])
+        interleaved = interleaved.at[..., 1::2].set(heads[..., 0::2])
+        return interleaved
+
+    def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
+        return heads * self.cosines + self.interleave_for_cis_rope(heads) * self.sines
+
+    def export(self) -> ParameterTree:
+        return dict(
+            cosines=self.cosines,
+            sines=self.sines,
+        )
+
+
 RoPEConfig = UnscaledRoPEConfig | LlamaRoPEConfig | YARNRoPEConfig | LinearScalingRoPEConfig
 
 register_config_union(RoPEConfig)

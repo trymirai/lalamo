@@ -128,13 +128,14 @@ def _load_fishaudio_tiktoken_data(
 ) -> tuple[TikokenEncoding, FishAudioSpecialInferenceTokens]:
     def load_tiktoken_bpe(tiktoken_bpe_file: Path) -> dict[bytes, int]:
         data = {}
-        for line in open(tiktoken_bpe_file).read().splitlines():
-            if not line:
-                continue
-            token, rank = line.split()
-            if token == "=":
-                continue
-            data[base64.b64decode(token)] = int(rank)
+        with open(tiktoken_bpe_file) as token_file:
+            for line in token_file.read().splitlines():
+                if not line:
+                    continue
+                token, rank = line.split()
+                if token == "=":
+                    continue
+                data[base64.b64decode(token)] = int(rank)
         return data
 
     mergeable_ranks = load_tiktoken_bpe(tiktoken_path)
@@ -145,7 +146,9 @@ def _load_fishaudio_tiktoken_data(
     end_idx = 0
     for token in special_tokens:
         if token.startswith("<|semantic:"):
-            idx = int(re.match(r"<\|semantic:(\d+)\|>", token).group(1))
+            match_results = re.match(r"<\|semantic:(\d+)\|>", token)
+            assert match_results is not None
+            idx = int(match_results.group(1))
             semantic_id_to_token_id[idx] = all_special_tokens_with_ids[token]
             end_idx = max(end_idx, idx)
 

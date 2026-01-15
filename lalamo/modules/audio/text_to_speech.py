@@ -1,5 +1,5 @@
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, replace
 from enum import Enum
 from functools import cached_property
 from typing import Any, Self, TypedDict
@@ -9,14 +9,20 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 from jinja2 import Template
 from tokenizers import Tokenizer
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.common import LalamoModule
+from lalamo.sampling import SamplingPolicy, make_policy
 
 from .audio_decoder import TTSAudioDecoder
+from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
+from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .text_decoder import TTSTextDecoder
-from .vocoders import Vocoder
+from .vocoders import Vocoder, VocoderConfig
 
 __all__ = ["TTSMessage", "TTSRequestFactory", "TTSRequestFactoryConfig"]
+
+DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.3, top_p=0.9)
+DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
 
 
 @dataclass(frozen=True)
@@ -95,10 +101,10 @@ class ForeignTTSModelType(Enum):
 
 
 @dataclass(frozen=True)
-class TTSConfig:
-    text_decoder_config: Any
-    audio_decoder_config: Any
-    vocoder_config: Any
+class TTSConfig[TextDecoderConfigT: Any, AudioDecoderConfigT: Any]:
+    text_decoder_config: TextDecoderConfigT
+    audio_decoder_config: AudioDecoderConfigT
+    vocoder_config: VocoderConfig
 
     activation_precision: DTypeLike
 
@@ -109,9 +115,9 @@ class TTSConfig:
         return TTSModel(config=self, text_decoder=text_decoder, audio_decoder=audio_decoder, vocoder=vocoder)
 
     def random_init(self, key: PRNGKeyArray) -> "TTSModel":
-        key1, key2 = jax.random.split(key)
-        text_decoder = self.text_decoder_config.random_init(key1)
-        audio_decoder = self.audio_decoder_config.random_init(key2)
+        key_text, key_audio = jax.random.split(key)
+        text_decoder = self.text_decoder_config.random_init(key=key_text)
+        audio_decoder = self.audio_decoder_config.random_init(key=key_audio)
         vocoder = self.vocoder_config.empty()
         return TTSModel(config=self, text_decoder=text_decoder, audio_decoder=audio_decoder, vocoder=vocoder)
 
@@ -132,4 +138,9 @@ class TTSModel(LalamoModule[TTSConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        return self
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
+            audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
+        )

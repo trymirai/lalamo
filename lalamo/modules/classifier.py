@@ -23,7 +23,7 @@ from lalamo.modules.utils import vmap_twice
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
-from .rope import PositionalEmbeddings
+from .rope import PositionalEmbeddings, PositionalEmbeddingsCis
 from .transformer_layer import TransformerLayerResult
 
 __all__ = [
@@ -67,7 +67,10 @@ class PredictionHeadConfig:
     def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
         dense_key, readout_key = jax.random.split(key)
         dense_layer = self.dense_config.random_init(
-            input_size, (input_size,), has_biases=self.use_dense_bias, key=dense_key,
+            input_size,
+            (input_size,),
+            has_biases=self.use_dense_bias,
+            key=dense_key,
         )
         norm = self.normalization_config.empty(input_size)
         readout = self.readout_config.random_init(
@@ -131,8 +134,8 @@ class ClassifierActivationTrace(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     token_positions: Int[Array, "batch tokens"]
 
-    local_positional_embeddings: PositionalEmbeddings
-    global_positional_embeddings: PositionalEmbeddings
+    local_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis
+    global_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis
 
     embedding_norm_output: Float[Array, "batch tokens channels"]
     layer_results: tuple[TransformerLayerResult, ...]
