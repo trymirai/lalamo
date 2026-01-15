@@ -1,11 +1,8 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from pathlib import Path
-from typing import Any, Self, Sequence
+from typing import Any, Self
 
 import jax
-from fish_speech.models.dac.inference import load_model
-from fish_speech.models.dac.modded_dac import DAC
 from hydra.utils import instantiate
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray

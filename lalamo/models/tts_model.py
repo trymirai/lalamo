@@ -9,17 +9,14 @@ from typing import Self
 import equinox as eqx
 import jax
 import numpy as np
-import torch
 from jax import Array
 from jax import numpy as jnp
 from jaxtyping import DTypeLike, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
-from lalamo.model_import.loaders.fishaudio_loaders import load_descript_audio_codec
-from lalamo.model_import.model_specs.common import cast_if_float
-from lalamo.modules import NoopVocoder, TTSModel, VocoderConfig, config_converter
-from lalamo.modules.audio.fishaudio import DescriptAudioCodec, DescriptAudioCodecConfig, FishAudioTextDecoderConfig
+from lalamo.modules import TTSModel, config_converter
+from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_sampling import (
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
     DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
@@ -27,13 +24,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_sampling import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
-    load_tokenizer_from_fish_audio,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_thin_wrapper import (
-    FishAudioTextDecoder_Foreign,
-    FishAudioTextDecoderConfig_Foreign,
-    load_fish_audio_audio_decoder,
-    try_locate_fish_audio_model_path,
 )
 from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
@@ -43,11 +33,8 @@ from lalamo.modules.audio.text_to_speech import (
     TTSRequestFactory,
     TTSRequestFactoryConfig,
 )
-from lalamo.modules.audio.utils import DTypeConvert
-from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
-from lalamo.utils import MapDictValues
 
 from .common import ParameterTree, unflatten_parameters
 
@@ -166,7 +153,7 @@ class FishAudioTTSGenerator(TTSGenerator):
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
-        assert isinstance(self.tts_model.text_decoder, (FishAudioTextDecoder_Foreign, FishAudioTextDecoder))
+        assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
         sampling_params = sampling_params_from_policy(sampling_policy, repetition_penalty)
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
@@ -184,136 +171,10 @@ class FishAudioTTSGenerator(TTSGenerator):
         return super().get_generated_audio_params()
 
 
-def _build_foreign_fish_audio_tts_generator(
-    path_to_checkpoints: Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16
-) -> "TTSGenerator":
-    text_decoder_config = FishAudioTextDecoderConfig_Foreign.from_config_file(path_to_checkpoints / "config.json")
-    text_decoder: FishAudioTextDecoder_Foreign = text_decoder_config.load_model(
-        path_to_checkpoints, device=device, precision=precision
-    )
-    audio_decoder = load_fish_audio_audio_decoder(path_to_checkpoints)
-
-    tokenizer = load_tokenizer_from_fish_audio(str(path_to_checkpoints))
-
-    prompt_template = """
-{% for message in messages %}<|{{message.style}}|><|{{message.speaker_id}}|>{{message.content}}{% endfor %}
-"""
-
-    tts_request_factory_config = TTSRequestFactoryConfig(
-        prompt_template=prompt_template,
-    )
-
-    message_processor = TTSRequestFactory(tts_request_factory_config, tokenizer)
-
-    tts_config = TTSConfig(
-        text_decoder.config,
-        audio_decoder.config,
-        VocoderConfig(),
-        activation_precision=DTypeConvert.to_jax(precision),
-    )
-
-    audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.pcm)
-    tts_model = TTSModel(
-        config=tts_config,
-        text_decoder=text_decoder,
-        audio_decoder=audio_decoder,
-        vocoder=NoopVocoder(tts_config.vocoder_config),
-    )
-    return FishAudioTTSGenerator(
-        config=FishAudioGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
-        tts_model=tts_model,
-        message_processor=message_processor,
-        audio_renderer=AudioRenderer(audio_renderer_config),
-    )
-
-
-def _build_lalamo_fish_audio_tts_generator_from_checkpoint(
-    path_to_checkpoints: Path, device="cpu", precision: torch.dtype = torch.bfloat16
-) -> "TTSGenerator":
-    path_to_audio_model = path_to_checkpoints / "codec.pth"
-    text_decoder = FishAudioModeling.text_decoder_from_foreign_model(path_to_checkpoints, jnp.bfloat16)
-    audio_decoder = FishAudioModeling.dac_from_foreign_model(path_to_audio_model, jnp.float32)
-
-    tokenizer = load_tokenizer_from_fish_audio(str(path_to_checkpoints))
-
-    prompt_template = """
-{% for message in messages %}<|{{message.style}}|><|{{message.speaker_id}}|>{{message.content}}{% endfor %}
-"""
-
-    tts_request_factory_config = TTSRequestFactoryConfig(
-        prompt_template=prompt_template,
-    )
-
-    message_processor = TTSRequestFactory(tts_request_factory_config, tokenizer)
-
-    tts_config = TTSConfig(
-        text_decoder.config,
-        audio_decoder.config,
-        VocoderConfig(),
-        activation_precision=DTypeConvert.to_jax(precision),
-    )
-    audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.pcm)
-    tts_model = TTSModel(
-        config=tts_config,
-        text_decoder=text_decoder,
-        audio_decoder=audio_decoder,
-        vocoder=NoopVocoder(tts_config.vocoder_config),
-    )
-    return FishAudioTTSGenerator(
-        config=FishAudioGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
-        message_processor=message_processor,
-        tts_model=tts_model,
-        audio_renderer=AudioRenderer(audio_renderer_config),
-    )
-
-
-class FishAudioModeling:
-    from fish_speech.models.text2semantic.llama import DualARTransformer
-
-    @staticmethod
-    def dac_from_foreign_model(audio_chkpt_path: Path, precision: DTypeLike) -> DescriptAudioCodec:
-        from fish_speech.models.dac.inference import load_model
-        from fish_speech.models.dac.modded_dac import DAC
-
-        fish_dac = load_model("modded_dac_vq", audio_chkpt_path, device="cpu")
-        assert isinstance(fish_dac, DAC)
-
-        dac_weights = dict(
-            MapDictValues(
-                lambda v: cast_if_float(torch_to_jax(v), precision),
-                fish_dac.state_dict(),
-            )
-        )
-
-        return load_descript_audio_codec(dac_weights)
-
-    @staticmethod
-    def text_decoder_from_foreign_model(
-        fish_model_or_path: Path | DualARTransformer, precision: DTypeLike
-    ) -> FishAudioTextDecoder:
-        from lalamo.model_import.loaders.fishaudio_loaders import load_fishaudio_text_decoder
-
-        return load_fishaudio_text_decoder(fish_model_or_path, precision)
-
-
 @dataclass(frozen=True)
 class TTSLoader:
     @staticmethod
-    def load_model_from_foreign_model_preset(preset: ForeignTTSModelType, path_to_checkpoints: Path) -> "TTSGenerator":
-        match preset:
-            case ForeignTTSModelType.FISH_AUDIO:
-                return _build_foreign_fish_audio_tts_generator(path_to_checkpoints)
-            case ForeignTTSModelType.FISH_AUDIO_LALAMO:
-                return _build_lalamo_fish_audio_tts_generator_from_checkpoint(path_to_checkpoints)
-
-    @staticmethod
-    def try_locate_audio_model_path(preset: ForeignTTSModelType) -> Path | None:
-        match preset:
-            case ForeignTTSModelType.FISH_AUDIO | ForeignTTSModelType.FISH_AUDIO_LALAMO:
-                return try_locate_fish_audio_model_path()
-
-    @staticmethod
-    def tts_generator_type_from_model_name(tts_model_type: str):
+    def tts_generator_type_from_model_name(tts_model_type: str) -> tuple[type, type]:
         if tts_model_type == "FishAudio/openaudio/openaudio-s1-mini":
             return FishAudioTTSGenerator, FishAudioGeneratorConfig
         else:

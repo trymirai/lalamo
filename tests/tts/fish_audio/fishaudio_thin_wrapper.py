@@ -1,5 +1,3 @@
-import shutil
-import tempfile
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,10 +19,8 @@ from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from hydra.utils import instantiate
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from omegaconf import DictConfig
-from tokenizers import Tokenizer
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
-from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterTree
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
@@ -49,18 +45,6 @@ def try_locate_fish_audio_model_path() -> Optional[Path]:
         return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
     except StopIteration:
         return None
-
-
-def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
-    output_temp_dir = tempfile.mkdtemp()
-    try:
-        fishspeech_tokenizer = FishTokenizer.from_pretrained(path_to_chkpt)
-
-        convert_tiktoken_to_fast(fishspeech_tokenizer.tkt_model, output_temp_dir)
-        tokenizer = Tokenizer.from_file(output_temp_dir + "/tokenizer.json")
-        return tokenizer
-    finally:
-        shutil.rmtree(output_temp_dir)
 
 
 class FromFishAudioRepo:

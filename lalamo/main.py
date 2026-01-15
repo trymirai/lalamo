@@ -270,21 +270,9 @@ class CliConversionCallbacks(ConversionCallbacks):
 def tts(
     model_path: Annotated[
         Path | None,
-        Option(
+        Argument(
             help="Path to the model directory.",
             metavar="MODEL_PATH",
-        ),
-    ] = None,
-    foreign_model: Annotated[
-        ForeignTTSModelType | None,
-        Option(
-            help="Type of forerign model to use.",
-        ),
-    ] = None,
-    foreign_chkpt_path: Annotated[
-        Path | None,
-        Option(
-            help="Path to directory with foreign model checkpoints.",
         ),
     ] = None,
     output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech")] = None,
@@ -295,8 +283,8 @@ def tts(
         ),
     ] = False,
 ) -> None:
-    if model_path is None and foreign_model is None:
-        err_console.print("Either path to Lalalo TTS model or type of foreign TTS model has to be specified")
+    if model_path is None:
+        err_console.print("Path to Lalalo TTS model has to be specified")
         raise Exit
     if output_file is None:
         output_file = Path.cwd() / "generated_speech.wav"
@@ -306,23 +294,6 @@ def tts(
     if model_path is not None:
         console.print(f"🤖 Loading model from specified path: {model_path}.")
         model = TTSLoader.load_model(model_path)
-
-    if foreign_model:
-        if foreign_chkpt_path is None:
-            console.print("Path to checkpoint not specified, will try to find it from HuggingFace cache.")
-            foreign_chkpt_path = TTSLoader.try_locate_audio_model_path(foreign_model)
-            if foreign_chkpt_path is None:
-                err_console.print(f"Failed to locate checkpoint directory for model {foreign_model}")
-                raise Exit
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            transient=True,
-        ) as progress:
-            loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-            model = TTSLoader.load_model_from_foreign_model_preset(foreign_model, foreign_chkpt_path)
-        progress.remove_task(loading_task)
-        console.print(f"🤖 Synthesizing speech with [blue]{foreign_model}[/blue]:")
 
     assert model is not None
     _stop_word = "/stop"

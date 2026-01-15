@@ -34,6 +34,8 @@ class AudioRenderer:
         pass
 
     def condition_signal(
-        self, generated_audio: np.ndarray, generated_audio_properties: AudioRenderingConfig
+        self,
+        generated_audio: np.ndarray,
+        generated_audio_properties: AudioRenderingConfig,  # noqa: ARG002
     ) -> np.ndarray:
         return generated_audio

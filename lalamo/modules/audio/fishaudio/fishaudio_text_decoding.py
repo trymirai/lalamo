@@ -1,150 +1,24 @@
-import shutil
-import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
 import jax
 import torch
-from fish_speech.models.text2semantic.llama import BaseModelArgs, DualARModelArgs
-from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
-from tokenizers import Tokenizer
-from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.activations import Identity, SiLU
+from lalamo.modules.activations import Identity
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import RoPEConfigCis
-from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 from lalamo.modules.utils import vmap_twice
 
 from .fishaudio_sampling import FishAudioSamplingParams, sample
-
-
-def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
-    output_temp_dir = tempfile.mkdtemp()
-    try:
-        fishspeech_tokenizer = FishTokenizer.from_pretrained(path_to_chkpt)
-
-        convert_tiktoken_to_fast(fishspeech_tokenizer.tkt_model, output_temp_dir)
-        tokenizer = Tokenizer.from_file(output_temp_dir + "/tokenizer.json")
-        return tokenizer
-    finally:
-        shutil.rmtree(output_temp_dir)
-
-
-class ConfigMapping:
-    # TODO: move this to tests or remove completely
-    @staticmethod
-    def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
-        return BaseModelArgs(
-            model_type=fish_transformer_config.model_type,
-            vocab_size=fish_transformer_config.vocab_size,
-            n_layer=fish_transformer_config.n_fast_layer,
-            n_head=fish_transformer_config.fast_n_head,
-            dim=fish_transformer_config.fast_dim,
-            intermediate_size=fish_transformer_config.fast_intermediate_size,
-            n_local_heads=fish_transformer_config.fast_n_local_heads,
-            head_dim=fish_transformer_config.fast_head_dim,
-            rope_base=fish_transformer_config.rope_base,
-            norm_eps=fish_transformer_config.norm_eps,
-            max_seq_len=fish_transformer_config.max_seq_len,
-            dropout=fish_transformer_config.dropout,
-            tie_word_embeddings=fish_transformer_config.tie_word_embeddings,
-            attention_qkv_bias=fish_transformer_config.fast_attention_qkv_bias,
-            attention_o_bias=fish_transformer_config.fast_attention_o_bias,
-            attention_qk_norm=fish_transformer_config.fast_attention_qk_norm,
-            codebook_size=fish_transformer_config.codebook_size,
-            num_codebooks=fish_transformer_config.num_codebooks,
-        )
-
-    @staticmethod
-    def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        config: BaseModelArgs, precision: DTypeLike
-    ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-        global_rope_config = RoPEConfigCis(precision=precision, base=config.rope_base)
-        local_rope_config = None
-
-        norm_config = NormalizationConfig(
-            scale_precision=precision,
-            accumulation_precision=precision,
-            epsilon=config.norm_eps,
-            scale_offset=None,
-            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-            subtract_mean=False,
-        )
-
-        qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-        out_projection_config = FullPrecisionLinearConfig(precision=precision)
-        mixer_config = AttentionConfig(
-            qkv_projection_config=qkv_projection_config,
-            out_projection_config=out_projection_config,
-            query_norm_config=norm_config if config.attention_qk_norm else None,
-            key_norm_config=norm_config if config.attention_qk_norm else None,
-            num_heads=config.n_head,
-            num_groups=config.n_local_heads,
-            head_dim=config.head_dim,
-            is_causal=True,
-            scale=None,
-            sliding_window_size=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=False,
-            has_out_biases=False,
-        )
-
-        mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-        mlp_use_up_biases = False
-        mlp_use_down_biases = False
-        mlp_config = DenseMLPConfig(
-            linear_config=mlp_linear_config,
-            activation=SiLU(),
-            has_up_biases=mlp_use_up_biases,
-            has_down_biases=mlp_use_down_biases,
-            gate_clipping=None,
-            up_clipping=None,
-        )
-
-        pre_mixer_norm_config = norm_config
-        post_mixer_norm_config = None
-        pre_mlp_norm_config = norm_config
-        post_mlp_norm_config = None
-
-        layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=pre_mixer_norm_config,
-            mixer_config=mixer_config,
-            post_mixer_norm_config=post_mixer_norm_config,
-            pre_mlp_norm_config=pre_mlp_norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=post_mlp_norm_config,
-        )
-        model_dim = config.dim
-        hidden_dim = config.intermediate_size
-        context_length = config.max_seq_len
-
-        transformer_cfg = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
-            layer_configs=tuple([layer_config] * config.n_layer),
-            output_norm_config=norm_config,
-            model_dim=model_dim,
-            hidden_dim=hidden_dim,
-            context_length=context_length,
-        )
-        linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
-
-        return (transformer_cfg, linear_out_cfg)
 
 
 @dataclass
@@ -184,53 +58,6 @@ class FishAudioTextDecoderConfig:
     # NOTE: magic constants from FishAudio code
     short_logits_size: int = 1024
     repeat_window_size: int = 16
-
-    @classmethod
-    def from_fish_audio_config(
-        cls,
-        fish_audio_cfg: DualARModelArgs,
-        tokenizer: FishTokenizer,
-        precision: DTypeLike,
-    ) -> "FishAudioTextDecoderConfig":
-        slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-            fish_audio_cfg, precision
-        )
-        fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
-        fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-            fast_fish_cfg, precision
-        )
-
-        slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-        fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-
-        codebook_embeddings_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-        if fish_audio_cfg.dim == fish_audio_cfg.fast_dim:
-            fast_model_projection_config = None
-        else:
-            fast_model_projection_config = FullPrecisionLinearConfig(precision)
-
-        assert fish_audio_cfg.fast_dim is not None
-        return FishAudioTextDecoderConfig(
-            slow_embeddings_config=slow_embedding_cfg,
-            slow_model_config=slow_transformer_cfg,
-            slow_readout_config=slow_readout_cfg,
-            fast_embeddings_config=fast_embedding_cfg,
-            fast_model_config=fast_transformer_cfg,
-            fast_readout_config=fast_readout_cfg,
-            codebook_embeddings_config=codebook_embeddings_cfg,
-            fast_model_projection_config=fast_model_projection_config,
-            semantic_token_begin_id=tokenizer.semantic_begin_id,
-            semantic_token_end_id=tokenizer.semantic_end_id,
-            im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
-            codebook_size=fish_audio_cfg.codebook_size,
-            precision=precision,
-            vocab_size=fish_audio_cfg.vocab_size,
-            slow_model_dim=fish_audio_cfg.dim,
-            fast_model_dim=fish_audio_cfg.fast_dim,
-            num_codebooks=fish_audio_cfg.num_codebooks,
-            max_seq_len=fish_audio_cfg.max_seq_len,
-            scale_codebook_embeddings=fish_audio_cfg.scale_codebook_embeddings,
-        )
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
@@ -455,19 +282,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
-        Generate semantic tokens for a full utterance given text tokens.
-
-        This function implements the autoregressive generation loop, processing text tokens
-        through the slow transformer and generating codebook tokens until the end token
-        is reached or max sequence length is exceeded.
-
-        Args:
-            text_tokens: Input text tokens with shape (batch, tokens). Currently only batch=1 is supported.
-            sampling_params: Sampling parameters including temperature, top_p, and argmax_decoding flag.
-            key: Optional PRNG key for sampling. Required if argmax_decoding is False.
-
+        Generate semantic tokens for a full utterance given text tokens in an autoregressive
+        generation loop. Processing text tokens through the slow transformer and generating
+        codebook tokens until the end token is reached or max sequence length is exceeded.
         Returns:
-            Generated codebook tokens with shape (num_codebooks, generated_tokens).
+            Generated codebook tokens
         """
         assert sampling_params is not None, "sampling_params must always be specified for FishAudioTextDecoder"
         assert sampling_params.argmax_decoding or key is not None, "PRNG key required for non-argmax decoding"
@@ -522,9 +341,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # Generate remaining tokens
         cur_token = first_codes
         generated_count = 1
-
-        # MY_DBG
-        max_new_tokens = 30
 
         for i in range(1, max_new_tokens):
             # print(f" ### MY_DBG: decoding token {i}")
@@ -613,7 +429,7 @@ def decode_next_token(
         codebooks = [
             sample(
                 logits,
-                key,
+                key,  # pyright: ignore[reportArgumentType]
                 sampling_params,
                 previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
             )[0].reshape(1)  # NOTE: reshaping to ensure its tensor, not scalar
@@ -663,7 +479,7 @@ def decode_next_token(
         else:
             code = sample(
                 short_logits,
-                key,
+                key,  # pyright: ignore[reportArgumentType]
                 sampling_params,
                 previous_tokens=(previous_tokens[codebook_idx + 1] if previous_tokens is not None else None),
             )[0].reshape(1)  # NOTE: reshaping to ensure its tensor, not scalar
