@@ -32,7 +32,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
-from lalamo.audio import play_audio
+from lalamo.audio import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -339,7 +339,7 @@ def tts(
         tts_result = model.generate_speech([user_message])
 
         if replay:
-            play_audio(tts_result.audio, tts_result.audio_params.samplerate)
+            play_mono_audio(tts_result.audio, tts_result.audio_params.samplerate)
 
         if output_file.exists():
             answer = console.input(

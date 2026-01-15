@@ -1,12 +1,12 @@
 import numpy as np
 import pyaudio
 
-__all__ = ["play_audio"]
+__all__ = ["play_mono_audio"]
 
 DEFAULT_SAMPLERATE: int = 44100
 
 
-def play_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 1024) -> None:
+def play_mono_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 1024) -> None:
     if audio.dtype not in [np.float32, np.float16, np.float64]:
         raise ValueError("Input audio datatype is expected to be a floating point")
     (n_samples,) = audio.shape

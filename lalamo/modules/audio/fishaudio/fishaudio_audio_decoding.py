@@ -367,4 +367,4 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     def audio_from_codes(self, indices: Array) -> Array:
         if len(indices.shape) == 2:
             indices = indices[None, :]
-        return self(indices)[0, :]
+        return self(indices)[0, :, 0]

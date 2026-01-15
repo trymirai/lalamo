@@ -13,13 +13,10 @@ from jax import numpy as jnp
 from jax import vmap
 from pytest import fixture
 
-from lalamo.models import ForeignTTSModelType, TTSGeneratorConfig
+from lalamo.model_import.loaders.fishaudio_loaders import load_fishaudio_text_decoder
+from lalamo.models import ForeignTTSModelType
 from lalamo.models.tts_model import TTSLoader
 from lalamo.modules import GELU
-from lalamo.modules.audio.fishaudio.fishaudio_audio_decoding import (
-    DescriptAudioCodec,
-    DescriptAudioCodecConfig,
-)
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     AudioDecoderBlockSpatialParams,
@@ -319,7 +316,7 @@ def test_sample_jax_vs_pytorch_distribution_similarity() -> None:
 def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
     tts_message = get_tts_message()
 
-    tts_generator = TTSGeneratorConfig.load_model_from_foreign_model_preset(
+    tts_generator = TTSLoader.load_model_from_foreign_model_preset(
         ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
     )
     tokenized_text = tts_generator.tokenize_text([tts_message])
@@ -332,9 +329,7 @@ def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
         tokenized_text, sampling_params=sampling_params
     )
 
-    lalamo_text_decoder = FishAudioTextDecoderConfig.from_foreign_model(
-        tts_generator.tts_model.text_decoder.fish_model, jnp.bfloat16
-    )
+    lalamo_text_decoder = load_fishaudio_text_decoder(tts_generator.tts_model.text_decoder.fish_model, jnp.bfloat16)
     lalamo_semantic_tokens = lalamo_text_decoder.decode_utterance(tokenized_text, sampling_params=sampling_params)
 
     _testlog.info(f"Fishaudio wrapper tokens: {fishaudio_wrapper_semantic_tokens}")
@@ -1636,6 +1631,7 @@ def test_dac_matches_pytorch() -> None:
     """
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC as FishDAC
+
     from lalamo.models.tts_model import FishAudioModeling
 
     # Load FishAudio DAC model
@@ -1658,7 +1654,6 @@ def test_dac_matches_pytorch() -> None:
 
     # Load Lalamo DAC using from_foreign_model
     precision = jnp.float32
-    # lalamo_dac: DescriptAudioCodec = DescriptAudioCodecConfig.from_foreign_model(audio_chkpt_path, precision)
     lalamo_dac = FishAudioModeling.dac_from_foreign_model(audio_chkpt_path, precision)
 
     fish_dac_omega_config = get_default_fishaudio_dac_config()
