@@ -13,9 +13,6 @@ from jax import numpy as jnp
 from jax import vmap
 from pytest import fixture
 
-from lalamo.model_import.loaders.fishaudio_loaders import load_fishaudio_text_decoder
-from lalamo.models import ForeignTTSModelType
-from lalamo.models.tts_model import TTSLoader
 from lalamo.modules import GELU
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
@@ -39,15 +36,20 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 from lalamo.modules.audio.fishaudio.fishaudio_sampling import FishAudioSamplingParams, logits_to_probs, sample
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
-    FishAudioTextDecoderConfig,
     FishAudioTextDecoderResult,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_thin_wrapper import (
-    FishAudioTextDecoder_Foreign,
 )
 from lalamo.modules.audio.text_to_speech import TTSMessage
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from tests.tts.fish_audio.fishaudio_thin_wrapper import (
+    FishAudioTextDecoder_Foreign,
+)
+from tests.tts.fish_audio.fishaudio_torch_stuff import (
+    FishAudioModeling,
+    ForeignTTSModelType,
+    TTSLoaderTorch,
+    load_fishaudio_text_decoder,
+)
 
 _testlog = logging.getLogger("tts_test_logger")
 
@@ -74,7 +76,7 @@ def get_tts_message() -> TTSMessage:
 
 def test_fishaudio_text_tokenization(fish_audio_local_model_path: Path) -> None:
     with jax.disable_jit():
-        tts_generator = TTSLoader.load_model_from_foreign_model_preset(
+        tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
             ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
         )
         fish_tokenizer = FishTokenizer.from_pretrained(str(fish_audio_local_model_path))
@@ -94,11 +96,9 @@ def test_fishaudio_text_tokenization(fish_audio_local_model_path: Path) -> None:
 
 @torch.no_grad
 def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
-    from lalamo.model_import.loaders.fishaudio_loaders import load_fishaudio_text_decoder
-
     tts_message = get_tts_message()
 
-    tts_generator = TTSLoader.load_model_from_foreign_model_preset(
+    tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
         ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
     )
     assert isinstance(tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
@@ -316,7 +316,7 @@ def test_sample_jax_vs_pytorch_distribution_similarity() -> None:
 def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
     tts_message = get_tts_message()
 
-    tts_generator = TTSLoader.load_model_from_foreign_model_preset(
+    tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
         ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
     )
     tokenized_text = tts_generator.tokenize_text([tts_message])
@@ -1632,8 +1632,6 @@ def test_dac_matches_pytorch() -> None:
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC as FishDAC
 
-    from lalamo.models.tts_model import FishAudioModeling
-
     # Load FishAudio DAC model
     fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
     repos = huggingface_hub.scan_cache_dir().repos
@@ -1746,7 +1744,7 @@ def test_dtype_convert_roundtrip() -> None:
 @pytest.mark.skip(reason="Temporary test used for e2e TTS with FishAudio")
 def test_fishaudio_lalamo_tts_generation(fish_audio_local_model_path: Path) -> None:
     """Test TTS generation using FISH_AUDIO_LALAMO preset."""
-    model = TTSLoader.load_model_from_foreign_model_preset(
+    model = TTSLoaderTorch.load_model_from_foreign_model_preset(
         ForeignTTSModelType.FISH_AUDIO_LALAMO,
         fish_audio_local_model_path,
     )

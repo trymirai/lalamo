@@ -1,8 +1,119 @@
-from tokenizers import Tokenizer
 import shutil
 import tempfile
+from enum import Enum
+from pathlib import Path
+from typing import Optional
+
+import huggingface_hub
+import torch
+from fish_speech.models.text2semantic.llama import (
+    BaseModelArgs,
+    DualARModelArgs,
+    DualARTransformer,
+)
 from fish_speech.tokenizer import FishTokenizer
+from jax import numpy as jnp
+from jaxtyping import Array, DTypeLike
+from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
+
+from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.common import MapDictValues, ParameterPath
+from lalamo.model_import.loaders.fishaudio_loaders import (
+    load_descript_audio_codec,
+    load_fish_audio_text_decoding_modules,
+)
+from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
+from lalamo.model_import.model_specs.common import cast_if_float
+from lalamo.models.tts_model import FishAudioGeneratorConfig, FishAudioTTSGenerator, TTSGenerator
+from lalamo.modules import (
+    AttentionConfig,
+    DenseMLPConfig,
+    NormalizationConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
+    UpcastMode,
+)
+from lalamo.modules.activations import Identity, SiLU
+from lalamo.modules.audio.fishaudio.fishaudio_audio_decoding import DescriptAudioCodec
+from lalamo.modules.audio.fishaudio.fishaudio_common import IM_END_TOKEN
+from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoder, FishAudioTextDecoderConfig
+from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel, TTSRequestFactory, TTSRequestFactoryConfig
+from lalamo.modules.audio.utils import DTypeConvert
+from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.rope import RoPEConfigCis
+from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+
+from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
+
+
+class ForeignTTSModelType(Enum):
+    FISH_AUDIO = "fishaudio"
+    FISH_AUDIO_LALAMO = "fishaudio_lalamo"
+
+
+def try_locate_fish_audio_model_path() -> Optional[Path]:
+    # TODO: (peter.glushkov) replace this one with actual ModelSpec
+    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
+
+    repos = huggingface_hub.scan_cache_dir().repos
+    try:
+        fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+
+        api = huggingface_hub.HfApi()
+        cache_info = api.model_info(fish_audiod_repo_id)
+        commit_hash = cache_info.sha
+        return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    except StopIteration:
+        return None
+
+
+def from_fish_audio_config(
+    fish_audio_cfg: DualARModelArgs,
+    tokenizer: FishTokenizer,
+    precision: DTypeLike,
+) -> "FishAudioTextDecoderConfig":
+    slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+        fish_audio_cfg, precision
+    )
+    fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
+    fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
+        fast_fish_cfg, precision
+    )
+
+    slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+    fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+
+    codebook_embeddings_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+    if fish_audio_cfg.dim == fish_audio_cfg.fast_dim:
+        fast_model_projection_config = None
+    else:
+        fast_model_projection_config = FullPrecisionLinearConfig(precision)
+
+    assert fish_audio_cfg.fast_dim is not None
+    return FishAudioTextDecoderConfig(
+        slow_embeddings_config=slow_embedding_cfg,
+        slow_model_config=slow_transformer_cfg,
+        slow_readout_config=slow_readout_cfg,
+        fast_embeddings_config=fast_embedding_cfg,
+        fast_model_config=fast_transformer_cfg,
+        fast_readout_config=fast_readout_cfg,
+        codebook_embeddings_config=codebook_embeddings_cfg,
+        fast_model_projection_config=fast_model_projection_config,
+        semantic_token_begin_id=tokenizer.semantic_begin_id,
+        semantic_token_end_id=tokenizer.semantic_end_id,
+        im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
+        codebook_size=fish_audio_cfg.codebook_size,
+        precision=precision,
+        vocab_size=fish_audio_cfg.vocab_size,
+        slow_model_dim=fish_audio_cfg.dim,
+        fast_model_dim=fish_audio_cfg.fast_dim,
+        num_codebooks=fish_audio_cfg.num_codebooks,
+        max_seq_len=fish_audio_cfg.max_seq_len,
+        scale_codebook_embeddings=fish_audio_cfg.scale_codebook_embeddings,
+    )
 
 
 def load_fishaudio_text_decoder(
@@ -17,8 +128,6 @@ def load_fishaudio_text_decoder(
         NaiveModelArgs,
     )
     from fish_speech.tokenizer import FishTokenizer
-
-    from lalamo.modules.audio.fishaudio.fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
     def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
         if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
@@ -41,7 +150,7 @@ def load_fishaudio_text_decoder(
         fish_model_dict = fish_model_or_path.state_dict()
 
     assert isinstance(fish_model_cfg, DualARModelArgs)
-    config = FishAudioTextDecoderConfig.from_fish_audio_config(fish_model_cfg, fish_tokenizer, precision)
+    config = from_fish_audio_config(fish_model_cfg, fish_tokenizer, precision)
     weights_mapping = dict(MapDictValues(lambda v: cast_if_float(torch_to_jax(v), precision), fish_model_dict))
 
     transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
@@ -206,54 +315,6 @@ class ConfigMapping:
         return (transformer_cfg, linear_out_cfg)
 
 
-# @classmethod from FishAudioTextDecoder
-def from_fish_audio_config(
-    cls,
-    fish_audio_cfg: DualARModelArgs,
-    tokenizer: FishTokenizer,
-    precision: DTypeLike,
-) -> "FishAudioTextDecoderConfig":
-    slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        fish_audio_cfg, precision
-    )
-    fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
-    fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        fast_fish_cfg, precision
-    )
-
-    slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-    fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-
-    codebook_embeddings_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-    if fish_audio_cfg.dim == fish_audio_cfg.fast_dim:
-        fast_model_projection_config = None
-    else:
-        fast_model_projection_config = FullPrecisionLinearConfig(precision)
-
-    assert fish_audio_cfg.fast_dim is not None
-    return FishAudioTextDecoderConfig(
-        slow_embeddings_config=slow_embedding_cfg,
-        slow_model_config=slow_transformer_cfg,
-        slow_readout_config=slow_readout_cfg,
-        fast_embeddings_config=fast_embedding_cfg,
-        fast_model_config=fast_transformer_cfg,
-        fast_readout_config=fast_readout_cfg,
-        codebook_embeddings_config=codebook_embeddings_cfg,
-        fast_model_projection_config=fast_model_projection_config,
-        semantic_token_begin_id=tokenizer.semantic_begin_id,
-        semantic_token_end_id=tokenizer.semantic_end_id,
-        im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
-        codebook_size=fish_audio_cfg.codebook_size,
-        precision=precision,
-        vocab_size=fish_audio_cfg.vocab_size,
-        slow_model_dim=fish_audio_cfg.dim,
-        fast_model_dim=fish_audio_cfg.fast_dim,
-        num_codebooks=fish_audio_cfg.num_codebooks,
-        max_seq_len=fish_audio_cfg.max_seq_len,
-        scale_codebook_embeddings=fish_audio_cfg.scale_codebook_embeddings,
-    )
-
-
 class FishAudioFromTorch:
     @staticmethod
     def load_tokenizer_from_fish_audio(path_to_chkpt: str) -> Tokenizer:
@@ -267,9 +328,12 @@ class FishAudioFromTorch:
         finally:
             shutil.rmtree(output_temp_dir)
 
-    def _build_foreign_fish_audio_tts_generator(
+    @staticmethod
+    def build_foreign_fish_audio_tts_generator(
         path_to_checkpoints: Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16
     ) -> "TTSGenerator":
+        from .fishaudio_thin_wrapper import FishAudioTextDecoder_Foreign, load_fish_audio_audio_decoder
+
         text_decoder_config = FishAudioTextDecoderConfig_Foreign.from_config_file(path_to_checkpoints / "config.json")
         text_decoder: FishAudioTextDecoder_Foreign = text_decoder_config.load_model(
             path_to_checkpoints, device=device, precision=precision
@@ -309,11 +373,12 @@ class FishAudioFromTorch:
             audio_renderer=AudioRenderer(audio_renderer_config),
         )
 
-    def _build_lalamo_fish_audio_tts_generator_from_checkpoint(
+    @staticmethod
+    def build_lalamo_fish_audio_tts_generator_from_checkpoint(
         path_to_checkpoints: Path, device="cpu", precision: torch.dtype = torch.bfloat16
     ) -> "TTSGenerator":
         path_to_audio_model = path_to_checkpoints / "codec.pth"
-        text_decoder = FishAudioModeling.text_decoder_from_foreign_model(path_to_checkpoints, jnp.bfloat16)
+        text_decoder = TTSLoaderTorch.text_decoder_from_foreign_model(path_to_checkpoints, jnp.bfloat16)
         audio_decoder = FishAudioModeling.dac_from_foreign_model(path_to_audio_model, jnp.float32)
 
         tokenizer = FishAudioFromTorch.load_tokenizer_from_fish_audio(str(path_to_checkpoints))
@@ -370,21 +435,20 @@ class FishAudioModeling:
         return load_descript_audio_codec(dac_weights)
 
 
-class TTSLoader:
+class TTSLoaderTorch:
+    @staticmethod
     def text_decoder_from_foreign_model(
         fish_model_or_path: Path | DualARTransformer, precision: DTypeLike
     ) -> FishAudioTextDecoder:
-        from lalamo.model_import.loaders.fishaudio_loaders import load_fishaudio_text_decoder
-
         return load_fishaudio_text_decoder(fish_model_or_path, precision)
 
     @staticmethod
-    def load_model_from_foreign_model_preset(preset: ForeignTTSModelType, path_to_checkpoints: Path) -> "TTSGenerator":
+    def load_model_from_foreign_model_preset(preset: ForeignTTSModelType, path_to_checkpoints: Path) -> TTSGenerator:
         match preset:
             case ForeignTTSModelType.FISH_AUDIO:
-                return _build_foreign_fish_audio_tts_generator(path_to_checkpoints)
+                return FishAudioFromTorch.build_foreign_fish_audio_tts_generator(path_to_checkpoints)
             case ForeignTTSModelType.FISH_AUDIO_LALAMO:
-                return _build_lalamo_fish_audio_tts_generator_from_checkpoint(path_to_checkpoints)
+                return FishAudioFromTorch.build_lalamo_fish_audio_tts_generator_from_checkpoint(path_to_checkpoints)
 
     @staticmethod
     def try_locate_audio_model_path(preset: ForeignTTSModelType) -> Path | None:

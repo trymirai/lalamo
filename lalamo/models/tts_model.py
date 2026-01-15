@@ -38,12 +38,7 @@ from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
 
-__all__ = ["ForeignTTSModelType", "TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
-
-
-class ForeignTTSModelType(Enum):
-    FISH_AUDIO = "fishaudio"
-    FISH_AUDIO_LALAMO = "fishaudio_lalamo"
+__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
 
 
 @dataclass(frozen=True)

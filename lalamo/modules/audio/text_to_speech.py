@@ -95,11 +95,6 @@ class TTSRequestFactory:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
 
-class ForeignTTSModelType(Enum):
-    FISH_AUDIO = "fishaudio"
-    FISH_AUDIO_LALAMO = "fishaudio_lalamo"
-
-
 @dataclass(frozen=True)
 class TTSConfig[TextDecoderConfigT: Any, AudioDecoderConfigT: Any]:
     text_decoder_config: TextDecoderConfigT

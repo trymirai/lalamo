@@ -51,7 +51,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.models.tts_model import ForeignTTSModelType, TTSLoader, TTSMessage
+from lalamo.models.tts_model import TTSLoader, TTSMessage
 from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator

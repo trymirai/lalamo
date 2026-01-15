@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Self
 
-import huggingface_hub
 import torch
 from fish_speech.models.dac.modded_dac import DAC
 from fish_speech.models.dac.rvq import ResidualVectorQuantize
@@ -29,22 +28,6 @@ from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-
-
-def try_locate_fish_audio_model_path() -> Optional[Path]:
-    # TODO: (peter.glushkov) replace this one with actual ModelSpec
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-
-    repos = huggingface_hub.scan_cache_dir().repos
-    try:
-        fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-        api = huggingface_hub.HfApi()
-        cache_info = api.model_info(fish_audiod_repo_id)
-        commit_hash = cache_info.sha
-        return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    except StopIteration:
-        return None
 
 
 class FromFishAudioRepo:
