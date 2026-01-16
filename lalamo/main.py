@@ -305,7 +305,7 @@ def tts(
         if user_text == "":
             continue
 
-        user_message = TTSMessage.simple_message(user_text)
+        user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
 
         tts_result = model.generate_speech([user_message])
 

@@ -394,7 +394,7 @@ def decode_next_token(
     input_pos: Array,
     sampling_policy: SamplingPolicy,
     key: PRNGKeyArray,
-    previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future
+    previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
 ) -> tuple[Int[Array, "batch codes"], State | None]:
     slow_model_result = model.transformer_slow(
         inner_features=x,

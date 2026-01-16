@@ -39,10 +39,6 @@ class TTSMessage:
     speaker_id: str
     style: str
 
-    @staticmethod
-    def simple_message(text: str) -> "TTSMessage":
-        return TTSMessage(content=text, speaker_id="speaker:1", style="interleave")
-
 
 class TTSRequest(TypedDict):
     messages: list[TTSMessage]

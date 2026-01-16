@@ -1749,7 +1749,7 @@ def test_fishaudio_lalamo_tts_generation(fish_audio_local_model_path: Path) -> N
         fish_audio_local_model_path,
     )
 
-    tts_message = TTSMessage.simple_message("Some text!")
+    tts_message = TTSMessage(content="Some text.", speaker_id="speaker:0", style="interleave")
     tts_result = model.generate_speech([tts_message])
 
     _testlog.info(f"Generated audio shape: {tts_result.audio.shape}")
