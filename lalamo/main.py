@@ -270,7 +270,7 @@ class CliConversionCallbacks(ConversionCallbacks):
 def tts(
     model_path: Annotated[
         Path | None,
-        Argument(
+        Option(
             help="Path to the model directory.",
             metavar="MODEL_PATH",
         ),

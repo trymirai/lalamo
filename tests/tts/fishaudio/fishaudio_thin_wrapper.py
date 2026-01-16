@@ -23,11 +23,22 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from lalamo.common import ParameterTree
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.audio.fishaudio.fishaudio_sampling import FishAudioSamplingParams
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.sampling import SamplingPolicy
+from tests.tts.fishaudio.fishaudio_sampling import (
+    FishAudioSamplingParams,
+    sampling_params_from_policy,
+)
+
+"""
+Current model provides a Lalamo wrapper around FishAudio native model.
+Torch code for FishAudio is wrapped into Lalamo's config-module framework,
+dataflow is maintained in Jax tensors through interfaces while internally
+they are converted to Torch tensors.
+"""
 
 
 class FromFishAudioRepo:
@@ -518,10 +529,11 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_params: FishAudioSamplingParams | None = None,
+        sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
+        sampling_params = sampling_params_from_policy(sampling_policy)
 
         _, n_tokens = text_tokens_torch.shape
 

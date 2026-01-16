@@ -13,6 +13,12 @@ from tiktoken.core import Encoding as TikokenEncoding
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
+from lalamo.sampling import SamplingPolicy, make_policy
+
+# Default sampling policy for FishAudio TTS taken from the codebase
+DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
+DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
+
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
     if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:

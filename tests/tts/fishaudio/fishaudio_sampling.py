@@ -4,12 +4,9 @@ from typing import Optional
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, Float, Int, PRNGKeyArray
+from numpy import isin
 
-from lalamo.sampling import CompositePolicy, GreedyPolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy, make_policy
-
-# Default sampling policy for FishAudio TTS taken from the codebase
-DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
-DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
+from lalamo.sampling import CompositePolicy, GreedyPolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy
 
 
 @dataclass(frozen=True)
@@ -64,7 +61,7 @@ def sample(
 
 
 def sampling_params_from_policy(
-    policy: SamplingPolicy,
+    policy: SamplingPolicy | None,
     repetition_penalty: float = 1.0,
 ) -> FishAudioSamplingParams:
     """
@@ -82,6 +79,13 @@ def sampling_params_from_policy(
     Returns:
         FishAudioSamplingParams with extracted values.
     """
+    if policy is None:
+        return FishAudioSamplingParams(
+            argmax_decoding=True,
+            top_p=0.0,
+            temperature=0.0,
+            repetition_penalty=0.0,
+        )
     temperature = 1.0
     top_p = 1.0
     argmax_decoding = False

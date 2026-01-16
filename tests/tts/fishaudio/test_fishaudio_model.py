@@ -33,7 +33,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_sampling import FishAudioSamplingParams, logits_to_probs, sample
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
     FishAudioTextDecoderResult,
@@ -41,10 +40,17 @@ from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
 from lalamo.modules.audio.text_to_speech import TTSMessage
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-from tests.tts.fish_audio.fishaudio_thin_wrapper import (
+from lalamo.sampling import GreedyPolicy
+from tests.tts.fishaudio.fishaudio_sampling import (
+    FishAudioSamplingParams,
+    logits_to_probs,
+    sample,
+    sampling_params_from_policy,
+)
+from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
 )
-from tests.tts.fish_audio.fishaudio_torch_stuff import (
+from tests.tts.fishaudio.fishaudio_torch_stuff import (
     FishAudioModeling,
     ForeignTTSModelType,
     TTSLoaderTorch,
@@ -104,20 +110,21 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     assert isinstance(tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
     fish_model = tts_generator.tts_model.text_decoder.fish_model
 
-    sampling_params = FishAudioSamplingParams(
-        argmax_decoding=True, top_p=0.808, temperature=0.808, repetition_penalty=1.1016
-    )
+    sampling_policy = GreedyPolicy()
+    key = jax.random.PRNGKey(123)
 
     # -- preparing inputs for lalamo
     tokenized_text_lalamo = jnp.array(tts_generator.message_processor.tokenize_request([tts_message]))[None, :]
     n_tokens = tokenized_text_lalamo.shape[-1]
     input_pos = jnp.arange(n_tokens)[None, :]
-    output_fish = tts_generator.tts_model.text_decoder(tokenized_text_lalamo, sampling_params=sampling_params)
+    output_fish = tts_generator.tts_model.text_decoder(
+        tokenized_text_lalamo, sampling_params=sampling_params_from_policy(sampling_policy)
+    )
 
     # -- lalamo model setup and inference
     lalamo_model: FishAudioTextDecoder = load_fishaudio_text_decoder(fish_model, jnp.bfloat16)
     decode_result: FishAudioTextDecoderResult = lalamo_model(
-        text_tokens=tokenized_text_lalamo, input_pos=input_pos, sampling_params=sampling_params
+        text_tokens=tokenized_text_lalamo, input_pos=input_pos, sampling_policy=sampling_policy, key=key
     )
     output_lalamo = decode_result.token_codes
 
@@ -321,16 +328,14 @@ def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
     )
     tokenized_text = tts_generator.tokenize_text([tts_message])
     assert isinstance(tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
-    sampling_params = FishAudioSamplingParams(
-        argmax_decoding=True, temperature=0.808, top_p=0.808, repetition_penalty=1.1016
-    )
+    sampling_policy = GreedyPolicy()
 
     fishaudio_wrapper_semantic_tokens = tts_generator.tts_model.text_decoder.decode_utterance(
-        tokenized_text, sampling_params=sampling_params
+        tokenized_text, sampling_policy=sampling_policy
     )
 
     lalamo_text_decoder = load_fishaudio_text_decoder(tts_generator.tts_model.text_decoder.fish_model, jnp.bfloat16)
-    lalamo_semantic_tokens = lalamo_text_decoder.decode_utterance(tokenized_text, sampling_params=sampling_params)
+    lalamo_semantic_tokens = lalamo_text_decoder.decode_utterance(tokenized_text, sampling_policy=sampling_policy)
 
     _testlog.info(f"Fishaudio wrapper tokens: {fishaudio_wrapper_semantic_tokens}")
     _testlog.info(f"Lalamo tokens.          : {lalamo_semantic_tokens}")

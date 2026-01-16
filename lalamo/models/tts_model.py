@@ -2,7 +2,6 @@ import json
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 from typing import Self
 
@@ -17,10 +16,9 @@ from tokenizers import Tokenizer
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
-from lalamo.modules.audio.fishaudio.fishaudio_sampling import (
+from lalamo.modules.audio.fishaudio.fishaudio_common import (
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
     DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
-    sampling_params_from_policy,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
@@ -145,15 +143,14 @@ class FishAudioTTSGenerator(TTSGenerator):
         self,
         text_tokens: Array,
         sampling_policy: SamplingPolicy = DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
-        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserverd for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
-        sampling_params = sampling_params_from_policy(sampling_policy, repetition_penalty)
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
-            text_tokens, sampling_params=sampling_params, key=random_key
+            text_tokens, sampling_policy=sampling_policy, key=random_key
         )
 
     def decode_audio(self, semantic_tokens: Array) -> Array:

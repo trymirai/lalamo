@@ -25,6 +25,6 @@ class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
     def decode_utterance(
         self,
         text_tokens: Array,
-        sampling_params: Any | None = None,
+        sampling_policy: Any | None = None,
         key: Any | None = None,
     ) -> Array: ...

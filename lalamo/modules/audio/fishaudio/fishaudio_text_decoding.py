@@ -3,13 +3,13 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax
-import torch
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
+from lalamo.modules.audio.fishaudio.fishaudio_common import DEFAULT_FISH_AUDIO_SAMPLING_POLICY
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -17,8 +17,7 @@ from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import vmap_twice
-
-from .fishaudio_sampling import FishAudioSamplingParams, sample
+from lalamo.sampling import SamplingPolicy
 
 
 @dataclass
@@ -213,10 +212,10 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def __call__(
         self,
         text_tokens: Int[Array, "batch tokens"],
+        sampling_policy: SamplingPolicy,
+        key: PRNGKeyArray,
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
-        sampling_params: FishAudioSamplingParams | None = None,
-        key: PRNGKeyArray | None = None,
     ) -> FishAudioTextDecoderResult:
         batch_size, seq_length = text_tokens.shape
         if input_pos is None:
@@ -229,17 +228,13 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # ignore it for now
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
-        if sampling_params is None:
-            sampling_params = FishAudioSamplingParams(
-                temperature=0.808, top_p=0.808, repetition_penalty=1.1016, argmax_decoding=True
-            )
         embeddings = self.embed(text_and_codebooks)
         codes, updated_state = decode_next_token(
             model=self,
             x=embeddings,
             state_slow=state,
             input_pos=input_pos,
-            sampling_params=sampling_params,
+            sampling_policy=sampling_policy,
             previous_tokens=None,
             key=key,
         )
@@ -278,7 +273,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_params: FishAudioSamplingParams | None = None,
+        sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
@@ -288,8 +283,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         Returns:
             Generated codebook tokens
         """
-        assert sampling_params is not None, "sampling_params must always be specified for FishAudioTextDecoder"
-        assert sampling_params.argmax_decoding or key is not None, "PRNG key required for non-argmax decoding"
 
         batch_size, prompt_length = text_tokens.shape
         assert batch_size == 1, "Only batch_size=1 is supported"
@@ -299,6 +292,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         if prompt_length >= max_seq_len:
             raise ValueError(f"Input sequence length {prompt_length} exceeds max_seq_len {max_seq_len}")
+
+        if sampling_policy is None:
+            sampling_policy = DEFAULT_FISH_AUDIO_SAMPLING_POLICY
+        if key is None:
+            key = jax.random.PRNGKey(123)
 
         max_new_tokens = max_seq_len - prompt_length
 
@@ -322,9 +320,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             x=embeddings,
             state_slow=None,
             input_pos=input_pos,
-            sampling_params=sampling_params,
-            previous_tokens=None,
+            sampling_policy=sampling_policy,
             key=key,
+            previous_tokens=None,
         )
 
         # TODO: remove after debugging is done
@@ -369,9 +367,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
                 x=embeddings,
                 state_slow=state_slow,
                 input_pos=input_pos,
-                sampling_params=sampling_params,
-                previous_tokens=window,
+                sampling_policy=sampling_policy,
                 key=subkey,
+                previous_tokens=window,
             )
 
             seq = seq.at[:, prompt_length + i].set(next_codes[0])
@@ -393,18 +391,15 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         return codes
 
 
-@torch.no_grad
 def decode_next_token(
     model: FishAudioTextDecoder,
     x: Array,
     state_slow: State | None,
     input_pos: Array,
-    sampling_params: FishAudioSamplingParams,
-    previous_tokens: Array | None = None,
-    key: PRNGKeyArray | None = None,
+    sampling_policy: SamplingPolicy,
+    key: PRNGKeyArray,
+    previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future
 ) -> tuple[Int[Array, "batch codes"], State | None]:
-    assert sampling_params.argmax_decoding or key is not None
-
     slow_model_result = model.transformer_slow(
         inner_features=x,
         token_positions=input_pos,
@@ -423,17 +418,7 @@ def decode_next_token(
 
     (logits,) = vmap_twice(model.readout_slow)(slow_model_result.outputs)
 
-    if sampling_params.argmax_decoding:
-        codebooks = [logits[:, -1].argmax(axis=-1)]
-    else:
-        codebooks = [
-            sample(
-                logits,
-                key,  # pyright: ignore[reportArgumentType]
-                sampling_params,
-                previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
-            )[0].reshape(1)  # NOTE: reshaping to ensure its tensor, not scalar
-        ]
+    codebooks = [vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0].reshape(1)]
 
     batch_size, *_ = x.shape
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
@@ -474,15 +459,7 @@ def decode_next_token(
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
 
-        if sampling_params.argmax_decoding:
-            code = short_logits[:, -1].argmax(axis=-1)
-        else:
-            code = sample(
-                short_logits,
-                key,  # pyright: ignore[reportArgumentType]
-                sampling_params,
-                previous_tokens=(previous_tokens[codebook_idx + 1] if previous_tokens is not None else None),
-            )[0].reshape(1)  # NOTE: reshaping to ensure its tensor, not scalar
+        code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])[0].reshape(1)
 
         hidden_states = model.embeddings_fast.embed(code)
         codebooks.append(code)
