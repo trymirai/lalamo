@@ -853,24 +853,14 @@ def load_audio_decoder(
 
 
 def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
-    """Load a DescriptAudioCodec from a FishAudio DAC checkpoint.
-
-    Args:
-        audio_chkpt_path: Path to the FishAudio DAC checkpoint file.
-        precision: Data type precision for the model weights.
-
-    Returns:
-        DescriptAudioCodec module with loaded weights.
-    """
-
-    # Create empty module structure from config
-    dac_module = DescriptAudioCodecConfig.from_fishaudio_config(get_default_fishaudio_dac_config())
+    dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(
+        fish_dac_config=get_default_fishaudio_dac_config()
+    )
+    dac_module = dac_config.empty()
 
     loaded_quantizer = load_downsample_rvq(dac_module.quantizer, state_dict, path=ParameterPath("quantizer"))
-
     loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))
 
-    # Create the final module with loaded components
     return DescriptAudioCodec(
         config=dac_module.config,
         quantizer=loaded_quantizer,

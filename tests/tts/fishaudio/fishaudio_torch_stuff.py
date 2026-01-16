@@ -18,13 +18,12 @@ from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
-from lalamo.common import MapDictValues, ParameterPath
+from lalamo.common import MapDictValues, ParameterPath, cast_if_float
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
     load_fish_audio_text_decoding_modules,
 )
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
-from lalamo.model_import.model_specs.common import cast_if_float
 from lalamo.models.tts_model import FishAudioGeneratorConfig, FishAudioTTSGenerator, TTSGenerator
 from lalamo.modules import (
     AttentionConfig,
@@ -127,11 +126,6 @@ def load_fishaudio_text_decoder(
         NaiveModelArgs,
     )
     from fish_speech.tokenizer import FishTokenizer
-
-    def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
-        if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
-            return array.astype(cast_to)
-        return array
 
     if isinstance(fish_model_or_path, Path):
         fish_tokenizer = FishTokenizer.from_pretrained(str(fish_model_or_path))

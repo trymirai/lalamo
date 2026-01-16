@@ -11,8 +11,9 @@ from typing import Any, ClassVar, cast, get_args, get_origin
 
 import cattrs
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import DTypeLike
 
+from lalamo.common import cast_if_float
 from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
@@ -36,12 +37,6 @@ class ModelType(StrEnum):
     LANGUAGE_MODEL = "language_model"
     CLASSIFIER_MODEL = "classifier_model"
     TTS_MODEL = "tts_model"
-
-
-def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
-    if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
-        return array.astype(cast_to)
-    return array
 
 
 class WeightsType(Enum):

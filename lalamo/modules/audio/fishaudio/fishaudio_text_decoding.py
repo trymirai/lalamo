@@ -9,7 +9,12 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
-from lalamo.modules.audio.fishaudio.fishaudio_common import DEFAULT_FISH_AUDIO_SAMPLING_POLICY, fishaudio_logger
+from lalamo.modules.audio.fishaudio.fishaudio_common import (
+    DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
+    REPEAT_WINDOW_SIZE,
+    SHORT_LOGITS_SIZE,
+    fishaudio_logger,
+)
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -54,9 +59,8 @@ class FishAudioTextDecoderConfig:
 
     precision: DTypeLike
 
-    # NOTE: magic constants from FishAudio code
-    short_logits_size: int = 1024
-    repeat_window_size: int = 16
+    short_logits_size: int = SHORT_LOGITS_SIZE
+    repeat_window_size: int = REPEAT_WINDOW_SIZE
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
@@ -300,7 +304,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         max_new_tokens = max_seq_len - prompt_length
 
-        # Prepare prompt: text tokens in first row, zeros for codebook rows
+        # Prepare prompt: text tokens in first row
+        # Rest of codebook rows are zeros until we start using audio-embeddings for explicit style
         prompt = jnp.zeros((batch_size, codebook_dim, prompt_length), dtype=text_tokens.dtype)
         prompt = prompt.at[:, 0, :].set(text_tokens)
 
@@ -311,10 +316,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         # Track previous tokens for repetition penalty (windowed)
         previous_tokens = jnp.zeros((codebook_dim, max_seq_len), dtype=jnp.int32)
 
-        # Embed and generate first token
         input_pos = jnp.arange(prompt_length)[None, :]
         embeddings = self.embed(prompt)
-
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
@@ -330,17 +333,13 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         seq = seq.at[:, prompt_length].set(first_codes[0])
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
-        # Check for early termination
         if first_codes[0, 0] == self.config.im_end_token_id:
             codes = seq[1:, prompt_length : prompt_length + 1]
             return codes
 
-        # Generate remaining tokens
         cur_token = first_codes
         generated_count = 1
-
         for i in range(1, max_new_tokens):
-            # Prepare current token for embedding
             cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
 
             # Get windowed previous tokens for repetition penalty

@@ -1,15 +1,3 @@
-"""Internal modules for FishAudio audio decoding.
-
-This module contains the building blocks used by DescriptAudioCodec:
-- Convolution modules (CausalConv1d, CausalTransposeConv1d, Conv1d)
-- ConvNeXt blocks
-- Upsampling modules
-- Vector quantization modules
-- Snake activation
-- Residual units
-- DAC decoder blocks and decoder
-"""
-
 import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
@@ -17,110 +5,17 @@ from typing import Self
 
 import equinox as eqx
 import jax
-from hydra.utils import instantiate
 from jax import lax, vmap
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
-from omegaconf import DictConfig
 
 from lalamo.common import ParameterTree, dummy_array
-from lalamo.modules.activations import GELU, Activation, SiLU
+from lalamo.modules.activations import GELU, Activation
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import LayerScale, LayerScaleConfig, Normalization, NormalizationConfig, UpcastMode
-from lalamo.modules.rope import RoPEConfigCis
-from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
-
-# =============================================================================
-# Configuration Mapping
-# =============================================================================
-
-
-class ConfigMapping:
-    @staticmethod
-    def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
-        config, precision: DTypeLike, window_size: int, input_dim: int
-    ) -> TransformerConfig:
-        global_rope_config = RoPEConfigCis(precision=precision, base=config.rope_base)
-        local_rope_config = None
-
-        norm_config_pre = NormalizationConfig(
-            scale_precision=precision,
-            accumulation_precision=precision,
-            epsilon=config.norm_eps,
-            scale_offset=None,
-            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-            subtract_mean=False,
-        )
-        norm_config_post = LayerScaleConfig(scale_precision=precision)
-
-        qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-        out_projection_config = FullPrecisionLinearConfig(precision=precision)
-        mixer_config = AttentionConfig(
-            qkv_projection_config=qkv_projection_config,
-            out_projection_config=out_projection_config,
-            query_norm_config=None,
-            key_norm_config=None,
-            num_heads=config.n_head,
-            num_groups=config.n_local_heads,
-            head_dim=config.head_dim,
-            is_causal=True,
-            scale=None,
-            sliding_window_size=window_size,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=False,
-            has_out_biases=False,
-        )
-
-        mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-        mlp_use_up_biases = False
-        mlp_use_down_biases = False
-        mlp_config = DenseMLPConfig(
-            linear_config=mlp_linear_config,
-            activation=SiLU(),
-            has_up_biases=mlp_use_up_biases,
-            has_down_biases=mlp_use_down_biases,
-            gate_clipping=None,
-            up_clipping=None,
-        )
-
-        pre_mixer_norm_config = norm_config_pre
-        post_mixer_norm_config = norm_config_post
-        pre_mlp_norm_config = norm_config_pre
-        post_mlp_norm_config = norm_config_post
-
-        layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=pre_mixer_norm_config,
-            mixer_config=mixer_config,
-            post_mixer_norm_config=post_mixer_norm_config,
-            pre_mlp_norm_config=pre_mlp_norm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=post_mlp_norm_config,
-        )
-        hidden_dim = config.intermediate_size
-        context_length = config.block_size
-
-        transformer_cfg = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
-            layer_configs=tuple([layer_config] * config.n_layer),
-            output_norm_config=norm_config_pre,
-            model_dim=input_dim,
-            hidden_dim=hidden_dim,
-            context_length=context_length,
-        )
-
-        return transformer_cfg
-
-
-# =============================================================================
-# Helper Functions
-# =============================================================================
 
 
 def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, padding_total: int = 0) -> int:
@@ -130,19 +25,8 @@ def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, pa
     return int(ideal_length - length)
 
 
-# =============================================================================
-# Causal Conv1d Module
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class CausalConv1dConfig:
-    """Configuration for CausalConv1d module.
-
-    This is a causal 1D convolution that pads the input on the left side only,
-    ensuring that the output at time t only depends on inputs at times <= t.
-    """
-
     precision: DTypeLike
     has_biases: bool
 
@@ -157,18 +41,10 @@ class CausalConv1dConfig:
         *,
         key: PRNGKeyArray,
     ) -> "CausalConv1d":
-        # Effective kernel size accounting for dilation
         effective_kernel_size = (kernel_size - 1) * dilation + 1
-
-        # Initialize weights using Kaiming/He initialization
-        fan_in = in_channels * kernel_size // groups
-        scale = 1 / math.sqrt(fan_in)
-
-        weights = jax.random.uniform(
+        weights = jax.random.normal(
             key,
-            (out_channels, in_channels // groups, kernel_size),
-            minval=-scale,
-            maxval=scale,
+            shape=(out_channels, in_channels // groups, kernel_size),
             dtype=self.precision,
         )
 
@@ -221,12 +97,8 @@ class CausalConv1dConfig:
 
 class CausalConv1d(LalamoModule[CausalConv1dConfig]):
     """Causal 1D convolution module.
-
     Implements causal convolution by left-padding the input with zeros.
     The output at position t only depends on inputs at positions <= t.
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
     """
 
     weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
@@ -264,14 +136,6 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply causal convolution.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_out, out_channels)
-        """
         length = x.shape[1]  # sequence dimension is axis 1
         pad = self.padding
         extra_padding = _get_extra_padding_for_conv1d(length, self.effective_kernel_size, self.stride, pad)
@@ -280,7 +144,6 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
         # Input is (batch, sequence, channels), pad the sequence dimension (axis 1)
         x_padded = jnp.pad(x, ((0, 0), (pad, extra_padding), (0, 0)), mode="constant", constant_values=0)
 
-        # Perform convolution using jax.lax.conv_general_dilated
         # Input: (N, S, C) - NSC format
         # Kernel: (O, I, K) - OIH format
         # Output: (N, S, C) - NSC format
@@ -320,15 +183,10 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
         )
 
 
-# =============================================================================
-# Causal Transpose Conv1d Module
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class CausalTransposeConv1dConfig:
-    """Configuration for CausalTransposeConv1d module.
-
+    """
+    Configuration for CausalTransposeConv1d module.
     This is a causal transposed 1D convolution (deconvolution) that removes
     padding from the output to maintain causality.
     """
@@ -346,16 +204,10 @@ class CausalTransposeConv1dConfig:
         *,
         key: PRNGKeyArray,
     ) -> "CausalTransposeConv1d":
-        # Initialize weights using Kaiming/He initialization
-        fan_in = in_channels * kernel_size
-        scale = 1 / math.sqrt(fan_in)
-
         # For transposed conv, weight shape is (in_channels, out_channels, kernel_size)
-        weights = jax.random.uniform(
+        weights = jax.random.normal(
             key,
             (in_channels, out_channels, kernel_size),
-            minval=-scale,
-            maxval=scale,
             dtype=self.precision,
         )
 
@@ -400,13 +252,10 @@ class CausalTransposeConv1dConfig:
 
 
 class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
-    """Causal transposed 1D convolution (deconvolution) module.
-
+    """
+    Causal transposed 1D convolution (deconvolution) module.
     Implements causal transposed convolution by removing appropriate padding
     from the output.
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
     """
 
     weights: Float[Array, "in_channels out_channels kernel_size"]
@@ -438,16 +287,6 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply causal transposed convolution.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_out, out_channels)
-        """
-        # Perform transposed convolution using jax.lax.conv_transpose
-        # PyTorch ConvTranspose1d weight is (in_channels, out_channels, kernel_size)
         # Input: (N, S, C) - NSC format
         # Kernel: (I, O, K) - IOH format
         # Output: (N, S, C) - NSC format
@@ -498,181 +337,6 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
         )
 
 
-# =============================================================================
-# Standard Conv1d Module
-# =============================================================================
-
-
-@dataclass(frozen=True)
-class Conv1dConfig:
-    """Configuration for standard (non-causal) Conv1d module.
-
-    This is a standard 1D convolution with symmetric padding.
-    """
-
-    precision: DTypeLike
-    has_biases: bool
-
-    def random_init(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        dilation: int = 1,
-        groups: int = 1,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Conv1d":
-        fan_in = in_channels * kernel_size // groups
-        scale = 1 / math.sqrt(fan_in)
-
-        weights = jax.random.uniform(
-            key,
-            (out_channels, in_channels // groups, kernel_size),
-            minval=-scale,
-            maxval=scale,
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return Conv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            stride=stride,
-            dilation=dilation,
-            groups=groups,
-        )
-
-    def empty(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        dilation: int = 1,
-        groups: int = 1,
-    ) -> "Conv1d":
-        weights = dummy_array(
-            (out_channels, in_channels // groups, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = dummy_array((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return Conv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            stride=stride,
-            dilation=dilation,
-            groups=groups,
-        )
-
-
-class Conv1d(LalamoModule[Conv1dConfig]):
-    """Standard (non-causal) 1D convolution module.
-
-    Uses symmetric padding (same padding on both sides).
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-    """
-
-    weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
-    biases: Float[Array, " out_channels"] | None
-
-    stride: int = eqx.field(static=True)
-    dilation: int = eqx.field(static=True)
-    groups: int = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def out_channels(self) -> int:
-        out_channels, _, _ = self.weights.shape
-        return out_channels
-
-    @property
-    def in_channels(self) -> int:
-        _, in_channels_per_group, _ = self.weights.shape
-        return in_channels_per_group * self.groups
-
-    @property
-    def kernel_size(self) -> int:
-        _, _, kernel_size = self.weights.shape
-        return kernel_size
-
-    def __call__(
-        self,
-        x: Float[Array, "batch sequence in_channels"],
-    ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply standard convolution with symmetric padding.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_out, out_channels)
-        """
-        effective_kernel_size = (self.kernel_size - 1) * self.dilation + 1
-        total_padding = effective_kernel_size - 1
-        pad_left = total_padding // 2
-        pad_right = total_padding - pad_left
-
-        x_padded = jnp.pad(x, ((0, 0), (pad_left, pad_right), (0, 0)), mode="constant", constant_values=0)
-
-        output = lax.conv_general_dilated(
-            x_padded,
-            self.weights,
-            window_strides=(self.stride,),
-            padding="VALID",
-            rhs_dilation=(self.dilation,),
-            feature_group_count=self.groups,
-            dimension_numbers=("NHC", "OIH", "NHC"),
-        )
-
-        if self.biases is not None:
-            output = output + self.biases[None, None, :]
-
-        return output
-
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "Conv1d":
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=weights["weights"],
-            biases=biases,
-        )
-
-
-# =============================================================================
-# ConvNeXt Block Module
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class ConvNeXtSpatialParams:
     """Spatial parameters for ConvNeXt blocks.
@@ -690,18 +354,6 @@ class ConvNeXtSpatialParams:
 
 @dataclass(frozen=True)
 class ConvNeXtBlockConfig:
-    """Configuration for ConvNeXt block.
-
-    ConvNeXt block consists of:
-    1. Depthwise convolution (groups=channels)
-    2. LayerNorm
-    3. Pointwise conv (Linear) expanding to mlp_ratio * dim
-    4. GELU activation
-    5. Pointwise conv (Linear) projecting back to dim
-    6. Optional layer scale (gamma)
-    7. Residual connection
-    """
-
     precision: DTypeLike
     activation: Activation
 
@@ -845,15 +497,6 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         x: Float[Array, "batch sequence channels"],
         apply_residual: bool = True,
     ) -> Float[Array, "batch sequence channels"]:
-        """Apply ConvNeXt block.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, channels)
-            apply_residual: Whether to add residual connection
-
-        Returns:
-            Output tensor of shape (batch, sequence, channels)
-        """
         residual = x
 
         x = self.depthwise_conv(x)
@@ -907,18 +550,8 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         )
 
 
-# =============================================================================
-# Upsampling Modules
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class TransposeConvSpatialParams:
-    """Parameters for a single upsampling block.
-
-    These parameters define the structure of one upsampling block within the Upsampler.
-    """
-
     in_channels: int
     out_channels: int
     upsample_kernel_size: int
@@ -927,13 +560,6 @@ class TransposeConvSpatialParams:
 
 @dataclass(frozen=True)
 class UpsamplingBlockConfig:
-    """Configuration for upsampling block.
-
-    The upsampling block consists of:
-    1. CausalTransposeConv1d (upsampling)
-    2. ConvNeXtBlock
-    """
-
     precision: DTypeLike
 
     def random_init(
@@ -1031,18 +657,7 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply upsampling block.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_upsampled, out_channels)
-        """
-        # Transposed conv for upsampling
         x = self.trans_conv(x)
-
-        # ConvNeXt block for refinement
         x = self.convnext(x)
 
         return x
@@ -1069,11 +684,6 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
 
 @dataclass(frozen=True)
 class UpsamplerConfig:
-    """Configuration for the full upsampler module.
-
-    The upsampler consists of a sequence of UpsamplingBlocks, each with its own configuration.
-    """
-
     block_configs: tuple[UpsamplingBlockConfig, ...]
 
     def empty(
@@ -1081,15 +691,6 @@ class UpsamplerConfig:
         trans_conv_params_per_block: tuple[TransposeConvSpatialParams, ...],
         convnext_spatial_params: ConvNeXtSpatialParams,
     ) -> "Upsampler":
-        """Create an empty Upsampler with specified block parameters.
-
-        Args:
-            trans_conv_params_per_block: Tuple of TransposeConvSpatialParams for each block.
-            convnext_spatial_params: Spatial parameters for ConvNeXt blocks (shared across all blocks).
-
-        Returns:
-            Empty Upsampler module.
-        """
         assert len(self.block_configs) == len(trans_conv_params_per_block), (
             f"Number of block configs ({len(self.block_configs)}) must match "
             f"number of block params ({len(trans_conv_params_per_block)})"
@@ -1112,16 +713,6 @@ class UpsamplerConfig:
         *,
         key: PRNGKeyArray,
     ) -> "Upsampler":
-        """Create a randomly initialized Upsampler.
-
-        Args:
-            trans_conv_params_per_block: Tuple of TransposeConvSpatialParams for each block.
-            convnext_spatial_params: Spatial parameters for ConvNeXt blocks (shared across all blocks).
-            key: PRNG key for random initialization.
-
-        Returns:
-            Randomly initialized Upsampler module.
-        """
         assert len(self.block_configs) == len(trans_conv_params_per_block)
 
         blocks = []
@@ -1163,14 +754,6 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply all upsampling blocks sequentially.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_upsampled, out_channels)
-        """
         for block in self.blocks:
             x = block(x)
         return x
@@ -1189,11 +772,6 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
             new_blocks.append(block.import_weights(w))
 
         return replace(self, blocks=tuple(new_blocks))
-
-
-# =============================================================================
-# Vector Quantization Modules
-# =============================================================================
 
 
 @dataclass(frozen=True)
@@ -1400,12 +978,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
 
 @dataclass(frozen=True)
 class DownsampleResidualVectorQuantizeConfig:
-    """Configuration for DownsampleResidualVectorQuantize module.
-
-    This module combines semantic and residual quantization with a post-processing
-    transformer and upsampling to decode audio codes back to continuous representations.
-    """
-
     precision: DTypeLike
     semantic_quantizer_config: ResidualVectorQuantizeConfig
     quantizer_config: ResidualVectorQuantizeConfig
@@ -1419,17 +991,6 @@ class DownsampleResidualVectorQuantizeConfig:
         semantic_quantizer_params: VectorQuantizerParams,
         quantizer_params: VectorQuantizerParams,
     ) -> "DownsampleResidualVectorQuantize":
-        """Create module with uninitialized (dummy) weights.
-
-        Args:
-            upsampler_trans_conv_params: Tuple of TransposeConvSpatialParams for each upsampling block.
-            convnext_spatial_params: Spatial parameters for ConvNeXt blocks.
-            semantic_quantizer_params: Parameters for semantic quantizer.
-            quantizer_params: Parameters for residual quantizer.
-
-        Returns:
-            DownsampleResidualVectorQuantize module with dummy weights.
-        """
         semantic_quantizer = self.semantic_quantizer_config.empty(
             input_dim=semantic_quantizer_params.input_dim,
             codebook_size=semantic_quantizer_params.codebook_size,
@@ -1463,18 +1024,6 @@ class DownsampleResidualVectorQuantizeConfig:
         *,
         key: PRNGKeyArray,
     ) -> "DownsampleResidualVectorQuantize":
-        """Create module with randomly initialized weights.
-
-        Args:
-            upsampler_trans_conv_params: Tuple of TransposeConvSpatialParams for each upsampling block.
-            convnext_spatial_params: Spatial parameters for ConvNeXt blocks.
-            semantic_quantizer_params: Parameters for semantic quantizer.
-            quantizer_params: Parameters for residual quantizer.
-            key: PRNG key for random initialization.
-
-        Returns:
-            DownsampleResidualVectorQuantize module with random weights.
-        """
         key1, key2, key3, key4 = jax.random.split(key, 4)
 
         semantic_quantizer = self.semantic_quantizer_config.random_init(
@@ -1542,30 +1091,14 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
     ) -> Float[Array, "batch upsampled_tokens channels"]:
-        """Decode audio codes to continuous features.
-
-        Args:
-            indices: Integer codes with shape (batch, n_codebooks, tokens).
-                     First row (indices[:, 0]) contains semantic codes,
-                     remaining rows (indices[:, 1:]) contain residual codes.
-
-        Returns:
-            Decoded audio features with shape (batch, upsampled_tokens, channels).
-        """
-        # Clamp indices to valid codebook ranges
         semantic_indices = jnp.clip(indices[:, :1], 0, self.semantic_codebook_size - 1)
         residual_indices = jnp.clip(indices[:, 1:], 0, self.quantizer_codebook_size - 1)
 
-        # Decode semantic codes: (batch, 1, tokens) -> (batch, tokens, input_dim)
         z_q_semantic = vmap(self.semantic_quantizer.from_codes)(semantic_indices)
-
-        # Decode residual codes: (batch, n_residual_codebooks, tokens) -> (batch, tokens, input_dim)
         z_q_residual = vmap(self.quantizer.from_codes)(residual_indices)
 
-        # Sum semantic and residual representations
         z_q = z_q_semantic + z_q_residual
 
-        # Process through transformer post-module
         batch_size, seq_length, _ = z_q.shape
         token_positions = jnp.broadcast_to(jnp.arange(seq_length)[None, :], (batch_size, seq_length))
 
@@ -1582,7 +1115,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         )
         z_q = post_result.outputs
 
-        # Upsample to target temporal resolution
         z_q = self.upsampler(z_q)
 
         return z_q
@@ -1591,10 +1123,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
     ) -> Float[Array, "batch upsampled_tokens channels"]:
-        """Decode audio codes to continuous features.
-
-        This is an alias for the decode method.
-        """
         return self.decode(indices)
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -1627,29 +1155,15 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         )
 
 
-# =============================================================================
-# Snake1d Activation Module
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class Snake1dConfig:
-    """Configuration for Snake1d activation module.
-
-    Snake activation: x + (1/alpha) * sin^2(alpha * x)
-    This is a learnable periodic activation function that has been shown to be
-    effective for audio synthesis tasks.
-    """
-
     precision: DTypeLike
 
     def empty(self, channels: int) -> "Snake1d":
-        """Create module with uninitialized (dummy) weights."""
         alpha = dummy_array((channels,), dtype=self.precision)
         return Snake1d(config=self, alpha=alpha)
 
     def random_init(self, channels: int) -> "Snake1d":
-        """Create module with initialized weights (alpha=1)."""
         alpha = jnp.ones((channels,), dtype=self.precision)
         return Snake1d(config=self, alpha=alpha)
 
@@ -1677,14 +1191,6 @@ class Snake1d(LalamoModule[Snake1dConfig]):
         self,
         x: Float[Array, "batch sequence channels"],
     ) -> Float[Array, "batch sequence channels"]:
-        """Apply Snake activation.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence, channels)
-        """
         # alpha is (channels,), broadcast to (1, 1, channels) for (batch, seq, channels) input
         alpha = self.alpha[None, None, :]
         # Snake activation: x + (1/alpha) * sin^2(alpha * x)
@@ -1706,27 +1212,12 @@ class Snake1d(LalamoModule[Snake1dConfig]):
 
 @dataclass(frozen=True)
 class ResidualUnitSpatialParams:
-    """Spatial parameters for ResidualUnit.
-
-    These parameters control the convolution structure.
-    """
-
     dilation: int = 1
     kernel_size: int = 7
 
 
 @dataclass(frozen=True)
 class ResidualUnitConfig:
-    """Configuration for ResidualUnit module.
-
-    ResidualUnit consists of:
-    1. Snake1d activation
-    2. Causal Conv1d (kernel_size=7, dilation=dilation)
-    3. Snake1d activation
-    4. Causal Conv1d (kernel_size=1)
-    5. Residual connection (with padding adjustment for causal mode)
-    """
-
     precision: DTypeLike
     causal: bool = True
 
@@ -1735,7 +1226,6 @@ class ResidualUnitConfig:
         dim: int,
         spatial_params: ResidualUnitSpatialParams,
     ) -> "ResidualUnit":
-        """Create module with uninitialized (dummy) weights."""
         if not self.causal:
             raise NotImplementedError("Non-causal ResidualUnit is not implemented")
 
@@ -1780,7 +1270,6 @@ class ResidualUnitConfig:
         *,
         key: PRNGKeyArray,
     ) -> "ResidualUnit":
-        """Create module with randomly initialized weights."""
         if not self.causal:
             raise NotImplementedError("Non-causal ResidualUnit is not implemented")
 
@@ -1905,18 +1394,8 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
         )
 
 
-# =============================================================================
-# DAC Decoder Block Module
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class AudioDecoderBlockSpatialParams:
-    """Spatial parameters for DACDecoder.
-
-    These parameters define the structure of one decoder block.
-    """
-
     input_dim: int
     output_dim: int
     stride: int
@@ -1924,16 +1403,6 @@ class AudioDecoderBlockSpatialParams:
 
 @dataclass(frozen=True)
 class DACDecoderBlockConfig:
-    """Configuration for DACDecoderBlock module.
-
-    DACDecoderBlock consists of:
-    1. Snake1d activation
-    2. CausalTransposeConv1d (upsampling)
-    3. ResidualUnit (dilation=1)
-    4. ResidualUnit (dilation=3)
-    5. ResidualUnit (dilation=9)
-    """
-
     precision: DTypeLike
     causal: bool = True
 
@@ -1941,16 +1410,13 @@ class DACDecoderBlockConfig:
         self,
         spatial_params: AudioDecoderBlockSpatialParams,
     ) -> "DACDecoderBlock":
-        """Create module with uninitialized (dummy) weights."""
         input_dim = spatial_params.input_dim
         output_dim = spatial_params.output_dim
         stride = spatial_params.stride
 
-        # Snake1d activation before transpose conv
         snake_config = Snake1dConfig(precision=self.precision)
         snake = snake_config.empty(input_dim)
 
-        # Transpose conv for upsampling
         trans_conv_config = CausalTransposeConv1dConfig(precision=self.precision, has_biases=True)
         trans_conv = trans_conv_config.empty(
             in_channels=input_dim,
@@ -1960,7 +1426,6 @@ class DACDecoderBlockConfig:
             dilation=1,
         )
 
-        # Three residual units with different dilations
         res_config = ResidualUnitConfig(precision=self.precision, causal=self.causal)
 
         res_unit1 = res_config.empty(output_dim, ResidualUnitSpatialParams(dilation=1))
@@ -1982,18 +1447,15 @@ class DACDecoderBlockConfig:
         *,
         key: PRNGKeyArray,
     ) -> "DACDecoderBlock":
-        """Create module with randomly initialized weights."""
         input_dim = spatial_params.input_dim
         output_dim = spatial_params.output_dim
         stride = spatial_params.stride
 
         key1, key2, key3, key4 = jax.random.split(key, 4)
 
-        # Snake1d activation before transpose conv
         snake_config = Snake1dConfig(precision=self.precision)
         snake = snake_config.random_init(input_dim)
 
-        # Transpose conv for upsampling
         trans_conv_config = CausalTransposeConv1dConfig(precision=self.precision, has_biases=True)
         trans_conv = trans_conv_config.random_init(
             in_channels=input_dim,
@@ -2004,7 +1466,6 @@ class DACDecoderBlockConfig:
             key=key1,
         )
 
-        # Three residual units with different dilations
         res_config = ResidualUnitConfig(precision=self.precision, causal=self.causal)
 
         res_unit1 = res_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=1), key=key2)
@@ -2057,14 +1518,6 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply DecoderBlock.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_upsampled, out_channels)
-        """
         x = self.snake(x)
         x = self.trans_conv(x)
         x = self.res_unit1(x)
@@ -2105,18 +1558,8 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
         )
 
 
-# =============================================================================
-# DAC Decoder Module
-# =============================================================================
-
-
 @dataclass(frozen=True)
 class DACDecoderSpatialParams:
-    """Spatial parameters for DACDecoder.
-
-    These parameters define the full decoder structure.
-    """
-
     input_channel: int  # Input channels (from quantizer output)
     channels: int  # Initial channel width after first conv
     rates: tuple[int, ...]  # Upsampling rates for each DecoderBlock
@@ -2125,14 +1568,6 @@ class DACDecoderSpatialParams:
 
 @dataclass(frozen=True)
 class DACDecoderConfig:
-    """Configuration for DACDecoderConfig module.
-
-    DACDecoderConfig consists of:
-    1. Initial CausalConv1d (input_channel -> channels)
-    2. Multiple DecoderBlocks (upsampling stages)
-    3. Final Snake1d + CausalConv1d + Tanh
-    """
-
     precision: DTypeLike
     causal: bool = True
 
@@ -2140,7 +1575,6 @@ class DACDecoderConfig:
         self,
         spatial_params: DACDecoderSpatialParams,
     ) -> "DACDecoder":
-        """Create module with uninitialized (dummy) weights."""
         if not self.causal:
             raise NotImplementedError("Non-causal AudioDecoder is not implemented")
 
@@ -2149,7 +1583,6 @@ class DACDecoderConfig:
         rates = spatial_params.rates
         d_out = spatial_params.d_out
 
-        # First conv: input_channel -> channels
         first_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
         first_conv = first_conv_config.empty(
             in_channels=input_channel,
@@ -2160,7 +1593,6 @@ class DACDecoderConfig:
             groups=1,
         )
 
-        # DecoderBlocks with decreasing channel dimensions
         decoder_blocks: list[DACDecoderBlock] = []
         for i, stride in enumerate(rates):
             block_input_dim = channels // (2**i)
@@ -2178,11 +1610,9 @@ class DACDecoderConfig:
         # Final output dimension after all decoder blocks
         final_dim = channels // (2 ** len(rates))
 
-        # Final snake activation
         final_snake_config = Snake1dConfig(precision=self.precision)
         final_snake = final_snake_config.empty(final_dim)
 
-        # Final conv: final_dim -> d_out
         final_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
         final_conv = final_conv_config.empty(
             in_channels=final_dim,
@@ -2207,7 +1637,6 @@ class DACDecoderConfig:
         *,
         key: PRNGKeyArray,
     ) -> "DACDecoder":
-        """Create module with randomly initialized weights."""
         if not self.causal:
             raise NotImplementedError("Non-causal AudioDecoder is not implemented")
 
@@ -2216,11 +1645,9 @@ class DACDecoderConfig:
         rates = spatial_params.rates
         d_out = spatial_params.d_out
 
-        # Split keys: first_conv, decoder_blocks..., final_conv
         num_keys = 2 + len(rates)  # first_conv + blocks + final_conv
         keys = jax.random.split(key, num_keys)
 
-        # First conv
         first_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
         first_conv = first_conv_config.random_init(
             in_channels=input_channel,
@@ -2232,7 +1659,6 @@ class DACDecoderConfig:
             key=keys[0],
         )
 
-        # DecoderBlocks
         decoder_blocks: list[DACDecoderBlock] = []
         for i, stride in enumerate(rates):
             block_input_dim = channels // (2**i)
@@ -2250,11 +1676,9 @@ class DACDecoderConfig:
         # Final dimension
         final_dim = channels // (2 ** len(rates))
 
-        # Final snake
         final_snake_config = Snake1dConfig(precision=self.precision)
         final_snake = final_snake_config.random_init(final_dim)
 
-        # Final conv
         final_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
         final_conv = final_conv_config.random_init(
             in_channels=final_dim,
@@ -2314,22 +1738,11 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        """Apply AudioDecoder.
-
-        Args:
-            x: Input tensor of shape (batch, sequence, in_channels)
-
-        Returns:
-            Output tensor of shape (batch, sequence_upsampled, d_out) in range [-1, 1]
-        """
-        # First conv
         x = self.first_conv(x)
 
-        # Decoder blocks (upsampling)
         for block in self.decoder_blocks:
             x = block(x)
 
-        # Final activation and conv
         x = self.final_snake(x)
         x = self.final_conv(x)
 

@@ -8,10 +8,17 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
-from lalamo.modules import TTSAudioDecoder
+from lalamo.modules.activations import SiLU
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
+from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.mlp import DenseMLPConfig
+from lalamo.modules.normalization import LayerScaleConfig, NormalizationConfig, UpcastMode
+from lalamo.modules.rope import RoPEConfigCis
+from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.transformer import TransformerConfig
+from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .fishaudio_modules import (
-    ConfigMapping,
     ConvNeXtSpatialParams,
     DACDecoder,
     DACDecoderConfig,
@@ -26,18 +33,84 @@ from .fishaudio_modules import (
 )
 
 
+def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+    config, precision: DTypeLike, window_size: int, input_dim: int
+) -> TransformerConfig:
+    global_rope_config = RoPEConfigCis(precision=precision, base=config.rope_base)
+    local_rope_config = None
+
+    norm_config_pre = NormalizationConfig(
+        scale_precision=precision,
+        accumulation_precision=precision,
+        epsilon=config.norm_eps,
+        scale_offset=None,
+        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False,
+    )
+    norm_config_post = LayerScaleConfig(scale_precision=precision)
+
+    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
+    out_projection_config = FullPrecisionLinearConfig(precision=precision)
+    mixer_config = AttentionConfig(
+        qkv_projection_config=qkv_projection_config,
+        out_projection_config=out_projection_config,
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=config.n_head,
+        num_groups=config.n_local_heads,
+        head_dim=config.head_dim,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=window_size,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkv_biases=False,
+        has_out_biases=False,
+    )
+
+    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
+    mlp_use_up_biases = False
+    mlp_use_down_biases = False
+    mlp_config = DenseMLPConfig(
+        linear_config=mlp_linear_config,
+        activation=SiLU(),
+        has_up_biases=mlp_use_up_biases,
+        has_down_biases=mlp_use_down_biases,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+
+    pre_mixer_norm_config = norm_config_pre
+    post_mixer_norm_config = norm_config_post
+    pre_mlp_norm_config = norm_config_pre
+    post_mlp_norm_config = norm_config_post
+
+    layer_config = TransformerLayerConfig(
+        pre_mixer_norm_config=pre_mixer_norm_config,
+        mixer_config=mixer_config,
+        post_mixer_norm_config=post_mixer_norm_config,
+        pre_mlp_norm_config=pre_mlp_norm_config,
+        mlp_config=mlp_config,
+        post_mlp_norm_config=post_mlp_norm_config,
+    )
+    hidden_dim = config.intermediate_size
+    context_length = config.block_size
+
+    transformer_cfg = TransformerConfig(
+        global_rope_config=global_rope_config,
+        local_rope_config=local_rope_config,
+        layer_configs=tuple([layer_config] * config.n_layer),
+        output_norm_config=norm_config_pre,
+        model_dim=input_dim,
+        hidden_dim=hidden_dim,
+        context_length=context_length,
+    )
+
+    return transformer_cfg
+
+
 @dataclass(frozen=True)
 class DescriptAudioCodecConfig:
-    """Configuration for DAC (Discrete Audio Codec) module.
-
-    DAC combines the quantizer (DownsampleResidualVectorQuantize) and decoder (DACDecoder)
-    into a single module that decodes audio codes to waveform.
-
-    The decoding pipeline:
-    1. Quantizer decodes integer codes to continuous latent representations
-    2. Decoder upsamples and converts latents to audio waveform
-    """
-
     precision: DTypeLike
     quantizer_config: DownsampleResidualVectorQuantizeConfig
     decoder_config: DACDecoderConfig
@@ -59,19 +132,6 @@ class DescriptAudioCodecConfig:
     def empty(
         self,
     ) -> "DescriptAudioCodec":
-        """Create module with uninitialized (dummy) weights.
-
-        Args:
-            quantizer_upsampler_trans_conv_params: TransposeConv params for quantizer upsampler blocks.
-            quantizer_convnext_spatial_params: ConvNeXt params for quantizer upsampler.
-            semantic_quantizer_params: Parameters for semantic quantizer.
-            quantizer_params: Parameters for residual quantizer.
-            decoder_spatial_params: Spatial parameters for the audio decoder.
-
-        Returns:
-            DAC module with dummy weights.
-        """
-
         (
             semantic_quantizer_params,
             quantizer_params,
@@ -110,19 +170,6 @@ class DescriptAudioCodecConfig:
         *,
         key: PRNGKeyArray,
     ) -> "DescriptAudioCodec":
-        """Create module with randomly initialized weights.
-
-        Args:
-            quantizer_upsampler_trans_conv_params: TransposeConv params for quantizer upsampler blocks.
-            quantizer_convnext_spatial_params: ConvNeXt params for quantizer upsampler.
-            semantic_quantizer_params: Parameters for semantic quantizer.
-            quantizer_params: Parameters for residual quantizer.
-            decoder_spatial_params: Spatial parameters for the audio decoder.
-            key: PRNG key for random initialization.
-
-        Returns:
-            DAC module with random weights.
-        """
         key1, key2 = jax.random.split(key)
 
         (
@@ -166,16 +213,12 @@ class DescriptAudioCodecConfig:
     ) -> "DescriptAudioCodecConfig":
         precision = jnp.float32
 
-        # Extract config parameters
         samplerate = fish_dac_config["sample_rate"]
-
         fish_quantizer_config = fish_dac_config["quantizer"]
 
-        # Build quantizer config using existing helper
         input_dim = fish_quantizer_config["input_dim"]
         downsample_factor = fish_quantizer_config["downsample_factor"]
         post_module_config_dict = fish_quantizer_config["post_module"]
-
         encoder_dim = fish_dac_config["encoder_dim"]
         encoder_rates = fish_dac_config["encoder_rates"]
         decoder_dim = fish_dac_config["decoder_dim"]
@@ -188,12 +231,11 @@ class DescriptAudioCodecConfig:
         codebook_size = fish_quantizer_config["codebook_size"]
         semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
 
-        # === Create full DAC config ===
         upsampler_config = UpsamplerConfig(
             block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor))
         )
         post_module_transformer_foreign = instantiate(post_module_config_dict["config"])
-        post_module_config = ConfigMapping.lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+        post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
             post_module_transformer_foreign,
             precision,
             window_size=post_module_config_dict["window_size"],
@@ -246,7 +288,7 @@ class DescriptAudioCodecConfig:
         tuple[TransposeConvSpatialParams, ...],
         DACDecoderSpatialParams,
     ]:
-        latent_dim = encoder_dim * (2 ** len(encoder_rates))  # 64 * 16 = 1024
+        latent_dim = encoder_dim * (2 ** len(encoder_rates))
         downsample_dims = [input_dim for _ in range(len(downsample_factor))]
         all_dims = (input_dim, *downsample_dims)
 
@@ -283,29 +325,13 @@ class DescriptAudioCodecConfig:
             decoder_spatial_params,
         )
 
-    @staticmethod
-    def from_fishaudio_config(
-        fish_dac_config: Mapping[Any, Any],
-        # key: PRNGKeyArray = jax.random.PRNGKey(123),
-    ) -> "DescriptAudioCodec":
-        """Create DAC module from FishAudio DAC config.
-
-        Args:
-            fish_dac_config: Config dict from FishAudio DAC model.
-            key: PRNG key for random initialization.
-
-        Returns:
-            DAC module configured to match FishAudio DAC structure.
-        """
-        dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(fish_dac_config=fish_dac_config)
-        return dac_config.empty(
-            # key=key,
-        )
-
 
 class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     """Lalamo implementation of DAC (Descript Audio Codec)
     Original code: https://github.com/descriptinc/descript-audio-codec
+    The decoding pipeline:
+    1. Quantizer decodes integer codes to continuous latent representations
+    2. Decoder upsamples and converts latents to audio waveform
     """
 
     quantizer: DownsampleResidualVectorQuantize
@@ -329,7 +355,8 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
 
     @property
     def n_codebooks(self) -> int:
-        return 1 + self.quantizer.quantizer.n_codebooks  # 1 semantic + n residual
+        # NOTE: 1 semantic + n residuals
+        return 1 + self.quantizer.quantizer.n_codebooks
 
     def __call__(
         self,

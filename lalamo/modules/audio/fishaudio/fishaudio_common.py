@@ -21,32 +21,11 @@ from lalamo.sampling import SamplingPolicy, make_policy
 DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
 DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
 
+# NOTE: magic constants from FishAudio code
+SHORT_LOGITS_SIZE: int = 1024
+REPEAT_WINDOW_SIZE: int = 16
 
-def _setup_logger() -> Logger:
-    import sys
-
-    logger = logging.getLogger("fishaudio")
-    logger.handlers = []  # Clear any existing
-    logger.setLevel(logging.DEBUG)
-    logger.propagate = False  # Ignore root logger completely
-
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
-    handler.setFormatter(logging.Formatter("%(levelname)s-%(name)s : %(message)s"))
-    logger.addHandler(handler)
-    return logger
-
-
-fishaudio_logger = _setup_logger()
-
-
-def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
-    if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
-        return array.astype(cast_to)
-    return array
-
-
-# This is copied from fish-speech repo
+# NOTE: tokenization consts from FishAudio code
 FISH_TIKTOKEN_PATTERN = "|".join(
     [
         r"(?i:'s|'t|'re|'ve|'m|'ll|'d)",
@@ -61,7 +40,7 @@ FISH_TIKTOKEN_PATTERN = "|".join(
 )
 IM_END_TOKEN = "<|im_end|>"
 
-# NOTE: copied directly from fish-speech repo where it is held as YAML file
+# NOTE: in fish-speech repo this was a YAML config stored right in the code
 _default_audio_codec_config = {
     "_target_": "fish_speech.models.dac.modded_dac.DAC",
     "sample_rate": 44100,
@@ -136,6 +115,21 @@ _default_audio_codec_config = {
         "semantic_codebook_size": 4096,
     },
 }
+
+
+def _setup_fishaudio_logger() -> Logger:
+    import os
+    import sys
+
+    logger = logging.getLogger("fishaudio")
+    logger.setLevel(os.environ.get("LOGLEVEL", "WARNING"))
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(logging.Formatter("%(levelname)s-%(name)s : %(message)s"))
+    logger.addHandler(handler)
+    return logger
+
+
+fishaudio_logger = _setup_fishaudio_logger()
 
 
 @dataclass(frozen=True)

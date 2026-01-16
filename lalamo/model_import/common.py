@@ -372,7 +372,10 @@ def _import_tts_model(
 
     tts_generator_config = TTSGeneratorConfig(
         tts_config=foreign_tts_config.to_lalamo_config(
-            context_length=8192, activation_precision=precision, accumulation_precision=precision, metadata_dict={}
+            context_length=context_length,
+            activation_precision=precision,
+            accumulation_precision=precision,
+            metadata_dict={},
         ),
         message_processor_config=message_processor.config,
     )

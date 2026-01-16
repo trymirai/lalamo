@@ -121,3 +121,9 @@ class ParameterPath(str):
         if not self:
             return ParameterPath(str(other))
         return ParameterPath(self + "." + str(other))
+
+
+def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
+    if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
+        return array.astype(cast_to)
+    return array

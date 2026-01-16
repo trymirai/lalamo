@@ -1,6 +1,5 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
-from enum import Enum
 from functools import cached_property
 from typing import Any, Self, TypedDict
 
@@ -14,8 +13,6 @@ from lalamo.modules.common import LalamoModule
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .audio_decoder import TTSAudioDecoder
-from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
-from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 

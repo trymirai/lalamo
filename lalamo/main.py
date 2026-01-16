@@ -298,7 +298,7 @@ def tts(
     assert model is not None
     _stop_word = "/stop"
     while True:
-        user_text = console.input(f"[cyan]text to generate ({_stop_word} to exit)> [/cyan]")
+        user_text = console.input(f"[cyan]input text to generate speech({_stop_word} to exit)> [/cyan]")
         if user_text == _stop_word:
             console.print("[green] Goodbye! [/green]")
             break
