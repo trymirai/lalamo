@@ -23,7 +23,7 @@ def logits_to_probs(
     temperature: float,
     previous_tokens: Optional[Int[Array, " tokens"]] = None,
 ) -> Float[Array, " vocabulary"]:
-    # NOTE: repetition_penalty is not implemented yet - stub for API compatibility
+    # NOTE: repetition_penalty is not implemented yet - stub it for API compatibility
     policies = []
     if top_p > 0 and top_p < 1.0:
         policies.append(TopPPolicy(p=top_p))

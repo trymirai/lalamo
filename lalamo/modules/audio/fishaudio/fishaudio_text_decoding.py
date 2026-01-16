@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
-from lalamo.modules.audio.fishaudio.fishaudio_common import DEFAULT_FISH_AUDIO_SAMPLING_POLICY
+from lalamo.modules.audio.fishaudio.fishaudio_common import DEFAULT_FISH_AUDIO_SAMPLING_POLICY, fishaudio_logger
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -281,7 +281,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         generation loop. Processing text tokens through the slow transformer and generating
         codebook tokens until the end token is reached or max sequence length is exceeded.
         Returns:
-            Generated codebook tokens
+            Generated codebook tokens for DAC codec
         """
 
         batch_size, prompt_length = text_tokens.shape
@@ -325,8 +325,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens=None,
         )
 
-        # TODO: remove after debugging is done
-        print(f"{0} : code={first_codes[0]}")
+        fishaudio_logger.debug(f"{0} : code={first_codes[0]}")
 
         seq = seq.at[:, prompt_length].set(first_codes[0])
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
@@ -341,8 +340,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         generated_count = 1
 
         for i in range(1, max_new_tokens):
-            # print(f" ### MY_DBG: decoding token {i}")
-
             # Prepare current token for embedding
             cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
 
@@ -376,8 +373,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
             generated_count += 1
 
-            # TODO: remove after debugging is done
-            print(f"{i} : code={next_codes[0]}")
+            fishaudio_logger.debug(f"{i} : code={next_codes[0]}")
 
             if next_codes[0, 0] == self.config.im_end_token_id:
                 break
@@ -418,7 +414,7 @@ def decode_next_token(
 
     (logits,) = vmap_twice(model.readout_slow)(slow_model_result.outputs)
 
-    codebooks = [vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0].reshape(1)]
+    codebooks = [vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])]
 
     batch_size, *_ = x.shape
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
@@ -459,7 +455,7 @@ def decode_next_token(
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
 
-        code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])[0].reshape(1)
+        code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])
 
         hidden_states = model.embeddings_fast.embed(code)
         codebooks.append(code)

@@ -62,7 +62,6 @@ _testlog = logging.getLogger("tts_test_logger")
 
 @fixture
 def fish_audio_local_model_path() -> Path:
-    # TODO: (peter.glushkov) replace this one with actual ModelSpec
     fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
 
     repos = huggingface_hub.scan_cache_dir().repos
@@ -891,7 +890,6 @@ def test_convnext_block_matches_pytorch() -> None:
     layer_scale_init_value = 1e-6
     seq_length = 50
 
-    # Create PyTorch module
     torch_block = PyTorchConvNeXtBlock(
         dim=dim,
         layer_scale_init_value=layer_scale_init_value,
@@ -901,7 +899,6 @@ def test_convnext_block_matches_pytorch() -> None:
     )
     torch_block.eval()
 
-    # Create Lalamo module
     lalamo_config = ConvNeXtBlockConfig(
         precision=jnp.float32,
         activation=GELU(),
@@ -919,8 +916,6 @@ def test_convnext_block_matches_pytorch() -> None:
     dwconv_weights = torch_block.dwconv.conv.weight.detach()
     dwconv_biases = torch_block.dwconv.conv.bias.detach()
 
-    # LayerNorm: weight (Lalamo LayerNorm only does element-wise mult, uses "scales")
-    # Note: PyTorch LayerNorm bias is not used in Lalamo's simplified LayerNorm
     norm_scale = torch_block.norm.weight.detach()
     norm_bias = torch_block.norm.bias.detach()
 

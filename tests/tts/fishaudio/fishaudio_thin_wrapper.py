@@ -22,7 +22,7 @@ from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
 from lalamo.common import ParameterTree
-from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.audio.fishaudio.fishaudio_common import fishaudio_logger, get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
 from lalamo.modules.audio.utils import DTypeConvert
@@ -217,8 +217,7 @@ class FromFishAudioRepo:
             previous_tokens[:, i : i + 1] = next_token.view(model.config.num_codebooks + 1, -1)
             final_idx = i
 
-            # TODO: remove after debugging is done
-            print(f"{i} : code={cur_token[0]}")
+            fishaudio_logger.debug(f"{i} : code={cur_token[0]}")
 
             if cur_token[0, 0, -1] == model.tokenizer.get_token_id(IM_END_TOKEN):
                 break

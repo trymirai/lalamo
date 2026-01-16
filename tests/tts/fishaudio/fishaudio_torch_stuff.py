@@ -55,7 +55,6 @@ class ForeignTTSModelType(Enum):
 
 
 def try_locate_fish_audio_model_path() -> Optional[Path]:
-    # TODO: (peter.glushkov) replace this one with actual ModelSpec
     fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
 
     repos = huggingface_hub.scan_cache_dir().repos

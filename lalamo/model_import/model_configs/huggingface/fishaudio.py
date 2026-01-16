@@ -168,8 +168,6 @@ class FishAudioConfig(ForeignTTSConfig):
     def extract_transformer_configs(
         self, precision: DTypeLike, fast_module=False
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-        # def extract_fast_transformer_params(fish_transformer_config: DualARModelArgs) -> BaseModelArgs:
-
         n_layer = self.n_fast_layer if fast_module else self.n_layer
         n_head = self.fast_n_head if fast_module else self.n_head
         dim = self.fast_dim if fast_module else self.dim

@@ -1,9 +1,11 @@
 import base64
 import json
+import logging
 import re
 import shutil
 import tempfile
 from dataclasses import dataclass
+from logging import Logger
 from pathlib import Path
 
 from jax import numpy as jnp
@@ -18,6 +20,24 @@ from lalamo.sampling import SamplingPolicy, make_policy
 # Default sampling policy for FishAudio TTS taken from the codebase
 DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
 DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
+
+
+def _setup_logger() -> Logger:
+    import sys
+
+    logger = logging.getLogger("fishaudio")
+    logger.handlers = []  # Clear any existing
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False  # Ignore root logger completely
+
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(logging.Formatter("%(levelname)s-%(name)s : %(message)s"))
+    logger.addHandler(handler)
+    return logger
+
+
+fishaudio_logger = _setup_logger()
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:

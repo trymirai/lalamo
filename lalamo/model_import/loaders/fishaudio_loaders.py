@@ -15,7 +15,6 @@ from lalamo.modules import (
     DenseMLP,
     FullPrecisionLinear,
     LayerScale,
-    LinearBase,
     MLPBase,
     Normalization,
     Transformer,
@@ -40,8 +39,10 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlock,
     VectorQuantize,
 )
+from lalamo.modules.torch_interop import jax_to_torch
 
 from .common import load_parameters
+from .huggingface import load_linear, load_rmsnorm
 
 
 def _fuse_full_precision_weights(
@@ -86,10 +87,10 @@ def _fuse_weight_norm_conv1d(
 
     # Load the weight_g and weight_v parameters
     with torch.no_grad():
-        temp_conv.weight_g.copy_(torch.from_numpy(weight_g.__array__()))
-        temp_conv.weight_v.copy_(torch.from_numpy(weight_v.__array__()))
+        temp_conv.weight_g = torch.nn.Parameter(jax_to_torch(weight_g), requires_grad=False)
+        temp_conv.weight_v = torch.nn.Parameter(jax_to_torch(weight_v), requires_grad=False)
         if bias is not None:
-            temp_conv.bias.copy_(torch.from_numpy(bias.__array__()))
+            temp_conv.bias = torch.nn.Parameter(jax_to_torch(bias), requires_grad=False)
 
     # Fuse with remove_weight_norm
     temp_conv = remove_weight_norm(temp_conv, name="weight")
@@ -139,10 +140,10 @@ def _fuse_parametrized_weight_norm_conv1d(
 
     # Load the weight_g and weight_v parameters
     with torch.no_grad():
-        temp_conv.parametrizations.weight.original0.copy_(torch.from_numpy(weight_g.__array__()))
-        temp_conv.parametrizations.weight.original1.copy_(torch.from_numpy(weight_v.__array__()))
+        temp_conv.parametrizations.weight.original0 = torch.nn.Parameter(jax_to_torch(weight_g), requires_grad=False)
+        temp_conv.parametrizations.weight.original1 = torch.nn.Parameter(jax_to_torch(weight_v), requires_grad=False)
         if bias is not None:
-            temp_conv.bias.copy_(torch.from_numpy(bias.__array__()))
+            temp_conv.bias = torch.nn.Parameter(jax_to_torch(bias), requires_grad=False)
 
     # Fuse with remove_parametrizations
     remove_parametrizations(temp_conv, "weight")
@@ -152,46 +153,6 @@ def _fuse_parametrized_weight_norm_conv1d(
     fused_bias = jnp.array(temp_conv.bias.detach().numpy()) if temp_conv.bias is not None else None
 
     return fused_weight, fused_bias
-
-
-def load_linear(
-    module: LinearBase,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-    sublayers_to_fuse: list[str] | None = None,
-) -> LinearBase:
-    """Loads a linear layer, optionally fusing weights from sublayers."""
-    if not module.has_biases:
-        if sublayers_to_fuse:
-            paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
-        else:
-            paths_to_check = path / "bias"
-        for p in paths_to_check:
-            if p in weights_dict:
-                raise ValueError(f"Bias tensor found at {p} but module does not support it.")
-        bias = None
-    elif sublayers_to_fuse is None:
-        bias = weights_dict[path / "bias"]
-    else:
-        bias = jnp.concatenate(
-            [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
-            axis=0,
-        )
-
-    if isinstance(module, FullPrecisionLinear):
-        weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
-        return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
-
-    raise TypeError(f"Unsupported module type for loading: {type(module)}")
-
-
-def load_rmsnorm(
-    module: Normalization,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> Normalization:
-    scales = weights_dict[path / "weight"]
-    return load_parameters(lambda m: (m.scales,), module, (scales,))
 
 
 def load_layer_norm(
