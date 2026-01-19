@@ -2026,6 +2026,9 @@ cpu = [
 cuda = [
     { name = "jax", extra = ["cuda"] },
 ]
+pyaudio = [
+    { name = "pyaudio" },
+]
 tpu = [
     { name = "jax", extra = ["tpu"] },
 ]
@@ -2046,7 +2049,6 @@ dev = [
     { name = "kernels" },
     { name = "memray" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin'" },
-    { name = "pyaudio" },
     { name = "pytest" },
     { name = "pytest-env" },
     { name = "pytest-xdist" },
@@ -2077,13 +2079,14 @@ requires-dist = [
     { name = "ml-dtypes", specifier = ">=0.5.1" },
     { name = "optax", specifier = ">=0.2.4" },
     { name = "polars", specifier = ">=1.33.1" },
+    { name = "pyaudio", marker = "extra == 'pyaudio'", specifier = ">=0.2.0" },
     { name = "rich", specifier = ">=14.0.0" },
     { name = "thefuzz", specifier = ">=0.22.1" },
     { name = "tokenizers", specifier = ">=0.21.2" },
     { name = "typer", specifier = ">=0.15.1" },
     { name = "xxhash", specifier = ">=3.5.0" },
 ]
-provides-extras = ["cpu", "cuda", "tpu"]
+provides-extras = ["cpu", "cuda", "tpu", "pyaudio"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -2101,7 +2104,6 @@ dev = [
     { name = "kernels", specifier = ">=0.10.2" },
     { name = "memray", specifier = ">=1.17.2" },
     { name = "mlx-lm", marker = "sys_platform == 'darwin'", specifier = ">=0.28.3" },
-    { name = "pyaudio", specifier = ">=0.2.0" },
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-env", specifier = ">=1.1.5" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },

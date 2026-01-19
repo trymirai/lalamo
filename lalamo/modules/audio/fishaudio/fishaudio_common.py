@@ -8,37 +8,39 @@ from dataclasses import dataclass
 from logging import Logger
 from pathlib import Path
 
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
 from omegaconf import DictConfig
 from tiktoken.core import Encoding as TikokenEncoding
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.sampling import CompositePolicy, SamplingPolicy, make_policy
 
-# Default sampling policy for FishAudio TTS taken from the codebase
-DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
-DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
 
-# NOTE: magic constants from FishAudio code
-SHORT_LOGITS_SIZE: int = 1024
-REPEAT_WINDOW_SIZE: int = 16
+@dataclass(frozen=True)
+class FishaudioConsts:
+    """
+    Consts and configuration elements that were stored in Fishaudio
+    codebase as either global variables or magic consts
+    """
 
-# NOTE: tokenization consts from FishAudio code
-FISH_TIKTOKEN_PATTERN = "|".join(
-    [
-        r"(?i:'s|'t|'re|'ve|'m|'ll|'d)",
-        r"\p{P}",
-        r"[^\r\n\p{L}\p{N}]?\p{L}+",
-        r"\p{N}",
-        r" ?[^\s\p{L}\p{N}]+[\r\n]*",
-        r"\s*[\r\n]+",
-        r"\s+(\?!\S)",
-        r"\s+",
-    ]
-)
-IM_END_TOKEN = "<|im_end|>"
+    DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
+    DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
+    SHORT_LOGITS_SIZE: int = 1024
+    REPEAT_WINDOW_SIZE: int = 16
+    FISH_TIKTOKEN_PATTERN = "|".join(
+        [
+            r"(?i:'s|'t|'re|'ve|'m|'ll|'d)",
+            r"\p{P}",
+            r"[^\r\n\p{L}\p{N}]?\p{L}+",
+            r"\p{N}",
+            r" ?[^\s\p{L}\p{N}]+[\r\n]*",
+            r"\s*[\r\n]+",
+            r"\s+(\?!\S)",
+            r"\s+",
+        ]
+    )
+    IM_END_TOKEN = "<|im_end|>"
+
 
 # NOTE: in fish-speech repo this was a YAML config stored right in the code
 _default_audio_codec_config = {
@@ -177,7 +179,7 @@ def _load_fishaudio_tiktoken_data(
 
     tkt_model = TikokenEncoding(
         name=Path(tiktoken_path).stem,
-        pat_str=FISH_TIKTOKEN_PATTERN,
+        pat_str=FishaudioConsts.FISH_TIKTOKEN_PATTERN,
         mergeable_ranks=mergeable_ranks,
         special_tokens=all_special_tokens_with_ids,
     )
@@ -185,7 +187,7 @@ def _load_fishaudio_tiktoken_data(
     inference_special_tokens = FishAudioSpecialInferenceTokens(
         semantic_begin_id=semantic_begin_id,
         semantic_end_id=semantic_end_id,
-        im_end_token_id=all_special_tokens_with_ids[IM_END_TOKEN],
+        im_end_token_id=all_special_tokens_with_ids[FishaudioConsts.IM_END_TOKEN],
     )
 
     return tkt_model, inference_special_tokens

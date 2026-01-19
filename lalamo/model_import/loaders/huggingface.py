@@ -1,5 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
+from lalamo.modules.normalization import Normalization
 
 import jax.numpy as jnp
 from einops import rearrange
@@ -518,6 +519,7 @@ def load_transformer_layer(
     permute_conv: bool,
 ) -> TransformerLayer:
     if module.pre_mixer_norm is not None:
+        assert isinstance(module.pre_mixer_norm, Normalization)
         pre_attention_norm = load_rmsnorm(
             module.pre_mixer_norm,
             weights_dict,
@@ -536,7 +538,9 @@ def load_transformer_layer(
     else:
         mixer = module.mixer
 
+    assert isinstance(module.pre_mlp_norm, Normalization)
     if module.post_mixer_norm is not None:
+        assert isinstance(module.post_mixer_norm, Normalization)
         post_attention_norm = load_rmsnorm(
             module.post_mixer_norm,
             weights_dict,
@@ -567,6 +571,7 @@ def load_transformer_layer(
     )
 
     if module.post_mlp_norm is not None:
+        assert isinstance(module.post_mlp_norm, Normalization)
         post_mlp_norm = load_rmsnorm(
             module.post_mlp_norm,
             weights_dict,
@@ -903,6 +908,7 @@ def load_huggingface_classifier(
         path: ParameterPath,
     ) -> TransformerLayer:
         if module.pre_mixer_norm is not None:
+            assert isinstance(module.pre_mixer_norm, Normalization)
             pre_attention_norm = load_rmsnorm(
                 module.pre_mixer_norm,
                 weights_dict,
@@ -913,7 +919,9 @@ def load_huggingface_classifier(
 
         assert isinstance(module.mixer, Attention)
         attention = load_attention_local(module.mixer, weights_dict, path / "attn")
+        assert isinstance(module.pre_mlp_norm, Normalization)
         if module.post_mixer_norm is not None:
+            assert isinstance(module.post_mixer_norm, Normalization)
             post_attention_norm = load_rmsnorm(
                 module.post_mixer_norm,
                 weights_dict,
@@ -936,6 +944,7 @@ def load_huggingface_classifier(
 
         mlp = load_mlp_local(module.mlp, weights_dict, path / "mlp")
         if module.post_mlp_norm is not None:
+            assert isinstance(module.post_mlp_norm, Normalization)
             post_mlp_norm = load_rmsnorm(
                 module.post_mlp_norm,
                 weights_dict,

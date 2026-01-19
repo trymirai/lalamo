@@ -17,8 +17,8 @@ from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
-    DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
+    FishaudioConsts
+    FishaudioConsts,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
@@ -142,8 +142,8 @@ class FishAudioTTSGenerator(TTSGenerator):
     def decode_text(
         self,
         text_tokens: Array,
-        sampling_policy: SamplingPolicy = DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
-        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserverd for near future
+        sampling_policy: SamplingPolicy = FishaudioConsts.DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
+        repetition_penalty: float = FishaudioConsts.DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserverd for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)

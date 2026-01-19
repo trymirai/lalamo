@@ -35,7 +35,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import Identity, SiLU
 from lalamo.modules.audio.fishaudio.fishaudio_audio_decoding import DescriptAudioCodec
-from lalamo.modules.audio.fishaudio.fishaudio_common import IM_END_TOKEN
+from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoder, FishAudioTextDecoderConfig
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel, TTSRequestFactory, TTSRequestFactoryConfig
 from lalamo.modules.audio.utils import DTypeConvert
@@ -102,7 +102,7 @@ def from_fish_audio_config(
         fast_model_projection_config=fast_model_projection_config,
         semantic_token_begin_id=tokenizer.semantic_begin_id,
         semantic_token_end_id=tokenizer.semantic_end_id,
-        im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
+        im_end_token_id=tokenizer.get_token_id(FishaudioConsts.IM_END_TOKEN),
         codebook_size=fish_audio_cfg.codebook_size,
         precision=precision,
         vocab_size=fish_audio_cfg.vocab_size,

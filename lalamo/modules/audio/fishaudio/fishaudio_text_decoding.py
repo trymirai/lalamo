@@ -9,12 +9,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
-from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
-    REPEAT_WINDOW_SIZE,
-    SHORT_LOGITS_SIZE,
-    fishaudio_logger,
-)
+from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts, fishaudio_logger
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -59,8 +54,8 @@ class FishAudioTextDecoderConfig:
 
     precision: DTypeLike
 
-    short_logits_size: int = SHORT_LOGITS_SIZE
-    repeat_window_size: int = REPEAT_WINDOW_SIZE
+    short_logits_size: int = FishaudioConsts.SHORT_LOGITS_SIZE
+    repeat_window_size: int = FishaudioConsts.REPEAT_WINDOW_SIZE
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
@@ -298,7 +293,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             raise ValueError(f"Input sequence length {prompt_length} exceeds max_seq_len {max_seq_len}")
 
         if sampling_policy is None:
-            sampling_policy = DEFAULT_FISH_AUDIO_SAMPLING_POLICY
+            sampling_policy = FishaudioConsts.DEFAULT_FISH_AUDIO_SAMPLING_POLICY
         if key is None:
             key = jax.random.PRNGKey(123)
 
