@@ -79,7 +79,9 @@ override-dependencies = [
     "numpy>=1.0,<3.0",
     "datasets>=2.0,<3.0"
 ]
-
+exclude-dependencies = [
+    "pyaudio"
+]
 
 [[tool.uv.index]]
 name = "torch-cpu"

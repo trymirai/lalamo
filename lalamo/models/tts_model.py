@@ -16,10 +16,7 @@ from tokenizers import Tokenizer
 from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
-from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    FishaudioConsts
-    FishaudioConsts,
-)
+from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
 )
