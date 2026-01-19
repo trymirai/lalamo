@@ -7,7 +7,7 @@ from attr import dataclass
 class AudioEncoding(StrEnum):
     pcm = "PCM"
     ulaw = "uLAW"
-    mlaw = "mLAW"
+    alaw = "aLAW"
 
 
 @dataclass
@@ -18,9 +18,7 @@ class AudioRenderingConfig:
     encoding: AudioEncoding
 
     def init(self) -> "AudioRenderer":
-        return AudioRenderer(
-            config=self,
-        )
+        return AudioRenderer(config=self)
 
 
 @dataclass

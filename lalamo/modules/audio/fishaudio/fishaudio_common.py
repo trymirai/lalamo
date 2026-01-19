@@ -13,7 +13,8 @@ from tiktoken.core import Encoding as TikokenEncoding
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.sampling import CompositePolicy, SamplingPolicy, make_policy
+from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.utils import setup_custom_logger
 
 
 @dataclass(frozen=True)
@@ -23,7 +24,8 @@ class FishaudioConsts:
     codebase as either global variables or magic consts
     """
 
-    DEFAULT_FISH_AUDIO_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.8008, top_p=0.8008)
+    DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE = 0.8008
+    DEFAULT_FISH_AUDIO_SAMPLING_TOP_P = 0.8008
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
     SHORT_LOGITS_SIZE: int = 1024
     REPEAT_WINDOW_SIZE: int = 16
@@ -118,20 +120,14 @@ _default_audio_codec_config = {
     },
 }
 
-
-def _setup_fishaudio_logger() -> Logger:
-    import os
-    import sys
-
-    logger = logging.getLogger("fishaudio")
-    logger.setLevel(os.environ.get("LOGLEVEL", "WARNING"))
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("%(levelname)s-%(name)s : %(message)s"))
-    logger.addHandler(handler)
-    return logger
+fishaudio_logger = setup_custom_logger(logger_name="fishaudio")
 
 
-fishaudio_logger = _setup_fishaudio_logger()
+def default_fishaudio_sampling_policy() -> SamplingPolicy:
+    return make_policy(
+        temperature=FishaudioConsts.DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE,
+        top_p=FishaudioConsts.DEFAULT_FISH_AUDIO_SAMPLING_TOP_P,
+    )
 
 
 @dataclass(frozen=True)

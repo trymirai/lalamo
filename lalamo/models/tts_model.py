@@ -13,10 +13,10 @@ from jax import numpy as jnp
 from jaxtyping import DTypeLike, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
-from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts
+from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts, default_fishaudio_sampling_policy
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
 )
@@ -139,11 +139,13 @@ class FishAudioTTSGenerator(TTSGenerator):
     def decode_text(
         self,
         text_tokens: Array,
-        sampling_policy: SamplingPolicy = FishaudioConsts.DEFAULT_FISH_AUDIO_SAMPLING_POLICY,
+        sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = FishaudioConsts.DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserverd for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
+
+        sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
 
         random_key = jax.random.PRNGKey(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(

@@ -13,7 +13,7 @@ from jax import Array
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
-from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.models import (
     ClassifierModel,

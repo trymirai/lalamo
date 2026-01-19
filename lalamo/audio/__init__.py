@@ -1,4 +1,18 @@
-from .audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
-from .utils import play_mono_audio
+from functools import lru_cache
+from typing import Any
 
-__all__ = ["AudioEncoding", "AudioRenderer", "AudioRenderingConfig", "play_mono_audio"]
+from lalamo.utils import setup_custom_logger
+
+audio_logger = setup_custom_logger("lalamo-audio")
+
+
+@lru_cache(maxsize=1)
+def get_pyaudio() -> Any | None:
+    try:
+        import pyaudio
+    except ImportError as e:
+        msg = f"Failed to import 'pyaudio' package: {e}."
+        audio_logger.warning(msg)
+        return None
+
+    return pyaudio

@@ -9,7 +9,11 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
-from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts, fishaudio_logger
+from lalamo.modules.audio.fishaudio.fishaudio_common import (
+    FishaudioConsts,
+    default_fishaudio_sampling_policy,
+    fishaudio_logger,
+)
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -293,7 +297,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             raise ValueError(f"Input sequence length {prompt_length} exceeds max_seq_len {max_seq_len}")
 
         if sampling_policy is None:
-            sampling_policy = FishaudioConsts.DEFAULT_FISH_AUDIO_SAMPLING_POLICY
+            sampling_policy = default_fishaudio_sampling_policy()
         if key is None:
             key = jax.random.PRNGKey(123)
 

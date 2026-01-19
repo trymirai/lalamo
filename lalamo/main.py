@@ -32,7 +32,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
-from lalamo.audio import play_mono_audio
+from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,

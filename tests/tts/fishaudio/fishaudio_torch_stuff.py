@@ -13,11 +13,11 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.audio import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.common import MapDictValues, ParameterPath, cast_if_float
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
