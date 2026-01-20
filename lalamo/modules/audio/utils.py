@@ -20,7 +20,7 @@ class DTypeConvert:
             "bool": torch.bool,
             "complex64": torch.complex64,
             "complex128": torch.complex128,
-        }
+        },
     )
 
     @classmethod

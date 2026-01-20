@@ -3,11 +3,10 @@ from dataclasses import dataclass, replace
 from typing import Any, Self
 
 import jax
-from hydra.utils import instantiate
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
 from lalamo.modules.linear import FullPrecisionLinearConfig
@@ -34,15 +33,18 @@ from .fishaudio_modules import (
 
 
 def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
-    config, precision: DTypeLike, window_size: int, input_dim: int
+    config: Mapping[Any, Any],
+    precision: DTypeLike,
+    window_size: int,
+    input_dim: int,
 ) -> TransformerConfig:
-    global_rope_config = RoPEConfigCis(precision=precision, base=config.rope_base)
+    global_rope_config = RoPEConfigCis(precision=precision, base=config["rope_base"])
     local_rope_config = None
 
     norm_config_pre = NormalizationConfig(
         scale_precision=precision,
         accumulation_precision=precision,
-        epsilon=config.norm_eps,
+        epsilon=config["norm_eps"],
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
@@ -56,9 +58,9 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         out_projection_config=out_projection_config,
         query_norm_config=None,
         key_norm_config=None,
-        num_heads=config.n_head,
-        num_groups=config.n_local_heads,
-        head_dim=config.head_dim,
+        num_heads=config["n_head"],
+        num_groups=config["n_local_heads"],
+        head_dim=config["head_dim"],
         is_causal=True,
         scale=None,
         sliding_window_size=window_size,
@@ -93,13 +95,13 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         mlp_config=mlp_config,
         post_mlp_norm_config=post_mlp_norm_config,
     )
-    hidden_dim = config.intermediate_size
-    context_length = config.block_size
+    hidden_dim = config["intermediate_size"]
+    context_length = config["block_size"]
 
     transformer_cfg = TransformerConfig(
         global_rope_config=global_rope_config,
         local_rope_config=local_rope_config,
-        layer_configs=tuple([layer_config] * config.n_layer),
+        layer_configs=tuple([layer_config] * config["n_layer"]),
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
         hidden_dim=hidden_dim,
@@ -232,9 +234,12 @@ class DescriptAudioCodecConfig:
         semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
 
         upsampler_config = UpsamplerConfig(
-            block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor))
+            block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor)),
         )
-        post_module_transformer_foreign = instantiate(post_module_config_dict["config"])
+        post_module_transformer_foreign = post_module_config_dict["config"]
+        if post_module_transformer_foreign["n_local_heads"] == -1:
+            # NOTE: this condifion is from post_init() for the post-module config object
+            post_module_transformer_foreign["n_local_heads"] = post_module_transformer_foreign["n_head"]
         post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
             post_module_transformer_foreign,
             precision,
@@ -293,10 +298,14 @@ class DescriptAudioCodecConfig:
         all_dims = (input_dim, *downsample_dims)
 
         semantic_quantizer_params = VectorQuantizerParams(
-            input_dim=input_dim, codebook_size=semantic_codebook_size, codebook_dim=codebook_dim
+            input_dim=input_dim,
+            codebook_size=semantic_codebook_size,
+            codebook_dim=codebook_dim,
         )
         quantizer_params = VectorQuantizerParams(
-            input_dim=input_dim, codebook_size=codebook_size, codebook_dim=[codebook_dim] * n_codebooks
+            input_dim=input_dim,
+            codebook_size=codebook_size,
+            codebook_dim=[codebook_dim] * n_codebooks,
         )
         convnext_params = ConvNeXtSpatialParams()
         upsample_conv_params = tuple(
@@ -308,7 +317,7 @@ class DescriptAudioCodecConfig:
                     upsample_stride=factor,
                 )
                 for idx, factor in reversed(list(enumerate(downsample_factor)))
-            ]
+            ],
         )
         decoder_spatial_params = DACDecoderSpatialParams(
             input_channel=latent_dim,
@@ -384,8 +393,8 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
 
         return replace(
             self,
-            quantizer=self.quantizer.import_weights(quantizer_weights),
-            decoder=self.decoder.import_weights(decoder_weights),
+            quantizer=self.quantizer.import_weights(require_tree(quantizer_weights)),
+            decoder=self.decoder.import_weights(require_tree(decoder_weights)),
         )
 
     def audio_from_codes(self, indices: Array) -> Array:

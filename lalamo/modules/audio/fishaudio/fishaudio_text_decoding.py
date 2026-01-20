@@ -65,11 +65,14 @@ class FishAudioTextDecoderConfig:
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
         embeddings_fast = self.fast_embeddings_config.empty(self.codebook_size, self.fast_model_dim)
         codebook_embeddings = self.codebook_embeddings_config.empty(
-            self.codebook_size * self.num_codebooks, self.slow_model_dim
+            self.codebook_size * self.num_codebooks,
+            self.slow_model_dim,
         )
         if self.fast_model_projection_config is not None:
             fast_model_projection = self.fast_model_projection_config.empty(
-                self.slow_model_dim, (self.fast_model_dim,), False
+                input_dim=self.slow_model_dim,
+                output_dims=(self.fast_model_dim,),
+                has_biases=False,
             )
         else:
             fast_model_projection = Identity()
@@ -88,7 +91,9 @@ class FishAudioTextDecoderConfig:
             embeddings_fast=embeddings_fast,
             transformer_fast=self.fast_model_config.empty(),
             readout_fast=self.fast_readout_config.empty(
-                input_dim=self.fast_model_dim, output_dims=(self.codebook_size,), has_biases=False
+                input_dim=self.fast_model_dim,
+                output_dims=(self.codebook_size,),
+                has_biases=False,
             ),
             codebook_embeddings=codebook_embeddings,
             fast_model_projection=fast_model_projection,
@@ -107,17 +112,26 @@ class FishAudioTextDecoderConfig:
         ) = jax.random.split(key, 8)
 
         embeddings_slow = self.slow_embeddings_config.random_init(
-            vocab_size=self.vocab_size, model_dim=self.slow_model_dim, key=key_emb_slow
+            vocab_size=self.vocab_size,
+            model_dim=self.slow_model_dim,
+            key=key_emb_slow,
         )
         embeddings_fast = self.fast_embeddings_config.random_init(
-            vocab_size=self.codebook_size, model_dim=self.fast_model_dim, key=key_emb_fast
+            vocab_size=self.codebook_size,
+            model_dim=self.fast_model_dim,
+            key=key_emb_fast,
         )
         codebook_embeddings = self.codebook_embeddings_config.random_init(
-            vocab_size=self.codebook_size * self.num_codebooks, model_dim=self.slow_model_dim, key=key_emb_codebook
+            vocab_size=self.codebook_size * self.num_codebooks,
+            model_dim=self.slow_model_dim,
+            key=key_emb_codebook,
         )
         if self.fast_model_projection_config is not None:
             fast_model_projection = self.fast_model_projection_config.random_init(
-                input_dim=self.slow_model_dim, output_dims=(self.fast_model_dim,), has_biases=False, key=key_fast_proj
+                input_dim=self.slow_model_dim,
+                output_dims=(self.fast_model_dim,),
+                has_biases=False,
+                key=key_fast_proj,
             )
         else:
             fast_model_projection = Identity()
@@ -131,7 +145,10 @@ class FishAudioTextDecoderConfig:
             embeddings_slow=embeddings_slow,
             transformer_slow=self.slow_model_config.random_init(key=key_transformer_slow),
             readout_slow=self.slow_readout_config.random_init(
-                input_dim=self.slow_model_dim, output_dims=(self.vocab_size,), has_biases=False, key=key_readout_slow
+                input_dim=self.slow_model_dim,
+                output_dims=(self.vocab_size,),
+                has_biases=False,
+                key=key_readout_slow,
             ),
             embeddings_fast=embeddings_fast,
             transformer_fast=self.fast_model_config.random_init(key=key_transformer_fast),
@@ -191,7 +208,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             readout_fast=self.readout_fast.import_weights(require_tree(weights["readout_fast"])),
             codebook_embeddings=self.codebook_embeddings.import_weights(require_tree(weights["codebook_embeddings"])),
             fast_model_projection=self.fast_model_projection.import_weights(
-                require_tree(weights["fast_model_projection"])
+                require_tree(weights["fast_model_projection"]),
             )
             if isinstance(self.fast_model_projection, FullPrecisionLinear)
             else Identity(),
@@ -225,7 +242,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             input_pos = jnp.arange(seq_length)[None, :]
 
         text_and_codebooks = jnp.zeros(
-            (batch_size, self.config.num_codebooks + 1, seq_length), dtype=text_tokens.dtype
+            (batch_size, self.config.num_codebooks + 1, seq_length),
+            dtype=text_tokens.dtype,
         )
         # NOTE: the rest of codebook lines should be filled in case audio promt is used, but
         # ignore it for now
@@ -244,7 +262,9 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
 
     def embed(
-        self, inp: Int[Array, "batch codebooks tokens"], apply_codebook_embeddings: bool = False
+        self,
+        inp: Int[Array, "batch codebooks tokens"],
+        apply_codebook_embeddings: bool = False,
     ) -> Float[Array, "batch tokens embedding"]:
         """
         apply_codebook_embeddings argumet should be set to 'True' if audio-prompt is used. In this

@@ -293,7 +293,7 @@ class RoPEConfigCis:
         return 1.0
 
     def _precompute_freqs_cis(
-        self, head_dim: int, seq_len: int
+        self, head_dim: int, seq_len: int,
     ) -> tuple[Float[Array, "sequence head_dim"], Float[Array, "sequence head_dim"]]:
         time_steps = jnp.repeat(jnp.arange(0, head_dim // 2).astype(self.precision) * 2 / head_dim, 2)
         freqs = 1.0 / (self.base**time_steps)

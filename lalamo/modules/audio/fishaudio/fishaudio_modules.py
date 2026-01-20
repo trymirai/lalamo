@@ -9,7 +9,7 @@ from jax import lax, vmap
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import ParameterTree, dummy_array, require_tree
 from lalamo.modules.activations import GELU, Activation
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -534,18 +534,18 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         assert isinstance(pwconv2_weights, Mapping)
 
         if self.scale is not None:
-            gamma_weights = weights.get("gamma")
-            assert isinstance(gamma_weights, Mapping)
-            gamma = self.scale.import_weights(gamma_weights)
+            assert isinstance(weights["gamma"], Mapping)
+            gamma_weights = weights["gamma"]
+            gamma = self.scale.import_weights(require_tree(gamma_weights))
         else:
             gamma = None
 
         return replace(
             self,
-            depthwise_conv=self.depthwise_conv.import_weights(dwconv_weights),
-            norm=self.norm.import_weights(norm_weights),
-            pointwise_conv_step1=self.pointwise_conv_step1.import_weights(pwconv1_weights),
-            pointwise_conv_step2=self.pointwise_conv_step2.import_weights(pwconv2_weights),
+            depthwise_conv=self.depthwise_conv.import_weights(require_tree(dwconv_weights)),
+            norm=self.norm.import_weights(require_tree(norm_weights)),
+            pointwise_conv_step1=self.pointwise_conv_step1.import_weights(require_tree(pwconv1_weights)),
+            pointwise_conv_step2=self.pointwise_conv_step2.import_weights(require_tree(pwconv2_weights)),
             scale=gamma,
         )
 
@@ -677,8 +677,8 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
 
         return replace(
             self,
-            trans_conv=self.trans_conv.import_weights(trans_conv_weights),
-            convnext=self.convnext.import_weights(convnext_weights),
+            trans_conv=self.trans_conv.import_weights(require_tree(trans_conv_weights)),
+            convnext=self.convnext.import_weights(require_tree(convnext_weights)),
         )
 
 
@@ -807,7 +807,11 @@ class VectorQuantizeConfig:
         )
 
     def random_init(
-        self, input_dim: int, codebook_size: int, codebook_dim: int, key: PRNGKeyArray
+        self,
+        input_dim: int,
+        codebook_size: int,
+        codebook_dim: int,
+        key: PRNGKeyArray,
     ) -> "VectorQuantize":
         codebook_key, proj_key = jax.random.split(key)
 
@@ -821,7 +825,10 @@ class VectorQuantizeConfig:
 
         out_proj_config = FullPrecisionLinearConfig(precision=self.precision)
         out_proj = out_proj_config.random_init(
-            input_dim=codebook_dim, output_dims=(input_dim,), has_biases=True, key=proj_key
+            input_dim=codebook_dim,
+            output_dims=(input_dim,),
+            has_biases=True,
+            key=proj_key,
         )
         assert isinstance(out_proj, FullPrecisionLinear)
 
@@ -874,8 +881,8 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         assert isinstance(out_proj_weights, Mapping)
         return replace(
             self,
-            codebook=self.codebook.import_weights(codebook_weights),
-            out_proj=self.out_proj.import_weights(out_proj_weights),
+            codebook=self.codebook.import_weights(require_tree(codebook_weights)),
+            out_proj=self.out_proj.import_weights(require_tree(out_proj_weights)),
         )
 
 
@@ -917,7 +924,11 @@ class ResidualVectorQuantizeConfig:
         )
 
     def random_init(
-        self, input_dim: int, codebook_size: int, codebook_dim: int | list[int], key: PRNGKeyArray
+        self,
+        input_dim: int,
+        codebook_size: int,
+        codebook_dim: int | list[int],
+        key: PRNGKeyArray,
     ) -> "ResidualVectorQuantize":
         if isinstance(codebook_dim, int):
             codebook_dims = [codebook_dim]
@@ -1133,7 +1144,7 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             "upsampler": self.upsampler.export_weights(),
         }
 
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+    def import_weights(self, weights: ParameterTree) -> Self:
         assert isinstance(weights, Mapping)
 
         semantic_quantizer_weights = weights["semantic_quantizer"]
@@ -1374,7 +1385,7 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
             "conv2": self.conv2.export_weights(),
         }
 
-    def import_weights(self, weights: ParameterTree[Array]) -> "ResidualUnit":
+    def import_weights(self, weights: ParameterTree) -> "ResidualUnit":
         assert isinstance(weights, Mapping)
         snake1_weights = weights["snake1"]
         conv1_weights = weights["conv1"]
@@ -1550,11 +1561,11 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
 
         return replace(
             self,
-            snake=self.snake.import_weights(snake_weights),
-            trans_conv=self.trans_conv.import_weights(trans_conv_weights),
-            res_unit1=self.res_unit1.import_weights(res_unit1_weights),
-            res_unit2=self.res_unit2.import_weights(res_unit2_weights),
-            res_unit3=self.res_unit3.import_weights(res_unit3_weights),
+            snake=self.snake.import_weights(require_tree(snake_weights)),
+            trans_conv=self.trans_conv.import_weights(require_tree(trans_conv_weights)),
+            res_unit1=self.res_unit1.import_weights(require_tree(res_unit1_weights)),
+            res_unit2=self.res_unit2.import_weights(require_tree(res_unit2_weights)),
+            res_unit3=self.res_unit3.import_weights(require_tree(res_unit3_weights)),
         )
 
 
@@ -1778,8 +1789,8 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
 
         return replace(
             self,
-            first_conv=self.first_conv.import_weights(first_conv_weights),
+            first_conv=self.first_conv.import_weights(require_tree(first_conv_weights)),
             decoder_blocks=tuple(new_blocks),
-            final_snake=self.final_snake.import_weights(final_snake_weights),
-            final_conv=self.final_conv.import_weights(final_conv_weights),
+            final_snake=self.final_snake.import_weights(require_tree(final_snake_weights)),
+            final_conv=self.final_conv.import_weights(require_tree(final_conv_weights)),
         )

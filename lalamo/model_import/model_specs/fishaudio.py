@@ -1,4 +1,3 @@
-from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 
 from .common import ConfigMap, FileSpec, ModelSpec, ModelType, WeightsType
@@ -20,7 +19,7 @@ FISHAUDIO_TTS_MODELS = [
         config_type=FishAudioConfig,
         weights_type=WeightsType.TORCH,
         configs=ConfigMap(
-            chat_template=DIRECT_CHAT_TEMPLATE, generation_config=None, tokenizer=FileSpec("tokenizer.tiktoken")
+            chat_template=DIRECT_CHAT_TEMPLATE, generation_config=None, tokenizer=FileSpec("tokenizer.tiktoken"),
         ),
         model_type=ModelType.TTS_MODEL,
     ),

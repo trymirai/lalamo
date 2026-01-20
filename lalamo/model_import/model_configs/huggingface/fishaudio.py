@@ -166,7 +166,9 @@ class FishAudioConfig(ForeignTTSConfig):
     im_end_token_id: int = -1
 
     def extract_transformer_configs(
-        self, precision: DTypeLike, fast_module=False
+        self,
+        precision: DTypeLike,
+        fast_module: bool = False,
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
         n_layer = self.n_fast_layer if fast_module else self.n_layer
         n_head = self.fast_n_head if fast_module else self.n_head
@@ -174,8 +176,6 @@ class FishAudioConfig(ForeignTTSConfig):
         intermediate_size = self.fast_intermediate_size if fast_module else self.intermediate_size
         n_local_heads = self.fast_n_local_heads if fast_module else self.n_local_heads
         head_dim = self.fast_head_dim if fast_module else self.head_dim
-        attention_qkv_bias = self.fast_attention_qkv_bias if fast_module else self.attention_qkv_bias
-        attention_o_bias = self.fast_attention_o_bias if fast_module else self.attention_o_bias
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
         global_rope_config = RoPEConfigCis(precision=precision, base=self.rope_base)
@@ -258,20 +258,24 @@ class FishAudioConfig(ForeignTTSConfig):
         accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
         audio_decoder_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(
-            fish_dac_config=get_default_fishaudio_dac_config()
+            fish_dac_config=get_default_fishaudio_dac_config(),
         )
 
         slow_transformer_cfg, slow_readout_cfg = self.extract_transformer_configs(
-            precision=activation_precision, fast_module=False
+            precision=activation_precision,
+            fast_module=False,
         )
         fast_transformer_cfg, fast_readout_cfg = self.extract_transformer_configs(
-            precision=activation_precision, fast_module=True
+            precision=activation_precision,
+            fast_module=True,
         )
         slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=activation_precision)
         fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=activation_precision)
 
         codebook_embeddings_cfg = TiedEmbeddingConfig(
-            input_scale=None, logit_soft_cap=None, precision=activation_precision
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=activation_precision,
         )
         if self.dim == self.fast_dim:
             fast_model_projection_config = None

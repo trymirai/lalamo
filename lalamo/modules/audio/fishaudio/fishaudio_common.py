@@ -1,11 +1,9 @@
 import base64
 import json
-import logging
 import re
 import shutil
 import tempfile
 from dataclasses import dataclass
-from logging import Logger
 from pathlib import Path
 
 from omegaconf import DictConfig
@@ -15,6 +13,8 @@ from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.sampling import SamplingPolicy, make_policy
 from lalamo.utils import setup_custom_logger
+
+DEFAULT_FISHAUDIO_RANDOM_SEED: int = 123
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class FishaudioConsts:
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY: float = 1.1016
     SHORT_LOGITS_SIZE: int = 1024
     REPEAT_WINDOW_SIZE: int = 16
-    FISH_TIKTOKEN_PATTERN = "|".join(
+    FISH_TIKTOKEN_PATTERN = "|".join(  # noqa: FLY002
         [
             r"(?i:'s|'t|'re|'ve|'m|'ll|'d)",
             r"\p{P}",
@@ -39,7 +39,7 @@ class FishaudioConsts:
             r"\s*[\r\n]+",
             r"\s+(\?!\S)",
             r"\s+",
-        ]
+        ],
     )
     IM_END_TOKEN = "<|im_end|>"
 
@@ -142,7 +142,8 @@ def get_default_fishaudio_dac_config() -> DictConfig:
 
 
 def _load_fishaudio_tiktoken_data(
-    tiktoken_path: Path, special_tokens: dict[str, int]
+    tiktoken_path: Path,
+    special_tokens: dict[str, int],
 ) -> tuple[TikokenEncoding, FishAudioSpecialInferenceTokens]:
     def load_tiktoken_bpe(tiktoken_bpe_file: Path) -> dict[bytes, int]:
         data = {}
@@ -190,7 +191,8 @@ def _load_fishaudio_tiktoken_data(
 
 
 def load_tokenizer_from_fishaudio_tiktoken(
-    path_to_tokenizer: Path, path_to_special_tokens: Path
+    path_to_tokenizer: Path,
+    path_to_special_tokens: Path,
 ) -> tuple[Tokenizer, FishAudioSpecialInferenceTokens]:
     output_temp_dir = tempfile.mkdtemp()
     try:
@@ -201,7 +203,8 @@ def load_tokenizer_from_fishaudio_tiktoken(
             all_special_tokens_with_ids = {}
 
         tkt_model, special_inference_tokens = _load_fishaudio_tiktoken_data(
-            path_to_tokenizer, all_special_tokens_with_ids
+            path_to_tokenizer,
+            all_special_tokens_with_ids,
         )
 
         convert_tiktoken_to_fast(tkt_model, output_temp_dir)

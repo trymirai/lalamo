@@ -5,8 +5,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.common import ParameterTree
-
-from ..common import LalamoModule
+from lalamo.modules.common import LalamoModule
 
 
 @dataclass(frozen=True)
@@ -33,7 +32,8 @@ class NoopVocoder(LalamoModule[NoopVocoderConfig]):
         return self
 
     def __call__(
-        self, audio_features: Float[Array, "batch audio_channels samples"]
+        self,
+        audio_features: Float[Array, "batch audio_channels samples"],
     ) -> Float[Array, "batch audio_channels samples"]:
         return audio_features
 

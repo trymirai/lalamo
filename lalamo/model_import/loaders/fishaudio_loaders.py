@@ -165,7 +165,7 @@ def load_layer_norm(
 
 
 def load_transformer_block(
-    module: Transformer, weights_dict: Mapping[str, Array], fast: bool = False, path: ParameterPath | None = None
+    module: Transformer, weights_dict: Mapping[str, Array], fast: bool = False, path: ParameterPath | None = None,
 ) -> Transformer:
     def load_attention_local(
         module: Attention,
@@ -304,7 +304,7 @@ def load_transformer_block(
 
 
 def load_fish_audio_text_decoding_modules(
-    transformer: Transformer, output: FullPrecisionLinear, weights_dict: Mapping[str, Array], fast: bool = False
+    transformer: Transformer, output: FullPrecisionLinear, weights_dict: Mapping[str, Array], fast: bool = False,
 ) -> tuple[Transformer, FullPrecisionLinear]:
     transformer = load_transformer_block(transformer, weights_dict=weights_dict, fast=fast)
 
@@ -562,7 +562,7 @@ def load_upsampler(
 
 
 def load_downsample_rvq(
-    module: DownsampleResidualVectorQuantize, weights_dict: Mapping[str, Array], path: ParameterPath | None = None
+    module: DownsampleResidualVectorQuantize, weights_dict: Mapping[str, Array], path: ParameterPath | None = None,
 ) -> DownsampleResidualVectorQuantize:
     """Loads a DownsampleResidualVectorQuantize module from weights.
 
@@ -709,7 +709,7 @@ def load_weight_norm_conv1d(
     """
     is_transposed = isinstance(module, CausalTransposeConv1d)
     fused_weight, fused_bias = _fuse_parametrized_weight_norm_conv1d(
-        weights_dict, path / "conv", is_transposed=is_transposed
+        weights_dict, path / "conv", is_transposed=is_transposed,
     )
 
     return load_parameters(
@@ -854,7 +854,7 @@ def load_audio_decoder(
 
 def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
     dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(
-        fish_dac_config=get_default_fishaudio_dac_config()
+        fish_dac_config=get_default_fishaudio_dac_config(),
     )
     dac_module = dac_config.empty()
 

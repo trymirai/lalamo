@@ -1,6 +1,5 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from lalamo.modules.normalization import Normalization
 
 import jax.numpy as jnp
 from einops import rearrange

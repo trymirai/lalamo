@@ -1,7 +1,6 @@
 from abc import abstractmethod
 from typing import Self
 
-from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree

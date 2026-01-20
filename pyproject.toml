@@ -161,3 +161,6 @@ ignore = [
     "TD003",
     "TRY003",
 ]
+
+[tool.ty.rules]
+unresolved-import = "ignore"

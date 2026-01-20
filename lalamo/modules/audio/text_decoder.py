@@ -1,10 +1,11 @@
 from abc import abstractmethod
-from typing import Any, Self
+from typing import Self
 
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
+from lalamo.sampling import SamplingPolicy
 
 
 class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
@@ -25,6 +26,6 @@ class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
     def decode_utterance(
         self,
         text_tokens: Array,
-        sampling_policy: Any | None = None,
-        key: Any | None = None,
+        sampling_policy: SamplingPolicy | None = None,
+        key: PRNGKeyArray | None = None,
     ) -> Array: ...
