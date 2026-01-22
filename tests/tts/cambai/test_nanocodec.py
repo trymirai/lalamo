@@ -1,12 +1,10 @@
-"""Tests for NanoCodec model components (quantizer + decoder)."""
-
 from collections.abc import Mapping
 from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig
 
 from tests.tts.cambai.nanocodec_torch_stuff import (
     AudioCodecModel,

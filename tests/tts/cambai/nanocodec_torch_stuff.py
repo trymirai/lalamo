@@ -4,7 +4,7 @@ import math
 import tarfile
 from abc import abstractmethod
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, is_dataclass
+from dataclasses import is_dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -23,7 +23,7 @@ _HAS_HYDRA = True
 NEMO_MODEL_ID = "nemo-nano-codec-22khz-1.78kbps-12.5fps"
 
 
-def try_locate_fish_audio_model_path() -> Optional[Path]:
+def try_locate_fish_audio_model_path() -> Path | None:
     fish_audiod_repo_id = f"nvidia/{NEMO_MODEL_ID}"
 
     repos = huggingface_hub.scan_cache_dir().repos
@@ -232,7 +232,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         return indices.to(torch.int32)
 
     def forward(
-        self, inputs: torch.Tensor, input_len: Optional[torch.Tensor] = None
+        self, inputs: torch.Tensor, input_len: torch.Tensor | None = None
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if inputs.size(1) != self.dim:
             raise RuntimeError(
@@ -251,12 +251,12 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         indices = indices.unsqueeze(0)
         return dequantized, indices
 
-    def encode(self, inputs: torch.Tensor, input_len: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def encode(self, inputs: torch.Tensor, input_len: torch.Tensor | None = None) -> torch.Tensor:
         """Convert a continuous code vector to a single index."""
         _, indices = self(inputs=inputs, input_len=input_len)
         return indices
 
-    def decode(self, indices: torch.Tensor, input_len: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def decode(self, indices: torch.Tensor, input_len: torch.Tensor | None = None) -> torch.Tensor:
         """Convert a single index to a continuous code vector."""
         if indices.size(0) > 1:
             # codebook dimension used for compatibility with RVQ
