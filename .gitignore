@@ -17,6 +17,7 @@ wheels/
 # Pyright
 .mypy_cache/
 .pytest_cache/
+.hypothesis/
 .pyright/
 
 # Notebooks

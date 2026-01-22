@@ -112,6 +112,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     def __call__(
         self,
         inputs: Float[Array, "suffix_tokens channels"],
+        length_without_padding: Int[Array, ""] | int | None = None,
         state: Float[Array, "prefix_tokens channels"] | None = None,
         return_updated_state: bool = False,
     ) -> CausalConvResult:
@@ -136,9 +137,23 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         if self.biases is not None:
             results = results + self.biases
 
+        if return_updated_state:
+            if length_without_padding is None:
+                length_without_padding = num_suffix_tokens
+            length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
+            length_without_padding = jnp.clip(length_without_padding, 0, num_suffix_tokens)
+            updated_state = jax.lax.dynamic_slice_in_dim(
+                inputs_with_history,
+                start_index=length_without_padding,
+                slice_size=self.kernel_size - 1,
+                axis=0,
+            )
+        else:
+            updated_state = None
+
         return CausalConvResult(
             results,
-            (inputs_with_history if return_updated_state else None),
+            updated_state,
         )
 
     def export_weights(self) -> ParameterTree:
@@ -436,6 +451,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         conv_output, updated_conv_state = self.conv(
             conv_inputs,
+            length_without_padding,
             state.conv_state,
             return_updated_state=return_updated_state,
         )
