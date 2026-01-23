@@ -24,6 +24,7 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fish_audio_text_decoding_modules,
 )
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
+from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
 from lalamo.models.tts_model import FishAudioGeneratorConfig, FishAudioTTSGenerator, TTSGenerator
 from lalamo.modules import (
     AttentionConfig,
@@ -34,7 +35,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import Identity, SiLU
-from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts
+from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts, get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoder, FishAudioTextDecoderConfig
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel, TTSRequestFactory, TTSRequestFactoryConfig
 from lalamo.modules.audio.utils import DTypeConvert
@@ -44,7 +45,7 @@ from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.rope import RoPEConfigCis
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 
-from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
+from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign, default_fish_audio_audio_decoder_config
 
 
 class ForeignTTSModelType(Enum):
@@ -376,7 +377,11 @@ class FishAudioFromTorch:
         # Load audio decoder using fishaudio_loaders directly
         fish_dac = load_model("modded_dac_vq", path_to_audio_model, device="cpu")
         assert isinstance(fish_dac, DAC)
-        audio_decoder = load_descript_audio_codec(prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict()))
+        audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(get_default_fishaudio_dac_config())
+        audio_decoder = audio_decoder_cfg.empty()
+        audio_decoder = load_descript_audio_codec(
+            audio_decoder, prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict())
+        )
 
         tokenizer = FishAudioFromTorch.load_tokenizer_from_fish_audio(str(path_to_checkpoints))
 

@@ -12,6 +12,7 @@ from jax import numpy as jnp
 from jax import vmap
 from pytest import fixture
 
+from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
 from lalamo.modules import GELU
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
@@ -32,7 +33,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoderResult
 from lalamo.modules.audio.text_to_speech import TTSMessage
 from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import torch_to_jax
@@ -125,7 +125,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     )
 
     # Run Lalamo model
-    decode_result: FishAudioTextDecoderResult = lalamo_text_decoder(
+    decode_result = lalamo_text_decoder(
         text_tokens=tokenized_text, input_pos=input_pos, sampling_policy=sampling_policy, key=key
     )
     output_lalamo = decode_result.token_codes
@@ -1210,7 +1210,9 @@ def test_dac_matches_pytorch() -> None:
 
     # Load Lalamo DAC using fishaudio_loaders directly
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict())
-    lalamo_dac = load_descript_audio_codec(weights_dict)
+    audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(get_default_fishaudio_dac_config())
+    lalamo_dac = audio_decoder_cfg.empty()
+    lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
 
     fish_dac_omega_config = get_default_fishaudio_dac_config()
 
