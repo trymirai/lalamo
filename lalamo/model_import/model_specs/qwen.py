@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs import HFQwen2Config, HFQwen3Config
+from lalamo.model_import.decoder_configs import HFQwen2Config, HFQwen3Config, HFQwen3NextConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType
@@ -275,5 +275,25 @@ QWEN3 = [
     ),
 ]
 
+QWEN3_NEXT = [
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3-Next",
+        name="Qwen3-Next-80B-A3B-Instruct",
+        size="80B",
+        quantization=None,
+        repo="Qwen/Qwen3-Next-80B-A3B-Instruct",
+        config_type=HFQwen3NextConfig,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3-Next",
+        name="Qwen3-Next-80B-A3B-Instruct-FP8",
+        size="80B",
+        quantization=None,
+        repo="Qwen/Qwen3-Next-80B-A3B-Instruct-FP8",
+        config_type=HFQwen3NextConfig,
+    ),
+]
 
-QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT

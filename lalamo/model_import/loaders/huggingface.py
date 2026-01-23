@@ -10,6 +10,8 @@ from lalamo.modules import (
     Attention,
     AttentionConfig,
     Decoder,
+    DeltaNetAttention,
+    DeltaNetAttentionConfig,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
@@ -30,7 +32,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.embedding import MLXQuantizedUntiedEmbedding
-from lalamo.modules.mlp import MixtureOfExperts, MLPBase
+from lalamo.modules.mlp import MixtureOfExperts, MLPBase, SparseMoE
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
@@ -256,12 +258,150 @@ def load_mlp(
     if isinstance(module, MixtureOfExperts):
         return load_moe(module, weights_dict, path)
 
+    if isinstance(module, SparseMoE):
+        return load_sparse_moe(module, weights_dict, path)
+
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
+
+
+def load_sparse_moe(
+    module: SparseMoE,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> SparseMoE:
+    if (path / "gate.weight") in weights_dict:
+        router_path = path / "gate"
+    elif (path / "router.weight") in weights_dict:
+        router_path = path / "router"
+    else:
+        router_path = path / "gate"
+    router = load_linear(module.router, weights_dict, router_path)
+
+    experts_path = path / "experts"
+    if (experts_path / "gate_up_proj_blocks") in weights_dict:
+        fused = decode_mxfp4(
+            weights_dict[experts_path / "gate_up_proj_blocks"],
+            weights_dict[experts_path / "gate_up_proj_scales"],
+            dtype=module.activation_precision,
+            flatten=False,
+        )
+        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
+        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
+        combined_up_gate = jnp.concatenate([up_w, gate_w], axis=-1)
+        combined_up_gate_w = jnp.swapaxes(combined_up_gate, -1, -2)
+
+        gub = weights_dict[experts_path / "gate_up_proj_bias"]
+        if gub.ndim == 1:
+            gub = jnp.broadcast_to(gub, (combined_up_gate_w.shape[0], gub.shape[0]))
+        up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
+        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
+
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (combined_up_gate_w, combined_up_gate_b),
+        )
+
+        down_w = decode_mxfp4(
+            weights_dict[experts_path / "down_proj_blocks"],
+            weights_dict[experts_path / "down_proj_scales"],
+            dtype=module.activation_precision,
+            flatten=False,
+        )
+        down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
+        down_b = weights_dict[experts_path / "down_proj_bias"]
+        if down_b.ndim == 1:
+            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
+
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (down_w, down_b),
+        )
+
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+    elif (experts_path / "gate_up_proj.weight") in weights_dict:
+        gate_up_w = weights_dict[experts_path / "gate_up_proj.weight"]
+        gate_w, up_w = jnp.split(gate_up_w, 2, axis=-2)
+        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=-2)
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (combined_up_gate_w, None),
+        )
+        down_projection = load_linear(module.experts.down_projection, weights_dict, experts_path / "down_proj")
+
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+    elif (experts_path / "0" / "gate_up_proj.weight") in weights_dict:
+        gate_up_weights = []
+        down_weights = []
+        for idx in range(module.mixture_size):
+            gate_up_weights.append(weights_dict[experts_path / str(idx) / "gate_up_proj.weight"])
+            down_weights.append(weights_dict[experts_path / str(idx) / "down_proj.weight"])
+        gate_up_w = jnp.stack(gate_up_weights, axis=0)
+        gate_w, up_w = jnp.split(gate_up_w, 2, axis=1)
+        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (combined_up_gate_w, None),
+        )
+        down_w = jnp.stack(down_weights, axis=0)
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (down_w, None),
+        )
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+    else:
+        experts = load_mlp(
+            module.experts,
+            weights_dict,
+            experts_path,
+            "up_proj",
+            "gate_proj",
+            "down_proj",
+        )
+
+    shared_expert = load_mlp(
+        module.shared_expert,
+        weights_dict,
+        path / "shared_expert",
+        "up_proj",
+        "gate_proj",
+        "down_proj",
+    )
+    shared_expert_gate = load_linear(module.shared_expert_gate, weights_dict, path / "shared_expert_gate")
+
+    return load_parameters(
+        lambda m: (m.router, m.experts, m.shared_expert, m.shared_expert_gate),
+        module,
+        (router, experts, shared_expert, shared_expert_gate),
+    )
 
 
 def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:
     # Load router via the standard linear loader
-    router = load_linear(module.router, weights_dict, path / "router")
+    # Qwen-MoE often names the router layer "gate" in HF weights.
+    if (path / "router.weight") in weights_dict or (path / "router.qweight") in weights_dict:
+        router_path = path / "router"
+    elif (path / "gate.weight") in weights_dict or (path / "gate.qweight") in weights_dict:
+        router_path = path / "gate"
+    else:
+        router_path = path / "router"
+    router = load_linear(module.router, weights_dict, router_path)
 
     experts_path = path / "experts"
     # Handle fused MXFP4 experts layout if present
@@ -358,12 +498,22 @@ def load_attention(
     else:
         raise NotImplementedError("Can't determine attention output projection name")
 
-    qkv_projection = load_linear(
-        module.qkv_projection,
-        weights_dict,
-        path,
-        sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
-    )
+    if module.config.uses_separate_qkv:
+        q_proj = load_linear(module.q_proj, weights_dict, path / "q_proj")
+        k_proj = load_linear(module.k_proj, weights_dict, path / "k_proj")
+        v_proj = load_linear(module.v_proj, weights_dict, path / "v_proj")
+        qkv_projection = None
+    else:
+        qkv_projection = load_linear(
+            module.qkv_projection,
+            weights_dict,
+            path,
+            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+        )
+        q_proj = None
+        k_proj = None
+        v_proj = None
+
     out_projection = load_linear(module.out_projection, weights_dict, path / o_proj_name)
 
     if module.query_norm is not None:
@@ -399,13 +549,16 @@ def load_attention(
     return load_parameters(
         lambda m: (
             m.qkv_projection,
+            m.q_proj,
+            m.k_proj,
+            m.v_proj,
             m.out_projection,
             m.query_norm,
             m.key_norm,
             m.sinks,
         ),
         module,
-        (qkv_projection, out_projection, query_norm, key_norm, sinks),
+        (qkv_projection, q_proj, k_proj, v_proj, out_projection, query_norm, key_norm, sinks),
     )
 
 
@@ -503,6 +656,45 @@ def load_short_conv(
     )
 
 
+def load_delta_net_attention(
+    module: DeltaNetAttention,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    permute_conv: bool,
+) -> DeltaNetAttention:
+    in_proj_qkvz = load_linear(module.in_proj_qkvz, weights_dict, path / "in_proj_qkvz")
+    in_proj_ba = load_linear(module.in_proj_ba, weights_dict, path / "in_proj_ba")
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
+    out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj")
+    norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
+
+    dt_bias_path = path / "dt_bias"
+    if dt_bias_path in weights_dict:
+        dt_bias = weights_dict[dt_bias_path]
+    else:
+        dt_bias = module.dt_bias
+
+    a_log_path = path / "A_log"
+    if a_log_path in weights_dict:
+        a_log = weights_dict[a_log_path]
+    else:
+        a_log = module.a_log
+
+    return load_parameters(
+        lambda m: (
+            m.in_proj_qkvz,
+            m.in_proj_ba,
+            m.conv,
+            m.out_proj,
+            m.norm,
+            m.dt_bias,
+            m.a_log,
+        ),
+        module,
+        (in_proj_qkvz, in_proj_ba, conv, out_proj, norm, dt_bias, a_log),
+    )
+
+
 def load_transformer_layer(
     module: TransformerLayer,
     weights_dict: Mapping[str, Array],
@@ -529,6 +721,8 @@ def load_transformer_layer(
     # Load mixer (attention or mamba)
     if isinstance(module.mixer, Attention):
         mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
+    elif isinstance(module.mixer, DeltaNetAttention):
+        mixer = load_delta_net_attention(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, Mamba2):
         mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, ShortConv):
@@ -772,7 +966,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {AttentionConfig: "self_attn"}
+        mixer_key = {AttentionConfig: "self_attn", DeltaNetAttentionConfig: "linear_attn"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"

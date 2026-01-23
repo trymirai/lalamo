@@ -32,6 +32,9 @@ __all__ = [
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "SparseMoE",
+    "SparseMoEConfig",
+    "TopKRouting",
     "RoutingFunction",
     "SoftmaxRouting",
 ]
@@ -277,7 +280,23 @@ class SoftmaxRouting(RoutingFunctionBase):
         return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
 
 
-RoutingFunction = SoftmaxRouting | DummyUnionMember
+@dataclass(frozen=True)
+class TopKRouting(RoutingFunctionBase):
+    norm_topk_prob: bool
+
+    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
+        routing_weights = jax.nn.softmax(logits)
+        active_weights, active_indices = jax.lax.top_k(routing_weights, num_active)
+        if self.norm_topk_prob:
+            active_weights = active_weights / jnp.sum(active_weights)
+        mask = jnp.zeros_like(logits, dtype=bool)
+        mask = mask.at[active_indices].set(True)
+        expert_weights = jnp.zeros_like(logits)
+        expert_weights = expert_weights.at[active_indices].set(active_weights)
+        return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
+
+
+RoutingFunction = SoftmaxRouting | TopKRouting | DummyUnionMember
 
 
 register_config_union(RoutingFunction)
@@ -489,8 +508,254 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             experts=self.experts.import_weights(require_tree(weights["experts"])),
         )
 
+@dataclass(frozen=True)
+class SparseMoEConfig(MLPConfigBase):
+    expert_config: DenseMLPConfig
+    shared_expert_config: DenseMLPConfig
+    shared_expert_gate_config: LinearConfig
+    router_config: LinearConfig
+    routing_function: TopKRouting
 
-MLPConfig = DenseMLPConfig | MixtureOfExpertsConfig
+    mixture_size: int
+    num_experts_per_token: int
+    router_has_biases: bool
+    expert_hidden_dim: int
+    shared_expert_hidden_dim: int
+
+    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "SparseMoE":  # noqa: ARG002
+        experts_key, router_key, shared_key, shared_gate_key = jax.random.split(key, 4)
+        router = self.router_config.random_init(
+            model_dim,
+            (self.mixture_size,),
+            has_biases=self.router_has_biases,
+            key=router_key,
+        )
+        experts = self.expert_config.random_init_mixture(
+            self.mixture_size,
+            model_dim,
+            self.expert_hidden_dim,
+            key=experts_key,
+        )
+        shared_expert = self.shared_expert_config.random_init(
+            model_dim,
+            self.shared_expert_hidden_dim,
+            key=shared_key,
+        )
+        shared_expert_gate = self.shared_expert_gate_config.random_init(
+            model_dim,
+            (1,),
+            has_biases=False,
+            key=shared_gate_key,
+        )
+        return SparseMoE(self, router, experts, shared_expert, shared_expert_gate)
+
+    def empty(self, model_dim: int, hidden_dim: int) -> "SparseMoE":  # noqa: ARG002
+        router = self.router_config.empty(model_dim, (self.mixture_size,), has_biases=self.router_has_biases)
+        experts = self.expert_config.empty_mixture(
+            self.mixture_size,
+            model_dim,
+            self.expert_hidden_dim,
+        )
+        shared_expert = self.shared_expert_config.empty(model_dim, self.shared_expert_hidden_dim)
+        shared_expert_gate = self.shared_expert_gate_config.empty(
+            model_dim,
+            (1,),
+            has_biases=False,
+        )
+        return SparseMoE(self, router, experts, shared_expert, shared_expert_gate)
+
+
+class SparseMoE(MLPBase[SparseMoEConfig]):
+    router: LinearBase
+    experts: DenseMLP
+    shared_expert: DenseMLP
+    shared_expert_gate: LinearBase
+
+    @property
+    def mixture_size(self) -> int:
+        return self.config.mixture_size
+
+    @property
+    def num_experts_per_token(self) -> int:
+        return self.config.num_experts_per_token
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.experts.activation_precision
+
+    @property
+    def model_dim(self) -> int:
+        return self.experts.model_dim
+
+    @property
+    def hidden_dim(self) -> int:
+        return self.experts.hidden_dim
+
+    def __post_init__(self) -> None:
+        if self.router.input_dim != self.experts.model_dim:
+            raise ValueError(
+                f"Router input dimension ({self.router.input_dim}) must match experts model_dim"
+                f" ({self.experts.model_dim}).",
+            )
+        (router_output_dim,) = self.router.output_dims
+        if router_output_dim != self.mixture_size:
+            raise ValueError(
+                f"Router output dimension ({router_output_dim}) must equal mixture_size ({self.mixture_size}).",
+            )
+        if self.experts.mixture_size != self.mixture_size:
+            raise ValueError(
+                f"Experts mixture_size ({self.experts.mixture_size}) does not match specified mixture_size"
+                f" ({self.mixture_size}).",
+            )
+
+    def __call__(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
+        forward_pass_config: MLPForwardPassConfig | None = None,
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        match forward_pass_mode:
+            case ForwardPassMode.MULTI_TOKEN:
+                return self.call_prefill_mode(inputs, lengths_without_padding, forward_pass_config)
+            case ForwardPassMode.SINGLE_TOKEN:
+                return self.call_decode_mode(inputs)
+
+    @eqx.filter_jit
+    def call_decode_mode(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        def per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
+            (router_logits,) = self.router(x)
+            routing = self.config.routing_function.call_unbatched(
+                router_logits,
+                num_active=self.num_experts_per_token,
+            )
+            active_indices = jnp.flatnonzero(routing.expert_mask, size=self.num_experts_per_token)
+            active_weights = routing.expert_weights[active_indices]
+
+            def apply_one(idx: Int[Array, ""], w: Float[Array, ""]) -> Float[Array, " channels"]:
+                selected_expert = jax.tree_util.tree_map(
+                    lambda leaf: jax.lax.dynamic_index_in_dim(leaf, idx, axis=0, keepdims=False),
+                    self.experts,
+                )
+                return selected_expert.call_unbatched(x) * w
+
+            contributions = vmap(apply_one)(active_indices, active_weights)
+            expert_out = jnp.sum(contributions, axis=0)
+            (shared_gate,) = self.shared_expert_gate(x)
+            shared_out = self.shared_expert.call_unbatched(x) * jax.nn.sigmoid(shared_gate)
+            return expert_out + shared_out
+
+        return vmap_twice(per_token)(inputs)
+
+    @eqx.filter_jit
+    def call_prefill_mode(
+        self,
+        inputs: Float[Array, "batch suffix_tokens channels"],
+        lengths_without_padding: Int[Array, " batch"] | None = None,
+        forward_pass_config: MLPForwardPassConfig | None = None,
+    ) -> Float[Array, "batch suffix_tokens channels"]:
+        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
+        batch_size, sequence_length, _ = inputs.shape
+        num_tokens = batch_size * sequence_length
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.ones(batch_size, dtype=jnp.int32) * sequence_length
+        padding_mask = jnp.arange(sequence_length)[None, :] < lengths_without_padding[:, None]
+
+        flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
+        flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
+
+        (router_logits,) = vmap(self.router)(flattened_inputs)
+        routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+        token_mask = rearrange(
+            routing_map.expert_mask & flattened_padding_mask[:, None],
+            "tokens experts -> experts tokens",
+        )
+        expert_weights = rearrange(
+            routing_map.expert_weights,
+            "tokens experts -> experts tokens",
+        )
+        expert_weights = jnp.where(token_mask, expert_weights, 0.0)
+
+        chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
+        num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
+        token_indices = vmap(lambda m: jnp.flatnonzero(m, size=num_padded_tokens, fill_value=_SENTINEL))(token_mask)
+        chunked_token_indices = rearrange(
+            token_indices,
+            "experts (chunks chunk_tokens) -> chunks experts chunk_tokens",
+            chunk_tokens=chunk_size,
+        )
+
+        def loop_iteration(
+            accumulator: Float[Array, "tokens channels"],
+            token_indices_for_chunk: Int[Array, "experts chunk_tokens"],
+        ) -> tuple[Float[Array, "tokens channels"], None]:
+            def inner() -> Float[Array, "tokens channels"]:
+                weights_for_chunk = jnp.take_along_axis(
+                    expert_weights,
+                    token_indices_for_chunk,
+                    axis=1,
+                    mode="fill",
+                    fill_value=0.0,
+                )
+
+                def run_expert(
+                    expert: DenseMLP,
+                    indices: Int[Array, " tokens_per_chunk"],
+                    weights: Float[Array, " tokens_per_chunk"],
+                ) -> Float[Array, "tokens_per_chunk channels"]:
+                    inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
+                    return vmap(expert.call_unbatched)(inputs) * weights[:, None]
+
+                expert_outputs = vmap(run_expert)(self.experts, token_indices_for_chunk, weights_for_chunk)
+                return accumulator.at[token_indices_for_chunk].add(
+                    expert_outputs,
+                    mode="drop",
+                )
+
+            return (
+                jax.lax.cond(
+                    jnp.any(token_indices_for_chunk != _SENTINEL),
+                    inner,
+                    lambda: accumulator,
+                ),
+                None,
+            )
+
+        result, _ = jax.lax.scan(loop_iteration, jnp.zeros_like(flattened_inputs), chunked_token_indices)
+        expert_result = rearrange(
+            result,
+            "(batch suffix_tokens) channels -> batch suffix_tokens channels",
+            batch=batch_size,
+        )
+
+        shared_out = vmap_twice(self.shared_expert.call_unbatched)(inputs)
+        (shared_gate,) = vmap_twice(self.shared_expert_gate)(inputs)
+        shared_out = shared_out * jax.nn.sigmoid(shared_gate)
+        return expert_result + shared_out
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "router": self.router.export_weights(),
+            "experts": self.experts.export_weights(),
+            "shared_expert": self.shared_expert.export_weights(),
+            "shared_expert_gate": self.shared_expert_gate.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        return replace(
+            self,
+            router=self.router.import_weights(require_tree(weights["router"])),
+            experts=self.experts.import_weights(require_tree(weights["experts"])),
+            shared_expert=self.shared_expert.import_weights(require_tree(weights["shared_expert"])),
+            shared_expert_gate=self.shared_expert_gate.import_weights(require_tree(weights["shared_expert_gate"])),
+        )
+
+
+MLPConfig = DenseMLPConfig | MixtureOfExpertsConfig | SparseMoEConfig
 
 
 register_config_union(MLPConfig)

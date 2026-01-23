@@ -100,10 +100,17 @@ class AttentionConfig(TokenMixerConfigBase):
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
+    uses_separate_qkv: bool = False
+    q_proj_config: LinearConfig | None = None
+    k_proj_config: LinearConfig | None = None
+    v_proj_config: LinearConfig | None = None
+    o_proj_config: LinearConfig | None = None
+    q_proj_has_gate: bool = False
+    rope_dim_override: int | None = None
 
     @property
     def rope_dim(self) -> int:
-        return self.head_dim
+        return self.rope_dim_override if self.rope_dim_override is not None else self.head_dim
 
     def random_init(
         self,
@@ -112,22 +119,58 @@ class AttentionConfig(TokenMixerConfigBase):
         key: PRNGKeyArray,
     ) -> "Attention":
         qkv_key, out_key = jax.random.split(key)
-        qkv_projection = self.qkv_projection_config.random_init(
-            input_dim=model_dim,
-            output_dims=(
+        if self.uses_separate_qkv:
+            q_key, k_key, v_key = jax.random.split(qkv_key, 3)
+            q_proj_config = self.q_proj_config or self.qkv_projection_config
+            k_proj_config = self.k_proj_config or self.qkv_projection_config
+            v_proj_config = self.v_proj_config or self.qkv_projection_config
+            o_proj_config = self.o_proj_config or self.out_projection_config
+
+            q_proj = q_proj_config.random_init(
+                input_dim=model_dim,
+                output_dims=(self.num_heads * self.head_dim * (2 if self.q_proj_has_gate else 1),),
+                has_biases=self.has_qkv_biases,
+                key=q_key,
+            )
+            k_proj = k_proj_config.random_init(
+                input_dim=model_dim,
+                output_dims=(self.num_groups * self.head_dim,),
+                has_biases=self.has_qkv_biases,
+                key=k_key,
+            )
+            v_proj = v_proj_config.random_init(
+                input_dim=model_dim,
+                output_dims=(self.num_groups * self.head_dim,),
+                has_biases=self.has_qkv_biases,
+                key=v_key,
+            )
+            out_projection = o_proj_config.random_init(
                 self.num_heads * self.head_dim,
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
-            has_biases=self.has_qkv_biases,
-            key=qkv_key,
-        )
-        out_projection = self.out_projection_config.random_init(
-            self.num_heads * self.head_dim,
-            (model_dim,),
-            has_biases=self.has_out_biases,
-            key=out_key,
-        )
+                (model_dim,),
+                has_biases=self.has_out_biases,
+                key=out_key,
+            )
+            qkv_projection = None
+        else:
+            qkv_projection = self.qkv_projection_config.random_init(
+                input_dim=model_dim,
+                output_dims=(
+                    self.num_heads * self.head_dim,
+                    self.num_groups * self.head_dim,
+                    self.num_groups * self.head_dim,
+                ),
+                has_biases=self.has_qkv_biases,
+                key=qkv_key,
+            )
+            out_projection = self.out_projection_config.random_init(
+                self.num_heads * self.head_dim,
+                (model_dim,),
+                has_biases=self.has_out_biases,
+                key=out_key,
+            )
+            q_proj = None
+            k_proj = None
+            v_proj = None
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.init(
@@ -151,6 +194,9 @@ class AttentionConfig(TokenMixerConfigBase):
         return Attention(
             self,
             qkv_projection=qkv_projection,
+            q_proj=q_proj,
+            k_proj=k_proj,
+            v_proj=v_proj,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
@@ -167,20 +213,50 @@ class AttentionConfig(TokenMixerConfigBase):
         self,
         model_dim: int,
     ) -> "Attention":
-        qkv_projection = self.qkv_projection_config.empty(
-            input_dim=model_dim,
-            output_dims=(
+        if self.uses_separate_qkv:
+            q_proj_config = self.q_proj_config or self.qkv_projection_config
+            k_proj_config = self.k_proj_config or self.qkv_projection_config
+            v_proj_config = self.v_proj_config or self.qkv_projection_config
+            o_proj_config = self.o_proj_config or self.out_projection_config
+            q_proj = q_proj_config.empty(
+                input_dim=model_dim,
+                output_dims=(self.num_heads * self.head_dim * (2 if self.q_proj_has_gate else 1),),
+                has_biases=self.has_qkv_biases,
+            )
+            k_proj = k_proj_config.empty(
+                input_dim=model_dim,
+                output_dims=(self.num_groups * self.head_dim,),
+                has_biases=self.has_qkv_biases,
+            )
+            v_proj = v_proj_config.empty(
+                input_dim=model_dim,
+                output_dims=(self.num_groups * self.head_dim,),
+                has_biases=self.has_qkv_biases,
+            )
+            out_projection = o_proj_config.empty(
                 self.num_heads * self.head_dim,
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
-            has_biases=self.has_qkv_biases,
-        )
-        out_projection = self.out_projection_config.empty(
-            self.num_heads * self.head_dim,
-            (model_dim,),
-            has_biases=self.has_out_biases,
-        )
+                (model_dim,),
+                has_biases=self.has_out_biases,
+            )
+            qkv_projection = None
+        else:
+            qkv_projection = self.qkv_projection_config.empty(
+                input_dim=model_dim,
+                output_dims=(
+                    self.num_heads * self.head_dim,
+                    self.num_groups * self.head_dim,
+                    self.num_groups * self.head_dim,
+                ),
+                has_biases=self.has_qkv_biases,
+            )
+            out_projection = self.out_projection_config.empty(
+                self.num_heads * self.head_dim,
+                (model_dim,),
+                has_biases=self.has_out_biases,
+            )
+            q_proj = None
+            k_proj = None
+            v_proj = None
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.empty(
@@ -204,6 +280,9 @@ class AttentionConfig(TokenMixerConfigBase):
         return Attention(
             self,
             qkv_projection=qkv_projection,
+            q_proj=q_proj,
+            k_proj=k_proj,
+            v_proj=v_proj,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
@@ -218,7 +297,10 @@ class AttentionConfig(TokenMixerConfigBase):
 
 
 class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
-    qkv_projection: LinearBase
+    qkv_projection: LinearBase | None
+    q_proj: LinearBase | None
+    k_proj: LinearBase | None
+    v_proj: LinearBase | None
     out_projection: LinearBase
 
     query_norm: Normalization | None
@@ -237,11 +319,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.qkv_projection.activation_precision
+        if self.qkv_projection is not None:
+            return self.qkv_projection.activation_precision
+        assert self.q_proj is not None
+        return self.q_proj.activation_precision
 
     @property
     def model_dim(self) -> int:
-        return self.qkv_projection.input_dim
+        if self.qkv_projection is not None:
+            return self.qkv_projection.input_dim
+        assert self.q_proj is not None
+        return self.q_proj.input_dim
 
     @property
     def group_size(self) -> int:
@@ -262,11 +350,50 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.sinks is not None
 
     def __post_init__(self) -> None:
-        if self.qkv_projection.has_biases != self.config.has_qkv_biases:
-            raise ValueError(
-                f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"
-                f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
-            )
+        if self.config.uses_separate_qkv:
+            assert self.q_proj is not None and self.k_proj is not None and self.v_proj is not None
+            if self.q_proj.has_biases != self.config.has_qkv_biases:
+                raise ValueError(
+                    f"Q projection has_biases {self.q_proj.has_biases} does not match"
+                    f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
+                )
+            if self.k_proj.has_biases != self.config.has_qkv_biases:
+                raise ValueError(
+                    f"K projection has_biases {self.k_proj.has_biases} does not match"
+                    f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
+                )
+            if self.v_proj.has_biases != self.config.has_qkv_biases:
+                raise ValueError(
+                    f"V projection has_biases {self.v_proj.has_biases} does not match"
+                    f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
+                )
+            q_output_dim, = self.q_proj.output_dims
+            expected_q = self.num_heads * self.head_dim * (2 if self.config.q_proj_has_gate else 1)
+            if q_output_dim != expected_q:
+                raise ValueError(
+                    f"Query projection output dimension must be {expected_q}, got {q_output_dim}",
+                )
+            k_output_dim, = self.k_proj.output_dims
+            if k_output_dim != self.num_groups * self.head_dim:
+                raise ValueError(
+                    f"Key projection output dimension must be num_groups * head_dim"
+                    f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
+                    f" got {k_output_dim}",
+                )
+            v_output_dim, = self.v_proj.output_dims
+            if v_output_dim != self.num_groups * self.head_dim:
+                raise ValueError(
+                    f"Value projection output dimension must be num_groups * head_dim"
+                    f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
+                    f" got {v_output_dim}",
+                )
+        else:
+            assert self.qkv_projection is not None
+            if self.qkv_projection.has_biases != self.config.has_qkv_biases:
+                raise ValueError(
+                    f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"
+                    f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
+                )
         if self.out_projection.has_biases != self.config.has_out_biases:
             raise ValueError(
                 f"Output projection has_biases {self.out_projection.has_biases} does not match"
@@ -293,25 +420,26 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
                 f" got {self.out_projection.input_dim}",
             )
-        q_output_dim, k_output_dim, v_output_dim = self.qkv_projection.output_dims
-        if q_output_dim != self.num_heads * self.head_dim:
-            raise ValueError(
-                f"Query projection output dimension must be num_heads * head_dim"
-                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
-                f" got {q_output_dim}",
-            )
-        if k_output_dim != self.num_groups * self.head_dim:
-            raise ValueError(
-                f"Key projection output dimension must be num_groups * head_dim"
-                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
-                f" got {k_output_dim}",
-            )
-        if v_output_dim != self.num_groups * self.head_dim:
-            raise ValueError(
-                f"Value projection output dimension must be num_groups * head_dim"
-                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
-                f" got {v_output_dim}",
-            )
+        if self.qkv_projection is not None:
+            q_output_dim, k_output_dim, v_output_dim = self.qkv_projection.output_dims
+            if q_output_dim != self.num_heads * self.head_dim:
+                raise ValueError(
+                    f"Query projection output dimension must be num_heads * head_dim"
+                    f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
+                    f" got {q_output_dim}",
+                )
+            if k_output_dim != self.num_groups * self.head_dim:
+                raise ValueError(
+                    f"Key projection output dimension must be num_groups * head_dim"
+                    f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
+                    f" got {k_output_dim}",
+                )
+            if v_output_dim != self.num_groups * self.head_dim:
+                raise ValueError(
+                    f"Value projection output dimension must be num_groups * head_dim"
+                    f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
+                    f" got {v_output_dim}",
+                )
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:
@@ -328,25 +456,63 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
-        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
-        queries = rearrange(
-            queries,
-            "tokens (heads head_channels) -> tokens heads head_channels",
-            heads=self.num_heads,
-            head_channels=self.head_dim,
-        )
-        keys = rearrange(
-            keys,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.num_groups,
-            head_channels=self.head_dim,
-        )
-        values = rearrange(
-            values,
-            "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.num_groups,
-            head_channels=self.head_dim,
-        )
+        if self.config.uses_separate_qkv:
+            assert self.q_proj is not None and self.k_proj is not None and self.v_proj is not None
+            (q_out,) = vmap(self.q_proj, in_axes=0)(inputs)
+            if self.config.q_proj_has_gate:
+                q_out = rearrange(
+                    q_out,
+                    "tokens (heads head_channels) -> tokens heads head_channels",
+                    heads=self.num_heads,
+                    head_channels=self.head_dim * 2,
+                )
+                queries, gate = jnp.split(q_out, 2, axis=-1)
+                gate = rearrange(gate, "tokens heads head_channels -> tokens (heads head_channels)")
+            else:
+                queries = rearrange(
+                    q_out,
+                    "tokens (heads head_channels) -> tokens heads head_channels",
+                    heads=self.num_heads,
+                    head_channels=self.head_dim,
+                )
+                gate = None
+
+            (k_out,) = vmap(self.k_proj, in_axes=0)(inputs)
+            keys = rearrange(
+                k_out,
+                "tokens (groups head_channels) -> tokens groups head_channels",
+                groups=self.num_groups,
+                head_channels=self.head_dim,
+            )
+            (v_out,) = vmap(self.v_proj, in_axes=0)(inputs)
+            values = rearrange(
+                v_out,
+                "tokens (groups head_channels) -> tokens groups head_channels",
+                groups=self.num_groups,
+                head_channels=self.head_dim,
+            )
+        else:
+            assert self.qkv_projection is not None
+            queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
+            queries = rearrange(
+                queries,
+                "tokens (heads head_channels) -> tokens heads head_channels",
+                heads=self.num_heads,
+                head_channels=self.head_dim,
+            )
+            keys = rearrange(
+                keys,
+                "tokens (groups head_channels) -> tokens groups head_channels",
+                groups=self.num_groups,
+                head_channels=self.head_dim,
+            )
+            values = rearrange(
+                values,
+                "tokens (groups head_channels) -> tokens groups head_channels",
+                groups=self.num_groups,
+                head_channels=self.head_dim,
+            )
+            gate = None
 
         if self.query_norm is not None:
             queries = vmap(vmap(self.query_norm))(queries)
@@ -355,8 +521,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
-            queries = apply_positional_embeddings(queries)
-            keys = apply_positional_embeddings(keys)
+            rope_dim = positional_embeddings.head_dim
+            if rope_dim < self.head_dim:
+                q_rot, q_pass = queries[..., :rope_dim], queries[..., rope_dim:]
+                k_rot, k_pass = keys[..., :rope_dim], keys[..., rope_dim:]
+                q_rot = apply_positional_embeddings(q_rot)
+                k_rot = apply_positional_embeddings(k_rot)
+                queries = jnp.concatenate([q_rot, q_pass], axis=-1)
+                keys = jnp.concatenate([k_rot, k_pass], axis=-1)
+            else:
+                queries = apply_positional_embeddings(queries)
+                keys = apply_positional_embeddings(keys)
 
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
@@ -400,6 +575,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads=self.num_heads,
             head_channels=self.head_dim,
         )
+        if gate is not None:
+            attention_output = attention_output * jax.nn.sigmoid(gate)
         (result,) = vmap(self.out_projection, in_axes=0)(attention_output)
 
         if not return_updated_state:
@@ -420,10 +597,18 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
     def export_weights(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = {
-            "qkv_projection": self.qkv_projection.export_weights(),
-            "out_projection": self.out_projection.export_weights(),
-        }
+        if self.config.uses_separate_qkv:
+            result: dict[str, ParameterTree | Array] = {
+                "q_proj": self.q_proj.export_weights() if self.q_proj is not None else None,
+                "k_proj": self.k_proj.export_weights() if self.k_proj is not None else None,
+                "v_proj": self.v_proj.export_weights() if self.v_proj is not None else None,
+                "out_projection": self.out_projection.export_weights(),
+            }
+        else:
+            result = {
+                "qkv_projection": self.qkv_projection.export_weights(),
+                "out_projection": self.out_projection.export_weights(),
+            }
         if self.query_norm is not None:
             result["query_norm"] = self.query_norm.export_weights()
         if self.key_norm is not None:
@@ -435,6 +620,19 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
+        if self.config.uses_separate_qkv:
+            return replace(
+                self,
+                q_proj=self.q_proj.import_weights(require_tree(weights["q_proj"])) if self.q_proj else None,
+                k_proj=self.k_proj.import_weights(require_tree(weights["k_proj"])) if self.k_proj else None,
+                v_proj=self.v_proj.import_weights(require_tree(weights["v_proj"])) if self.v_proj else None,
+                out_projection=self.out_projection.import_weights(require_tree(weights["out_projection"])),
+                query_norm=self.query_norm.import_weights(require_tree(weights["query_norm"]))
+                if self.query_norm
+                else None,
+                key_norm=self.key_norm.import_weights(require_tree(weights["key_norm"])) if self.key_norm else None,
+                sinks=require_array(weights["sinks"]) if self.sinks is not None else None,
+            )
         return replace(
             self,
             qkv_projection=self.qkv_projection.import_weights(require_tree(weights["qkv_projection"])),

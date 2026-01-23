@@ -1,6 +1,7 @@
 from lalamo.modules.common import register_config_union
 
 from .attention import Attention, AttentionConfig, AttentionResult
+from .delta_net_attention import DeltaNetAttention, DeltaNetAttentionConfig, DeltaNetAttentionResult
 from .common import TokenMixerBase, TokenMixerResult
 from .mamba import Mamba2, Mamba2Config, Mamba2Result, SeparableCausalConv, SeparableCausalConvConfig
 from .short_conv import ShortConv, ShortConvConfig, ShortConvResult
@@ -14,7 +15,7 @@ from .state import (
     StaticKVCacheLayer,
 )
 
-TokenMixerConfig = AttentionConfig | Mamba2Config | ShortConvConfig
+TokenMixerConfig = AttentionConfig | DeltaNetAttentionConfig | Mamba2Config | ShortConvConfig
 
 register_config_union(TokenMixerConfig)
 
@@ -22,6 +23,9 @@ __all__ = [
     "Attention",
     "AttentionConfig",
     "AttentionResult",
+    "DeltaNetAttention",
+    "DeltaNetAttentionConfig",
+    "DeltaNetAttentionResult",
     "DynamicKVCacheLayer",
     "KVCacheLayer",
     "Mamba2",
