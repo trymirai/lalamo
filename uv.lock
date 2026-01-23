@@ -1496,6 +1496,18 @@ hf-transfer = [
 ]
 
 [[package]]
+name = "hypothesis"
+version = "6.150.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "sortedcontainers" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/ab/20/37805e8871ffd4bf4958c2e13d608fe1fc914d00f3707b35744ab62751a4/hypothesis-6.150.0.tar.gz", hash = "sha256:ac263bdaf338f4899a9a56e8224304e29b3ad91799e0274783c49abd91ea35ac", size = 474629, upload-time = "2026-01-06T17:08:27.582Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0f/6c/49e29a0b856be17048fa4a216cc21bf914623f66305f6327b7a9bcec6871/hypothesis-6.150.0-py3-none-any.whl", hash = "sha256:caf1f752418c49ac805f11d909c5831aaceb96762aa3895e0c702468dedbe3fe", size = 542064, upload-time = "2026-01-06T17:08:25.643Z" },
+]
+
+[[package]]
 name = "humanfriendly"
 version = "10.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2033,6 +2045,7 @@ dev = [
     { name = "blobfile" },
     { name = "cartesia-metal", marker = "sys_platform == 'darwin'" },
     { name = "cartesia-mlx", marker = "sys_platform == 'darwin'" },
+    { name = "hypothesis" },
     { name = "fish-speech" },
     { name = "fishaudio" },
     { name = "ipykernel" },
@@ -2088,6 +2101,7 @@ dev = [
     { name = "blobfile", specifier = ">=3.1.0" },
     { name = "cartesia-metal", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-metal&tag=da3abff" },
     { name = "cartesia-mlx", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-mlx&tag=da3abff" },
+    { name = "hypothesis", specifier = ">=6.150.0" },
     { name = "fish-speech", specifier = ">=0.1.0" },
     { name = "fishaudio", specifier = ">=0.0.5" },
     { name = "ipykernel", specifier = ">=6.29.5" },
@@ -4571,6 +4585,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/a2/87/a6771e1546d97e7e041b6ae58d80074f81b7d5121207425c964ddf5cfdbd/sniffio-1.3.1.tar.gz", hash = "sha256:f4324edc670a0f49750a81b895f35c3adb843cca46f0530f79fc1babb23789dc", size = 20372, upload-time = "2024-02-25T23:20:04.057Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e9/44/75a9c9421471a6c4805dbf2356f7c181a29c1879239abab1ea2cc8f38b40/sniffio-1.3.1-py3-none-any.whl", hash = "sha256:2f6da418d1f1e0fddd844478f41680e794e6051915791a034ff65e5f100525a2", size = 10235, upload-time = "2024-02-25T23:20:01.196Z" },
+]
+
+[[package]]
+name = "sortedcontainers"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/c4/ba2f8066cceb6f23394729afe52f3bf7adec04bf9ed2c820b39e19299111/sortedcontainers-2.4.0.tar.gz", hash = "sha256:25caa5a06cc30b6b83d11423433f65d1f9d76c4c6a0c90e3379eaa43b9bfdb88", size = 30594, upload-time = "2021-05-16T22:03:42.897Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/32/46/9cb0e58b2deb7f82b84065f37f3bffeb12413f947f9388e4cac22c4621ce/sortedcontainers-2.4.0-py2.py3-none-any.whl", hash = "sha256:a163dcaede0f1c021485e957a39245190e74249897e2ae4b2aa38595db237ee0", size = 29575, upload-time = "2021-05-16T22:03:41.177Z" },
 ]
 
 [[package]]
