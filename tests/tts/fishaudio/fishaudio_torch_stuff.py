@@ -17,7 +17,7 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.common import MapDictValues, ParameterPath, cast_if_float
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
@@ -351,7 +351,6 @@ class FishAudioFromTorch:
             activation_precision=DTypeConvert.to_jax(precision),
         )
 
-        audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.PCM)
         tts_model = TTSModel(
             config=tts_config,
             text_decoder=text_decoder,
@@ -362,7 +361,6 @@ class FishAudioFromTorch:
             config=FishAudioGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
             tts_model=tts_model,
             message_processor=message_processor,
-            audio_renderer=AudioRenderer(audio_renderer_config),
         )
 
     @staticmethod
@@ -398,7 +396,6 @@ class FishAudioFromTorch:
             VocoderConfig(),
             activation_precision=DTypeConvert.to_jax(precision),
         )
-        audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.PCM)
         tts_model = TTSModel(
             config=tts_config,
             text_decoder=text_decoder,
@@ -409,7 +406,6 @@ class FishAudioFromTorch:
             config=FishAudioGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
             message_processor=message_processor,
             tts_model=tts_model,
-            audio_renderer=AudioRenderer(audio_renderer_config),
         )
 
 

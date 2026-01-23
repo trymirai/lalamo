@@ -11,7 +11,7 @@ from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.audio.utils import DEFAULT_SAMPLERATE
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
@@ -48,14 +48,13 @@ class TTSGeneratorConfig:
 @dataclass
 class TTSGenerationResult:
     audio: np.ndarray
-    audio_params: AudioRenderingConfig
+    audio_params: AudioRenderingSettings
 
 
 class TTSGenerator(eqx.Module):
     config: TTSGeneratorConfig
     tts_model: TTSModel
 
-    audio_renderer: AudioRenderer = eqx.field(static=True)
     message_processor: TTSRequestFactory = eqx.field(static=True)
 
     @property
@@ -93,9 +92,9 @@ class TTSGenerator(eqx.Module):
     def generate_waveform(self, audio_features: Array) -> Array:
         return self.tts_model.vocoder(audio_features)
 
-    def get_generated_audio_params(self) -> AudioRenderingConfig:
+    def get_generated_audio_params(self) -> AudioRenderingSettings:
         # NOTE: think if this could be moved to config level or made mandatory via abstract
-        return AudioRenderingConfig(
+        return AudioRenderingSettings(
             samplerate=DEFAULT_SAMPLERATE,
             output_channels=1,
             bitwidth=16,
@@ -122,12 +121,9 @@ class TTSGenerator(eqx.Module):
 
         audio_waveform = self.tts_model.vocoder(audio_features)
 
-        audio_waveform = self.audio_renderer.condition_signal(
-            generated_audio=np.array(audio_waveform),
-            generated_audio_properties=self.get_generated_audio_params(),
-        )
+        audio_settings = self.get_generated_audio_params()
 
-        return TTSGenerationResult(audio=audio_waveform, audio_params=self.audio_renderer.config)
+        return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
 
 
 @dataclass(frozen=True)
@@ -164,8 +160,8 @@ class FishAudioTTSGenerator(TTSGenerator):
     def generate_waveform(self, audio_features: Array) -> Array:
         return super().generate_waveform(audio_features)
 
-    def get_generated_audio_params(self) -> AudioRenderingConfig:
-        return AudioRenderingConfig(
+    def get_generated_audio_params(self) -> AudioRenderingSettings:
+        return AudioRenderingSettings(
             samplerate=self.tts_model.audio_decoder.samplerate,
             output_channels=1,
             bitwidth=16,
@@ -202,15 +198,8 @@ class TTSLoader:  # Either move to different module or just make a standalone fu
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSRequestFactory(config.message_processor_config, tokenizer)
-        audio_renderer_config = AudioRenderingConfig(
-            config.tts_config.audio_decoder_config.samplerate,
-            1,
-            16,
-            AudioEncoding.PCM,
-        )
         return generator_type(
             config=config,
             tts_model=model,
-            audio_renderer=AudioRenderer(config=audio_renderer_config),
             message_processor=message_processor,
         )

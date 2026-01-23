@@ -4,7 +4,7 @@ from typing import Any
 
 import torch
 from jax import numpy as jnp
-from jaxtyping import Array
+from jaxtyping import Array, DTypeLike
 from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
 from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
@@ -13,17 +13,23 @@ from torch.nn.utils.parametrize import remove_parametrizations
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
+    AttentionConfig,
     DenseMLP,
+    DenseMLPConfig,
     FullPrecisionLinear,
+    FullPrecisionLinearConfig,
+    Identity,
     MLPBase,
     Normalization,
+    NormalizationConfig,
+    SiLU,
     Transformer,
+    TransformerConfig,
     TransformerLayer,
+    TransformerLayerConfig,
+    UpcastMode,
 )
-from lalamo.modules.audio.fishaudio import (
-    DescriptAudioCodec,
-    DescriptAudioCodecConfig,
-)
+from lalamo.modules.audio.fishaudio import DescriptAudioCodec, DescriptAudioCodecConfig, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     CausalConv1d,
@@ -31,18 +37,24 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     ConvNeXtBlock,
     DACDecoder,
     DACDecoderBlock,
+    DACDecoderConfig,
     DownsampleResidualVectorQuantize,
+    DownsampleResidualVectorQuantizeConfig,
     ResidualUnit,
     ResidualVectorQuantize,
+    ResidualVectorQuantizeConfig,
     Snake1d,
     Upsampler,
+    UpsamplerConfig,
     UpsamplingBlock,
+    UpsamplingBlockConfig,
     VectorQuantize,
 )
+from lalamo.modules.rope import RoPEConfigCis
 from lalamo.modules.torch_interop import jax_to_torch
 
 from .common import load_parameters
-from .huggingface import load_linear, load_rmsnorm
+from .huggingface import load_rmsnorm, load_tied_embedding
 
 
 class FuseDimension(Enum):
@@ -178,6 +190,184 @@ def _fuse_layer_scaling_with_linear(
     weight_dict[fuse_target_path] = fused_weights
 
 
+def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+    config: Mapping[Any, Any],
+    precision: DTypeLike,
+    window_size: int,
+    input_dim: int,
+) -> TransformerConfig:
+    global_rope_config = RoPEConfigCis(precision=precision, base=config["rope_base"])
+    local_rope_config = None
+
+    norm_config_pre = NormalizationConfig(
+        scale_precision=precision,
+        accumulation_precision=precision,
+        epsilon=config["norm_eps"],
+        scale_offset=None,
+        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False,
+    )
+
+    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
+    out_projection_config = FullPrecisionLinearConfig(precision=precision)
+    mixer_config = AttentionConfig(
+        qkv_projection_config=qkv_projection_config,
+        out_projection_config=out_projection_config,
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=config["n_head"],
+        num_groups=config["n_local_heads"],
+        head_dim=config["head_dim"],
+        is_causal=True,
+        scale=None,
+        sliding_window_size=window_size,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkv_biases=False,
+        has_out_biases=False,
+    )
+
+    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
+    mlp_use_up_biases = False
+    mlp_use_down_biases = False
+    mlp_config = DenseMLPConfig(
+        linear_config=mlp_linear_config,
+        activation=SiLU(),
+        has_up_biases=mlp_use_up_biases,
+        has_down_biases=mlp_use_down_biases,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+
+    pre_mixer_norm_config = norm_config_pre
+    post_mixer_norm_config = None
+    pre_mlp_norm_config = norm_config_pre
+    post_mlp_norm_config = None
+
+    layer_config = TransformerLayerConfig(
+        pre_mixer_norm_config=pre_mixer_norm_config,
+        mixer_config=mixer_config,
+        post_mixer_norm_config=post_mixer_norm_config,
+        pre_mlp_norm_config=pre_mlp_norm_config,
+        mlp_config=mlp_config,
+        post_mlp_norm_config=post_mlp_norm_config,
+    )
+    hidden_dim = config["intermediate_size"]
+    context_length = config["block_size"]
+
+    transformer_cfg = TransformerConfig(
+        global_rope_config=global_rope_config,
+        local_rope_config=local_rope_config,
+        layer_configs=tuple([layer_config] * config["n_layer"]),
+        output_norm_config=norm_config_pre,
+        model_dim=input_dim,
+        hidden_dim=hidden_dim,
+        context_length=context_length,
+    )
+
+    return transformer_cfg
+
+
+def instantiate_dac_config_from_fishaudio_config(
+    fish_dac_config: Mapping[Any, Any],
+) -> "DescriptAudioCodecConfig":
+    precision = jnp.float32
+
+    samplerate = fish_dac_config["sample_rate"]
+    fish_quantizer_config = fish_dac_config["quantizer"]
+
+    input_dim = fish_quantizer_config["input_dim"]
+    downsample_factor = fish_quantizer_config["downsample_factor"]
+    post_module_config_dict = fish_quantizer_config["post_module"]
+    encoder_dim = fish_dac_config["encoder_dim"]
+    encoder_rates = fish_dac_config["encoder_rates"]
+    decoder_dim = fish_dac_config["decoder_dim"]
+    decoder_rates = fish_dac_config["decoder_rates"]
+    fish_quantizer_config = fish_dac_config["quantizer"]
+    input_dim = fish_quantizer_config["input_dim"]
+    n_codebooks = fish_quantizer_config["n_codebooks"]
+    codebook_dim = fish_quantizer_config["codebook_dim"]
+    downsample_factor = fish_quantizer_config["downsample_factor"]
+    codebook_size = fish_quantizer_config["codebook_size"]
+    semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
+
+    upsampler_config = UpsamplerConfig(
+        block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor)),
+    )
+    post_module_transformer_foreign = post_module_config_dict["config"]
+    if post_module_transformer_foreign["n_local_heads"] == -1:
+        # NOTE: this condifion is from post_init() for the post-module config object
+        post_module_transformer_foreign["n_local_heads"] = post_module_transformer_foreign["n_head"]
+    post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+        post_module_transformer_foreign,
+        precision,
+        window_size=post_module_config_dict["window_size"],
+        input_dim=post_module_config_dict["input_dim"],
+    )
+    semantic_quantizer_config = ResidualVectorQuantizeConfig(precision)
+    residual_quantizer_config = ResidualVectorQuantizeConfig(precision)
+
+    quantizer_full_config = DownsampleResidualVectorQuantizeConfig(
+        precision=precision,
+        semantic_quantizer_config=semantic_quantizer_config,
+        quantizer_config=residual_quantizer_config,
+        post_module_config=post_module_config,
+        upsampler_config=upsampler_config,
+    )
+    decoder_config = DACDecoderConfig(precision=precision, causal=True)
+    return DescriptAudioCodecConfig(
+        precision=precision,
+        quantizer_config=quantizer_full_config,
+        decoder_config=decoder_config,
+        samplerate=samplerate,
+        encoder_dim=encoder_dim,
+        encoder_rates=encoder_rates,
+        decoder_dim=decoder_dim,
+        decoder_rates=decoder_rates,
+        input_dim=input_dim,
+        n_codebooks=n_codebooks,
+        codebook_dim=codebook_dim,
+        downsample_factor=downsample_factor,
+        codebook_size=codebook_size,
+        semantic_codebook_size=semantic_codebook_size,
+    )
+
+
+def load_linear_with_scaling_fusing(
+    module: FullPrecisionLinear,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None = None,
+    scaling_to_fuze: Array | None = None,
+) -> FullPrecisionLinear:
+    """Loads a linear layer, optionally fusing weights from sublayers."""
+    if not module.has_biases:
+        if sublayers_to_fuse:
+            paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
+        else:
+            paths_to_check = path / "bias"
+        for p in paths_to_check:
+            if p in weights_dict:
+                raise ValueError(f"Bias tensor found at {p} but module does not support it.")
+        bias = None
+    elif sublayers_to_fuse is None:
+        bias = weights_dict[path / "bias"]
+    else:
+        bias = jnp.concatenate(
+            [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
+            axis=0,
+        )
+
+    weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
+
+    if scaling_to_fuze is not None:
+        weights = weights * scaling_to_fuze[:, None]
+        if bias is not None:
+            bias = bias * scaling_to_fuze
+
+    return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
+
+
 def load_transformer_block(
     module: Transformer,
     weights_dict: Mapping[str, Array],
@@ -188,16 +378,19 @@ def load_transformer_block(
         module: Attention,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
+        scaling_to_fuze: Array | None = None,
     ) -> Attention:
         # TODO: permute q and k to avoid creating additional Rope class
 
-        qkv_projection = load_linear(
+        qkv_projection = load_linear_with_scaling_fusing(
             module.qkv_projection,
             weights_dict,
             path / "wqkv",
             sublayers_to_fuse=None,
         )
-        out_projection = load_linear(module.out_projection, weights_dict, path / "wo")
+        out_projection = load_linear_with_scaling_fusing(
+            module.out_projection, weights_dict, path / "wo", scaling_to_fuze=scaling_to_fuze
+        )
 
         if module.query_norm is not None:
             query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
@@ -222,16 +415,19 @@ def load_transformer_block(
         up_proj_key: str,
         gate_proj_key: str,
         down_proj_key: str,
+        scaling_to_fuze: Array | None = None,
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
         # Standard dense MLP with separate sublayers.
-        up_projection = load_linear(
+        up_projection = load_linear_with_scaling_fusing(
             module.up_projection,
             weights_dict,
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
-        down_projection = load_linear(module.down_projection, weights_dict, path / down_proj_key)
+        down_projection = load_linear_with_scaling_fusing(
+            module.down_projection, weights_dict, path / down_proj_key, scaling_to_fuze=scaling_to_fuze
+        )
         return load_parameters(
             lambda m: (m.up_projection, m.down_projection),
             module,
@@ -243,50 +439,48 @@ def load_transformer_block(
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
     ) -> TransformerLayer:
-        # Create mutable dict for layer scaling fusion (original may be read-only ChainMap)
-        mutable_weights: dict[str, Array] = dict(weights_dict)
-
         if module.pre_mixer_norm is not None:
             assert isinstance(module.pre_mixer_norm, Normalization)
             pre_mixer_norm = load_rmsnorm(
                 module.pre_mixer_norm,
-                mutable_weights,
+                weights_dict,
                 path / "attention_norm",
             )
         else:
             pre_mixer_norm = None
 
         layer_scale_path = path / "attention_layer_scale" / "gamma"
-        if layer_scale_path in mutable_weights:
-            _fuse_layer_scaling_with_linear(
-                mutable_weights,
-                path / "attention" / "wo" / "weight",
-                layer_scale_path,
-                FuseDimension.SCALE_FOR_OUTPUT,
-            )
+        layer_scale_weights = weights_dict.get(layer_scale_path, None)
         post_mixer_norm = None
 
         assert isinstance(module.mixer, Attention)
-        attention = load_attention_local(module.mixer, mutable_weights, path / "attention")
+        attention = load_attention_local(
+            module=module.mixer,
+            weights_dict=weights_dict,
+            path=path / "attention",
+            scaling_to_fuze=layer_scale_weights,
+        )
 
         assert isinstance(module.pre_mlp_norm, Normalization)
         pre_mlp_norm = load_rmsnorm(
             module.pre_mlp_norm,
-            mutable_weights,
+            weights_dict,
             path / "ffn_norm",
         )
 
         layer_scale_path = path / "ffn_layer_scale" / "gamma"
-        if layer_scale_path in mutable_weights:
-            _fuse_layer_scaling_with_linear(
-                mutable_weights,
-                path / "feed_forward" / "w2" / "weight",
-                layer_scale_path,
-                FuseDimension.SCALE_FOR_OUTPUT,
-            )
+        layer_scale_weights = weights_dict.get(layer_scale_path, None)
         post_mlp_norm = None
 
-        mlp = load_mlp(module.mlp, mutable_weights, path / "feed_forward", "w3", "w1", "w2")
+        mlp = load_mlp(
+            module=module.mlp,
+            weights_dict=weights_dict,
+            path=path / "feed_forward",
+            up_proj_key="w3",
+            gate_proj_key="w1",
+            down_proj_key="w2",
+            scaling_to_fuze=layer_scale_weights,
+        )
 
         return load_parameters(
             lambda m: (
@@ -344,7 +538,7 @@ def load_fish_audio_text_decoding_modules(
 
     base_path = ParameterPath()
     output_linear_name = "output" if not fast else "fast_output"
-    output_linear = load_linear(output, weights_dict, base_path / output_linear_name)
+    output_linear = load_linear_with_scaling_fusing(output, weights_dict, base_path / output_linear_name)
     output = load_parameters(
         lambda m: (m,),
         output,
@@ -886,7 +1080,7 @@ def load_audio_decoder(
 
 
 def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
-    dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(
+    dac_config = instantiate_dac_config_from_fishaudio_config(
         fish_dac_config=get_default_fishaudio_dac_config(),
     )
     dac_module = dac_config.empty()
@@ -899,3 +1093,84 @@ def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCod
         quantizer=loaded_quantizer,
         decoder=loaded_decoder,
     )
+
+
+def load_fishaudio_text_decoder(
+    module: FishAudioTextDecoder,
+    weights_dict: Mapping[str, Array],
+    decoder_path: ParameterPath | None = None,
+) -> FishAudioTextDecoder:
+    basepath = ParameterPath() if decoder_path is None else decoder_path
+    transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
+        module.transformer_slow,
+        module.readout_slow,
+        weights_dict,
+        fast=False,
+    )
+    transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
+        module.transformer_fast,
+        module.readout_fast,
+        weights_dict,
+        fast=True,
+    )
+    embeddings_slow = load_tied_embedding(
+        module.embeddings_slow,
+        weights_dict,
+        basepath / "embeddings",
+    )
+    embeddings_fast = load_tied_embedding(
+        module.embeddings_fast,
+        weights_dict,
+        basepath / "fast_embeddings",
+    )
+
+    codebook_embeddings = load_tied_embedding(
+        module.codebook_embeddings,
+        weights_dict,
+        basepath / "codebook_embeddings",
+    )
+
+    if isinstance(module.fast_model_projection, FullPrecisionLinear):
+        fast_model_projection = load_linear_with_scaling_fusing(
+            module.fast_model_projection,
+            weights_dict,
+            basepath / "fast_project_in",
+        )
+        assert isinstance(fast_model_projection, FullPrecisionLinear)
+    else:
+        fast_model_projection = Identity()
+
+    return load_parameters(
+        lambda m: (
+            m.embeddings_slow,
+            m.transformer_slow,
+            m.readout_slow,
+            m.embeddings_fast,
+            m.transformer_fast,
+            m.readout_fast,
+            m.codebook_embeddings,
+            m.fast_model_projection,
+        ),
+        module,
+        (
+            embeddings_slow,
+            transformer_slow,
+            readout_slow,
+            embeddings_fast,
+            transformer_fast,
+            readout_fast,
+            codebook_embeddings,
+            fast_model_projection,
+        ),
+    )
+
+
+def load_fishaudio_audio_decoder(
+    module: DescriptAudioCodec,
+    weights_dict: Mapping[str, Array],
+    base_path: ParameterPath,
+) -> DescriptAudioCodec:
+    loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
+    loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
+
+    return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))

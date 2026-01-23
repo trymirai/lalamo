@@ -13,8 +13,8 @@ from jax import Array
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
-from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
+from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
@@ -326,7 +326,6 @@ def _import_tts_model(
     if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
         # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
         # so we load the Tokenizer and update config using data from it
-        from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 
         tokenizer_special_tokens_path = download_file(
             FileSpec(filename="special_tokens.json"),
@@ -363,9 +362,6 @@ def _import_tts_model(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    audio_rendering_config = AudioRenderingConfig(tts_model.audio_decoder.samplerate, 1, 16, AudioEncoding.PCM)
-    audio_renderer = AudioRenderer(audio_rendering_config)
-
     assert isinstance(model_spec.configs.chat_template, str)
     tts_request_factory_config = TTSRequestFactoryConfig(
         prompt_template=model_spec.configs.chat_template,
@@ -381,7 +377,7 @@ def _import_tts_model(
         ),
         message_processor_config=message_processor.config,
     )
-    tts_generator = TTSGenerator(tts_generator_config, tts_model, audio_renderer, message_processor)
+    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
 
     return (tts_generator, tts_generator_config)
 

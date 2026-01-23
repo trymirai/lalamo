@@ -1,21 +1,12 @@
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Self
+from typing import Self
 
 import jax
-from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
-from lalamo.modules.linear import FullPrecisionLinearConfig
-from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
-from lalamo.modules.rope import RoPEConfigCis
-from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
 from .fishaudio_modules import (
     ConvNeXtSpatialParams,
@@ -24,90 +15,9 @@ from .fishaudio_modules import (
     DACDecoderSpatialParams,
     DownsampleResidualVectorQuantize,
     DownsampleResidualVectorQuantizeConfig,
-    ResidualVectorQuantizeConfig,
     TransposeConvSpatialParams,
-    UpsamplerConfig,
-    UpsamplingBlockConfig,
     VectorQuantizerParams,
 )
-
-
-def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
-    config: Mapping[Any, Any],
-    precision: DTypeLike,
-    window_size: int,
-    input_dim: int,
-) -> TransformerConfig:
-    global_rope_config = RoPEConfigCis(precision=precision, base=config["rope_base"])
-    local_rope_config = None
-
-    norm_config_pre = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
-        epsilon=config["norm_eps"],
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
-
-    qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-    out_projection_config = FullPrecisionLinearConfig(precision=precision)
-    mixer_config = AttentionConfig(
-        qkv_projection_config=qkv_projection_config,
-        out_projection_config=out_projection_config,
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=config["n_head"],
-        num_groups=config["n_local_heads"],
-        head_dim=config["head_dim"],
-        is_causal=True,
-        scale=None,
-        sliding_window_size=window_size,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkv_biases=False,
-        has_out_biases=False,
-    )
-
-    mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
-    mlp_use_up_biases = False
-    mlp_use_down_biases = False
-    mlp_config = DenseMLPConfig(
-        linear_config=mlp_linear_config,
-        activation=SiLU(),
-        has_up_biases=mlp_use_up_biases,
-        has_down_biases=mlp_use_down_biases,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-
-    pre_mixer_norm_config = norm_config_pre
-    post_mixer_norm_config = None
-    pre_mlp_norm_config = norm_config_pre
-    post_mlp_norm_config = None
-
-    layer_config = TransformerLayerConfig(
-        pre_mixer_norm_config=pre_mixer_norm_config,
-        mixer_config=mixer_config,
-        post_mixer_norm_config=post_mixer_norm_config,
-        pre_mlp_norm_config=pre_mlp_norm_config,
-        mlp_config=mlp_config,
-        post_mlp_norm_config=post_mlp_norm_config,
-    )
-    hidden_dim = config["intermediate_size"]
-    context_length = config["block_size"]
-
-    transformer_cfg = TransformerConfig(
-        global_rope_config=global_rope_config,
-        local_rope_config=local_rope_config,
-        layer_configs=tuple([layer_config] * config["n_layer"]),
-        output_norm_config=norm_config_pre,
-        model_dim=input_dim,
-        hidden_dim=hidden_dim,
-        context_length=context_length,
-    )
-
-    return transformer_cfg
 
 
 @dataclass(frozen=True)
@@ -206,73 +116,6 @@ class DescriptAudioCodecConfig:
             config=self,
             quantizer=quantizer,
             decoder=decoder,
-        )
-
-    @staticmethod
-    def instantiate_config_from_fishaudio_config(
-        fish_dac_config: Mapping[Any, Any],
-    ) -> "DescriptAudioCodecConfig":
-        # TODO: move this one out of the 'modules'
-
-        precision = jnp.float32
-
-        samplerate = fish_dac_config["sample_rate"]
-        fish_quantizer_config = fish_dac_config["quantizer"]
-
-        input_dim = fish_quantizer_config["input_dim"]
-        downsample_factor = fish_quantizer_config["downsample_factor"]
-        post_module_config_dict = fish_quantizer_config["post_module"]
-        encoder_dim = fish_dac_config["encoder_dim"]
-        encoder_rates = fish_dac_config["encoder_rates"]
-        decoder_dim = fish_dac_config["decoder_dim"]
-        decoder_rates = fish_dac_config["decoder_rates"]
-        fish_quantizer_config = fish_dac_config["quantizer"]
-        input_dim = fish_quantizer_config["input_dim"]
-        n_codebooks = fish_quantizer_config["n_codebooks"]
-        codebook_dim = fish_quantizer_config["codebook_dim"]
-        downsample_factor = fish_quantizer_config["downsample_factor"]
-        codebook_size = fish_quantizer_config["codebook_size"]
-        semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
-
-        upsampler_config = UpsamplerConfig(
-            block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor)),
-        )
-        post_module_transformer_foreign = post_module_config_dict["config"]
-        if post_module_transformer_foreign["n_local_heads"] == -1:
-            # NOTE: this condifion is from post_init() for the post-module config object
-            post_module_transformer_foreign["n_local_heads"] = post_module_transformer_foreign["n_head"]
-        post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
-            post_module_transformer_foreign,
-            precision,
-            window_size=post_module_config_dict["window_size"],
-            input_dim=post_module_config_dict["input_dim"],
-        )
-        semantic_quantizer_config = ResidualVectorQuantizeConfig(precision)
-        residual_quantizer_config = ResidualVectorQuantizeConfig(precision)
-
-        quantizer_full_config = DownsampleResidualVectorQuantizeConfig(
-            precision=precision,
-            semantic_quantizer_config=semantic_quantizer_config,
-            quantizer_config=residual_quantizer_config,
-            post_module_config=post_module_config,
-            upsampler_config=upsampler_config,
-        )
-        decoder_config = DACDecoderConfig(precision=precision, causal=True)
-        return DescriptAudioCodecConfig(
-            precision=precision,
-            quantizer_config=quantizer_full_config,
-            decoder_config=decoder_config,
-            samplerate=samplerate,
-            encoder_dim=encoder_dim,
-            encoder_rates=encoder_rates,
-            decoder_dim=decoder_dim,
-            decoder_rates=decoder_rates,
-            input_dim=input_dim,
-            n_codebooks=n_codebooks,
-            codebook_dim=codebook_dim,
-            downsample_factor=downsample_factor,
-            codebook_size=codebook_size,
-            semantic_codebook_size=semantic_codebook_size,
         )
 
     @staticmethod

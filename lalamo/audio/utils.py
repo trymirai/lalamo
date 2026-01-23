@@ -6,7 +6,7 @@ DEFAULT_SAMPLERATE: int = 44100
 
 
 def play_mono_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 1024) -> None:
-    import pyaudio  # pyright: ignore[reportMissingModuleSource], pyaudio is optional to install
+    import pyaudio  # type: ignore[reportMissingImports], pyaudio is optional to install,
 
     if audio.dtype not in [np.float32, np.float16, np.float64]:
         raise ValueError("Input audio datatype is expected to be a floating point")

@@ -10,18 +10,15 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
-    load_audio_decoder,
-    load_downsample_rvq,
-    load_fish_audio_text_decoding_modules,
+    instantiate_dac_config_from_fishaudio_config,
+    load_fishaudio_audio_decoder,
+    load_fishaudio_text_decoder,
 )
-from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
-    FullPrecisionLinear,
     FullPrecisionLinearConfig,
-    Identity,
     LalamoModule,
     NormalizationConfig,
     SiLU,
@@ -35,7 +32,6 @@ from lalamo.modules import (
 )
 from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
-    DescriptAudioCodecConfig,
     FishAudioTextDecoder,
     FishAudioTextDecoderConfig,
 )
@@ -43,87 +39,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudi
 from lalamo.modules.rope import RoPEConfigCis
 
 __all__ = ["FishAudioConfig"]
-
-
-def load_fishaudio_text_decoder(
-    module: FishAudioTextDecoder,
-    weights_dict: Mapping[str, Array],
-    decoder_path: ParameterPath | None = None,
-) -> FishAudioTextDecoder:
-    basepath = ParameterPath() if decoder_path is None else decoder_path
-    transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
-        module.transformer_slow,
-        module.readout_slow,
-        weights_dict,
-        fast=False,
-    )
-    transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
-        module.transformer_fast,
-        module.readout_fast,
-        weights_dict,
-        fast=True,
-    )
-    embeddings_slow = load_tied_embedding(
-        module.embeddings_slow,
-        weights_dict,
-        basepath / "embeddings",
-    )
-    embeddings_fast = load_tied_embedding(
-        module.embeddings_fast,
-        weights_dict,
-        basepath / "fast_embeddings",
-    )
-
-    codebook_embeddings = load_tied_embedding(
-        module.codebook_embeddings,
-        weights_dict,
-        basepath / "codebook_embeddings",
-    )
-
-    if isinstance(module.fast_model_projection, FullPrecisionLinear):
-        fast_model_projection = load_linear(
-            module.fast_model_projection,
-            weights_dict,
-            basepath / "fast_project_in",
-        )
-        assert isinstance(fast_model_projection, FullPrecisionLinear)
-    else:
-        fast_model_projection = Identity()
-
-    return load_parameters(
-        lambda m: (
-            m.embeddings_slow,
-            m.transformer_slow,
-            m.readout_slow,
-            m.embeddings_fast,
-            m.transformer_fast,
-            m.readout_fast,
-            m.codebook_embeddings,
-            m.fast_model_projection,
-        ),
-        module,
-        (
-            embeddings_slow,
-            transformer_slow,
-            readout_slow,
-            embeddings_fast,
-            transformer_fast,
-            readout_fast,
-            codebook_embeddings,
-            fast_model_projection,
-        ),
-    )
-
-
-def load_fishaudio_audio_decoder(
-    module: DescriptAudioCodec,
-    weights_dict: Mapping[str, Array],
-    base_path: ParameterPath,
-) -> DescriptAudioCodec:
-    loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
-    loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
-
-    return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))
 
 
 @dataclass(frozen=True)
@@ -257,7 +172,7 @@ class FishAudioConfig(ForeignTTSConfig):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
-        audio_decoder_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(
+        audio_decoder_config = instantiate_dac_config_from_fishaudio_config(
             fish_dac_config=get_default_fishaudio_dac_config(),
         )
 
