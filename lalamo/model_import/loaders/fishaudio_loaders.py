@@ -521,7 +521,7 @@ def load_convnext_block(
     norm_weight = weights_dict[path / "norm" / "weight"]
     norm_bias = weights_dict[path / "norm" / "bias"]
     norm = load_parameters(
-        lambda m: (m.scales, m.bias),
+        lambda m: (m.scales, m.biases),
         module.norm,
         (norm_weight, norm_bias),
     )

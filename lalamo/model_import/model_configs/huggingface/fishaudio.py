@@ -15,6 +15,7 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import (
+    GELU,
     AttentionConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
@@ -37,11 +38,18 @@ from lalamo.modules.audio.fishaudio import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+    CausalConv1dConfig,
+    CausalTransposeConv1dConfig,
+    ConvNeXtBlockConfig,
+    DACDecoderBlockConfig,
     DACDecoderConfig,
     DownsampleResidualVectorQuantizeConfig,
+    ResidualUnitConfig,
     ResidualVectorQuantizeConfig,
+    Snake1dConfig,
     UpsamplerConfig,
     UpsamplingBlockConfig,
+    VectorQuantizeConfig,
 )
 from lalamo.modules.rope import RoPEConfigCis
 
@@ -149,9 +157,30 @@ def instantiate_dac_config_from_fishaudio_config(
     codebook_size = fish_quantizer_config["codebook_size"]
     semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
 
-    upsampler_config = UpsamplerConfig(
-        block_configs=tuple([UpsamplingBlockConfig(precision)] * len(downsample_factor)),
+    convnext_config = ConvNeXtBlockConfig(
+        precision=jnp.float32,
+        activation=GELU(approximate=False),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
+    upsampling_block_config = UpsamplingBlockConfig(
+        precision=jnp.float32,
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        convnext_config=convnext_config,
+    )
+    num_blocks = len(downsample_factor)
+    block_configs = tuple(upsampling_block_config for _ in range(num_blocks))
+    upsampler_config = UpsamplerConfig(block_configs=block_configs)
+
     post_module_transformer_foreign = post_module_config_dict["config"]
     if post_module_transformer_foreign["n_local_heads"] == -1:
         # NOTE: this condifion is from post_init() for the post-module config object
@@ -162,17 +191,49 @@ def instantiate_dac_config_from_fishaudio_config(
         window_size=post_module_config_dict["window_size"],
         input_dim=post_module_config_dict["input_dim"],
     )
-    semantic_quantizer_config = ResidualVectorQuantizeConfig(precision)
-    residual_quantizer_config = ResidualVectorQuantizeConfig(precision)
+
+    vq_config = VectorQuantizeConfig(
+        precision=jnp.float32,
+        codebook_config=TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=jnp.float32,
+        ),
+        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    lalamo_rvq_config = ResidualVectorQuantizeConfig(
+        precision=jnp.float32,
+        vq_config=vq_config,
+    )
 
     quantizer_full_config = DownsampleResidualVectorQuantizeConfig(
         precision=precision,
-        semantic_quantizer_config=semantic_quantizer_config,
-        quantizer_config=residual_quantizer_config,
+        semantic_quantizer_config=lalamo_rvq_config,
+        quantizer_config=lalamo_rvq_config,
         post_module_config=post_module_config,
         upsampler_config=upsampler_config,
     )
-    decoder_config = DACDecoderConfig(precision=precision, causal=True)
+    res_unit_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
+    decoder_block_config = DACDecoderBlockConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        res_unit_config=res_unit_config,
+        causal=True,
+    )
+    decoder_config = DACDecoderConfig(
+        precision=jnp.float32,
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        decoder_block_config=decoder_block_config,
+        causal=True,
+    )
+
     return DescriptAudioCodecConfig(
         precision=precision,
         quantizer_config=quantizer_full_config,

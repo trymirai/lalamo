@@ -10,11 +10,11 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_tree
-from lalamo.modules.activations import GELU, Activation
+from lalamo.modules.activations import Activation
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
 
 
@@ -356,6 +356,9 @@ class ConvNeXtSpatialParams:
 class ConvNeXtBlockConfig:
     precision: DTypeLike
     activation: Activation
+    dwconv_config: CausalConv1dConfig
+    norm_config: NormalizationConfig
+    pwconv_config: FullPrecisionLinearConfig
 
     def random_init(
         self,
@@ -366,8 +369,7 @@ class ConvNeXtBlockConfig:
     ) -> "ConvNeXtBlock":
         key1, key2, key3 = jax.random.split(key, 3)
 
-        dwconv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        dwconv = dwconv_config.random_init(
+        dwconv = self.dwconv_config.random_init(
             in_channels=dim,
             out_channels=dim,
             kernel_size=spatial_params.kernel_size,
@@ -377,23 +379,11 @@ class ConvNeXtBlockConfig:
             key=key1,
         )
 
-        norm_config = NormalizationConfig(
-            scale_precision=self.precision,
-            accumulation_precision=self.precision,
-            epsilon=1e-6,
-            scale_offset=None,
-            upcast_mode=UpcastMode.FULL_LAYER,
-            subtract_mean=True,
-            use_bias=True,
-        )
-        norm = norm_config.init(dim)
+        norm = self.norm_config.init(dim)
 
         hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1_config = FullPrecisionLinearConfig(precision=self.precision)
-        pwconv1 = pwconv1_config.random_init(dim, (hidden_dim,), has_biases=True, key=key2)
-
-        pwconv2_config = FullPrecisionLinearConfig(precision=self.precision)
-        pwconv2 = pwconv2_config.random_init(hidden_dim, (dim,), has_biases=True, key=key3)
+        pwconv1 = self.pwconv_config.random_init(dim, (hidden_dim,), has_biases=True, key=key2)
+        pwconv2 = self.pwconv_config.random_init(hidden_dim, (dim,), has_biases=True, key=key3)
 
         return ConvNeXtBlock(
             config=self,
@@ -408,8 +398,7 @@ class ConvNeXtBlockConfig:
         dim: int,
         spatial_params: ConvNeXtSpatialParams,
     ) -> "ConvNeXtBlock":
-        dwconv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        dwconv = dwconv_config.empty(
+        dwconv = self.dwconv_config.empty(
             in_channels=dim,
             out_channels=dim,
             kernel_size=spatial_params.kernel_size,
@@ -418,23 +407,11 @@ class ConvNeXtBlockConfig:
             groups=dim,
         )
 
-        norm_config = NormalizationConfig(
-            scale_precision=self.precision,
-            accumulation_precision=self.precision,
-            epsilon=10e-6,
-            scale_offset=None,
-            upcast_mode=UpcastMode.FULL_LAYER,
-            subtract_mean=True,
-            use_bias=True,
-        )
-        norm = norm_config.empty(dim)
+        norm = self.norm_config.empty(dim)
 
         hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1_config = FullPrecisionLinearConfig(precision=self.precision)
-        pwconv1 = pwconv1_config.empty(dim, (hidden_dim,), has_biases=True)
-
-        pwconv2_config = FullPrecisionLinearConfig(precision=self.precision)
-        pwconv2 = pwconv2_config.empty(hidden_dim, (dim,), has_biases=True)
+        pwconv1 = self.pwconv_config.empty(dim, (hidden_dim,), has_biases=True)
+        pwconv2 = self.pwconv_config.empty(hidden_dim, (dim,), has_biases=True)
 
         return ConvNeXtBlock(
             config=self,
@@ -531,6 +508,8 @@ class TransposeConvSpatialParams:
 @dataclass(frozen=True)
 class UpsamplingBlockConfig:
     precision: DTypeLike
+    trans_conv_config: CausalTransposeConv1dConfig
+    convnext_config: ConvNeXtBlockConfig
 
     def random_init(
         self,
@@ -541,8 +520,7 @@ class UpsamplingBlockConfig:
     ) -> "UpsamplingBlock":
         key1, key2 = jax.random.split(key)
 
-        trans_conv_config = CausalTransposeConv1dConfig(precision=self.precision, has_biases=True)
-        trans_conv = trans_conv_config.random_init(
+        trans_conv = self.trans_conv_config.random_init(
             in_channels=trans_conv_params.in_channels,
             out_channels=trans_conv_params.out_channels,
             kernel_size=trans_conv_params.upsample_kernel_size,
@@ -551,11 +529,7 @@ class UpsamplingBlockConfig:
             key=key1,
         )
 
-        convnext_config = ConvNeXtBlockConfig(
-            precision=self.precision,
-            activation=GELU(approximate=False),
-        )
-        convnext = convnext_config.random_init(
+        convnext = self.convnext_config.random_init(
             dim=trans_conv_params.out_channels,
             spatial_params=convnext_spatial_params,
             key=key2,
@@ -572,8 +546,7 @@ class UpsamplingBlockConfig:
         trans_conv_params: TransposeConvSpatialParams,
         convnext_spatial_params: ConvNeXtSpatialParams,
     ) -> "UpsamplingBlock":
-        trans_conv_config = CausalTransposeConv1dConfig(precision=self.precision, has_biases=True)
-        trans_conv = trans_conv_config.empty(
+        trans_conv = self.trans_conv_config.empty(
             in_channels=trans_conv_params.in_channels,
             out_channels=trans_conv_params.out_channels,
             kernel_size=trans_conv_params.upsample_kernel_size,
@@ -581,11 +554,7 @@ class UpsamplingBlockConfig:
             dilation=1,
         )
 
-        convnext_config = ConvNeXtBlockConfig(
-            precision=self.precision,
-            activation=GELU(approximate=False),
-        )
-        convnext = convnext_config.empty(
+        convnext = self.convnext_config.empty(
             dim=trans_conv_params.out_channels,
             spatial_params=convnext_spatial_params,
         )
@@ -747,6 +716,8 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
 @dataclass(frozen=True)
 class VectorQuantizeConfig:
     precision: DTypeLike
+    codebook_config: TiedEmbeddingConfig
+    out_proj_config: FullPrecisionLinearConfig
 
     def empty(
         self,
@@ -754,16 +725,10 @@ class VectorQuantizeConfig:
         codebook_size: int,
         codebook_dim: int,
     ) -> "VectorQuantize":
-        codebook_config = TiedEmbeddingConfig(
-            input_scale=None,
-            logit_soft_cap=None,
-            precision=self.precision,
-        )
-        codebook = codebook_config.empty(codebook_size, codebook_dim)
+        codebook = self.codebook_config.empty(codebook_size, codebook_dim)
         assert isinstance(codebook, TiedEmbedding)
 
-        out_proj_config = FullPrecisionLinearConfig(precision=self.precision)
-        out_proj = out_proj_config.empty(
+        out_proj = self.out_proj_config.empty(
             input_dim=codebook_dim,
             output_dims=(input_dim,),
             has_biases=True,
@@ -785,16 +750,10 @@ class VectorQuantizeConfig:
     ) -> "VectorQuantize":
         codebook_key, proj_key = jax.random.split(key)
 
-        codebook_config = TiedEmbeddingConfig(
-            input_scale=None,
-            logit_soft_cap=None,
-            precision=self.precision,
-        )
-        codebook = codebook_config.random_init(codebook_size, codebook_dim, key=codebook_key)
+        codebook = self.codebook_config.random_init(codebook_size, codebook_dim, key=codebook_key)
         assert isinstance(codebook, TiedEmbedding)
 
-        out_proj_config = FullPrecisionLinearConfig(precision=self.precision)
-        out_proj = out_proj_config.random_init(
+        out_proj = self.out_proj_config.random_init(
             input_dim=codebook_dim,
             output_dims=(input_dim,),
             has_biases=True,
@@ -866,6 +825,7 @@ class VectorQuantizerParams:
 @dataclass(frozen=True)
 class ResidualVectorQuantizeConfig:
     precision: DTypeLike
+    vq_config: VectorQuantizeConfig
 
     def empty(
         self,
@@ -878,9 +838,8 @@ class ResidualVectorQuantizeConfig:
         else:
             codebook_dims = list(codebook_dim)
 
-        vq_config = VectorQuantizeConfig(precision=self.precision)
         quantizers = [
-            vq_config.empty(
+            self.vq_config.empty(
                 input_dim=input_dim,
                 codebook_size=codebook_size,
                 codebook_dim=dim,
@@ -905,9 +864,8 @@ class ResidualVectorQuantizeConfig:
         else:
             codebook_dims = list(codebook_dim)
 
-        vq_config = VectorQuantizeConfig(precision=self.precision)
         quantizers = [
-            vq_config.random_init(input_dim=input_dim, codebook_size=codebook_size, codebook_dim=dim, key=key)
+            self.vq_config.random_init(input_dim=input_dim, codebook_size=codebook_size, codebook_dim=dim, key=key)
             for dim in codebook_dims
         ]
 
@@ -1200,6 +1158,8 @@ class ResidualUnitSpatialParams:
 @dataclass(frozen=True)
 class ResidualUnitConfig:
     precision: DTypeLike
+    snake_config: Snake1dConfig
+    conv_config: CausalConv1dConfig
     causal: bool = True
 
     def empty(
@@ -1210,11 +1170,9 @@ class ResidualUnitConfig:
         if not self.causal:
             raise NotImplementedError("Non-causal ResidualUnit is not implemented")
 
-        snake1_config = Snake1dConfig(precision=self.precision)
-        snake1 = snake1_config.empty(dim)
+        snake1 = self.snake_config.empty(dim)
 
-        conv1_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        conv1 = conv1_config.empty(
+        conv1 = self.conv_config.empty(
             in_channels=dim,
             out_channels=dim,
             kernel_size=spatial_params.kernel_size,
@@ -1223,11 +1181,9 @@ class ResidualUnitConfig:
             groups=1,
         )
 
-        snake2_config = Snake1dConfig(precision=self.precision)
-        snake2 = snake2_config.empty(dim)
+        snake2 = self.snake_config.empty(dim)
 
-        conv2_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        conv2 = conv2_config.empty(
+        conv2 = self.conv_config.empty(
             in_channels=dim,
             out_channels=dim,
             kernel_size=1,
@@ -1256,11 +1212,9 @@ class ResidualUnitConfig:
 
         key1, key2 = jax.random.split(key, 2)
 
-        snake1_config = Snake1dConfig(precision=self.precision)
-        snake1 = snake1_config.random_init(dim)
+        snake1 = self.snake_config.random_init(dim)
 
-        conv1_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        conv1 = conv1_config.random_init(
+        conv1 = self.conv_config.random_init(
             in_channels=dim,
             out_channels=dim,
             kernel_size=spatial_params.kernel_size,
@@ -1270,11 +1224,9 @@ class ResidualUnitConfig:
             key=key1,
         )
 
-        snake2_config = Snake1dConfig(precision=self.precision)
-        snake2 = snake2_config.random_init(dim)
+        snake2 = self.snake_config.random_init(dim)
 
-        conv2_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        conv2 = conv2_config.random_init(
+        conv2 = self.conv_config.random_init(
             in_channels=dim,
             out_channels=dim,
             kernel_size=1,
@@ -1385,6 +1337,9 @@ class AudioDecoderBlockSpatialParams:
 @dataclass(frozen=True)
 class DACDecoderBlockConfig:
     precision: DTypeLike
+    snake_config: Snake1dConfig
+    trans_conv_config: CausalTransposeConv1dConfig
+    res_unit_config: ResidualUnitConfig
     causal: bool = True
 
     def empty(
@@ -1395,11 +1350,9 @@ class DACDecoderBlockConfig:
         output_dim = spatial_params.output_dim
         stride = spatial_params.stride
 
-        snake_config = Snake1dConfig(precision=self.precision)
-        snake = snake_config.empty(input_dim)
+        snake = self.snake_config.empty(input_dim)
 
-        trans_conv_config = CausalTransposeConv1dConfig(precision=self.precision, has_biases=True)
-        trans_conv = trans_conv_config.empty(
+        trans_conv = self.trans_conv_config.empty(
             in_channels=input_dim,
             out_channels=output_dim,
             kernel_size=2 * stride,
@@ -1407,11 +1360,9 @@ class DACDecoderBlockConfig:
             dilation=1,
         )
 
-        res_config = ResidualUnitConfig(precision=self.precision, causal=self.causal)
-
-        res_unit1 = res_config.empty(output_dim, ResidualUnitSpatialParams(dilation=1))
-        res_unit2 = res_config.empty(output_dim, ResidualUnitSpatialParams(dilation=3))
-        res_unit3 = res_config.empty(output_dim, ResidualUnitSpatialParams(dilation=9))
+        res_unit1 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=1))
+        res_unit2 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=3))
+        res_unit3 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=9))
 
         return DACDecoderBlock(
             config=self,
@@ -1434,11 +1385,9 @@ class DACDecoderBlockConfig:
 
         key1, key2, key3, key4 = jax.random.split(key, 4)
 
-        snake_config = Snake1dConfig(precision=self.precision)
-        snake = snake_config.random_init(input_dim)
+        snake = self.snake_config.random_init(input_dim)
 
-        trans_conv_config = CausalTransposeConv1dConfig(precision=self.precision, has_biases=True)
-        trans_conv = trans_conv_config.random_init(
+        trans_conv = self.trans_conv_config.random_init(
             in_channels=input_dim,
             out_channels=output_dim,
             kernel_size=2 * stride,
@@ -1447,11 +1396,9 @@ class DACDecoderBlockConfig:
             key=key1,
         )
 
-        res_config = ResidualUnitConfig(precision=self.precision, causal=self.causal)
-
-        res_unit1 = res_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=1), key=key2)
-        res_unit2 = res_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=3), key=key3)
-        res_unit3 = res_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=9), key=key4)
+        res_unit1 = self.res_unit_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=1), key=key2)
+        res_unit2 = self.res_unit_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=3), key=key3)
+        res_unit3 = self.res_unit_config.random_init(output_dim, ResidualUnitSpatialParams(dilation=9), key=key4)
 
         return DACDecoderBlock(
             config=self,
@@ -1550,6 +1497,9 @@ class DACDecoderSpatialParams:
 @dataclass(frozen=True)
 class DACDecoderConfig:
     precision: DTypeLike
+    conv_config: CausalConv1dConfig
+    snake_config: Snake1dConfig
+    decoder_block_config: DACDecoderBlockConfig
     causal: bool = True
 
     def empty(
@@ -1564,8 +1514,7 @@ class DACDecoderConfig:
         rates = spatial_params.rates
         d_out = spatial_params.d_out
 
-        first_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        first_conv = first_conv_config.empty(
+        first_conv = self.conv_config.empty(
             in_channels=input_channel,
             out_channels=channels,
             kernel_size=7,
@@ -1579,23 +1528,20 @@ class DACDecoderConfig:
             block_input_dim = channels // (2**i)
             block_output_dim = channels // (2 ** (i + 1))
 
-            block_config = DACDecoderBlockConfig(precision=self.precision, causal=self.causal)
             block_spatial = AudioDecoderBlockSpatialParams(
                 input_dim=block_input_dim,
                 output_dim=block_output_dim,
                 stride=stride,
             )
-            block = block_config.empty(spatial_params=block_spatial)
+            block = self.decoder_block_config.empty(spatial_params=block_spatial)
             decoder_blocks.append(block)
 
         # Final output dimension after all decoder blocks
         final_dim = channels // (2 ** len(rates))
 
-        final_snake_config = Snake1dConfig(precision=self.precision)
-        final_snake = final_snake_config.empty(final_dim)
+        final_snake = self.snake_config.empty(final_dim)
 
-        final_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        final_conv = final_conv_config.empty(
+        final_conv = self.conv_config.empty(
             in_channels=final_dim,
             out_channels=d_out,
             kernel_size=7,
@@ -1629,8 +1575,7 @@ class DACDecoderConfig:
         num_keys = 2 + len(rates)  # first_conv + blocks + final_conv
         keys = jax.random.split(key, num_keys)
 
-        first_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        first_conv = first_conv_config.random_init(
+        first_conv = self.conv_config.random_init(
             in_channels=input_channel,
             out_channels=channels,
             kernel_size=7,
@@ -1645,23 +1590,20 @@ class DACDecoderConfig:
             block_input_dim = channels // (2**i)
             block_output_dim = channels // (2 ** (i + 1))
 
-            block_config = DACDecoderBlockConfig(precision=self.precision, causal=self.causal)
             block_spatial = AudioDecoderBlockSpatialParams(
                 input_dim=block_input_dim,
                 output_dim=block_output_dim,
                 stride=stride,
             )
-            block = block_config.random_init(spatial_params=block_spatial, key=keys[1 + i])
+            block = self.decoder_block_config.random_init(spatial_params=block_spatial, key=keys[1 + i])
             decoder_blocks.append(block)
 
         # Final dimension
         final_dim = channels // (2 ** len(rates))
 
-        final_snake_config = Snake1dConfig(precision=self.precision)
-        final_snake = final_snake_config.random_init(final_dim)
+        final_snake = self.snake_config.random_init(final_dim)
 
-        final_conv_config = CausalConv1dConfig(precision=self.precision, has_biases=True)
-        final_conv = final_conv_config.random_init(
+        final_conv = self.conv_config.random_init(
             in_channels=final_dim,
             out_channels=d_out,
             kernel_size=7,

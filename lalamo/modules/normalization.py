@@ -40,19 +40,19 @@ class NormalizationConfig:
             bias = jnp.zeros(input_dim, dtype=self.scale_precision)
         else:
             bias = None
-        return Normalization(self, scales=scales, bias=bias)
+        return Normalization(self, scales=scales, biases=bias)
 
     def empty(self, input_dim: int) -> "Normalization":
         if self.use_bias:
             bias = dummy_array(input_dim, dtype=self.scale_precision)
         else:
             bias = None
-        return Normalization(config=self, scales=dummy_array(input_dim, dtype=self.scale_precision), bias=bias)
+        return Normalization(config=self, scales=dummy_array(input_dim, dtype=self.scale_precision), biases=bias)
 
 
 class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
-    bias: Float[Array, " channels"] | None = None
+    biases: Float[Array, " channels"] | None = None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -95,15 +95,15 @@ class Normalization(LalamoModule[NormalizationConfig]):
         result = normalized_x * adjusted_scales
 
         if self.config.use_bias:
-            assert self.bias is not None
-            result += self.bias
+            assert self.biases is not None
+            result += self.biases
         return result.astype(inputs.dtype)
 
     def export_weights(self) -> ParameterTree:
         result = {"scales": self.scales}
         if self.config.use_bias:
-            assert self.bias is not None
-            result["bias"] = self.bias
+            assert self.biases is not None
+            result["biases"] = self.biases
         return result
 
     def import_weights(
@@ -112,8 +112,8 @@ class Normalization(LalamoModule[NormalizationConfig]):
     ) -> Self:
         assert isinstance(weights, Mapping)
         if self.config.use_bias:
-            assert isinstance(weights["bias"], Array)
-            bias = weights["bias"]
+            assert isinstance(weights["biases"], Array)
+            biases = weights["biases"]
         else:
-            bias = None
-        return replace(self, scales=weights["scales"], bias=bias)
+            biases = None
+        return replace(self, scales=weights["scales"], biases=biases)

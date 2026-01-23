@@ -3,7 +3,6 @@ from pathlib import Path
 
 import huggingface_hub
 import jax
-import numpy as np
 import pytest
 import torch
 from fish_speech.tokenizer import FishTokenizer
@@ -35,6 +34,9 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 )
 from lalamo.modules.audio.text_to_speech import TTSMessage
 from lalamo.modules.audio.utils import DTypeConvert
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
@@ -56,11 +58,18 @@ def fish_audio_local_model_path() -> Path:
     repos = huggingface_hub.scan_cache_dir().repos
     fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
 
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
+    try:
+        api = HfApi()
+        cache_info = api.model_info(fish_audiod_repo_id)
+        commit_hash = cache_info.sha
+    except ConnectionError:
+        pytest.skip("Failed to connect to Hugging Face to retrieve model info")
 
-    return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    final_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    if not Path.exists(final_path):
+        raise FileNotFoundError(f"Failed to find fishaudio model at: {final_path}")
+
+    return final_path
 
 
 def get_tts_message() -> TTSMessage:
@@ -157,7 +166,15 @@ def test_vector_quantize_decode_code() -> None:
     dac_vq.eval()
 
     # Create Lalamo VectorQuantize with same config
-    lalamo_vq_config = VectorQuantizeConfig(precision=jnp.float32)
+    lalamo_vq_config = VectorQuantizeConfig(
+        precision=jnp.float32,
+        codebook_config=TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=jnp.float32,
+        ),
+        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
     lalamo_vq = lalamo_vq_config.empty(
         input_dim=input_dim,
         codebook_size=codebook_size,
@@ -216,7 +233,19 @@ def test_residual_vector_quantize_from_codes() -> None:
     )
     dac_rvq.eval()
 
-    lalamo_rvq_config = ResidualVectorQuantizeConfig(precision=jnp.float32)
+    vq_config = VectorQuantizeConfig(
+        precision=jnp.float32,
+        codebook_config=TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=jnp.float32,
+        ),
+        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    lalamo_rvq_config = ResidualVectorQuantizeConfig(
+        precision=jnp.float32,
+        vq_config=vq_config,
+    )
     lalamo_rvq = lalamo_rvq_config.empty(
         input_dim=input_dim,
         codebook_size=codebook_size,
@@ -675,6 +704,17 @@ def test_convnext_block_matches_pytorch() -> None:
     lalamo_config = ConvNeXtBlockConfig(
         precision=jnp.float32,
         activation=GELU(),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
     spatial_params = ConvNeXtSpatialParams(
         mlp_ratio=mlp_ratio,
@@ -714,7 +754,7 @@ def test_convnext_block_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_upsampling_block_matches_pytorch() -> None:
+def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo UpsamplingBlock matches PyTorch upsampling block from DAC model.
 
     This test loads a real DAC model checkpoint, extracts the first upsampling block,
@@ -723,17 +763,7 @@ def test_upsampling_block_matches_pytorch() -> None:
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC
 
-    # Load DAC model
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-    repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
-
-    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    audio_chkpt_path = model_path / "codec.pth"
+    audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
     device = "cpu"
 
@@ -763,7 +793,26 @@ def test_upsampling_block_matches_pytorch() -> None:
     _testlog.info(f"UpsamplingBlock config: in={in_channels}, out={out_channels}, kernel={upsample_kernel_size}")
 
     # Create Lalamo UpsamplingBlock
-    lalamo_config = UpsamplingBlockConfig(precision=jnp.float32)
+    convnext_config = ConvNeXtBlockConfig(
+        precision=jnp.float32,
+        activation=GELU(approximate=False),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    lalamo_config = UpsamplingBlockConfig(
+        precision=jnp.float32,
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        convnext_config=convnext_config,
+    )
     trans_conv_params = TransposeConvSpatialParams(
         in_channels=in_channels,
         out_channels=out_channels,
@@ -822,7 +871,7 @@ def test_upsampling_block_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_upsampler_matches_pytorch() -> None:
+def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo Upsampler matches the full DAC quantizer upsampler.
 
     This test loads a real DAC model checkpoint, extracts all upsampling blocks,
@@ -831,17 +880,7 @@ def test_upsampler_matches_pytorch() -> None:
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC
 
-    # Load DAC model
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-    repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
-
-    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    audio_chkpt_path = model_path / "codec.pth"
+    audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
     device = "cpu"
 
@@ -884,7 +923,27 @@ def test_upsampler_matches_pytorch() -> None:
         )
 
     # Create Lalamo Upsampler config - one UpsamplingBlockConfig per block
-    block_configs = tuple(UpsamplingBlockConfig(precision=jnp.float32) for _ in range(num_blocks))
+    convnext_config = ConvNeXtBlockConfig(
+        precision=jnp.float32,
+        activation=GELU(approximate=False),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    upsampling_block_config = UpsamplingBlockConfig(
+        precision=jnp.float32,
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        convnext_config=convnext_config,
+    )
+    block_configs = tuple(upsampling_block_config for _ in range(num_blocks))
     convnext_spatial_params = ConvNeXtSpatialParams(
         mlp_ratio=4.0,
         kernel_size=7,
@@ -1010,7 +1069,12 @@ def test_residual_unit_matches_pytorch() -> None:
     torch_res_unit.eval()
 
     # Create Lalamo module
-    lalamo_config = ResidualUnitConfig(precision=jnp.float32, causal=True)
+    lalamo_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
     spatial_params = ResidualUnitSpatialParams(dilation=dilation, kernel_size=7)
     lalamo_res_unit = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
 
@@ -1069,7 +1133,19 @@ def test_decoder_block_matches_pytorch() -> None:
     torch_decoder_block.eval()
 
     # Create Lalamo module
-    lalamo_config = DACDecoderBlockConfig(precision=jnp.float32, causal=True)
+    res_unit_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
+    lalamo_config = DACDecoderBlockConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        res_unit_config=res_unit_config,
+        causal=True,
+    )
     spatial_params = AudioDecoderBlockSpatialParams(
         input_dim=input_dim,
         output_dim=output_dim,
@@ -1136,7 +1212,26 @@ def test_audio_decoder_matches_pytorch() -> None:
     torch_decoder.eval()
 
     # Create Lalamo module
-    lalamo_config = DACDecoderConfig(precision=jnp.float32, causal=True)
+    res_unit_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
+    decoder_block_config = DACDecoderBlockConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        res_unit_config=res_unit_config,
+        causal=True,
+    )
+    lalamo_config = DACDecoderConfig(
+        precision=jnp.float32,
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        decoder_block_config=decoder_block_config,
+        causal=True,
+    )
     spatial_params = DACDecoderSpatialParams(
         input_channel=input_channel,
         channels=channels,
@@ -1176,7 +1271,7 @@ def test_audio_decoder_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_dac_matches_pytorch() -> None:
+def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo DAC matches PyTorch DAC from FishAudio.
 
     This test loads a real DAC model checkpoint, creates a Lalamo DAC module
@@ -1190,17 +1285,7 @@ def test_dac_matches_pytorch() -> None:
 
     from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
 
-    # Load FishAudio DAC model
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-    repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
-
-    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    audio_chkpt_path = model_path / "codec.pth"
+    audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
     device = "cpu"
 
