@@ -99,7 +99,7 @@ class TTSGenerator(eqx.Module):
             samplerate=DEFAULT_SAMPLERATE,
             output_channels=1,
             bitwidth=16,
-            encoding=AudioEncoding.pcm,
+            encoding=AudioEncoding.PCM,
         )
 
     def generate_speech(
@@ -169,14 +169,18 @@ class FishAudioTTSGenerator(TTSGenerator):
             samplerate=self.tts_model.audio_decoder.samplerate,
             output_channels=1,
             bitwidth=16,
-            encoding=AudioEncoding.pcm,
+            encoding=AudioEncoding.PCM,
         )
 
 
 @dataclass(frozen=True)
-class TTSLoader:
+class TTSLoader:  # Either move to different module or just make a standalone function
     @staticmethod
     def tts_generator_type_from_model_name(tts_model_type: str) -> tuple[type, type]:
+        # TODO: remove it and create a union of FishAudioGeneratorConfig and DummyUnionMember
+        # and call register_config_union() on this union
+        # TTSGeneratorConfig -> TTSGeneratorConfigBase, inherit from it
+        # TTSGeneratorConfig = FishAudioGeneratorConfig | DummyUnionMember -> register_config_union(TTSGeneratorConfig)
         if tts_model_type == "FishAudio/openaudio/openaudio-s1-mini":
             return FishAudioTTSGenerator, FishAudioGeneratorConfig
         raise ValueError(f"Unsupported TTS model: {tts_model_type}")
@@ -202,7 +206,7 @@ class TTSLoader:
             config.tts_config.audio_decoder_config.samplerate,
             1,
             16,
-            AudioEncoding.pcm,
+            AudioEncoding.PCM,
         )
         return generator_type(
             config=config,

@@ -76,8 +76,8 @@ version = { attr = "lalamo.__version__" }
 [tool.uv]
 package = true
 override-dependencies = [
-    "numpy>=1.0,<3.0",
-    "datasets>=2.0,<3.0"
+    "numpy>=2.3",
+    "datasets>=2.21"
 ]
 exclude-dependencies = [
     "pyaudio"
@@ -161,6 +161,3 @@ ignore = [
     "TD003",
     "TRY003",
 ]
-
-[tool.ty.rules]
-unresolved-import = "ignore"

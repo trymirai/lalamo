@@ -34,7 +34,6 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import Identity, SiLU
-from lalamo.modules.audio.fishaudio.fishaudio_audio_decoding import DescriptAudioCodec
 from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoder, FishAudioTextDecoderConfig
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel, TTSRequestFactory, TTSRequestFactoryConfig
@@ -352,7 +351,7 @@ class FishAudioFromTorch:
             activation_precision=DTypeConvert.to_jax(precision),
         )
 
-        audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.pcm)
+        audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.PCM)
         tts_model = TTSModel(
             config=tts_config,
             text_decoder=text_decoder,
@@ -370,9 +369,16 @@ class FishAudioFromTorch:
     def build_lalamo_fish_audio_tts_generator_from_checkpoint(
         path_to_checkpoints: Path, device="cpu", precision: torch.dtype = torch.bfloat16
     ) -> "TTSGenerator":
+        from fish_speech.models.dac.inference import load_model
+        from fish_speech.models.dac.modded_dac import DAC
+
         path_to_audio_model = path_to_checkpoints / "codec.pth"
         text_decoder = TTSLoaderTorch.text_decoder_from_foreign_model(path_to_checkpoints, jnp.bfloat16)
-        audio_decoder = FishAudioModeling.dac_from_foreign_model(path_to_audio_model, jnp.float32)
+
+        # Load audio decoder using fishaudio_loaders directly
+        fish_dac = load_model("modded_dac_vq", path_to_audio_model, device="cpu")
+        assert isinstance(fish_dac, DAC)
+        audio_decoder = load_descript_audio_codec(prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict()))
 
         tokenizer = FishAudioFromTorch.load_tokenizer_from_fish_audio(str(path_to_checkpoints))
 
@@ -392,7 +398,7 @@ class FishAudioFromTorch:
             VocoderConfig(),
             activation_precision=DTypeConvert.to_jax(precision),
         )
-        audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.pcm)
+        audio_renderer_config = AudioRenderingConfig(44100, 1, 16, AudioEncoding.PCM)
         tts_model = TTSModel(
             config=tts_config,
             text_decoder=text_decoder,
@@ -405,27 +411,6 @@ class FishAudioFromTorch:
             tts_model=tts_model,
             audio_renderer=AudioRenderer(audio_renderer_config),
         )
-
-
-class FishAudioModeling:
-    from fish_speech.models.text2semantic.llama import DualARTransformer
-
-    @staticmethod
-    def dac_from_foreign_model(audio_chkpt_path: Path, precision: DTypeLike) -> DescriptAudioCodec:
-        from fish_speech.models.dac.inference import load_model
-        from fish_speech.models.dac.modded_dac import DAC
-
-        fish_dac = load_model("modded_dac_vq", audio_chkpt_path, device="cpu")
-        assert isinstance(fish_dac, DAC)
-
-        dac_weights = dict(
-            MapDictValues(
-                lambda v: cast_if_float(torch_to_jax(v), precision),
-                fish_dac.state_dict(),
-            )
-        )
-
-        return load_descript_audio_codec(dac_weights)
 
 
 class TTSLoaderTorch:
@@ -448,3 +433,15 @@ class TTSLoaderTorch:
         match preset:
             case ForeignTTSModelType.FISH_AUDIO | ForeignTTSModelType.FISH_AUDIO_LALAMO:
                 return try_locate_fish_audio_model_path()
+
+
+def prepare_state_dict_for_lalamo_loaders(
+    state_dict: dict[str, torch.Tensor],
+    prefix: str = "",
+) -> dict[str, jnp.ndarray]:
+    """Convert PyTorch state_dict to JAX arrays with optional key prefix for Lalamo loaders."""
+    result = {}
+    for key, tensor in state_dict.items():
+        full_key = f"{prefix}.{key}" if prefix else key
+        result[full_key] = torch_to_jax(tensor.detach())
+    return result

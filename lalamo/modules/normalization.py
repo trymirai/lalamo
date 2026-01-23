@@ -13,8 +13,6 @@ from lalamo.common import ParameterTree, dummy_array
 from .common import LalamoModule
 
 __all__ = [
-    "LayerScale",
-    "LayerScaleConfig",
     "Normalization",
     "NormalizationConfig",
     "UpcastMode",
@@ -119,53 +117,3 @@ class Normalization(LalamoModule[NormalizationConfig]):
         else:
             bias = None
         return replace(self, scales=weights["scales"], bias=bias)
-
-
-@dataclass(frozen=True)
-class LayerScaleConfig:
-    scale_precision: DTypeLike
-
-    def init(self, input_dim: int) -> "LayerScale":
-        scales = jnp.ones(input_dim, dtype=self.scale_precision)
-        return LayerScale(self, scales=scales)
-
-    def empty(self, input_dim: int) -> "LayerScale":
-        return LayerScale(
-            config=self,
-            scales=dummy_array(input_dim, dtype=self.scale_precision),
-        )
-
-
-class LayerScale(LalamoModule[LayerScaleConfig]):
-    scales: Float[Array, " channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.scale_precision
-
-    @property
-    def input_dim(self) -> int:
-        (result,) = self.scales.shape
-        return result
-
-    def __post_init__(self) -> None:
-        if self.config.scale_precision != self.scales.dtype:
-            raise ValueError(
-                f"Scales precision {self.scales.dtype} does not match the"
-                f" specified precision {self.config.scale_precision}",
-            )
-
-    @eqx.filter_jit
-    def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        result = inputs * self.scales
-        return result
-
-    def export_weights(self) -> ParameterTree:
-        return {"scales": self.scales}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(self, scales=weights["scales"])

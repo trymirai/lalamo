@@ -12,7 +12,6 @@ from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishaudioConsts,
     default_fishaudio_sampling_policy,
-    fishaudio_logger,
 )
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.common import ForwardPassMode
@@ -347,8 +346,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens=None,
         )
 
-        fishaudio_logger.debug(f"{0} : code={first_codes[0]}")
-
         seq = seq.at[:, prompt_length].set(first_codes[0])
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
@@ -390,8 +387,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             seq = seq.at[:, prompt_length + i].set(next_codes[0])
             previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
             generated_count += 1
-
-            fishaudio_logger.debug(f"{i} : code={next_codes[0]}")
 
             if next_codes[0, 0] == self.config.im_end_token_id:
                 break

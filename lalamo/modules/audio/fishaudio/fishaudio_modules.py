@@ -14,7 +14,7 @@ from lalamo.modules.activations import GELU, Activation
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.normalization import LayerScale, LayerScaleConfig, Normalization, NormalizationConfig, UpcastMode
+from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
 from lalamo.modules.transformer import Transformer, TransformerConfig
 
 
@@ -395,22 +395,12 @@ class ConvNeXtBlockConfig:
         pwconv2_config = FullPrecisionLinearConfig(precision=self.precision)
         pwconv2 = pwconv2_config.random_init(hidden_dim, (dim,), has_biases=True, key=key3)
 
-        if spatial_params.layer_scale_init_value > 0:
-            gamma_config = LayerScaleConfig(scale_precision=self.precision)
-            gamma = LayerScale(
-                config=gamma_config,
-                scales=jnp.ones((dim,), dtype=self.precision) * spatial_params.layer_scale_init_value,
-            )
-        else:
-            gamma = None
-
         return ConvNeXtBlock(
             config=self,
             depthwise_conv=dwconv,
             norm=norm,
             pointwise_conv_step1=pwconv1,
             pointwise_conv_step2=pwconv2,
-            scale=gamma,
         )
 
     def empty(
@@ -446,19 +436,12 @@ class ConvNeXtBlockConfig:
         pwconv2_config = FullPrecisionLinearConfig(precision=self.precision)
         pwconv2 = pwconv2_config.empty(hidden_dim, (dim,), has_biases=True)
 
-        if spatial_params.layer_scale_init_value > 0:
-            gamma_config = LayerScaleConfig(scale_precision=self.precision)
-            gamma = gamma_config.empty(dim)
-        else:
-            gamma = None
-
         return ConvNeXtBlock(
             config=self,
             depthwise_conv=dwconv,
             norm=norm,
             pointwise_conv_step1=pwconv1,
             pointwise_conv_step2=pwconv2,
-            scale=gamma,
         )
 
 
@@ -482,7 +465,6 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
     norm: Normalization
     pointwise_conv_step1: FullPrecisionLinear
     pointwise_conv_step2: FullPrecisionLinear
-    scale: LayerScale | None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -504,8 +486,6 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step1))(x)
         x = jax.vmap(jax.vmap(self.config.activation))(x)
         (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step2))(x)
-        if self.scale is not None:
-            x = jax.vmap(jax.vmap(self.scale))(x)
         if apply_residual:
             x = residual + x
 
@@ -518,8 +498,6 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
             "pwconv1": self.pointwise_conv_step1.export_weights(),
             "pwconv2": self.pointwise_conv_step2.export_weights(),
         }
-        if self.scale is not None:
-            result["gamma"] = self.scale.export_weights()
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> "ConvNeXtBlock":
@@ -533,20 +511,12 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
         assert isinstance(pwconv1_weights, Mapping)
         assert isinstance(pwconv2_weights, Mapping)
 
-        if self.scale is not None:
-            assert isinstance(weights["gamma"], Mapping)
-            gamma_weights = weights["gamma"]
-            gamma = self.scale.import_weights(require_tree(gamma_weights))
-        else:
-            gamma = None
-
         return replace(
             self,
             depthwise_conv=self.depthwise_conv.import_weights(require_tree(dwconv_weights)),
             norm=self.norm.import_weights(require_tree(norm_weights)),
             pointwise_conv_step1=self.pointwise_conv_step1.import_weights(require_tree(pwconv1_weights)),
             pointwise_conv_step2=self.pointwise_conv_step2.import_weights(require_tree(pwconv2_weights)),
-            scale=gamma,
         )
 
 

@@ -329,10 +329,12 @@ def _import_tts_model(
         from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 
         tokenizer_special_tokens_path = download_file(
-            FileSpec(filename="special_tokens.json"), model_repo=model_spec.repo,
+            FileSpec(filename="special_tokens.json"),
+            model_repo=model_spec.repo,
         )
         tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
-            tokenizer_path, tokenizer_special_tokens_path,
+            tokenizer_path,
+            tokenizer_special_tokens_path,
         )
         foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
         assert isinstance(foreign_tts_config, FishAudioConfig)
@@ -361,7 +363,7 @@ def _import_tts_model(
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 
-    audio_rendering_config = AudioRenderingConfig(tts_model.audio_decoder.samplerate, 1, 16, AudioEncoding.pcm)
+    audio_rendering_config = AudioRenderingConfig(tts_model.audio_decoder.samplerate, 1, 16, AudioEncoding.PCM)
     audio_renderer = AudioRenderer(audio_rendering_config)
 
     assert isinstance(model_spec.configs.chat_template, str)

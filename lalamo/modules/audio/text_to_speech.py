@@ -37,7 +37,7 @@ class TTSMessage:
     style: str
 
 
-class TTSRequest(TypedDict):
+class TTSRequest(TypedDict):  # TODO: Sync naming with MessageProcessor's classes
     messages: list[TTSMessage]
 
 

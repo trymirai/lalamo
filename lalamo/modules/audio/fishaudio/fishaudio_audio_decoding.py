@@ -11,7 +11,7 @@ from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import LayerScaleConfig, NormalizationConfig, UpcastMode
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import RoPEConfigCis
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer import TransformerConfig
@@ -49,7 +49,6 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
-    norm_config_post = LayerScaleConfig(scale_precision=precision)
 
     qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
     out_projection_config = FullPrecisionLinearConfig(precision=precision)
@@ -83,9 +82,9 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     )
 
     pre_mixer_norm_config = norm_config_pre
-    post_mixer_norm_config = norm_config_post
+    post_mixer_norm_config = None
     pre_mlp_norm_config = norm_config_pre
-    post_mlp_norm_config = norm_config_post
+    post_mlp_norm_config = None
 
     layer_config = TransformerLayerConfig(
         pre_mixer_norm_config=pre_mixer_norm_config,
@@ -213,6 +212,8 @@ class DescriptAudioCodecConfig:
     def instantiate_config_from_fishaudio_config(
         fish_dac_config: Mapping[Any, Any],
     ) -> "DescriptAudioCodecConfig":
+        # TODO: move this one out of the 'modules'
+
         precision = jnp.float32
 
         samplerate = fish_dac_config["sample_rate"]

@@ -5,9 +5,9 @@ from attr import dataclass
 
 
 class AudioEncoding(StrEnum):
-    pcm = "PCM"
-    ulaw = "uLAW"
-    alaw = "aLAW"
+    PCM = "pcm"
+    ULAW = "uLAW"
+    ALAW = "aLAW"
 
 
 @dataclass

@@ -12,7 +12,6 @@ from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.sampling import SamplingPolicy, make_policy
-from lalamo.utils import setup_custom_logger
 
 DEFAULT_FISHAUDIO_RANDOM_SEED: int = 123
 
@@ -119,8 +118,6 @@ _default_audio_codec_config = {
         "semantic_codebook_size": 4096,
     },
 }
-
-fishaudio_logger = setup_custom_logger(logger_name="fishaudio")
 
 
 def default_fishaudio_sampling_policy() -> SamplingPolicy:

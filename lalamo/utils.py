@@ -1,4 +1,3 @@
-import logging
 from collections.abc import (
     Callable,
     Collection,
@@ -154,15 +153,3 @@ def process_chat_template(template: str) -> str:
     template = template.replace("{% generation %}", "")
     template = template.replace("{%- endgeneration -%}", "")
     return template
-
-
-def setup_custom_logger(logger_name: str, logger_default_level: str = "WARNING") -> logging.Logger:
-    import os
-    import sys
-
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(os.environ.get("LOGLEVEL", logger_default_level))
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter("[%(levelname)s] %(name)s : %(message)s"))
-    logger.addHandler(handler)
-    return logger

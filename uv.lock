@@ -14,8 +14,8 @@ resolution-markers = [
 
 [manifest]
 overrides = [
-    { name = "datasets", specifier = ">=2.0,<3.0" },
-    { name = "numpy", specifier = ">=1.0,<3.0" },
+    { name = "datasets", specifier = ">=2.21" },
+    { name = "numpy", specifier = ">=2.3" },
 ]
 excludes = ["pyaudio"]
 
