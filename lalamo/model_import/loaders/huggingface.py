@@ -422,21 +422,12 @@ def load_attention(
     else:
         raise NotImplementedError("Can't determine attention output projection name")
 
-    if module.config.uses_separate_qkv:
-        q_proj = load_linear(module.q_proj, weights_dict, path / "q_proj")
-        k_proj = load_linear(module.k_proj, weights_dict, path / "k_proj")
-        v_proj = load_linear(module.v_proj, weights_dict, path / "v_proj")
-        qkv_projection = None
-    else:
-        qkv_projection = load_linear(
-            module.qkv_projection,
-            weights_dict,
-            path,
-            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
-        )
-        q_proj = None
-        k_proj = None
-        v_proj = None
+    qkv_projection = load_linear(
+        module.qkv_projection,
+        weights_dict,
+        path,
+        sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+    )
 
     out_projection = load_linear(module.out_projection, weights_dict, path / o_proj_name)
 
@@ -473,16 +464,13 @@ def load_attention(
     return load_parameters(
         lambda m: (
             m.qkv_projection,
-            m.q_proj,
-            m.k_proj,
-            m.v_proj,
             m.out_projection,
             m.query_norm,
             m.key_norm,
             m.sinks,
         ),
         module,
-        (qkv_projection, q_proj, k_proj, v_proj, out_projection, query_norm, key_norm, sinks),
+        (qkv_projection, out_projection, query_norm, key_norm, sinks),
     )
 
 

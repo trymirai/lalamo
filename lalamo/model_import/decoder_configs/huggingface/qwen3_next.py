@@ -233,11 +233,6 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     is_causal=True,
                     scale=None,
                     sliding_window_size=None,
-                    uses_separate_qkv=True,
-                    q_proj_config=linear_config,
-                    k_proj_config=linear_config,
-                    v_proj_config=linear_config,
-                    o_proj_config=linear_config,
                     q_proj_has_gate=True,
                     rope_dim_override=int(self.head_dim * self.partial_rotary_factor),
                 )

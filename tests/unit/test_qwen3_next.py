@@ -96,9 +96,18 @@ def _build_hf_weights_for_qwen3_next(decoder: Decoder) -> dict[ParameterPath, jn
             weights[mixer_path / "A_log"] = layer.mixer.a_log
         elif isinstance(layer.mixer, Attention):
             mixer_path = layer_path / "self_attn"
-            weights[mixer_path / "q_proj" / "weight"] = layer.mixer.q_proj.weights
-            weights[mixer_path / "k_proj" / "weight"] = layer.mixer.k_proj.weights
-            weights[mixer_path / "v_proj" / "weight"] = layer.mixer.v_proj.weights
+            q_out_dim, k_out_dim, v_out_dim = layer.mixer.qkv_projection.output_dims
+            qkv_weights = layer.mixer.qkv_projection.weights
+            q_end = q_out_dim
+            k_end = q_end + k_out_dim
+            weights[mixer_path / "q_proj" / "weight"] = qkv_weights[:q_end]
+            weights[mixer_path / "k_proj" / "weight"] = qkv_weights[q_end:k_end]
+            weights[mixer_path / "v_proj" / "weight"] = qkv_weights[k_end:]
+            if layer.mixer.qkv_projection.biases is not None:
+                qkv_biases = layer.mixer.qkv_projection.biases
+                weights[mixer_path / "q_proj" / "bias"] = qkv_biases[:q_end]
+                weights[mixer_path / "k_proj" / "bias"] = qkv_biases[q_end:k_end]
+                weights[mixer_path / "v_proj" / "bias"] = qkv_biases[k_end:]
             weights[mixer_path / "o_proj" / "weight"] = layer.mixer.out_projection.weights
             if layer.mixer.query_norm is not None:
                 weights[mixer_path / "q_norm" / "weight"] = layer.mixer.query_norm.scales
