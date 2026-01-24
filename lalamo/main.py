@@ -855,24 +855,36 @@ def test(
 @app.callback()
 def _profile_memory(
     ctx: Context,
-    profile_memory: Annotated[
+    profile: Annotated[
         Path | None,
         Option(
-            help="Record and save the XLA memory profile to specified path",
-            show_default="Don't save the XLA memory profile",
-            envvar="LALAMO_PROFILE_MEMORY",
+            help="Record and save the xprof profile to specified path",
+            show_default="Don't save the xprof profile",
+            envvar="LALAMO_PROFILE",
         ),
     ] = None,
 ) -> None:
-    if profile_memory is None:
+    if profile is None:
         return
 
-    if profile_memory.is_dir():
-        profile_memory /= "lalamo-memory.prof"
+    if profile.exists():
+        answer = console.input(
+            rf"⚠️ Profile directory [cyan]{profile}[/cyan] already exists."
+            r" Do you want to overwrite it? [cyan]\[y/n][/cyan]: ",
+        )
+        while answer.lower() not in ["y", "n", "yes", "no"]:
+            answer = console.input("Please enter 'y' or 'n': ")
+        if answer.lower() in ["y", "yes"]:
+            shutil.rmtree(profile)
+        else:
+            console.print("Exiting...")
+            raise Exit
+
+    jax.profiler.start_trace(profile)
 
     def _save_memory_profile() -> None:
-        console.print(f"Saving XLA memory profile to {profile_memory}")
-        jax.profiler.save_device_memory_profile(profile_memory)
+        console.print(f"Saving xprof profile to {profile}")
+        jax.profiler.stop_trace()
 
     ctx.call_on_close(_save_memory_profile)
 
