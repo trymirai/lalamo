@@ -269,111 +269,35 @@ def load_sparse_moe(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> SparseMoE:
-    if (path / "gate.weight") in weights_dict:
-        router_path = path / "gate"
-    elif (path / "router.weight") in weights_dict:
-        router_path = path / "router"
-    else:
-        router_path = path / "gate"
-    router = load_linear(module.router, weights_dict, router_path)
+    router = load_linear(module.router, weights_dict, path / "gate")
 
     experts_path = path / "experts"
-    if (experts_path / "gate_up_proj_blocks") in weights_dict:
-        fused = decode_mxfp4(
-            weights_dict[experts_path / "gate_up_proj_blocks"],
-            weights_dict[experts_path / "gate_up_proj_scales"],
-            dtype=module.activation_precision,
-            flatten=False,
-        )
-        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
-        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
-        combined_up_gate = jnp.concatenate([up_w, gate_w], axis=-1)
-        combined_up_gate_w = jnp.swapaxes(combined_up_gate, -1, -2)
-
-        gub = weights_dict[experts_path / "gate_up_proj_bias"]
-        if gub.ndim == 1:
-            gub = jnp.broadcast_to(gub, (combined_up_gate_w.shape[0], gub.shape[0]))
-        up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
-        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
-
-        up_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.up_projection,
-            (combined_up_gate_w, combined_up_gate_b),
-        )
-
-        down_w = decode_mxfp4(
-            weights_dict[experts_path / "down_proj_blocks"],
-            weights_dict[experts_path / "down_proj_scales"],
-            dtype=module.activation_precision,
-            flatten=False,
-        )
-        down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
-        down_b = weights_dict[experts_path / "down_proj_bias"]
-        if down_b.ndim == 1:
-            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
-
-        down_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.down_projection,
-            (down_w, down_b),
-        )
-
-        experts = load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module.experts,
-            (up_projection, down_projection),
-        )
-    elif (experts_path / "gate_up_proj.weight") in weights_dict:
-        gate_up_w = weights_dict[experts_path / "gate_up_proj.weight"]
-        gate_w, up_w = jnp.split(gate_up_w, 2, axis=-2)
-        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=-2)
-        up_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.up_projection,
-            (combined_up_gate_w, None),
-        )
-        down_projection = load_linear(module.experts.down_projection, weights_dict, experts_path / "down_proj")
-
-        experts = load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module.experts,
-            (up_projection, down_projection),
-        )
-    elif (experts_path / "0" / "gate_up_proj.weight") in weights_dict:
-        gate_up_weights = []
-        down_weights = []
-        for idx in range(module.mixture_size):
-            gate_up_weights.append(weights_dict[experts_path / str(idx) / "gate_up_proj.weight"])
-            down_weights.append(weights_dict[experts_path / str(idx) / "down_proj.weight"])
-        gate_up_w = jnp.stack(gate_up_weights, axis=0)
-        gate_w, up_w = jnp.split(gate_up_w, 2, axis=1)
-        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
-        up_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.up_projection,
-            (combined_up_gate_w, None),
-        )
-        down_w = jnp.stack(down_weights, axis=0)
-        down_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.down_projection,
-            (down_w, None),
-        )
-        experts = load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module.experts,
-            (up_projection, down_projection),
-        )
-    else:
-        experts = load_mlp(
-            module.experts,
-            weights_dict,
-            experts_path,
-            "up_proj",
-            "gate_proj",
-            "down_proj",
-        )
+    up_weights = []
+    gate_weights = []
+    down_weights = []
+    for idx in range(module.mixture_size):
+        up_weights.append(weights_dict[experts_path / str(idx) / "up_proj.weight"])
+        gate_weights.append(weights_dict[experts_path / str(idx) / "gate_proj.weight"])
+        down_weights.append(weights_dict[experts_path / str(idx) / "down_proj.weight"])
+    up_w = jnp.stack(up_weights, axis=0)
+    gate_w = jnp.stack(gate_weights, axis=0)
+    combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
+    up_projection = load_parameters(
+        lambda m: (m.weights, m.biases),
+        module.experts.up_projection,
+        (combined_up_gate_w, None),
+    )
+    down_w = jnp.stack(down_weights, axis=0)
+    down_projection = load_parameters(
+        lambda m: (m.weights, m.biases),
+        module.experts.down_projection,
+        (down_w, None),
+    )
+    experts = load_parameters(
+        lambda m: (m.up_projection, m.down_projection),
+        module.experts,
+        (up_projection, down_projection),
+    )
 
     shared_expert = load_mlp(
         module.shared_expert,
