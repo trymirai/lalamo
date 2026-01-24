@@ -20,6 +20,7 @@ from transformers.models.gemma3.modeling_gemma3 import (
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.models.modernbert.modeling_modernbert import ModernBertEncoderLayer
 from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
+from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDecoderLayer, Qwen3NextGatedDeltaNet
 from transformers.processing_utils import Unpack
 
 from lalamo.modules import DecoderResult
@@ -56,6 +57,16 @@ class HFAttention(Protocol):
         past_key_value: Cache | None = None,
         cache_position: Tensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> Tensor: ...
+
+
+class HFDeltaNetAttention(Protocol):
+    def forward(
+        self,
+        hidden_states: Tensor,
+        cache_params: Any | None = None,
+        cache_position: Tensor | None = None,
+        attention_mask: Tensor | None = None,
     ) -> Tensor: ...
 
 
@@ -179,7 +190,10 @@ def _load_hf_model(
     return model, device
 
 
-def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention | Gemma3Attention) -> Tensor:
+def _build_hf_attention_mask(
+    hidden_states: Tensor,
+    hf_attention: HFAttention | Gemma3Attention | HFDeltaNetAttention,
+) -> Tensor:
     batch, seqlen, _ = hidden_states.shape
     q_len = seqlen
     k_len = seqlen
@@ -224,7 +238,7 @@ class HFDecoderTracer(
         torch.Tensor,
         HFTransformerLayer | Gemma3DecoderLayer,
         HFRMSNorm,
-        HFAttention | Gemma3Attention,
+        HFAttention | Gemma3Attention | HFDeltaNetAttention,
         HFMLP,
     ],
 ):
@@ -252,10 +266,16 @@ class HFDecoderTracer(
 
     def attention(
         self,
-        attention: HFAttention | Gemma3Attention,
+        attention: HFAttention | Gemma3Attention | HFDeltaNetAttention,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
     ) -> torch.Tensor:
+        if Qwen3NextGatedDeltaNet is not None and isinstance(attention, Qwen3NextGatedDeltaNet):
+            # DeltaNet does not have attention
+            return attention.forward(
+                hidden_states=hidden_states,
+                attention_mask=None,
+            )
         attention_mask = _build_hf_attention_mask(hidden_states, attention)
 
         attention_output, _ = attention.forward(  # type: ignore
@@ -308,7 +328,12 @@ class HFDecoderTracer(
 
         return layer.post_attention_layernorm
 
-    def layer_attention(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFAttention | Gemma3Attention:
+    def layer_attention(
+        self,
+        layer: HFTransformerLayer | Gemma3DecoderLayer | Qwen3NextDecoderLayer,
+    ) -> HFAttention | Gemma3Attention | HFDeltaNetAttention:
+        if getattr(layer, "layer_type", None) == "linear_attention" and hasattr(layer, "linear_attn"):
+            return layer.linear_attn
         return layer.self_attn
 
     def layer_mlp(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFMLP:

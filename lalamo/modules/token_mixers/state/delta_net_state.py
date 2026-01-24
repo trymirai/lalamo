@@ -15,12 +15,12 @@ class DeltaNetStateLayer(StateLayerBase):
     recurrent_state: Float[Array, "*batch heads head_k_dim head_v_dim"]
 
     def __post_init__(self) -> None:
-        if self.conv_state.ndim not in (2, 3):
+        if self.conv_state.ndim not in {2, 3}:
             raise ValueError(
                 "Conv state must have 2 or 3 dimensions: [batch], tokens, conv_channels,"
                 f" got shape {self.conv_state.shape}",
             )
-        if self.recurrent_state.ndim not in (3, 4):
+        if self.recurrent_state.ndim not in {3, 4}:
             raise ValueError(
                 "Recurrent state must have 3 or 4 dimensions: [batch], heads, head_k_dim, head_v_dim,"
                 f" got shape {self.recurrent_state.shape}",
