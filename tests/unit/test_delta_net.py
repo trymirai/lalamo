@@ -48,7 +48,7 @@ def _make_lalamo_delta_net(hf_config: Any):
         scale_precision=precision,
         accumulation_precision=precision,
         epsilon=hf_config.rms_norm_eps,
-        scale_offset=1.0,
+        scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )

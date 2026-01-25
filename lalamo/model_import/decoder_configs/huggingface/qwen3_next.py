@@ -145,6 +145,15 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
+        # Gated DeltaNet RMSNorm in Qwen3-Next uses direct weights (no +1 offset).
+        gated_rmsnorm_config = NormalizationConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=accumulation_precision,
+            epsilon=self.rms_norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
+        )
 
         if quantization is None:
             linear_config = FullPrecisionLinearConfig(
@@ -210,7 +219,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                         has_biases=False,
                     ),
                     out_proj_config=linear_config,
-                    norm_config=rmsnorm_config,
+                    norm_config=gated_rmsnorm_config,
                     num_k_heads=self.linear_num_key_heads,
                     num_v_heads=self.linear_num_value_heads,
                     head_k_dim=self.linear_key_head_dim,
