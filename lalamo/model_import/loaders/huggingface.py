@@ -340,6 +340,8 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         gate_weights.append(weights_dict[expert_path / "gate_proj.weight"])
         down_weights.append(weights_dict[expert_path / "down_proj.weight"])
         if up_biases is not None:
+            # up_biases and gate_biases are created in lockstep from the same flag.
+            assert gate_biases is not None
             up_biases.append(weights_dict[expert_path / "up_proj.bias"])
             gate_biases.append(weights_dict[expert_path / "gate_proj.bias"])
         if down_biases is not None:
@@ -351,6 +353,8 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
     if up_biases is None:
         combined_up_gate_b = None
     else:
+        # up_biases and gate_biases are created in lockstep from the same flag.
+        assert gate_biases is not None
         up_b = jnp.stack(up_biases, axis=0)
         gate_b = jnp.stack(gate_biases, axis=0)
         combined_up_gate_b = jnp.concatenate([up_b, gate_b], axis=1)

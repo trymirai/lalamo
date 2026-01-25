@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from jaxtyping import DTypeLike
 
@@ -28,7 +28,7 @@ from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
-from .common import HuggingFaceLMConfig, MLXQuantizationConfig
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFQwen3NextConfig"]
 
@@ -77,8 +77,8 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
 
     attention_bias: bool = False
 
-    quantization: object | None = None
-    quantization_config: object | None = None
+    quantization: QuantizationConfigType | Mapping[str, object] = None
+    quantization_config: QuantizationConfigType | Mapping[str, object] = None
 
     def to_decoder_config(
         self,
@@ -87,15 +87,25 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        quantization = self.quantization or self.quantization_config
-        if isinstance(quantization, dict):
-            if "group_size" in quantization and "bits" in quantization:
-                quantization = MLXQuantizationConfig(
-                    group_size=int(quantization["group_size"]),
-                    bits=int(quantization["bits"]),
+        if self.quantization is not None:
+            quantization_raw = self.quantization
+        else:
+            quantization_raw = self.quantization_config
+        if isinstance(quantization_raw, Mapping):
+            quantization_mapping = cast("Mapping[str, object]", quantization_raw)
+            group_size_value = quantization_mapping.get("group_size")
+            bits_value = quantization_mapping.get("bits")
+            if isinstance(group_size_value, (int, str, bytes, bytearray)) and isinstance(
+                bits_value, (int, str, bytes, bytearray),
+            ):
+                quantization: QuantizationConfigType | None = MLXQuantizationConfig(
+                    group_size=int(group_size_value),
+                    bits=int(bits_value),
                 )
             else:
                 quantization = None
+        else:
+            quantization = quantization_raw
         if isinstance(quantization, MLXQuantizationConfig):
             if self.tie_word_embeddings:
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
