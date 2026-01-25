@@ -13,7 +13,7 @@ MODEL_LIST = [
     "LiquidAI/LFM2-700M",
 ]
 
-BATCH_SIZES = [1, 4, 16, 64]
+BATCH_SIZES = [1, 4, 16, 64, 128]
 
 HEADERS = [
     "model",
@@ -56,9 +56,8 @@ def main() -> None:
         max_input_length=128,
         max_output_length=32,
         num_logits_per_token=8,
-        batch_size=1_000,
+        batch_size=10_000,
     )
-    print(f"large_batch_estimate_bytes={estimate_bytes}")
 
     for model_repo, batch_size in tqdm(work_items):
         try:
