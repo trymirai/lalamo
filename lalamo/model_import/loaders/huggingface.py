@@ -36,7 +36,6 @@ from lalamo.modules.mlp import MixtureOfExperts, MLPBase, SparseMoE
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
-from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
 __all__ = ["load_huggingface_decoder"]
 
@@ -328,71 +327,53 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
     router = load_linear(module.router, weights_dict, router_path)
 
     experts_path = path / "experts"
-    # Handle fused MXFP4 experts layout if present
-    if (experts_path / "gate_up_proj_blocks") in weights_dict:
-        # Decode fused gate/up (interleaved), split into (up, gate), and add +1.0 to up bias
-        fused = decode_mxfp4(
-            weights_dict[experts_path / "gate_up_proj_blocks"],
-            weights_dict[experts_path / "gate_up_proj_scales"],
-            dtype=module.activation_precision,
-            flatten=False,
-        )
-        # Stored as (experts, outputs=2*hidden_dim, input_blocks, input_block_elems)
-        # Merge blocks and move outputs last
-        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
-        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
-        combined_up_gate = jnp.concatenate([up_w, gate_w], axis=-1)
-        # Transpose to new layout: (experts, outputs, inputs)
-        combined_up_gate_w = jnp.swapaxes(combined_up_gate, -1, -2)
+    up_weights = []
+    gate_weights = []
+    down_weights = []
+    up_biases = [] if module.experts.up_projection.has_biases else None
+    gate_biases = [] if module.experts.up_projection.has_biases else None
+    down_biases = [] if module.experts.down_projection.has_biases else None
 
-        gub = weights_dict[experts_path / "gate_up_proj_bias"]
-        if gub.ndim == 1:
-            # Broadcast to (experts, 2*hidden_dim)
-            gub = jnp.broadcast_to(gub, (combined_up_gate_w.shape[0], gub.shape[0]))
-        up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
-        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
+    for idx in range(module.mixture_size):
+        expert_path = experts_path / str(idx)
+        up_weights.append(weights_dict[expert_path / "up_proj.weight"])
+        gate_weights.append(weights_dict[expert_path / "gate_proj.weight"])
+        down_weights.append(weights_dict[expert_path / "down_proj.weight"])
+        if up_biases is not None:
+            up_biases.append(weights_dict[expert_path / "up_proj.bias"])
+            gate_biases.append(weights_dict[expert_path / "gate_proj.bias"])
+        if down_biases is not None:
+            down_biases.append(weights_dict[expert_path / "down_proj.bias"])
 
-        up_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.up_projection,
-            (combined_up_gate_w, combined_up_gate_b),
-        )
-
-        # Down projection: decode MXFP4 to dense
-        down_w = decode_mxfp4(
-            weights_dict[experts_path / "down_proj_blocks"],
-            weights_dict[experts_path / "down_proj_scales"],
-            dtype=module.activation_precision,
-            flatten=False,
-        )
-        # Stored as (experts, outputs=model_dim, input_blocks, input_block_elems)
-        # Merge blocks and move outputs last
-        down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
-        down_b = weights_dict[experts_path / "down_proj_bias"]
-        if down_b.ndim == 1:
-            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
-
-        down_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
-            module.experts.down_projection,
-            (down_w, down_b),
-        )
-
-        experts = load_parameters(
-            lambda m: (m.up_projection, m.down_projection),
-            module.experts,
-            (up_projection, down_projection),
-        )
+    up_w = jnp.stack(up_weights, axis=0)
+    gate_w = jnp.stack(gate_weights, axis=0)
+    combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
+    if up_biases is None:
+        combined_up_gate_b = None
     else:
-        # Fallback: recursively load a standard DenseMLP experts module
-        experts = load_mlp(
-            module.experts,
-            weights_dict,
-            experts_path,
-            "up_proj",
-            "gate_proj",
-            "down_proj",
-        )
+        up_b = jnp.stack(up_biases, axis=0)
+        gate_b = jnp.stack(gate_biases, axis=0)
+        combined_up_gate_b = jnp.concatenate([up_b, gate_b], axis=1)
+
+    up_projection = load_parameters(
+        lambda m: (m.weights, m.biases),
+        module.experts.up_projection,
+        (combined_up_gate_w, combined_up_gate_b),
+    )
+
+    down_w = jnp.stack(down_weights, axis=0)
+    down_b = jnp.stack(down_biases, axis=0) if down_biases is not None else None
+    down_projection = load_parameters(
+        lambda m: (m.weights, m.biases),
+        module.experts.down_projection,
+        (down_w, down_b),
+    )
+
+    experts = load_parameters(
+        lambda m: (m.up_projection, m.down_projection),
+        module.experts,
+        (up_projection, down_projection),
+    )
 
     return load_parameters(
         lambda m: (m.router, m.experts),
