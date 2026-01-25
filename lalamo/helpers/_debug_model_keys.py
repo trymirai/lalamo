@@ -1,7 +1,6 @@
 import sys
 from pathlib import Path
 
-
 repo_root = str(Path(__file__).resolve().parent)
 if repo_root in sys.path:
     sys.path.remove(repo_root)

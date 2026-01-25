@@ -1,14 +1,14 @@
 import jax
 import jax.numpy as jnp
 
-from lalamo.model_import.decoder_configs.huggingface.qwen3_next import HFQwen3NextConfig
 from lalamo.common import ParameterPath
+from lalamo.model_import.decoder_configs.huggingface.qwen3_next import HFQwen3NextConfig
 from lalamo.modules import (
     AttentionConfig,
+    Decoder,
     DeltaNetAttentionConfig,
     DenseMLP,
     DenseMLPConfig,
-    Decoder,
     SparseMoEConfig,
     TiedEmbeddingConfig,
 )
@@ -98,6 +98,11 @@ def _build_hf_weights_for_qwen3_next(decoder: Decoder) -> dict[ParameterPath, jn
             mixer_path = layer_path / "self_attn"
             q_out_dim, k_out_dim, v_out_dim = layer.mixer.qkv_projection.output_dims
             qkv_weights = layer.mixer.qkv_projection.weights
+            total_out_dim = qkv_weights.shape[0]
+            assert total_out_dim == q_out_dim + k_out_dim + v_out_dim, (
+                "Attention QKV projection dim mismatch: "
+                f"{total_out_dim} != {q_out_dim} + {k_out_dim} + {v_out_dim}"
+            )
             q_end = q_out_dim
             k_end = q_end + k_out_dim
             weights[mixer_path / "q_proj" / "weight"] = qkv_weights[:q_end]

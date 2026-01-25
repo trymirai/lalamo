@@ -253,7 +253,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         positional_embeddings: PositionalEmbeddings | None,
         state: DeltaNetStateLayer | None = None,
         return_updated_state: bool = False,
-        length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
+        length_without_padding: Int[Array, ""] | int | None = None,
     ) -> DeltaNetAttentionResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
@@ -287,6 +287,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
 
         key_dim = self.config.key_dim
         value_dim = self.config.value_dim
+        total_dim = conv_output.shape[-1]
+        assert total_dim == 2 * key_dim + value_dim, (
+            "DeltaNetAttention conv output dim mismatch: "
+            f"{total_dim} != 2 * {key_dim} + {value_dim}"
+        )
         query, key, value = jnp.split(conv_output, [key_dim, 2 * key_dim], axis=-1)
         query = query.reshape(query.shape[0], self.config.num_k_heads, self.config.head_k_dim)
         key = key.reshape(key.shape[0], self.config.num_k_heads, self.config.head_k_dim)

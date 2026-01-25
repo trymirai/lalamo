@@ -1,6 +1,6 @@
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-import os
 from typing import Any, Protocol, Self
 
 import jax

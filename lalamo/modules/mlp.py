@@ -32,11 +32,11 @@ __all__ = [
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "RoutingFunction",
+    "SoftmaxRouting",
     "SparseMoE",
     "SparseMoEConfig",
     "TopKRouting",
-    "RoutingFunction",
-    "SoftmaxRouting",
 ]
 
 

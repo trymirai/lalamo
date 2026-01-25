@@ -5,8 +5,8 @@ from .mamba_state import Mamba2StateLayer
 from .short_conv_state import ShortConvStateLayer
 
 __all__ = [
-    "DynamicKVCacheLayer",
     "DeltaNetStateLayer",
+    "DynamicKVCacheLayer",
     "KVCacheLayer",
     "Mamba2StateLayer",
     "ShortConvStateLayer",
