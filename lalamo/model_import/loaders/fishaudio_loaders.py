@@ -1,4 +1,5 @@
-from collections.abc import Mapping
+from collections.abc import Mapping, MutableMapping
+from enum import Enum
 from typing import Any
 
 import torch
@@ -14,17 +15,14 @@ from lalamo.modules import (
     Attention,
     DenseMLP,
     FullPrecisionLinear,
-    LayerScale,
+    Identity,
+    LinearBase,
     MLPBase,
     Normalization,
     Transformer,
     TransformerLayer,
 )
-from lalamo.modules.audio.fishaudio import (
-    DescriptAudioCodec,
-    DescriptAudioCodecConfig,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     CausalConv1d,
     CausalTransposeConv1d,
@@ -42,7 +40,12 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 from lalamo.modules.torch_interop import jax_to_torch
 
 from .common import load_parameters
-from .huggingface import load_linear, load_rmsnorm
+from .huggingface import load_rmsnorm, load_tied_embedding
+
+
+class FuseDimension(Enum):
+    SCALE_FOR_INPUT = "scale_input"
+    SCALE_FOR_OUTPUT = "scale_output"
 
 
 def _fuse_full_precision_weights(
@@ -155,30 +158,83 @@ def _fuse_parametrized_weight_norm_conv1d(
     return fused_weight, fused_bias
 
 
-def load_layer_norm(
-    module: LayerScale,
+def _fuse_layer_scaling_with_linear(
+    weight_dict: MutableMapping[str, Array],
+    fuse_target_path: ParameterPath,
+    weights_to_fuse_path: ParameterPath,
+    fuse_dim: FuseDimension,
+) -> None:
+    """Fuse layer scaling into linear layer weights by mutating weight_dict."""
+    fuse_target = weight_dict[fuse_target_path]
+    weights_to_fuse = weight_dict[weights_to_fuse_path]
+    match fuse_dim:
+        case FuseDimension.SCALE_FOR_INPUT:
+            fused_weights = fuse_target * weights_to_fuse
+        case FuseDimension.SCALE_FOR_OUTPUT:
+            fused_weights = fuse_target * weights_to_fuse[:, None]
+
+    weight_dict[fuse_target_path] = fused_weights
+
+
+def load_linear_with_scaling_fusing(
+    module: LinearBase,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> LayerScale:
-    scales = weights_dict[path / "gamma"]
-    return load_parameters(lambda m: (m.scales,), module, (scales,))
+    sublayers_to_fuse: list[str] | None = None,
+    scaling_to_fuze: Array | None = None,
+) -> LinearBase:
+    assert isinstance(module, FullPrecisionLinear)
+    if not module.has_biases:
+        if sublayers_to_fuse:
+            paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
+        else:
+            paths_to_check = path / "bias"
+        for p in paths_to_check:
+            if p in weights_dict:
+                raise ValueError(f"Bias tensor found at {p} but module does not support it.")
+        bias = None
+    elif sublayers_to_fuse is None:
+        bias = weights_dict[path / "bias"]
+    else:
+        bias = jnp.concatenate(
+            [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
+            axis=0,
+        )
+
+    weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
+
+    if scaling_to_fuze is not None:
+        weights = weights * scaling_to_fuze[:, None]
+        if bias is not None:
+            bias = bias * scaling_to_fuze
+
+    return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
 
 def load_transformer_block(
-    module: Transformer, weights_dict: Mapping[str, Array], fast: bool = False, path: ParameterPath | None = None,
+    module: Transformer,
+    weights_dict: Mapping[str, Array],
+    fast: bool = False,
+    path: ParameterPath | None = None,
 ) -> Transformer:
     def load_attention_local(
         module: Attention,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
+        scaling_to_fuze: Array | None = None,
     ) -> Attention:
-        qkv_projection = load_linear(
+        qkv_projection = load_linear_with_scaling_fusing(
             module.qkv_projection,
             weights_dict,
             path / "wqkv",
             sublayers_to_fuse=None,
         )
-        out_projection = load_linear(module.out_projection, weights_dict, path / "wo")
+        out_projection = load_linear_with_scaling_fusing(
+            module.out_projection,
+            weights_dict,
+            path / "wo",
+            scaling_to_fuze=scaling_to_fuze,
+        )
 
         if module.query_norm is not None:
             query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
@@ -203,16 +259,22 @@ def load_transformer_block(
         up_proj_key: str,
         gate_proj_key: str,
         down_proj_key: str,
+        scaling_to_fuze: Array | None = None,
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
         # Standard dense MLP with separate sublayers.
-        up_projection = load_linear(
+        up_projection = load_linear_with_scaling_fusing(
             module.up_projection,
             weights_dict,
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
-        down_projection = load_linear(module.down_projection, weights_dict, path / down_proj_key)
+        down_projection = load_linear_with_scaling_fusing(
+            module.down_projection,
+            weights_dict,
+            path / down_proj_key,
+            scaling_to_fuze=scaling_to_fuze,
+        )
         return load_parameters(
             lambda m: (m.up_projection, m.down_projection),
             module,
@@ -234,14 +296,17 @@ def load_transformer_block(
         else:
             pre_mixer_norm = None
 
-        if module.post_mixer_norm is not None:
-            assert isinstance(module.post_mixer_norm, LayerScale)
-            post_mixer_norm = load_layer_norm(module.post_mixer_norm, weights_dict, path / "attention_layer_scale")
-        else:
-            post_mixer_norm = None
+        layer_scale_path = path / "attention_layer_scale" / "gamma"
+        layer_scale_weights = weights_dict.get(layer_scale_path, None)
+        post_mixer_norm = None
 
         assert isinstance(module.mixer, Attention)
-        attention = load_attention_local(module.mixer, weights_dict, path / "attention")
+        attention = load_attention_local(
+            module=module.mixer,
+            weights_dict=weights_dict,
+            path=path / "attention",
+            scaling_to_fuze=layer_scale_weights,
+        )
 
         assert isinstance(module.pre_mlp_norm, Normalization)
         pre_mlp_norm = load_rmsnorm(
@@ -249,13 +314,20 @@ def load_transformer_block(
             weights_dict,
             path / "ffn_norm",
         )
-        if module.post_mlp_norm is not None:
-            assert isinstance(module.post_mlp_norm, LayerScale)
-            post_mlp_norm = load_layer_norm(module.post_mlp_norm, weights_dict, path / "ffn_layer_scale")
-        else:
-            post_mlp_norm = None
 
-        mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward", "w3", "w1", "w2")
+        layer_scale_path = path / "ffn_layer_scale" / "gamma"
+        layer_scale_weights = weights_dict.get(layer_scale_path, None)
+        post_mlp_norm = None
+
+        mlp = load_mlp(
+            module=module.mlp,
+            weights_dict=weights_dict,
+            path=path / "feed_forward",
+            up_proj_key="w3",
+            gate_proj_key="w1",
+            down_proj_key="w2",
+            scaling_to_fuze=layer_scale_weights,
+        )
 
         return load_parameters(
             lambda m: (
@@ -304,13 +376,16 @@ def load_transformer_block(
 
 
 def load_fish_audio_text_decoding_modules(
-    transformer: Transformer, output: FullPrecisionLinear, weights_dict: Mapping[str, Array], fast: bool = False,
+    transformer: Transformer,
+    output: FullPrecisionLinear,
+    weights_dict: Mapping[str, Array],
+    fast: bool = False,
 ) -> tuple[Transformer, FullPrecisionLinear]:
     transformer = load_transformer_block(transformer, weights_dict=weights_dict, fast=fast)
 
     base_path = ParameterPath()
     output_linear_name = "output" if not fast else "fast_output"
-    output_linear = load_linear(output, weights_dict, base_path / output_linear_name)
+    output_linear = load_linear_with_scaling_fusing(output, weights_dict, base_path / output_linear_name)
     output = load_parameters(
         lambda m: (m,),
         output,
@@ -411,7 +486,7 @@ def load_convnext_block(
     """Loads a ConvNeXtBlock module from weights.
 
     Expected weight structure at path:
-        - gamma (LayerScale)
+        - gamma
         - dwconv.conv.weight
         - dwconv.conv.bias
         - norm.weight
@@ -429,16 +504,6 @@ def load_convnext_block(
     Returns:
         ConvNeXtBlock module with loaded weights.
     """
-    # Load LayerScale (gamma)
-    if module.scale is not None:
-        gamma_scales = weights_dict[path / "gamma"]
-        scale = load_parameters(
-            lambda m: (m.scales,),
-            module.scale,
-            (gamma_scales,),
-        )
-    else:
-        scale = None
 
     # Load depthwise conv
     # PyTorch conv weights are (out_channels, in_channels/groups, kernel_size)
@@ -454,7 +519,7 @@ def load_convnext_block(
     norm_weight = weights_dict[path / "norm" / "weight"]
     norm_bias = weights_dict[path / "norm" / "bias"]
     norm = load_parameters(
-        lambda m: (m.scales, m.bias),
+        lambda m: (m.scales, m.biases),
         module.norm,
         (norm_weight, norm_bias),
     )
@@ -469,9 +534,14 @@ def load_convnext_block(
         (pwconv1_weight, pwconv1_bias),
     )
 
-    # Load pointwise conv 2 (Linear layer)
+    # Load pointwise conv 2 (Linear layer), fusing layer scaling if present
     pwconv2_weight = weights_dict[path / "pwconv2" / "weight"]
     pwconv2_bias = weights_dict[path / "pwconv2" / "bias"]
+    layer_scale_path = path / "gamma"
+    if layer_scale_path in weights_dict:
+        layer_scale = weights_dict[layer_scale_path]
+        pwconv2_weight = pwconv2_weight * layer_scale[:, None]
+        pwconv2_bias = pwconv2_bias * layer_scale
     pointwise_conv_step2 = load_parameters(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step2,
@@ -479,9 +549,9 @@ def load_convnext_block(
     )
 
     return load_parameters(
-        lambda m: (m.scale, m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
+        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
         module,
-        (scale, depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
+        (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
     )
 
 
@@ -562,7 +632,9 @@ def load_upsampler(
 
 
 def load_downsample_rvq(
-    module: DownsampleResidualVectorQuantize, weights_dict: Mapping[str, Array], path: ParameterPath | None = None,
+    module: DownsampleResidualVectorQuantize,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath | None = None,
 ) -> DownsampleResidualVectorQuantize:
     """Loads a DownsampleResidualVectorQuantize module from weights.
 
@@ -709,7 +781,9 @@ def load_weight_norm_conv1d(
     """
     is_transposed = isinstance(module, CausalTransposeConv1d)
     fused_weight, fused_bias = _fuse_parametrized_weight_norm_conv1d(
-        weights_dict, path / "conv", is_transposed=is_transposed,
+        weights_dict,
+        path / "conv",
+        is_transposed=is_transposed,
     )
 
     return load_parameters(
@@ -852,12 +926,7 @@ def load_audio_decoder(
     )
 
 
-def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
-    dac_config = DescriptAudioCodecConfig.instantiate_config_from_fishaudio_config(
-        fish_dac_config=get_default_fishaudio_dac_config(),
-    )
-    dac_module = dac_config.empty()
-
+def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
     loaded_quantizer = load_downsample_rvq(dac_module.quantizer, state_dict, path=ParameterPath("quantizer"))
     loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))
 
@@ -866,3 +935,84 @@ def load_descript_audio_codec(state_dict: Mapping[str, Any]) -> DescriptAudioCod
         quantizer=loaded_quantizer,
         decoder=loaded_decoder,
     )
+
+
+def load_fishaudio_text_decoder(
+    module: FishAudioTextDecoder,
+    weights_dict: Mapping[str, Array],
+    decoder_path: ParameterPath | None = None,
+) -> FishAudioTextDecoder:
+    basepath = ParameterPath() if decoder_path is None else decoder_path
+    transformer_slow, readout_slow = load_fish_audio_text_decoding_modules(
+        module.transformer_slow,
+        module.readout_slow,
+        weights_dict,
+        fast=False,
+    )
+    transformer_fast, readout_fast = load_fish_audio_text_decoding_modules(
+        module.transformer_fast,
+        module.readout_fast,
+        weights_dict,
+        fast=True,
+    )
+    embeddings_slow = load_tied_embedding(
+        module.embeddings_slow,
+        weights_dict,
+        basepath / "embeddings",
+    )
+    embeddings_fast = load_tied_embedding(
+        module.embeddings_fast,
+        weights_dict,
+        basepath / "fast_embeddings",
+    )
+
+    codebook_embeddings = load_tied_embedding(
+        module.codebook_embeddings,
+        weights_dict,
+        basepath / "codebook_embeddings",
+    )
+
+    if isinstance(module.fast_model_projection, FullPrecisionLinear):
+        fast_model_projection = load_linear_with_scaling_fusing(
+            module.fast_model_projection,
+            weights_dict,
+            basepath / "fast_project_in",
+        )
+        assert isinstance(fast_model_projection, FullPrecisionLinear)
+    else:
+        fast_model_projection = Identity()
+
+    return load_parameters(
+        lambda m: (
+            m.embeddings_slow,
+            m.transformer_slow,
+            m.readout_slow,
+            m.embeddings_fast,
+            m.transformer_fast,
+            m.readout_fast,
+            m.codebook_embeddings,
+            m.fast_model_projection,
+        ),
+        module,
+        (
+            embeddings_slow,
+            transformer_slow,
+            readout_slow,
+            embeddings_fast,
+            transformer_fast,
+            readout_fast,
+            codebook_embeddings,
+            fast_model_projection,
+        ),
+    )
+
+
+def load_fishaudio_audio_decoder(
+    module: DescriptAudioCodec,
+    weights_dict: Mapping[str, Array],
+    base_path: ParameterPath,
+) -> DescriptAudioCodec:
+    loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
+    loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
+
+    return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))

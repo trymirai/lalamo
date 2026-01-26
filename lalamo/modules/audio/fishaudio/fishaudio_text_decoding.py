@@ -10,11 +10,10 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    FishaudioConsts,
     default_fishaudio_sampling_policy,
-    fishaudio_logger,
 )
-from lalamo.modules.audio.text_decoder import TTSTextDecoder
+from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -32,7 +31,7 @@ class FishAudioTextDecoderResult:
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig:
+class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
     slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
     slow_readout_config: FullPrecisionLinearConfig
@@ -58,8 +57,8 @@ class FishAudioTextDecoderConfig:
 
     precision: DTypeLike
 
-    short_logits_size: int = FishaudioConsts.SHORT_LOGITS_SIZE
-    repeat_window_size: int = FishaudioConsts.REPEAT_WINDOW_SIZE
+    short_logits_size: int = SHORT_LOGITS_SIZE
+    repeat_window_size: int = REPEAT_WINDOW_SIZE
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
@@ -347,8 +346,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens=None,
         )
 
-        fishaudio_logger.debug(f"{0} : code={first_codes[0]}")
-
         seq = seq.at[:, prompt_length].set(first_codes[0])
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
@@ -390,8 +387,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             seq = seq.at[:, prompt_length + i].set(next_codes[0])
             previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
             generated_count += 1
-
-            fishaudio_logger.debug(f"{i} : code={next_codes[0]}")
 
             if next_codes[0, 0] == self.config.im_end_token_id:
                 break

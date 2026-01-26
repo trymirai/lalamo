@@ -116,7 +116,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         positional_embeddings: PositionalEmbeddings | None,
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
-        length_without_padding: Int[Array, ""] | int | None = None, # noqa: ARG002
+        length_without_padding: Int[Array, ""] | int | None = None,
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
@@ -124,7 +124,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         pre_conv_gate, post_conv_gate, x = vmap(self.in_projection)(inputs)
 
         prev_conv_state = state.conv_state if state is not None else None
-        conv_output = self.conv(x * pre_conv_gate, prev_conv_state, return_updated_state)
+        conv_output = self.conv(x * pre_conv_gate, length_without_padding, prev_conv_state, return_updated_state)
 
         (outputs,) = vmap(self.out_projection)(conv_output.outputs * post_conv_gate)
         updated_conv_state = conv_output.state

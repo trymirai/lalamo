@@ -11,14 +11,15 @@ from jax import numpy as jnp
 from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderer, AudioRenderingConfig
+from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.audio.utils import DEFAULT_SAMPLERATE
 from lalamo.modules import TTSModel, config_converter
-from lalamo.modules.audio.fishaudio import DescriptAudioCodecConfig, FishAudioTextDecoderConfig
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    DEFAULT_FISHAUDIO_RANDOM_SEED,
-    FishaudioConsts,
     default_fishaudio_sampling_policy,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_consts import (
+    DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+    DEFAULT_FISHAUDIO_RANDOM_SEED,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
@@ -28,8 +29,8 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
     TTSMessage,
-    TTSRequestFactory,
-    TTSRequestFactoryConfig,
+    TTSMessageProcessor,
+    TTSMessageProcessorConfig,
 )
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
@@ -42,21 +43,20 @@ __all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
 @dataclass(frozen=True)
 class TTSGeneratorConfig:
     tts_config: TTSConfig
-    message_processor_config: TTSRequestFactoryConfig
+    message_processor_config: TTSMessageProcessorConfig
 
 
 @dataclass
 class TTSGenerationResult:
     audio: np.ndarray
-    audio_params: AudioRenderingConfig
+    audio_params: AudioRenderingSettings
 
 
 class TTSGenerator(eqx.Module):
     config: TTSGeneratorConfig
     tts_model: TTSModel
 
-    audio_renderer: AudioRenderer = eqx.field(static=True)
-    message_processor: TTSRequestFactory = eqx.field(static=True)
+    message_processor: TTSMessageProcessor = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -93,13 +93,13 @@ class TTSGenerator(eqx.Module):
     def generate_waveform(self, audio_features: Array) -> Array:
         return self.tts_model.vocoder(audio_features)
 
-    def get_generated_audio_params(self) -> AudioRenderingConfig:
+    def get_generated_audio_params(self) -> AudioRenderingSettings:
         # NOTE: think if this could be moved to config level or made mandatory via abstract
-        return AudioRenderingConfig(
+        return AudioRenderingSettings(
             samplerate=DEFAULT_SAMPLERATE,
             output_channels=1,
             bitwidth=16,
-            encoding=AudioEncoding.pcm,
+            encoding=AudioEncoding.PCM,
         )
 
     def generate_speech(
@@ -122,18 +122,30 @@ class TTSGenerator(eqx.Module):
 
         audio_waveform = self.tts_model.vocoder(audio_features)
 
-        audio_waveform = self.audio_renderer.condition_signal(
-            generated_audio=np.array(audio_waveform),
-            generated_audio_properties=self.get_generated_audio_params(),
+        audio_settings = self.get_generated_audio_params()
+
+        return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
+
+    @classmethod
+    def load_model(cls, path: Path | str) -> "TTSGenerator":
+        if isinstance(path, str):
+            path = Path(path)
+        with open(path / "config.json") as config_file:
+            config_json = json.load(config_file)
+
+        config = config_converter.structure(config_json["model_config"], TTSGeneratorConfig)
+        assert isinstance(config, TTSGeneratorConfig)
+        with Path(path / "model.safetensors").open("rb") as fd:
+            _, weights_dict = safe_read(fd)
+            weights = unflatten_parameters(weights_dict)
+            model = config.tts_config.empty().import_weights(weights)
+        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
+        message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
+        return TTSGenerator(
+            config=config,
+            tts_model=model,
+            message_processor=message_processor,
         )
-
-        return TTSGenerationResult(audio=audio_waveform, audio_params=self.audio_renderer.config)
-
-
-@dataclass(frozen=True)
-class FishAudioGeneratorConfig(TTSGeneratorConfig):
-    tts_config: TTSConfig[FishAudioTextDecoderConfig, DescriptAudioCodecConfig]
-    message_processor_config: TTSRequestFactoryConfig
 
 
 class FishAudioTTSGenerator(TTSGenerator):
@@ -141,7 +153,7 @@ class FishAudioTTSGenerator(TTSGenerator):
         self,
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,
-        repetition_penalty: float = FishaudioConsts.DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
@@ -164,49 +176,10 @@ class FishAudioTTSGenerator(TTSGenerator):
     def generate_waveform(self, audio_features: Array) -> Array:
         return super().generate_waveform(audio_features)
 
-    def get_generated_audio_params(self) -> AudioRenderingConfig:
-        return AudioRenderingConfig(
+    def get_generated_audio_params(self) -> AudioRenderingSettings:
+        return AudioRenderingSettings(
             samplerate=self.tts_model.audio_decoder.samplerate,
             output_channels=1,
             bitwidth=16,
-            encoding=AudioEncoding.pcm,
-        )
-
-
-@dataclass(frozen=True)
-class TTSLoader:
-    @staticmethod
-    def tts_generator_type_from_model_name(tts_model_type: str) -> tuple[type, type]:
-        if tts_model_type == "FishAudio/openaudio/openaudio-s1-mini":
-            return FishAudioTTSGenerator, FishAudioGeneratorConfig
-        raise ValueError(f"Unsupported TTS model: {tts_model_type}")
-
-    @staticmethod
-    def load_model(path: Path | str) -> TTSGenerator:
-        if isinstance(path, str):
-            path = Path(path)
-        with open(path / "config.json") as config_file:
-            config_json = json.load(config_file)
-        full_tts_model_name: str = f"{config_json['vendor']}/{config_json['family']}/{config_json['name']}"
-        generator_type, generator_config_type = TTSLoader.tts_generator_type_from_model_name(full_tts_model_name)
-
-        config = config_converter.structure(config_json["model_config"], generator_config_type)
-        assert isinstance(config, TTSGeneratorConfig)
-        with Path(path / "model.safetensors").open("rb") as fd:
-            _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.tts_config.empty().import_weights(weights)
-        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
-        message_processor = TTSRequestFactory(config.message_processor_config, tokenizer)
-        audio_renderer_config = AudioRenderingConfig(
-            config.tts_config.audio_decoder_config.samplerate,
-            1,
-            16,
-            AudioEncoding.pcm,
-        )
-        return generator_type(
-            config=config,
-            tts_model=model,
-            audio_renderer=AudioRenderer(config=audio_renderer_config),
-            message_processor=message_processor,
+            encoding=AudioEncoding.PCM,
         )

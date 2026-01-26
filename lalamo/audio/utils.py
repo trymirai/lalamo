@@ -1,17 +1,12 @@
 import numpy as np
 
-from lalamo.audio import audio_logger, get_pyaudio
-
 __all__ = ["play_mono_audio"]
 
 DEFAULT_SAMPLERATE: int = 44100
 
 
 def play_mono_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 1024) -> None:
-    pyaudio = get_pyaudio()
-    if pyaudio is None:
-        audio_logger.warning("'pyaudio' package is not imported, unable to replay audio.")
-        return
+    import pyaudio  # type: ignore[reportMissingImports], pyaudio is optional to install,
 
     if audio.dtype not in [np.float32, np.float16, np.float64]:
         raise ValueError("Input audio datatype is expected to be a floating point")

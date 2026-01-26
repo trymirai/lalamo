@@ -3,16 +3,15 @@ from pathlib import Path
 
 import huggingface_hub
 import jax
-import numpy as np
 import pytest
 import torch
-from fish_speech.models.text2semantic import inference as fish_inference
 from fish_speech.tokenizer import FishTokenizer
 from huggingface_hub import HfApi
 from jax import numpy as jnp
 from jax import vmap
 from pytest import fixture
 
+from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
 from lalamo.modules import GELU
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
@@ -33,28 +32,19 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
-    FishAudioTextDecoder,
-    FishAudioTextDecoderResult,
-)
 from lalamo.modules.audio.text_to_speech import TTSMessage
-from lalamo.modules.audio.utils import DTypeConvert
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.embedding import TiedEmbeddingConfig
+from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.normalization import NormalizationConfig, UpcastMode
+from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
-from tests.tts.fishaudio.fishaudio_sampling import (
-    FishAudioSamplingParams,
-    logits_to_probs,
-    sample,
-    sampling_params_from_policy,
-)
+from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
 )
 from tests.tts.fishaudio.fishaudio_torch_stuff import (
-    FishAudioModeling,
     ForeignTTSModelType,
     TTSLoaderTorch,
-    load_fishaudio_text_decoder,
 )
 
 _testlog = logging.getLogger("tts_test_logger")
@@ -67,11 +57,18 @@ def fish_audio_local_model_path() -> Path:
     repos = huggingface_hub.scan_cache_dir().repos
     fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
 
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
+    try:
+        api = HfApi()
+        cache_info = api.model_info(fish_audiod_repo_id)
+        commit_hash = cache_info.sha
+    except ConnectionError:
+        pytest.skip("Failed to connect to Hugging Face to retrieve model info")
 
-    return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    final_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+    if not Path.exists(final_path):
+        raise FileNotFoundError(f"Failed to find fishaudio model at: {final_path}")
+
+    return final_path
 
 
 def get_tts_message() -> TTSMessage:
@@ -101,251 +98,60 @@ def test_fishaudio_text_tokenization(fish_audio_local_model_path: Path) -> None:
 
 @torch.no_grad
 def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
+    from lalamo.model_import.model_configs.huggingface.fishaudio import load_fishaudio_text_decoder
+
+    from .fishaudio_torch_stuff import from_fish_audio_config, prepare_state_dict_for_lalamo_loaders
+
     tts_message = get_tts_message()
 
-    tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
+    # Load PyTorch-wrapped model for reference output
+    pytorch_tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
         ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
     )
-    assert isinstance(tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
-    fish_model = tts_generator.tts_model.text_decoder.fish_model
+    assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
+    fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
+
+    # Create Lalamo text decoder config from PyTorch model config
+    precision = jnp.bfloat16
+    lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer, precision)
+
+    # Convert PyTorch weights to JAX and load into Lalamo text decoder
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
+    lalamo_text_decoder = load_fishaudio_text_decoder(lalamo_config.empty(), weights_dict)
 
     sampling_policy = GreedyPolicy()
     key = jax.random.PRNGKey(123)
 
-    # -- preparing inputs for lalamo
-    tokenized_text_lalamo = jnp.array(tts_generator.message_processor.tokenize_request([tts_message]))[None, :]
-    n_tokens = tokenized_text_lalamo.shape[-1]
+    # Prepare inputs
+    tokenized_text = jnp.array(pytorch_tts_generator.message_processor.tokenize_request([tts_message]))[None, :]
+    n_tokens = tokenized_text.shape[-1]
     input_pos = jnp.arange(n_tokens)[None, :]
-    output_fish = tts_generator.tts_model.text_decoder(
-        tokenized_text_lalamo, sampling_params=sampling_params_from_policy(sampling_policy)
+
+    # Run PyTorch model
+    output_pytorch = pytorch_tts_generator.tts_model.text_decoder(
+        tokenized_text, sampling_params=sampling_params_from_policy(sampling_policy)
     )
 
-    # -- lalamo model setup and inference
-    lalamo_model: FishAudioTextDecoder = load_fishaudio_text_decoder(fish_model, jnp.bfloat16)
-    decode_result: FishAudioTextDecoderResult = lalamo_model(
-        text_tokens=tokenized_text_lalamo, input_pos=input_pos, sampling_policy=sampling_policy, key=key
+    # Run Lalamo model
+    decode_result = lalamo_text_decoder(
+        text_tokens=tokenized_text, input_pos=input_pos, sampling_policy=sampling_policy, key=key
     )
     output_lalamo = decode_result.token_codes
 
-    _testlog.info(f"output_fish. : {output_fish}")
-    _testlog.info(f"output_lalamo: {output_lalamo}")
+    _testlog.info(f"output_pytorch: {output_pytorch}")
+    _testlog.info(f"output_lalamo : {output_lalamo}")
 
-    assert output_fish[:, 0].tolist() == output_lalamo[0].tolist()
-
-
-def test_logits_to_probs_jax_basic() -> None:
-    """Test that logits_to_probs_jax produces valid probability distributions."""
-    logits = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-
-    probs = logits_to_probs(logits, top_p=1.0, temperature=1.0)
-
-    assert jnp.isclose(jnp.sum(probs), 1.0, atol=1e-5)
-    assert jnp.all(probs >= 0)
-    assert probs[4] > probs[3] > probs[2] > probs[1] > probs[0]
-
-
-def test_logits_to_probs_jax_temperature() -> None:
-    """Test that temperature affects the probability distribution correctly."""
-    logits = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-
-    probs_low_temp = logits_to_probs(logits, top_p=1.0, temperature=0.1)
-    probs_high_temp = logits_to_probs(logits, top_p=1.0, temperature=10.0)
-
-    assert probs_low_temp[4] > probs_high_temp[4]
-    assert jnp.std(probs_high_temp) < jnp.std(probs_low_temp)
-
-
-def test_sample_jax_respects_temperature() -> None:
-    """Test that lower temperature makes sampling more deterministic."""
-    logits = jnp.array([[[0.0, 0.0, 0.0, 0.0, 10.0]]])
-
-    sampling_params = FishAudioSamplingParams(
-        temperature=0.01, top_p=1.0, repetition_penalty=1.0, argmax_decoding=False
-    )
-
-    high_count = 0
-    for i in range(50):
-        key = jax.random.PRNGKey(i)
-        token, _ = sample(logits, key=key, sampling_params=sampling_params)
-        if int(token) == 4:
-            high_count += 1
-
-    assert high_count >= 45, f"Expected token 4 at least 45/50 times, got {high_count}"
-
-
-def test_logits_to_probs_jax_vs_pytorch_basic() -> None:
-    """Test that JAX and PyTorch logits_to_probs produce similar probability distributions."""
-    logits_jax = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    logits_torch = jax_to_torch(logits_jax)
-
-    temperature = 1.0
-    top_p = 0.9
-
-    probs_jax = logits_to_probs(logits_jax, top_p=top_p, temperature=temperature)
-
-    probs_torch = fish_inference.logits_to_probs(
-        logits_torch.clone(),
-        temperature=torch.tensor(temperature),
-        top_p=torch.tensor(top_p),
-        repetition_penalty=torch.tensor(1.0),
-        previous_tokens=None,
-    )
-
-    probs_torch_as_jax = torch_to_jax(probs_torch)
-
-    # Both should produce valid probability distributions
-    assert jnp.isclose(jnp.sum(probs_jax), 1.0, atol=1e-5)
-    assert jnp.isclose(jnp.sum(probs_torch_as_jax), 1.0, atol=1e-5)
-
-    # Check relative ordering is preserved (highest logit = highest prob)
-    assert jnp.argmax(probs_jax) == jnp.argmax(probs_torch_as_jax)
-
-
-def test_logits_to_probs_jax_vs_pytorch_temperature_scaling() -> None:
-    """Test that both implementations scale with temperature similarly."""
-    logits_jax = jnp.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    logits_torch = jax_to_torch(logits_jax)
-
-    for temperature in [0.1, 0.5, 1.0, 2.0]:
-        probs_jax = logits_to_probs(logits_jax, top_p=1.0, temperature=temperature)
-        probs_torch = fish_inference.logits_to_probs(
-            logits_torch.clone(),
-            temperature=torch.tensor(temperature),
-            top_p=torch.tensor(1.0),
-            repetition_penalty=torch.tensor(1.0),
-            previous_tokens=None,
-        )
-        probs_torch_as_jax = torch_to_jax(probs_torch)
-
-        # Argmax should match for all temperatures
-        assert jnp.argmax(probs_jax) == jnp.argmax(probs_torch_as_jax), f"Argmax mismatch at temperature={temperature}"
-
-
-def test_logits_to_probs_jax_vs_pytorch_top_p() -> None:
-    """Test that top-p filtering works similarly in both implementations."""
-    logits_jax = jnp.array([0.1, 0.2, 0.3, 5.0, 10.0])  # Clear top-2 tokens
-    logits_torch = jax_to_torch(logits_jax)
-
-    # With low top_p, only the top tokens should have non-zero probability
-    top_p = 0.5
-
-    probs_jax = logits_to_probs(logits_jax, temperature=1.0, top_p=top_p)
-    probs_torch = fish_inference.logits_to_probs(
-        logits_torch.clone(),
-        temperature=torch.tensor(1.0),
-        top_p=torch.tensor(top_p),
-        repetition_penalty=torch.tensor(1.0),
-        previous_tokens=None,
-    )
-    probs_torch_as_jax = torch_to_jax(probs_torch)
-
-    # Both should zero out low-probability tokens
-    # The top token (index 4) should have the highest probability in both
-    assert jnp.argmax(probs_jax) == 4
-    assert jnp.argmax(probs_torch_as_jax) == 4
-
-    # Lower logit tokens should have zero or near-zero probability
-    assert probs_jax[0] < 0.01
-    assert probs_torch_as_jax[0] < 0.01
-
-
-def test_sample_jax_vs_pytorch_deterministic() -> None:
-    """Test that both sampling implementations pick the same token with very low temperature."""
-    # Create logits with a clear winner
-    logits_jax = jnp.array([[[0.0, 0.0, 0.0, 0.0, 100.0]]])  # Token 4 is dominant
-    logits_torch = jax_to_torch(logits_jax)
-
-    temperature = 0.001  # Very low temperature = nearly deterministic
-    sampling_params = FishAudioSamplingParams(
-        argmax_decoding=False, top_p=1.0, temperature=temperature, repetition_penalty=1.0
-    )
-
-    key = jax.random.PRNGKey(42)
-    token_jax, _ = sample(logits_jax, key=key, sampling_params=sampling_params)
-
-    token_torch, _ = fish_inference.sample(
-        logits_torch.clone(),
-        temperature=torch.tensor(temperature),
-        top_p=torch.tensor(1.0),
-        repetition_penalty=torch.tensor(1.0),
-        previous_tokens=None,
-    )
-
-    # Both should pick token 4 (the dominant one)
-    assert int(token_jax) == 4
-    assert int(token_torch.item()) == 4
-
-
-def test_sample_jax_vs_pytorch_distribution_similarity() -> None:
-    """Test that JAX and PyTorch sampling produce similar distributions over many samples."""
-    logits_jax = jnp.array([[[1.0, 2.0, 3.0, 4.0, 5.0]]])
-    logits_torch = jax_to_torch(logits_jax)
-
-    temperature = 1.0
-    top_p = 1.0
-    num_samples = 200
-
-    sampling_params = FishAudioSamplingParams(
-        argmax_decoding=False, top_p=1.0, temperature=temperature, repetition_penalty=1.0
-    )
-
-    jax_counts = [0] * 5
-    for i in range(num_samples):
-        key = jax.random.PRNGKey(i)
-        token, _ = sample(logits_jax, key=key, sampling_params=sampling_params)
-        jax_counts[int(token)] += 1
-
-    torch_counts = [0] * 5
-    torch.manual_seed(42)
-    for _ in range(num_samples):
-        token, _ = fish_inference.sample(
-            logits_torch.clone(),
-            temperature=torch.tensor(temperature),
-            top_p=torch.tensor(top_p),
-            repetition_penalty=torch.tensor(1.0),
-            previous_tokens=None,
-        )
-        torch_counts[int(token.item())] += 1
-
-    # Both should favor higher-indexed tokens (higher logits)
-    # Token 4 should be sampled most frequently in both
-    assert jax_counts[4] == max(jax_counts), f"JAX didn't favor token 4: {jax_counts}"
-    assert torch_counts[4] == max(torch_counts), f"PyTorch didn't favor token 4: {torch_counts}"
-
-    # Token 0 should be sampled least frequently in both
-    assert jax_counts[0] == min(jax_counts), f"JAX sampled token 0 too often: {jax_counts}"
-    assert torch_counts[0] == min(torch_counts), f"PyTorch sampled token 0 too often: {torch_counts}"
-
-
-@pytest.mark.skip(reason="Temporary test used for full utterance tokens generation")
-@torch.no_grad
-def test_full_utterance_decoding(fish_audio_local_model_path: Path) -> None:
-    tts_message = get_tts_message()
-
-    tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
-        ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
-    )
-    tokenized_text = tts_generator.tokenize_text([tts_message])
-    assert isinstance(tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
-    sampling_policy = GreedyPolicy()
-
-    fishaudio_wrapper_semantic_tokens = tts_generator.tts_model.text_decoder.decode_utterance(
-        tokenized_text, sampling_policy=sampling_policy
-    )
-
-    lalamo_text_decoder = load_fishaudio_text_decoder(tts_generator.tts_model.text_decoder.fish_model, jnp.bfloat16)
-    lalamo_semantic_tokens = lalamo_text_decoder.decode_utterance(tokenized_text, sampling_policy=sampling_policy)
-
-    _testlog.info(f"Fishaudio wrapper tokens: {fishaudio_wrapper_semantic_tokens}")
-    _testlog.info(f"Lalamo tokens.          : {lalamo_semantic_tokens}")
-
-    np.save("fish_codes.npy", np.array(fishaudio_wrapper_semantic_tokens))
-    np.save("lalamo_codes.npy", np.array(lalamo_semantic_tokens))
+    assert output_pytorch[:, 0].tolist() == output_lalamo[0].tolist()
 
 
 @torch.no_grad
 def test_vector_quantize_decode_code() -> None:
     from dac.nn.quantize import VectorQuantize as DACVectorQuantize
+
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_vector_quantize
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
 
     # Test parameters
     input_dim = 512
@@ -359,32 +165,23 @@ def test_vector_quantize_decode_code() -> None:
     dac_vq.eval()
 
     # Create Lalamo VectorQuantize with same config
-    lalamo_vq_config = VectorQuantizeConfig(precision=jnp.float32)
+    lalamo_vq_config = VectorQuantizeConfig(
+        precision=jnp.float32,
+        codebook_config=TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=jnp.float32,
+        ),
+        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
     lalamo_vq = lalamo_vq_config.empty(
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=codebook_dim,
     )
 
-    # Extract weights from DAC and load into Lalamo
-    # DAC codebook: nn.Embedding(codebook_size, codebook_dim)
-    dac_codebook_weights = dac_vq.codebook.weight.detach()  # (codebook_size, codebook_dim)
-
-    # DAC out_proj: WNConv1d(codebook_dim, input_dim, kernel_size=1)
-    # WNConv1d with kernel_size=1 is essentially a linear layer
-    # Weight shape for Conv1d: (out_channels, in_channels, kernel_size) = (input_dim, codebook_dim, 1)
-    dac_out_proj_weight = dac_vq.out_proj.weight.detach().squeeze(-1)  # (input_dim, codebook_dim)
-    assert dac_vq.out_proj.bias is not None
-    dac_out_proj_bias = dac_vq.out_proj.bias.detach()  # (input_dim,)
-
-    lalamo_weights = {
-        "codebook": {"weights": torch_to_jax(dac_codebook_weights)},
-        "out_proj": {
-            "weights": torch_to_jax(dac_out_proj_weight),
-            "biases": torch_to_jax(dac_out_proj_bias),
-        },
-    }
-    lalamo_vq = lalamo_vq.import_weights(lalamo_weights)
+    weights_dict = prepare_state_dict_for_lalamo_loaders(dac_vq.state_dict(), prefix="vq")
+    lalamo_vq = load_vector_quantize(lalamo_vq, weights_dict, ParameterPath("vq"))
 
     torch.manual_seed(42)
     test_indices_torch = torch.randint(0, codebook_size, (batch_size, num_tokens))
@@ -415,6 +212,11 @@ def test_vector_quantize_decode_code() -> None:
 def test_residual_vector_quantize_from_codes() -> None:
     from dac.nn.quantize import ResidualVectorQuantize as DACResidualVectorQuantize
 
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_residual_vector_quantize
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
     input_dim = 512
     n_codebooks = 9
     codebook_size = 1024
@@ -430,33 +232,27 @@ def test_residual_vector_quantize_from_codes() -> None:
     )
     dac_rvq.eval()
 
-    lalamo_rvq_config = ResidualVectorQuantizeConfig(precision=jnp.float32)
+    vq_config = VectorQuantizeConfig(
+        precision=jnp.float32,
+        codebook_config=TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=jnp.float32,
+        ),
+        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    lalamo_rvq_config = ResidualVectorQuantizeConfig(
+        precision=jnp.float32,
+        vq_config=vq_config,
+    )
     lalamo_rvq = lalamo_rvq_config.empty(
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=[codebook_dim] * n_codebooks,
     )
 
-    # Extract weights from DAC and load into Lalamo
-    lalamo_quantizer_weights = []
-    for dac_q in dac_rvq.quantizers:
-        dac_codebook_weights = dac_q.codebook.weight.detach()
-        dac_out_proj_weight = dac_q.out_proj.weight.detach().squeeze(-1)
-        assert dac_q.out_proj.bias is not None
-        dac_out_proj_bias = dac_q.out_proj.bias.detach()
-
-        lalamo_quantizer_weights.append(
-            {
-                "codebook": {"weights": torch_to_jax(dac_codebook_weights)},
-                "out_proj": {
-                    "weights": torch_to_jax(dac_out_proj_weight),
-                    "biases": torch_to_jax(dac_out_proj_bias),
-                },
-            }
-        )
-
-    lalamo_weights = {"quantizers": lalamo_quantizer_weights}
-    lalamo_rvq = lalamo_rvq.import_weights(lalamo_weights)
+    weights_dict = prepare_state_dict_for_lalamo_loaders(dac_rvq.state_dict(), prefix="rvq")
+    lalamo_rvq = load_residual_vector_quantize(lalamo_rvq, weights_dict, ParameterPath("rvq"))
 
     torch.manual_seed(42)
     test_codes_torch = torch.randint(0, codebook_size, (batch_size, n_codebooks, num_tokens))
@@ -882,6 +678,11 @@ def test_convnext_block_matches_pytorch() -> None:
     """Test that Lalamo ConvNeXtBlock matches PyTorch ConvNeXtBlock."""
     from fish_speech.models.dac.rvq import ConvNeXtBlock as PyTorchConvNeXtBlock
 
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_convnext_block
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
     batch_size = 2
     dim = 64
     kernel_size = 7
@@ -902,6 +703,17 @@ def test_convnext_block_matches_pytorch() -> None:
     lalamo_config = ConvNeXtBlockConfig(
         precision=jnp.float32,
         activation=GELU(),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
     spatial_params = ConvNeXtSpatialParams(
         mlp_ratio=mlp_ratio,
@@ -911,44 +723,8 @@ def test_convnext_block_matches_pytorch() -> None:
     )
     lalamo_block = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
 
-    # Extract weights from PyTorch and map to Lalamo format
-    # dwconv weights: (out_channels, in_channels/groups, kernel_size)
-    dwconv_weights = torch_block.dwconv.conv.weight.detach()
-    dwconv_biases = torch_block.dwconv.conv.bias.detach()
-
-    norm_scale = torch_block.norm.weight.detach()
-    norm_bias = torch_block.norm.bias.detach()
-
-    # pwconv1: Linear (dim -> hidden_dim)
-    pwconv1_weights = torch_block.pwconv1.weight.detach()  # (hidden_dim, dim)
-    pwconv1_biases = torch_block.pwconv1.bias.detach()
-
-    # pwconv2: Linear (hidden_dim -> dim)
-    pwconv2_weights = torch_block.pwconv2.weight.detach()  # (dim, hidden_dim)
-    pwconv2_biases = torch_block.pwconv2.bias.detach()
-
-    # gamma (layer scale) - Lalamo uses LayerNorm with "scales" key
-    gamma = torch_block.gamma.detach() if torch_block.gamma is not None else None
-
-    lalamo_weights = {
-        "dwconv": {
-            "weights": torch_to_jax(dwconv_weights),
-            "biases": torch_to_jax(dwconv_biases),
-        },
-        "norm": {"scales": torch_to_jax(norm_scale), "bias": torch_to_jax(norm_bias)},
-        "pwconv1": {
-            "weights": torch_to_jax(pwconv1_weights),
-            "biases": torch_to_jax(pwconv1_biases),
-        },
-        "pwconv2": {
-            "weights": torch_to_jax(pwconv2_weights),
-            "biases": torch_to_jax(pwconv2_biases),
-        },
-    }
-    if gamma is not None:
-        lalamo_weights["gamma"] = {"scales": torch_to_jax(gamma)}
-
-    lalamo_block = lalamo_block.import_weights(lalamo_weights)
+    weights_dict = prepare_state_dict_for_lalamo_loaders(torch_block.state_dict(), prefix="block")
+    lalamo_block = load_convnext_block(lalamo_block, weights_dict, ParameterPath("block"))
 
     # Create test input: PyTorch uses (batch, channels, sequence)
     torch.manual_seed(42)
@@ -977,7 +753,7 @@ def test_convnext_block_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_upsampling_block_matches_pytorch() -> None:
+def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo UpsamplingBlock matches PyTorch upsampling block from DAC model.
 
     This test loads a real DAC model checkpoint, extracts the first upsampling block,
@@ -986,17 +762,7 @@ def test_upsampling_block_matches_pytorch() -> None:
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC
 
-    # Load DAC model
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-    repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
-
-    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    audio_chkpt_path = model_path / "codec.pth"
+    audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
     device = "cpu"
 
@@ -1026,7 +792,26 @@ def test_upsampling_block_matches_pytorch() -> None:
     _testlog.info(f"UpsamplingBlock config: in={in_channels}, out={out_channels}, kernel={upsample_kernel_size}")
 
     # Create Lalamo UpsamplingBlock
-    lalamo_config = UpsamplingBlockConfig(precision=jnp.float32)
+    convnext_config = ConvNeXtBlockConfig(
+        precision=jnp.float32,
+        activation=GELU(approximate=False),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    lalamo_config = UpsamplingBlockConfig(
+        precision=jnp.float32,
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        convnext_config=convnext_config,
+    )
     trans_conv_params = TransposeConvSpatialParams(
         in_channels=in_channels,
         out_channels=out_channels,
@@ -1044,48 +829,13 @@ def test_upsampling_block_matches_pytorch() -> None:
         convnext_spatial_params=convnext_spatial_params,
     )
 
-    # Extract weights from PyTorch upsampler block (Sequential of CausalTransConvNet, ConvNeXtBlock)
-    torch_trans_conv = fish_upsampler_block[0]
-    torch_convnext = fish_upsampler_block[1]
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_upsampling_block
 
-    # Trans conv weights
-    trans_conv_weights = torch_trans_conv.conv.weight.detach()
-    trans_conv_biases = torch_trans_conv.conv.bias.detach()
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
 
-    # ConvNeXt weights
-    dwconv_weights = torch_convnext.dwconv.conv.weight.detach()
-    dwconv_biases = torch_convnext.dwconv.conv.bias.detach()
-    norm_scale = torch_convnext.norm.weight.detach()
-    norm_bias = torch_convnext.norm.bias.detach()
-    pwconv1_weights = torch_convnext.pwconv1.weight.detach()
-    pwconv1_biases = torch_convnext.pwconv1.bias.detach()
-    pwconv2_weights = torch_convnext.pwconv2.weight.detach()
-    pwconv2_biases = torch_convnext.pwconv2.bias.detach()
-    gamma = torch_convnext.gamma.detach() if torch_convnext.gamma is not None else None
-
-    lalamo_weights = {
-        "trans_conv": {
-            "weights": torch_to_jax(trans_conv_weights),
-            "biases": torch_to_jax(trans_conv_biases),
-        },
-        "convnext": {
-            "dwconv": {
-                "weights": torch_to_jax(dwconv_weights),
-                "biases": torch_to_jax(dwconv_biases),
-            },
-            "norm": {"scales": torch_to_jax(norm_scale), "bias": torch_to_jax(norm_bias)},
-            "pwconv1": {
-                "weights": torch_to_jax(pwconv1_weights),
-                "biases": torch_to_jax(pwconv1_biases),
-            },
-            "pwconv2": {
-                "weights": torch_to_jax(pwconv2_weights),
-                "biases": torch_to_jax(pwconv2_biases),
-            },
-        },
-    }
-    if gamma is not None:
-        lalamo_weights["convnext"]["gamma"] = {"scales": torch_to_jax(gamma)}
+    path = ParameterPath("block")
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_upsampler_block.state_dict(), prefix="block")
 
     # Create test input
     batch_size = 1
@@ -1100,7 +850,7 @@ def test_upsampling_block_matches_pytorch() -> None:
     # Run both
     torch_output = fish_upsampler_block(test_input_torch)
     with jax.disable_jit():
-        lalamo_block = lalamo_block.import_weights(lalamo_weights)
+        lalamo_block = load_upsampling_block(lalamo_block, weights_dict, path)
         lalamo_output = lalamo_block(test_input_jax)
 
     # Compare - transpose JAX output back for comparison
@@ -1120,7 +870,7 @@ def test_upsampling_block_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_upsampler_matches_pytorch() -> None:
+def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo Upsampler matches the full DAC quantizer upsampler.
 
     This test loads a real DAC model checkpoint, extracts all upsampling blocks,
@@ -1129,17 +879,7 @@ def test_upsampler_matches_pytorch() -> None:
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC
 
-    # Load DAC model
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-    repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
-
-    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    audio_chkpt_path = model_path / "codec.pth"
+    audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
     device = "cpu"
 
@@ -1182,7 +922,27 @@ def test_upsampler_matches_pytorch() -> None:
         )
 
     # Create Lalamo Upsampler config - one UpsamplingBlockConfig per block
-    block_configs = tuple(UpsamplingBlockConfig(precision=jnp.float32) for _ in range(num_blocks))
+    convnext_config = ConvNeXtBlockConfig(
+        precision=jnp.float32,
+        activation=GELU(approximate=False),
+        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=jnp.float32,
+            accumulation_precision=jnp.float32,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+    )
+    upsampling_block_config = UpsamplingBlockConfig(
+        precision=jnp.float32,
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        convnext_config=convnext_config,
+    )
+    block_configs = tuple(upsampling_block_config for _ in range(num_blocks))
     convnext_spatial_params = ConvNeXtSpatialParams(
         mlp_ratio=4.0,
         kernel_size=7,
@@ -1195,54 +955,13 @@ def test_upsampler_matches_pytorch() -> None:
         convnext_spatial_params=convnext_spatial_params,
     )
 
-    # Extract weights from all PyTorch upsampler blocks
-    blocks_weights = []
-    for fish_block in fish_upsampler:
-        torch_trans_conv = fish_block[0]
-        torch_convnext = fish_block[1]
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_upsampler
 
-        # Trans conv weights
-        trans_conv_weights = torch_trans_conv.conv.weight.detach()
-        trans_conv_biases = torch_trans_conv.conv.bias.detach()
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
 
-        # ConvNeXt weights
-        dwconv_weights = torch_convnext.dwconv.conv.weight.detach()
-        dwconv_biases = torch_convnext.dwconv.conv.bias.detach()
-        norm_scale = torch_convnext.norm.weight.detach()
-        norm_bias = torch_convnext.norm.bias.detach()
-        pwconv1_weights = torch_convnext.pwconv1.weight.detach()
-        pwconv1_biases = torch_convnext.pwconv1.bias.detach()
-        pwconv2_weights = torch_convnext.pwconv2.weight.detach()
-        pwconv2_biases = torch_convnext.pwconv2.bias.detach()
-        gamma = torch_convnext.gamma.detach() if torch_convnext.gamma is not None else None
-
-        block_weight = {
-            "trans_conv": {
-                "weights": torch_to_jax(trans_conv_weights),
-                "biases": torch_to_jax(trans_conv_biases),
-            },
-            "convnext": {
-                "dwconv": {
-                    "weights": torch_to_jax(dwconv_weights),
-                    "biases": torch_to_jax(dwconv_biases),
-                },
-                "norm": {"scales": torch_to_jax(norm_scale), "bias": torch_to_jax(norm_bias)},
-                "pwconv1": {
-                    "weights": torch_to_jax(pwconv1_weights),
-                    "biases": torch_to_jax(pwconv1_biases),
-                },
-                "pwconv2": {
-                    "weights": torch_to_jax(pwconv2_weights),
-                    "biases": torch_to_jax(pwconv2_biases),
-                },
-            },
-        }
-        if gamma is not None:
-            block_weight["convnext"]["gamma"] = {"scales": torch_to_jax(gamma)}
-
-        blocks_weights.append(block_weight)
-
-    lalamo_weights = {"blocks": blocks_weights}
+    path = ParameterPath("upsample")
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_upsampler.state_dict(), prefix="upsample")
 
     # Create test input - use the input dimension of the first block (deepest level)
     batch_size = 1
@@ -1259,7 +978,7 @@ def test_upsampler_matches_pytorch() -> None:
     torch_output = fish_upsampler(test_input_torch)
 
     with jax.disable_jit():
-        lalamo_upsampler = lalamo_upsampler.import_weights(lalamo_weights)
+        lalamo_upsampler = load_upsampler(lalamo_upsampler, weights_dict, path)
         lalamo_output = lalamo_upsampler(test_input_jax)
 
     # Compare - transpose JAX output back for comparison
@@ -1283,6 +1002,11 @@ def test_snake1d_matches_pytorch() -> None:
     """Test that Lalamo Snake1d matches PyTorch Snake1d."""
     from dac.nn.layers import Snake1d as PyTorchSnake1d
 
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_snake1d
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
     batch_size = 2
     channels = 64
     seq_length = 100
@@ -1295,11 +1019,8 @@ def test_snake1d_matches_pytorch() -> None:
     lalamo_config = Snake1dConfig(precision=jnp.float32)
     lalamo_snake = lalamo_config.empty(channels)
 
-    # Extract weights from PyTorch: alpha is (1, channels, 1) in PyTorch
-    torch_alpha = torch_snake.alpha.detach().squeeze()  # (channels,)
-
-    lalamo_weights = {"alpha": torch_to_jax(torch_alpha)}
-    lalamo_snake = lalamo_snake.import_weights(lalamo_weights)
+    weights_dict = prepare_state_dict_for_lalamo_loaders(torch_snake.state_dict(), prefix="snake")
+    lalamo_snake = load_snake1d(lalamo_snake, weights_dict, ParameterPath("snake"))
 
     # Create test input: PyTorch uses (batch, channels, sequence)
     torch.manual_seed(42)
@@ -1332,6 +1053,11 @@ def test_residual_unit_matches_pytorch() -> None:
     """Test that Lalamo ResidualUnit matches PyTorch ResidualUnit."""
     from fish_speech.models.dac.modded_dac import ResidualUnit as PyTorchResidualUnit
 
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_residual_unit
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
     batch_size = 2
     dim = 64
     dilation = 3
@@ -1342,37 +1068,17 @@ def test_residual_unit_matches_pytorch() -> None:
     torch_res_unit.eval()
 
     # Create Lalamo module
-    lalamo_config = ResidualUnitConfig(precision=jnp.float32, causal=True)
+    lalamo_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
     spatial_params = ResidualUnitSpatialParams(dilation=dilation, kernel_size=7)
     lalamo_res_unit = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
 
-    # Extract weights from PyTorch
-    # block is Sequential(Snake1d, Conv, Snake1d, Conv)
-    torch_block = torch_res_unit.block
-
-    # Snake1d weights
-    snake1_alpha = torch_block[0].alpha.detach().squeeze()  # (channels,)
-    snake2_alpha = torch_block[2].alpha.detach().squeeze()  # (channels,)
-
-    # Conv weights (CausalWNConv1d wraps nn.Conv1d)
-    conv1_weights = torch_block[1].conv.weight.detach()
-    conv1_biases = torch_block[1].conv.bias.detach()
-    conv2_weights = torch_block[3].conv.weight.detach()
-    conv2_biases = torch_block[3].conv.bias.detach()
-
-    lalamo_weights = {
-        "snake1": {"alpha": torch_to_jax(snake1_alpha)},
-        "conv1": {
-            "weights": torch_to_jax(conv1_weights),
-            "biases": torch_to_jax(conv1_biases),
-        },
-        "snake2": {"alpha": torch_to_jax(snake2_alpha)},
-        "conv2": {
-            "weights": torch_to_jax(conv2_weights),
-            "biases": torch_to_jax(conv2_biases),
-        },
-    }
-    lalamo_res_unit = lalamo_res_unit.import_weights(lalamo_weights)
+    weights_dict = prepare_state_dict_for_lalamo_loaders(torch_res_unit.state_dict(), prefix="res")
+    lalamo_res_unit = load_residual_unit(lalamo_res_unit, weights_dict, ParameterPath("res"))
 
     # Create test input
     torch.manual_seed(42)
@@ -1404,6 +1110,11 @@ def test_decoder_block_matches_pytorch() -> None:
     """Test that Lalamo DecoderBlock matches PyTorch DecoderBlock."""
     from fish_speech.models.dac.modded_dac import DecoderBlock as PyTorchDecoderBlock
 
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_audio_decoder_block
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
     batch_size = 2
     input_dim = 128
     output_dim = 64
@@ -1421,7 +1132,19 @@ def test_decoder_block_matches_pytorch() -> None:
     torch_decoder_block.eval()
 
     # Create Lalamo module
-    lalamo_config = DACDecoderBlockConfig(precision=jnp.float32, causal=True)
+    res_unit_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
+    lalamo_config = DACDecoderBlockConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        res_unit_config=res_unit_config,
+        causal=True,
+    )
     spatial_params = AudioDecoderBlockSpatialParams(
         input_dim=input_dim,
         output_dim=output_dim,
@@ -1429,45 +1152,10 @@ def test_decoder_block_matches_pytorch() -> None:
     )
     lalamo_decoder_block = lalamo_config.empty(spatial_params=spatial_params)
 
-    # Extract weights from PyTorch
-    # block is Sequential(Snake1d, TransConv, ResUnit, ResUnit, ResUnit)
-    torch_block = torch_decoder_block.block
-
-    # Snake weights
-    snake_alpha = torch_block[0].alpha.detach().squeeze()
-
-    # TransConv weights
-    trans_conv_weights = torch_block[1].conv.weight.detach()
-    trans_conv_biases = torch_block[1].conv.bias.detach()
-
-    def extract_res_unit_weights(res_unit):
-        block = res_unit.block
-        return {
-            "snake1": {"alpha": torch_to_jax(block[0].alpha.detach().squeeze())},
-            "conv1": {
-                "weights": torch_to_jax(block[1].conv.weight.detach()),
-                "biases": torch_to_jax(block[1].conv.bias.detach()),
-            },
-            "snake2": {"alpha": torch_to_jax(block[2].alpha.detach().squeeze())},
-            "conv2": {
-                "weights": torch_to_jax(block[3].conv.weight.detach()),
-                "biases": torch_to_jax(block[3].conv.bias.detach()),
-            },
-        }
-
-    lalamo_weights = {
-        "snake": {"alpha": torch_to_jax(snake_alpha)},
-        "trans_conv": {
-            "weights": torch_to_jax(trans_conv_weights),
-            "biases": torch_to_jax(trans_conv_biases),
-        },
-        "res_unit1": extract_res_unit_weights(torch_block[2]),
-        "res_unit2": extract_res_unit_weights(torch_block[3]),
-        "res_unit3": extract_res_unit_weights(torch_block[4]),
-    }
+    weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder_block.state_dict(), prefix="dec_block")
 
     with jax.disable_jit():
-        lalamo_decoder_block = lalamo_decoder_block.import_weights(lalamo_weights)
+        lalamo_decoder_block = load_audio_decoder_block(lalamo_decoder_block, weights_dict, ParameterPath("dec_block"))
 
         # Create test input
         torch.manual_seed(42)
@@ -1499,6 +1187,11 @@ def test_audio_decoder_matches_pytorch() -> None:
     """Test that Lalamo AudioDecoder matches PyTorch Decoder."""
     from fish_speech.models.dac.modded_dac import Decoder as PyTorchDecoder
 
+    from lalamo.common import ParameterPath
+    from lalamo.model_import.loaders.fishaudio_loaders import load_audio_decoder
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
     batch_size = 1
     input_channel = 512  # latent dim from quantizer
     channels = 1536  # decoder_dim
@@ -1518,7 +1211,26 @@ def test_audio_decoder_matches_pytorch() -> None:
     torch_decoder.eval()
 
     # Create Lalamo module
-    lalamo_config = DACDecoderConfig(precision=jnp.float32, causal=True)
+    res_unit_config = ResidualUnitConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        causal=True,
+    )
+    decoder_block_config = DACDecoderBlockConfig(
+        precision=jnp.float32,
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        res_unit_config=res_unit_config,
+        causal=True,
+    )
+    lalamo_config = DACDecoderConfig(
+        precision=jnp.float32,
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        snake_config=Snake1dConfig(precision=jnp.float32),
+        decoder_block_config=decoder_block_config,
+        causal=True,
+    )
     spatial_params = DACDecoderSpatialParams(
         input_channel=input_channel,
         channels=channels,
@@ -1527,74 +1239,10 @@ def test_audio_decoder_matches_pytorch() -> None:
     )
     lalamo_decoder = lalamo_config.empty(spatial_params=spatial_params)
 
-    # Extract weights from PyTorch Decoder
-    # The model is a Sequential: [first_conv, DecoderBlock..., final_snake, final_conv, Tanh]
-    torch_model = torch_decoder.model
-
-    # First conv (index 0)
-    first_conv_weights = torch_model[0].conv.weight.detach()
-    first_conv_biases = torch_model[0].conv.bias.detach()
-
-    # DecoderBlocks (indices 1 to len(rates))
-    def extract_decoder_block_weights(decoder_block):
-        block = decoder_block.block
-        # block is Sequential(Snake1d, TransConv, ResUnit, ResUnit, ResUnit)
-        snake_alpha = block[0].alpha.detach().squeeze()
-        trans_conv_weights = block[1].conv.weight.detach()
-        trans_conv_biases = block[1].conv.bias.detach()
-
-        def extract_res_unit_weights(res_unit):
-            res_block = res_unit.block
-            return {
-                "snake1": {"alpha": torch_to_jax(res_block[0].alpha.detach().squeeze())},
-                "conv1": {
-                    "weights": torch_to_jax(res_block[1].conv.weight.detach()),
-                    "biases": torch_to_jax(res_block[1].conv.bias.detach()),
-                },
-                "snake2": {"alpha": torch_to_jax(res_block[2].alpha.detach().squeeze())},
-                "conv2": {
-                    "weights": torch_to_jax(res_block[3].conv.weight.detach()),
-                    "biases": torch_to_jax(res_block[3].conv.bias.detach()),
-                },
-            }
-
-        return {
-            "snake": {"alpha": torch_to_jax(snake_alpha)},
-            "trans_conv": {
-                "weights": torch_to_jax(trans_conv_weights),
-                "biases": torch_to_jax(trans_conv_biases),
-            },
-            "res_unit1": extract_res_unit_weights(block[2]),
-            "res_unit2": extract_res_unit_weights(block[3]),
-            "res_unit3": extract_res_unit_weights(block[4]),
-        }
-
-    decoder_blocks_weights = []
-    for i in range(len(rates)):
-        decoder_blocks_weights.append(extract_decoder_block_weights(torch_model[1 + i]))
-
-    # Final snake (index 1 + len(rates))
-    final_snake_alpha = torch_model[1 + len(rates)].alpha.detach().squeeze()
-
-    # Final conv (index 2 + len(rates))
-    final_conv_weights = torch_model[2 + len(rates)].conv.weight.detach()
-    final_conv_biases = torch_model[2 + len(rates)].conv.bias.detach()
-
-    lalamo_weights = {
-        "first_conv": {
-            "weights": torch_to_jax(first_conv_weights),
-            "biases": torch_to_jax(first_conv_biases),
-        },
-        "decoder_blocks": decoder_blocks_weights,
-        "final_snake": {"alpha": torch_to_jax(final_snake_alpha)},
-        "final_conv": {
-            "weights": torch_to_jax(final_conv_weights),
-            "biases": torch_to_jax(final_conv_biases),
-        },
-    }
+    weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder.state_dict(), prefix="decoder")
 
     with jax.disable_jit():
-        lalamo_decoder = lalamo_decoder.import_weights(lalamo_weights)
+        lalamo_decoder = load_audio_decoder(lalamo_decoder, weights_dict, ParameterPath("decoder"))
 
         # Create test input
         torch.manual_seed(42)
@@ -1622,27 +1270,21 @@ def test_audio_decoder_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_dac_matches_pytorch() -> None:
+def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     """Test that Lalamo DAC matches PyTorch DAC from FishAudio.
 
     This test loads a real DAC model checkpoint, creates a Lalamo DAC module
-    using from_foreign_model(), and compares full inference (codes -> audio)
+    using load_descript_audio_codec(), and compares full inference (codes -> audio)
     between both implementations.
     """
     from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC as FishDAC
 
-    # Load FishAudio DAC model
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-    repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+    from lalamo.model_import.loaders.fishaudio_loaders import load_descript_audio_codec
 
-    api = HfApi()
-    cache_info = api.model_info(fish_audiod_repo_id)
-    commit_hash = cache_info.sha
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
 
-    model_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    audio_chkpt_path = model_path / "codec.pth"
+    audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
     device = "cpu"
 
@@ -1650,9 +1292,11 @@ def test_dac_matches_pytorch() -> None:
     assert isinstance(fish_dac, FishDAC)
     fish_dac.eval()
 
-    # Load Lalamo DAC using from_foreign_model
-    precision = jnp.float32
-    lalamo_dac = FishAudioModeling.dac_from_foreign_model(audio_chkpt_path, precision)
+    # Load Lalamo DAC using fishaudio_loaders directly
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict())
+    audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(get_default_fishaudio_dac_config())
+    lalamo_dac = audio_decoder_cfg.empty()
+    lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
 
     fish_dac_omega_config = get_default_fishaudio_dac_config()
 
@@ -1705,56 +1349,3 @@ def test_dac_matches_pytorch() -> None:
     assert jnp.allclose(audio_fish_ntc, audio_lalamo, atol=1e-3), (
         f"Outputs don't match. Max diff: {jnp.max(jnp.abs(audio_diff))}"
     )
-
-
-def test_dtype_convert_roundtrip() -> None:
-    """Test that DTypeConvert correctly converts dtypes between JAX and PyTorch."""
-    # Test all supported dtypes: JAX -> PyTorch and back
-    test_cases = [
-        ("float16", torch.float16),
-        ("float32", torch.float32),
-        ("float64", torch.float64),
-        ("bfloat16", torch.bfloat16),
-        ("int8", torch.int8),
-        ("int16", torch.int16),
-        ("int32", torch.int32),
-        ("int64", torch.int64),
-        ("uint8", torch.uint8),
-        ("bool", torch.bool),
-        ("complex64", torch.complex64),
-        ("complex128", torch.complex128),
-    ]
-
-    for dtype_str, torch_dtype in test_cases:
-        jax_dtype = jnp.dtype(dtype_str)
-
-        # Test JAX dtype -> PyTorch
-        assert DTypeConvert.to_torch(jax_dtype) == torch_dtype, f"Failed JAX->Torch for {dtype_str}"
-
-        # Test PyTorch -> JAX
-        assert DTypeConvert.to_jax(torch_dtype) == jax_dtype, f"Failed Torch->JAX for {dtype_str}"
-
-        # Test string -> PyTorch
-        assert DTypeConvert.to_torch(dtype_str) == torch_dtype, f"Failed str->Torch for {dtype_str}"
-
-        # Test string -> JAX
-        assert DTypeConvert.to_jax(dtype_str) == jax_dtype, f"Failed str->JAX for {dtype_str}"
-
-
-@pytest.mark.skip(reason="Temporary test used for e2e TTS with FishAudio")
-def test_fishaudio_lalamo_tts_generation(fish_audio_local_model_path: Path) -> None:
-    """Test TTS generation using FISH_AUDIO_LALAMO preset."""
-    model = TTSLoaderTorch.load_model_from_foreign_model_preset(
-        ForeignTTSModelType.FISH_AUDIO_LALAMO,
-        fish_audio_local_model_path,
-    )
-
-    tts_message = TTSMessage(content="Some text.", speaker_id="speaker:0", style="interleave")
-    tts_result = model.generate_speech([tts_message])
-
-    _testlog.info(f"Generated audio shape: {tts_result.audio.shape}")
-    _testlog.info(f"Audio sample rate: {tts_result.audio_params.samplerate}")
-
-    assert tts_result.audio is not None
-    assert len(tts_result.audio) > 0
-    assert tts_result.audio_params.samplerate > 0

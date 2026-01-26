@@ -5,6 +5,7 @@ import sys
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from functools import partial
+from importlib.util import find_spec
 from itertools import islice
 from pathlib import Path
 from typing import Annotated
@@ -51,7 +52,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.models.tts_model import TTSLoader, TTSMessage
+from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -269,12 +270,12 @@ class CliConversionCallbacks(ConversionCallbacks):
 @app.command(help="Synthesize speech from given text utterance")
 def tts(
     model_path: Annotated[
-        Path | None,
-        Option(
+        Path,
+        Argument(
             help="Path to the model directory.",
             metavar="MODEL_PATH",
         ),
-    ] = None,
+    ],
     output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech")] = None,
     replay: Annotated[
         bool,
@@ -283,17 +284,16 @@ def tts(
         ),
     ] = False,
 ) -> None:
-    if model_path is None:
-        err_console.print("Path to Lalalo TTS model has to be specified")
-        raise Exit
     if output_file is None:
         output_file = Path.cwd() / "generated_speech.wav"
         console.print(f"Will save output to file {output_file}")
 
-    model = None
-    if model_path is not None:
-        console.print(f"🤖 Loading model from specified path: {model_path}.")
-        model = TTSLoader.load_model(model_path)
+    if replay and not find_spec("pyaudio"):
+        err_console.print("Failed to import pyaudio package used for audio replay. Run Lalamo without --replay.")
+        raise Exit(1)
+
+    console.print(f"🤖 Loading model from specified path: {model_path}.")
+    model = TTSGenerator.load_model(model_path)
 
     assert model is not None
     _stop_word = "/stop"

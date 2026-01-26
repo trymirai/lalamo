@@ -13,7 +13,7 @@ from lalamo.common import ParameterTree, require_tree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import LayerScale, LayerScaleConfig, Normalization, NormalizationConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, PositionalEmbeddingsCis
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
 from .utils import vmap_twice
@@ -81,12 +81,12 @@ class TransformerLayerResult(eqx.Module):
 
 @dataclass(frozen=True)
 class TransformerLayerConfig:
-    pre_mixer_norm_config: NormalizationConfig | LayerScaleConfig | None
+    pre_mixer_norm_config: NormalizationConfig | None
     mixer_config: TokenMixerConfig
-    post_mixer_norm_config: NormalizationConfig | LayerScaleConfig | None
-    pre_mlp_norm_config: NormalizationConfig | LayerScaleConfig
+    post_mixer_norm_config: NormalizationConfig | None
+    pre_mlp_norm_config: NormalizationConfig
     mlp_config: MLPConfig
-    post_mlp_norm_config: NormalizationConfig | LayerScaleConfig | None
+    post_mlp_norm_config: NormalizationConfig | None
 
     @property
     def rope_dim(self) -> int | None:
@@ -165,12 +165,12 @@ class TransformerLayerConfig:
 
 
 class TransformerLayer(LalamoModule[TransformerLayerConfig]):
-    pre_mixer_norm: Normalization | LayerScale | None
+    pre_mixer_norm: Normalization | None
     mixer: TokenMixerBase
-    post_mixer_norm: Normalization | LayerScale | None
-    pre_mlp_norm: Normalization | LayerScale | None
+    post_mixer_norm: Normalization | None
+    pre_mlp_norm: Normalization | None
     mlp: MLPBase
-    post_mlp_norm: Normalization | LayerScale | None
+    post_mlp_norm: Normalization | None
 
     @property
     def activation_precision(self) -> DTypeLike:
