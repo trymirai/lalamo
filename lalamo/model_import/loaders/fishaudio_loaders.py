@@ -223,8 +223,6 @@ def load_transformer_block(
         path: ParameterPath,
         scaling_to_fuze: Array | None = None,
     ) -> Attention:
-        # TODO: permute q and k to avoid creating additional Rope class
-
         qkv_projection = load_linear_with_scaling_fusing(
             module.qkv_projection,
             weights_dict,

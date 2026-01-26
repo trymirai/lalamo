@@ -13,7 +13,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishaudioConsts,
     default_fishaudio_sampling_policy,
 )
-from lalamo.modules.audio.text_decoder import TTSTextDecoder
+from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -31,7 +31,7 @@ class FishAudioTextDecoderResult:
 
 
 @dataclass(frozen=True)
-class FishAudioTextDecoderConfig:
+class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
     slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
     slow_readout_config: FullPrecisionLinearConfig

@@ -1,7 +1,8 @@
+from abc import ABC
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import cached_property
-from typing import Any, Self, TypedDict
+from typing import Self, TypedDict
 
 import jax
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
@@ -9,10 +10,12 @@ from jinja2 import Template
 from tokenizers import Tokenizer
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.common import LalamoModule
+from lalamo.modules.common import DummyUnionMember, LalamoModule, register_config_union
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .audio_decoder import TTSAudioDecoder
+from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
+from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
@@ -88,10 +91,17 @@ class TTSRequestFactory:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
 
+TTSAudioDecoderConfig = DescriptAudioCodecConfig | DummyUnionMember
+register_config_union(TTSAudioDecoderConfig)
+
+TTSTextDecoderConfig = FishAudioTextDecoderConfig | DummyUnionMember
+register_config_union(TTSTextDecoderConfig)
+
+
 @dataclass(frozen=True)
-class TTSConfig[TextDecoderConfigT: Any, AudioDecoderConfigT: Any]:
-    text_decoder_config: TextDecoderConfigT
-    audio_decoder_config: AudioDecoderConfigT
+class TTSConfig(ABC):
+    text_decoder_config: TTSTextDecoderConfig
+    audio_decoder_config: TTSAudioDecoderConfig
     vocoder_config: VocoderConfig
 
     activation_precision: DTypeLike

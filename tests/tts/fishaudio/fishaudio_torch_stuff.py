@@ -17,7 +17,6 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
-from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.common import MapDictValues, ParameterPath, cast_if_float
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
@@ -25,7 +24,7 @@ from lalamo.model_import.loaders.fishaudio_loaders import (
 )
 from lalamo.model_import.loaders.huggingface import load_linear, load_tied_embedding
 from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
-from lalamo.models.tts_model import FishAudioGeneratorConfig, FishAudioTTSGenerator, TTSGenerator
+from lalamo.models.tts_model import FishAudioTTSGenerator, TTSGenerator, TTSGeneratorConfig
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
@@ -43,9 +42,9 @@ from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.rope import RoPEConfigCis
-from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
+from lalamo.modules.torch_interop import torch_to_jax
 
-from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign, default_fish_audio_audio_decoder_config
+from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
 
 class ForeignTTSModelType(Enum):
@@ -359,7 +358,7 @@ class FishAudioFromTorch:
             vocoder=NoopVocoder(tts_config.vocoder_config),
         )
         return FishAudioTTSGenerator(
-            config=FishAudioGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
+            config=TTSGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
             tts_model=tts_model,
             message_processor=message_processor,
         )
@@ -408,7 +407,7 @@ class FishAudioFromTorch:
             vocoder=NoopVocoder(tts_config.vocoder_config),
         )
         return FishAudioTTSGenerator(
-            config=FishAudioGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
+            config=TTSGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
             message_processor=message_processor,
             tts_model=tts_model,
         )

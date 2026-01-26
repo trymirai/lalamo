@@ -1,10 +1,20 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Self
 
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
+
+
+@dataclass(frozen=True)
+class TTSAudioDecoderConfigBase(ABC):
+    @abstractmethod
+    def empty(self) -> "TTSAudioDecoder": ...
+
+    @abstractmethod
+    def random_init(self, *, key: PRNGKeyArray) -> "TTSAudioDecoder": ...
 
 
 class TTSAudioDecoder[ConfigT](LalamoModule[ConfigT]):

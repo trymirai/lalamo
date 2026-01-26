@@ -6,7 +6,7 @@ import jax
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 
 from .fishaudio_modules import (
     ConvNeXtSpatialParams,
@@ -21,7 +21,7 @@ from .fishaudio_modules import (
 
 
 @dataclass(frozen=True)
-class DescriptAudioCodecConfig:
+class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
     precision: DTypeLike
     quantizer_config: DownsampleResidualVectorQuantizeConfig
     decoder_config: DACDecoderConfig
