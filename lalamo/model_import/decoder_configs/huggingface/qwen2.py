@@ -127,7 +127,6 @@ class HFQwen2Config(HuggingFaceLMConfig):
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
-                logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=True,
                 has_out_biases=False,

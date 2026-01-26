@@ -1,14 +1,11 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int
 
-from lalamo.common import ParameterTree
-from lalamo.modules.common import PositionalEmbeddingSelector
-from lalamo.modules.linear import LinearBase, LinearConfig
+from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
+from lalamo.modules.linear import LinearBase, LinearConfigBase
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
@@ -27,9 +24,9 @@ ShortConvResult = TokenMixerResult[ShortConvStateLayer]
 
 @dataclass(frozen=True)
 class ShortConvConfig(TokenMixerConfigBase):
-    in_projection_config: LinearConfig
+    in_projection_config: LinearConfigBase
     conv_config: SeparableCausalConvConfig
-    out_projection_config: LinearConfig
+    out_projection_config: LinearConfigBase
 
     kernel_size: int
 
@@ -37,69 +34,41 @@ class ShortConvConfig(TokenMixerConfigBase):
     def rope_dim(self) -> None:
         return None
 
-    def random_init(
+    def init(
         self,
-        model_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "ShortConv":
-        in_projection = self.in_projection_config.random_init(
-            input_dim=model_dim,
-            output_dims=(model_dim,)*3,
-            has_biases=False,
-            key=key,
-        )
-
-        conv = self.conv_config.random_init(model_dim, self.kernel_size, key=key)
-
-        out_projection = self.out_projection_config.random_init(
-            input_dim=model_dim,
-            output_dims=(model_dim,),
-            has_biases=False,
-            key=key,
-        )
-
-        return ShortConv(
-            self,
-            in_projection=in_projection,
-            conv=conv,
-            out_projection=out_projection,
-        )
-
-    def empty(
-        self,
+        initializer: Initializer,
         model_dim: int,
     ) -> "ShortConv":
-        in_projection = self.in_projection_config.empty(
+        in_projection = self.in_projection_config.init(
+            initializer,
             input_dim=model_dim,
-            output_dims=(model_dim,)*3,
+            output_dims=(model_dim,) * 3,
             has_biases=False,
         )
 
-        conv = self.conv_config.empty(model_dim, self.kernel_size)
+        conv = self.conv_config.init(initializer, model_dim, self.kernel_size)
 
-        out_projection = self.out_projection_config.empty(
+        out_projection = self.out_projection_config.init(
+            initializer,
             input_dim=model_dim,
             output_dims=(model_dim,),
             has_biases=False,
         )
 
         return ShortConv(
-            self,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,
+            kernel_size=self.kernel_size,
         )
 
 
-class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
+class ShortConv(TokenMixerBase[ShortConvStateLayer]):
     in_projection: LinearBase
     conv: SeparableCausalConv
     out_projection: LinearBase
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_projection.activation_precision
+    kernel_size: int = eqx.field(static=True)
 
     @property
     def model_dim(self) -> int:
@@ -116,7 +85,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         positional_embeddings: PositionalEmbeddings | None,
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
-        length_without_padding: Int[Array, ""] | int | None = None, # noqa: ARG002
+        length_without_padding: Int[Array, ""] | int | None = None,  # noqa: ARG002
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
@@ -137,32 +106,9 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int) -> ShortConvStateLayer: # noqa: ARG002
+    def init_static_state(self, capacity: int) -> ShortConvStateLayer:  # noqa: ARG002
         return ShortConvStateLayer.init(
-            self.config.kernel_size,
+            self.kernel_size,
             self.in_projection.input_dim,
             self.activation_precision,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "in_projection": self.in_projection.export_weights(),
-            "conv": self.conv.export_weights(),
-            "out_projection": self.out_projection.export_weights(),
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["in_projection"], Mapping)
-        assert isinstance(weights["conv"], Mapping)
-        assert isinstance(weights["out_projection"], Mapping)
-
-        return replace(
-            self,
-            in_projection=self.in_projection.import_weights(weights["in_projection"]),
-            conv=self.conv.import_weights(weights["conv"]),
-            out_projection=self.out_projection.import_weights(weights["out_projection"]),
         )

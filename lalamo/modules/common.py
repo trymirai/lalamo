@@ -1,23 +1,68 @@
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
-from typing import ClassVar, Generic, Self, TypeVar, get_origin
+from typing import ClassVar, NamedTuple, Self, cast, get_origin
 
 import equinox as eqx
+import jax
 from cattrs import GenConverter
 from cattrs.preconf.json import make_converter
+from jax import ShapeDtypeStruct
 from jax import numpy as jnp
-from jaxtyping import DTypeLike
+from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import JSON, RegistryABC
 
 __all__ = [
+    "EmptyInitializer",
     "ForwardPassMode",
+    "Initializer",
+    "LalamoConfig",
     "LalamoModule",
+    "ModuleWithConfig",
     "PositionalEmbeddingSelector",
+    "RandomInitializer",
 ]
+
+
+def _unpack_registry_abc_from_option(annotation: type) -> type[RegistryABC] | None:
+    maybe_registry_abc = get_origin(annotation)
+
+    if isinstance(maybe_registry_abc, UnionType):
+        maybe_registry_abc, *rest = set(maybe_registry_abc.__args__) - {None}
+        if rest:
+            return None
+
+    assert maybe_registry_abc is not None
+    if issubclass(maybe_registry_abc, RegistryABC):
+        return maybe_registry_abc
+
+    return None
+
+
+def _dtype_to_str(dtype: DTypeLike) -> str:
+    if dtype == jnp.bfloat16:
+        return "bfloat16"
+    try:
+        return str(dtype.dtype)  # type: ignore
+    except AttributeError:
+        return str(dtype)
+
+
+def _str_to_dtype(dtype_str: str) -> jnp.dtype:
+    return {
+        "int4": jnp.int4,
+        "int8": jnp.int8,
+        "int16": jnp.int16,
+        "int32": jnp.int32,
+        "int64": jnp.int64,
+        "bfloat16": jnp.bfloat16,
+        "float16": jnp.float16,
+        "float32": jnp.float32,
+        "float64": jnp.float64,
+    }[dtype_str]
 
 
 def _make_config_converter() -> GenConverter:
@@ -97,50 +142,60 @@ class LalamoConfig:
         return self._converter.unstructure(self)
 
 
-ConfigT_co = TypeVar("ConfigT_co", bound=LalamoConfig, covariant=True)
+class LalamoModule(eqx.Module):
+    pass
 
 
-class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
-    config: ConfigT_co = eqx.field(static=True)
+class ModuleWithConfig[ModuleT, ConfigT](NamedTuple):
+    module: ModuleT
+    config: ConfigT
 
-    @property
+
+
+@dataclass
+class Initializer(ABC):
+    precision: DTypeLike
+
     @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
+    def normal(self, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array: ...
+
+    @abstractmethod
+    def ones(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array: ...
+
+    @abstractmethod
+    def zeros(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array: ...
 
 
-def _unpack_registry_abc_from_option(annotation: type) -> type[RegistryABC] | None:
-    maybe_registry_abc = get_origin(annotation)
+class EmptyInitializer(Initializer):
+    @classmethod
+    def _dummy_array(cls, shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
+        if isinstance(shape, int):
+            shape = (shape,)
+        return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype))
 
-    if isinstance(maybe_registry_abc, UnionType):
-        maybe_registry_abc, *rest = set(maybe_registry_abc.__args__) - {None}
-        if rest:
-            return None
+    @classmethod
+    def normal(cls, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array:  # noqa: ARG003
+        return cls._dummy_array(shape, dtype)
 
-    assert maybe_registry_abc is not None
-    if issubclass(maybe_registry_abc, RegistryABC):
-        return maybe_registry_abc
+    @classmethod
+    def ones(cls, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return cls._dummy_array(shape, dtype)
 
-    return None
-
-
-def _dtype_to_str(dtype: DTypeLike) -> str:
-    if dtype == jnp.bfloat16:
-        return "bfloat16"
-    try:
-        return str(dtype.dtype)  # type: ignore
-    except AttributeError:
-        return str(dtype)
+    @classmethod
+    def zeros(cls, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return cls._dummy_array(shape, dtype)
 
 
-def _str_to_dtype(dtype_str: str) -> jnp.dtype:
-    return {
-        "int4": jnp.int4,
-        "int8": jnp.int8,
-        "int16": jnp.int16,
-        "int32": jnp.int32,
-        "int64": jnp.int64,
-        "bfloat16": jnp.bfloat16,
-        "float16": jnp.float16,
-        "float32": jnp.float32,
-        "float64": jnp.float64,
-    }[dtype_str]
+@dataclass
+class RandomInitializer(Initializer):
+    key: PRNGKeyArray
+
+    def normal(self, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        self.key, key = jax.random.split(self.key)
+        return jax.random.normal(key, shape, dtype) * std
+
+    def ones(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return jax.numpy.ones(shape, dtype)
+
+    def zeros(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return jax.numpy.zeros(shape, dtype)

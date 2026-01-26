@@ -1,5 +1,5 @@
 from abc import ABC, ABCMeta
-from typing import Any
+from typing import Any, Self
 from weakref import WeakSet
 
 __all__ = ["RegistryABC", "RegistryMeta"]
@@ -58,6 +58,6 @@ class RegistryABC(ABC, metaclass=RegistryMeta):
     """
 
     @classmethod
-    def __descendants__(cls) -> tuple[type, ...]:
+    def __descendants__(cls) -> tuple[type[Self], ...]:
         reg: WeakSet[type] = getattr(cls, RegistryMeta._REG_ATTR)  # noqa: SLF001
         return tuple(reg)

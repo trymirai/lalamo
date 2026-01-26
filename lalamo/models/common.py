@@ -1,20 +1,15 @@
-import json
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Self
 
 import equinox as eqx
 from jax import numpy as jnp
-from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, unflatten_parameters
+from lalamo.common import DTypeLike
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
-from lalamo.safetensors import safe_read
 
 __all__ = [
     "TextModel",
@@ -32,25 +27,10 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         self,
         model: LalamoModule,
         message_processor: MessageProcessor,
-    ) -> LalamoModule[Self]: ...
-
-    @classmethod
-    def load_model(cls, path: Path | str) -> LalamoModule[Self]:
-        if isinstance(path, str):
-            path = Path(path)
-        with open(path / "config.json") as config_file:
-            config_json = json.load(config_file)
-        config = config_converter.structure(config_json["model_config"], cls)
-        with Path(path / "model.safetensors").open("rb") as fd:
-            _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.model_config.empty().import_weights(weights)
-        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
-        message_processor = MessageProcessor(config.message_processor_config, tokenizer)
-        return config.init(model, message_processor)
+    ) -> "TextModel": ...
 
 
-class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
+class TextModel[ModelT: Decoder | Classifier](LalamoModule):
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
 

@@ -7,12 +7,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from pathlib import Path
-from typing import ClassVar, cast, get_args, get_origin
+from typing import ClassVar, get_args, get_origin
 
-import cattrs
 import jax.numpy as jnp
+from cattrs import GenConverter
+from cattrs.preconf.json import make_converter
 from jaxtyping import Array, DTypeLike
 
+from lalamo.common import JSON
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_read
@@ -90,56 +92,69 @@ class ConfigMap:
     chat_template: FileSpec | JSONFieldSpec | str | None = None
 
 
-def _is_foreign_config_type(t: object) -> bool:
+ChatTemplateType = FileSpec | JSONFieldSpec | str | None
+
+
+def _is_foreign_config_type(t: type) -> bool:
     origin = get_origin(t)
     args = get_args(t)
     return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
 
 
-def _structure_foreign_config_factory(
-    t: object,  # noqa: ARG001
-    c: cattrs.Converter,  # noqa: ARG001
-) -> Callable[[object, object], type[ForeignConfig]]:
-    name_to_type = {t.__name__: t for t in ForeignConfig.__descendants__()}
-
-    def _hook(v: object, _t: object) -> type[ForeignConfig]:
-        if isinstance(v, type) and issubclass(v, ForeignConfig):
-            return v
-        return name_to_type[cast("str", v)]
-
-    return _hook
+def _is_chat_template_type(t: type) -> bool:
+    return t == ChatTemplateType
 
 
-def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Callable[[type[ForeignConfig]], str]:  # noqa: ARG001
-    def _hook(v: type[ForeignConfig]) -> str:
-        return v.__name__
+def _make_model_spec_converter() -> GenConverter:
+    converter = make_converter()
 
-    return _hook
+    @converter.register_unstructure_hook_factory(_is_foreign_config_type)
+    def unstructure_foreign_config_type(
+        t: type,  # noqa: ARG001
+        c: GenConverter,  # noqa: ARG001
+    ) -> Callable[[type[ForeignConfig]], str]:
+        def unstructure(v: type[ForeignConfig]) -> str:
+            return v.__name__
 
+        return unstructure
 
-def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFieldSpec | str | None:
-    if value is None:
-        return None
-    if isinstance(value, str):
-        return value
-    if isinstance(value, dict):
-        if "file_spec" in value and "field_name" in value:
-            return JSONFieldSpec(
-                file_spec=FileSpec(**value["file_spec"]),
-                field_name=value["field_name"],
-            )
-        if "filename" in value:
-            return FileSpec(**value)
-    raise ValueError(f"Invalid chat_template value: {value}")
+    @converter.register_structure_hook_factory(_is_foreign_config_type)
+    def structure_foreign_config_type(
+        t: type,  # noqa: ARG001
+    ) -> Callable[[str | type[ForeignConfig], type], type[ForeignConfig]]:
+        name_to_type: dict[str, type[ForeignConfig]] = {cls.__name__: cls for cls in ForeignConfig.__descendants__()}
+
+        def structure(v: str | type[ForeignConfig], _t: type) -> type[ForeignConfig]:
+            if isinstance(v, type) and issubclass(v, ForeignConfig):
+                return v
+            return name_to_type[v]
+
+        return structure
+
+    @converter.register_structure_hook_factory(_is_chat_template_type)
+    def structure_chat_template(
+        t: type,  # noqa: ARG001
+    ) -> Callable[[JSON, type], FileSpec | JSONFieldSpec | str | None]:
+        def structure(value: JSON, _t: type) -> FileSpec | JSONFieldSpec | str | None:
+            if value is None:
+                return None
+            if isinstance(value, str):
+                return value
+            if isinstance(value, dict):
+                if "file_spec" in value and "field_name" in value:
+                    return converter.structure(value, JSONFieldSpec)
+                if "filename" in value:
+                    return converter.structure(value, FileSpec)
+            raise ValueError(f"Invalid chat_template value: {value}")
+
+        return structure
+
+    return converter
 
 
 @dataclass(frozen=True)
 class ModelSpec:
-    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
-
-    _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
-    _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
-    _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
+    _converter: ClassVar[GenConverter] = _make_model_spec_converter()
 
     vendor: str
     family: str

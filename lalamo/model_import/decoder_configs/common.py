@@ -9,10 +9,10 @@ import cattrs
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import ClassifierConfig, DecoderConfig
-from lalamo.modules.common import LalamoModule
+from lalamo.modules.common import EmptyInitializer, LalamoModule, ModuleWithConfig
 from lalamo.registry_abc import RegistryABC
 
-__all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
+__all__ = ["ForeignClassifierConfig", "ForeignLMConfig", "ModuleWithConfig"]
 
 
 @dataclass(frozen=True)
@@ -54,10 +54,11 @@ class ForeignConfig[ConfigT: DecoderConfig | ClassifierConfig](RegistryABC):
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
         metadata_dict: Mapping[str, str],
-    ) -> LalamoModule[ConfigT]:
+    ) -> ModuleWithConfig[LalamoModule, ConfigT]:
         config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
-        model = config.empty()
-        return self._load_weights(model, weights_dict)
+        model = config.init(EmptyInitializer())
+        model = self._load_weights(model, weights_dict)
+        return ModuleWithConfig(model, config)
 
 
 @dataclass(frozen=True)

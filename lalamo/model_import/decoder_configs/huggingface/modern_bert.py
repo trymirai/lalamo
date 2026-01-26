@@ -5,18 +5,19 @@ import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
 from lalamo.modules import (
-    Activation,
+    GELU,
+    ActivationBase,
     AttentionConfig,
     ClassifierConfig,
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     NormalizationConfig,
+    SiLU,
     TransformerConfig,
     TransformerLayerConfig,
     UnscaledRoPEConfig,
     UpcastMode,
 )
-from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.classifier import (
     PoolingType,
     PredictionHeadConfig,
@@ -32,7 +33,7 @@ from .common import (
 __all__ = ["ModernBERTConfig"]
 
 
-def activation_from_str(activation: str) -> type[Activation]:
+def activation_from_str(activation: str) -> type[ActivationBase]:
     supported_activations = {
         "silu": SiLU,
         "gelu": GELU,
@@ -167,7 +168,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
-                logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=False,

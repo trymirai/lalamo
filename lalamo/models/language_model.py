@@ -1,6 +1,5 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
@@ -84,22 +83,18 @@ class LanguageModelConfig(TextModelConfig[DecoderConfig]):
         message_processor: MessageProcessor,
     ) -> "LanguageModel":
         assert isinstance(model, Decoder)
-        return LanguageModel(self, model, message_processor)
-
-    @classmethod
-    def load_model(cls, path: Path | str) -> "LanguageModel":
-        result = super().load_model(path)
-        assert isinstance(result, LanguageModel)
-        return result
+        return LanguageModel(model, message_processor, self.generation_config)
 
 
-class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
+class LanguageModel(TextModel[Decoder]):
+    generation_config: GenerationConfig = eqx.field(static=True)
+
     @property
     def stop_token_ids(self) -> tuple[int, ...]:
-        return self.config.generation_config.stop_token_ids
+        return self.generation_config.stop_token_ids
 
     def default_sampling_policy(self) -> SamplingPolicy:
-        return self.config.generation_config.default_policy()
+        return self.generation_config.default_policy()
 
     @eqx.filter_jit
     def _prefill(

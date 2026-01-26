@@ -1,5 +1,4 @@
 from lalamo.model_import.decoder_configs import (
-    HFGemma2Config,
     HFGemma3Config,
     HFGemma3TextConfig,
 )
@@ -8,18 +7,6 @@ from lalamo.quantization import QuantizationMode
 from .common import ConfigMap, FileSpec, ModelSpec, WeightsType
 
 __all__ = ["GEMMA_MODELS"]
-
-GEMMA2 = [
-    ModelSpec(
-        vendor="Google",
-        family="Gemma-2",
-        name="Gemma-2-2B-Instruct",
-        size="2B",
-        quantization=None,
-        repo="google/gemma-2-2b-it",
-        config_type=HFGemma2Config,
-    ),
-]
 
 GEMMA3 = [
     ModelSpec(
@@ -121,4 +108,4 @@ GEMMA3 = [
 ]
 
 
-GEMMA_MODELS = GEMMA2 + GEMMA3
+GEMMA_MODELS = GEMMA3

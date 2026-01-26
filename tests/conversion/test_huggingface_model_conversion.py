@@ -1,4 +1,3 @@
-import json
 import pathlib
 import shutil
 import tempfile
@@ -10,12 +9,7 @@ from typing import Any
 import pytest
 import torch
 
-from lalamo.common import flatten_parameters
-from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, import_model
-from lalamo.model_import.model_specs import ModelType
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.modules import config_converter
-from lalamo.safetensors import safe_write
+from lalamo.model_import import REPO_TO_MODEL, import_model
 from tests.helpers import limit_memory, unsi
 from tests.tracer.tracer import DType, ModelTestSpec
 
@@ -83,27 +77,10 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
         assert model_spec, f"Unknown model specified: {model_repo}"
 
         # Step 1: Import model from HF format
-        model, metadata = import_model(
+        model, _config, metadata = import_model(
             model_spec=model_spec,
             precision=model_dtype.jax_dtype if model_dtype is not None else None,
         )
 
         # Step 2: Export model
-        model.message_processor.tokenizer.save(str(tmp_path / "tokenizer.json"))
-        weights = flatten_parameters(model.export_weights())
-        del model
-        with (tmp_path / "model.safetensors").open("wb") as fd:
-            safe_write(fd, weights)
-        config_json = config_converter.unstructure(metadata, ModelMetadata)
-        with open(tmp_path / "config.json", "w") as file:
-            json.dump(config_json, file, indent=4)
-
-    # Step 3: Re-import model from Lalamo format
-    model = None
-    match metadata.model_type:
-        case ModelType.LANGUAGE_MODEL:
-            model = LanguageModelConfig.load_model(tmp_path)
-        case ModelType.CLASSIFIER_MODEL:
-            model = ClassifierModelConfig.load_model(tmp_path)
-    assert model is not None, f"Failed to load model {model_repo}"
-    del model
+        raise NotImplementedError("export_weights is not implemented yet")

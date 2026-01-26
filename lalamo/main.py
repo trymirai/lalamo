@@ -48,7 +48,6 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.speculator.estimator import get_default_device_memory
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -128,7 +127,7 @@ def chat(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = LanguageModelConfig.load_model(model_path)
+        raise NotImplementedError("load_model is not yet implemented")
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up compilation cache...")
         list(model.stream_reply_text([UserMessage("")], max_output_length=1))
@@ -173,7 +172,7 @@ def classify(
         transient=True,
     ) as progress:
         loading_task = progress.add_task("🚀 [cyan]Loading model...[/cyan]")
-        model = ClassifierModelConfig.load_model(model_path)
+        raise NotImplementedError("load_model is not yet implemented")
         progress.remove_task(loading_task)
         warmup_task = progress.add_task("🔥 Warming up...")
         model.classify_chat([UserMessage(content="warmup message")])
@@ -383,6 +382,7 @@ class CliTraceCallbacks(TraceCallbacks):
         self.progress.remove_task(self.saving_task)
         self.stack.close()
         console.print(f"💾 Trace saved to [cyan]{self.output_path}[/cyan]")
+
 
 @app.command(help="Trace a model.")
 def trace(
@@ -701,7 +701,7 @@ def view_traces(
         ),
     ] = None,
 ) -> None:
-    model = LanguageModelConfig.load_model(model_path)
+    raise NotImplementedError("load_model is not yet implemented")
 
     with open(trace_path, "rb") as trace_fd:
         traces = LalamoCompletion.deserialize_many(trace_fd)
@@ -830,7 +830,7 @@ def test(
         Option(help="Number of sequences to generate"),
     ] = 8,
 ) -> None:
-    model = LanguageModelConfig.load_model(model_path)
+    raise NotImplementedError("load_model is not yet implemented")
 
     with open(speculator_path, "rb") as fd:
         speculator = NGramSpeculator.deserialize(fd.read())

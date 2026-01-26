@@ -1,7 +1,7 @@
 from abc import ABC, ABCMeta
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any, cast
+from typing import Any
 from weakref import WeakSet
 
 import jax.numpy as jnp
@@ -34,12 +34,6 @@ type ParameterTree[ArrayType: ArrayLike] = (
 )
 
 type JSON = str | int | float | bool | None | dict[str, JSON] | list[JSON]
-
-
-def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
-    if isinstance(shape, int):
-        shape = (shape,)
-    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype))
 
 
 def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[ArrayType]) -> dict[str, ArrayType]:

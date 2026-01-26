@@ -148,7 +148,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             is_causal=True,
             scale=None,
             sliding_window_size=None,
-            logit_soft_cap=None,
             has_sinks=False,
             has_qkv_biases=False,
             has_out_biases=False,

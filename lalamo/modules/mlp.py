@@ -1,5 +1,5 @@
 import math
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from functools import partial
 
@@ -8,28 +8,29 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
+from lalamo.common import RegistryABC
 from lalamo.modules.utils import vmap_twice
 
-from .activations import Activation
+from .activations import ActivationBase
 from .common import (
-    DummyUnionMember,
     ForwardPassMode,
+    Initializer,
+    LalamoConfig,
     LalamoModule,
-    register_config_union,
 )
-from .linear import LinearBase, LinearConfig
+from .linear import LinearBase, LinearConfigBase
 
 __all__ = [
     "DenseMLP",
     "DenseMLPConfig",
     "MLPBase",
-    "MLPConfig",
+    "MLPConfigBase",
     "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
-    "RoutingFunction",
+    "RoutingFunctionBase",
     "SoftmaxRouting",
 ]
 
@@ -42,7 +43,7 @@ class MLPForwardPassConfig:
     moe_chunk_size_ratio: float = 0.2
 
 
-class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
+class MLPBase(LalamoModule):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
@@ -66,113 +67,74 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
 
 
 @dataclass(frozen=True)
-class MLPConfigBase(ABC):
+class MLPConfigBase(LalamoConfig, RegistryABC):
     @abstractmethod
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> MLPBase: ...
-
-    @abstractmethod
-    def empty(self, model_dim: int, hidden_dim: int) -> MLPBase: ...
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> MLPBase: ...
 
 
 @dataclass(frozen=True)
 class DenseMLPConfig(MLPConfigBase):
-    linear_config: LinearConfig
-    activation: Activation
+    linear_config: LinearConfigBase
+    activation: ActivationBase
     has_up_biases: bool
     has_down_biases: bool
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
 
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
-        up_key, down_key = jax.random.split(key)
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "DenseMLP":
         return DenseMLP(
-            self,
-            up_projection=self.linear_config.random_init(
-                model_dim,
-                (hidden_dim, hidden_dim),
-                has_biases=self.has_up_biases,
-                key=up_key,
-            ),
-            down_projection=self.linear_config.random_init(
-                hidden_dim,
-                (model_dim,),
-                has_biases=self.has_down_biases,
-                key=down_key,
-            ),
-        )
-
-    def empty(self, model_dim: int, hidden_dim: int) -> "DenseMLP":
-        return DenseMLP(
-            self,
-            up_projection=self.linear_config.empty(
+            up_projection=self.linear_config.init(
+                initializer,
                 model_dim,
                 (hidden_dim, hidden_dim),
                 has_biases=self.has_up_biases,
             ),
-            down_projection=self.linear_config.empty(
+            down_projection=self.linear_config.init(
+                initializer,
                 hidden_dim,
                 (model_dim,),
                 has_biases=self.has_down_biases,
             ),
+            activation=self.activation,
+            gate_clipping=self.gate_clipping,
+            up_clipping=self.up_clipping,
         )
 
-    def random_init_mixture(
+    def init_mixture(
         self,
-        mixture_size: int,
-        model_dim: int,
-        hidden_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DenseMLP":
-        up_key, down_key = jax.random.split(key)
-        return DenseMLP(
-            self,
-            up_projection=self.linear_config.random_init_mixture(
-                mixture_size,
-                model_dim,
-                (hidden_dim, hidden_dim),
-                has_biases=self.has_up_biases,
-                key=up_key,
-            ),
-            down_projection=self.linear_config.random_init_mixture(
-                mixture_size,
-                hidden_dim,
-                (model_dim,),
-                has_biases=self.has_down_biases,
-                key=down_key,
-            ),
-        )
-
-    def empty_mixture(
-        self,
+        initializer: Initializer,
         mixture_size: int,
         model_dim: int,
         hidden_dim: int,
     ) -> "DenseMLP":
         return DenseMLP(
-            self,
-            up_projection=self.linear_config.empty_mixture(
+            up_projection=self.linear_config.init_mixture(
+                initializer,
                 mixture_size,
                 model_dim,
                 (hidden_dim, hidden_dim),
                 has_biases=self.has_up_biases,
             ),
-            down_projection=self.linear_config.empty_mixture(
+            down_projection=self.linear_config.init_mixture(
+                initializer,
                 mixture_size,
                 hidden_dim,
                 (model_dim,),
                 has_biases=self.has_down_biases,
             ),
+            activation=self.activation,
+            gate_clipping=self.gate_clipping,
+            up_clipping=self.up_clipping,
         )
 
 
-class DenseMLP(MLPBase[DenseMLPConfig]):
+class DenseMLP(MLPBase):
     up_projection: LinearBase
     down_projection: LinearBase
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.up_projection.activation_precision
+    activation: ActivationBase = eqx.field(static=True)
+    gate_clipping: tuple[float | None, float | None] | None = eqx.field(static=True)
+    up_clipping: tuple[float | None, float | None] | None = eqx.field(static=True)
 
     @property
     def model_dim(self) -> int:
@@ -185,23 +147,6 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     @property
     def mixture_size(self) -> int | None:
         return self.up_projection.mixture_size
-
-    def __post_init__(self) -> None:
-        up_output_dim, gate_output_dim = self.up_projection.output_dims
-        if up_output_dim != gate_output_dim:
-            raise ValueError(
-                f"Up projection output dimension {up_output_dim} does not match"
-                f" the gate output dimension {gate_output_dim}",
-            )
-        (down_output_dim,) = self.down_projection.output_dims
-        if (self.up_projection.input_dim, up_output_dim) != (
-            down_output_dim,
-            self.down_projection.input_dim,
-        ):
-            raise ValueError(
-                f"Down projection dimensions {self.down_projection.input_dim, down_output_dim} do not match"
-                f" the up projection output dimensions {self.up_projection.input_dim, up_output_dim}",
-            )
 
     @eqx.filter_jit
     def __call__(
@@ -224,11 +169,11 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
         up_proj, gate = self.up_projection(inputs)
-        if self.config.gate_clipping:
-            gate = jnp.clip(gate, *self.config.gate_clipping)
-        if self.config.up_clipping:
-            up_proj = jnp.clip(up_proj, *self.config.up_clipping)
-        gate = self.config.activation(gate)
+        if self.gate_clipping:
+            gate = jnp.clip(gate, *self.gate_clipping)
+        if self.up_clipping:
+            up_proj = jnp.clip(up_proj, *self.up_clipping)
+        gate = self.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
 
         return result
@@ -240,7 +185,7 @@ class RoutingMap(eqx.Module):
 
 
 @dataclass(frozen=True)
-class RoutingFunctionBase(ABC):
+class RoutingFunctionBase(LalamoConfig, RegistryABC):
     def __call__(self, logits: Float[Array, "batch_tokens experts"], num_active: int) -> RoutingMap:
         return vmap(partial(self.call_unbatched, num_active=num_active))(logits)
 
@@ -260,54 +205,43 @@ class SoftmaxRouting(RoutingFunctionBase):
         return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
 
 
-RoutingFunction = SoftmaxRouting | DummyUnionMember
-
-
-register_config_union(RoutingFunction)  # type: ignore (pyright bug)
-
-
 @dataclass(frozen=True)
-class MixtureOfExpertsConfig(ABC):
+class MixtureOfExpertsConfig(MLPConfigBase):
     expert_config: DenseMLPConfig
-    router_config: LinearConfig
-    routing_function: RoutingFunction
+    router_config: LinearConfigBase
+    routing_function: RoutingFunctionBase
 
     mixture_size: int
     num_experts_per_token: int
     router_has_biases: bool
 
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MixtureOfExperts":
-        experts_key, router_key = jax.random.split(key)
-        router = self.router_config.random_init(
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":
+        router = self.router_config.init(
+            initializer,
             model_dim,
             (self.mixture_size,),
             has_biases=self.router_has_biases,
-            key=router_key,
         )
-        experts = self.expert_config.random_init_mixture(self.mixture_size, model_dim, hidden_dim, key=experts_key)
-        return MixtureOfExperts(self, router, experts)
+        experts = self.expert_config.init_mixture(initializer, self.mixture_size, model_dim, hidden_dim)
+        return MixtureOfExperts(
+            router=router,
+            experts=experts,
+            routing_function=self.routing_function,
+            num_experts_per_token=self.num_experts_per_token,
+        )
 
-    def empty(self, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":
-        router = self.router_config.empty(model_dim, (self.mixture_size,), has_biases=self.router_has_biases)
-        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, hidden_dim)
-        return MixtureOfExperts(self, router, experts)
 
-
-class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
+class MixtureOfExperts(MLPBase):
     router: LinearBase
     experts: DenseMLP
 
+    routing_function: RoutingFunctionBase = eqx.field(static=True)
+    num_experts_per_token: int = eqx.field(static=True)
+
     @property
     def mixture_size(self) -> int:
-        return self.config.mixture_size
-
-    @property
-    def num_experts_per_token(self) -> int:
-        return self.config.num_experts_per_token
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.experts.activation_precision
+        (router_output_dim,) = self.router.output_dims
+        return router_output_dim
 
     @property
     def model_dim(self) -> int:
@@ -316,25 +250,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     @property
     def hidden_dim(self) -> int:
         return self.experts.hidden_dim
-
-    def __post_init__(self) -> None:
-        if self.router.input_dim != self.experts.model_dim:
-            raise ValueError(
-                f"Router input dimension ({self.router.input_dim}) must match experts model_dim"
-                f" ({self.experts.model_dim}).",
-            )
-
-        (router_output_dim,) = self.router.output_dims
-        if router_output_dim != self.mixture_size:
-            raise ValueError(
-                f"Router output dimension ({router_output_dim}) must equal mixture_size ({self.mixture_size}).",
-            )
-
-        if self.experts.mixture_size != self.mixture_size:
-            raise ValueError(
-                f"Experts mixture_size ({self.experts.mixture_size}) does not match specified mixture_size"
-                f" ({self.mixture_size}).",
-            )
 
     def __call__(
         self,
@@ -356,7 +271,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     ) -> Float[Array, "batch suffix_tokens channels"]:
         def per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
             (router_logits,) = self.router(x)
-            routing = self.config.routing_function.call_unbatched(
+            routing = self.routing_function.call_unbatched(
                 router_logits,
                 num_active=self.num_experts_per_token,
             )
@@ -393,7 +308,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
-        routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+        routing_map = self.routing_function(router_logits, self.num_experts_per_token)
         token_mask = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
@@ -455,9 +370,3 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
         )
-
-
-MLPConfig = DenseMLPConfig | MixtureOfExpertsConfig
-
-
-register_config_union(MLPConfig)  # type: ignore (pyright bug)

@@ -1,6 +1,5 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from pathlib import Path
 
 import jax
 from jax import Array
@@ -26,22 +25,16 @@ class ClassifierModelConfig(TextModelConfig[ClassifierConfig]):
         message_processor: MessageProcessor,
     ) -> "ClassifierModel":
         assert isinstance(model, Classifier)
-        return ClassifierModel(self, model, message_processor)
-
-    @classmethod
-    def load_model(cls, path: Path | str) -> "ClassifierModel":
-        result = super().load_model(path)
-        assert isinstance(result, ClassifierModel)
-        return result
+        return ClassifierModel(model, message_processor)
 
 
-class ClassifierModel(TextModel[ClassifierModelConfig, Classifier]):
+class ClassifierModel(TextModel[Classifier]):
     def label_output_logits(self, logits: Float[Array, "batch logits"]) -> dict[str, Float[Array, " batch"]]:
-        output_labels = self.model.config.output_labels
+        output_labels = self.model.output_labels
         probabilities = jax.nn.sigmoid(logits)
 
         if output_labels is None:
-            output_labels = [f"class_{idx}" for idx in range(self.model.config.num_labels)]
+            output_labels = [f"class_{idx}" for idx in range(self.model.num_labels)]
 
         assert probabilities.ndim == 2, f"Expected 2D array, got array of shape {logits.shape}"
 

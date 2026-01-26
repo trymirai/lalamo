@@ -170,7 +170,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 out_projection_config=linear_config,
                 query_norm_config=None,
                 key_norm_config=None,
-                logit_soft_cap=None,
                 has_sinks=True,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,

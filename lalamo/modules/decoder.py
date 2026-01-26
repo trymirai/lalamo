@@ -1,11 +1,10 @@
 from dataclasses import dataclass
 
 import equinox as eqx
-import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from .common import ForwardPassMode, LalamoConfig, LalamoModule
+from .common import ForwardPassMode, Initializer, LalamoConfig, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfigBase
 from .rope import PositionalEmbeddings
 from .token_mixers import State
@@ -13,8 +12,8 @@ from .transformer import (
     Transformer,
     TransformerConfig,
     TransformerForwardPassConfig,
-    TransformerLayerResult,
 )
+from .transformer_layer import TransformerLayerResult
 from .utils import vmap_twice
 
 __all__ = [
@@ -55,40 +54,21 @@ class DecoderConfig(LalamoConfig):
 
     vocab_size: int
 
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Decoder":
-        embedding_key, transformer_key = jax.random.split(key)
-        embedding = self.embedding_config.random_init(
-            vocab_size=self.vocab_size,
-            model_dim=self.transformer_config.model_dim,
-            key=embedding_key,
-        )
-        transformer = self.transformer_config.random_init(key=transformer_key)
-
-        return Decoder(
-            config=self,
-            embedding=embedding,
-            transformer=transformer,
-        )
-
-    def empty(self) -> "Decoder":
-        embedding = self.embedding_config.empty(
+    def init(self, initializer: Initializer) -> "Decoder":
+        embedding = self.embedding_config.init(
+            initializer,
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
         )
-        transformer = self.transformer_config.empty()
+        transformer = self.transformer_config.init(initializer)
 
         return Decoder(
-            config=self,
             embedding=embedding,
             transformer=transformer,
         )
 
 
-class Decoder(LalamoModule[DecoderConfig]):
+class Decoder(LalamoModule):
     embedding: EmbeddingBase
     transformer: Transformer
 

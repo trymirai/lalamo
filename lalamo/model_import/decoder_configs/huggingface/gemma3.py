@@ -177,7 +177,6 @@ class HFGemma3TextConfigRaw:
                 out_projection_config=linear_config,
                 query_norm_config=rms_norm_config,
                 key_norm_config=rms_norm_config,
-                logit_soft_cap=self.attn_logit_softcapping,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
                 has_out_biases=self.attention_bias,

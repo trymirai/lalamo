@@ -8,22 +8,18 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
-    AttentionConfig,
     Decoder,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
     Mamba2,
-    Mamba2Config,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
-    MLXQuantizedTiedEmbeddingConfig,
     MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
     ShortConv,
-    ShortConvConfig,
     TiedEmbedding,
     TransformerLayer,
     UntiedEmbedding,
@@ -174,7 +170,7 @@ def load_linear(
             sublayers_to_fuse,
             AWQ_QUANTIZED_WEIGHT_LAYOUT,
         )
-        weight_quantization = module.config.weight_quantization_mode
+        weight_quantization = module.weight_quantization_mode
         activation_precision = module.activation_precision
 
         if weight_quantization == QuantizationMode.UINT4:
@@ -209,7 +205,7 @@ def load_linear(
             sublayers_to_fuse,
             MLX_QUANTIZED_WEIGHT_LAYOUT,
         )
-        weight_quantization = module.config.weight_quantization_mode
+        weight_quantization = module.weight_quantization_mode
         activation_precision = module.activation_precision
 
         weights = _process_quantized_tensor(
@@ -616,7 +612,7 @@ def load_mlx_quantized_tied_embedding(
 
     weights = _process_quantized_tensor(
         qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -641,7 +637,7 @@ def load_mlx_quantized_untied_embedding(
 
     input_weights = _process_quantized_tensor(
         input_qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -650,7 +646,7 @@ def load_mlx_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -685,7 +681,7 @@ def load_mlx_semi_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -730,7 +726,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "backbone"
         embedding_path = decoder_path / "embedding"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {Mamba2Config: "mixer"}
+        mixer_key = {Mamba2: "mixer"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -744,7 +740,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = base_path / "embedding.encoder"
         pre_mixer_norm_key = "norm"
-        mixer_key = {Mamba2Config: "layer"}
+        mixer_key = {Mamba2: "layer"}
         permute_conv = False
         pre_mlp_norm_key = "norm"
         mlp_key = "layer"
@@ -758,8 +754,8 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "operator_norm"
-        mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
-        permute_conv = isinstance(module.config.embedding_config, MLXQuantizedTiedEmbeddingConfig)
+        mixer_key = {ShortConv: "conv", Attention: "self_attn"}
+        permute_conv = isinstance(module.embedding, MLXQuantizedTiedEmbedding)
         pre_mlp_norm_key = "ffn_norm"
         mlp_key = "feed_forward"
         up_proj_key = "w3"
@@ -772,7 +768,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {AttentionConfig: "self_attn"}
+        mixer_key = {Attention: "self_attn"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -807,7 +803,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key[type(layer.config.mixer_config)],  # type: ignore
+            mixer_key[type(layer.mixer)],  # type: ignore
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,

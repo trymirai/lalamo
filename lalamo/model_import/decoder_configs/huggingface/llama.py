@@ -108,7 +108,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                     activation_quantization_mode=None,
                     activation_precision=activation_precision,
                 )
-        else: # noqa: PLR5501
+        else:  # noqa: PLR5501
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
                     input_scale=None,
@@ -181,7 +181,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             out_projection_config=linear_config,
             query_norm_config=None,
             key_norm_config=None,
-            logit_soft_cap=None,
             has_sinks=False,
             has_qkv_biases=self.attention_bias,
             has_out_biases=False,

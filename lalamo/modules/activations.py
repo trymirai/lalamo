@@ -1,8 +1,8 @@
 from abc import abstractmethod
+from dataclasses import dataclass
 
 import jax
 import jax.numpy as jnp
-from attr import dataclass
 from jaxtyping import Array, Float
 
 from lalamo.modules.common import LalamoConfig, RegistryABC

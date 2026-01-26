@@ -1,17 +1,14 @@
-import json
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from itertools import chain
 from pathlib import Path
 
-from jaxtyping import DTypeLike
-
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import Message
-from lalamo.model_import import ModelMetadata, ModelSpec, import_model
+from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
     FileSpec,
@@ -20,8 +17,6 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.models import LanguageModelConfig
-from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
 from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
@@ -90,9 +85,8 @@ def convert(
     )
 
     if precision is not None:
-        precision_dtype = config_converter.structure(precision.value, DTypeLike)  # type: ignore
-    else:
-        precision_dtype = None
+        raise NotImplementedError("precision conversion is not yet implemented")
+    precision_dtype = None
 
     if output_dir.exists():
         callbacks.output_dir_exists()
@@ -110,7 +104,7 @@ def convert(
             case FinishedInitializingModelEvent():
                 callbacks.finished_initializing_model()
 
-    model, metadata = import_model(
+    model, _config, metadata = import_model(
         model_spec,
         precision=precision_dtype,
         context_length=context_length,
@@ -119,18 +113,7 @@ def convert(
     callbacks.saving_model()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-    weights = flatten_parameters(model.export_weights())
-    del model
-
-    with Path(output_dir / "model.safetensors").open("wb") as fd:
-        safe_write(fd, weights)
-
-    config_json = config_converter.unstructure(metadata, ModelMetadata)
-    with open(output_dir / "config.json", "w") as file:
-        json.dump(config_json, file, indent=4)
-
-    callbacks.finished_saving_model()
+    raise NotImplementedError("export_weights is not yet implemented")
 
 
 @dataclass
@@ -185,7 +168,7 @@ def trace(
     callbacks.started()
 
     callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
+    raise NotImplementedError("load_model has been removed")
     callbacks.finished_loading_model()
 
     callbacks.tracing_model()
@@ -241,7 +224,7 @@ def estimate_batchsize(
     callbacks = callbacks_type(model_path, max_input_length, max_output_length, num_logits_per_token, mem)
 
     callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
+    raise NotImplementedError("load_model has been removed")
     callbacks.finished_loading_model()
 
     def progress_callback(event: EstimateBatchsizeFromMemoryEvent) -> None:
@@ -325,7 +308,7 @@ def collect_traces(
     )
 
     callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
+    raise NotImplementedError("load_model has been removed")
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()

@@ -16,17 +16,6 @@ class KVCacheLayer(StateLayerBase):
     keys: Float[Array, "*batch tokens groups head_channels"]
     values: Float[Array, "*batch tokens groups head_channels"]
 
-    def __post_init__(self) -> None:
-        if self.keys.ndim not in (3, 4):
-            raise ValueError(
-                f"Key and value buffers must have 3 or 4 dimensions: [batch], capacity, groups, head_channels,"
-                f" got shape {self.keys.shape}",
-            )
-        if self.keys.shape != self.values.shape:
-            raise ValueError("Keys and values buffers must have the same shape")
-        if self.keys.dtype != self.values.dtype:
-            raise ValueError("Keys and values buffers must have the same dtype")
-
     def _raise_if_batched(self) -> None:
         if self.keys.ndim != 3:
             raise ValueError(

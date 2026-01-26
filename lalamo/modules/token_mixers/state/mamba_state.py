@@ -12,20 +12,6 @@ class Mamba2StateLayer(StateLayerBase):
     conv_state: Float[Array, "*batch tokens conv_channels"]
     ssm_state: Float[Array, "*batch groups head_channels state_channels"]
 
-    def __post_init__(self) -> None:
-        if self.conv_state.ndim not in (2, 3):
-            raise ValueError(
-                f"Conv state must have 2 or 3 dimensions: [batch], tokens, conv_channels,"
-                f" got shape {self.conv_state.shape}",
-            )
-        if self.ssm_state.ndim not in (3, 4):
-            raise ValueError(
-                f"SSM state must have 3 or 4 dimensions: [batch], groups, head_channels, state_channels,"
-                f" got shape {self.ssm_state.shape}",
-            )
-        if self.conv_state.dtype != self.ssm_state.dtype:
-            raise ValueError("Conv state and SSM state must have the same dtype")
-
     @classmethod
     def init(
         cls,

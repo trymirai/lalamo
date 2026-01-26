@@ -13,13 +13,6 @@ __all__ = ["ShortConvStateLayer"]
 class ShortConvStateLayer(StateLayerBase):
     conv_state: Float[Array, "*batch tokens conv_channels"]
 
-    def __post_init__(self) -> None:
-        if self.conv_state.ndim not in (2, 3):
-            raise ValueError(
-                f"Conv state must have 2 or 3 dimensions: [batch], tokens, conv_channels,"
-                f" got shape {self.conv_state.shape}",
-            )
-
     @classmethod
     def init(
         cls,

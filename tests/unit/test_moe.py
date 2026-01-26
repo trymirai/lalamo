@@ -7,6 +7,7 @@ from lalamo.modules import (
     ForwardPassMode,
     FullPrecisionLinearConfig,
     MixtureOfExpertsConfig,
+    RandomInitializer,
     SoftmaxRouting,
 )
 from tests.common import assert_close
@@ -42,7 +43,7 @@ def test_moe_prefill_vs_decode_match() -> None:
 
     # Initialize MoE
     key = jax.random.PRNGKey(0)
-    moe = moe_config.random_init(model_dim=model_dim, hidden_dim=hidden_dim, key=key)
+    moe = moe_config.init(RandomInitializer(key), model_dim, hidden_dim)
 
     # Random inputs
     batch = 2

@@ -2,17 +2,15 @@ from dataclasses import dataclass
 
 import equinox as eqx
 import jax
-from einops import einsum, rearrange, repeat
+from einops import rearrange
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int
 
-from lalamo.common import dummy_array
-from lalamo.modules.common import PositionalEmbeddingSelector
-from lalamo.modules.linear import LinearBase, LinearConfig
+from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
+from lalamo.modules.linear import LinearBase, LinearConfigBase
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import apply_soft_capping
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
@@ -24,65 +22,13 @@ __all__ = [
 ]
 
 
-def _repeat_kv(
-    keys_or_values: Float[Array, "tokens groups channels"],
-    group_size: int,
-) -> Float[Array, "tokens groups*group_size channels"]:
-    return repeat(
-        keys_or_values,
-        "tokens groups channels -> tokens (groups group_size) channels",
-        group_size=group_size,
-    )
-
-
-def _soft_capped_attention_kernel(
-    queries: Float[Array, "dst_tokens heads head_channels"],
-    keys: Float[Array, "src_tokens groups head_channels"],
-    values: Float[Array, "src_tokens groups head_channels"],
-    mask: Bool[Array, "dst_tokens src_tokens"] | None,
-    scale: float | None,
-    logit_soft_cap: float,
-) -> Float[Array, "dst_tokens heads head_channels"]:
-    _, num_heads, head_dim = queries.shape
-    _, num_groups, _ = keys.shape
-    group_size = num_heads // num_groups
-    keys = _repeat_kv(keys, group_size)
-    values = _repeat_kv(values, group_size)
-    queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
-    keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
-    attention_logits = einsum(
-        queries_head_first,
-        keys_head_first,
-        "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
-    )
-    if mask is not None:
-        attention_logits = jnp.where(
-            mask,
-            attention_logits,
-            jnp.array(float("-inf"), dtype=attention_logits.dtype),
-        )
-
-    if scale is None:
-        scale_val = head_dim**-0.5
-    else:
-        scale_val = float(scale)
-    attention_logits = attention_logits * scale_val
-    attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
-    attention_weights = jax.nn.softmax(attention_logits, axis=-1)
-    return einsum(
-        attention_weights,
-        values,
-        "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
-    )
-
-
 AttentionResult = TokenMixerResult[KVCacheLayer]
 
 
 @dataclass(frozen=True)
 class AttentionConfig(TokenMixerConfigBase):
-    qkv_projection_config: LinearConfig
-    out_projection_config: LinearConfig
+    qkv_projection_config: LinearConfigBase
+    out_projection_config: LinearConfigBase
 
     query_norm_config: NormalizationConfig | None
     key_norm_config: NormalizationConfig | None
@@ -94,7 +40,6 @@ class AttentionConfig(TokenMixerConfigBase):
     scale: float | None
     sliding_window_size: int | None
 
-    logit_soft_cap: float | None
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
@@ -103,69 +48,13 @@ class AttentionConfig(TokenMixerConfigBase):
     def rope_dim(self) -> int:
         return self.head_dim
 
-    def random_init(
+    def init(
         self,
-        model_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Attention":
-        qkv_key, out_key = jax.random.split(key)
-        qkv_projection = self.qkv_projection_config.random_init(
-            input_dim=model_dim,
-            output_dims=(
-                self.num_heads * self.head_dim,
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
-            has_biases=self.has_qkv_biases,
-            key=qkv_key,
-        )
-        out_projection = self.out_projection_config.random_init(
-            self.num_heads * self.head_dim,
-            (model_dim,),
-            has_biases=self.has_out_biases,
-            key=out_key,
-        )
-
-        if self.query_norm_config is not None:
-            query_norm = self.query_norm_config.init(
-                input_dim=self.head_dim,
-            )
-        else:
-            query_norm = None
-
-        if self.key_norm_config is not None:
-            key_norm = self.key_norm_config.init(
-                input_dim=self.head_dim,
-            )
-        else:
-            key_norm = None
-
-        if self.has_sinks:
-            sinks = jnp.zeros((self.num_heads,), dtype=qkv_projection.activation_precision)
-        else:
-            sinks = None
-
-        return Attention(
-            self,
-            qkv_projection=qkv_projection,
-            out_projection=out_projection,
-            query_norm=query_norm,
-            key_norm=key_norm,
-            sinks=sinks,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            is_causal=self.is_causal,
-            scale=self.scale,
-            sliding_window_size=self.sliding_window_size,
-        )
-
-    def empty(
-        self,
+        initializer: Initializer,
         model_dim: int,
     ) -> "Attention":
-        qkv_projection = self.qkv_projection_config.empty(
+        qkv_projection = self.qkv_projection_config.init(
+            initializer,
             input_dim=model_dim,
             output_dims=(
                 self.num_heads * self.head_dim,
@@ -174,33 +63,29 @@ class AttentionConfig(TokenMixerConfigBase):
             ),
             has_biases=self.has_qkv_biases,
         )
-        out_projection = self.out_projection_config.empty(
+        out_projection = self.out_projection_config.init(
+            initializer,
             self.num_heads * self.head_dim,
             (model_dim,),
             has_biases=self.has_out_biases,
         )
 
         if self.query_norm_config is not None:
-            query_norm = self.query_norm_config.empty(
-                input_dim=self.head_dim,
-            )
+            query_norm = self.query_norm_config.init(initializer, self.head_dim)
         else:
             query_norm = None
 
         if self.key_norm_config is not None:
-            key_norm = self.key_norm_config.empty(
-                input_dim=self.head_dim,
-            )
+            key_norm = self.key_norm_config.init(initializer, self.head_dim)
         else:
             key_norm = None
 
         if self.has_sinks:
-            sinks = dummy_array(self.num_heads, qkv_projection.activation_precision)
+            sinks = initializer.zeros((self.num_heads,), qkv_projection.activation_precision)
         else:
             sinks = None
 
         return Attention(
-            self,
             qkv_projection=qkv_projection,
             out_projection=out_projection,
             query_norm=query_norm,
@@ -215,7 +100,7 @@ class AttentionConfig(TokenMixerConfigBase):
         )
 
 
-class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
+class Attention(TokenMixerBase[KVCacheLayer]):
     qkv_projection: LinearBase
     out_projection: LinearBase
 
@@ -232,10 +117,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     scale: float | None = eqx.field(static=True)
     sliding_window_size: int | None = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.qkv_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -258,64 +139,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     @property
     def has_sinks(self) -> bool:
         return self.sinks is not None
-
-    def __post_init__(self) -> None:
-        if self.qkv_projection.has_biases != self.config.has_qkv_biases:
-            raise ValueError(
-                f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"
-                f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
-            )
-        if self.out_projection.has_biases != self.config.has_out_biases:
-            raise ValueError(
-                f"Output projection has_biases {self.out_projection.has_biases} does not match"
-                f" the specified config has_out_biases {self.config.has_out_biases}",
-            )
-        if self.query_norm is not None and self.query_norm.input_dim != self.head_dim:
-            raise ValueError(
-                f"Query normalization input dimension must match head_dim ({self.head_dim}),"
-                f" got {self.query_norm.input_dim}",
-            )
-        if self.key_norm is not None and self.key_norm.input_dim != self.head_dim:
-            raise ValueError(
-                f"Key normalization input dimension must match head_dim ({self.head_dim}),"
-                f" got {self.key_norm.input_dim}",
-            )
-        if self.num_heads % self.num_groups != 0:
-            raise ValueError(
-                "Number of heads must be divisible by the number of groups,"
-                f" got {self.num_heads} heads and {self.num_groups} groups",
-            )
-        if self.out_projection.input_dim != self.num_heads * self.head_dim:
-            raise ValueError(
-                f"Output projection input dimension must be num_heads * head_dim"
-                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
-                f" got {self.out_projection.input_dim}",
-            )
-        q_output_dim, k_output_dim, v_output_dim = self.qkv_projection.output_dims
-        if q_output_dim != self.num_heads * self.head_dim:
-            raise ValueError(
-                f"Query projection output dimension must be num_heads * head_dim"
-                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
-                f" got {q_output_dim}",
-            )
-        if k_output_dim != self.num_groups * self.head_dim:
-            raise ValueError(
-                f"Key projection output dimension must be num_groups * head_dim"
-                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
-                f" got {k_output_dim}",
-            )
-        if v_output_dim != self.num_groups * self.head_dim:
-            raise ValueError(
-                f"Value projection output dimension must be num_groups * head_dim"
-                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
-                f" got {v_output_dim}",
-            )
-        if self.sinks is not None:
-            (num_sink_heads,) = self.sinks.shape
-            if num_sink_heads != self.num_heads:
-                raise ValueError(
-                    f"Number of sink heads must be equal to number of heads ({self.num_heads}), got {num_sink_heads}",
-                )
 
     @eqx.filter_jit
     def __call__(
@@ -374,24 +197,15 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             sink_bias = None
 
-        if self.config.logit_soft_cap is not None:
-            attention_output = _soft_capped_attention_kernel(
-                queries,
-                updated_state.keys,
-                updated_state.values,
-                mask=mask,
-                scale=self.scale,
-                logit_soft_cap=self.config.logit_soft_cap,
-            )
-        else:
-            attention_output = jax.nn.dot_product_attention(
-                queries,
-                updated_state.keys,
-                updated_state.values,
-                bias=sink_bias,
-                mask=mask,
-                scale=self.scale,
-            )
+        attention_output = jax.nn.dot_product_attention(
+            queries,
+            updated_state.keys,
+            updated_state.values,
+            bias=sink_bias,
+            mask=mask,
+            scale=self.scale,
+        )
+
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",

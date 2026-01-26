@@ -49,7 +49,6 @@ dev = [
     "twine>=6.1.0",
     "ruff==0.14.0",
     "pytest-xdist>=3.8.0",
-    "basedpyright>=1.36.1",
 ]
 
 [project.scripts]

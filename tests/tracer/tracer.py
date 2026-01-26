@@ -15,6 +15,7 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import ClassifierModel, LanguageModel, import_model
 from lalamo.model_import.common import ModelType
+from lalamo.modules import TransformerLayerResult
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
@@ -137,6 +138,8 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
     def match_embedding(self, activation_trace: ActivationTrace) -> None:
         first_layer_results, *_ = activation_trace.layer_results
+
+        assert isinstance(first_layer_results, TransformerLayerResult)
         assert first_layer_results.activation_trace is not None
         llm_results = first_layer_results.activation_trace.inputs
 
@@ -463,7 +466,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         dtype=test_spec.dtype,
     )
 
-    model, model_metadata = import_model(
+    model, _config, model_metadata = import_model(
         test_spec.model_repo,
         context_length=test_spec.num_tokens * test_spec.token_stride,
         precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,

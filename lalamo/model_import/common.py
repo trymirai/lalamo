@@ -15,7 +15,8 @@ from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.models import ClassifierModel, ClassifierModelConfig, GenerationConfig, LanguageModel, LanguageModelConfig
-from lalamo.modules import Classifier, Decoder, LalamoModule
+from lalamo.modules import Classifier, Decoder
+from lalamo.modules.common import ModuleWithConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -121,6 +122,7 @@ def download_config_file(
 
 class ImportResults(NamedTuple):
     model: LanguageModel | ClassifierModel
+    config: LanguageModelConfig | ClassifierModelConfig
     metadata: ModelMetadata
 
 
@@ -182,7 +184,7 @@ def _load_main_processing_module(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     context_length: int | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
-) -> LalamoModule:
+) -> ModuleWithConfig:
     weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
@@ -197,7 +199,7 @@ def _load_main_processing_module(
         if progress_callback is not None:
             progress_callback(InitializingModelEvent())
 
-        processing_module = foreign_config.load(
+        module_with_config = foreign_config.load(
             context_length,
             precision,
             accumulation_precision,
@@ -205,7 +207,7 @@ def _load_main_processing_module(
             metadata_dict,
         )
 
-    return processing_module
+    return module_with_config
 
 
 def _import_language_model(
@@ -222,7 +224,7 @@ def _import_language_model(
 
     if precision is None:
         precision = foreign_decoder_config.default_precision
-    decoder = _load_main_processing_module(
+    module_with_config = _load_main_processing_module(
         model_spec,
         precision,
         foreign_decoder_config,
@@ -230,6 +232,8 @@ def _import_language_model(
         context_length,
         accumulation_precision,
     )
+    decoder = module_with_config.module
+    decoder_config = module_with_config.config
     assert isinstance(decoder, Decoder)
 
     if progress_callback is not None:
@@ -259,12 +263,12 @@ def _import_language_model(
         )
 
     language_model_config = LanguageModelConfig(
-        model_config=decoder.config,
+        model_config=decoder_config,
         message_processor_config=message_processor.config,
         generation_config=generation_config,
     )
 
-    language_model = LanguageModel(language_model_config, decoder, message_processor)
+    language_model = LanguageModel(decoder, message_processor, generation_config)
     return language_model, language_model_config
 
 
@@ -283,7 +287,7 @@ def _import_classifier(
     if precision is None:
         precision = foreign_classifier_config.default_precision
 
-    classifier = _load_main_processing_module(
+    module_with_config = _load_main_processing_module(
         model_spec,
         precision,
         foreign_classifier_config,
@@ -291,6 +295,8 @@ def _import_classifier(
         context_length,
         accumulation_precision,
     )
+    classifier = module_with_config.module
+    classifier_config = module_with_config.config
     assert isinstance(classifier, Classifier)
 
     if progress_callback is not None:
@@ -299,10 +305,10 @@ def _import_classifier(
     message_processor = import_message_processor(model_spec)
 
     classifier_model_config = ClassifierModelConfig(
-        model_config=classifier.config,
+        model_config=classifier_config,
         message_processor_config=message_processor.config,
     )
-    classifier_model = ClassifierModel(classifier_model_config, classifier, message_processor)
+    classifier_model = ClassifierModel(classifier, message_processor)
     return classifier_model, classifier_model_config
 
 
@@ -351,4 +357,4 @@ def import_model(
         model_config=config,
         grammar_start_tokens=model_spec.grammar_start_tokens,
     )
-    return ImportResults(model, metadata)
+    return ImportResults(model, config, metadata)
