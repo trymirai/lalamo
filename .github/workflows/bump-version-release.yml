@@ -82,7 +82,7 @@ jobs:
 
       - name: Open pull request to default branch (bump/version-*)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         shell: bash
         run: |
           gh pr create --base "${{ github.event.repository.default_branch }}" \
