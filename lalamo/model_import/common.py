@@ -22,7 +22,7 @@ from lalamo.models import (
     LanguageModel,
     LanguageModelConfig,
     TTSGenerator,
-    TTSGeneratorConfig,
+    TTSGeneratorConfigBase,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
@@ -85,7 +85,7 @@ class ModelMetadata:
     repo: str
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
-    model_config: LanguageModelConfig | ClassifierModelConfig | TTSGeneratorConfig
+    model_config: LanguageModelConfig | ClassifierModelConfig | TTSGeneratorConfigBase
     grammar_start_tokens: tuple[str, ...]
 
 
@@ -319,7 +319,7 @@ def _import_tts_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[TTSGenerator, TTSGeneratorConfig]:
+) -> tuple[TTSGenerator, TTSGeneratorConfigBase]:
     foreign_tts_config_file = download_config_file(model_spec)
     tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
 
@@ -368,7 +368,7 @@ def _import_tts_model(
     )
     message_processor = TTSRequestFactory(tts_request_factory_config, tokenizer)
 
-    tts_generator_config = TTSGeneratorConfig(
+    tts_generator_config = TTSGeneratorConfigBase(
         tts_config=foreign_tts_config.to_lalamo_config(
             context_length=context_length,
             activation_precision=precision,

@@ -36,12 +36,18 @@ from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
 
-__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
+__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfigBase"]
 
 
 @dataclass(frozen=True)
-class TTSGeneratorConfig:
+class TTSGeneratorConfigBase:
     tts_config: TTSConfig
+    message_processor_config: TTSRequestFactoryConfig
+
+
+@dataclass(frozen=True)
+class FishAudioGeneratorConfig(TTSGeneratorConfigBase):
+    tts_config: TTSConfig[FishAudioTextDecoderConfig, DescriptAudioCodecConfig]
     message_processor_config: TTSRequestFactoryConfig
 
 
@@ -52,7 +58,7 @@ class TTSGenerationResult:
 
 
 class TTSGenerator(eqx.Module):
-    config: TTSGeneratorConfig
+    config: TTSGeneratorConfigBase
     tts_model: TTSModel
 
     message_processor: TTSRequestFactory = eqx.field(static=True)
@@ -126,12 +132,6 @@ class TTSGenerator(eqx.Module):
         return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
 
 
-@dataclass(frozen=True)
-class FishAudioGeneratorConfig(TTSGeneratorConfig):
-    tts_config: TTSConfig[FishAudioTextDecoderConfig, DescriptAudioCodecConfig]
-    message_processor_config: TTSRequestFactoryConfig
-
-
 class FishAudioTTSGenerator(TTSGenerator):
     def decode_text(
         self,
@@ -191,7 +191,7 @@ class TTSLoader:  # Either move to different module or just make a standalone fu
         generator_type, generator_config_type = TTSLoader.tts_generator_type_from_model_name(full_tts_model_name)
 
         config = config_converter.structure(config_json["model_config"], generator_config_type)
-        assert isinstance(config, TTSGeneratorConfig)
+        assert isinstance(config, TTSGeneratorConfigBase)
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
             weights = unflatten_parameters(weights_dict)

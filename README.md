@@ -62,14 +62,9 @@ How to:
 - **Debian/Ubuntu**: `apt-get install portaudio19-dev python-all-dev`
 - **Other Linux**: [PortAudio build instructions](https://www.portaudio.com/docs/v19-doxydocs/compile_linux.html)
 
-Then install with:
+Then run :
 
 ```bash
-uv pip install "path/to/lalamo[pyaudio]"
+uv run --with  pyaudio lalamo path/to/model --replay
 ```
 
-Or just add pyaudio into your UV venv:
-
-```bash
-uv pip install pyaudio
-```
