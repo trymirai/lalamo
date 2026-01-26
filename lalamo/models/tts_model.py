@@ -15,9 +15,11 @@ from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.audio.utils import DEFAULT_SAMPLERATE
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    DEFAULT_FISHAUDIO_RANDOM_SEED,
-    FishaudioConsts,
     default_fishaudio_sampling_policy,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_consts import (
+    DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+    DEFAULT_FISHAUDIO_RANDOM_SEED,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
@@ -27,8 +29,8 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
     TTSMessage,
-    TTSRequestFactory,
-    TTSRequestFactoryConfig,
+    TTSMessageProcessor,
+    TTSMessageProcessorConfig,
 )
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
@@ -41,7 +43,7 @@ __all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
 @dataclass(frozen=True)
 class TTSGeneratorConfig:
     tts_config: TTSConfig
-    message_processor_config: TTSRequestFactoryConfig
+    message_processor_config: TTSMessageProcessorConfig
 
 
 @dataclass
@@ -54,7 +56,7 @@ class TTSGenerator(eqx.Module):
     config: TTSGeneratorConfig
     tts_model: TTSModel
 
-    message_processor: TTSRequestFactory = eqx.field(static=True)
+    message_processor: TTSMessageProcessor = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -138,7 +140,7 @@ class TTSGenerator(eqx.Module):
             weights = unflatten_parameters(weights_dict)
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
-        message_processor = TTSRequestFactory(config.message_processor_config, tokenizer)
+        message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
         return TTSGenerator(
             config=config,
             tts_model=model,
@@ -151,7 +153,7 @@ class FishAudioTTSGenerator(TTSGenerator):
         self,
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,
-        repetition_penalty: float = FishaudioConsts.DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)

@@ -1,4 +1,3 @@
-from abc import ABC
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, replace
 from functools import cached_property
@@ -19,7 +18,7 @@ from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
-__all__ = ["TTSMessage", "TTSRequestFactory", "TTSRequestFactoryConfig"]
+__all__ = ["TTSMessage", "TTSMessageProcessor", "TTSMessageProcessorConfig"]
 
 DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.3, top_p=0.9)
 DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
@@ -40,27 +39,27 @@ class TTSMessage:
     style: str
 
 
-class TTSRequest(TypedDict):  # TODO: Sync naming with MessageProcessor's classes
+class TTSRequest(TypedDict):
     messages: list[TTSMessage]
 
 
 @dataclass(frozen=True)
-class TTSRequestFactoryConfig:
+class TTSMessageProcessorConfig:
     prompt_template: str
 
     # TODO(peter.glushkov): find a better way to handle opening new-line symbol
     drop_initial_newline: bool = True
 
-    def init(self, tokenizer: Tokenizer) -> "TTSRequestFactory":
-        return TTSRequestFactory(
+    def init(self, tokenizer: Tokenizer) -> "TTSMessageProcessor":
+        return TTSMessageProcessor(
             self,
             tokenizer=tokenizer,
         )
 
 
 @dataclass(frozen=True)
-class TTSRequestFactory:
-    config: TTSRequestFactoryConfig
+class TTSMessageProcessor:
+    config: TTSMessageProcessorConfig
     tokenizer: Tokenizer
 
     @cached_property
@@ -99,7 +98,7 @@ register_config_union(TTSTextDecoderConfig)
 
 
 @dataclass(frozen=True)
-class TTSConfig(ABC):
+class TTSConfig:
     text_decoder_config: TTSTextDecoderConfig
     audio_decoder_config: TTSAudioDecoderConfig
     vocoder_config: VocoderConfig

@@ -52,8 +52,7 @@ dev = [
     "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
     "hypothesis>=6.150.0",
-    "fishaudio>=0.0.5",
-    "fish_speech>=0.1.0",
+    "fish-speech",
     "bidict>=0.23.1",
     "tiktoken>=0.12.0",
     "blobfile>=3.1.0"
@@ -76,13 +75,6 @@ version = { attr = "lalamo.__version__" }
 
 [tool.uv]
 package = true
-override-dependencies = [
-    "numpy>=2.3",
-    "datasets>=2.21"
-]
-exclude-dependencies = [
-    "pyaudio"
-]
 
 [[tool.uv.index]]
 name = "torch-cpu"
@@ -107,6 +99,7 @@ torch = [
 ]
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-mlx" }
+fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="1d542fd"}
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.

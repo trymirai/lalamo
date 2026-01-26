@@ -25,7 +25,6 @@ from lalamo.common import ParameterTree
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
-from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
 from lalamo.sampling import SamplingPolicy
 from tests.tts.fishaudio.fishaudio_sampling import (
@@ -371,7 +370,7 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder[FishAudioAudioDecoderConfig_
     def activation_precision(self) -> DTypeLike:
         semantic_quantizer = self.dac_model.quantizer
         assert isinstance(semantic_quantizer, ResidualVectorQuantize)
-        return DTypeConvert.to_jax(semantic_quantizer.quantizers[0].codebook.weight.dtype)
+        return torch_to_jax(semantic_quantizer.quantizers[0].codebook.weight.dtype)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {}
@@ -463,7 +462,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return DTypeConvert.to_jax(self.fish_model.embeddings.weight.dtype)
+        return torch_to_jax(self.fish_model.embeddings.weight.dtype)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {}

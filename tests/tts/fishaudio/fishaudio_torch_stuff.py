@@ -34,15 +34,15 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import Identity, SiLU
-from lalamo.modules.audio.fishaudio.fishaudio_common import FishaudioConsts, get_default_fishaudio_dac_config
+from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.audio.fishaudio.fishaudio_consts import IM_END_TOKEN
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoder, FishAudioTextDecoderConfig
-from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel, TTSRequestFactory, TTSRequestFactoryConfig
-from lalamo.modules.audio.utils import DTypeConvert
+from lalamo.modules.audio.text_to_speech import TTSConfig, TTSMessageProcessor, TTSMessageProcessorConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.rope import RoPEConfigCis
-from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.modules.torch_interop import DTypeConvert, torch_to_jax
 
 from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
@@ -101,7 +101,7 @@ def from_fish_audio_config(
         fast_model_projection_config=fast_model_projection_config,
         semantic_token_begin_id=tokenizer.semantic_begin_id,
         semantic_token_end_id=tokenizer.semantic_end_id,
-        im_end_token_id=tokenizer.get_token_id(FishaudioConsts.IM_END_TOKEN),
+        im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
         codebook_size=fish_audio_cfg.codebook_size,
         precision=precision,
         vocab_size=fish_audio_cfg.vocab_size,
@@ -338,11 +338,11 @@ class FishAudioFromTorch:
     {% for message in messages %}<|{{message.style}}|><|{{message.speaker_id}}|>{{message.content}}{% endfor %}
     """
 
-        tts_request_factory_config = TTSRequestFactoryConfig(
+        tts_request_factory_config = TTSMessageProcessorConfig(
             prompt_template=prompt_template,
         )
 
-        message_processor = TTSRequestFactory(tts_request_factory_config, tokenizer)
+        message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
 
         tts_config = TTSConfig(
             text_decoder.config,
@@ -388,11 +388,11 @@ class FishAudioFromTorch:
     {% for message in messages %}<|{{message.style}}|><|{{message.speaker_id}}|>{{message.content}}{% endfor %}
     """
 
-        tts_request_factory_config = TTSRequestFactoryConfig(
+        tts_request_factory_config = TTSMessageProcessorConfig(
             prompt_template=prompt_template,
         )
 
-        message_processor = TTSRequestFactory(tts_request_factory_config, tokenizer)
+        message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
 
         tts_config = TTSConfig(
             text_decoder.config,

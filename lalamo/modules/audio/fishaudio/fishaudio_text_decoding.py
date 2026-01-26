@@ -10,9 +10,9 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
-    FishaudioConsts,
     default_fishaudio_sampling_policy,
 )
+from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
@@ -57,8 +57,8 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
 
     precision: DTypeLike
 
-    short_logits_size: int = FishaudioConsts.SHORT_LOGITS_SIZE
-    repeat_window_size: int = FishaudioConsts.REPEAT_WINDOW_SIZE
+    short_logits_size: int = SHORT_LOGITS_SIZE
+    repeat_window_size: int = REPEAT_WINDOW_SIZE
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)

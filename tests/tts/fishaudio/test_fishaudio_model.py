@@ -33,7 +33,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     VectorQuantizeConfig,
 )
 from lalamo.modules.audio.text_to_speech import TTSMessage
-from lalamo.modules.audio.utils import DTypeConvert
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
@@ -1350,37 +1349,3 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     assert jnp.allclose(audio_fish_ntc, audio_lalamo, atol=1e-3), (
         f"Outputs don't match. Max diff: {jnp.max(jnp.abs(audio_diff))}"
     )
-
-
-def test_dtype_convert_roundtrip() -> None:
-    """Test that DTypeConvert correctly converts dtypes between JAX and PyTorch."""
-    # Test all supported dtypes: JAX -> PyTorch and back
-    test_cases = [
-        ("float16", torch.float16),
-        ("float32", torch.float32),
-        ("float64", torch.float64),
-        ("bfloat16", torch.bfloat16),
-        ("int8", torch.int8),
-        ("int16", torch.int16),
-        ("int32", torch.int32),
-        ("int64", torch.int64),
-        ("uint8", torch.uint8),
-        ("bool", torch.bool),
-        ("complex64", torch.complex64),
-        ("complex128", torch.complex128),
-    ]
-
-    for dtype_str, torch_dtype in test_cases:
-        jax_dtype = jnp.dtype(dtype_str)
-
-        # Test JAX dtype -> PyTorch
-        assert DTypeConvert.to_torch(jax_dtype) == torch_dtype, f"Failed JAX->Torch for {dtype_str}"
-
-        # Test PyTorch -> JAX
-        assert DTypeConvert.to_jax(torch_dtype) == jax_dtype, f"Failed Torch->JAX for {dtype_str}"
-
-        # Test string -> PyTorch
-        assert DTypeConvert.to_torch(dtype_str) == torch_dtype, f"Failed str->Torch for {dtype_str}"
-
-        # Test string -> JAX
-        assert DTypeConvert.to_jax(dtype_str) == jax_dtype, f"Failed str->JAX for {dtype_str}"
