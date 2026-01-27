@@ -32,7 +32,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.embedding import MLXQuantizedUntiedEmbedding
-from lalamo.modules.mlp import MixtureOfExperts, MLPBase, SparseMoE
+from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
@@ -257,62 +257,7 @@ def load_mlp(
     if isinstance(module, MixtureOfExperts):
         return load_moe(module, weights_dict, path)
 
-    if isinstance(module, SparseMoE):
-        return load_sparse_moe(module, weights_dict, path)
-
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
-
-
-def load_sparse_moe(
-    module: SparseMoE,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> SparseMoE:
-    router = load_linear(module.router, weights_dict, path / "gate")
-
-    experts_path = path / "experts"
-    up_weights = []
-    gate_weights = []
-    down_weights = []
-    for idx in range(module.mixture_size):
-        up_weights.append(weights_dict[experts_path / str(idx) / "up_proj.weight"])
-        gate_weights.append(weights_dict[experts_path / str(idx) / "gate_proj.weight"])
-        down_weights.append(weights_dict[experts_path / str(idx) / "down_proj.weight"])
-    up_w = jnp.stack(up_weights, axis=0)
-    gate_w = jnp.stack(gate_weights, axis=0)
-    combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
-    up_projection = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.experts.up_projection,
-        (combined_up_gate_w, None),
-    )
-    down_w = jnp.stack(down_weights, axis=0)
-    down_projection = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.experts.down_projection,
-        (down_w, None),
-    )
-    experts = load_parameters(
-        lambda m: (m.up_projection, m.down_projection),
-        module.experts,
-        (up_projection, down_projection),
-    )
-
-    shared_expert = load_mlp(
-        module.shared_expert,
-        weights_dict,
-        path / "shared_expert",
-        "up_proj",
-        "gate_proj",
-        "down_proj",
-    )
-    shared_expert_gate = load_linear(module.shared_expert_gate, weights_dict, path / "shared_expert_gate")
-
-    return load_parameters(
-        lambda m: (m.router, m.experts, m.shared_expert, m.shared_expert_gate),
-        module,
-        (router, experts, shared_expert, shared_expert_gate),
-    )
 
 
 def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:

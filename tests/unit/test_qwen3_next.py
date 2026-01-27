@@ -9,9 +9,9 @@ from lalamo.modules import (
     DeltaNetAttentionConfig,
     DenseMLP,
     DenseMLPConfig,
-    SparseMoEConfig,
     TiedEmbeddingConfig,
 )
+from lalamo.modules.mlp import MixtureOfExpertsConfig
 from lalamo.modules.token_mixers import Attention, DeltaNetAttention
 
 
@@ -100,8 +100,7 @@ def _build_hf_weights_for_qwen3_next(decoder: Decoder) -> dict[ParameterPath, jn
             qkv_weights = layer.mixer.qkv_projection.weights
             total_out_dim = qkv_weights.shape[0]
             assert total_out_dim == q_out_dim + k_out_dim + v_out_dim, (
-                "Attention QKV projection dim mismatch: "
-                f"{total_out_dim} != {q_out_dim} + {k_out_dim} + {v_out_dim}"
+                f"Attention QKV projection dim mismatch: {total_out_dim} != {q_out_dim} + {k_out_dim} + {v_out_dim}"
             )
             q_end = q_out_dim
             k_end = q_end + k_out_dim
@@ -155,11 +154,11 @@ def test_qwen3_next_decoder_config_mixer_and_mlp_types() -> None:
     assert isinstance(layer_configs[2].mixer_config, DeltaNetAttentionConfig)
     assert isinstance(layer_configs[3].mixer_config, AttentionConfig)
 
-    # decoder_sparse_step=2 + num_experts>0 => layer 4 uses SparseMoE, layer 2 is in mlp_only_layers
+    # decoder_sparse_step=2 + num_experts>0 => layer 4 uses MoE, layer 2 is in mlp_only_layers
     assert isinstance(layer_configs[0].mlp_config, DenseMLPConfig)
     assert isinstance(layer_configs[1].mlp_config, DenseMLPConfig)
     assert isinstance(layer_configs[2].mlp_config, DenseMLPConfig)
-    assert isinstance(layer_configs[3].mlp_config, SparseMoEConfig)
+    assert isinstance(layer_configs[3].mlp_config, MixtureOfExpertsConfig)
 
 
 def test_qwen3_next_weights_load() -> None:

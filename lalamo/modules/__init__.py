@@ -51,9 +51,6 @@ from .mlp import (
     MLPForwardPassConfig,
     RoutingFunction,
     SoftmaxRouting,
-    SparseMoE,
-    SparseMoEConfig,
-    TopKRouting,
 )
 from .normalization import Normalization, NormalizationConfig, UpcastMode
 from .rope import (
@@ -155,13 +152,10 @@ __all__ = [
     "ShortConvStateLayer",
     "SiLU",
     "SoftmaxRouting",
-    "SparseMoE",
-    "SparseMoEConfig",
     "State",
     "StaticKVCacheLayer",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
-    "TopKRouting",
     "Transformer",
     "TransformerConfig",
     "TransformerLayer",

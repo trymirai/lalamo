@@ -22,9 +22,13 @@ def _check_compatible(old_value: PyTree, new_value: PyTree, module: eqx.Module) 
     if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
         name = _get_name(old_value, module)
         if old_value.shape != new_value.shape:
-            raise ValueError(f"Expected parameter {name} to have shape {old_value.shape}, got {new_value.shape}")
+            raise ValueError(
+                f"Expected parameter {module}.{name} to have shape {old_value.shape}, got {new_value.shape}",
+            )
         if old_value.dtype != new_value.dtype:
-            raise ValueError(f"Expected parameter {name} to have dtype {old_value.dtype}, got {new_value.dtype}")
+            raise ValueError(
+                f"Expected parameter {module}.{name} to have dtype {old_value.dtype}, got {new_value.dtype}",
+            )
     elif type(old_value) is not type(new_value):
         raise TypeError(f"Expected parameter of type {type(old_value)}, got {type(new_value)}")
 

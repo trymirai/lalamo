@@ -14,9 +14,7 @@ from lalamo.modules import (
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
-    SparseMoEConfig,
     TiedEmbeddingConfig,
-    TopKRouting,
     TransformerConfig,
     TransformerLayerConfig,
     UnscaledRoPEConfig,
@@ -25,6 +23,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.linear import MLXQuantizedLinearConfig
+from lalamo.modules.mlp import MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
@@ -77,8 +76,8 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
 
     attention_bias: bool = False
 
-    quantization: QuantizationConfigType | Mapping[str, object] = None
-    quantization_config: QuantizationConfigType | Mapping[str, object] = None
+    quantization: QuantizationConfigType | None = None
+    quantization_config: QuantizationConfigType | None = None
 
     def to_decoder_config(
         self,
@@ -96,7 +95,8 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
             group_size_value = quantization_mapping.get("group_size")
             bits_value = quantization_mapping.get("bits")
             if isinstance(group_size_value, (int, str, bytes, bytearray)) and isinstance(
-                bits_value, (int, str, bytes, bytearray),
+                bits_value,
+                (int, str, bytes, bytearray),
             ):
                 quantization: QuantizationConfigType | None = MLXQuantizationConfig(
                     group_size=int(group_size_value),
@@ -200,15 +200,17 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        moe_config = SparseMoEConfig(
+        moe_config = MixtureOfExpertsConfig(
             mixture_size=self.num_experts,
-            num_experts_per_token=self.num_experts_per_tok,
-            routing_function=TopKRouting(norm_topk_prob=self.norm_topk_prob),
+            num_experts_per_token=(self.num_experts_per_tok or 1),
+            routing_function=SoftmaxRouting(),
             router_config=linear_config,
             router_has_biases=False,
             expert_config=experts_config,
+            gate_config=linear_config,
             shared_expert_config=shared_expert_config,
-            shared_expert_gate_config=linear_config,
+            gate_applies_to_shared_experts=True,
+            num_shared_experts=1,
             expert_hidden_dim=self.moe_intermediate_size,
             shared_expert_hidden_dim=self.shared_expert_intermediate_size,
         )
