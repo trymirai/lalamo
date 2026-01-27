@@ -6,8 +6,8 @@ from .ssm_state import SSMStateLayer
 __all__ = [
     "DynamicKVCacheLayer",
     "KVCacheLayer",
-    "ShortConvStateLayer",
     "SSMStateLayer",
+    "ShortConvStateLayer",
     "State",
     "StateLayerBase",
     "StaticKVCacheLayer",
