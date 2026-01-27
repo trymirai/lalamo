@@ -101,11 +101,12 @@ class AttentionConfig(TokenMixerConfigBase):
     has_qkv_biases: bool
     has_out_biases: bool
     q_proj_has_gate: bool = False
-    rope_dim_override: int | None = None
+    # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
+    partial_rope_dim: int | None = None
 
     @property
     def rope_dim(self) -> int:
-        return self.rope_dim_override if self.rope_dim_override is not None else self.head_dim
+        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
 
     def random_init(
         self,
@@ -381,17 +382,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
-            rope_dim = positional_embeddings.head_dim
-            if rope_dim < self.head_dim:
-                q_rot, q_pass = queries[..., :rope_dim], queries[..., rope_dim:]
-                k_rot, k_pass = keys[..., :rope_dim], keys[..., rope_dim:]
-                q_rot = apply_positional_embeddings(q_rot)
-                k_rot = apply_positional_embeddings(k_rot)
-                queries = jnp.concatenate([q_rot, q_pass], axis=-1)
-                keys = jnp.concatenate([k_rot, k_pass], axis=-1)
-            else:
-                queries = apply_positional_embeddings(queries)
-                keys = apply_positional_embeddings(keys)
+            queries = apply_positional_embeddings(queries)
+            keys = apply_positional_embeddings(keys)
 
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)

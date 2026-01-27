@@ -254,7 +254,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     scale=None,
                     sliding_window_size=None,
                     q_proj_has_gate=True,
-                    rope_dim_override=int(self.head_dim * self.partial_rotary_factor),
+                    partial_rope_dim=int(self.head_dim * self.partial_rotary_factor),
                 )
 
             if (layer_idx not in self.mlp_only_layers) and (
