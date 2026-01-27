@@ -40,7 +40,12 @@ def inference_collect_traces(
             prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
             prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
         )
-        .compile()
+        # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
+        # 0 - no autotune, gpu shouldn't be touched
+        # 1 - basic level, gpu should be touched veeery little
+        # 2,3 - gpu touched more and more
+        # 4 (default) - gpu might allocate more memory than the run would require!
+        .compile(compiler_options={"xla_gpu_autotune_level": "2"})
     )
 
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
