@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Self
+from typing import Literal, Self
 
 import equinox as eqx
 import jax
@@ -36,7 +36,6 @@ __all__ = [
     "SoftmaxRouting",
     "SparseMoE",
     "SparseMoEConfig",
-    "TopKRouting",
 ]
 
 
@@ -280,23 +279,7 @@ class SoftmaxRouting(RoutingFunctionBase):
         return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
 
 
-@dataclass(frozen=True)
-class TopKRouting(RoutingFunctionBase):
-    norm_topk_prob: bool
-
-    def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
-        routing_weights = jax.nn.softmax(logits)
-        active_weights, active_indices = jax.lax.top_k(routing_weights, num_active)
-        if self.norm_topk_prob:
-            active_weights = active_weights / jnp.sum(active_weights)
-        mask = jnp.zeros_like(logits, dtype=bool)
-        mask = mask.at[active_indices].set(True)
-        expert_weights = jnp.zeros_like(logits)
-        expert_weights = expert_weights.at[active_indices].set(active_weights)
-        return RoutingMap(expert_mask=mask, expert_weights=expert_weights)
-
-
-RoutingFunction = SoftmaxRouting | TopKRouting | DummyUnionMember
+RoutingFunction = SoftmaxRouting | DummyUnionMember
 
 
 register_config_union(RoutingFunction)
@@ -312,8 +295,12 @@ class MixtureOfExpertsConfig(ABC):
     num_experts_per_token: int
     router_has_biases: bool
 
+    num_shared_experts: int | None = None
+    shared_expert_config: DenseMLPConfig | None = None
+    shared_expert_gate_config: LinearConfig | None = None
+
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MixtureOfExperts":
-        experts_key, router_key = jax.random.split(key)
+        experts_key, router_key, shared_experts_key, shared_experts_gate_key = jax.random.split(key, 4)
         router = self.router_config.random_init(
             model_dim,
             (self.mixture_size,),
@@ -321,17 +308,55 @@ class MixtureOfExpertsConfig(ABC):
             key=router_key,
         )
         experts = self.expert_config.random_init_mixture(self.mixture_size, model_dim, hidden_dim, key=experts_key)
-        return MixtureOfExperts(self, router, experts)
+
+        shared_experts = None
+        if self.shared_expert_config is not None:
+            if self.num_shared_experts is None:
+                raise ValueError("Please provide the (num_shared_experts: int) when using shared experts.")
+            shared_experts = self.shared_expert_config.random_init_mixture(
+                self.num_shared_experts,
+                model_dim,
+                hidden_dim,
+                key=shared_experts_key,
+            )
+
+        shared_experts_gate = None
+        if self.shared_expert_gate is not None:
+            if self.shared_expert_config is None:
+                raise ValueError("shared_expert: DenseMLPConfig) when using shared expert gate.")
+            shared_experts_gate = self.shared_expert_gate_config.random_init(
+                model_dim,
+                (1,),
+                has_biases=False,
+                key=shared_experts_gate_key,
+            )
+
+        return MixtureOfExperts(self, router, experts, shared_experts, shared_experts_gate)
 
     def empty(self, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":
         router = self.router_config.empty(model_dim, (self.mixture_size,), has_biases=self.router_has_biases)
         experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, hidden_dim)
-        return MixtureOfExperts(self, router, experts)
+
+        shared_experts = None
+        if self.shared_expert_config is not None:
+            shared_experts = self.shared_expert_config.empty_mixture(self.num_shared_experts, model_dim, hidden_dim)
+
+        shared_experts_gate = None
+        if shared_experts_gate is not None:
+            shared_experts_gate = self.shared_expert_gate_config.empty(model_dim, (1,), has_biases=False)
+
+        return MixtureOfExperts(self, router, experts, shared_experts, shared_experts_gate)
 
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: LinearBase
     experts: DenseMLP
+
+    shared_experts: DenseMLP | None
+    gate: LinearBase | None
+
+    gate_applies_to_experts: bool = False
+    gate_applies_to_shared_experts: bool = False
 
     @property
     def mixture_size(self) -> int:
@@ -406,8 +431,21 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 )
                 return selected_expert.call_unbatched(x) * w
 
-            contributions = vmap(apply_one)(active_indices, active_weights)
-            return jnp.sum(contributions, axis=0)
+            experts_contribution = vmap(apply_one)(active_indices, active_weights).sum(axis=0)
+
+            shared_contribution = 0.0
+            if self.shared_experts is not None:
+                shared_contribution = vmap(lambda expert: expert.call_unbatched(x))(self.shared_experts).sum(axis=0)
+
+            gating_factor = jax.nn.sigmoid(self.gate(x)) if self.gate is not None else 1.0
+
+            if self.gate_applies_to_experts:
+                experts_contribution *= gating_factor
+
+            if self.gate_applies_to_shared_experts:
+                shared_contribution *= gating_factor
+
+            return experts_contribution + shared_contribution
 
         return vmap_twice(per_token)(inputs)
 
@@ -508,6 +546,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             experts=self.experts.import_weights(require_tree(weights["experts"])),
         )
 
+
 @dataclass(frozen=True)
 class SparseMoEConfig(MLPConfigBase):
     expert_config: DenseMLPConfig
@@ -536,17 +575,6 @@ class SparseMoEConfig(MLPConfigBase):
             self.expert_hidden_dim,
             key=experts_key,
         )
-        shared_expert = self.shared_expert_config.random_init(
-            model_dim,
-            self.shared_expert_hidden_dim,
-            key=shared_key,
-        )
-        shared_expert_gate = self.shared_expert_gate_config.random_init(
-            model_dim,
-            (1,),
-            has_biases=False,
-            key=shared_gate_key,
-        )
         return SparseMoE(self, router, experts, shared_expert, shared_expert_gate)
 
     def empty(self, model_dim: int, hidden_dim: int) -> "SparseMoE":  # noqa: ARG002
@@ -568,8 +596,9 @@ class SparseMoEConfig(MLPConfigBase):
 class SparseMoE(MLPBase[SparseMoEConfig]):
     router: LinearBase
     experts: DenseMLP
-    shared_expert: DenseMLP
-    shared_expert_gate: LinearBase
+    shared_experts: DenseMLP | None
+    gate: LinearBase | None
+    gate_applies_to: Literal["experts", "shared_experts", "all"] | None = None
 
     @property
     def mixture_size(self) -> int:
