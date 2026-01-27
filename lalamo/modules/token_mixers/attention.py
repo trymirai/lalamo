@@ -114,13 +114,17 @@ class AttentionConfig(TokenMixerConfigBase):
         key: PRNGKeyArray,
     ) -> "Attention":
         qkv_key, out_key = jax.random.split(key)
+        q_output_dim = self.num_heads * self.head_dim
+        output_dims = (
+            q_output_dim,
+            self.num_groups * self.head_dim,
+            self.num_groups * self.head_dim,
+        )
+        if self.q_proj_has_gate:
+            output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.random_init(
             input_dim=model_dim,
-            output_dims=(
-                self.num_heads * self.head_dim * (2 if self.q_proj_has_gate else 1),
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
+            output_dims=output_dims,
             has_biases=self.has_qkv_biases,
             key=qkv_key,
         )
@@ -169,13 +173,17 @@ class AttentionConfig(TokenMixerConfigBase):
         self,
         model_dim: int,
     ) -> "Attention":
+        q_output_dim = self.num_heads * self.head_dim
+        output_dims = (
+            q_output_dim,
+            self.num_groups * self.head_dim,
+            self.num_groups * self.head_dim,
+        )
+        if self.q_proj_has_gate:
+            output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.empty(
             input_dim=model_dim,
-            output_dims=(
-                self.num_heads * self.head_dim * (2 if self.q_proj_has_gate else 1),
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
+            output_dims=output_dims,
             has_biases=self.has_qkv_biases,
         )
         out_projection = self.out_projection_config.empty(
@@ -295,8 +303,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
                 f" got {self.out_projection.input_dim}",
             )
-        q_output_dim, k_output_dim, v_output_dim = self.qkv_projection.output_dims
-        expected_q = self.num_heads * self.head_dim * (2 if self.config.q_proj_has_gate else 1)
+        output_dims = self.qkv_projection.output_dims
+        if len(output_dims) not in (3, 4):
+            raise ValueError(
+                "QKV projection must have 3 (qkv) or 4 (qkvz) output dims, "
+                f"got {len(output_dims)}",
+            )
+        q_output_dim, k_output_dim, v_output_dim = output_dims[:3]
+        expected_q = self.num_heads * self.head_dim
         if q_output_dim != expected_q:
             raise ValueError(
                 f"Query projection output dimension must be {expected_q}, got {q_output_dim}",
@@ -313,6 +327,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
                 f" got {v_output_dim}",
             )
+        if self.config.q_proj_has_gate:
+            if len(output_dims) != 4:
+                raise ValueError("QKVZ projection must have 4 output dims when q_proj_has_gate is enabled.")
+            gate_output_dim = output_dims[3]
+            if gate_output_dim != expected_q:
+                raise ValueError(
+                    f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
+                )
+        elif len(output_dims) != 3:
+            raise ValueError("QKV projection must have 3 output dims when q_proj_has_gate is disabled.")
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:
@@ -329,24 +353,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
-        q_out, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
-        if self.config.q_proj_has_gate:
-            q_out = rearrange(
-                q_out,
-                "tokens (heads head_channels) -> tokens heads head_channels",
-                heads=self.num_heads,
-                head_channels=self.head_dim * 2,
-            )
-            queries, gate = jnp.split(q_out, 2, axis=-1)
-            gate = rearrange(gate, "tokens heads head_channels -> tokens (heads head_channels)")
-        else:
-            gate = None
-            queries = rearrange(
-                q_out,
-                "tokens (heads head_channels) -> tokens heads head_channels",
-                heads=self.num_heads,
-                head_channels=self.head_dim,
-            )
+        q_out, keys, values, *gate_out = vmap(self.qkv_projection, in_axes=0)(inputs)
+        queries = rearrange(
+            q_out,
+            "tokens (heads head_channels) -> tokens heads head_channels",
+            heads=self.num_heads,
+            head_channels=self.head_dim,
+        )
+        gate = gate_out[0] if gate_out else None
         keys = rearrange(
             keys,
             "tokens (groups head_channels) -> tokens groups head_channels",
@@ -367,17 +381,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
-            rope_dim = positional_embeddings.head_dim
-            if rope_dim < self.head_dim:
-                q_rot, q_pass = queries[..., :rope_dim], queries[..., rope_dim:]
-                k_rot, k_pass = keys[..., :rope_dim], keys[..., rope_dim:]
-                q_rot = apply_positional_embeddings(q_rot)
-                k_rot = apply_positional_embeddings(k_rot)
-                queries = jnp.concatenate([q_rot, q_pass], axis=-1)
-                keys = jnp.concatenate([k_rot, k_pass], axis=-1)
-            else:
-                queries = apply_positional_embeddings(queries)
-                keys = apply_positional_embeddings(keys)
+            queries = apply_positional_embeddings(queries)
+            keys = apply_positional_embeddings(keys)
 
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)

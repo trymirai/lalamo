@@ -408,8 +408,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     shared_experts: DenseMLP | None
     gate: LinearBase | None
 
-    gate_applies_to_experts: bool = False
-    gate_applies_to_shared_experts: bool = False
+    gate_applies_to_experts: bool = eqx.field(static=True)
+    gate_applies_to_shared_experts: bool = eqx.field(static=True)
 
     @property
     def mixture_size(self) -> int:

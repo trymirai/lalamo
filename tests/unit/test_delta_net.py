@@ -59,10 +59,10 @@ def _make_lalamo_delta_net(hf_config: Any):
         conv_config=SeparableCausalConvConfig(precision=precision, has_biases=False),
         out_proj_config=linear_config,
         norm_config=norm_config,
-        num_k_heads=hf_config.linear_num_key_heads,
-        num_v_heads=hf_config.linear_num_value_heads,
-        head_k_dim=hf_config.linear_key_head_dim,
-        head_v_dim=hf_config.linear_value_head_dim,
+        num_heads=hf_config.linear_num_value_heads,
+        num_groups=hf_config.linear_num_key_heads,
+        head_dim=hf_config.linear_key_head_dim,
+        value_head_dim=hf_config.linear_value_head_dim,
         kernel_size=hf_config.linear_conv_kernel_dim,
     )
     return config.random_init(model_dim=hf_config.hidden_size, key=jax.random.PRNGKey(0))

@@ -15,7 +15,7 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
-from .mamba import SeparableCausalConv, SeparableCausalConvConfig
+from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .state import DeltaNetStateLayer
 
 __all__ = [
@@ -36,27 +36,15 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
     out_proj_config: LinearConfig
     norm_config: NormalizationConfig
 
-    num_k_heads: int
-    num_v_heads: int
-    head_k_dim: int
-    head_v_dim: int
+    num_heads: int
+    num_groups: int
+    head_dim: int
+    value_head_dim: int
     kernel_size: int
 
     @property
     def rope_dim(self) -> None:
         return None
-
-    @property
-    def key_dim(self) -> int:
-        return self.num_k_heads * self.head_k_dim
-
-    @property
-    def value_dim(self) -> int:
-        return self.num_v_heads * self.head_v_dim
-
-    @property
-    def conv_dim(self) -> int:
-        return self.key_dim * 2 + self.value_dim
 
     def random_init(
         self,
@@ -65,28 +53,34 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
         key: PRNGKeyArray,
     ) -> "DeltaNetAttention":
         qkvz_key, ba_key, conv_key, out_key = jax.random.split(key, 4)
+        key_dim, value_dim, conv_dim = _delta_dims(
+            self.num_heads,
+            self.num_groups,
+            self.head_dim,
+            self.value_head_dim,
+        )
         in_proj_qkvz = self.in_proj_qkvz_config.random_init(
             input_dim=model_dim,
-            output_dims=(self.key_dim * 2 + self.value_dim * 2,),
+            output_dims=(key_dim * 2 + value_dim * 2,),
             has_biases=False,
             key=qkvz_key,
         )
         in_proj_ba = self.in_proj_ba_config.random_init(
             input_dim=model_dim,
-            output_dims=(self.num_v_heads * 2,),
+            output_dims=(self.num_heads * 2,),
             has_biases=False,
             key=ba_key,
         )
-        conv = self.conv_config.random_init(self.conv_dim, self.kernel_size, key=conv_key)
+        conv = self.conv_config.random_init(conv_dim, self.kernel_size, key=conv_key)
         out_proj = self.out_proj_config.random_init(
-            input_dim=self.value_dim,
+            input_dim=value_dim,
             output_dims=(model_dim,),
             has_biases=False,
             key=out_key,
         )
-        norm = self.norm_config.init(self.head_v_dim)
-        dt_bias = jnp.zeros((self.num_v_heads,), dtype=in_proj_qkvz.activation_precision)
-        a_log = jnp.zeros((self.num_v_heads,), dtype=in_proj_qkvz.activation_precision)
+        norm = self.norm_config.init(self.value_head_dim)
+        dt_bias = jnp.zeros((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
+        a_log = jnp.zeros((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
         return DeltaNetAttention(
             self,
             in_proj_qkvz=in_proj_qkvz,
@@ -96,31 +90,42 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             norm=norm,
             dt_bias=dt_bias,
             a_log=a_log,
+            num_heads=self.num_heads,
+            num_groups=self.num_groups,
+            head_dim=self.head_dim,
+            value_head_dim=self.value_head_dim,
+            kernel_size=self.kernel_size,
         )
 
     def empty(
         self,
         model_dim: int,
     ) -> "DeltaNetAttention":
+        key_dim, value_dim, conv_dim = _delta_dims(
+            self.num_heads,
+            self.num_groups,
+            self.head_dim,
+            self.value_head_dim,
+        )
         in_proj_qkvz = self.in_proj_qkvz_config.empty(
             input_dim=model_dim,
-            output_dims=(self.key_dim * 2 + self.value_dim * 2,),
+            output_dims=(key_dim * 2 + value_dim * 2,),
             has_biases=False,
         )
         in_proj_ba = self.in_proj_ba_config.empty(
             input_dim=model_dim,
-            output_dims=(self.num_v_heads * 2,),
+            output_dims=(self.num_heads * 2,),
             has_biases=False,
         )
-        conv = self.conv_config.empty(self.conv_dim, self.kernel_size)
+        conv = self.conv_config.empty(conv_dim, self.kernel_size)
         out_proj = self.out_proj_config.empty(
-            input_dim=self.value_dim,
+            input_dim=value_dim,
             output_dims=(model_dim,),
             has_biases=False,
         )
-        norm = self.norm_config.empty(self.head_v_dim)
-        dt_bias = dummy_array((self.num_v_heads,), dtype=in_proj_qkvz.activation_precision)
-        a_log = dummy_array((self.num_v_heads,), dtype=in_proj_qkvz.activation_precision)
+        norm = self.norm_config.empty(self.value_head_dim)
+        dt_bias = dummy_array((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
+        a_log = dummy_array((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
         return DeltaNetAttention(
             self,
             in_proj_qkvz=in_proj_qkvz,
@@ -130,7 +135,23 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             norm=norm,
             dt_bias=dt_bias,
             a_log=a_log,
+            num_heads=self.num_heads,
+            num_groups=self.num_groups,
+            head_dim=self.head_dim,
+            value_head_dim=self.value_head_dim,
+            kernel_size=self.kernel_size,
         )
+
+
+def _delta_dims(
+    num_heads: int,
+    num_groups: int,
+    head_dim: int,
+    value_head_dim: int,
+) -> tuple[int, int, int]:
+    key_dim = num_groups * head_dim
+    value_dim = num_heads * value_head_dim
+    return key_dim, value_dim, key_dim * 2 + value_dim
 
 
 class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLayer]):
@@ -141,6 +162,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
     norm: Normalization
     dt_bias: Float[Array, " heads"]
     a_log: Float[Array, " heads"]
+    num_heads: int = eqx.field(static=True)
+    num_groups: int = eqx.field(static=True)
+    head_dim: int = eqx.field(static=True)
+    value_head_dim: int = eqx.field(static=True)
+    kernel_size: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -154,6 +180,18 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
         return PositionalEmbeddingSelector.NONE
 
+    @property
+    def key_dim(self) -> int:
+        return self.num_groups * self.head_dim
+
+    @property
+    def value_dim(self) -> int:
+        return self.num_heads * self.value_head_dim
+
+    @property
+    def conv_dim(self) -> int:
+        return self.key_dim * 2 + self.value_dim
+
     def _split_qkvz_ba(
         self,
         mixed_qkvz: Float[Array, "tokens channels"],
@@ -166,16 +204,16 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         Float[Array, "tokens v_heads"],
         Float[Array, "tokens v_heads"],
     ]:
-        num_k_heads = self.config.num_k_heads
-        num_v_heads = self.config.num_v_heads
+        num_k_heads = self.num_groups
+        num_v_heads = self.num_heads
         if num_v_heads % num_k_heads != 0:
             raise ValueError(
                 "Number of value heads must be divisible by number of key heads, "
                 f"got {num_v_heads} and {num_k_heads}.",
             )
         v_per_k = num_v_heads // num_k_heads
-        head_k_dim = self.config.head_k_dim
-        head_v_dim = self.config.head_v_dim
+        head_k_dim = self.head_dim
+        head_v_dim = self.value_head_dim
 
         mixed_qkvz = mixed_qkvz.reshape(
             mixed_qkvz.shape[0],
@@ -269,11 +307,9 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
 
         if state is None:
             state = DeltaNetStateLayer.init(
-                self.config.kernel_size,
-                self.config.conv_dim,
-                self.config.num_v_heads,
-                self.config.head_k_dim,
-                self.config.head_v_dim,
+                self.kernel_size,
+                self.conv_dim,
+                (self.num_heads, self.head_dim, self.value_head_dim),
                 self.activation_precision,
             )
 
@@ -285,17 +321,17 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         )
         conv_output = jax.nn.silu(conv_output)
 
-        key_dim = self.config.key_dim
-        value_dim = self.config.value_dim
+        key_dim = self.key_dim
+        value_dim = self.value_dim
         total_dim = conv_output.shape[-1]
         assert total_dim == 2 * key_dim + value_dim, (
             "DeltaNetAttention conv output dim mismatch: "
             f"{total_dim} != 2 * {key_dim} + {value_dim}"
         )
         query, key, value = jnp.split(conv_output, [key_dim, 2 * key_dim], axis=-1)
-        query = query.reshape(query.shape[0], self.config.num_k_heads, self.config.head_k_dim)
-        key = key.reshape(key.shape[0], self.config.num_k_heads, self.config.head_k_dim)
-        value = value.reshape(value.shape[0], self.config.num_v_heads, self.config.head_v_dim)
+        query = query.reshape(query.shape[0], self.num_groups, self.head_dim)
+        key = key.reshape(key.shape[0], self.num_groups, self.head_dim)
+        value = value.reshape(value.shape[0], self.num_heads, self.value_head_dim)
 
         beta = jax.nn.sigmoid(b)
         g = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
@@ -303,13 +339,13 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         )
         g = g.astype(inputs.dtype)
 
-        repeat_factor = self.config.num_v_heads // self.config.num_k_heads
+        repeat_factor = self.num_heads // self.num_groups
         if repeat_factor > 1:
             query = jnp.repeat(query, repeat_factor, axis=1)
             key = jnp.repeat(key, repeat_factor, axis=1)
 
         eps = jnp.array(1e-6, dtype=query.dtype)
-        scale = jnp.array(self.config.head_k_dim**-0.5, dtype=query.dtype)
+        scale = jnp.array(self.head_dim**-0.5, dtype=query.dtype)
         query = query / (jnp.linalg.norm(query, axis=-1, keepdims=True) + eps)
         key = key / (jnp.linalg.norm(key, axis=-1, keepdims=True) + eps)
         query = query * scale
@@ -325,7 +361,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
             value,
             g,
             beta,
-            state.recurrent_state,
+            state.ssm_state,
             length_without_padding,
         )
 
@@ -354,11 +390,9 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
 
     def init_static_state(self, capacity: int) -> DeltaNetStateLayer:  # noqa: ARG002
         return DeltaNetStateLayer.init(
-            self.config.kernel_size,
-            self.config.conv_dim,
-            self.config.num_v_heads,
-            self.config.head_k_dim,
-            self.config.head_v_dim,
+            self.kernel_size,
+            self.conv_dim,
+            (self.num_heads, self.head_dim, self.value_head_dim),
             self.activation_precision,
         )
 

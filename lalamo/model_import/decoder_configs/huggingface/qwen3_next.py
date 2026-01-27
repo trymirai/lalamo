@@ -232,10 +232,10 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     ),
                     out_proj_config=linear_config,
                     norm_config=gated_rmsnorm_config,
-                    num_k_heads=self.linear_num_key_heads,
-                    num_v_heads=self.linear_num_value_heads,
-                    head_k_dim=self.linear_key_head_dim,
-                    head_v_dim=self.linear_value_head_dim,
+                    num_heads=self.linear_num_value_heads,
+                    num_groups=self.linear_num_key_heads,
+                    head_dim=self.linear_key_head_dim,
+                    value_head_dim=self.linear_value_head_dim,
                     kernel_size=self.linear_conv_kernel_dim,
                 )
             else:
