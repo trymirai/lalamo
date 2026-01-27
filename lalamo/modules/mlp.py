@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Literal, Self
+from typing import Literal, Self, cast
 
 import equinox as eqx
 import jax
@@ -345,6 +345,7 @@ class MixtureOfExpertsConfig(ABC):
 
         shared_experts = None
         if self.shared_expert_config is not None:
+            assert self.num_shared_experts is not None
             shared_hidden_dim = self.shared_expert_hidden_dim or expert_hidden_dim
             shared_experts = self.shared_expert_config.random_init_mixture(
                 self.num_shared_experts,
@@ -379,6 +380,7 @@ class MixtureOfExpertsConfig(ABC):
 
         shared_experts = None
         if self.shared_expert_config is not None:
+            assert self.num_shared_experts is not None
             shared_hidden_dim = self.shared_expert_hidden_dim or expert_hidden_dim
             shared_experts = self.shared_expert_config.empty_mixture(
                 self.num_shared_experts,
@@ -649,19 +651,24 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
+        mapping_weights = cast("Mapping[str, Array | ParameterTree[Array]]", weights)
 
         shared_experts = None
-        if weights.get("shared_experts", None) is not None:
-            shared_experts = self.shared_experts.import_weights(require_tree(weights["shared_experts"]))
+        if "shared_experts" in mapping_weights:
+            if self.shared_experts is None:
+                raise ValueError("Cannot import shared expert weights without configured shared experts.")
+            shared_experts = self.shared_experts.import_weights(require_tree(mapping_weights["shared_experts"]))
 
         gate = None
-        if weights.get("gate", None) is not None:
-            gate = self.gate.import_weights(require_tree(weights["gate"]))
+        if "gate" in mapping_weights:
+            if self.gate is None:
+                raise ValueError("Cannot import gate weights without configured gating.")
+            gate = self.gate.import_weights(require_tree(mapping_weights["gate"]))
 
         return replace(
             self,
-            router=self.router.import_weights(require_tree(weights["router"])),
-            experts=self.experts.import_weights(require_tree(weights["experts"])),
+            router=self.router.import_weights(require_tree(mapping_weights["router"])),
+            experts=self.experts.import_weights(require_tree(mapping_weights["experts"])),
             shared_experts=shared_experts,
             gate=gate,
         )

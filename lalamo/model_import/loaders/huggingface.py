@@ -407,6 +407,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
     shared_experts = None
     if module.shared_experts is not None:
         shared_mixture_size = module.shared_experts.mixture_size
+        assert shared_mixture_size is not None
         if (path / "shared_expert" / "up_proj.weight") in weights_dict:
             if shared_mixture_size != 1:
                 raise ValueError("Shared expert weights are unindexed but num_shared_experts != 1.")
