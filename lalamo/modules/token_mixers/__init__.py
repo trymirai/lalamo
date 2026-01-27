@@ -9,7 +9,6 @@ from .short_conv import ShortConv, ShortConvConfig, ShortConvResult
 from .state import (
     DynamicKVCacheLayer,
     KVCacheLayer,
-    Mamba2StateLayer,
     ShortConvStateLayer,
     SSMStateLayer,
     State,
@@ -33,7 +32,6 @@ __all__ = [
     "Mamba2",
     "Mamba2Config",
     "Mamba2Result",
-    "Mamba2StateLayer",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
     "ShortConv",

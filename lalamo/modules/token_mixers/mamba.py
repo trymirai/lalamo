@@ -14,10 +14,10 @@ from lalamo.modules.activations import Activation
 from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
-from .state import Mamba2StateLayer
 
 __all__ = [
     "Mamba2",
@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 
-Mamba2Result = TokenMixerResult[Mamba2StateLayer]
+Mamba2Result = TokenMixerResult[SSMStateLayer]
 
 
 @dataclass(frozen=True)
@@ -148,7 +148,7 @@ class Mamba2Config(TokenMixerConfigBase):
         )
 
 
-class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
+class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     in_projection: LinearBase
     conv: SeparableCausalConv
     out_projection: LinearBase
@@ -291,7 +291,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         self,
         inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings | None,
-        state: Mamba2StateLayer | None = None,
+        state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> Mamba2Result:
@@ -301,7 +301,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(inputs)
 
         if state is None:
-            state = Mamba2StateLayer.init(
+            state = SSMStateLayer.init(
                 self.config.kernel_size,
                 self.config.conv_dim,
                 (self.num_heads, self.head_dim, self.state_dim),
@@ -372,7 +372,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         if return_updated_state:
             assert updated_conv_state is not None
-            updated_state = Mamba2StateLayer(updated_conv_state, final_ssm_state)
+            updated_state = SSMStateLayer(updated_conv_state, final_ssm_state)
         else:
             updated_state = None
 
@@ -381,8 +381,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             state=updated_state,
         )
 
-    def init_static_state(self, capacity: int) -> Mamba2StateLayer:  # noqa: ARG002
-        return Mamba2StateLayer.init(
+    def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
+        return SSMStateLayer.init(
             self.config.kernel_size,
             self.config.conv_dim,
             (self.num_heads, self.head_dim, self.state_dim),

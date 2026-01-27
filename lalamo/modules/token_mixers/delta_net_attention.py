@@ -13,10 +13,10 @@ from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
-from .state import DeltaNetStateLayer
 
 __all__ = [
     "DeltaNetAttention",
@@ -25,7 +25,18 @@ __all__ = [
 ]
 
 
-DeltaNetAttentionResult = TokenMixerResult[DeltaNetStateLayer]
+DeltaNetAttentionResult = TokenMixerResult[SSMStateLayer]
+
+
+def _delta_dims(
+    num_heads: int,
+    num_groups: int,
+    head_dim: int,
+    value_head_dim: int,
+) -> tuple[int, int, int]:
+    key_dim = num_groups * head_dim
+    value_dim = num_heads * value_head_dim
+    return key_dim, value_dim, key_dim * 2 + value_dim
 
 
 @dataclass(frozen=True)
@@ -143,18 +154,7 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
         )
 
 
-def _delta_dims(
-    num_heads: int,
-    num_groups: int,
-    head_dim: int,
-    value_head_dim: int,
-) -> tuple[int, int, int]:
-    key_dim = num_groups * head_dim
-    value_dim = num_heads * value_head_dim
-    return key_dim, value_dim, key_dim * 2 + value_dim
-
-
-class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLayer]):
+class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     in_proj: LinearBase
     conv: SeparableCausalConv
     out_proj: LinearBase
@@ -196,7 +196,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         queries: Float[Array, "tokens heads head_k_dim"],
         keys: Float[Array, "tokens heads head_k_dim"],
         values: Float[Array, "tokens heads head_v_dim"],
-        g: Float[Array, "tokens heads"],
+        decay_factor: Float[Array, "tokens heads"],
         beta: Float[Array, "tokens heads"],
         initial_state: Float[Array, "heads head_k_dim head_v_dim"],
         num_steps: Int[Array, ""] | int,
@@ -218,9 +218,9 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
             Float[Array, "heads head_v_dim"],
         ]:
             index, carry_state = index_and_state
-            query_t, key_t, value_t, g_t, beta_t = step_inputs
+            query_t, key_t, value_t, decay_factor_t, beta_t = step_inputs
 
-            decay = jnp.exp(g_t)[:, None, None]
+            decay = jnp.exp(decay_factor_t)[:, None, None]
             decayed_state = carry_state * decay
             value_delta = value_t - jnp.sum(decayed_state * key_t[:, :, None], axis=-2)
             value_delta = value_delta * beta_t[:, None]
@@ -233,7 +233,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         (_, final_state), outputs = jax.lax.scan(
             scan_fn,
             (jnp.zeros((), dtype=jnp.int32), initial_state),
-            (queries, keys, values, g, beta),
+            (queries, keys, values, decay_factor, beta),
         )
         return outputs, final_state
 
@@ -242,18 +242,19 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         self,
         inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings | None,
-        state: DeltaNetStateLayer | None = None,
+        state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> DeltaNetAttentionResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
-        q, k, v, z, b, a = vmap(self.in_proj)(inputs)
+        q, k, v, gate, b, a = vmap(self.in_proj)(inputs)
         mixed_qkv = jnp.concatenate([q, k, v], axis=-1)
+        beta = jax.nn.sigmoid(b)
 
         if state is None:
-            state = DeltaNetStateLayer.init(
+            state = SSMStateLayer.init(
                 self.kernel_size,
                 self.conv_dim,
                 (self.num_heads, self.head_dim, self.value_head_dim),
@@ -274,11 +275,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         key = key.reshape(key.shape[0], self.num_groups, self.head_dim)
         value = value.reshape(value.shape[0], self.num_heads, self.value_head_dim)
 
-        beta = jax.nn.sigmoid(b)
-        g = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
+        # since we work with exponentials, we (possibly?) uplift dtype to make sure numbers are nice
+        decay_factor = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
             (a + self.dt_bias).astype(jnp.float32),
         )
-        g = g.astype(inputs.dtype)
+        decay_factor = decay_factor.astype(inputs.dtype)
 
         repeat_factor = self.num_heads // self.num_groups
         if repeat_factor > 1:
@@ -300,7 +301,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
             query,
             key,
             value,
-            g,
+            decay_factor,
             beta,
             state.ssm_state,
             length_without_padding,
@@ -312,26 +313,26 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
             variance = jnp.mean(jnp.square(x_up), axis=-1, keepdims=True)
             x_norm = x_up * jax.lax.rsqrt(variance + self.norm.config.epsilon)
             x_norm = x_norm.astype(input_dtype)
-            scaled = (x_norm * self.norm.scales.astype(input_dtype)).astype(jnp.float32)
+            scaled = x_norm * self.norm.scales.astype(input_dtype)
             gated = scaled * jax.nn.silu(gate.astype(jnp.float32))
             return gated.astype(input_dtype)
 
-        z = z.reshape(z.shape[0], self.num_heads, self.value_head_dim)
-        core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, z)
+        gate = gate.reshape(gate.shape[0], self.num_heads, self.value_head_dim)
+        core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
         core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], -1)
 
         (outputs,) = vmap(self.out_proj)(core_attn_out)
 
         if return_updated_state:
             assert updated_conv_state is not None
-            updated_state = DeltaNetStateLayer(updated_conv_state, final_state)
+            updated_state = SSMStateLayer(updated_conv_state, final_state)
         else:
             updated_state = None
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int) -> DeltaNetStateLayer:  # noqa: ARG002
-        return DeltaNetStateLayer.init(
+    def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
+        return SSMStateLayer.init(
             self.kernel_size,
             self.conv_dim,
             (self.num_heads, self.head_dim, self.value_head_dim),
