@@ -271,63 +271,106 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         router_path = path / "router"
     router = load_linear(module.router, weights_dict, router_path)
 
-    experts_path = path / "experts"
-    up_weights = []
-    gate_weights = []
-    down_weights = []
-    up_biases = [] if module.experts.up_projection.has_biases else None
-    gate_biases = [] if module.experts.up_projection.has_biases else None
-    down_biases = [] if module.experts.down_projection.has_biases else None
+    def load_expert_stack(
+        experts_module: DenseMLP,
+        experts_path: ParameterPath,
+        mixture_size: int,
+        *,
+        indexed: bool = True,
+    ) -> DenseMLP:
+        if not indexed and mixture_size != 1:
+            raise ValueError("Unindexed expert weights require mixture_size == 1.")
+        up_weights = []
+        gate_weights = []
+        down_weights = []
+        up_biases = [] if experts_module.up_projection.has_biases else None
+        gate_biases = [] if experts_module.up_projection.has_biases else None
+        down_biases = [] if experts_module.down_projection.has_biases else None
 
-    for idx in range(module.mixture_size):
-        expert_path = experts_path / str(idx)
-        up_weights.append(weights_dict[expert_path / "up_proj.weight"])
-        gate_weights.append(weights_dict[expert_path / "gate_proj.weight"])
-        down_weights.append(weights_dict[expert_path / "down_proj.weight"])
-        if up_biases is not None:
+        for idx in range(mixture_size):
+            expert_path = experts_path / str(idx) if indexed else experts_path
+            up_weights.append(weights_dict[expert_path / "up_proj.weight"])
+            gate_weights.append(weights_dict[expert_path / "gate_proj.weight"])
+            down_weights.append(weights_dict[expert_path / "down_proj.weight"])
+            if up_biases is not None:
+                # up_biases and gate_biases are created in lockstep from the same flag.
+                assert gate_biases is not None
+                up_biases.append(weights_dict[expert_path / "up_proj.bias"])
+                gate_biases.append(weights_dict[expert_path / "gate_proj.bias"])
+            if down_biases is not None:
+                down_biases.append(weights_dict[expert_path / "down_proj.bias"])
+
+        up_w = jnp.stack(up_weights, axis=0)
+        gate_w = jnp.stack(gate_weights, axis=0)
+        combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
+        if up_biases is None:
+            combined_up_gate_b = None
+        else:
             # up_biases and gate_biases are created in lockstep from the same flag.
             assert gate_biases is not None
-            up_biases.append(weights_dict[expert_path / "up_proj.bias"])
-            gate_biases.append(weights_dict[expert_path / "gate_proj.bias"])
-        if down_biases is not None:
-            down_biases.append(weights_dict[expert_path / "down_proj.bias"])
+            up_b = jnp.stack(up_biases, axis=0)
+            gate_b = jnp.stack(gate_biases, axis=0)
+            combined_up_gate_b = jnp.concatenate([up_b, gate_b], axis=1)
 
-    up_w = jnp.stack(up_weights, axis=0)
-    gate_w = jnp.stack(gate_weights, axis=0)
-    combined_up_gate_w = jnp.concatenate([up_w, gate_w], axis=1)
-    if up_biases is None:
-        combined_up_gate_b = None
-    else:
-        # up_biases and gate_biases are created in lockstep from the same flag.
-        assert gate_biases is not None
-        up_b = jnp.stack(up_biases, axis=0)
-        gate_b = jnp.stack(gate_biases, axis=0)
-        combined_up_gate_b = jnp.concatenate([up_b, gate_b], axis=1)
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            experts_module.up_projection,
+            (combined_up_gate_w, combined_up_gate_b),
+        )
 
-    up_projection = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.experts.up_projection,
-        (combined_up_gate_w, combined_up_gate_b),
-    )
+        down_w = jnp.stack(down_weights, axis=0)
+        down_b = jnp.stack(down_biases, axis=0) if down_biases is not None else None
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            experts_module.down_projection,
+            (down_w, down_b),
+        )
 
-    down_w = jnp.stack(down_weights, axis=0)
-    down_b = jnp.stack(down_biases, axis=0) if down_biases is not None else None
-    down_projection = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.experts.down_projection,
-        (down_w, down_b),
-    )
+        return load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            experts_module,
+            (up_projection, down_projection),
+        )
 
-    experts = load_parameters(
-        lambda m: (m.up_projection, m.down_projection),
-        module.experts,
-        (up_projection, down_projection),
-    )
+    experts = load_expert_stack(module.experts, path / "experts", module.mixture_size)
+
+    shared_experts = None
+    if module.shared_experts is not None:
+        shared_mixture_size = module.shared_experts.mixture_size
+        if (path / "shared_expert" / "up_proj.weight") in weights_dict:
+            if shared_mixture_size != 1:
+                raise ValueError("Shared expert weights are unindexed but num_shared_experts != 1.")
+            shared_path = path / "shared_expert"
+            shared_experts = load_expert_stack(
+                module.shared_experts,
+                shared_path,
+                shared_mixture_size,
+                indexed=False,
+            )
+        elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
+            shared_experts = load_expert_stack(
+                module.shared_experts,
+                path / "shared_experts",
+                shared_mixture_size,
+            )
+        else:
+            raise KeyError("Could not find shared expert weights in HF checkpoint.")
+
+    gate = None
+    if module.gate is not None:
+        gate_path = None
+        for candidate in ("shared_expert_gate", "shared_experts_gate", "shared_gate"):
+            if (path / candidate / "weight") in weights_dict or (path / candidate / "qweight") in weights_dict:
+                gate_path = path / candidate
+                break
+        if gate_path is None:
+            raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
+        gate = load_linear(module.gate, weights_dict, gate_path)
 
     return load_parameters(
-        lambda m: (m.router, m.experts),
+        lambda m: (m.router, m.experts, m.shared_experts, m.gate),
         module,
-        (router, experts),
+        (router, experts, shared_experts, gate),
     )
 
 

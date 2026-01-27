@@ -267,9 +267,24 @@ class RoutingFunctionBase(ABC):
 
 @dataclass(frozen=True)
 class SoftmaxRouting(RoutingFunctionBase):
+    domain: Literal["top-k", "all"] = "top-k"
+    # domain corresponds to the input to the softmax function:
+    #      "top-k":  softmax only on the top (selected) logits
+    #      "all":    softmax all then top-k.
+    # Example (logits [2,1,0], k=2): top-k softmax ~[0.73,0.27]; all-softmax top-k ~[0.66,0.24];
+    # renorm_topk rescales the selected probs, but it still differs when the selected set changes.
+    norm_topk_prob: bool = False
+
     def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
-        active_logits, active_indices = jax.lax.top_k(logits, num_active)
-        active_weights = jax.nn.softmax(active_logits)
+        if self.domain == "all":
+            probs = jax.nn.softmax(logits)
+            active_weights, active_indices = jax.lax.top_k(probs, num_active)
+            if self.norm_topk_prob:
+                denom = active_weights.sum()
+                active_weights = jnp.where(denom > 0, active_weights / denom, active_weights)
+        else:
+            active_logits, active_indices = jax.lax.top_k(logits, num_active)
+            active_weights = jax.nn.softmax(active_logits)
         mask = jnp.zeros_like(logits, dtype=bool)
         mask = mask.at[active_indices].set(True)
         expert_weights = jnp.zeros_like(logits)
@@ -464,7 +479,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         if self.gate is None:
             return expert_result, shared_contribution
 
-        gating_factor = jax.nn.sigmoid(self.gate(inputs))
+        (gating_factor,) = self.gate(inputs)
+        gating_factor = jax.nn.sigmoid(gating_factor)
 
         if self.gate_applies_to_experts:
             expert_result *= gating_factor

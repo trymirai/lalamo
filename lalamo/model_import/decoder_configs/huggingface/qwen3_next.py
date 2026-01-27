@@ -203,7 +203,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         moe_config = MixtureOfExpertsConfig(
             mixture_size=self.num_experts,
             num_experts_per_token=(self.num_experts_per_tok or 1),
-            routing_function=SoftmaxRouting(),
+            routing_function=SoftmaxRouting(domain="all", norm_topk_prob=self.norm_topk_prob),
             router_config=linear_config,
             router_has_biases=False,
             expert_config=experts_config,
