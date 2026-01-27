@@ -115,15 +115,21 @@ AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros"
 MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
 
 
+def _reorder_q_proj(array: Array, perm: Array, axis: int) -> Array:
+    return jnp.take(array, perm, axis=axis)
+
+
 def _fuse_qkv_gate_bias(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     q_output_dim: int,
     has_biases: bool,
+    q_perm: Array,
 ) -> Array | None:
     if not has_biases:
         return None
     q_bias = weights_dict[path / "q_proj" / "bias"]
+    q_bias = _reorder_q_proj(q_bias, q_perm, axis=0)
     k_bias = weights_dict[path / "k_proj" / "bias"]
     v_bias = weights_dict[path / "v_proj" / "bias"]
     q_bias, gate_bias = jnp.split(q_bias, [q_output_dim], axis=0)
@@ -135,13 +141,15 @@ def _fuse_qkv_gate_full_precision(
     path: ParameterPath,
     q_output_dim: int,
     has_biases: bool,
+    q_perm: Array,
 ) -> tuple[Array, Array | None]:
     q_weight = weights_dict[path / "q_proj" / "weight"]
+    q_weight = _reorder_q_proj(q_weight, q_perm, axis=0)
     k_weight = weights_dict[path / "k_proj" / "weight"]
     v_weight = weights_dict[path / "v_proj" / "weight"]
     q_weight, gate_weight = jnp.split(q_weight, [q_output_dim], axis=0)
     weights = jnp.concatenate([q_weight, k_weight, v_weight, gate_weight], axis=0)
-    bias = _fuse_qkv_gate_bias(weights_dict, path, q_output_dim, has_biases)
+    bias = _fuse_qkv_gate_bias(weights_dict, path, q_output_dim, has_biases, q_perm)
     return weights, bias
 
 
@@ -150,11 +158,15 @@ def _fuse_qkv_gate_quantized(
     path: ParameterPath,
     q_output_dim: int,
     layout: QuantizedParamLayout,
+    q_perm: Array,
 ) -> tuple[Array, Array, Array]:
     split_axis = int(layout.transposed)
     q_weight = weights_dict[path / "q_proj" / layout.weight]
     q_zero = weights_dict[path / "q_proj" / layout.bias]
     q_scale = weights_dict[path / "q_proj" / layout.scale]
+    q_weight = _reorder_q_proj(q_weight, q_perm, axis=split_axis)
+    q_zero = _reorder_q_proj(q_zero, q_perm, axis=split_axis)
+    q_scale = _reorder_q_proj(q_scale, q_perm, axis=split_axis)
     q_weight, gate_weight = jnp.split(q_weight, [q_output_dim], axis=split_axis)
     q_zero, gate_zero = jnp.split(q_zero, [q_output_dim], axis=split_axis)
     q_scale, gate_scale = jnp.split(q_scale, [q_output_dim], axis=split_axis)
@@ -454,6 +466,12 @@ def load_attention(
         raise NotImplementedError("Can't determine attention output projection name")
 
     if module.config.q_proj_has_gate:
+        head_dim = module.head_dim
+        num_heads = module.num_heads
+        base = jnp.arange(num_heads, dtype=jnp.int32) * (2 * head_dim)
+        q = base[:, None] + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
+        gate = base[:, None] + head_dim + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
+        q_perm = jnp.concatenate([q.reshape(-1), gate.reshape(-1)], axis=0)
         q_output_dim = module.qkv_projection.output_dims[0]
         if isinstance(module.qkv_projection, FullPrecisionLinear):
             weights, bias = _fuse_qkv_gate_full_precision(
@@ -461,6 +479,7 @@ def load_attention(
                 path,
                 q_output_dim,
                 module.qkv_projection.has_biases,
+                q_perm,
             )
 
             qkv_projection = load_parameters(
@@ -475,8 +494,9 @@ def load_attention(
                 path,
                 q_output_dim,
                 layout,
+                q_perm,
             )
-            bias = _fuse_qkv_gate_bias(weights_dict, path, q_output_dim, module.qkv_projection.has_biases)
+            bias = _fuse_qkv_gate_bias(weights_dict, path, q_output_dim, module.qkv_projection.has_biases, q_perm)
 
             weight_quantization = module.qkv_projection.config.weight_quantization_mode
             activation_precision = module.qkv_projection.activation_precision
@@ -511,6 +531,7 @@ def load_attention(
                 path,
                 q_output_dim,
                 layout,
+                q_perm,
             )
 
             weight_quantization = module.qkv_projection.config.weight_quantization_mode
