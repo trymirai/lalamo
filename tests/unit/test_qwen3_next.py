@@ -87,8 +87,7 @@ def _build_hf_weights_for_qwen3_next(decoder: Decoder) -> dict[ParameterPath, jn
 
         if isinstance(layer.mixer, DeltaNetAttention):
             mixer_path = layer_path / "linear_attn"
-            weights[mixer_path / "in_proj_qkvz" / "weight"] = layer.mixer.in_proj_qkvz.weights
-            weights[mixer_path / "in_proj_ba" / "weight"] = layer.mixer.in_proj_ba.weights
+            weights[mixer_path / "in_proj" / "weight"] = layer.mixer.in_proj.weights
             weights[mixer_path / "conv.weight"] = layer.mixer.conv.weights
             weights[mixer_path / "out_proj" / "weight"] = layer.mixer.out_proj.weights
             weights[mixer_path / "norm" / "weight"] = layer.mixer.norm.scales

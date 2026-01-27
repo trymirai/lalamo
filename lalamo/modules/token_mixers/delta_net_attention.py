@@ -30,8 +30,7 @@ DeltaNetAttentionResult = TokenMixerResult[DeltaNetStateLayer]
 
 @dataclass(frozen=True)
 class DeltaNetAttentionConfig(TokenMixerConfigBase):
-    in_proj_qkvz_config: LinearConfig
-    in_proj_ba_config: LinearConfig
+    in_proj_config: LinearConfig
     conv_config: SeparableCausalConvConfig
     out_proj_config: LinearConfig
     norm_config: NormalizationConfig
@@ -52,24 +51,25 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
         *,
         key: PRNGKeyArray,
     ) -> "DeltaNetAttention":
-        qkvz_key, ba_key, conv_key, out_key = jax.random.split(key, 4)
+        proj_key, conv_key, out_key = jax.random.split(key, 3)
         key_dim, value_dim, conv_dim = _delta_dims(
             self.num_heads,
             self.num_groups,
             self.head_dim,
             self.value_head_dim,
         )
-        in_proj_qkvz = self.in_proj_qkvz_config.random_init(
+        in_proj = self.in_proj_config.random_init(
             input_dim=model_dim,
-            output_dims=(key_dim * 2 + value_dim * 2,),
+            output_dims=(
+                key_dim,
+                key_dim,
+                value_dim,
+                value_dim,
+                self.num_heads,
+                self.num_heads,
+            ),
             has_biases=False,
-            key=qkvz_key,
-        )
-        in_proj_ba = self.in_proj_ba_config.random_init(
-            input_dim=model_dim,
-            output_dims=(self.num_heads * 2,),
-            has_biases=False,
-            key=ba_key,
+            key=proj_key,
         )
         conv = self.conv_config.random_init(conv_dim, self.kernel_size, key=conv_key)
         out_proj = self.out_proj_config.random_init(
@@ -79,12 +79,11 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             key=out_key,
         )
         norm = self.norm_config.init(self.value_head_dim)
-        dt_bias = jnp.zeros((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
-        a_log = jnp.zeros((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
+        dt_bias = jnp.zeros((self.num_heads,), dtype=in_proj.activation_precision)
+        a_log = jnp.zeros((self.num_heads,), dtype=in_proj.activation_precision)
         return DeltaNetAttention(
             self,
-            in_proj_qkvz=in_proj_qkvz,
-            in_proj_ba=in_proj_ba,
+            in_proj=in_proj,
             conv=conv,
             out_proj=out_proj,
             norm=norm,
@@ -107,14 +106,16 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             self.head_dim,
             self.value_head_dim,
         )
-        in_proj_qkvz = self.in_proj_qkvz_config.empty(
+        in_proj = self.in_proj_config.empty(
             input_dim=model_dim,
-            output_dims=(key_dim * 2 + value_dim * 2,),
-            has_biases=False,
-        )
-        in_proj_ba = self.in_proj_ba_config.empty(
-            input_dim=model_dim,
-            output_dims=(self.num_heads * 2,),
+            output_dims=(
+                key_dim,
+                key_dim,
+                value_dim,
+                value_dim,
+                self.num_heads,
+                self.num_heads,
+            ),
             has_biases=False,
         )
         conv = self.conv_config.empty(conv_dim, self.kernel_size)
@@ -124,12 +125,11 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             has_biases=False,
         )
         norm = self.norm_config.empty(self.value_head_dim)
-        dt_bias = dummy_array((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
-        a_log = dummy_array((self.num_heads,), dtype=in_proj_qkvz.activation_precision)
+        dt_bias = dummy_array((self.num_heads,), dtype=in_proj.activation_precision)
+        a_log = dummy_array((self.num_heads,), dtype=in_proj.activation_precision)
         return DeltaNetAttention(
             self,
-            in_proj_qkvz=in_proj_qkvz,
-            in_proj_ba=in_proj_ba,
+            in_proj=in_proj,
             conv=conv,
             out_proj=out_proj,
             norm=norm,
@@ -155,8 +155,7 @@ def _delta_dims(
 
 
 class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLayer]):
-    in_proj_qkvz: LinearBase
-    in_proj_ba: LinearBase
+    in_proj: LinearBase
     conv: SeparableCausalConv
     out_proj: LinearBase
     norm: Normalization
@@ -170,11 +169,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.in_proj_qkvz.activation_precision
+        return self.in_proj.activation_precision
 
     @property
     def model_dim(self) -> int:
-        return self.in_proj_qkvz.input_dim
+        return self.in_proj.input_dim
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
@@ -191,52 +190,6 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
     @property
     def conv_dim(self) -> int:
         return self.key_dim * 2 + self.value_dim
-
-    def _split_qkvz_ba(
-        self,
-        mixed_qkvz: Float[Array, "tokens channels"],
-        mixed_ba: Float[Array, "tokens channels"],
-    ) -> tuple[
-        Float[Array, "tokens k_heads k_dim"],
-        Float[Array, "tokens k_heads k_dim"],
-        Float[Array, "tokens v_heads v_dim"],
-        Float[Array, "tokens v_heads v_dim"],
-        Float[Array, "tokens v_heads"],
-        Float[Array, "tokens v_heads"],
-    ]:
-        num_k_heads = self.num_groups
-        num_v_heads = self.num_heads
-        if num_v_heads % num_k_heads != 0:
-            raise ValueError(
-                "Number of value heads must be divisible by number of key heads, "
-                f"got {num_v_heads} and {num_k_heads}.",
-            )
-        v_per_k = num_v_heads // num_k_heads
-        head_k_dim = self.head_dim
-        head_v_dim = self.value_head_dim
-
-        mixed_qkvz = mixed_qkvz.reshape(
-            mixed_qkvz.shape[0],
-            num_k_heads,
-            2 * head_k_dim + 2 * head_v_dim * v_per_k,
-        )
-        mixed_ba = mixed_ba.reshape(mixed_ba.shape[0], num_k_heads, 2 * v_per_k)
-
-        split_points = (
-            head_k_dim,
-            2 * head_k_dim,
-            2 * head_k_dim + head_v_dim * v_per_k,
-        )
-        query, key, value, z = jnp.split(mixed_qkvz, split_points, axis=-1)
-        b, a = jnp.split(mixed_ba, 2, axis=-1)
-
-        value = value.reshape(value.shape[0], num_k_heads, v_per_k, head_v_dim)
-        z = z.reshape(z.shape[0], num_k_heads, v_per_k, head_v_dim)
-        value = value.reshape(value.shape[0], num_v_heads, head_v_dim)
-        z = z.reshape(z.shape[0], num_v_heads, head_v_dim)
-        b = b.reshape(b.shape[0], num_v_heads)
-        a = a.reshape(a.shape[0], num_v_heads)
-        return query, key, value, z, b, a
 
     def _scan(
         self,
@@ -296,14 +249,8 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
-        (mixed_qkvz,) = vmap(self.in_proj_qkvz)(inputs)
-        (mixed_ba,) = vmap(self.in_proj_ba)(inputs)
-        query, key, value, z, b, a = self._split_qkvz_ba(mixed_qkvz, mixed_ba)
-
-        query = query.reshape(query.shape[0], -1)
-        key = key.reshape(key.shape[0], -1)
-        value = value.reshape(value.shape[0], -1)
-        mixed_qkv = jnp.concatenate([query, key, value], axis=-1)
+        q, k, v, z, b, a = vmap(self.in_proj)(inputs)
+        mixed_qkv = jnp.concatenate([q, k, v], axis=-1)
 
         if state is None:
             state = DeltaNetStateLayer.init(
@@ -321,14 +268,8 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         )
         conv_output = jax.nn.silu(conv_output)
 
-        key_dim = self.key_dim
-        value_dim = self.value_dim
-        total_dim = conv_output.shape[-1]
-        assert total_dim == 2 * key_dim + value_dim, (
-            "DeltaNetAttention conv output dim mismatch: "
-            f"{total_dim} != 2 * {key_dim} + {value_dim}"
-        )
-        query, key, value = jnp.split(conv_output, [key_dim, 2 * key_dim], axis=-1)
+        query, key, value = jnp.split(conv_output, [self.key_dim, 2 * self.key_dim], axis=-1)
+
         query = query.reshape(query.shape[0], self.num_groups, self.head_dim)
         key = key.reshape(key.shape[0], self.num_groups, self.head_dim)
         value = value.reshape(value.shape[0], self.num_heads, self.value_head_dim)
@@ -375,6 +316,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
             gated = scaled * jax.nn.silu(gate.astype(jnp.float32))
             return gated.astype(input_dtype)
 
+        z = z.reshape(z.shape[0], self.num_heads, self.value_head_dim)
         core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, z)
         core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], -1)
 
@@ -398,8 +340,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
 
     def export_weights(self) -> ParameterTree:
         return {
-            "in_proj_qkvz": self.in_proj_qkvz.export_weights(),
-            "in_proj_ba": self.in_proj_ba.export_weights(),
+            "in_proj": self.in_proj.export_weights(),
             "conv": self.conv.export_weights(),
             "out_proj": self.out_proj.export_weights(),
             "norm": self.norm.export_weights(),
@@ -411,8 +352,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, DeltaNetStateLay
         assert isinstance(weights, Mapping)
         return replace(
             self,
-            in_proj_qkvz=self.in_proj_qkvz.import_weights(require_tree(weights["in_proj_qkvz"])),
-            in_proj_ba=self.in_proj_ba.import_weights(require_tree(weights["in_proj_ba"])),
+            in_proj=self.in_proj.import_weights(require_tree(weights["in_proj"])),
             conv=self.conv.import_weights(require_tree(weights["conv"])),
             out_proj=self.out_proj.import_weights(require_tree(weights["out_proj"])),
             norm=self.norm.import_weights(require_tree(weights["norm"])),

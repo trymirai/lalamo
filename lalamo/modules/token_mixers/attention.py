@@ -306,8 +306,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         output_dims = self.qkv_projection.output_dims
         if len(output_dims) not in (3, 4):
             raise ValueError(
-                "QKV projection must have 3 (qkv) or 4 (qkvz) output dims, "
-                f"got {len(output_dims)}",
+                f"QKV projection must have 3 (qkv) or 4 (qkvz) output dims, got {len(output_dims)}",
             )
         q_output_dim, k_output_dim, v_output_dim = output_dims[:3]
         expected_q = self.num_heads * self.head_dim
@@ -354,13 +353,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
         q_out, keys, values, *gate_out = vmap(self.qkv_projection, in_axes=0)(inputs)
+        gate = gate_out[0] if gate_out else None
+
         queries = rearrange(
             q_out,
             "tokens (heads head_channels) -> tokens heads head_channels",
             heads=self.num_heads,
             head_channels=self.head_dim,
         )
-        gate = gate_out[0] if gate_out else None
         keys = rearrange(
             keys,
             "tokens (groups head_channels) -> tokens groups head_channels",

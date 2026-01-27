@@ -224,8 +224,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         for layer_idx, layer_type in enumerate(layer_types):
             if layer_type == "linear_attention":
                 mixer_config = DeltaNetAttentionConfig(
-                    in_proj_qkvz_config=linear_config,
-                    in_proj_ba_config=linear_config,
+                    in_proj_config=linear_config,
                     conv_config=SeparableCausalConvConfig(
                         precision=activation_precision,
                         has_biases=False,

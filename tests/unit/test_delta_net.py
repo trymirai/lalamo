@@ -54,8 +54,7 @@ def _make_lalamo_delta_net(hf_config: Any):
     )
     linear_config = FullPrecisionLinearConfig(precision=precision)
     config = DeltaNetAttentionConfig(
-        in_proj_qkvz_config=linear_config,
-        in_proj_ba_config=linear_config,
+        in_proj_config=linear_config,
         conv_config=SeparableCausalConvConfig(precision=precision, has_biases=False),
         out_proj_config=linear_config,
         norm_config=norm_config,
