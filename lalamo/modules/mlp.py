@@ -564,27 +564,11 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "experts (chunks chunk_tokens) -> chunks experts chunk_tokens",
             chunk_tokens=chunk_size,
         )
-        shared_token_indices = rearrange(
-            jnp.arange(num_padded_tokens),
-            "(chunks chunk_tokens) -> chunks chunk_tokens",
-            chunk_tokens=chunk_size,
-        )
 
         def loop_iteration(
-            accumulators: tuple[
-                Float[Array, "tokens channels"],
-                Float[Array, "tokens channels"],
-            ],
-            chunk_inputs: tuple[
-                Int[Array, "experts chunk_tokens"],
-                Int[Array, "chunk_tokens"],
-            ],
-        ) -> tuple[
-            tuple[Float[Array, "tokens channels"], Float[Array, "tokens channels"]],
-            None,
-        ]:
-            expert_accumulator, shared_accumulator = accumulators
-            token_indices_for_chunk, shared_token_indices_for_chunk = chunk_inputs
+            expert_accumulator: Float[Array, "tokens channels"],
+            token_indices_for_chunk: Int[Array, "experts chunk_tokens"],
+        ) -> tuple[Float[Array, "tokens channels"], None]:
 
             def run_experts(
                 expert_accumulator: Float[Array, "tokens channels"],
@@ -618,31 +602,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 expert_accumulator,
             )
 
-            if self.shared_experts is not None:
+            return expert_accumulator, None
 
-                def shared_per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-                    return vmap(lambda expert: expert.call_unbatched(x))(self.shared_experts).sum(axis=0)
-
-                shared_inputs = flattened_inputs.at[shared_token_indices_for_chunk].get(
-                    mode="fill",
-                    fill_value=0.0,
-                )
-                shared_mask = flattened_padding_mask.at[shared_token_indices_for_chunk].get(
-                    mode="fill",
-                    fill_value=False,
-                )
-                shared_outputs = vmap(shared_per_token)(shared_inputs) * shared_mask[:, None]
-                shared_accumulator = shared_accumulator.at[shared_token_indices_for_chunk].add(
-                    shared_outputs,
-                    mode="drop",
-                )
-
-            return (expert_accumulator, shared_accumulator), None
-
-        (expert_result, shared_result), _ = jax.lax.scan(
+        expert_result, _ = jax.lax.scan(
             loop_iteration,
-            (jnp.zeros_like(flattened_inputs), jnp.zeros_like(flattened_inputs)),
-            (chunked_token_indices, shared_token_indices),
+            jnp.zeros_like(flattened_inputs),
+            chunked_token_indices,
         )
 
         expert_result = rearrange(
@@ -650,11 +615,14 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
         )
-        shared_result = rearrange(
-            shared_result,
-            "(batch suffix_tokens) channels -> batch suffix_tokens channels",
-            batch=batch_size,
-        )
+        if self.shared_experts is None:
+            shared_result = 0.0
+        else:
+
+            def shared_per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
+                return vmap(lambda expert: expert.call_unbatched(x))(self.shared_experts).sum(axis=0)
+
+            shared_result = vmap_twice(shared_per_token)(inputs)
 
         expert_result, shared_contribution = vmap_twice(self.apply_gating)(
             expert_result,
