@@ -1,5 +1,6 @@
 import functools
 import itertools
+import os
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -10,10 +11,35 @@ from lalamo.models import LanguageModel
 
 
 def get_default_device_memory() -> int | None:
+    dynamic_allocate = False
+
+    preallocate = os.getenv("XLA_PYTHON_CLIENT_PREALLOCATE", "")
+    dynamic_allocate |= preallocate.strip().lower() in {"0", "false", "no", "off"}
+
+    allocator = os.getenv("XLA_PYTHON_CLIENT_ALLOCATOR", "")
+    dynamic_allocate |= allocator.strip().lower() in {"platform", "cuda_malloc_async"}
+
+    if dynamic_allocate:
+        return None
+
     memory_stats = jax.local_devices()[0].memory_stats()
     if memory_stats is None or "bytes_limit" not in memory_stats:
         return None
-    return memory_stats["bytes_limit"]
+
+    # discount by 0.98 because if you try to allocate exactly bytes_limit
+    # jax will _try_ to allocate a bit more, and then throws an OOM
+    bytes_limit = memory_stats["bytes_limit"] * 0.98
+
+    mem_fraction_raw = os.getenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "")
+    try:
+        mem_fraction = float(mem_fraction_raw)
+    except ValueError:
+        mem_fraction = 0.75  # jax default https://docs.jax.dev/en/latest/gpu_memory_allocation.html
+
+    # JAX usually can't allocate more than 98%-ish percent memory; idk why
+    # Besides we use _some_ autotuning during runtime, so we add 0.96 safety margin here
+    bytes_limit = int(max(bytes_limit, bytes_limit / min(mem_fraction, 1.0)) * 0.96)
+    return bytes_limit
 
 
 def estimate_memory_from_batchsize(
@@ -30,14 +56,14 @@ def estimate_memory_from_batchsize(
                 max_output_length=max_output_length,
                 num_top_logits_to_return=num_logits_per_token,
             ),
-            backend="cpu",  # cuda backend tries to allocate in .compile() and ooms
         )
         .lower(
             model,
             prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
             prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
         )
-        .compile()
+        # disables autotune, see https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level
+        .compile(compiler_options={"xla_gpu_autotune_level": "0"})
         .memory_analysis()
     )
 
