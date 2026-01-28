@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from lalamo.models import LanguageModel
 
 
-def get_default_device_memory() -> int | None:
+def get_default_device_bytes() -> int | None:
     dynamic_allocate = False
 
     preallocate = os.getenv("XLA_PYTHON_CLIENT_PREALLOCATE", "")
@@ -26,20 +26,22 @@ def get_default_device_memory() -> int | None:
     if memory_stats is None or "bytes_limit" not in memory_stats:
         return None
 
-    # discount by 0.98 because if you try to allocate exactly bytes_limit
-    # jax will _try_ to allocate a bit more, and then throws an OOM
-    bytes_limit = memory_stats["bytes_limit"] * 0.98
-
     mem_fraction_raw = os.getenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "")
     try:
         mem_fraction = float(mem_fraction_raw)
     except ValueError:
         mem_fraction = 0.75  # jax default https://docs.jax.dev/en/latest/gpu_memory_allocation.html
 
-    # JAX usually can't allocate more than 98%-ish percent memory; idk why
-    # Besides we use _some_ autotuning during runtime, so we add 0.96 safety margin here
-    bytes_limit = int(max(bytes_limit, bytes_limit / min(mem_fraction, 1.0)) * 0.96)
-    return bytes_limit
+    # 500mb is seemingly the usually observed overhead; this tries to match the actual capacity of the gpu
+    # so it should correspond to something you'd see in nvidia-smi
+    memory_limit = memory_stats["bytes_limit"] / min(mem_fraction, 1.0) + (500 * 1000 * 1000)
+
+    return get_usable_memory_from_bytes(memory_limit)
+
+
+def get_usable_memory_from_bytes(limit_bytes: int) -> int:
+    # JAX allocates a bit more than it needs, so we discount it by some safety factor
+    return int(limit_bytes * 0.95)
 
 
 def estimate_memory_from_batchsize(

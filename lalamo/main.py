@@ -49,7 +49,10 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.speculator.estimator import get_default_device_memory
+from lalamo.speculator.estimator import (
+    get_default_device_bytes,
+    get_usable_memory_from_bytes,
+)
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -384,6 +387,7 @@ class CliTraceCallbacks(TraceCallbacks):
         self.stack.close()
         console.print(f"💾 Trace saved to [cyan]{self.output_path}[/cyan]")
 
+
 @app.command(help="Trace a model.")
 def trace(
     model_path: Annotated[
@@ -557,14 +561,24 @@ def estimate_batchsize(
     ] = None,
 ) -> None:
     if vram_gb is not None:
-        mem = vram_gb * 1024 * 1024 * 1024
-    elif (mem := get_default_device_memory()) is None:
+        # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
+        mem_bytes = vram_gb * 1000 * 1000 * 1000
+    elif (mem_bytes := get_default_device_bytes()) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 
+    usable_mem = get_usable_memory_from_bytes(mem_bytes)
+
     callbacks_type = CliEstimateBatchsizeCallbacks
 
-    _estimate_batchsize(model_path, mem, max_input_length, max_output_length, num_logits_per_token, callbacks_type)
+    _estimate_batchsize(
+        model_path,
+        usable_mem,
+        max_input_length,
+        max_output_length,
+        num_logits_per_token,
+        callbacks_type,
+    )
 
 
 @dataclass
