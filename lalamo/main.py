@@ -35,15 +35,18 @@ from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    EvalConversionCallbacks,
     Precision,
     TraceCallbacks,
     TrainCallbacks,
 )
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
+from lalamo.commands import convert_dataset as _convert_dataset
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
+from lalamo.eval_import import REPO_TO_EVAL, EvalSpec
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
@@ -73,7 +76,7 @@ class ModelParser(ParamType):
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
         result = REPO_TO_MODEL.get(value)
         if result is None:
-            closest_repo = _closest_repo(value)
+            closest_repo = _closest_match(value, REPO_TO_MODEL)
             error_message_parts = [
                 f'"{value}".',
             ]
@@ -89,13 +92,32 @@ class ModelParser(ParamType):
         return result
 
 
-def _closest_repo(query: str, min_score: float = 80) -> str | None:
-    if not REPO_TO_MODEL:
+def _closest_match(query: str, registry: dict[str, object], min_score: float = 80) -> str | None:
+    if not registry:
         return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, list(REPO_TO_MODEL))
+    (closest_match, score), *_ = thefuzz.process.extract(query, list(registry))
     if closest_match and score >= min_score:
         return closest_match
     return None
+
+
+class EvalParser(ParamType):
+    name: str = "Huggingface Eval Repo"
+
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> EvalSpec:
+        result = REPO_TO_EVAL.get(value)
+        if result is None:
+            closest_repo = _closest_match(value, REPO_TO_EVAL)
+            error_message_parts = [
+                f'"{value}".',
+            ]
+            if closest_repo:
+                error_message_parts.append(
+                    f' Perhaps you meant "{closest_repo}"?',
+                )
+            error_message = "".join(error_message_parts)
+            return self.fail(error_message, param, ctx)
+        return result
 
 
 def _error(message: str) -> None:
@@ -490,6 +512,88 @@ def list_models(
 
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
+
+eval_app = Typer()
+app.add_typer(eval_app, name="eval", help="Evaluate models on benchmarks.")
+
+
+DEFAULT_DATASETS_DIR = Path("datasets")
+
+
+@dataclass
+class CliEvalConversionCallbacks(EvalConversionCallbacks):  # TODO: should we refactor Cli*Callbacks to reduce repetition
+    overwrite: bool = False
+
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+
+    def started(self) -> None:
+        console.print(f"🚀 Converting eval dataset [cyan]{self.eval_spec.name}[/cyan].")
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists. Continue?"
+        ):
+            raise Exit(0)
+
+    def downloading_file(self, filename: str) -> None:
+        # TODO: Add progress tracking
+        pass
+
+    def finished_downloading_file(self, filename: str) -> None:
+        # TODO: Update progress
+        pass
+
+    def finished(self) -> None:
+        if self.progress is not None:
+            self.stack.close()
+        console.print(f"✅ Dataset converted successfully to [cyan]{self.output_dir}[/cyan]")
+
+
+@eval_app.command(name="convert-dataset", help="Download and convert evaluation dataset.")
+def convert_dataset(
+    eval_repo: Annotated[
+        EvalSpec,
+        Argument(
+            help=(
+                "HuggingFace eval repo. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan]."
+            ),
+            click_type=EvalParser(),
+            show_default=False,
+            metavar="EVAL_REPO",
+            autocompletion=lambda: list(REPO_TO_EVAL),
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the dataset to.",
+            show_default="Saves the dataset in the `datasets/<eval_name>` directory",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing dataset files.",
+        ),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        output_dir = DEFAULT_DATASETS_DIR / eval_repo.name
+
+    _convert_dataset(
+        eval_repo,
+        output_dir,
+        partial(CliEvalConversionCallbacks, overwrite=overwrite),
+    )
 
 
 @dataclass
