@@ -203,7 +203,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         moe_config = MixtureOfExpertsConfig(
             mixture_size=self.num_experts,
             num_experts_per_token=(self.num_experts_per_tok or 1),
-            routing_function=SoftmaxRouting(domain="all", norm_topk_prob=self.norm_topk_prob),
+            routing_function=SoftmaxRouting(),
             router_config=linear_config,
             router_has_biases=False,
             expert_config=experts_config,
@@ -253,7 +253,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     is_causal=True,
                     scale=None,
                     sliding_window_size=None,
-                    q_proj_has_gate=True,
+                    has_gate=True,
                     partial_rope_dim=int(self.head_dim * self.partial_rotary_factor),
                 )
 

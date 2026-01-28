@@ -36,6 +36,7 @@ from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
+from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
 __all__ = ["load_huggingface_decoder"]
 
@@ -369,7 +370,55 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             (up_projection, down_projection),
         )
 
-    experts = load_expert_stack(module.experts, path / "experts", module.mixture_size)
+    experts_path = path / "experts"
+    # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
+    if (experts_path / "gate_up_proj_blocks") in weights_dict:
+        fused = decode_mxfp4(
+            weights_dict[experts_path / "gate_up_proj_blocks"],
+            weights_dict[experts_path / "gate_up_proj_scales"],
+            dtype=module.activation_precision,
+            flatten=False,
+        )
+        fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
+        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
+        combined_up_gate_w = jnp.swapaxes(jnp.concatenate([up_w, gate_w], axis=-1), -1, -2)
+
+        gub = weights_dict[experts_path / "gate_up_proj_bias"]
+        if gub.ndim == 1:
+            gub = jnp.broadcast_to(gub, (combined_up_gate_w.shape[0], gub.shape[0]))
+        up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
+        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
+
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (combined_up_gate_w, combined_up_gate_b),
+        )
+
+        down_w = decode_mxfp4(
+            weights_dict[experts_path / "down_proj_blocks"],
+            weights_dict[experts_path / "down_proj_scales"],
+            dtype=module.activation_precision,
+            flatten=False,
+        )
+        down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
+        down_b = weights_dict[experts_path / "down_proj_bias"]
+        if down_b.ndim == 1:
+            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
+
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (down_w, down_b),
+        )
+
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+    else:
+        experts = load_expert_stack(module.experts, experts_path, module.mixture_size)
 
     shared_experts = None
     if module.shared_experts is not None:
@@ -435,7 +484,7 @@ def load_attention(
     else:
         raise NotImplementedError("Can't determine attention output projection name")
 
-    if module.config.q_proj_has_gate:
+    if module.config.has_gate:
         q_output_dim, k_output_dim, v_output_dim = module.qkv_projection.output_dims[:3]
         q_len = q_output_dim * 2
         head_dim = module.head_dim

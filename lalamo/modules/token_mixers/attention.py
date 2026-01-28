@@ -100,7 +100,7 @@ class AttentionConfig(TokenMixerConfigBase):
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
-    q_proj_has_gate: bool = False
+    has_gate: bool = False
     # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
     partial_rope_dim: int | None = None
 
@@ -121,7 +121,7 @@ class AttentionConfig(TokenMixerConfigBase):
             self.num_groups * self.head_dim,
             self.num_groups * self.head_dim,
         )
-        if self.q_proj_has_gate:
+        if self.has_gate:
             output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.random_init(
             input_dim=model_dim,
@@ -180,7 +180,7 @@ class AttentionConfig(TokenMixerConfigBase):
             self.num_groups * self.head_dim,
             self.num_groups * self.head_dim,
         )
-        if self.q_proj_has_gate:
+        if self.has_gate:
             output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.empty(
             input_dim=model_dim,
@@ -327,16 +327,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
                 f" got {v_output_dim}",
             )
-        if self.config.q_proj_has_gate:
+        if self.config.has_gate:
             if len(output_dims) != 4:
-                raise ValueError("QKVZ projection must have 4 output dims when q_proj_has_gate is enabled.")
+                raise ValueError("QKVZ projection must have 4 output dims when has_gate is enabled.")
             gate_output_dim = output_dims[3]
             if gate_output_dim != expected_q:
                 raise ValueError(
                     f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
                 )
         elif len(output_dims) != 3:
-            raise ValueError("QKV projection must have 3 output dims when q_proj_has_gate is disabled.")
+            raise ValueError("QKV projection must have 3 output dims when has_gate is disabled.")
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:
@@ -449,7 +449,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
 
     def export_weights(self) -> ParameterTree:
-        result = {
+        result: dict[str, ParameterTree | Array] = {
             "qkv_projection": self.qkv_projection.export_weights(),
             "out_projection": self.out_projection.export_weights(),
         }

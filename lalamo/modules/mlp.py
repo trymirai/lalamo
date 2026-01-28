@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Literal, Self, cast
+from typing import Self, cast
 
 import equinox as eqx
 import jax
@@ -267,24 +267,9 @@ class RoutingFunctionBase(ABC):
 
 @dataclass(frozen=True)
 class SoftmaxRouting(RoutingFunctionBase):
-    domain: Literal["top-k", "all"] = "top-k"
-    # domain corresponds to the input to the softmax function:
-    #      "top-k":  softmax only on the top (selected) logits
-    #      "all":    softmax all then top-k.
-    # Example (logits [2,1,0], k=2): top-k softmax ~[0.73,0.27]; all-softmax top-k ~[0.66,0.24];
-    # renorm_topk rescales the selected probs, but it still differs when the selected set changes.
-    norm_topk_prob: bool = False
-
     def call_unbatched(self, logits: Float[Array, " experts"], num_active: int) -> RoutingMap:
-        if self.domain == "all":
-            probs = jax.nn.softmax(logits)
-            active_weights, active_indices = jax.lax.top_k(probs, num_active)
-            if self.norm_topk_prob:
-                denom = active_weights.sum()
-                active_weights = jnp.where(denom > 0, active_weights / denom, active_weights)
-        else:
-            active_logits, active_indices = jax.lax.top_k(logits, num_active)
-            active_weights = jax.nn.softmax(active_logits)
+        active_logits, active_indices = jax.lax.top_k(logits, num_active)
+        active_weights = jax.nn.softmax(active_logits)
         mask = jnp.zeros_like(logits, dtype=bool)
         mask = mask.at[active_indices].set(True)
         expert_weights = jnp.zeros_like(logits)
@@ -571,7 +556,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             expert_accumulator: Float[Array, "tokens channels"],
             token_indices_for_chunk: Int[Array, "experts chunk_tokens"],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-
             def run_experts(
                 expert_accumulator: Float[Array, "tokens channels"],
             ) -> Float[Array, "tokens channels"]:
