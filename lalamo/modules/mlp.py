@@ -618,7 +618,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             batch=batch_size,
         )
         if self.shared_experts is None:
-            shared_result = 0.0
+            shared_result = jnp.zeros_like(expert_result)
         else:
 
             def shared_per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:

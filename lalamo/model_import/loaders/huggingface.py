@@ -91,16 +91,27 @@ def _process_quantized_tensor(
     return unpacked.astype(activation_precision)
 
 
+def _maybe_reorder(array: Array, reorder: tuple[Array, int] | None) -> Array:
+    if reorder is None:
+        return array
+    perm, axis = reorder
+    return jnp.take(array, perm, axis=axis)
+
+
 def _fuse_full_precision_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
+    *,
+    param_name: str = "weight",
+    reorder: tuple[Array, int] | None = None,
 ) -> Array:
     if sublayers_to_fuse is None:
-        return weights_dict[path / "weight"]
+        return _maybe_reorder(weights_dict[path / param_name], reorder)
 
-    weights = [weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse]
-    return jnp.concatenate(weights, axis=0)
+    weights = [weights_dict[path / layer_name / param_name] for layer_name in sublayers_to_fuse]
+    fused = jnp.concatenate(weights, axis=0)
+    return _maybe_reorder(fused, reorder)
 
 
 @dataclass(frozen=True)
@@ -115,74 +126,20 @@ AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros"
 MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
 
 
-def _reorder_q_proj(array: Array, perm: Array, axis: int) -> Array:
-    return jnp.take(array, perm, axis=axis)
-
-
-def _fuse_qkv_gate_bias(
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-    q_output_dim: int,
-    has_biases: bool,
+def _build_qkv_gate_reorder(
+    q_len: int,
+    k_len: int,
+    v_len: int,
     q_perm: Array,
-) -> Array | None:
-    if not has_biases:
-        return None
-    q_bias = weights_dict[path / "q_proj" / "bias"]
-    q_bias = _reorder_q_proj(q_bias, q_perm, axis=0)
-    k_bias = weights_dict[path / "k_proj" / "bias"]
-    v_bias = weights_dict[path / "v_proj" / "bias"]
-    q_bias, gate_bias = jnp.split(q_bias, [q_output_dim], axis=0)
-    return jnp.concatenate([q_bias, k_bias, v_bias, gate_bias], axis=0)
-
-
-def _fuse_qkv_gate_full_precision(
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
     q_output_dim: int,
-    has_biases: bool,
-    q_perm: Array,
-) -> tuple[Array, Array | None]:
-    q_weight = weights_dict[path / "q_proj" / "weight"]
-    q_weight = _reorder_q_proj(q_weight, q_perm, axis=0)
-    k_weight = weights_dict[path / "k_proj" / "weight"]
-    v_weight = weights_dict[path / "v_proj" / "weight"]
-    q_weight, gate_weight = jnp.split(q_weight, [q_output_dim], axis=0)
-    weights = jnp.concatenate([q_weight, k_weight, v_weight, gate_weight], axis=0)
-    bias = _fuse_qkv_gate_bias(weights_dict, path, q_output_dim, has_biases, q_perm)
-    return weights, bias
-
-
-def _fuse_qkv_gate_quantized(
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-    q_output_dim: int,
-    layout: QuantizedParamLayout,
-    q_perm: Array,
-) -> tuple[Array, Array, Array]:
-    split_axis = int(layout.transposed)
-    q_weight = weights_dict[path / "q_proj" / layout.weight]
-    q_zero = weights_dict[path / "q_proj" / layout.bias]
-    q_scale = weights_dict[path / "q_proj" / layout.scale]
-    q_weight = _reorder_q_proj(q_weight, q_perm, axis=split_axis)
-    q_zero = _reorder_q_proj(q_zero, q_perm, axis=split_axis)
-    q_scale = _reorder_q_proj(q_scale, q_perm, axis=split_axis)
-    q_weight, gate_weight = jnp.split(q_weight, [q_output_dim], axis=split_axis)
-    q_zero, gate_zero = jnp.split(q_zero, [q_output_dim], axis=split_axis)
-    q_scale, gate_scale = jnp.split(q_scale, [q_output_dim], axis=split_axis)
-
-    k_weight = weights_dict[path / "k_proj" / layout.weight]
-    k_zero = weights_dict[path / "k_proj" / layout.bias]
-    k_scale = weights_dict[path / "k_proj" / layout.scale]
-
-    v_weight = weights_dict[path / "v_proj" / layout.weight]
-    v_zero = weights_dict[path / "v_proj" / layout.bias]
-    v_scale = weights_dict[path / "v_proj" / layout.scale]
-
-    fused_qweights = jnp.concatenate([q_weight, k_weight, v_weight, gate_weight], axis=split_axis)
-    fused_qzeros = jnp.concatenate([q_zero, k_zero, v_zero, gate_zero], axis=split_axis)
-    fused_scales = jnp.concatenate([q_scale, k_scale, v_scale, gate_scale], axis=split_axis)
-    return fused_qweights, fused_qzeros, fused_scales
+) -> Array:
+    if q_perm.shape[0] != q_len:
+        raise ValueError(f"q_perm length {q_perm.shape[0]} does not match q_proj length {q_len}.")
+    q_indices = q_perm[:q_output_dim]
+    gate_indices = q_perm[q_output_dim:]
+    k_indices = jnp.arange(k_len, dtype=jnp.int32) + q_len
+    v_indices = jnp.arange(v_len, dtype=jnp.int32) + q_len + k_len
+    return jnp.concatenate([q_indices, k_indices, v_indices, gate_indices], axis=0)
 
 
 def _fuse_quantized_weights(
@@ -190,6 +147,8 @@ def _fuse_quantized_weights(
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
     quantized_param_layout: QuantizedParamLayout,
+    *,
+    reorder: tuple[Array, int] | None = None,
 ) -> tuple[Array, Array, Array]:
     # Note that AWQ quantized weights are stored transposed relative to full-precision weights
 
@@ -197,7 +156,11 @@ def _fuse_quantized_weights(
         qweights = weights_dict[path / quantized_param_layout.weight]
         qzeros = weights_dict[path / quantized_param_layout.bias]
         scales = weights_dict[path / quantized_param_layout.scale]
-        return qweights, qzeros, scales
+        return (
+            _maybe_reorder(qweights, reorder),
+            _maybe_reorder(qzeros, reorder),
+            _maybe_reorder(scales, reorder),
+        )
 
     qweights = [weights_dict[path / layer_name / quantized_param_layout.weight] for layer_name in sublayers_to_fuse]
     qzeros = [weights_dict[path / layer_name / quantized_param_layout.bias] for layer_name in sublayers_to_fuse]
@@ -207,7 +170,11 @@ def _fuse_quantized_weights(
     fused_qzeros = jnp.concatenate(qzeros, axis=int(quantized_param_layout.transposed))
     fused_scales = jnp.concatenate(scales, axis=int(quantized_param_layout.transposed))
 
-    return fused_qweights, fused_qzeros, fused_scales
+    return (
+        _maybe_reorder(fused_qweights, reorder),
+        _maybe_reorder(fused_qzeros, reorder),
+        _maybe_reorder(fused_scales, reorder),
+    )
 
 
 def load_linear(
@@ -458,6 +425,8 @@ def load_attention(
     module: Attention,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    *,
+    reorder_q_proj_gate: bool = True,
 ) -> Attention:
     if (path / "o_proj.weight") in weights_dict or (path / "o_proj.qweight") in weights_dict:
         o_proj_name = "o_proj"
@@ -467,21 +436,43 @@ def load_attention(
         raise NotImplementedError("Can't determine attention output projection name")
 
     if module.config.q_proj_has_gate:
+        q_output_dim, k_output_dim, v_output_dim = module.qkv_projection.output_dims[:3]
+        q_len = q_output_dim * 2
         head_dim = module.head_dim
         num_heads = module.num_heads
-        base = jnp.arange(num_heads, dtype=jnp.int32) * (2 * head_dim)
-        q = base[:, None] + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
-        gate = base[:, None] + head_dim + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
-        q_perm = jnp.concatenate([q.reshape(-1), gate.reshape(-1)], axis=0)
-        q_output_dim = module.qkv_projection.output_dims[0]
-        if isinstance(module.qkv_projection, FullPrecisionLinear):
-            weights, bias = _fuse_qkv_gate_full_precision(
+        if reorder_q_proj_gate:
+            base = jnp.arange(num_heads, dtype=jnp.int32) * (2 * head_dim)
+            q = base[:, None] + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
+            gate = base[:, None] + head_dim + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
+            q_perm = jnp.concatenate([q.reshape(-1), gate.reshape(-1)], axis=0)
+        else:
+            q_perm = jnp.arange(q_len, dtype=jnp.int32)
+        reorder = (_build_qkv_gate_reorder(q_len, k_output_dim, v_output_dim, q_perm, q_output_dim), 0)
+
+        def fuse_bias() -> Array | None:
+            if not module.qkv_projection.has_biases:
+                for proj in ("q_proj", "k_proj", "v_proj"):
+                    if (path / proj / "bias") in weights_dict:
+                        raise ValueError(
+                            f"Bias tensor found at {path / proj / 'bias'} but module does not support it.",
+                        )
+                return None
+            return _fuse_full_precision_weights(
                 weights_dict,
                 path,
-                q_output_dim,
-                module.qkv_projection.has_biases,
-                q_perm,
+                ["q_proj", "k_proj", "v_proj"],
+                param_name="bias",
+                reorder=reorder,
             )
+
+        if isinstance(module.qkv_projection, FullPrecisionLinear):
+            weights = _fuse_full_precision_weights(
+                weights_dict,
+                path,
+                ["q_proj", "k_proj", "v_proj"],
+                reorder=reorder,
+            )
+            bias = fuse_bias()
 
             qkv_projection = load_parameters(
                 lambda m: (m.weights, m.biases),
@@ -490,21 +481,20 @@ def load_attention(
             )
         elif isinstance(module.qkv_projection, GroupQuantizedLinear):
             layout = AWQ_QUANTIZED_WEIGHT_LAYOUT
-            fused_qweights, fused_qzeros, fused_scales = _fuse_qkv_gate_quantized(
+            axis = int(layout.transposed)
+            reorder_with_axis = (reorder[0], axis)
+            fused_qweights, fused_qzeros, fused_scales = _fuse_quantized_weights(
                 weights_dict,
                 path,
-                q_output_dim,
+                ["q_proj", "k_proj", "v_proj"],
                 layout,
-                q_perm,
+                reorder=reorder_with_axis,
             )
-            bias = _fuse_qkv_gate_bias(weights_dict, path, q_output_dim, module.qkv_projection.has_biases, q_perm)
+            bias = fuse_bias()
 
             weight_quantization = module.qkv_projection.config.weight_quantization_mode
             activation_precision = module.qkv_projection.activation_precision
-            if weight_quantization == QuantizationMode.UINT4:
-                reverse_order = AWQ_UINT4_REVERSE_ORDER
-            else:
-                reverse_order = None
+            reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
 
             weights = _process_quantized_tensor(
                 fused_qweights,
@@ -527,13 +517,16 @@ def load_attention(
             )
         elif isinstance(module.qkv_projection, MLXQuantizedLinear):
             layout = MLX_QUANTIZED_WEIGHT_LAYOUT
-            fused_qweights, fused_qzeros, fused_scales = _fuse_qkv_gate_quantized(
+            axis = int(layout.transposed)
+            reorder_with_axis = (reorder[0], axis)
+            fused_qweights, fused_qzeros, fused_scales = _fuse_quantized_weights(
                 weights_dict,
                 path,
-                q_output_dim,
+                ["q_proj", "k_proj", "v_proj"],
                 layout,
-                q_perm,
+                reorder=reorder_with_axis,
             )
+            bias = fuse_bias()
 
             weight_quantization = module.qkv_projection.config.weight_quantization_mode
             activation_precision = module.qkv_projection.activation_precision
@@ -553,9 +546,9 @@ def load_attention(
             scales = fused_scales.astype(activation_precision)
 
             qkv_projection = load_parameters(
-                lambda m: (m.weights, m.scales, m.biases),
+                lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
                 module.qkv_projection,
-                (weights, scales.T, deq_biases),
+                (weights, scales, deq_biases, bias),
             )
         else:
             raise NotImplementedError("Unsupported qkv projection type for gated attention.")
@@ -893,6 +886,8 @@ def load_transformer_layer(
     gate_proj_key: str,
     down_proj_key: str,
     permute_conv: bool,
+    *,
+    reorder_q_proj_gate: bool = True,
 ) -> TransformerLayer:
     if module.pre_mixer_norm is not None:
         pre_attention_norm = load_rmsnorm(
@@ -905,7 +900,12 @@ def load_transformer_layer(
         pre_attention_norm = None
     # Load mixer (attention or mamba)
     if isinstance(module.mixer, Attention):
-        mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
+        mixer = load_attention(
+            module.mixer,
+            weights_dict,
+            mixer_path / mixer_key,
+            reorder_q_proj_gate=reorder_q_proj_gate,
+        )
     elif isinstance(module.mixer, DeltaNetAttention):
         mixer = load_delta_net_attention(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, Mamba2):
@@ -1096,6 +1096,8 @@ def load_untied_embedding(
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
+    *,
+    reorder_q_proj_gate: bool = True,
 ) -> Decoder:
     if any(key.startswith("language_model.") for key in weights_dict):
         base_path = ParameterPath("language_model")
@@ -1194,6 +1196,7 @@ def load_huggingface_decoder(
             gate_proj_key,
             down_proj_key,
             permute_conv,
+            reorder_q_proj_gate=reorder_q_proj_gate,
         )
         for i, layer in enumerate(module.transformer.layers)
     )
