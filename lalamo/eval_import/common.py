@@ -7,10 +7,9 @@ from pathlib import Path
 import huggingface_hub
 import pyarrow as pa
 import pyarrow.parquet as pq
+from evals import BenchmarkMetrics, DatasetMetadata, InternalEvalRecord
 
 from .eval_specs.common import EvalSpec
-from .internal_format import DatasetMetadata, InternalEvalRecord
-from .prediction_format import BenchmarkMetrics
 
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")

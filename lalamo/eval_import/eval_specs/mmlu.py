@@ -1,4 +1,4 @@
-from lalamo.eval_import.eval_handlers import MMLUProHandler
+from evals import MMLUProHandler
 
 from .common import EvalSpec
 

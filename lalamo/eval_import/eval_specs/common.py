@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from lalamo.eval_import.eval_handlers import EvalHandler
+    from evals import EvalHandler
 
 
 @dataclass(frozen=True)
