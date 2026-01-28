@@ -526,6 +526,7 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):  # TODO: should we re
 
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
+    downloading_tasks: dict[str, TaskID] = field(default_factory=dict)
 
     def started(self) -> None:
         console.print(f"🚀 Converting eval dataset [cyan]{self.eval_spec.name}[/cyan].")
@@ -545,12 +546,12 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):  # TODO: should we re
             raise Exit(0)
 
     def downloading_file(self, filename: str) -> None:
-        # TODO: Add progress tracking
-        pass
+        assert self.progress is not None
+        self.downloading_tasks[filename] = self.progress.add_task(f"Retrieving {filename}...")
 
     def finished_downloading_file(self, filename: str) -> None:
-        # TODO: Update progress
-        pass
+        assert self.progress is not None
+        self.progress.remove_task(self.downloading_tasks[filename])
 
     def finished(self) -> None:
         if self.progress is not None:
