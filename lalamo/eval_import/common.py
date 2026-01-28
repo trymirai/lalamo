@@ -1,9 +1,19 @@
+import importlib.metadata
+import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import huggingface_hub
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from .eval_specs.common import EvalSpec
+from .internal_format import DatasetMetadata, InternalEvalRecord
+from .prediction_format import BenchmarkMetrics
+
+
+LALAMO_VERSION = importlib.metadata.version("lalamo")
 
 
 @dataclass
@@ -21,6 +31,15 @@ class EvalConversionCallbacks:
         pass
 
     def finished_downloading_file(self, filename: str) -> None:
+        pass
+
+    def converting_split(self, split: str) -> None:
+        pass
+
+    def finished_converting_split(self, split: str) -> None:
+        pass
+
+    def saving_dataset(self) -> None:
         pass
 
     def finished(self) -> None:
@@ -42,25 +61,123 @@ def _list_parquet_files_for_split(repo_id: str, split: str) -> list[str]:
     return parquet_files
 
 
+def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
+    data = {
+        "id": [r.id for r in records],
+        "question": [r.question for r in records],
+        "answer": [r.answer for r in records],
+        "options": [r.options for r in records],
+        "answer_index": [r.answer_index for r in records],
+        "reasoning": [r.reasoning for r in records],
+        "category": [r.category for r in records],
+        "metadata": [json.dumps(r.metadata) if r.metadata else None for r in records],
+    }
+    return pa.table(data)
+
+
 def import_eval(
     eval_spec: EvalSpec,
     output_dir: Path,
     callbacks: EvalConversionCallbacks,
 ) -> None:
-    """
-    Download eval dataset from HuggingFace.
-    """
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    for split in eval_spec.splits:
-        parquet_files = _list_parquet_files_for_split(eval_spec.repo, split)
+    handler = eval_spec.handler_type()
+    total_examples: dict[str, int] = {}
 
-        for filename in parquet_files:
-            callbacks.downloading_file(filename)
-            huggingface_hub.hf_hub_download(
-                repo_id=eval_spec.repo,
-                repo_type="dataset",
-                filename=filename,
-                local_dir=str(output_dir),
-            )
-            callbacks.finished_downloading_file(filename)
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        for split in eval_spec.splits:
+            parquet_files = _list_parquet_files_for_split(eval_spec.repo, split)
+            all_split_records: list[InternalEvalRecord] = []
+
+            for filename in parquet_files:
+                callbacks.downloading_file(filename)
+                downloaded_path = huggingface_hub.hf_hub_download(
+                    repo_id=eval_spec.repo,
+                    repo_type="dataset",
+                    filename=filename,
+                    local_dir=str(temp_path),
+                )
+                callbacks.finished_downloading_file(filename)
+
+                callbacks.converting_split(split)
+                internal_records = handler.convert_split(Path(downloaded_path))
+                all_split_records.extend(internal_records)
+                callbacks.finished_converting_split(split)
+
+            callbacks.saving_dataset()
+            total_examples[split] = len(all_split_records)
+            internal_table = _records_to_table(all_split_records)
+            output_parquet = output_dir / f"{split}.parquet"
+            pq.write_table(internal_table, output_parquet)
+
+    metadata = DatasetMetadata(
+        lalamo_version=LALAMO_VERSION,
+        name=eval_spec.name,
+        repo=eval_spec.repo,
+        splits=tuple(eval_spec.splits),
+        schema_version="1.0",
+        total_examples=total_examples,
+    )
+
+    with open(output_dir / "config.json", "w") as f:
+        json.dump(
+            {
+                "lalamo_version": metadata.lalamo_version,
+                "name": metadata.name,
+                "repo": metadata.repo,
+                "splits": list(metadata.splits),
+                "schema_version": metadata.schema_version,
+                "total_examples": metadata.total_examples,
+            },
+            f,
+            indent=4,
+        )
+
+
+def benchmark_predictions(
+    eval_spec: EvalSpec,
+    model_name: str,
+    predictions_file: Path,
+    dataset_dir: Path,
+    split: str,
+    output_dir: Path,
+) -> "BenchmarkMetrics":
+    """Orchestrate benchmarking workflow: prepare data + run official evaluation.
+
+    Workflow:
+        1. Load ground truth from internal format dataset
+        2. Load predictions from parquet file
+        3. Prepare data using handler.prepare_for_benchmark()
+        4. Run benchmark using handler.run_official_benchmark(eval_spec.name, ...)
+        5. Save metrics and annotated predictions
+    """
+    # TODO: Implement
+    # handler = eval_spec.handler_type()
+    # ground_truth = load_internal_dataset(dataset_dir / f"{split}.parquet")
+    # predictions = load_predictions(predictions_file)
+    # prepared_path = handler.prepare_for_benchmark(predictions, ground_truth, output_dir / "prepared")
+    # metrics = handler.run_official_benchmark(prepared_path, eval_spec.name, model_name, split)
+    # save_metrics(metrics, output_dir / "metrics.json")
+    # return metrics
+    raise NotImplementedError("benchmark_predictions orchestration not yet implemented")
+
+
+def run_eval(
+    eval_spec: EvalSpec,
+    model_path: Path,
+    dataset_dir: Path,
+    split: str,
+    output_dir: Path,
+) -> "BenchmarkMetrics":
+    """Complete end-to-end evaluation workflow: inference + benchmarking.
+
+    Workflow:
+        1. Load internal format dataset
+        2. Load model
+        3. Run inference to generate predictions
+        4. Run benchmarking on predictions
+    """
+    raise NotImplementedError("run_eval orchestration not yet implemented")

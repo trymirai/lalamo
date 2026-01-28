@@ -527,6 +527,7 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):  # TODO: should we re
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
     downloading_tasks: dict[str, TaskID] = field(default_factory=dict)
+    converting_task: TaskID | None = None
 
     def started(self) -> None:
         console.print(f"🚀 Converting eval dataset [cyan]{self.eval_spec.name}[/cyan].")
@@ -552,6 +553,18 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):  # TODO: should we re
     def finished_downloading_file(self, filename: str) -> None:
         assert self.progress is not None
         self.progress.remove_task(self.downloading_tasks[filename])
+
+    def converting_split(self, split: str) -> None:
+        assert self.progress is not None
+        self.converting_task = self.progress.add_task(f"Converting {split} split to internal format...")
+
+    def finished_converting_split(self, split: str) -> None:
+        assert self.progress is not None
+        assert self.converting_task is not None
+        self.progress.remove_task(self.converting_task)
+
+    def saving_dataset(self) -> None:
+        pass
 
     def finished(self) -> None:
         if self.progress is not None:
