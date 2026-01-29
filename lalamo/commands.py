@@ -435,7 +435,7 @@ class GenerateRepliesCallbacks:
     model_path: Path
     dataset_path: Path
     output_path: Path
-    batch_size: int
+    max_vram: int | None
     total_rows: int
 
     def loading_model(self) -> None:
@@ -461,14 +461,14 @@ def generate_replies(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    batch_size: int = 1,
+    max_vram: int | None = None,
     max_output_length: int = 8192,
     callbacks_type: Callable[
         [
             Path,
             Path,
             Path,
-            int,
+            int | None,
             int,
         ],
         GenerateRepliesCallbacks,
@@ -481,7 +481,7 @@ def generate_replies(
         model_path,
         dataset_path,
         output_path,
-        batch_size,
+        max_vram,
         total_rows,
     )
 
@@ -496,7 +496,7 @@ def generate_replies(
 
     replies: list[tuple[int, AssistantMessage]] = []
     for rows_processed, (idx, reply) in enumerate(
-        model.reply_many(dataset, batch_size=batch_size, max_output_length=max_output_length),
+        model.reply_many(dataset, max_vram=max_vram, max_output_length=max_output_length),
     ):
         replies.append((idx, reply))
         callbacks.generation_progress(rows_processed)

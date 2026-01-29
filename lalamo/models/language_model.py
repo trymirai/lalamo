@@ -276,7 +276,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[list[Message]],
         sampling_policy: SamplingPolicy | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
-        batch_size: int = 1,
+        max_vram: int | None = None,
         max_output_length: int = 8192,
         *,
         key: PRNGKeyArray | None = None,
@@ -301,14 +301,48 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             padded_len = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= len(tokens))
             length_buckets.setdefault(padded_len, []).append((idx, tokens))
 
+        if not length_buckets:
+            return
+
+        # Estimate batch sizes by interpolating between smallest and largest prompt lengths
+        from lalamo.speculator.estimator import estimate_batchsize_from_memory
+
+        sorted_lengths = sorted(length_buckets.keys())
+        min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
+
+        print(max_vram)
+        if max_vram is None:
+            # Fallback: batch_size=1 for all buckets
+            batch_size_for_length = {length: 1 for length in sorted_lengths}
+            print(1)
+        elif min_len == max_len:
+            # Only one bucket size
+            bs = estimate_batchsize_from_memory(self, min_len, max_output_length, None, max_vram)
+            batch_size_for_length = {min_len: max(1, bs)}
+            print(bs)
+        else:
+            # Estimate for smallest (highest batch size) and largest (lowest batch size) buckets
+            bs_at_min = estimate_batchsize_from_memory(self, min_len, max_output_length, None, max_vram)
+            bs_at_max = estimate_batchsize_from_memory(self, max_len, max_output_length, None, max_vram)
+            bs_at_min = max(1, bs_at_min)
+            bs_at_max = max(1, bs_at_max)
+            print(bs_at_min, bs_at_max)
+
+            # Linear interpolation for intermediate lengths
+            def interpolate_batch_size(length: int) -> int:
+                t = (length - min_len) / (max_len - min_len)
+                return max(1, int(bs_at_min + t * (bs_at_max - bs_at_min)))
+
+            batch_size_for_length = {length: interpolate_batch_size(length) for length in sorted_lengths}
+
         # Merge small buckets and round to batch_size multiples.
         # Process small-to-large: keep multiples of batch_size, push remainder to next bucket.
         # Buckets with too few elements are merged entirely into the next bucket.
         min_batches = 10
         merged_buckets: dict[int, list[tuple[int, np.ndarray]]] = {}
         overflow: list[tuple[int, np.ndarray]] = []
-        sorted_lengths = sorted(length_buckets.keys())
         for i, padded_len in enumerate(sorted_lengths):
+            batch_size = batch_size_for_length[padded_len]
             items = overflow + length_buckets[padded_len]
             is_last = i == len(sorted_lengths) - 1
             if is_last:
@@ -386,7 +420,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             yield from decrease_batchsize_on_oom(
                 functools.partial(process_bucket, bucket=bucket, padded_input_length=padded_input_length),
-                batch_size,
+                batch_size_for_length[padded_input_length],
             )
 
     def stream_reply_text(

@@ -566,20 +566,31 @@ def generate_replies(
             help="Path to save the output parquet file.",
         ),
     ],
-    batch_size: Annotated[
-        int,
-        Option(help="Number of conversations to process in each batch."),
-    ] = 1,
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically via interpolation.",
+            show_default="max on default device",
+        ),
+    ] = None,
     max_output_length: Annotated[
         int,
         Option(help="Maximum number of tokens to generate per reply."),
     ] = 8192,
 ) -> None:
+    if vram_gb is not None:
+        mem_bytes = vram_gb * 1000 * 1000 * 1000
+    elif (mem_bytes := get_default_device_bytes()) is None:
+        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+        raise Exit(1)
+
+    max_vram = get_usable_memory_from_bytes(mem_bytes)
+
     _generate_replies(
         model_path,
         dataset_path,
         output_path,
-        batch_size,
+        max_vram,
         max_output_length,
         CliGenerateRepliesCallbacks,
     )

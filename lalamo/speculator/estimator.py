@@ -48,7 +48,7 @@ def estimate_memory_from_batchsize(
     model: LanguageModel,
     max_input_length: int,
     max_output_length: int,
-    num_logits_per_token: int,
+    num_logits_per_token: int | None,
     batch_size: int,
 ) -> int:
     memory_analysis = (
@@ -89,7 +89,7 @@ def estimate_batchsize_from_memory(
     model: LanguageModel,
     max_input_length: int,
     max_output_length: int,
-    num_logits_per_token: int,
+    num_logits_per_token: int | None,
     target_mem: int,
     progress: Callable[[EstimateBatchsizeFromMemoryEvent], None] | None = None,
 ) -> int:
