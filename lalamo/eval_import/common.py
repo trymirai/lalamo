@@ -153,7 +153,6 @@ def benchmark_predictions(
         4. Run benchmark using handler.run_official_benchmark(eval_spec.name, ...)
         5. Save metrics and annotated predictions
     """
-    # TODO: Implement
     # handler = eval_spec.handler_type()
     # ground_truth = load_internal_dataset(dataset_dir / f"{split}.parquet")
     # predictions = load_predictions(predictions_file)
@@ -180,3 +179,62 @@ def run_eval(
         4. Run benchmarking on predictions
     """
     raise NotImplementedError("run_eval orchestration not yet implemented")
+
+
+@dataclass
+class InferenceCallbacks:
+    model_path: Path
+    dataset_path: Path
+    output_path: Path
+
+    def started(self) -> None:
+        pass
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self) -> None:
+        pass
+
+    def running_inference(self, current: int, total: int) -> None:
+        pass
+
+    def finished_inference(self) -> None:
+        pass
+
+    def saving_predictions(self) -> None:
+        pass
+
+    def finished(self) -> None:
+        pass
+
+
+def run_inference(
+    model_path: Path,
+    dataset_path: Path,
+    output_path: Path,
+    max_output_length: int,
+    batch_size: int,
+    callbacks: type[InferenceCallbacks],
+) -> None:
+    """Run model inference on eval dataset and save predictions.
+
+    Workflow:
+        1. Load model
+        2. Load internal format dataset
+        3. Run inference to generate predictions
+        4. Save predictions to parquet
+    """
+    cb = callbacks(
+        model_path=model_path,
+        dataset_path=dataset_path,
+        output_path=output_path,
+    )
+    cb.started()
+    raise NotImplementedError("run_inference not yet implemented")

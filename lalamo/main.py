@@ -46,7 +46,7 @@ from lalamo.commands import convert_dataset as _convert_dataset
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
-from lalamo.eval_import import REPO_TO_EVAL, EvalSpec
+from lalamo.eval_import import REPO_TO_EVAL, EvalSpec, InferenceCallbacks, run_inference
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
@@ -607,6 +607,119 @@ def convert_dataset(
         eval_repo,
         output_dir,
         partial(CliEvalConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@dataclass
+class CliInferenceCallbacks(InferenceCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_model_task: TaskID | None = None
+    loading_dataset_task: TaskID | None = None
+    inference_task: TaskID | None = None
+    saving_task: TaskID | None = None
+
+    def started(self) -> None:
+        console.print(f"🔮 Running inference on [cyan]{self.dataset_path}[/cyan] with model [cyan]{self.model_path}[/cyan]")
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def loading_model(self) -> None:
+        assert self.progress is not None
+        self.loading_model_task = self.progress.add_task("🧠 Loading model...")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_model_task is not None
+        self.progress.remove_task(self.loading_model_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_dataset_task = self.progress.add_task("📊 Loading dataset...")
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_dataset_task is not None
+        self.progress.remove_task(self.loading_dataset_task)
+
+    def running_inference(self, current: int, total: int) -> None:
+        assert self.progress is not None
+        if self.inference_task is None:
+            self.inference_task = self.progress.add_task(
+                f"🔮 Running inference... ({current}/{total})",
+                total=total,
+            )
+        else:
+            self.progress.update(
+                self.inference_task,
+                completed=current,
+                description=f"🔮 Running inference... ({current}/{total})",
+            )
+
+    def finished_inference(self) -> None:
+        assert self.progress is not None
+        if self.inference_task is not None:
+            self.progress.remove_task(self.inference_task)
+
+    def saving_predictions(self) -> None:
+        assert self.progress is not None
+        self.saving_task = self.progress.add_task(f"💾 Saving predictions to {self.output_path}")
+
+    def finished(self) -> None:
+        if self.progress is not None and self.saving_task is not None:
+            self.progress.remove_task(self.saving_task)
+        self.stack.close()
+        console.print(f"✅ Predictions saved to [cyan]{self.output_path}[/cyan]")
+
+
+@eval_app.command(name="infer", help="Run model inference on evaluation dataset.")
+def infer(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the converted model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the eval dataset parquet file (e.g., datasets/MMLU-Pro/test.parquet).",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="Path to save predictions parquet file.",
+            show_default="predictions.parquet",
+        ),
+    ] = Path("predictions.parquet"),
+    max_output_length: Annotated[
+        int,
+        Option(
+            help="Maximum number of tokens to generate per question.",
+        ),
+    ] = 512,
+    batch_size: Annotated[
+        int,
+        Option(
+            help="Number of examples to process in parallel.",
+        ),
+    ] = 1,
+) -> None:
+    run_inference(
+        model_path=model_path,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        max_output_length=max_output_length,
+        batch_size=batch_size,
+        callbacks=CliInferenceCallbacks,
     )
 
 
