@@ -35,6 +35,7 @@ from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    GenerateRepliesCallbacks,
     Precision,
     TraceCallbacks,
     TrainCallbacks,
@@ -42,6 +43,7 @@ from lalamo.commands import (
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -490,6 +492,119 @@ def list_models(
             spec.repo,
         )
     console.print(table)
+
+
+@dataclass
+class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    generation_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+                transient=True,
+            ),
+        )
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+        self.generation_task = self.progress.add_task(
+            "🔮 [cyan]Generating replies...[/cyan]",
+            total=self.total_rows,
+        )
+
+    def generation_progress(self, rows_processed: int) -> None:
+        assert self.progress is not None
+        assert self.generation_task is not None
+        self.progress.update(self.generation_task, completed=rows_processed)
+
+    def finished_generation(self) -> None:
+        assert self.progress is not None
+        assert self.generation_task is not None
+        self.progress.update(self.generation_task, description="✅ Completed")
+        self.stack.close()
+        console.print(f"💾 Replies saved to [cyan]{self.output_path}[/cyan]")
+
+
+@app.command(help="Generate replies for conversations in a parquet file.")
+def generate_replies(
+    input_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the input parquet file with conversations.",
+            metavar="INPUT_PATH",
+        ),
+    ],
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="Path to save the output parquet file.",
+        ),
+    ],
+    max_input_length: Annotated[
+        int,
+        Option(help="Maximum input length for conversations."),
+    ] = 1024,
+    max_output_length: Annotated[
+        int,
+        Option(help="Maximum output length for generated replies."),
+    ] = 1024,
+    batch_size: Annotated[
+        int,
+        Option(help="Number of conversations to process in each batch."),
+    ] = 1,
+    cot_tag: Annotated[
+        str | None,
+        Option(
+            help="XML tag to extract chain-of-thought (e.g., 'think' extracts content from <think>...</think>).",
+            show_default="None, no CoT extraction",
+        ),
+    ] = None,
+    num_rows: Annotated[
+        int | None,
+        Option(
+            help="Number of rows to process.",
+            show_default="all",
+        ),
+    ] = None,
+) -> None:
+    _generate_replies(
+        model_path,
+        input_path,
+        output_path,
+        max_input_length,
+        max_output_length,
+        batch_size,
+        cot_tag,
+        num_rows,
+        CliGenerateRepliesCallbacks,
+    )
 
 
 speculator_app = Typer()

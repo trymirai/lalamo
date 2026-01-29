@@ -1,9 +1,11 @@
+import warnings
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
-from typing import cast
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from typing import TypeVar, cast
 
 import jax.numpy as jnp
 from jax._src.api import ShapeDtypeStruct
+from jax.errors import JaxRuntimeError
 from jaxtyping import Array, DTypeLike
 
 from lalamo.utils import MapDictValues, MapSequence
@@ -18,14 +20,57 @@ __all__ = [
     "flatten_parameters",
     "require_array",
     "require_tree",
+    "retry_on_oom",
     "unflatten_parameters",
 ]
+
+T = TypeVar("T")
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
 
 
 class LalamoWarning(UserWarning):
     """Custom warning class for Lalamo-specific warnings."""
+
+
+def retry_on_oom(
+    fn: Callable[[int], Iterable[T]],
+    starting_batch_size: int,
+) -> Iterable[T]:
+    """
+    Execute fn(batch_size) with automatic batch size reduction on OOM.
+
+    Args:
+        fn: Function that takes batch_size and returns an iterable
+        starting_batch_size: Initial batch size to try
+
+    Yields:
+        Results from fn(batch_size)
+
+    Raises:
+        JaxRuntimeError: If OOM occurs after first batch completes or at batch_size=1
+    """
+    first_batch_completed = False
+    effective_batch_size = starting_batch_size
+
+    while True:
+        try:
+            for result in fn(effective_batch_size):
+                first_batch_completed = True
+                yield result
+            break
+        except JaxRuntimeError:
+            if first_batch_completed:
+                raise
+            new_bs = max(int(0.7 * effective_batch_size - 1), 1)
+            if new_bs == 1 and effective_batch_size == 1:
+                raise
+            warnings.warn(
+                f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.",
+                LalamoWarning,
+                stacklevel=2,
+            )
+            effective_batch_size = new_bs
 
 
 type ArrayLike = Array | ShapeDtypeStruct

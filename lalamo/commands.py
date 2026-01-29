@@ -28,6 +28,8 @@ from lalamo.speculator.inference import CollectTracesEvent, inference_collect_tr
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
 
+import polars as pl
+
 
 class Precision(Enum):
     FLOAT32 = "float32"
@@ -427,3 +429,158 @@ def train(
     with open(output_path, "wb") as fd:
         fd.write(speculator.serialize())
     callbacks.finished_saving_speculator()
+
+
+@dataclass
+class GenerateRepliesCallbacks:
+    model_path: Path
+    input_path: Path
+    output_path: Path
+    max_input_length: int
+    max_output_length: int
+    batch_size: int
+    cot_tag: str | None
+    total_rows: int
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self) -> None:
+        pass
+
+    def generation_progress(self, rows_processed: int) -> None:
+        pass
+
+    def finished_generation(self) -> None:
+        pass
+
+
+def generate_replies(
+    model_path: Path,
+    input_path: Path,
+    output_path: Path,
+    max_input_length: int = 1024,
+    max_output_length: int = 1024,
+    batch_size: int = 1,
+    cot_tag: str | None = None,
+    num_rows: int | None = None,
+    callbacks_type: Callable[
+        [
+            Path,
+            Path,
+            Path,
+            int,
+            int,
+            int,
+            str | None,
+            int,
+        ],
+        GenerateRepliesCallbacks,
+    ] = GenerateRepliesCallbacks,
+) -> None:
+    """
+    Generate replies for conversations in a parquet file.
+
+    If cot_tag is provided, extracts chain-of-thought from within XML-like tags
+    (e.g., "<think>" for cot_tag="think"). Text inside tags goes to 'cot' column,
+    the rest to 'answer'.
+    """
+    import re
+
+    from lalamo.data.huggingface_message import HFMessage
+
+    callbacks_inst: GenerateRepliesCallbacks | None = None
+
+    callbacks_inst = None
+
+    def make_callbacks(total: int) -> GenerateRepliesCallbacks:
+        nonlocal callbacks_inst
+        callbacks_inst = callbacks_type(
+            model_path,
+            input_path,
+            output_path,
+            max_input_length,
+            max_output_length,
+            batch_size,
+            cot_tag,
+            total,
+        )
+        return callbacks_inst
+
+    # Load dataset first to get total count
+    df = pl.read_parquet(input_path)
+    total_rows = len(df) if num_rows is None else min(len(df), num_rows)
+
+    callbacks = make_callbacks(total_rows)
+
+    callbacks.loading_model()
+    model = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
+
+    callbacks.loading_dataset()
+    callbacks.finished_loading_dataset()
+
+    # Compile regex for CoT extraction
+    cot_pattern = None
+    if cot_tag:
+        cot_pattern = re.compile(
+            rf"<{re.escape(cot_tag)}>(.*?)</{re.escape(cot_tag)}>",
+            re.DOTALL,
+        )
+
+    def iter_conversations() -> Iterable[tuple[list[dict], list[Message]]]:
+        for idx, row in enumerate(df.iter_rows(named=True)):
+            if num_rows is not None and idx >= num_rows:
+                break
+            conversation = row.get("conversation", [])
+            messages = [HFMessage.from_dict(msg).as_message() for msg in conversation]
+            yield conversation, messages
+
+    conversations_list = list(iter_conversations())
+    conversations_only = [msgs for _, msgs in conversations_list]
+
+    results: list[dict] = []
+    rows_processed = 0
+
+    for (conversation, _), response in zip(
+        conversations_list,
+        model.reply_many(
+            conversations_only,
+            batch_size=batch_size,
+            max_input_length=max_input_length,
+            max_output_length=max_output_length,
+        ),
+        strict=True,
+    ):
+        full_response = response.response
+
+        # Extract CoT if tag is provided
+        cot = ""
+        answer = full_response
+        if cot_pattern and full_response:
+            cot_match = cot_pattern.search(full_response)
+            if cot_match:
+                cot = cot_match.group(1).strip()
+                answer = cot_pattern.sub("", full_response).strip()
+
+        results.append({
+            "conversation": conversation,
+            "answer": answer,
+            "cot": cot,
+        })
+
+        rows_processed += 1
+        callbacks.generation_progress(rows_processed)
+
+    # Write output parquet
+    output_df = pl.DataFrame(results)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_df.write_parquet(output_path)
+
+    callbacks.finished_generation()
