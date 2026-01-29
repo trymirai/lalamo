@@ -11,7 +11,7 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.message_processor import Message
+from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -494,17 +494,20 @@ def generate_replies(
     dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
 
-    replies = []
-    for rows_processed, reply in enumerate(
+    replies: list[tuple[int, AssistantMessage]] = []
+    for rows_processed, (idx, reply) in enumerate(
         model.reply_many(dataset, batch_size=batch_size, max_output_length=max_output_length),
     ):
-        replies.append(reply)
+        replies.append((idx, reply))
         callbacks.generation_progress(rows_processed)
+
+    # Sort by original index to restore input order
+    replies.sort(key=lambda x: x[0])  # noqa: FURB118
 
     df = pl.DataFrame(
         {
-            "response": [reply.response for reply in replies],
-            "chain_of_thought": [reply.chain_of_thought for reply in replies],
+            "response": [reply.response for _, reply in replies],
+            "chain_of_thought": [reply.chain_of_thought for _, reply in replies],
         },
     )
 
