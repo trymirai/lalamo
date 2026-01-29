@@ -237,7 +237,8 @@ def reply_many(
     if config is None:
         config = GenerateConfig()
 
-    assert batch_size is None or max_vram is None  # not both
+    # check that only one is not None
+    assert (batch_size is None) == (max_vram is not None)
 
     tokenized = [
         np.array(
