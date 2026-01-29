@@ -11,6 +11,8 @@ import numpy as np
 
 from lalamo.common import decrease_batchsize_on_oom
 from lalamo.inference.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
+from lalamo.models import LanguageModel
+from lalamo.models.language_model import GenerationResults
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator
@@ -19,8 +21,7 @@ if TYPE_CHECKING:
     from jaxtyping import PRNGKeyArray
 
     from lalamo.message_processor import AssistantMessage, Message
-    from lalamo.models import LanguageModel
-    from lalamo.models.language_model import ForwardPassConfig, GenerationResults
+    from lalamo.models.language_model import ForwardPassConfig
     from lalamo.sampling import SamplingPolicy
 
 
@@ -54,12 +55,10 @@ class GenerateConfig:
 
 def _bucket_by_length(
     tokenized: list[np.ndarray],
-    bucket_lengths: list[int] | None = None,
 ) -> dict[int, list[tuple[int, np.ndarray]]]:
     # Group tokenized sequences by their padded length.
     # Returns a dict mapping padded_length -> list of (original_index, tokens).
-    if bucket_lengths is None:
-        bucket_lengths = COMPILED_PROMPT_LENGTHS
+    bucket_lengths = COMPILED_PROMPT_LENGTHS
 
     buckets: dict[int, list[tuple[int, np.ndarray]]] = {}
     for idx, tokens in enumerate(tokenized):
@@ -111,9 +110,6 @@ def _linear_estimate_batch_sizes(
     # Estimate batch size for each bucket length via linear interpolation.
     # Since the map batch_size -> memory is convex, it can
     # be 'guaranteed' (as far as anything can be guaranteed in JAX) that this is a valid upper bound
-    if len(sorted_lengths) == 0:
-        return {}
-
     min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
 
     def make_progress(seq_len: int) -> Callable[[EstimateBatchsizeFromMemoryEvent], None] | None:
@@ -154,14 +150,7 @@ def generate_batched(
 ) -> Iterator[tuple[int, GenerationResults]]:
     # Generate for a bunch of tokenized inputs with batch-size decrease on OOM
 
-    if config is None:
-        config = GenerateConfig()
-
-    from lalamo.models import LanguageModel
-
     tokenized_list = list(tokenized)
-    if not tokenized_list:
-        return
 
     @functools.cache
     def make_compiled(bs: int) -> Compiled:
@@ -185,8 +174,6 @@ def generate_batched(
         )
 
     def process_batches(bs: int) -> Iterator[tuple[int, GenerationResults]]:
-        from lalamo.models.language_model import GenerationResults
-
         for real_batch in batched(tokenized_list, bs):
             indices = [idx for idx, _ in real_batch]
             tokens_list = [tokens for _, tokens in real_batch]
@@ -225,7 +212,7 @@ def reply_many(
     model: LanguageModel,
     messages: Iterable[list[Message]],
     max_vram: int | None,
-    config: GenerateConfig | None = None,
+    config: GenerateConfig = GenerateConfig(),  # noqa: B008
     batch_size: int | None = None,
     estimating_progress_callback: Callable[[BatchSizeEstimatingEvent], None] | None = None,
     estimated_callback: Callable[[], None] | None = None,
@@ -234,8 +221,6 @@ def reply_many(
 
     # Sequences are grouped by padded input length and processed longest-first,
     # so output order may differ from input order. Each result includes its original index.
-    if config is None:
-        config = GenerateConfig()
 
     # check that only one is not None
     assert (batch_size is None) == (max_vram is not None)
@@ -247,9 +232,6 @@ def reply_many(
         )
         for msg in messages
     ]
-
-    if not tokenized:
-        return
 
     buckets = _bucket_by_length(tokenized)
     sorted_lengths = sorted(buckets.keys())
