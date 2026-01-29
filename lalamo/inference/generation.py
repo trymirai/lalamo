@@ -44,82 +44,6 @@ class GenerateConfig:
     key: PRNGKeyArray | None = None
 
 
-def generate_batched(
-    model: LanguageModel,
-    tokenized: Iterable[tuple[int, np.ndarray]],
-    padded_length: int,
-    batch_size: int,
-    config: GenerateConfig | None = None,
-) -> Iterator[tuple[int, GenerationResults]]:
-    # Generate for a bunch of tokenized inputs with batch-size decrease on OOM
-
-    if config is None:
-        config = GenerateConfig()
-
-    from lalamo.models import LanguageModel
-
-    tokenized_list = list(tokenized)
-    if not tokenized_list:
-        return
-
-    @functools.cache
-    def make_compiled(bs: int) -> Compiled:
-        return (
-            jax.jit(
-                functools.partial(
-                    LanguageModel.generate_tokens,
-                    sampling_policy=config.sampling_policy,
-                    max_output_length=config.max_output_length,
-                    forward_pass_config=config.forward_pass_config,
-                    num_top_logits_to_return=config.num_top_logits_to_return,
-                    key=config.key,
-                ),
-            )
-            .lower(
-                model,
-                prompt_token_ids=jax.ShapeDtypeStruct((bs, padded_length), jnp.int32),
-                prompt_lengths_without_padding=jax.ShapeDtypeStruct((bs,), jnp.int32),
-            )
-            .compile(compiler_options={"xla_gpu_autotune_level": "0"})
-        )
-
-    def process_batches(bs: int) -> Iterator[tuple[int, GenerationResults]]:
-        from lalamo.models.language_model import GenerationResults
-
-        for real_batch in batched(tokenized_list, bs):
-            indices = [idx for idx, _ in real_batch]
-            tokens_list = [tokens for _, tokens in real_batch]
-
-            batch_padding = bs - len(tokens_list)
-            batch = (*tokens_list, *(np.array([0], dtype=np.int32),) * batch_padding)
-
-            padded = jnp.array(
-                np.array([np.pad(tokens, (0, padded_length - len(tokens)), constant_values=0) for tokens in batch]),
-            )
-            lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
-
-            compiled = make_compiled(bs)
-            results = compiled(
-                model,
-                prompt_token_ids=padded,
-                prompt_lengths_without_padding=lengths,
-            )
-
-            for i, idx in enumerate(indices):
-                yield (
-                    idx,
-                    GenerationResults(
-                        token_ids=results.token_ids[i],
-                        top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
-                        top_k_token_logits=results.top_k_token_logits[i]
-                        if results.top_k_token_logits is not None
-                        else None,
-                    ),
-                )
-
-    yield from decrease_batchsize_on_oom(process_batches, batch_size)
-
-
 def _bucket_by_length(
     tokenized: list[np.ndarray],
     bucket_lengths: list[int] | None = None,
@@ -195,6 +119,82 @@ def _linear_estimate_batch_sizes(
         return max(1, int(bs_at_min + t * (bs_at_max - bs_at_min)))
 
     return {length: interpolate(length) for length in sorted_lengths}
+
+
+def generate_batched(
+    model: LanguageModel,
+    tokenized: Iterable[tuple[int, np.ndarray]],
+    padded_length: int,
+    batch_size: int,
+    config: GenerateConfig | None = None,
+) -> Iterator[tuple[int, GenerationResults]]:
+    # Generate for a bunch of tokenized inputs with batch-size decrease on OOM
+
+    if config is None:
+        config = GenerateConfig()
+
+    from lalamo.models import LanguageModel
+
+    tokenized_list = list(tokenized)
+    if not tokenized_list:
+        return
+
+    @functools.cache
+    def make_compiled(bs: int) -> Compiled:
+        return (
+            jax.jit(
+                functools.partial(
+                    LanguageModel.generate_tokens,
+                    sampling_policy=config.sampling_policy,
+                    max_output_length=config.max_output_length,
+                    forward_pass_config=config.forward_pass_config,
+                    num_top_logits_to_return=config.num_top_logits_to_return,
+                    key=config.key,
+                ),
+            )
+            .lower(
+                model,
+                prompt_token_ids=jax.ShapeDtypeStruct((bs, padded_length), jnp.int32),
+                prompt_lengths_without_padding=jax.ShapeDtypeStruct((bs,), jnp.int32),
+            )
+            .compile(compiler_options={"xla_gpu_autotune_level": "0"})
+        )
+
+    def process_batches(bs: int) -> Iterator[tuple[int, GenerationResults]]:
+        from lalamo.models.language_model import GenerationResults
+
+        for real_batch in batched(tokenized_list, bs):
+            indices = [idx for idx, _ in real_batch]
+            tokens_list = [tokens for _, tokens in real_batch]
+
+            batch_padding = bs - len(tokens_list)
+            batch = (*tokens_list, *(np.array([0], dtype=np.int32),) * batch_padding)
+
+            padded = jnp.array(
+                np.array([np.pad(tokens, (0, padded_length - len(tokens)), constant_values=0) for tokens in batch]),
+            )
+            lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
+
+            compiled = make_compiled(bs)
+            results = compiled(
+                model,
+                prompt_token_ids=padded,
+                prompt_lengths_without_padding=lengths,
+            )
+
+            for i, idx in enumerate(indices):
+                yield (
+                    idx,
+                    GenerationResults(
+                        token_ids=results.token_ids[i],
+                        top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
+                        top_k_token_logits=results.top_k_token_logits[i]
+                        if results.top_k_token_logits is not None
+                        else None,
+                    ),
+                )
+
+    yield from decrease_batchsize_on_oom(process_batches, batch_size)
 
 
 def reply_many(

@@ -6,7 +6,7 @@ import numpy as np
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
-from lalamo.inference.batch_generate import GenerateConfig, generate_batched
+from lalamo.inference.generation import GenerateConfig, generate_batched
 from lalamo.message_processor import Message
 from lalamo.models import LanguageModel
 

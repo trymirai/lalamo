@@ -1,4 +1,4 @@
-from lalamo.inference.batch_generate import (
+from lalamo.inference.generation import (
     COMPILED_PROMPT_LENGTHS,
     GenerateConfig,
     generate_batched,
