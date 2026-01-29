@@ -539,24 +539,12 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
         else:
             self.progress.update(self.estimating_task, description=description)
 
-    def batch_sizes_estimated(self, batch_size_for_length: dict[int, int]) -> None:
+    def batch_sizes_estimated(self) -> None:
         assert self.progress is not None
         if self.estimating_task is not None:
             self.progress.remove_task(self.estimating_task)
             self.estimating_task = None
 
-        table = Table(
-            show_header=True,
-            header_style="bold",
-            box=box.ROUNDED,
-        )
-        table.add_column("Sequence Length", justify="right", style="cyan")
-        table.add_column("Batch Size", justify="right", style="green")
-        for length in sorted(batch_size_for_length.keys()):
-            table.add_row(str(length), str(batch_size_for_length[length]))
-        console.print(table)
-
-        assert self.progress is not None
         self.generation_task = self.progress.add_task(
             "🔮 [cyan]Generating replies...[/cyan]",
             total=self.total_rows,
@@ -600,7 +588,7 @@ def generate_replies(
     vram_gb: Annotated[
         int | None,
         Option(
-            help="Maximum VRAM in GB. Batch sizes are estimated automatically via interpolation.",
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
             show_default="max on default device",
         ),
     ] = None,
@@ -608,14 +596,24 @@ def generate_replies(
         int,
         Option(help="Maximum number of tokens to generate per reply."),
     ] = 8192,
+    batch_size: Annotated[
+        int | None,
+        Option(help="Fixed batch size to use, skipping automatic estimation."),
+    ] = None,
 ) -> None:
-    if vram_gb is not None:
-        mem_bytes = vram_gb * 1000 * 1000 * 1000
-    elif (mem_bytes := get_default_device_bytes()) is None:
-        err_console.print("Cannot get the default device's memory stats, use --vram-gb")
+    if batch_size is not None and vram_gb is not None:
+        err_console.print("Cannot use both --batch-size and --vram-gb")
         raise Exit(1)
 
-    max_vram = get_usable_memory_from_bytes(mem_bytes)
+    max_vram: int | None = None
+    if batch_size is None:
+        if vram_gb is not None:
+            mem_bytes = vram_gb * 1000 * 1000 * 1000
+        elif (mem_bytes := get_default_device_bytes()) is None:
+            err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
+            raise Exit(1)
+
+        max_vram = get_usable_memory_from_bytes(mem_bytes)
 
     _generate_replies(
         model_path,
@@ -623,6 +621,7 @@ def generate_replies(
         output_path,
         max_vram,
         max_output_length,
+        batch_size,
         CliGenerateRepliesCallbacks,
     )
 

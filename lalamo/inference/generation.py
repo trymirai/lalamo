@@ -26,7 +26,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "COMPILED_PROMPT_LENGTHS",
-    "BatchSizeEstimatedEvent",
     "BatchSizeEstimatingEvent",
     "GenerateConfig",
     "generate_batched",
@@ -39,11 +38,6 @@ class BatchSizeEstimatingEvent:
     sequence_length: int
     lo: int
     hi: int | None
-
-
-@dataclass(frozen=True)
-class BatchSizeEstimatedEvent:
-    batch_size_for_length: dict[int, int]
 
 
 COMPILED_PROMPT_LENGTHS = [64 * 2**i for i in range(13)]
@@ -137,10 +131,12 @@ def _linear_estimate_batch_sizes(
         return {min_len: max(1, bs)}
 
     bs_at_min = max(
-        1, estimate_batchsize_from_memory(model, min_len, max_output_length, None, max_vram, make_progress(min_len)),
+        1,
+        estimate_batchsize_from_memory(model, min_len, max_output_length, None, max_vram, make_progress(min_len)),
     )
     bs_at_max = max(
-        1, estimate_batchsize_from_memory(model, max_len, max_output_length, None, max_vram, make_progress(max_len)),
+        1,
+        estimate_batchsize_from_memory(model, max_len, max_output_length, None, max_vram, make_progress(max_len)),
     )
 
     def interpolate(length: int) -> int:
@@ -229,18 +225,20 @@ def generate_batched(
 def reply_many(
     model: LanguageModel,
     messages: Iterable[list[Message]],
-    max_vram: int,
+    max_vram: int | None,
     config: GenerateConfig | None = None,
+    batch_size: int | None = None,
     estimating_progress_callback: Callable[[BatchSizeEstimatingEvent], None] | None = None,
-    estimated_callback: Callable[[BatchSizeEstimatedEvent], None] | None = None,
+    estimated_callback: Callable[[], None] | None = None,
 ) -> Iterator[tuple[int, AssistantMessage]]:
-    assert max_vram is not None
     # Generate replies for multiple message sequences with automatic batching.
 
     # Sequences are grouped by padded input length and processed longest-first,
     # so output order may differ from input order. Each result includes its original index.
     if config is None:
         config = GenerateConfig()
+
+    assert batch_size is None or max_vram is None  # not both
 
     tokenized = [
         np.array(
@@ -256,15 +254,21 @@ def reply_many(
     buckets = _bucket_by_length(tokenized)
     sorted_lengths = sorted(buckets.keys())
 
-    batch_size_for_length = _linear_estimate_batch_sizes(
-        model, sorted_lengths, config.max_output_length, max_vram, estimating_progress_callback,
-    )
-    buckets = _merge_small_buckets(buckets, batch_size_for_length)
+    if batch_size is not None:
+        # Use fixed batch size for all lengths, skip estimation
+        batch_size_for_length = dict.fromkeys(sorted_lengths, batch_size)
+    else:
+        batch_size_for_length = _linear_estimate_batch_sizes(
+            model,
+            sorted_lengths,
+            config.max_output_length,
+            max_vram,  # ty: ignore
+            estimating_progress_callback,
+        )
+        buckets = _merge_small_buckets(buckets, batch_size_for_length)
 
     if estimated_callback is not None:
-        # Report the batch sizes for lengths that will actually be used (after merging)
-        used_batch_sizes = {length: batch_size_for_length.get(length, 1) for length in buckets}
-        estimated_callback(BatchSizeEstimatedEvent(used_batch_sizes))
+        estimated_callback()
 
     # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
     for padded_length in sorted(buckets.keys(), reverse=True):

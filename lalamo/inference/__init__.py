@@ -7,7 +7,6 @@ from lalamo.inference.estimator import (
 )
 from lalamo.inference.generation import (
     COMPILED_PROMPT_LENGTHS,
-    BatchSizeEstimatedEvent,
     BatchSizeEstimatingEvent,
     GenerateConfig,
     generate_batched,
@@ -16,7 +15,6 @@ from lalamo.inference.generation import (
 
 __all__ = [
     "COMPILED_PROMPT_LENGTHS",
-    "BatchSizeEstimatedEvent",
     "BatchSizeEstimatingEvent",
     "EstimateBatchsizeFromMemoryEvent",
     "GenerateConfig",

@@ -12,7 +12,6 @@ from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.inference import (
-    BatchSizeEstimatedEvent,
     BatchSizeEstimatingEvent,
     EstimateBatchsizeFromMemoryEvent,
     estimate_batchsize_from_memory,
@@ -441,7 +440,8 @@ class GenerateRepliesCallbacks:
     model_path: Path
     dataset_path: Path
     output_path: Path
-    max_vram: int
+    max_vram: int | None
+    batch_size: int | None
     total_rows: int
 
     def loading_model(self) -> None:
@@ -459,7 +459,7 @@ class GenerateRepliesCallbacks:
     def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
         pass
 
-    def batch_sizes_estimated(self, batch_size_for_length: dict[int, int]) -> None:
+    def batch_sizes_estimated(self) -> None:
         pass
 
     def generation_progress(self, rows_processed: int) -> None:
@@ -473,14 +473,16 @@ def generate_replies(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    max_vram: int,
+    max_vram: int | None,
     max_output_length: int = 8192,
+    batch_size: int | None = None,
     callbacks_type: Callable[
         [
             Path,
             Path,
             Path,
-            int,
+            int | None,
+            int | None,
             int,
         ],
         GenerateRepliesCallbacks,
@@ -494,6 +496,7 @@ def generate_replies(
         dataset_path,
         output_path,
         max_vram,
+        batch_size,
         total_rows,
     )
 
@@ -511,13 +514,13 @@ def generate_replies(
     def estimating_progress_callback(event: BatchSizeEstimatingEvent) -> None:
         callbacks.estimating_batchsize(event.sequence_length, event.lo, event.hi)
 
-    def estimated_callback(event: BatchSizeEstimatedEvent) -> None:
-        callbacks.batch_sizes_estimated(event.batch_size_for_length)
+    def estimated_callback() -> None:
+        callbacks.batch_sizes_estimated()
 
     replies: list[tuple[int, AssistantMessage]] = []
     config = GenerateConfig(max_output_length=max_output_length)
     for rows_processed, (idx, reply) in enumerate(
-        reply_many(model, dataset, max_vram, config, estimating_progress_callback, estimated_callback),
+        reply_many(model, dataset, max_vram, config, batch_size, estimating_progress_callback, estimated_callback),
     ):
         replies.append((idx, reply))
         callbacks.generation_progress(rows_processed)
