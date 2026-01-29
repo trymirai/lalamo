@@ -549,7 +549,6 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
             show_header=True,
             header_style="bold",
             box=box.ROUNDED,
-            title="📊 Estimated batch sizes",
         )
         table.add_column("Sequence Length", justify="right", style="cyan")
         table.add_column("Batch Size", justify="right", style="green")
