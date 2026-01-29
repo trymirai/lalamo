@@ -1377,7 +1377,7 @@ def test_audio_decoder_matches_pytorch() -> None:
 
 
 @torch.no_grad
-def test_single_transformer_layer(fish_audio_local_model_path: Path) -> None:
+def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> None:
     """Test that a single transformer layer matches between FishAudio and Lalamo.
 
     Based on sandbox/fish_audio_sandbox_text.py::compare_fish_transformer_layer_to_lalamo().
@@ -1454,6 +1454,124 @@ def test_single_transformer_layer(fish_audio_local_model_path: Path) -> None:
     )
     assert jnp.allclose(fish_output_jax, lalamo_output, atol=1e-1), (
         f"Outputs don't match. Max diff: {max_diff}, mean diff: {mean_diff}"
+    )
+
+
+@torch.no_grad
+def test_audio_transformer_inference() -> None:
+    """Test that the post-module Transformer from DAC config can be instantiated and run.
+
+    This test creates both a FishAudio WindowLimitedTransformer and a Lalamo Transformer
+    using the same config from get_default_fishaudio_dac_config, loads weights from
+    FishAudio into Lalamo, and verifies both can be instantiated correctly.
+    """
+    from fish_speech.models.dac.modded_dac import ModelArgs, WindowLimitedTransformer
+
+    from lalamo.model_import.loaders.fishaudio_loaders import load_transformer_block
+    from lalamo.model_import.model_configs.huggingface.fishaudio import (
+        lalamo_transformer_cfg_from_fish_audio_codec_cfg,
+    )
+    from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
+    fish_dac_config = get_default_fishaudio_dac_config()
+    post_module_config_dict = fish_dac_config["quantizer"]["post_module"]
+    post_module_transformer_foreign = post_module_config_dict["config"]
+
+    # === Create FishAudio WindowLimitedTransformer ===
+    torch.manual_seed(42)
+    fish_model_args = ModelArgs(
+        block_size=post_module_transformer_foreign["block_size"],
+        n_layer=post_module_transformer_foreign["n_layer"],
+        n_head=post_module_transformer_foreign["n_head"],
+        dim=post_module_transformer_foreign["dim"],
+        intermediate_size=post_module_transformer_foreign["intermediate_size"],
+        n_local_heads=post_module_transformer_foreign["n_local_heads"],
+        head_dim=post_module_transformer_foreign["head_dim"],
+        rope_base=post_module_transformer_foreign["rope_base"],
+        norm_eps=post_module_transformer_foreign["norm_eps"],
+        dropout_rate=post_module_transformer_foreign["dropout_rate"],
+        attn_dropout_rate=post_module_transformer_foreign["attn_dropout_rate"],
+        channels_first=post_module_transformer_foreign["channels_first"],
+    )
+    fish_transformer = WindowLimitedTransformer(
+        config=fish_model_args,
+        input_dim=post_module_config_dict["input_dim"],
+        window_size=post_module_config_dict["window_size"],
+        causal=post_module_config_dict["causal"],
+    )
+    fish_transformer.eval()
+
+    _testlog.info(f"FishAudio WindowLimitedTransformer instantiated with {len(fish_transformer.layers)} layers")
+
+    # === Create Lalamo Transformer ===
+    precision = jnp.float32
+    transformer_cfg = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+        post_module_transformer_foreign,
+        precision,
+        window_size=post_module_config_dict["window_size"],
+        input_dim=post_module_config_dict["input_dim"],
+    )
+
+    _testlog.info(
+        f"Lalamo Transformer config: model_dim={transformer_cfg.model_dim}, "
+        f"hidden_dim={transformer_cfg.hidden_dim}, "
+        f"context_length={transformer_cfg.context_length}, "
+        f"num_layers={len(transformer_cfg.layer_configs)}"
+    )
+
+    # Instantiate an empty Lalamo transformer
+    lalamo_transformer = transformer_cfg.empty()
+    _testlog.info(f"Lalamo Transformer instantiated with {len(lalamo_transformer.layers)} layers")
+
+    # === Load weights from FishAudio into Lalamo ===
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_transformer.state_dict())
+    lalamo_transformer = load_transformer_block(lalamo_transformer, weights_dict)
+
+    _testlog.info("Weights loaded from FishAudio WindowLimitedTransformer into Lalamo Transformer")
+
+    # === Run inference and compare outputs ===
+    from lalamo.modules import ForwardPassMode
+
+    batch_size = 1
+    seq_length = 32
+    input_dim = post_module_config_dict["input_dim"]
+
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, input_dim, seq_length, dtype=torch.float32)
+
+    fish_output = fish_transformer(test_input_torch)
+
+    # For Lalamo, we need (B, T, C) format and position indices
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)  # (B, C, T) -> (B, T, C)
+    input_pos = jnp.broadcast_to(jnp.arange(seq_length)[None, :], (batch_size, seq_length))
+    lalamo_result = lalamo_transformer(
+        inner_features=test_input_jax,
+        token_positions=input_pos,
+        state=None,
+        return_updated_state=False,
+        return_layer_results=False,
+        return_positional_embeddings=False,
+        lengths_without_padding=None,
+        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+        forward_pass_config=None,
+    )
+    lalamo_output = lalamo_result.outputs
+
+    # Convert FishAudio output for comparison (B, C, T) -> (B, T, C)
+    fish_output_jax = torch_to_jax(fish_output).transpose(0, 2, 1)
+
+    _testlog.info(f"FishAudio output shape: {fish_output.shape}")
+    _testlog.info(f"Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Max difference: {jnp.max(jnp.abs(fish_output_jax - lalamo_output))}")
+    _testlog.info(f"Mean difference: {jnp.mean(jnp.abs(fish_output_jax - lalamo_output))}")
+
+    assert fish_output_jax.shape == lalamo_output.shape, (
+        f"Shape mismatch: FishAudio {fish_output_jax.shape} vs Lalamo {lalamo_output.shape}"
+    )
+    assert jnp.allclose(fish_output_jax, lalamo_output, atol=1e-4), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(fish_output_jax - lalamo_output))}"
     )
 
 
