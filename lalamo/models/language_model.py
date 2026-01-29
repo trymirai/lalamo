@@ -19,6 +19,7 @@ from lalamo.modules import (
     LalamoModule,
     State,
 )
+
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import TextModel, TextModelConfig
@@ -31,6 +32,7 @@ __all__ = [
 ]
 
 
+_PREFILL_CHUNK_LENGTH = 2048
 _COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
 
 
@@ -111,6 +113,15 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
+
+        if state_capacity is not None and sequence_length > _PREFILL_CHUNK_LENGTH:
+            return self._chunked_prefill(
+                token_ids,
+                lengths_without_padding,
+                state_capacity,
+                forward_pass_config,
+            )
+
         token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
         if state_capacity is not None:
             state = self.model.init_static_state(batch_size, state_capacity)
@@ -139,6 +150,80 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             last_token_logits=last_token_logits,
             last_token_indices=last_logits_indices,
             state=decoder_outputs.updated_state,
+        )
+
+    def _chunked_prefill(
+        self,
+        token_ids: Int[Array, "batch tokens"],
+        lengths_without_padding: Int[Array, " batch"] | None,
+        state_capacity: int,
+        forward_pass_config: ForwardPassConfig | None,
+    ) -> PrefillResults:
+        batch_size, sequence_length = token_ids.shape
+        num_chunks = (sequence_length + _PREFILL_CHUNK_LENGTH - 1) // _PREFILL_CHUNK_LENGTH
+        chunked_length = num_chunks * _PREFILL_CHUNK_LENGTH
+        padding_length = chunked_length - sequence_length
+
+        token_ids = jnp.pad(token_ids, [(0, 0), (0, padding_length)])
+        token_positions = jnp.repeat(
+            jnp.arange(chunked_length, dtype=jnp.int32)[None, :],
+            batch_size,
+            axis=0,
+        )
+
+        chunked_token_ids = rearrange(
+            token_ids,
+            "batch (c cl) -> c batch cl",
+            cl=_PREFILL_CHUNK_LENGTH,
+        )
+        chunked_positions = rearrange(
+            token_positions,
+            "batch (c cl) -> c batch cl",
+            cl=_PREFILL_CHUNK_LENGTH,
+        )
+
+        if lengths_without_padding is not None:
+            effective_lengths = lengths_without_padding
+        else:
+            effective_lengths = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+        chunk_starts = jnp.arange(num_chunks, dtype=jnp.int32)[:, None] * _PREFILL_CHUNK_LENGTH
+        per_chunk_lengths = jnp.clip(effective_lengths[None, :] - chunk_starts, 0, _PREFILL_CHUNK_LENGTH)
+
+        state = self.model.init_static_state(batch_size, state_capacity + padding_length)
+
+        def apply_chunk(state: State, chunk_data: tuple) -> tuple[State, Float[Array, "batch cl vocab"]]:
+            chunk_tokens, chunk_positions, chunk_lengths = chunk_data
+            decoder_outputs = self.model(
+                chunk_tokens,
+                chunk_positions,
+                state,
+                return_updated_state=True,
+                lengths_without_padding=chunk_lengths,
+                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+                forward_pass_config=forward_pass_config,
+            )
+            assert decoder_outputs.updated_state is not None
+            return decoder_outputs.updated_state, decoder_outputs.logits
+
+        final_state, all_logits = jax.lax.scan(
+            apply_chunk,
+            state,
+            (chunked_token_ids, chunked_positions, per_chunk_lengths),
+        )
+
+        all_logits = rearrange(all_logits, "c batch cl vocab -> batch (c cl) vocab")
+
+        if lengths_without_padding is not None:
+            last_logits_indices = lengths_without_padding - 1
+        else:
+            last_logits_indices = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
+
+        last_token_logits = vmap(lambda logits, index: logits[index])(all_logits, last_logits_indices)
+
+        return PrefillResults(
+            last_token_logits=last_token_logits,
+            last_token_indices=last_logits_indices,
+            state=final_state,
         )
 
     @eqx.filter_jit
