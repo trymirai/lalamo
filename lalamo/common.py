@@ -11,6 +11,7 @@ from lalamo.utils import MapDictValues, MapSequence
 __all__ = [
     "DEFAULT_PRECISION",
     "ArrayLike",
+    "LalamoWarning",
     "ParameterPath",
     "ParameterTree",
     "dummy_array",
@@ -21,6 +22,10 @@ __all__ = [
 ]
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
+
+
+class LalamoWarning(UserWarning):
+    """Custom warning class for Lalamo-specific warnings."""
 
 
 type ArrayLike = Array | ShapeDtypeStruct

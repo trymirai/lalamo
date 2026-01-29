@@ -41,7 +41,7 @@ def get_default_device_bytes() -> int | None:
 
 def get_usable_memory_from_bytes(limit_bytes: int) -> int:
     # JAX allocates a bit more than it needs, so we discount it by some safety factor
-    return int(limit_bytes * 0.95)
+    return int(limit_bytes * 0.93)
 
 
 def estimate_memory_from_batchsize(
