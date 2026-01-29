@@ -1,20 +1,15 @@
-import functools
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from dataclasses import dataclass
-from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from einops import rearrange
 from jax import vmap
-from jax._src.stages import Compiled
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
-from lalamo.common import decrease_batchsize_on_oom
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
@@ -37,7 +32,7 @@ __all__ = [
 
 
 _PREFILL_CHUNK_LENGTH = 1024
-_COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
+_COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]  # used by stream_tokens
 
 
 type ForwardPassConfig = DecoderForwardPassConfig
@@ -354,154 +349,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         ).token_ids.squeeze(0)
         response_text = self.message_processor.detokenize(response_ids.tolist())
         return self.message_processor.parse_response(response_text)
-
-    def reply_many(
-        self,
-        messages: Iterable[list[Message]],
-        sampling_policy: SamplingPolicy | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
-        max_vram: int | None = None,
-        max_output_length: int = 8192,
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> Iterator[tuple[int, AssistantMessage]]:
-        # Automatically batches the list of message sequences and vmap's over batches,
-        # while making sure that if OOM happens the batch size is decreased.
-        # Sequences are grouped by padded input length and processed longest-first,
-        # so output order may differ from input order. Each result includes its original index.
-
-        # sadly we have to instantiate the dataset eagerly here - since to keep adequate batch sizes
-        # but at least we only instantiate the tokens, which makes memory consumption a bit smaller.
-        # We use numpy arrays to keep them in RAM instead of GPU memory.
-        tokenized = [
-            np.array(
-                self.message_processor.tokenize_text(self.message_processor.render_request(msg)),
-                dtype=np.int32,
-            )
-            for msg in messages
-        ]
-        length_buckets: dict[int, list[tuple[int, np.ndarray]]] = {}
-        for idx, tokens in enumerate(tokenized):
-            padded_len = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= len(tokens))
-            length_buckets.setdefault(padded_len, []).append((idx, tokens))
-
-        if not length_buckets:
-            return
-
-        # Estimate batch sizes by interpolating between smallest and largest prompt lengths
-        from lalamo.speculator.estimator import estimate_batchsize_from_memory
-
-        sorted_lengths = sorted(length_buckets.keys())
-        min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
-
-        if max_vram is None:
-            # Fallback: batch_size=1 for all buckets
-            batch_size_for_length = dict.fromkeys(sorted_lengths, 1)
-        elif min_len == max_len:
-            # Only one bucket size
-            bs = estimate_batchsize_from_memory(self, min_len, max_output_length, None, max_vram)
-            batch_size_for_length = {min_len: max(1, bs)}
-        else:
-            # Estimate for smallest (highest batch size) and largest (lowest batch size) buckets
-            bs_at_min = estimate_batchsize_from_memory(self, min_len, max_output_length, None, max_vram)
-            bs_at_max = estimate_batchsize_from_memory(self, max_len, max_output_length, None, max_vram)
-            bs_at_min = max(1, bs_at_min)
-            bs_at_max = max(1, bs_at_max)
-
-            # Linear interpolation for intermediate lengths
-            def interpolate_batch_size(length: int) -> int:
-                t = (length - min_len) / (max_len - min_len)
-                return max(1, int(bs_at_min + t * (bs_at_max - bs_at_min)))
-
-            batch_size_for_length = {length: interpolate_batch_size(length) for length in sorted_lengths}
-
-        # Merge small buckets and round to batch_size multiples.
-        # Process small-to-large: keep multiples of batch_size, push remainder to next bucket.
-        # Buckets with too few elements are merged entirely into the next bucket.
-        min_batches = 10
-        merged_buckets: dict[int, list[tuple[int, np.ndarray]]] = {}
-        overflow: list[tuple[int, np.ndarray]] = []
-        for i, padded_len in enumerate(sorted_lengths):
-            batch_size = batch_size_for_length[padded_len]
-            items = overflow + length_buckets[padded_len]
-            is_last = i == len(sorted_lengths) - 1
-            if is_last:
-                # Last bucket takes everything
-                if items:
-                    merged_buckets[padded_len] = items
-            elif len(items) < min_batches * batch_size:
-                # Too small, push everything to next bucket
-                overflow = items
-            else:
-                # Keep a multiple of batch_size, push remainder up
-                keep_count = (len(items) // batch_size) * batch_size
-                merged_buckets[padded_len] = items[:keep_count]
-                overflow = items[keep_count:]
-        length_buckets = merged_buckets
-
-        @functools.cache
-        def make_generate_tokens_compiled(batch_size: int, padded_input_length: int) -> Compiled:
-            print(batch_size, padded_input_length)
-            return (
-                jax.jit(
-                    functools.partial(
-                        LanguageModel.generate_tokens,
-                        sampling_policy=sampling_policy,
-                        max_output_length=max_output_length,
-                        forward_pass_config=forward_pass_config,
-                        key=key,
-                    ),
-                )
-                .lower(
-                    self,
-                    prompt_token_ids=jax.ShapeDtypeStruct((batch_size, padded_input_length), jnp.int32),
-                    prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
-                )
-                .compile(compiler_options={"xla_gpu_autotune_level": "0"})
-            )
-
-        # Process longest sequences first so batchsize=1 OOM happens early before wasting work
-        for padded_input_length in sorted(length_buckets.keys(), reverse=True):
-            bucket = length_buckets[padded_input_length]
-
-            def process_bucket(
-                batch_size: int,
-                bucket: list[tuple[int, np.ndarray]],
-                padded_input_length: int,
-            ) -> Iterator[tuple[int, AssistantMessage]]:
-                for real_batch in batched(bucket, batch_size):
-                    indices = [idx for idx, _ in real_batch]
-                    tokens_list = [tokens for _, tokens in real_batch]
-
-                    batch_padding = batch_size - len(tokens_list)
-                    batch = (*tokens_list, *(np.array([0], dtype=np.int32),) * batch_padding)
-
-                    # Pad in numpy (RAM), then convert to jnp (GPU) only at the end
-                    padded = jnp.array(
-                        np.array(
-                            [
-                                np.pad(tokens, (0, padded_input_length - len(tokens)), constant_values=0)
-                                for tokens in batch
-                            ],
-                        ),
-                    )
-                    lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
-
-                    generate_compiled = make_generate_tokens_compiled(batch_size, padded_input_length)
-                    results = generate_compiled(
-                        self,
-                        prompt_token_ids=padded,
-                        prompt_lengths_without_padding=lengths,
-                    )
-
-                    for i, idx in enumerate(indices):
-                        response_text = self.message_processor.detokenize(results.token_ids[i].tolist())
-                        yield idx, self.message_processor.parse_response(response_text)
-
-            yield from decrease_batchsize_on_oom(
-                functools.partial(process_bucket, bucket=bucket, padded_input_length=padded_input_length),
-                batch_size_for_length[padded_input_length],
-            )
 
     def stream_reply_text(
         self,

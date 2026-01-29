@@ -51,7 +51,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.speculator.estimator import (
+from lalamo.inference import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
 )

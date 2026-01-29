@@ -24,7 +24,7 @@ from lalamo.model_import.common import (
 from lalamo.models import LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
-from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
+from lalamo.inference import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory, reply_many
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
@@ -435,7 +435,7 @@ class GenerateRepliesCallbacks:
     model_path: Path
     dataset_path: Path
     output_path: Path
-    max_vram: int | None
+    max_vram: int
     total_rows: int
 
     def loading_model(self) -> None:
@@ -461,14 +461,14 @@ def generate_replies(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    max_vram: int | None = None,
+    max_vram: int,
     max_output_length: int = 8192,
     callbacks_type: Callable[
         [
             Path,
             Path,
             Path,
-            int | None,
+            int,
             int,
         ],
         GenerateRepliesCallbacks,
@@ -494,9 +494,12 @@ def generate_replies(
     dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
 
+    from lalamo.inference import GenerateConfig
+
     replies: list[tuple[int, AssistantMessage]] = []
+    config = GenerateConfig(max_output_length=max_output_length)
     for rows_processed, (idx, reply) in enumerate(
-        model.reply_many(dataset, max_vram=max_vram, max_output_length=max_output_length),
+        reply_many(model, dataset, max_vram, config),
     ):
         replies.append((idx, reply))
         callbacks.generation_progress(rows_processed)
