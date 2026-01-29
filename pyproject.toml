@@ -11,6 +11,7 @@ dependencies = [
     "jax>=0.8.1",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
+    "evals",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
     "rich>=14.0.0",
@@ -94,6 +95,7 @@ torch = [
 ]
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-mlx" }
+evals = { git = "ssh://git@github.com/trymirai/evals.git" }
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.

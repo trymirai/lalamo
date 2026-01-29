@@ -11,6 +11,7 @@ from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import Message
+from lalamo.eval_import import EvalConversionCallbacks, EvalSpec, import_eval
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -131,6 +132,23 @@ def convert(
         json.dump(config_json, file, indent=4)
 
     callbacks.finished_saving_model()
+
+
+def convert_dataset(
+    eval_spec: EvalSpec,
+    output_dir: Path,
+    callbacks_type: Callable[[EvalSpec, Path], EvalConversionCallbacks] = EvalConversionCallbacks,
+) -> None:
+    callbacks = callbacks_type(eval_spec, output_dir)
+
+    if output_dir.exists():
+        callbacks.output_dir_exists()
+
+    callbacks.started()
+
+    import_eval(eval_spec, output_dir, callbacks)
+
+    callbacks.finished()
 
 
 @dataclass

@@ -29,6 +29,9 @@ wheels/
 # Converted models
 /models/
 
+# Converted datasets
+/datasets/
+
 # Inference traces
 /traces/
 

@@ -35,15 +35,18 @@ from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    EvalConversionCallbacks,
     Precision,
     TraceCallbacks,
     TrainCallbacks,
 )
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
+from lalamo.commands import convert_dataset as _convert_dataset
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
+from lalamo.eval_import import REPO_TO_EVAL, EvalSpec, InferenceCallbacks, run_inference
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
@@ -76,7 +79,7 @@ class ModelParser(ParamType):
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
         result = REPO_TO_MODEL.get(value)
         if result is None:
-            closest_repo = _closest_repo(value)
+            closest_repo = _closest_match(value, REPO_TO_MODEL)
             error_message_parts = [
                 f'"{value}".',
             ]
@@ -92,13 +95,32 @@ class ModelParser(ParamType):
         return result
 
 
-def _closest_repo(query: str, min_score: float = 80) -> str | None:
-    if not REPO_TO_MODEL:
+def _closest_match(query: str, registry: dict[str, object], min_score: float = 80) -> str | None:
+    if not registry:
         return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, list(REPO_TO_MODEL))
+    (closest_match, score), *_ = thefuzz.process.extract(query, list(registry))
     if closest_match and score >= min_score:
         return closest_match
     return None
+
+
+class EvalParser(ParamType):
+    name: str = "Huggingface Eval Repo"
+
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> EvalSpec:
+        result = REPO_TO_EVAL.get(value)
+        if result is None:
+            closest_repo = _closest_match(value, REPO_TO_EVAL)
+            error_message_parts = [
+                f'"{value}".',
+            ]
+            if closest_repo:
+                error_message_parts.append(
+                    f' Perhaps you meant "{closest_repo}"?',
+                )
+            error_message = "".join(error_message_parts)
+            return self.fail(error_message, param, ctx)
+        return result
 
 
 def _error(message: str) -> None:
@@ -494,6 +516,215 @@ def list_models(
 
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
+
+eval_app = Typer()
+app.add_typer(eval_app, name="eval", help="Evaluate models on benchmarks.")
+
+
+DEFAULT_DATASETS_DIR = Path("datasets")
+
+
+@dataclass
+class CliEvalConversionCallbacks(EvalConversionCallbacks):  # TODO: should we refactor Cli*Callbacks to reduce repetition
+    overwrite: bool = False
+
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    downloading_tasks: dict[str, TaskID] = field(default_factory=dict)
+    converting_task: TaskID | None = None
+
+    def started(self) -> None:
+        console.print(f"🚀 Converting eval dataset [cyan]{self.eval_spec.name}[/cyan].")
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists. Continue?"
+        ):
+            raise Exit(0)
+
+    def downloading_file(self, filename: str) -> None:
+        assert self.progress is not None
+        self.downloading_tasks[filename] = self.progress.add_task(f"Retrieving {filename}...")
+
+    def finished_downloading_file(self, filename: str) -> None:
+        assert self.progress is not None
+        self.progress.remove_task(self.downloading_tasks[filename])
+
+    def converting_split(self, split: str) -> None:
+        assert self.progress is not None
+        self.converting_task = self.progress.add_task(f"Converting {split} split to internal format...")
+
+    def finished_converting_split(self, split: str) -> None:
+        assert self.progress is not None
+        assert self.converting_task is not None
+        self.progress.remove_task(self.converting_task)
+
+    def saving_dataset(self) -> None:
+        pass
+
+    def finished(self) -> None:
+        if self.progress is not None:
+            self.stack.close()
+        console.print(f"✅ Dataset converted successfully to [cyan]{self.output_dir}[/cyan]")
+
+
+@eval_app.command(name="convert-dataset", help="Download and convert evaluation dataset.")
+def convert_dataset(
+    eval_repo: Annotated[
+        EvalSpec,
+        Argument(
+            help=(
+                "HuggingFace eval repo. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan]."
+            ),
+            click_type=EvalParser(),
+            show_default=False,
+            metavar="EVAL_REPO",
+            autocompletion=lambda: list(REPO_TO_EVAL),
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the dataset to.",
+            show_default="Saves the dataset in the `datasets/<eval_name>` directory",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing dataset files.",
+        ),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        output_dir = DEFAULT_DATASETS_DIR / eval_repo.name
+
+    _convert_dataset(
+        eval_repo,
+        output_dir,
+        partial(CliEvalConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@dataclass
+class CliInferenceCallbacks(InferenceCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_model_task: TaskID | None = None
+    loading_dataset_task: TaskID | None = None
+    inference_task: TaskID | None = None
+    saving_task: TaskID | None = None
+
+    def started(self) -> None:
+        console.print(f"🔮 Running inference on [cyan]{self.dataset_path}[/cyan] with model [cyan]{self.model_path}[/cyan]")
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def loading_model(self) -> None:
+        assert self.progress is not None
+        self.loading_model_task = self.progress.add_task("🧠 Loading model...")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_model_task is not None
+        self.progress.remove_task(self.loading_model_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_dataset_task = self.progress.add_task("📊 Loading dataset...")
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_dataset_task is not None
+        self.progress.remove_task(self.loading_dataset_task)
+
+    def running_inference(self, current: int, total: int) -> None:
+        assert self.progress is not None
+        if self.inference_task is None:
+            self.inference_task = self.progress.add_task(
+                f"🔮 Running inference... ({current}/{total})",
+                total=total,
+            )
+        else:
+            self.progress.update(
+                self.inference_task,
+                completed=current,
+                description=f"🔮 Running inference... ({current}/{total})",
+            )
+
+    def finished_inference(self) -> None:
+        assert self.progress is not None
+        if self.inference_task is not None:
+            self.progress.remove_task(self.inference_task)
+
+    def saving_predictions(self) -> None:
+        assert self.progress is not None
+        self.saving_task = self.progress.add_task(f"💾 Saving predictions to {self.output_path}")
+
+    def finished(self) -> None:
+        if self.progress is not None and self.saving_task is not None:
+            self.progress.remove_task(self.saving_task)
+        self.stack.close()
+        console.print(f"✅ Predictions saved to [cyan]{self.output_path}[/cyan]")
+
+
+@eval_app.command(name="infer", help="Run model inference on evaluation dataset.")
+def infer(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the converted model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the eval dataset parquet file (e.g., datasets/MMLU-Pro/test.parquet).",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="Path to save predictions parquet file.",
+            show_default="predictions.parquet",
+        ),
+    ] = Path("predictions.parquet"),
+    max_output_length: Annotated[
+        int,
+        Option(
+            help="Maximum number of tokens to generate per question.",
+        ),
+    ] = 512,
+    batch_size: Annotated[
+        int,
+        Option(
+            help="Number of examples to process in parallel.",
+        ),
+    ] = 1,
+) -> None:
+    run_inference(
+        model_path=model_path,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        max_output_length=max_output_length,
+        batch_size=batch_size,
+        callbacks=CliInferenceCallbacks,
+    )
 
 
 @dataclass
