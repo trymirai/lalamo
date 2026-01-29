@@ -167,7 +167,7 @@ def decrease_batchsize_on_oom[T](
             # because OOM's sometimes generate stuff that won't be garbage collected,
             # we need to be very aggressive with decreasing batchsize here
             new_bs = max(int(0.7 * effective_batch_size - 1), 1)
-            if new_bs == 1:
+            if new_bs == 1 and effective_batch_size == 1:
                 raise
             warnings.warn(
                 f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.",
