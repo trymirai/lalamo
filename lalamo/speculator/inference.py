@@ -1,5 +1,4 @@
 import functools
-import warnings
 from collections.abc import Callable, Iterable
 from itertools import batched, chain, islice
 from typing import NamedTuple
@@ -7,9 +6,8 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 from jax._src.stages import Compiled
-from jax.errors import JaxRuntimeError
 
-from lalamo.common import LalamoWarning
+from lalamo.common import decrease_batchsize_on_oom
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
@@ -59,10 +57,8 @@ def inference_collect_traces(
     filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
 
     test_batch = list(islice(filtered_prefixes, batch_size))
-    first_batch_completed = False
 
     def collect_traces_body(batch_size: int) -> Iterable[LalamoCompletion]:
-        nonlocal first_batch_completed
         tokens_generated, sequences_processed = 0, 0
         generate_tokens_compiled = make_generate_tokens_compiled(batch_size)
         for real_batch in batched(chain(test_batch, filtered_prefixes), n=batch_size):
@@ -85,8 +81,6 @@ def inference_collect_traces(
             )
 
             assert generated.top_k_token_ids is not None and generated.top_k_token_logits is not None
-
-            first_batch_completed = True
 
             for conv_idx in range(len(real_batch)):
                 token_ids = generated.token_ids[conv_idx].tolist()
@@ -115,21 +109,4 @@ def inference_collect_traces(
             if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
                 break
 
-    effective_batch_size = batch_size
-    while True:
-        try:
-            yield from collect_traces_body(effective_batch_size)
-            break
-        except JaxRuntimeError as e:
-            if first_batch_completed:
-                raise
-            new_effective_batch_size = max(int(0.7 * effective_batch_size - 1), 1)
-            if new_effective_batch_size == 1:
-                raise
-            warnings.warn(
-                f"inference_collect_traces failed with {e}. Reducing batch size "
-                f"{effective_batch_size} -> {new_effective_batch_size}.",
-                LalamoWarning,
-                stacklevel=2,
-            )
-            effective_batch_size = new_effective_batch_size
+    yield from decrease_batchsize_on_oom(collect_traces_body, batch_size)
