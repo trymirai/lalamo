@@ -1,9 +1,3 @@
-from lalamo.inference.generation import (
-    COMPILED_PROMPT_LENGTHS,
-    GenerateConfig,
-    generate_batched,
-    reply_many,
-)
 from lalamo.inference.estimator import (
     EstimateBatchsizeFromMemoryEvent,
     estimate_batchsize_from_memory,
@@ -11,9 +5,19 @@ from lalamo.inference.estimator import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
 )
+from lalamo.inference.generation import (
+    COMPILED_PROMPT_LENGTHS,
+    BatchSizeEstimatedEvent,
+    BatchSizeEstimatingEvent,
+    GenerateConfig,
+    generate_batched,
+    reply_many,
+)
 
 __all__ = [
     "COMPILED_PROMPT_LENGTHS",
+    "BatchSizeEstimatedEvent",
+    "BatchSizeEstimatingEvent",
     "EstimateBatchsizeFromMemoryEvent",
     "GenerateConfig",
     "estimate_batchsize_from_memory",

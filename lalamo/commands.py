@@ -11,7 +11,13 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.inference import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory, reply_many
+from lalamo.inference import (
+    BatchSizeEstimatedEvent,
+    BatchSizeEstimatingEvent,
+    EstimateBatchsizeFromMemoryEvent,
+    estimate_batchsize_from_memory,
+    reply_many,
+)
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -450,6 +456,12 @@ class GenerateRepliesCallbacks:
     def finished_loading_dataset(self) -> None:
         pass
 
+    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+        pass
+
+    def batch_sizes_estimated(self, batch_size_for_length: dict[int, int]) -> None:
+        pass
+
     def generation_progress(self, rows_processed: int) -> None:
         pass
 
@@ -496,10 +508,16 @@ def generate_replies(
 
     from lalamo.inference import GenerateConfig
 
+    def estimating_progress_callback(event: BatchSizeEstimatingEvent) -> None:
+        callbacks.estimating_batchsize(event.sequence_length, event.lo, event.hi)
+
+    def estimated_callback(event: BatchSizeEstimatedEvent) -> None:
+        callbacks.batch_sizes_estimated(event.batch_size_for_length)
+
     replies: list[tuple[int, AssistantMessage]] = []
     config = GenerateConfig(max_output_length=max_output_length)
     for rows_processed, (idx, reply) in enumerate(
-        reply_many(model, dataset, max_vram, config),
+        reply_many(model, dataset, max_vram, config, estimating_progress_callback, estimated_callback),
     ):
         replies.append((idx, reply))
         callbacks.generation_progress(rows_processed)

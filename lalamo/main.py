@@ -499,6 +499,7 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
     loading_task: TaskID | None = None
+    estimating_task: TaskID | None = None
     generation_task: TaskID | None = None
 
     def loading_model(self) -> None:
@@ -526,6 +527,37 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
         assert self.progress is not None
         assert self.loading_task is not None
         self.progress.remove_task(self.loading_task)
+
+    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+        assert self.progress is not None
+        hi_str = str(hi) if hi is not None else "?"
+        description = (
+            f"📐 [cyan]Computing batch size for the prompt length of {sequence_length}... ({lo}..{hi_str})[/cyan]"
+        )
+        if self.estimating_task is None:
+            self.estimating_task = self.progress.add_task(description)
+        else:
+            self.progress.update(self.estimating_task, description=description)
+
+    def batch_sizes_estimated(self, batch_size_for_length: dict[int, int]) -> None:
+        assert self.progress is not None
+        if self.estimating_task is not None:
+            self.progress.remove_task(self.estimating_task)
+            self.estimating_task = None
+
+        table = Table(
+            show_header=True,
+            header_style="bold",
+            box=box.ROUNDED,
+            title="📊 Estimated batch sizes",
+        )
+        table.add_column("Sequence Length", justify="right", style="cyan")
+        table.add_column("Batch Size", justify="right", style="green")
+        for length in sorted(batch_size_for_length.keys()):
+            table.add_row(str(length), str(batch_size_for_length[length]))
+        console.print(table)
+
+        assert self.progress is not None
         self.generation_task = self.progress.add_task(
             "🔮 [cyan]Generating replies...[/cyan]",
             total=self.total_rows,

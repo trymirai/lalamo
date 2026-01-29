@@ -10,10 +10,10 @@ import jax.numpy as jnp
 import numpy as np
 
 from lalamo.common import decrease_batchsize_on_oom
-from lalamo.inference.estimator import estimate_batchsize_from_memory
+from lalamo.inference.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator
+    from collections.abc import Callable, Iterable, Iterator
 
     from jax._src.stages import Compiled
     from jaxtyping import PRNGKeyArray
@@ -26,12 +26,27 @@ if TYPE_CHECKING:
 
 __all__ = [
     "COMPILED_PROMPT_LENGTHS",
+    "BatchSizeEstimatedEvent",
+    "BatchSizeEstimatingEvent",
     "GenerateConfig",
     "generate_batched",
     "reply_many",
 ]
 
-COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
+
+@dataclass(frozen=True)
+class BatchSizeEstimatingEvent:
+    sequence_length: int
+    lo: int
+    hi: int | None
+
+
+@dataclass(frozen=True)
+class BatchSizeEstimatedEvent:
+    batch_size_for_length: dict[int, int]
+
+
+COMPILED_PROMPT_LENGTHS = [64 * 2**i for i in range(13)]
 MIN_BATCHES_IN_BUCKET = 5
 
 
@@ -98,6 +113,7 @@ def _linear_estimate_batch_sizes(
     sorted_lengths: list[int],
     max_output_length: int,
     max_vram: int,
+    progress_callback: Callable[[BatchSizeEstimatingEvent], None] | None = None,
 ) -> dict[int, int]:
     # Estimate batch size for each bucket length via linear interpolation.
     # Since the map batch_size -> memory is convex, it can
@@ -107,12 +123,25 @@ def _linear_estimate_batch_sizes(
 
     min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
 
+    def make_progress(seq_len: int) -> Callable[[EstimateBatchsizeFromMemoryEvent], None] | None:
+        if progress_callback is None:
+            return None
+
+        def inner(event: EstimateBatchsizeFromMemoryEvent) -> None:
+            progress_callback(BatchSizeEstimatingEvent(seq_len, event.lo, event.hi))
+
+        return inner
+
     if min_len == max_len:
-        bs = estimate_batchsize_from_memory(model, min_len, max_output_length, None, max_vram)
+        bs = estimate_batchsize_from_memory(model, min_len, max_output_length, None, max_vram, make_progress(min_len))
         return {min_len: max(1, bs)}
 
-    bs_at_min = max(1, estimate_batchsize_from_memory(model, min_len, max_output_length, None, max_vram))
-    bs_at_max = max(1, estimate_batchsize_from_memory(model, max_len, max_output_length, None, max_vram))
+    bs_at_min = max(
+        1, estimate_batchsize_from_memory(model, min_len, max_output_length, None, max_vram, make_progress(min_len)),
+    )
+    bs_at_max = max(
+        1, estimate_batchsize_from_memory(model, max_len, max_output_length, None, max_vram, make_progress(max_len)),
+    )
 
     def interpolate(length: int) -> int:
         t = (length - min_len) / (max_len - min_len)
@@ -202,6 +231,8 @@ def reply_many(
     messages: Iterable[list[Message]],
     max_vram: int,
     config: GenerateConfig | None = None,
+    estimating_progress_callback: Callable[[BatchSizeEstimatingEvent], None] | None = None,
+    estimated_callback: Callable[[BatchSizeEstimatedEvent], None] | None = None,
 ) -> Iterator[tuple[int, AssistantMessage]]:
     assert max_vram is not None
     # Generate replies for multiple message sequences with automatic batching.
@@ -225,8 +256,15 @@ def reply_many(
     buckets = _bucket_by_length(tokenized)
     sorted_lengths = sorted(buckets.keys())
 
-    batch_size_for_length = _linear_estimate_batch_sizes(model, sorted_lengths, config.max_output_length, max_vram)
+    batch_size_for_length = _linear_estimate_batch_sizes(
+        model, sorted_lengths, config.max_output_length, max_vram, estimating_progress_callback,
+    )
     buckets = _merge_small_buckets(buckets, batch_size_for_length)
+
+    if estimated_callback is not None:
+        # Report the batch sizes for lengths that will actually be used (after merging)
+        used_batch_sizes = {length: batch_size_for_length.get(length, 1) for length in buckets}
+        estimated_callback(BatchSizeEstimatedEvent(used_batch_sizes))
 
     # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
     for padded_length in sorted(buckets.keys(), reverse=True):
