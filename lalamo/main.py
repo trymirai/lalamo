@@ -508,7 +508,6 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
                 TextColumn("[progress.description]{task.description}"),
                 MofNCompleteColumn(),
                 TimeElapsedColumn(),
-                TimeRemainingColumn(),
                 transient=True,
             ),
         )
@@ -535,7 +534,7 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
     def generation_progress(self, rows_processed: int) -> None:
         assert self.progress is not None
         assert self.generation_task is not None
-        self.progress.update(self.generation_task, completed=rows_processed)
+        self.progress.update(self.generation_task, completed=rows_processed + 1)
 
     def finished_generation(self) -> None:
         assert self.progress is not None
@@ -547,18 +546,18 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
 
 @app.command(help="Generate replies for conversations in a parquet file.")
 def generate_replies(
-    input_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the input parquet file with conversations.",
-            metavar="INPUT_PATH",
-        ),
-    ],
     model_path: Annotated[
         Path,
         Argument(
             help="Path to the model directory.",
             metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the input parquet file with conversations.",
+            metavar="DATASET_PATH",
         ),
     ],
     output_path: Annotated[
@@ -567,42 +566,21 @@ def generate_replies(
             help="Path to save the output parquet file.",
         ),
     ],
-    max_input_length: Annotated[
-        int,
-        Option(help="Maximum input length for conversations."),
-    ] = 1024,
-    max_output_length: Annotated[
-        int,
-        Option(help="Maximum output length for generated replies."),
-    ] = 1024,
     batch_size: Annotated[
         int,
         Option(help="Number of conversations to process in each batch."),
     ] = 1,
-    cot_tag: Annotated[
-        str | None,
-        Option(
-            help="XML tag to extract chain-of-thought (e.g., 'think' extracts content from <think>...</think>).",
-            show_default="None, no CoT extraction",
-        ),
-    ] = None,
-    num_rows: Annotated[
-        int | None,
-        Option(
-            help="Number of rows to process.",
-            show_default="all",
-        ),
-    ] = None,
+    max_output_length: Annotated[
+        int,
+        Option(help="Maximum number of tokens to generate per reply."),
+    ] = 8192,
 ) -> None:
     _generate_replies(
         model_path,
-        input_path,
+        dataset_path,
         output_path,
-        max_input_length,
-        max_output_length,
         batch_size,
-        cot_tag,
-        num_rows,
+        max_output_length,
         CliGenerateRepliesCallbacks,
     )
 

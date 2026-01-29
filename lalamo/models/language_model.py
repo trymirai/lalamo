@@ -1,5 +1,6 @@
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
+from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
 
@@ -9,7 +10,6 @@ import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
-from itertools import batched
 
 from lalamo.common import decrease_batchsize_on_oom
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
@@ -270,10 +270,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
     def reply_many(
         self,
-        messages: list[Iterable[Message]],
+        messages: Iterable[list[Message]],
         sampling_policy: SamplingPolicy | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         batch_size: int = 1,
+        max_output_length: int = 8192,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterator[AssistantMessage]:
@@ -293,7 +294,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 batch = (*real_batch, *(jnp.array([0], dtype=jnp.int32),) * (batch_size - len(real_batch)))
                 max_len = max(len(tokens) for tokens in batch)
                 padded = jnp.array(
-                    [jnp.pad(tokens, (0, max_len - len(tokens)), constant_values=0) for tokens in batch]
+                    [jnp.pad(tokens, (0, max_len - len(tokens)), constant_values=0) for tokens in batch],
                 )
                 lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
 
@@ -301,6 +302,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     padded,
                     sampling_policy,
                     prompt_lengths_without_padding=lengths,
+                    max_output_length=max_output_length,
                     forward_pass_config=forward_pass_config,
                     key=key,
                 )

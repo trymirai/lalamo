@@ -5,6 +5,7 @@ from enum import Enum
 from itertools import chain
 from pathlib import Path
 
+import polars as pl
 from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters
@@ -27,8 +28,6 @@ from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estima
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
-
-import polars as pl
 
 
 class Precision(Enum):
@@ -434,10 +433,8 @@ def train(
 @dataclass
 class GenerateRepliesCallbacks:
     model_path: Path
-    input_path: Path
+    dataset_path: Path
     output_path: Path
-    max_input_length: int
-    max_output_length: int
     batch_size: int
     total_rows: int
 
@@ -464,9 +461,8 @@ def generate_replies(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    max_input_length: int = 1024,
-    max_output_length: int = 1024,
     batch_size: int = 1,
+    max_output_length: int = 8192,
     callbacks_type: Callable[
         [
             Path,
@@ -474,30 +470,34 @@ def generate_replies(
             Path,
             int,
             int,
-            int,
-            int,
         ],
         GenerateRepliesCallbacks,
     ] = GenerateRepliesCallbacks,
 ) -> None:
-    dataset_list = list(import_hf_parquet(dataset_path))
+    # Count rows without loading full dataset
+    total_rows = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
 
     callbacks = callbacks_type(
         model_path,
         dataset_path,
         output_path,
-        max_input_length,
-        max_output_length,
         batch_size,
-        len(dataset_list),
+        total_rows,
     )
 
     callbacks.loading_model()
     model = LanguageModelConfig.load_model(model_path)
     callbacks.finished_loading_model()
 
+    callbacks.loading_dataset()
+    dataset = iter(import_hf_parquet(dataset_path))
+    dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
+    callbacks.finished_loading_dataset()
+
     replies = []
-    for rows_processed, reply in enumerate(model.reply_many(dataset_list, batch_size=batch_size)):
+    for rows_processed, reply in enumerate(
+        model.reply_many(dataset, batch_size=batch_size, max_output_length=max_output_length),
+    ):
         replies.append(reply)
         callbacks.generation_progress(rows_processed)
 
