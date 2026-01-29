@@ -505,7 +505,7 @@ def generate_replies(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataset = iter(import_hf_parquet(dataset_path))
+    dataset = iter(import_hf_parquet(dataset_path, shuffle=False))
     dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
 
