@@ -27,6 +27,7 @@ from lalamo.modules import (
     TransformerLayerConfig,
     TTSConfig,
     TTSModel,
+    UnscaledRoPEConfig,
     UpcastMode,
     VocoderConfig,
 )
@@ -62,7 +63,14 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     window_size: int,
     input_dim: int,
 ) -> TransformerConfig:
-    global_rope_config = RoPEConfigCis(precision=precision, base=config["rope_base"])
+    # NOTE: this condifion is from post_init() for the post-module config object
+    n_local_heads = config["n_head"] if config["n_local_heads"] == -1 else config["n_local_heads"]
+
+    global_rope_config = UnscaledRoPEConfig(
+        precision=precision,
+        base=config["rope_base"],
+        max_sequence_length=config["block_size"],
+    )
     local_rope_config = None
 
     norm_config_pre = NormalizationConfig(
@@ -82,7 +90,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         query_norm_config=None,
         key_norm_config=None,
         num_heads=config["n_head"],
-        num_groups=config["n_local_heads"],
+        num_groups=n_local_heads,
         head_dim=config["head_dim"],
         is_causal=True,
         scale=None,
@@ -182,9 +190,6 @@ def instantiate_dac_config_from_fishaudio_config(
     upsampler_config = UpsamplerConfig(block_configs=block_configs)
 
     post_module_transformer_foreign = post_module_config_dict["config"]
-    if post_module_transformer_foreign["n_local_heads"] == -1:
-        # NOTE: this condifion is from post_init() for the post-module config object
-        post_module_transformer_foreign["n_local_heads"] = post_module_transformer_foreign["n_head"]
     post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         post_module_transformer_foreign,
         precision,
@@ -291,7 +296,7 @@ class FishAudioConfig(ForeignTTSConfig):
     semantic_token_end_id: int = -1
     im_end_token_id: int = -1
 
-    def extract_transformer_configs(
+    def extract_textual_transformer_configs(
         self,
         precision: DTypeLike,
         fast_module: bool = False,
@@ -305,6 +310,10 @@ class FishAudioConfig(ForeignTTSConfig):
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
         global_rope_config = RoPEConfigCis(precision=precision, base=self.rope_base)
+        # TODO: use regular unscaled rope later
+        # global_rope_config = UnscaledRoPEConfig(
+        #     precision=precision, base=self.rope_base, max_sequence_length=self.max_seq_len
+        # )
         local_rope_config = None
 
         norm_config = NormalizationConfig(
@@ -387,11 +396,11 @@ class FishAudioConfig(ForeignTTSConfig):
             fish_dac_config=get_default_fishaudio_dac_config(),
         )
 
-        slow_transformer_cfg, slow_readout_cfg = self.extract_transformer_configs(
+        slow_transformer_cfg, slow_readout_cfg = self.extract_textual_transformer_configs(
             precision=activation_precision,
             fast_module=False,
         )
-        fast_transformer_cfg, fast_readout_cfg = self.extract_transformer_configs(
+        fast_transformer_cfg, fast_readout_cfg = self.extract_textual_transformer_configs(
             precision=activation_precision,
             fast_module=True,
         )

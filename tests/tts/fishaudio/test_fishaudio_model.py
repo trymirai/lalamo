@@ -42,10 +42,7 @@ from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
 )
-from tests.tts.fishaudio.fishaudio_torch_stuff import (
-    ForeignTTSModelType,
-    TTSLoaderTorch,
-)
+from tests.tts.fishaudio.fishaudio_torch_stuff import FishAudioFromTorch
 
 _testlog = logging.getLogger("tts_test_logger")
 
@@ -78,9 +75,7 @@ def get_tts_message() -> TTSMessage:
 
 def test_fishaudio_text_tokenization(fish_audio_local_model_path: Path) -> None:
     with jax.disable_jit():
-        tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
-            ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
-        )
+        tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(fish_audio_local_model_path)
         fish_tokenizer = FishTokenizer.from_pretrained(str(fish_audio_local_model_path))
 
         tts_message = get_tts_message()
@@ -105,9 +100,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     tts_message = get_tts_message()
 
     # Load PyTorch-wrapped model for reference output
-    pytorch_tts_generator = TTSLoaderTorch.load_model_from_foreign_model_preset(
-        ForeignTTSModelType.FISH_AUDIO, fish_audio_local_model_path
-    )
+    pytorch_tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(fish_audio_local_model_path)
     assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
     fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
 
@@ -142,6 +135,120 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     _testlog.info(f"output_lalamo : {output_lalamo}")
 
     assert output_pytorch[:, 0].tolist() == output_lalamo[0].tolist()
+
+
+def test_permute_for_rope_rotate_half() -> None:
+    """Test that _permute_for_rope_rotate_half correctly reorders weights from interleaved to rotate-half format.
+
+    Interleaved RoPE format: pairs are adjacent [x0, x1, x2, x3, ...]
+        RoPE operates on pairs (x0, x1), (x2, x3), etc.
+
+    Rotate-half format: evens first, then odds [x0, x2, ..., x1, x3, ...]
+        RoPE operates by swapping halves.
+
+    The function permutes rows of the weight matrix. For a single head with head_dim=8:
+        Input rows:  [0, 1, 2, 3, 4, 5, 6, 7]  (interleaved pairs: 0-1, 2-3, 4-5, 6-7)
+        Output rows: [0, 2, 4, 6, 1, 3, 5, 7]  (first half: 0,2,4,6; second half: 1,3,5,7)
+    """
+    import numpy as np
+
+    from lalamo.model_import.loaders.fishaudio_loaders import _permute_for_rope_rotate_half
+
+    # Single head, head_dim=8, in_features=3 (different from head_dim for clarity)
+    num_heads = 1
+    head_dim = 8
+    in_features = 3
+    out_features = num_heads * head_dim
+
+    # Create weight matrix where each row is clearly identifiable
+    # Using row_idx * 10 + col_idx pattern for traceability
+    # Result looks like:
+    #   [[ 0,  1,  2],   <- row 0
+    #    [10, 11, 12],   <- row 1
+    #    ...
+    #    [70, 71, 72]]   <- row 7
+    row_indices = jnp.arange(out_features)[:, None]  # (out_features, 1)
+    col_indices = jnp.arange(in_features)[None, :]  # (1, in_features)
+    weight = (row_indices * 10 + col_indices).astype(jnp.float32)
+
+    result = _permute_for_rope_rotate_half(weight, num_heads, head_dim)
+
+    # Manually trace through the transformation:
+    # 1. Reshape (8, 3) -> (1, 4, 2, 3): groups pairs along axis 1, interleave index on axis 2
+    #    [h=0, pair=0, interleave=0] = row 0
+    #    [h=0, pair=0, interleave=1] = row 1
+    #    [h=0, pair=1, interleave=0] = row 2
+    #    [h=0, pair=1, interleave=1] = row 3
+    #    [h=0, pair=2, interleave=0] = row 4
+    #    [h=0, pair=2, interleave=1] = row 5
+    #    [h=0, pair=3, interleave=0] = row 6
+    #    [h=0, pair=3, interleave=1] = row 7
+    # 2. Transpose (0,2,1,3) -> (1, 2, 4, 3): swap pair and interleave axes
+    #    [h=0, interleave=0, pair=0..3] = rows 0,2,4,6  -> new rows 0,1,2,3
+    #    [h=0, interleave=1, pair=0..3] = rows 1,3,5,7  -> new rows 4,5,6,7
+    # 3. Reshape back (8, 3)
+    # Expected row order: [0,1,2,3,4,5,6,7] -> [0,2,4,6,1,3,5,7]
+
+    print(f"\n=== Single head test ===")
+    print(f"num_heads={num_heads}, head_dim={head_dim}, in_features={in_features}")
+    print(f"\nInput weight matrix (interleaved format):\n{np.array(weight)}")
+    print(f"\nOutput weight matrix (rotate-half format):\n{np.array(result)}")
+
+    # Verify by checking which input row ended up in each output row
+    for out_row in range(out_features):
+        # Each row has unique first element = row_idx * 10
+        first_elem = int(result[out_row, 0])
+        source_row = first_elem // 10
+        print(f"  Output row {out_row} <- Input row {source_row}")
+
+    # Verify the transformation is correct:
+    # First half (rows 0-3 in output) <- even input rows (0,2,4,6)
+    # Second half (rows 4-7 in output) <- odd input rows (1,3,5,7)
+    expected_mapping = [0, 2, 4, 6, 1, 3, 5, 7]
+    for out_idx, in_idx in enumerate(expected_mapping):
+        assert jnp.allclose(result[out_idx], weight[in_idx]), f"Output row {out_idx} should be input row {in_idx}"
+
+    print("\n2D matrix permutation test passed!")
+
+    # === Test 1D vector case ===
+    # This is used for bias vectors where we have a single head_dim worth of values
+    # The permutation is the same: interleaved pairs -> grouped halves
+    print(f"\n=== 1D vector test ===")
+
+    head_dim_1d = 8
+    # Create 1D vector with traceable values: [0, 10, 20, 30, 40, 50, 60, 70]
+    vector = (jnp.arange(head_dim_1d) * 10).astype(jnp.float32)
+
+    result_1d = _permute_for_rope_rotate_half(vector, num_heads=1, head_dim=head_dim_1d)
+
+    # Trace through transformation:
+    # 1. Reshape (8,) -> (4, 2):
+    #    [[0, 10], [20, 30], [40, 50], [60, 70]]
+    # 2. Transpose (2, 4):
+    #    [[0, 20, 40, 60], [10, 30, 50, 70]]
+    # 3. Reshape (8,):
+    #    [0, 20, 40, 60, 10, 30, 50, 70]
+    # Expected index mapping: [0,1,2,3,4,5,6,7] -> [0,2,4,6,1,3,5,7]
+
+    print(f"head_dim={head_dim_1d}")
+    print(f"\nInput vector (interleaved format):\n{np.array(vector)}")
+    print(f"\nOutput vector (rotate-half format):\n{np.array(result_1d)}")
+
+    # Verify by checking which input index ended up at each output index
+    for out_idx in range(head_dim_1d):
+        in_value = int(result_1d[out_idx])
+        source_idx = in_value // 10
+        print(f"  Output[{out_idx}] = {in_value} <- Input[{source_idx}]")
+
+    # Same mapping as 2D case: [0,2,4,6,1,3,5,7]
+    expected_mapping_1d = [0, 2, 4, 6, 1, 3, 5, 7]
+    expected_1d = vector[jnp.array(expected_mapping_1d)]
+
+    assert jnp.allclose(result_1d, expected_1d), (
+        f"1D permutation incorrect.\nGot: {result_1d}\nExpected: {expected_1d}"
+    )
+
+    print("\n1D vector permutation test passed!")
 
 
 @torch.no_grad
@@ -1266,6 +1373,205 @@ def test_audio_decoder_matches_pytorch() -> None:
     )
     assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
         f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    )
+
+
+@torch.no_grad
+def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> None:
+    """Test that a single transformer layer matches between FishAudio and Lalamo.
+
+    Based on sandbox/fish_audio_sandbox_text.py::compare_fish_transformer_layer_to_lalamo().
+    Compares the first layer output between FishAudio and Lalamo implementations.
+    """
+    from lalamo.model_import.loaders.fishaudio_loaders import load_transformer_block
+
+    from .fishaudio_torch_stuff import ConfigMapping, prepare_state_dict_for_lalamo_loaders
+
+    # Load the FishAudio model
+    pytorch_tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(fish_audio_local_model_path)
+    assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
+    fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
+    config = fish_model.config
+
+    # Create Lalamo transformer using config mapping
+    precision = jnp.bfloat16
+    transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config, precision)
+    lalamo_transformer = transformer_cfg.empty()
+
+    # Load weights
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
+    lalamo_transformer = load_transformer_block(lalamo_transformer, weights_dict)
+
+    # Create random embedded input (test layer computation, not embedding)
+    batch_size = 1
+    seq_length = 16
+    model_dim = config.dim
+
+    torch.manual_seed(42)
+    embedded_input_torch = torch.randn(batch_size, seq_length, model_dim, dtype=torch.bfloat16)
+    embedded_input_lalamo = torch_to_jax(embedded_input_torch)
+
+    max_seq_len = seq_length
+    input_pos = torch.arange(max_seq_len, device=embedded_input_torch.device)
+    input_pos_lalamo = torch_to_jax(input_pos)[None, :]
+
+    # Get mask and RoPE embeddings from fish model
+    mask = fish_model.causal_mask[None, None, input_pos, :max_seq_len]
+    freqs_cis = fish_model.freqs_cis[input_pos]
+
+    # Run first layer from each model
+    fish_layer = fish_model.layers[0]
+    fish_layer_result = fish_layer(embedded_input_torch, freqs_cis, mask, input_pos=input_pos)
+
+    assert lalamo_transformer.global_rope is not None
+    pos_emb_lalamo = vmap(lalamo_transformer.global_rope)(input_pos_lalamo)
+    lalamo_layer = lalamo_transformer.layers[0]
+    lalamo_layer_result = lalamo_layer(embedded_input_lalamo, pos_emb_lalamo)
+
+    # Compare outputs per token position
+    fish_output_jax = torch_to_jax(fish_layer_result)
+    lalamo_output = lalamo_layer_result.outputs
+
+    for k in range(max_seq_len):
+        diff = fish_output_jax[0][k] - lalamo_output[0][k]
+        _testlog.info(f"(token_idx={k}) Layer output diff: min={diff.min()}, max={diff.max()}, std={diff.std()}")
+
+    # Overall comparison
+    total_diff = jnp.abs(fish_output_jax - lalamo_output)
+    max_diff = float(jnp.max(total_diff))
+    mean_diff = float(jnp.mean(total_diff))
+    _testlog.info(f"Single layer - Max difference: {max_diff}")
+    _testlog.info(f"Single layer - Mean difference: {mean_diff}")
+
+    # Position 0 should match well (no RoPE applied) - validates weight loading
+    pos0_diff = jnp.abs(fish_output_jax[0, 0] - lalamo_output[0, 0])
+    pos0_max_diff = float(jnp.max(pos0_diff))
+    _testlog.info(f"Position 0 max difference: {pos0_max_diff}")
+    assert pos0_max_diff < 0.02, f"Position 0 mismatch indicates weight loading issue: {pos0_max_diff}"
+
+    assert fish_output_jax.shape == lalamo_output.shape, (
+        f"Shape mismatch: FishAudio {fish_output_jax.shape} vs Lalamo {lalamo_output.shape}"
+    )
+    assert jnp.allclose(fish_output_jax, lalamo_output, atol=1e-1), (
+        f"Outputs don't match. Max diff: {max_diff}, mean diff: {mean_diff}"
+    )
+
+
+@torch.no_grad
+def test_audio_transformer_inference() -> None:
+    """Test that the post-module Transformer from DAC config can be instantiated and run.
+
+    This test creates both a FishAudio WindowLimitedTransformer and a Lalamo Transformer
+    using the same config from get_default_fishaudio_dac_config, loads weights from
+    FishAudio into Lalamo, and verifies both can be instantiated correctly.
+    """
+    from fish_speech.models.dac.modded_dac import ModelArgs, WindowLimitedTransformer
+
+    from lalamo.model_import.loaders.fishaudio_loaders import load_transformer_block
+    from lalamo.model_import.model_configs.huggingface.fishaudio import (
+        lalamo_transformer_cfg_from_fish_audio_codec_cfg,
+    )
+    from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+
+    from .fishaudio_torch_stuff import prepare_state_dict_for_lalamo_loaders
+
+    fish_dac_config = get_default_fishaudio_dac_config()
+    post_module_config_dict = fish_dac_config["quantizer"]["post_module"]
+    post_module_transformer_foreign = post_module_config_dict["config"]
+
+    # === Create FishAudio WindowLimitedTransformer ===
+    torch.manual_seed(42)
+    fish_model_args = ModelArgs(
+        block_size=post_module_transformer_foreign["block_size"],
+        n_layer=post_module_transformer_foreign["n_layer"],
+        n_head=post_module_transformer_foreign["n_head"],
+        dim=post_module_transformer_foreign["dim"],
+        intermediate_size=post_module_transformer_foreign["intermediate_size"],
+        n_local_heads=post_module_transformer_foreign["n_local_heads"],
+        head_dim=post_module_transformer_foreign["head_dim"],
+        rope_base=post_module_transformer_foreign["rope_base"],
+        norm_eps=post_module_transformer_foreign["norm_eps"],
+        dropout_rate=post_module_transformer_foreign["dropout_rate"],
+        attn_dropout_rate=post_module_transformer_foreign["attn_dropout_rate"],
+        channels_first=post_module_transformer_foreign["channels_first"],
+    )
+    fish_transformer = WindowLimitedTransformer(
+        config=fish_model_args,
+        input_dim=post_module_config_dict["input_dim"],
+        window_size=post_module_config_dict["window_size"],
+        causal=post_module_config_dict["causal"],
+    )
+    fish_transformer.eval()
+
+    _testlog.info(f"FishAudio WindowLimitedTransformer instantiated with {len(fish_transformer.layers)} layers")
+
+    # === Create Lalamo Transformer ===
+    precision = jnp.float32
+    transformer_cfg = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
+        post_module_transformer_foreign,
+        precision,
+        window_size=post_module_config_dict["window_size"],
+        input_dim=post_module_config_dict["input_dim"],
+    )
+
+    _testlog.info(
+        f"Lalamo Transformer config: model_dim={transformer_cfg.model_dim}, "
+        f"hidden_dim={transformer_cfg.hidden_dim}, "
+        f"context_length={transformer_cfg.context_length}, "
+        f"num_layers={len(transformer_cfg.layer_configs)}"
+    )
+
+    # Instantiate an empty Lalamo transformer
+    lalamo_transformer = transformer_cfg.empty()
+    _testlog.info(f"Lalamo Transformer instantiated with {len(lalamo_transformer.layers)} layers")
+
+    # === Load weights from FishAudio into Lalamo ===
+    weights_dict = prepare_state_dict_for_lalamo_loaders(fish_transformer.state_dict())
+    lalamo_transformer = load_transformer_block(lalamo_transformer, weights_dict)
+
+    _testlog.info("Weights loaded from FishAudio WindowLimitedTransformer into Lalamo Transformer")
+
+    # === Run inference and compare outputs ===
+    from lalamo.modules import ForwardPassMode
+
+    batch_size = 1
+    seq_length = 32
+    input_dim = post_module_config_dict["input_dim"]
+
+    torch.manual_seed(42)
+    test_input_torch = torch.randn(batch_size, input_dim, seq_length, dtype=torch.float32)
+
+    fish_output = fish_transformer(test_input_torch)
+
+    # For Lalamo, we need (B, T, C) format and position indices
+    test_input_jax = torch_to_jax(test_input_torch).transpose(0, 2, 1)  # (B, C, T) -> (B, T, C)
+    input_pos = jnp.broadcast_to(jnp.arange(seq_length)[None, :], (batch_size, seq_length))
+    lalamo_result = lalamo_transformer(
+        inner_features=test_input_jax,
+        token_positions=input_pos,
+        state=None,
+        return_updated_state=False,
+        return_layer_results=False,
+        return_positional_embeddings=False,
+        lengths_without_padding=None,
+        forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+        forward_pass_config=None,
+    )
+    lalamo_output = lalamo_result.outputs
+
+    # Convert FishAudio output for comparison (B, C, T) -> (B, T, C)
+    fish_output_jax = torch_to_jax(fish_output).transpose(0, 2, 1)
+
+    _testlog.info(f"FishAudio output shape: {fish_output.shape}")
+    _testlog.info(f"Lalamo output shape: {lalamo_output.shape}")
+    _testlog.info(f"Max difference: {jnp.max(jnp.abs(fish_output_jax - lalamo_output))}")
+    _testlog.info(f"Mean difference: {jnp.mean(jnp.abs(fish_output_jax - lalamo_output))}")
+
+    assert fish_output_jax.shape == lalamo_output.shape, (
+        f"Shape mismatch: FishAudio {fish_output_jax.shape} vs Lalamo {lalamo_output.shape}"
+    )
+    assert jnp.allclose(fish_output_jax, lalamo_output, atol=1e-4), (
+        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(fish_output_jax - lalamo_output))}"
     )
 
 

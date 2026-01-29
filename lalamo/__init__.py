@@ -1,3 +1,8 @@
+import os
+
+# Must run before importing jax / tensorflow, this hides the XLA optimization logs
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
+
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -27,7 +32,7 @@ from lalamo.speculator import (
     SpeculatorTrainingEvent,
 )
 
-__version__ = "0.6.0"
+__version__ = "0.6.5"
 
 __all__ = [
     "AssistantMessage",

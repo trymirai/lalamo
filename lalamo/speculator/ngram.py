@@ -129,7 +129,7 @@ class NGramSpeculator(Speculator):
 
         return (
             memoryview(self.ngram_keys)[idx_start:idx_end],
-            memoryview(self.ngram_values)[idx_start:idx_end].cast("f"), # noop cast to make typechecker happy
+            memoryview(self.ngram_values)[idx_start:idx_end].cast("c").cast("f"), # noop cast to make typechecker happy
             memoryview(self.ngram_counts)[seq_hash : (seq_hash + 1)],
         )
 

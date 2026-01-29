@@ -1,9 +1,11 @@
+import warnings
 from collections import defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import cast
 
 import jax.numpy as jnp
 from jax._src.api import ShapeDtypeStruct
+from jax.errors import JaxRuntimeError
 from jaxtyping import Array, DTypeLike
 
 from lalamo.utils import MapDictValues, MapSequence
@@ -11,8 +13,10 @@ from lalamo.utils import MapDictValues, MapSequence
 __all__ = [
     "DEFAULT_PRECISION",
     "ArrayLike",
+    "LalamoWarning",
     "ParameterPath",
     "ParameterTree",
+    "decrease_batchsize_on_oom",
     "dummy_array",
     "flatten_parameters",
     "require_array",
@@ -21,6 +25,10 @@ __all__ = [
 ]
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
+
+
+class LalamoWarning(UserWarning):
+    """Custom warning class for Lalamo-specific warnings."""
 
 
 type ArrayLike = Array | ShapeDtypeStruct
@@ -127,3 +135,49 @@ def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
     if array.dtype in [jnp.float16, jnp.bfloat16, jnp.float32, jnp.float64]:
         return array.astype(cast_to)
     return array
+
+
+def decrease_batchsize_on_oom[T](
+    fn: Callable[[int], Iterable[T]],
+    starting_batch_size: int,
+) -> Iterable[T]:
+    """
+    Execute fn(batch_size) with automatic batch size reduction on OOM.
+    Only reduces batch size if OOM happened on the first batch.
+
+    Args:
+        fn: Function that takes batch_size and returns an iterable
+        starting_batch_size: Initial batch size to try
+
+    Yields:
+        Results from fn(batch_size)
+
+    Raises:
+        JaxRuntimeError: If OOM occurs after first batch completes or at batch_size=1
+    """
+    first_batch_completed = False
+    effective_batch_size = starting_batch_size
+
+    while True:
+        try:
+            for result in fn(effective_batch_size):
+                yield result
+
+                # as soon as we yielded we are not allowed to retry anymore
+                # to make sure we don't ever miss/duplicate outputs
+                first_batch_completed = True
+            break
+        except JaxRuntimeError:
+            if first_batch_completed:
+                raise
+            # because OOM's sometimes generate stuff that won't be garbage collected,
+            # we need to be very aggressive with decreasing batchsize here
+            new_bs = max(int(0.7 * effective_batch_size - 1), 1)
+            if new_bs == 1 and effective_batch_size == 1:
+                raise
+            warnings.warn(
+                f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.",
+                LalamoWarning,
+                stacklevel=3,
+            )
+            effective_batch_size = new_bs

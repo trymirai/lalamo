@@ -78,11 +78,13 @@ jobs:
         shell: bash
         run: |
           branch="bump/version-${{ inputs.new_version }}"
+          # Delete existing branch if it exists (from a previous failed run)
+          git push origin --delete "$branch" 2>/dev/null || true
           git push origin HEAD:"$branch"
 
       - name: Open pull request to default branch (bump/version-*)
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         shell: bash
         run: |
           gh pr create --base "${{ github.event.repository.default_branch }}" \
