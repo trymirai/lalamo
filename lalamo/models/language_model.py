@@ -1,4 +1,4 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import NamedTuple
@@ -9,11 +9,9 @@ import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from itertools import batched
 
-import functools
-from itertools import batched, chain, islice
-
-from lalamo.common import retry_on_oom
+from lalamo.common import decrease_batchsize_on_oom
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
@@ -28,7 +26,6 @@ from lalamo.sampling import SamplingPolicy, make_policy
 from .common import TextModel, TextModelConfig
 
 __all__ = [
-    "BatchedGenerationResult",
     "ForwardPassConfig",
     "GenerationConfig",
     "LanguageModel",
@@ -65,15 +62,6 @@ class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
-
-
-class BatchedGenerationResult(NamedTuple):
-    """Result for a single input from batched generation."""
-
-    input_token_ids: list[int]
-    output_token_ids: list[int]
-    top_k_token_ids: list[list[int]] | None
-    top_k_token_logits: list[list[float]] | None
 
 
 @dataclass(frozen=True)
@@ -280,164 +268,48 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         response_text = self.message_processor.detokenize(response_ids.tolist())
         return self.message_processor.parse_response(response_text)
 
-    def generate_tokens_batched(
-        self,
-        tokenized_inputs: Iterable[list[int]],
-        batch_size: int,
-        max_input_length: int,
-        max_output_length: int,
-        num_top_logits_to_return: int | None = None,
-        sampling_policy: SamplingPolicy | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
-        autotune_level: str = "0",
-        *,
-        key: PRNGKeyArray,
-    ) -> Iterable[BatchedGenerationResult]:
-        """Batched generation for a fixed batch size."""
-        compiled = (
-            jax.jit(
-                functools.partial(
-                    LanguageModel.generate_tokens,
-                    sampling_policy=sampling_policy,
-                    max_output_length=max_output_length,
-                    num_top_logits_to_return=num_top_logits_to_return,
-                    forward_pass_config=forward_pass_config,
-                ),
-            )
-            .lower(
-                self,
-                prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
-                prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
-            )
-            .compile(compiler_options={"xla_gpu_autotune_level": autotune_level})
-        )
-
-        for real_batch in batched(tokenized_inputs, n=batch_size):
-            real_batch_size = len(real_batch)
-            padded_batch = (*real_batch, *(([0],) * (batch_size - real_batch_size)))
-
-            lengths = jnp.array([len(tokens) for tokens in padded_batch], dtype=jnp.int32)
-            padded_tokens = jnp.array(
-                [
-                    jnp.pad(jnp.array(tokens, dtype=jnp.int32), (0, max_input_length - len(tokens)))
-                    for tokens in padded_batch
-                ]
-            )
-
-            key, subkey = jax.random.split(key)
-            generated = compiled(
-                self,
-                prompt_token_ids=padded_tokens,
-                prompt_lengths_without_padding=lengths,
-                key=subkey,
-            )
-
-            for idx in range(real_batch_size):
-                token_ids = generated.token_ids[idx].tolist()
-                stop_idx = next(
-                    (i + 1 for i, t in enumerate(token_ids) if t in self.stop_token_ids),
-                    len(token_ids),
-                )
-                token_ids = token_ids[:stop_idx]
-
-                top_k_ids = None
-                top_k_logits = None
-                if generated.top_k_token_ids is not None:
-                    top_k_ids = generated.top_k_token_ids[idx, : len(token_ids)].tolist()
-                if generated.top_k_token_logits is not None:
-                    top_k_logits = generated.top_k_token_logits[idx, : len(token_ids)].tolist()
-
-                yield BatchedGenerationResult(
-                    input_token_ids=real_batch[idx],
-                    output_token_ids=token_ids,
-                    top_k_token_ids=top_k_ids,
-                    top_k_token_logits=top_k_logits,
-                )
-
-    def generate_tokens_batched_safe(
-        self,
-        tokenized_inputs: Iterable[list[int]],
-        batch_size: int = 1,
-        max_input_length: int = 1024,
-        max_output_length: int = 8192,
-        num_top_logits_to_return: int | None = None,
-        sampling_policy: SamplingPolicy | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
-        autotune_level: str = "0",
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> Iterable[BatchedGenerationResult]:
-        """Batched generation with OOM recovery - reduces batch size on failure."""
-        if key is None:
-            key = jax.random.PRNGKey(0)
-
-        # Filter inputs that fit within max_input_length
-        filtered_inputs = filter(lambda tokens: len(tokens) <= max_input_length, tokenized_inputs)
-
-        # Take a test batch to detect OOM early
-        test_batch = list(islice(filtered_inputs, batch_size))
-        first_batch_completed = False
-        effective_batch_size = batch_size
-
-        while True:
-            try:
-                for result in self.generate_tokens_batched(
-                    chain(test_batch, filtered_inputs),
-                    effective_batch_size,
-                    max_input_length,
-                    max_output_length,
-                    num_top_logits_to_return,
-                    sampling_policy,
-                    forward_pass_config,
-                    autotune_level,
-                    key=key,
-                ):
-                    first_batch_completed = True
-                    yield result
-                break
-            except JaxRuntimeError:
-                if first_batch_completed:
-                    raise
-                new_bs = max(int(0.7 * effective_batch_size - 1), 1)
-                if new_bs == 1 and effective_batch_size == 1:
-                    raise
-                warnings.warn(
-                    f"generate_tokens_batched OOM. Reducing batch size {effective_batch_size} -> {new_bs}.",
-                    LalamoWarning,
-                    stacklevel=2,
-                )
-                effective_batch_size = new_bs
-
     def reply_many(
         self,
-        conversations: Iterable[Iterable[Message]],
-        batch_size: int = 1,
-        max_input_length: int = 1024,
-        max_output_length: int = 8192,
+        messages: list[Iterable[Message]],
         sampling_policy: SamplingPolicy | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
+        batch_size: int = 1,
         *,
         key: PRNGKeyArray | None = None,
-    ) -> Iterable[AssistantMessage]:
-        """Generate replies for multiple conversations with batching for efficiency."""
+    ) -> Iterator[AssistantMessage]:
+        # Automatically batches the list of message sequences and vmap's over batches,
+        # while making sure that if OOM happens the batch size is decreased.
 
-        def tokenize(conv: Iterable[Message]) -> list[int]:
-            formatted = self.message_processor.render_request(conv)
-            return self.message_processor.tokenize_text(formatted)
+        tokenized = [
+            jnp.array(
+                self.message_processor.tokenize_text(self.message_processor.render_request(msg)),
+                dtype=jnp.int32,
+            )
+            for msg in messages
+        ]
 
-        tokenized = map(tokenize, conversations)
+        def reply_many_body(batch_size: int) -> Iterator[AssistantMessage]:
+            for real_batch in batched(tokenized, batch_size):
+                batch = (*real_batch, *(jnp.array([0], dtype=jnp.int32),) * (batch_size - len(real_batch)))
+                max_len = max(len(tokens) for tokens in batch)
+                padded = jnp.array(
+                    [jnp.pad(tokens, (0, max_len - len(tokens)), constant_values=0) for tokens in batch]
+                )
+                lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
 
-        for result in self.generate_tokens_batched_safe(
-            tokenized,
-            batch_size=batch_size,
-            max_input_length=max_input_length,
-            max_output_length=max_output_length,
-            sampling_policy=sampling_policy,
-            forward_pass_config=forward_pass_config,
-            key=key,
-        ):
-            response_text = self.message_processor.detokenize(result.output_token_ids)
-            yield self.message_processor.parse_response(response_text)
+                results = self.generate_tokens(
+                    padded,
+                    sampling_policy,
+                    prompt_lengths_without_padding=lengths,
+                    forward_pass_config=forward_pass_config,
+                    key=key,
+                )
+
+                for i in range(len(real_batch)):
+                    response_text = self.message_processor.detokenize(results.token_ids[i].tolist())
+                    yield self.message_processor.parse_response(response_text)
+
+        yield from decrease_batchsize_on_oom(reply_many_body, batch_size)
 
     def stream_reply_text(
         self,
