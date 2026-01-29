@@ -19,6 +19,7 @@ from lalamo.modules import (
     LinearBase,
     MLPBase,
     Normalization,
+    RoPE,
     Transformer,
     TransformerLayer,
 )
@@ -46,6 +47,80 @@ from .huggingface import load_rmsnorm, load_tied_embedding
 class FuseDimension(Enum):
     SCALE_FOR_INPUT = "scale_input"
     SCALE_FOR_OUTPUT = "scale_output"
+
+
+def _permute_for_rope_rotate_half(
+    weight: Array,
+    num_heads: int,
+    head_dim: int,
+) -> Array:
+    """Permute weight matrix from interleaved RoPE format to rotate-half format.
+
+    This converts weights trained with the interleaved RoPE format:
+        interleaved: [-x1, x0, -x3, x2, -x5, x4, ...]
+    to the rotate-half format used by standard RoPE:
+        rotate-half: [-x_{d/2}, -x_{d/2+1}, ..., x_0, x_1, ...]
+
+    The transformation reorders the output dimensions of Q/K projections so that
+    the first half of each head's dimensions and the second half are grouped together,
+    rather than being interleaved.
+
+    Code is inspired by similar transformation from:
+    https://github.com/huggingface/transformers/blob/e42587f596181396e1c4b63660abf0c736b10dae/src/transformers/models/llama/convert_llama_weights_to_hf.py
+    """
+    if len(weight.shape) == 1:
+        # shortcut for vectors
+        in_features = weight.shape[0]
+        weight = weight.reshape(head_dim // 2, 2)
+        weight = jnp.transpose(weight, (1, 0))
+        return weight.reshape(in_features)
+
+    out_features, in_features = weight.shape
+    assert out_features == num_heads * head_dim, (
+        f"Output features {out_features} must equal num_heads * head_dim = {num_heads * head_dim}"
+    )
+    # Reshape: (num_heads * head_dim, in) -> (num_heads, head_dim // 2, 2, in)
+    weight = weight.reshape(num_heads, head_dim // 2, 2, in_features)
+
+    # Transpose: (num_heads, head_dim // 2, 2, in) -> (num_heads, 2, head_dim // 2, in)
+    weight = jnp.transpose(weight, (0, 2, 1, 3))
+
+    # Reshape back: (num_heads, 2, head_dim // 2, in) -> (num_heads * head_dim, in)
+    return weight.reshape(out_features, in_features)
+
+
+def _permute_qkv_for_rope_rotate_half(
+    qkv_weight: Array,
+    num_heads: int,
+    num_groups: int,
+    head_dim: int,
+) -> Array:
+    """Permute fused QKV weight matrix from interleaved RoPE to rotate-half format.
+
+    For grouped query attention (GQA), Q has num_heads while K/V have num_groups.
+    Only Q and K need permutation (they use RoPE). V is unchanged.
+
+    Args:
+        qkv_weight: Fused QKV weight of shape (q_dim + k_dim + v_dim, in_features)
+                    where q_dim = num_heads * head_dim, k_dim = v_dim = num_groups * head_dim
+        num_heads: Number of query heads.
+        num_groups: Number of key/value heads (groups for GQA).
+        head_dim: Dimension per head.
+
+    Returns:
+        Permuted QKV weight with Q and K converted to rotate-half format.
+    """
+    q_dim = num_heads * head_dim
+    k_dim = num_groups * head_dim
+
+    q_weight = qkv_weight[:q_dim, :]
+    k_weight = qkv_weight[q_dim : q_dim + k_dim, :]
+    v_weight = qkv_weight[q_dim + k_dim :, :]
+
+    q_weight = _permute_for_rope_rotate_half(q_weight, num_heads, head_dim)
+    k_weight = _permute_for_rope_rotate_half(k_weight, num_groups, head_dim)
+
+    return jnp.concatenate([q_weight, k_weight, v_weight], axis=0)
 
 
 def _fuse_full_precision_weights(
@@ -217,38 +292,68 @@ def load_transformer_block(
     fast: bool = False,
     path: ParameterPath | None = None,
 ) -> Transformer:
+    use_rotate_half_rope = isinstance(module.global_rope, RoPE)
+
     def load_attention_local(
-        module: Attention,
+        attn_module: Attention,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
         scaling_to_fuze: Array | None = None,
     ) -> Attention:
         qkv_projection = load_linear_with_scaling_fusing(
-            module.qkv_projection,
+            attn_module.qkv_projection,
             weights_dict,
             path / "wqkv",
             sublayers_to_fuse=None,
         )
+        assert isinstance(qkv_projection, FullPrecisionLinear)
+
+        # Permute QKV weights from interleaved RoPE format to rotate-half format
+        if use_rotate_half_rope:
+            permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
+                qkv_projection.weights,
+                num_heads=attn_module.num_heads,
+                num_groups=attn_module.num_groups,
+                head_dim=attn_module.head_dim,
+            )
+            qkv_projection = load_parameters(
+                lambda m: (m.weights,),
+                qkv_projection,
+                (permuted_qkv_weights,),
+            )
+        assert isinstance(qkv_projection, FullPrecisionLinear)
+
         out_projection = load_linear_with_scaling_fusing(
-            module.out_projection,
+            attn_module.out_projection,
             weights_dict,
             path / "wo",
             scaling_to_fuze=scaling_to_fuze,
         )
 
-        if module.query_norm is not None:
-            query_norm = load_rmsnorm(module.query_norm, weights_dict, path / "q_norm")
+        if attn_module.query_norm is not None:
+            query_norm = load_rmsnorm(attn_module.query_norm, weights_dict, path / "q_norm")
+            if use_rotate_half_rope:
+                permuted_scales = _permute_for_rope_rotate_half(
+                    query_norm.scales,
+                    1,
+                    query_norm.scales.shape[0],
+                )
+                query_norm = load_parameters(
+                    lambda m: (m.scales,),
+                    query_norm,
+                    (permuted_scales,),
+                )
         else:
             query_norm = None
 
-        if module.key_norm is not None:
-            key_norm = load_rmsnorm(module.key_norm, weights_dict, path / "k_norm")
+        if attn_module.key_norm is not None:
+            key_norm = load_rmsnorm(attn_module.key_norm, weights_dict, path / "k_norm")
         else:
             key_norm = None
 
         return load_parameters(
             lambda m: (m.qkv_projection, m.out_projection, m.query_norm, m.key_norm),
-            module,
+            attn_module,
             (qkv_projection, out_projection, query_norm, key_norm),
         )
 
@@ -302,7 +407,7 @@ def load_transformer_block(
 
         assert isinstance(module.mixer, Attention)
         attention = load_attention_local(
-            module=module.mixer,
+            attn_module=module.mixer,
             weights_dict=weights_dict,
             path=path / "attention",
             scaling_to_fuze=layer_scale_weights,
