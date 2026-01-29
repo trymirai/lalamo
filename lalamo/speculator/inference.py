@@ -4,7 +4,6 @@ from typing import NamedTuple
 
 import numpy as np
 
-from lalamo.common import decrease_batchsize_on_oom
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.inference.batch_generate import GenerateConfig, generate_batched
@@ -75,4 +74,8 @@ def inference_collect_traces(
         prompt_tokens = indexed_inputs[_idx][1]
         yield LalamoCompletion(list(prompt_tokens), token_ids, token_logits)
 
-    yield from decrease_batchsize_on_oom(collect_traces_body, batch_size)
+        if progress_callback is not None:
+            progress_callback(CollectTracesEvent(sequences_processed, tokens_generated))
+
+        if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
+            break
