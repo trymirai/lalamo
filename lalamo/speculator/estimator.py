@@ -1,5 +1,6 @@
 import functools
 import itertools
+import os
 from collections.abc import Callable
 from typing import NamedTuple
 
@@ -9,11 +10,38 @@ import jax.numpy as jnp
 from lalamo.models import LanguageModel
 
 
-def get_default_device_memory() -> int | None:
+def get_default_device_bytes() -> int | None:
+    dynamic_allocate = False
+
+    preallocate = os.getenv("XLA_PYTHON_CLIENT_PREALLOCATE", "")
+    dynamic_allocate |= preallocate.strip().lower() in {"0", "false", "no", "off"}
+
+    allocator = os.getenv("XLA_PYTHON_CLIENT_ALLOCATOR", "")
+    dynamic_allocate |= allocator.strip().lower() in {"platform", "cuda_malloc_async"}
+
+    if dynamic_allocate:
+        return None
+
     memory_stats = jax.local_devices()[0].memory_stats()
     if memory_stats is None or "bytes_limit" not in memory_stats:
         return None
-    return memory_stats["bytes_limit"]
+
+    mem_fraction_raw = os.getenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "")
+    try:
+        mem_fraction = float(mem_fraction_raw)
+    except ValueError:
+        mem_fraction = 0.75  # jax default https://docs.jax.dev/en/latest/gpu_memory_allocation.html
+
+    # 500mb is seemingly the usually observed overhead; this tries to match the actual capacity of the gpu
+    # so it should correspond to something you'd see in nvidia-smi
+    memory_limit = memory_stats["bytes_limit"] / min(mem_fraction, 1.0) + (500 * 1000 * 1000)
+
+    return get_usable_memory_from_bytes(memory_limit)
+
+
+def get_usable_memory_from_bytes(limit_bytes: int) -> int:
+    # JAX allocates a bit more than it needs, so we discount it by some safety factor
+    return int(limit_bytes * 0.93)
 
 
 def estimate_memory_from_batchsize(
@@ -30,14 +58,14 @@ def estimate_memory_from_batchsize(
                 max_output_length=max_output_length,
                 num_top_logits_to_return=num_logits_per_token,
             ),
-            backend="cpu",  # cuda backend tries to allocate in .compile() and ooms
         )
         .lower(
             model,
             prompt_token_ids=jax.ShapeDtypeStruct((batch_size, max_input_length), jnp.int32),
             prompt_lengths_without_padding=jax.ShapeDtypeStruct((batch_size,), jnp.int32),
         )
-        .compile()
+        # disables autotune, see https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level
+        .compile(compiler_options={"xla_gpu_autotune_level": "0"})
         .memory_analysis()
     )
 
