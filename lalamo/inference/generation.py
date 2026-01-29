@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 
 __all__ = [
-    "COMPILED_PROMPT_LENGTHS",
     "BatchSizeEstimatingEvent",
     "GenerateConfig",
     "generate_batched",
@@ -33,15 +32,15 @@ __all__ = [
 ]
 
 
+COMPILED_PROMPT_LENGTHS = [64 * 2**i for i in range(13)]
+MIN_BATCHES_IN_BUCKET = 5
+
+
 @dataclass(frozen=True)
 class BatchSizeEstimatingEvent:
     sequence_length: int
     lo: int
     hi: int | None
-
-
-COMPILED_PROMPT_LENGTHS = [64 * 2**i for i in range(13)]
-MIN_BATCHES_IN_BUCKET = 5
 
 
 @dataclass(frozen=True)
