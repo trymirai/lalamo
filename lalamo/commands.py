@@ -11,6 +11,7 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.inference import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory, reply_many
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -24,7 +25,6 @@ from lalamo.model_import.common import (
 from lalamo.models import LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
-from lalamo.inference import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory, reply_many
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
