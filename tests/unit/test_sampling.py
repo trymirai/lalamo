@@ -12,8 +12,8 @@ from transformers import GenerationConfig as TransformersGenerationConfig
 from transformers.generation.utils import GenerationMixin
 
 from lalamo.model_import.common import FileSpec, download_file
-from lalamo.model_import.decoder_configs.huggingface import HuggingFaceLMConfig
 from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
+from lalamo.model_import.model_configs.huggingface import HuggingFaceLMConfig
 from lalamo.model_import.model_specs import ALL_MODELS
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax

@@ -11,7 +11,7 @@ from lalamo.common import ParameterTree, require_tree
 
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
-from .rope import PositionalEmbeddings
+from .rope import PositionalEmbeddings, PositionalEmbeddingsCis
 from .token_mixers import State
 from .transformer import (
     Transformer,
@@ -38,8 +38,8 @@ class DecoderActivationTrace(eqx.Module):
     token_positions: Int[Array, "batch suffix_tokens"]
     state: State | None
 
-    local_positional_embeddings: PositionalEmbeddings | None
-    global_positional_embeddings: PositionalEmbeddings | None
+    local_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None
+    global_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None
 
     layer_results: tuple[TransformerLayerResult, ...]
 

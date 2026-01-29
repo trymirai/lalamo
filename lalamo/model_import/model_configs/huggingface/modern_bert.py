@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 import jax.numpy as jnp
 from jaxtyping import DTypeLike
@@ -94,7 +94,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             raise ValueError("Legnth of label2id and id2label is expected to be the same")
 
     def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[None, ...]:
-        result = [None] * num_layers
+        result: list[Any] = [None] * num_layers
         for index in range(len(result)):
             if index % global_attn_every_n_layers != 0:
                 result[index] = self.local_attention

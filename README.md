@@ -50,3 +50,21 @@ ModelSpec(
 )
 ```
 
+## Optional Features
+
+### PyAudio
+
+PyAudio enables audio playback for TTS models and is used as an optional Lalamo feature because it requires [PortAudio](https://www.portaudio.com/) to be installed. 
+
+How to:
+
+- **macOS**: `brew install portaudio` ([formula](https://formulae.brew.sh/formula/portaudio))
+- **Debian/Ubuntu**: `apt-get install portaudio19-dev python-all-dev`
+- **Other Linux**: [PortAudio build instructions](https://www.portaudio.com/docs/v19-doxydocs/compile_linux.html)
+
+Then run :
+
+```bash
+uv run --with  pyaudio lalamo path/to/model --replay
+```
+

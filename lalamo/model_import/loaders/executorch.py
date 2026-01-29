@@ -193,11 +193,13 @@ def load_transformer_layer(
     if module.post_mlp_norm is not None:
         raise ValueError("Post MLP normalization is not supported")
     if module.pre_mixer_norm is not None:
+        assert isinstance(module.pre_mixer_norm, Normalization)
         attention_norm = load_rmsnorm(module.pre_mixer_norm, weights_dict, path / "attention_norm")
     else:
         attention_norm = None
     assert isinstance(module.mixer, Attention)
     attention = load_attention(module.mixer, weights_dict, path / "mixer")
+    assert isinstance(module.pre_mlp_norm, Normalization)
     mlp_norm = load_rmsnorm(module.pre_mlp_norm, weights_dict, path / "ffn_norm")
     assert isinstance(module.mlp, DenseMLP)
     mlp = load_mlp(module.mlp, weights_dict, path / "feed_forward")

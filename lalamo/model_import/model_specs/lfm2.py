@@ -1,6 +1,6 @@
 from itertools import chain, product
 
-from lalamo.model_import.decoder_configs import HFLFM2Config
+from lalamo.model_import.model_configs import HFLFM2Config
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 
