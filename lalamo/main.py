@@ -511,7 +511,7 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
                 transient=True,
             ),
         )
-        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]")
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]", total=None)
 
     def finished_loading_model(self) -> None:
         assert self.progress is not None
@@ -520,7 +520,7 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
 
     def loading_dataset(self) -> None:
         assert self.progress is not None
-        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]")
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]", total=None)
 
     def finished_loading_dataset(self) -> None:
         assert self.progress is not None

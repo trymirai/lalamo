@@ -502,7 +502,7 @@ def generate_replies(
         callbacks.generation_progress(rows_processed)
 
     # Sort by original index to restore input order
-    replies.sort(key=lambda x: x[0])  # noqa: FURB118
+    replies.sort(key=lambda x: x[0])
 
     df = pl.DataFrame(
         {

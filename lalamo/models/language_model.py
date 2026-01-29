@@ -7,11 +7,11 @@ from typing import NamedTuple
 
 import equinox as eqx
 import jax
-import numpy as np
-from jax._src.stages import Compiled
 import jax.numpy as jnp
+import numpy as np
 from einops import rearrange
 from jax import vmap
+from jax._src.stages import Compiled
 from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
 
 from lalamo.common import decrease_batchsize_on_oom
@@ -24,7 +24,6 @@ from lalamo.modules import (
     LalamoModule,
     State,
 )
-
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import TextModel, TextModelConfig
@@ -37,7 +36,7 @@ __all__ = [
 ]
 
 
-_PREFILL_CHUNK_LENGTH = 2048
+_PREFILL_CHUNK_LENGTH = 1024
 _COMPILED_PROMPT_LENGTHS = [512 * 2**i for i in range(10)]
 
 
@@ -395,23 +394,19 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         sorted_lengths = sorted(length_buckets.keys())
         min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
 
-        print(max_vram)
         if max_vram is None:
             # Fallback: batch_size=1 for all buckets
-            batch_size_for_length = {length: 1 for length in sorted_lengths}
-            print(1)
+            batch_size_for_length = dict.fromkeys(sorted_lengths, 1)
         elif min_len == max_len:
             # Only one bucket size
             bs = estimate_batchsize_from_memory(self, min_len, max_output_length, None, max_vram)
             batch_size_for_length = {min_len: max(1, bs)}
-            print(bs)
         else:
             # Estimate for smallest (highest batch size) and largest (lowest batch size) buckets
             bs_at_min = estimate_batchsize_from_memory(self, min_len, max_output_length, None, max_vram)
             bs_at_max = estimate_batchsize_from_memory(self, max_len, max_output_length, None, max_vram)
             bs_at_min = max(1, bs_at_min)
             bs_at_max = max(1, bs_at_max)
-            print(bs_at_min, bs_at_max)
 
             # Linear interpolation for intermediate lengths
             def interpolate_batch_size(length: int) -> int:
@@ -488,7 +483,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                                 np.pad(tokens, (0, padded_input_length - len(tokens)), constant_values=0)
                                 for tokens in batch
                             ],
-                        )
+                        ),
                     )
                     lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
 
