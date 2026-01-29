@@ -2,13 +2,12 @@ import functools
 import itertools
 import os
 from collections.abc import Callable
-from typing import TYPE_CHECKING, NamedTuple
+from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
 
-if TYPE_CHECKING:
-    from lalamo.models import LanguageModel
+from lalamo.models import LanguageModel
 
 __all__ = [
     "EstimateBatchsizeFromMemoryEvent",
@@ -59,8 +58,6 @@ def estimate_memory_from_batchsize(
     num_logits_per_token: int | None,
     batch_size: int,
 ) -> int:
-    from lalamo.models import LanguageModel
-
     memory_analysis = (
         jax.jit(
             functools.partial(

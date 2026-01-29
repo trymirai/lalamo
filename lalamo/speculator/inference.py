@@ -72,7 +72,7 @@ def inference_collect_traces(
 
         # We need the original prompt tokens - get from indexed_inputs
         prompt_tokens = indexed_inputs[_idx][1]
-        yield LalamoCompletion(list(prompt_tokens), token_ids, token_logits)
+        yield LalamoCompletion(prompt_tokens.tolist(), token_ids, token_logits)
 
         if progress_callback is not None:
             progress_callback(CollectTracesEvent(sequences_processed, tokens_generated))
