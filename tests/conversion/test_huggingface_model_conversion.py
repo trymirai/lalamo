@@ -24,6 +24,7 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("Qwen/Qwen3-0.6B", convert_memory_limit=unsi("1.3 G")),
     ModelTestSpec("Qwen/Qwen3-8B", convert_memory_limit=unsi("16 G")),
     ModelTestSpec("Qwen/Qwen3-4B-AWQ"),
+    ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct"),
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct"),
     ModelTestSpec("google/gemma-3-1b-it", convert_memory_limit=unsi("2.5 G")),
     ModelTestSpec("google/gemma-3-4b-it"),

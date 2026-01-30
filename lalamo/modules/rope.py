@@ -55,7 +55,16 @@ class PositionalEmbeddings(eqx.Module):
         return jnp.concatenate((-x2, x1), axis=-1)
 
     def apply(self, heads: Float[Array, "*batch tokens head_channels"]) -> Float[Array, "*batch tokens head_channels"]:
-        return heads * self.cosines + self.rotate_half(heads) * self.sines
+        head_dim = self.head_dim
+        if heads.shape[-1] < head_dim:
+            raise ValueError(
+                f"RoPE head_dim {head_dim} exceeds input head_dim {heads.shape[-1]}",
+            )
+        rotated = heads[..., :head_dim]
+        rotated = rotated * self.cosines + self.rotate_half(rotated) * self.sines
+        if heads.shape[-1] == head_dim:
+            return rotated
+        return jnp.concatenate([rotated, heads[..., head_dim:]], axis=-1)
 
     def export(self) -> ParameterTree:
         return dict(

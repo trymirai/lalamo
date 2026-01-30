@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Self
+from typing import Self, cast
 
 import equinox as eqx
 import jax
@@ -293,26 +293,110 @@ class MixtureOfExpertsConfig(ABC):
     num_experts_per_token: int
     router_has_biases: bool
 
+    gate_config: LinearConfig | None = None
+
+    num_shared_experts: int | None = None
+    shared_expert_config: DenseMLPConfig | None = None
+
+    expert_hidden_dim: int | None = None
+    shared_expert_hidden_dim: int | None = None
+
+    gate_applies_to_experts: bool = False
+    gate_applies_to_shared_experts: bool = False
+
+    def __post_init__(self) -> None:
+        if self.shared_expert_config is not None and self.num_shared_experts is None:
+            raise ValueError("Please provide (num_shared_experts: int) when using shared experts.")
+        if self.gate_config is None and (self.gate_applies_to_shared_experts or self.gate_applies_to_experts):
+            raise ValueError("You cannot apply gating without defining (gate_config: LinearConfig)!")
+        if self.gate_config is not None and self.gate_applies_to_shared_experts and self.shared_expert_config is None:
+            raise ValueError("Please provide (shared_expert_config: DenseMLPConfig) when using shared expert gating.")
+
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MixtureOfExperts":
-        experts_key, router_key = jax.random.split(key)
+        experts_key, router_key, shared_experts_key, gate_key = jax.random.split(key, 4)
         router = self.router_config.random_init(
             model_dim,
             (self.mixture_size,),
             has_biases=self.router_has_biases,
             key=router_key,
         )
-        experts = self.expert_config.random_init_mixture(self.mixture_size, model_dim, hidden_dim, key=experts_key)
-        return MixtureOfExperts(self, router, experts)
+        expert_hidden_dim = self.expert_hidden_dim or hidden_dim
+        experts = self.expert_config.random_init_mixture(
+            self.mixture_size,
+            model_dim,
+            expert_hidden_dim,
+            key=experts_key,
+        )
+
+        shared_experts = None
+        if self.shared_expert_config is not None:
+            assert self.num_shared_experts is not None
+            shared_hidden_dim = self.shared_expert_hidden_dim or expert_hidden_dim
+            shared_experts = self.shared_expert_config.random_init_mixture(
+                self.num_shared_experts,
+                model_dim,
+                shared_hidden_dim,
+                key=shared_experts_key,
+            )
+
+        shared_experts_gate = None
+        if self.gate_config is not None:
+            shared_experts_gate = self.gate_config.random_init(
+                model_dim,
+                (1,),
+                has_biases=False,
+                key=gate_key,
+            )
+
+        return MixtureOfExperts(
+            self,
+            router,
+            experts,
+            shared_experts,
+            shared_experts_gate,
+            self.gate_applies_to_experts,
+            self.gate_applies_to_shared_experts,
+        )
 
     def empty(self, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":
         router = self.router_config.empty(model_dim, (self.mixture_size,), has_biases=self.router_has_biases)
-        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, hidden_dim)
-        return MixtureOfExperts(self, router, experts)
+        expert_hidden_dim = self.expert_hidden_dim or hidden_dim
+        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, expert_hidden_dim)
+
+        shared_experts = None
+        if self.shared_expert_config is not None:
+            assert self.num_shared_experts is not None
+            shared_hidden_dim = self.shared_expert_hidden_dim or expert_hidden_dim
+            shared_experts = self.shared_expert_config.empty_mixture(
+                self.num_shared_experts,
+                model_dim,
+                shared_hidden_dim,
+            )
+
+        gate = None
+        if self.gate_config is not None:
+            gate = self.gate_config.empty(model_dim, (1,), has_biases=False)
+
+        return MixtureOfExperts(
+            self,
+            router,
+            experts,
+            shared_experts,
+            gate,
+            self.gate_applies_to_experts,
+            self.gate_applies_to_shared_experts,
+        )
 
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: LinearBase
     experts: DenseMLP
+
+    shared_experts: DenseMLP | None
+    gate: LinearBase | None
+
+    gate_applies_to_experts: bool = eqx.field(static=True)
+    gate_applies_to_shared_experts: bool = eqx.field(static=True)
 
     @property
     def mixture_size(self) -> int:
@@ -352,6 +436,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 f"Experts mixture_size ({self.experts.mixture_size}) does not match specified mixture_size"
                 f" ({self.mixture_size}).",
             )
+        if self.gate is None and (self.gate_applies_to_experts or self.gate_applies_to_shared_experts):
+            raise ValueError("Gate must be provided when gate_applies_to_experts/shared_experts is enabled.")
+        if self.gate_applies_to_shared_experts and self.shared_experts is None:
+            raise ValueError("Shared experts must be provided when gate_applies_to_shared_experts is enabled.")
 
     def __call__(
         self,
@@ -365,6 +453,29 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 return self.call_prefill_mode(inputs, lengths_without_padding, forward_pass_config)
             case ForwardPassMode.SINGLE_TOKEN:
                 return self.call_decode_mode(inputs)
+
+    def apply_gating(
+        self,
+        expert_result: Float[Array, " channels"],
+        shared_contribution: Float[Array, " channels"] | float,
+        inputs: Float[Array, " channels"],
+    ) -> tuple[
+        Float[Array, " channels"],
+        Float[Array, " channels"] | float,
+    ]:
+        if self.gate is None:
+            return expert_result, shared_contribution
+
+        (gating_factor,) = self.gate(inputs)
+        gating_factor = jax.nn.sigmoid(gating_factor)
+
+        if self.gate_applies_to_experts:
+            expert_result *= gating_factor
+
+        if self.gate_applies_to_shared_experts:
+            shared_contribution *= gating_factor
+
+        return expert_result, shared_contribution
 
     @eqx.filter_jit
     def call_decode_mode(
@@ -387,8 +498,19 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 )
                 return selected_expert.call_unbatched(x) * w
 
-            contributions = vmap(apply_one)(active_indices, active_weights)
-            return jnp.sum(contributions, axis=0)
+            experts_contribution = vmap(apply_one)(active_indices, active_weights).sum(axis=0)
+
+            shared_contribution = 0.0
+            if self.shared_experts is not None:
+                shared_contribution = vmap(lambda expert: expert.call_unbatched(x))(self.shared_experts).sum(axis=0)
+
+            experts_contribution, shared_contribution = self.apply_gating(
+                experts_contribution,
+                shared_contribution,
+                x,
+            )
+
+            return experts_contribution + shared_contribution
 
         return vmap_twice(per_token)(inputs)
 
@@ -431,10 +553,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         def loop_iteration(
-            accumulator: Float[Array, "tokens channels"],
+            expert_accumulator: Float[Array, "tokens channels"],
             token_indices_for_chunk: Int[Array, "experts chunk_tokens"],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            def inner() -> Float[Array, "tokens channels"]:
+            def run_experts(
+                expert_accumulator: Float[Array, "tokens channels"],
+            ) -> Float[Array, "tokens channels"]:
                 weights_for_chunk = jnp.take_along_axis(
                     expert_weights,
                     token_indices_for_chunk,
@@ -452,41 +576,85 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     return vmap(expert.call_unbatched)(inputs) * weights[:, None]
 
                 expert_outputs = vmap(run_expert)(self.experts, token_indices_for_chunk, weights_for_chunk)
-                return accumulator.at[token_indices_for_chunk].add(
+                return expert_accumulator.at[token_indices_for_chunk].add(
                     expert_outputs,
                     mode="drop",
                 )
 
-            return (
-                jax.lax.cond(
-                    jnp.any(token_indices_for_chunk != _SENTINEL),
-                    inner,
-                    lambda: accumulator,
-                ),
-                None,
+            expert_accumulator = jax.lax.cond(
+                jnp.any(token_indices_for_chunk != _SENTINEL),
+                run_experts,
+                lambda acc: acc,
+                expert_accumulator,
             )
 
-        result, _ = jax.lax.scan(loop_iteration, jnp.zeros_like(flattened_inputs), chunked_token_indices)
-        return rearrange(
-            result,
+            return expert_accumulator, None
+
+        expert_result, _ = jax.lax.scan(
+            loop_iteration,
+            jnp.zeros_like(flattened_inputs),
+            chunked_token_indices,
+        )
+
+        expert_result = rearrange(
+            expert_result,
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
         )
+        if self.shared_experts is None:
+            shared_result = jnp.zeros_like(expert_result)
+        else:
+
+            def shared_per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
+                return vmap(lambda expert: expert.call_unbatched(x))(self.shared_experts).sum(axis=0)
+
+            shared_result = vmap_twice(shared_per_token)(inputs)
+
+        expert_result, shared_contribution = vmap_twice(self.apply_gating)(
+            expert_result,
+            shared_result,
+            inputs,
+        )
+
+        return expert_result + shared_contribution
 
     def export_weights(
         self,
     ) -> ParameterTree[Array]:
-        return {
+        result: dict[str, ParameterTree[Array]] = {
             "router": self.router.export_weights(),
             "experts": self.experts.export_weights(),
         }
 
+        if self.shared_experts is not None:
+            result["shared_experts"] = self.shared_experts.export_weights()
+        if self.gate is not None:
+            result["gate"] = self.gate.export_weights()
+
+        return result
+
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
+        mapping_weights = cast("Mapping[str, Array | ParameterTree[Array]]", weights)
+
+        shared_experts = None
+        if "shared_experts" in mapping_weights:
+            if self.shared_experts is None:
+                raise ValueError("Cannot import shared expert weights without configured shared experts.")
+            shared_experts = self.shared_experts.import_weights(require_tree(mapping_weights["shared_experts"]))
+
+        gate = None
+        if "gate" in mapping_weights:
+            if self.gate is None:
+                raise ValueError("Cannot import gate weights without configured gating.")
+            gate = self.gate.import_weights(require_tree(mapping_weights["gate"]))
+
         return replace(
             self,
-            router=self.router.import_weights(require_tree(weights["router"])),
-            experts=self.experts.import_weights(require_tree(weights["experts"])),
+            router=self.router.import_weights(require_tree(mapping_weights["router"])),
+            experts=self.experts.import_weights(require_tree(mapping_weights["experts"])),
+            shared_experts=shared_experts,
+            gate=gate,
         )
 
 
