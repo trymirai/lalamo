@@ -6,7 +6,7 @@ import numpy as np
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
-from lalamo.inference.generation import GenerateConfig, generate_batched
+from lalamo.inference.generation import InferenceConfig, generate_batched
 from lalamo.message_processor import Message
 from lalamo.models import LanguageModel
 
@@ -29,24 +29,20 @@ def inference_collect_traces(
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
     filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
+    filtered_prefixes = list(filtered_prefixes)  # eagerly materialize the prompts into RAM
 
-    # Enumerate and convert to numpy arrays for generate_batched format
-    indexed_inputs = [(idx, np.array(tokens, dtype=np.int32)) for idx, tokens in enumerate(filtered_prefixes)]
-
-    config = GenerateConfig(
+    config = InferenceConfig(
         max_output_length=max_output_length,
         num_top_logits_to_return=num_top_logits_to_collect,
+        padded_length=max_input_length,
+        batch_size=batch_size,
     )
 
     tokens_generated = 0
-    sequences_processed = 0
 
-    for _idx, generated in generate_batched(
-        model,
-        indexed_inputs,
-        padded_length=max_input_length,
-        batch_size=batch_size,
-        config=config,
+    for idx, generated in model.generate_tokens_many(
+        filtered_prefixes,
+        inference_config=config,
     ):
         token_ids = generated.token_ids.tolist()
         seqlen = next(
@@ -58,7 +54,6 @@ def inference_collect_traces(
             seqlen = min(seqlen, tokens_to_generate - tokens_generated)
 
         tokens_generated += seqlen
-        sequences_processed += 1  # noqa: SIM113
 
         token_ids = token_ids[:seqlen]
 
@@ -71,11 +66,10 @@ def inference_collect_traces(
         ]
 
         # We need the original prompt tokens - get from indexed_inputs
-        prompt_tokens = indexed_inputs[_idx][1]
-        yield LalamoCompletion(prompt_tokens.tolist(), token_ids, token_logits)
+        yield LalamoCompletion(filtered_prefixes[idx], token_ids, token_logits)
 
         if progress_callback is not None:
-            progress_callback(CollectTracesEvent(sequences_processed, tokens_generated))
+            progress_callback(CollectTracesEvent(idx, tokens_generated))
 
         if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
             break

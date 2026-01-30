@@ -3,6 +3,8 @@ from collections import defaultdict
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import cast
 
+import os
+import jax
 import jax.numpy as jnp
 from jax._src.api import ShapeDtypeStruct
 from jax.errors import JaxRuntimeError
@@ -131,47 +133,34 @@ class ParameterPath(str):
         return ParameterPath(self + "." + str(other))
 
 
-def decrease_batchsize_on_oom[T](
-    fn: Callable[[int], Iterable[T]],
-    starting_batch_size: int,
-) -> Iterable[T]:
-    """
-    Execute fn(batch_size) with automatic batch size reduction on OOM.
-    Only reduces batch size if OOM happened on the first batch.
+def get_default_device_bytes() -> int | None:
+    dynamic_allocate = False
 
-    Args:
-        fn: Function that takes batch_size and returns an iterable
-        starting_batch_size: Initial batch size to try
+    preallocate = os.getenv("XLA_PYTHON_CLIENT_PREALLOCATE", "")
+    dynamic_allocate |= preallocate.strip().lower() in {"0", "false", "no", "off"}
 
-    Yields:
-        Results from fn(batch_size)
+    allocator = os.getenv("XLA_PYTHON_CLIENT_ALLOCATOR", "")
+    dynamic_allocate |= allocator.strip().lower() in {"platform", "cuda_malloc_async"}
 
-    Raises:
-        JaxRuntimeError: If OOM occurs after first batch completes or at batch_size=1
-    """
-    first_batch_completed = False
-    effective_batch_size = starting_batch_size
+    if dynamic_allocate:
+        return None
 
-    while True:
-        try:
-            for result in fn(effective_batch_size):
-                yield result
+    memory_stats = jax.local_devices()[0].memory_stats()
+    if memory_stats is None or "bytes_limit" not in memory_stats:
+        return None
 
-                # as soon as we yielded we are not allowed to retry anymore
-                # to make sure we don't ever miss/duplicate outputs
-                first_batch_completed = True
-            break
-        except JaxRuntimeError:
-            if first_batch_completed:
-                raise
-            # because OOM's sometimes generate stuff that won't be garbage collected,
-            # we need to be very aggressive with decreasing batchsize here
-            new_bs = max(int(0.7 * effective_batch_size - 1), 1)
-            if new_bs == 1 and effective_batch_size == 1:
-                raise
-            warnings.warn(
-                f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.",
-                LalamoWarning,
-                stacklevel=3,
-            )
-            effective_batch_size = new_bs
+    mem_fraction_raw = os.getenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "")
+    try:
+        mem_fraction = float(mem_fraction_raw)
+    except ValueError:
+        mem_fraction = 0.75  # jax default https://docs.jax.dev/en/latest/gpu_memory_allocation.html
+
+    # 500mb is seemingly the usually observed overhead; this tries to match the actual capacity of the gpu
+    # so it should correspond to something you'd see in nvidia-smi
+    memory_limit = memory_stats["bytes_limit"] / min(mem_fraction, 1.0) + (500 * 1000 * 1000)
+
+    return memory_limit
+
+
+def get_usable_memory_from_bytes(limit_bytes: int) -> int:
+    return int(limit_bytes * 0.93)
