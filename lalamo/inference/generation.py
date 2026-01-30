@@ -1,29 +1,20 @@
-from __future__ import annotations
-
 import functools
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from itertools import batched
-from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+from jax._src.stages import Compiled
+from jaxtyping import PRNGKeyArray
 
 from lalamo.common import decrease_batchsize_on_oom
 from lalamo.inference.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
+from lalamo.message_processor import AssistantMessage, Message
 from lalamo.models import LanguageModel
-from lalamo.models.language_model import GenerationResults
-
-if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable, Iterator
-
-    from jax._src.stages import Compiled
-    from jaxtyping import PRNGKeyArray
-
-    from lalamo.message_processor import AssistantMessage, Message
-    from lalamo.models.language_model import ForwardPassConfig
-    from lalamo.sampling import SamplingPolicy
-
+from lalamo.models.language_model import ForwardPassConfig, GenerationResults
+from lalamo.sampling import SamplingPolicy
 
 __all__ = [
     "BatchSizeEstimatingEvent",
