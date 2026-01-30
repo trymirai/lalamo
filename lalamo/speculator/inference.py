@@ -2,11 +2,9 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import NamedTuple
 
-import numpy as np
-
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
-from lalamo.inference.generation import InferenceConfig, generate_batched
+from lalamo.models.common import InferenceConfig
 from lalamo.message_processor import Message
 from lalamo.models import LanguageModel
 
@@ -40,9 +38,11 @@ def inference_collect_traces(
 
     tokens_generated = 0
 
-    for idx, generated in model.generate_tokens_many(
-        filtered_prefixes,
-        inference_config=config,
+    for idx, generated in enumerate(
+        model.generate_tokens_many(
+            filtered_prefixes,
+            inference_config=config,
+        )
     ):
         token_ids = generated.token_ids.tolist()
         seqlen = next(

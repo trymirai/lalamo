@@ -10,12 +10,13 @@ from jax import Array
 from jax import numpy as jnp
 from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters, SamplingPolicy
+from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
+from lalamo.sampling import SamplingPolicy
 
 __all__ = [
     "TextModel",

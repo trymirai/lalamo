@@ -1,29 +1,21 @@
 import functools
-from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass
-from itertools import batched
-
-import jax
-import jax.numpy as jnp
-import numpy as np
-from jax._src.stages import Compiled
-from jaxtyping import PRNGKeyArray
-from jax.errors import JaxRuntimeError
 import itertools
-
-from lalamo.message_processor import AssistantMessage, Message
-from lalamo.models import LanguageModel
-from lalamo.models.language_model import ForwardPassConfig, GenerationResults
-from lalamo.sampling import SamplingPolicy
 import warnings
-from lalamo.common import LalamoWarning, InferenceConfig, get_usable_memory_from_bytes
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+
+import numpy as np
+from jax.errors import JaxRuntimeError
+
+from lalamo.common import LalamoWarning, get_usable_memory_from_bytes
+from lalamo.models.common import InferenceConfig
 
 __all__ = [
     "BatchSizeEstimatingEvent",
+    "estimate_batchsize_from_bytes",
+    "estimate_batchsizes_from_vram",
     "make_buckets_by_length",
     "merge_small_buckets",
-    "estimate_batchsizes_from_vram",
-    "estimate_batchsize_from_bytes",
 ]
 
 
@@ -70,7 +62,7 @@ def merge_small_buckets(
 
 
 def estimate_batchsizes_from_vram(
-    memory_per_batchsize_callback: Callable[int, int],
+    memory_per_batchsize_callback: Callable[[int], int],
     sorted_lengths: list[int],
     vram_bytes: int,
     inference_config: InferenceConfig,
@@ -104,9 +96,9 @@ def estimate_batchsizes_from_vram(
 
 
 def estimate_batchsize_from_bytes(
-    memory_per_batchsize_callback: Callable[int, int],
+    memory_per_batchsize_callback: Callable[[int], int],
     target_mem_bytes: int,
-    progress: Callable[BatchSizeEstimatingEvent, None] | None = None,
+    progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
 ) -> int:
     lo = 0
     hi = 0

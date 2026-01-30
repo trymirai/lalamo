@@ -12,11 +12,9 @@ from lalamo.common import flatten_parameters
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.inference import (
-    BatchSizeEstimatingEvent,
     EstimateBatchsizeFromMemoryEvent,
     InferenceConfig,
     estimate_batchsize_from_memory,
-    reply_many,
 )
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
@@ -515,7 +513,6 @@ def generate_replies(
     replies: list[tuple[int, AssistantMessage]] = []
     for rows_processed, (idx, reply) in enumerate(model.reply_many(dataset, inference_config)):
         replies.append((idx, reply))
-        callbacks.generation_progress(rows_processed)
 
     # Sort by original index to restore input order
     replies.sort(key=lambda x: x[0])

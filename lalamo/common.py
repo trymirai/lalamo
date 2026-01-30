@@ -1,13 +1,11 @@
-import warnings
+import os
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Mapping, Sequence
 from typing import cast
 
-import os
 import jax
 import jax.numpy as jnp
 from jax._src.api import ShapeDtypeStruct
-from jax.errors import JaxRuntimeError
 from jaxtyping import Array, DTypeLike
 
 from lalamo.utils import MapDictValues, MapSequence

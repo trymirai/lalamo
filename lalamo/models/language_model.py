@@ -1,19 +1,18 @@
+import functools
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
+from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
 
-from itertools import batched
-import functools
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray, Key
-from typing import Any
 from jax._src.stages import Compiled
+from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
@@ -25,9 +24,9 @@ from lalamo.modules import (
     State,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
-from .lm_helpers import merge_small_buckets, estimate_batchsizes_from_vram, decrease_batchsize_on_oom
 
-from .common import TextModel, TextModelConfig, InferenceConfig
+from .common import InferenceConfig, TextModel, TextModelConfig
+from .lm_helpers import decrease_batchsize_on_oom, estimate_batchsizes_from_vram, merge_small_buckets
 
 __all__ = [
     "ForwardPassConfig",
@@ -100,6 +99,9 @@ class LanguageModelConfig(TextModelConfig[DecoderConfig]):
         return result
 
 
+_compile_cache = {}
+
+
 class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     @property
     def stop_token_ids(self) -> tuple[int, ...]:
@@ -120,11 +122,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         batch_size, sequence_length = token_ids.shape
 
         if sequence_length > chunked_prefill_cutoff:
+            assert state_capacity is not None, "state_capacity must be provided for chunked prefill"
             return self._chunked_prefill(
                 token_ids,
                 lengths_without_padding,
                 state_capacity,
-                forward_pass_config,
+                forward_pass_config=forward_pass_config,
             )
 
         token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
@@ -232,7 +235,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             state=final_state,
         )
 
-    @eqx.filter_jit
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
@@ -361,33 +363,35 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         response_text = self.message_processor.detokenize(response_ids.tolist())
         return self.message_processor.parse_response(response_text)
 
-    @functools.cache  # noqa: B019
     def compile_generate_tokens(
         self,
         inference_config: InferenceConfig,
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> Compiled:
-        return (
-            jax.jit(
-                functools.partial(
-                    LanguageModel.generate_tokens,
-                    sampling_policy=inference_config.sampling_policy,
-                    max_output_length=inference_config.max_output_length,
-                    forward_pass_config=forward_pass_config,
-                    num_top_logits_to_return=inference_config.num_top_logits_to_return,
-                ),
+        key = (inference_config, forward_pass_config)
+        if key not in _compile_cache:
+            _compile_cache[key] = (
+                jax.jit(
+                    functools.partial(
+                        LanguageModel.generate_tokens,
+                        sampling_policy=inference_config.sampling_policy,
+                        max_output_length=inference_config.max_output_length,
+                        num_top_logits_to_return=inference_config.num_top_logits_to_return,
+                        forward_pass_config=forward_pass_config,
+                    ),
+                )
+                .lower(
+                    self,
+                    prompt_token_ids=jax.ShapeDtypeStruct(
+                        (inference_config.batch_size, inference_config.padded_length),
+                        jnp.int32,
+                    ),
+                    prompt_lengths_without_padding=jax.ShapeDtypeStruct((inference_config.batch_size,), jnp.int32),
+                    keys=jax.ShapeDtypeStruct((inference_config.batch_size,), jax.random.key(0).dtype),
+                )
+                .compile(compiler_options={"xla_gpu_autotune_level": "0"})
             )
-            .lower(
-                self,
-                prompt_token_ids=jax.ShapeDtypeStruct(
-                    (inference_config.batch_size, inference_config.padded_length),
-                    jnp.int32,
-                ),
-                prompt_lengths_without_padding=jax.ShapeDtypeStruct((inference_config.batch_size,), jnp.int32),
-                keys=jax.ShapeDtypeStruct((inference_config.batch_size,), jax.dtypes.prng_key),
-            )
-            .compile(compiler_options={"xla_gpu_autotune_level": "0"})
-        )
+        return _compile_cache[key]
 
     def generate_tokens_many(
         self,
@@ -396,7 +400,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         forward_pass_config: ForwardPassConfig | None = None,
         *,
         keys: Key[Array, " num_sequences"] | None = None,
-    ) -> Iterator[tuple[int, GenerationResults]]:
+    ) -> Iterator[GenerationResults]:
         tokenized = list(tokenized)  # load eagerly to RAM
 
         if keys is None:
@@ -409,9 +413,16 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         def process_batches(batch_size: int) -> Iterator[tuple[int, GenerationResults]]:
             new_inference_config = replace(inference_config, batch_size=batch_size)
-            for real_batch, batch_keys in batched(zip(tokenized, keys, strict=True), batch_size):
+            for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
+                real_batch, batch_keys = zip(*batch_items, strict=True)
                 batch_padding = batch_size - len(real_batch)
                 batch = (*real_batch, *(np.array([0], dtype=np.int32),) * batch_padding)
+
+                # Pad keys if necessary
+                padded_keys = jnp.array(batch_keys)
+                if batch_padding > 0:
+                    dummy_keys = jax.random.split(jax.random.key(0), batch_padding)
+                    padded_keys = jnp.concatenate([jnp.array(batch_keys), dummy_keys])
 
                 padded = jnp.array(
                     np.array(
@@ -428,8 +439,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     self,
                     prompt_token_ids=padded,
                     prompt_lengths_without_padding=lengths,
-                    forward_pass_config=forward_pass_config,
-                    keys=batch_keys,
+                    keys=padded_keys,
                 )
 
                 for i in range(len(real_batch)):
@@ -470,7 +480,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         vram_bytes: int | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
-    ) -> Iterator[tuple[int, str]]:
+    ) -> Iterator[tuple[int, AssistantMessage]]:
         dataset = list(dataset)  # eagerly load the dataset into RAM
 
         if keys is None:
@@ -505,11 +515,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 vram_bytes,
                 inference_config,
             )
-        buckets = merge_small_buckets(buckets, minimum_batches_in_bucket=4)
+        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=4)
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):
-            sequence_ids, sequence_tokenized = buckets[padded_length]
+            sequence_ids, sequence_tokenized = zip(*buckets[padded_length])
+            sequence_ids = list(sequence_ids)
             batch_size = batch_size_per_bucket[padded_length]
 
             bucket_inference_config = replace(inference_config, batch_size=batch_size, padded_length=padded_length)
@@ -518,7 +529,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 sequence_tokenized,
                 bucket_inference_config,
                 forward_pass_config,
-                keys=keys[sequence_ids],
+                keys=keys[np.array(sequence_ids)],
             )
 
             for idx, result in zip(sequence_ids, all_results, strict=True):
