@@ -14,6 +14,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.inference import (
     BatchSizeEstimatingEvent,
     EstimateBatchsizeFromMemoryEvent,
+    GenerateConfig,
     estimate_batchsize_from_memory,
     reply_many,
 )
@@ -508,8 +509,6 @@ def generate_replies(
     dataset = iter(import_hf_parquet(dataset_path, shuffle=False))
     dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
-
-    from lalamo.inference import GenerateConfig
 
     def estimating_progress_callback(event: BatchSizeEstimatingEvent) -> None:
         callbacks.estimating_batchsize(event.sequence_length, event.lo, event.hi)

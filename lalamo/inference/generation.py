@@ -146,7 +146,7 @@ def generate_batched(
     tokenized: Iterable[tuple[int, np.ndarray]],
     padded_length: int,
     batch_size: int,
-    config: GenerateConfig | None = None,
+    config: GenerateConfig = GenerateConfig(),  # noqa: B008
 ) -> Iterator[tuple[int, GenerationResults]]:
     # Generate for a bunch of tokenized inputs with batch-size decrease on OOM
 
@@ -211,7 +211,7 @@ def generate_batched(
 def reply_many(
     model: LanguageModel,
     messages: Iterable[list[Message]],
-    max_vram: int | None,
+    max_vram: int | None = None,
     config: GenerateConfig = GenerateConfig(),  # noqa: B008
     batch_size: int | None = None,
     estimating_progress_callback: Callable[[BatchSizeEstimatingEvent], None] | None = None,
@@ -223,7 +223,7 @@ def reply_many(
     # so output order may differ from input order. Each result includes its original index.
 
     # check that only one is not None
-    assert (batch_size is None) == (max_vram is not None)
+    assert (batch_size is None) == (max_vram is not None), "One of batch_size or max_vram must be specified"
 
     tokenized = [
         np.array(
