@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
+from itertools import batched
 import functools
 import equinox as eqx
 import jax
@@ -24,7 +25,7 @@ from lalamo.modules import (
     State,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
-import lm_helpers
+from .lm_helpers import merge_small_buckets, estimate_batchsizes_from_vram, decrease_batchsize_on_oom
 
 from .common import TextModel, TextModelConfig, InferenceConfig
 
@@ -408,7 +409,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         def process_batches(batch_size: int) -> Iterator[tuple[int, GenerationResults]]:
             new_inference_config = replace(inference_config, batch_size=batch_size)
-            for real_batch, batch_keys in lm_helpers.batched(zip(tokenized, keys, strict=True), batch_size):
+            for real_batch, batch_keys in batched(zip(tokenized, keys, strict=True), batch_size):
                 batch_padding = batch_size - len(real_batch)
                 batch = (*real_batch, *(np.array([0], dtype=np.int32),) * batch_padding)
 
@@ -440,7 +441,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                         else None,
                     )
 
-        yield from lm_helpers.decrease_batchsize_on_oom(
+        yield from decrease_batchsize_on_oom(
             process_batches,
             starting_batch_size=inference_config.batch_size,
         )
@@ -498,13 +499,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if inference_config.batch_size is not None:
             batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
         else:
-            batch_size_per_bucket = lm_helpers.estimate_batch_sizes_from_vram(
+            batch_size_per_bucket = estimate_batchsizes_from_vram(
                 self.memory_consumption,
                 sorted_lengths,
                 vram_bytes,
                 inference_config,
             )
-        buckets = lm_helpers.merge_small_buckets(buckets, minimum_batches_in_bucket=4)
+        buckets = merge_small_buckets(buckets, minimum_batches_in_bucket=4)
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):
