@@ -15,6 +15,7 @@ from lalamo.models import LanguageModel
 class CollectTracesEvent(NamedTuple):
     sequences_processed: int
     tokens_generated: int
+    prefill_tokens: int
 
 
 def inference_collect_traces(
@@ -53,13 +54,14 @@ def inference_collect_traces(
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
     filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
 
-    tokens_generated, sequences_processed = 0, 0
+    tokens_generated, sequences_processed, prefill_tokens = 0, 0, 0
 
     for real_batch in batched(filtered_prefixes, n=batch_size):
         batch_padding = batch_size - len(real_batch)
         batch = (*real_batch, *(([0],) * batch_padding))
 
         length_without_padding = jnp.array(list(map(len, batch)))
+        prefill_tokens += sum(len(seq) for seq in real_batch)
 
         padded = jnp.array(
             [jnp.pad(jnp.array(tokens), (0, max_input_length - len(tokens)), constant_values=0) for tokens in batch],
@@ -95,7 +97,7 @@ def inference_collect_traces(
                 break
 
         if progress_callback is not None:
-            progress_callback(CollectTracesEvent(sequences_processed, tokens_generated))
+            progress_callback(CollectTracesEvent(sequences_processed, tokens_generated, prefill_tokens))
 
         if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
             break

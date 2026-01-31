@@ -28,6 +28,17 @@ __all__ = [
 ]
 
 
+def segsum(x: Float[Array, "... T"]) -> Float[Array, "... T T"]:
+    """Stable segment sum for causal cumulative computation."""
+    T = x.shape[-1]
+    x = jnp.broadcast_to(x[..., None], (*x.shape, T))  # ... T -> ... T T
+    mask = jnp.tril(jnp.ones((T, T), dtype=bool), k=-1)
+    x = jnp.where(mask, x, 0)
+    x_segsum = jnp.cumsum(x, axis=-2)
+    mask = jnp.tril(jnp.ones((T, T), dtype=bool), k=0)
+    return jnp.where(mask, x_segsum, -jnp.inf)
+
+
 Mamba2Result = TokenMixerResult[Mamba2StateLayer]
 
 
@@ -188,6 +199,8 @@ class Mamba2Config(TokenMixerConfigBase):
     has_in_biases: bool
     has_out_biases: bool
 
+    chunk_size: int = 256
+
     @property
     def inner_dim(self) -> int:
         return self.num_heads * self.head_dim
@@ -330,6 +343,76 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
                 f"Number of value heads ({self.num_heads}) must be divisible by number of groups ({self.num_groups})",
             )
 
+    def _step(
+        self,
+        x: Float[Array, "heads head_dim"],
+        B: Float[Array, "groups state_dim"],
+        C: Float[Array, "groups state_dim"],
+        dt_log: Float[Array, " heads"],
+        state: Float[Array, "heads head_dim state_dim"],
+    ) -> tuple[Float[Array, "heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+        """Single-token SSM state update without scan overhead."""
+        heads_per_group = self.num_heads // self.num_groups
+
+        dt = jax.nn.softplus(dt_log)
+        decay = jnp.exp(-dt)[:, None, None]
+        mix = dt[:, None, None]
+
+        B_expanded = jnp.repeat(B, heads_per_group, axis=0)
+        C_expanded = jnp.repeat(C, heads_per_group, axis=0)
+        x_norm = x / (dt[:, None] + 1e-8)
+
+        input_contribution = mix * x_norm[:, :, None] * B_expanded[:, None, :]
+        new_state = decay * state + input_contribution
+        output = einsum(new_state, C_expanded, "h p n, h n -> h p")
+
+        return output, new_state
+
+    def _conv_step(
+        self,
+        x: Float[Array, " channels"],
+        state: Float[Array, "kernel_minus_1 channels"],
+    ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
+        """Single-token conv update without full convolution."""
+        full_input = jnp.concatenate([state, x[None, :]], axis=0)
+        output = einsum(full_input, self.conv.weights, "k c, c k -> c")
+        if self.conv.biases is not None:
+            output = output + self.conv.biases
+        new_state = jnp.concatenate([state[1:], x[None, :]], axis=0)
+        return output, new_state
+
+    def _decode_step(
+        self,
+        inputs: Float[Array, "1 channels"],
+        state: Mamba2StateLayer,
+    ) -> Mamba2Result:
+        """Optimized path for single-token decode without scan machinery."""
+        x = inputs[0]
+
+        conv_in, gate, dt_log = self.in_projection(x)
+        conv_out, new_conv_state = self._conv_step(conv_in, state.conv_state)
+        conv_activated = self.config.activation(conv_out)
+
+        x_ssm, B_flat, C_flat = jnp.split(
+            conv_activated,
+            [self.inner_dim, self.inner_dim + self.num_groups * self.state_dim],
+        )
+        x_ssm = rearrange(x_ssm, "(h p) -> h p", h=self.num_heads)
+        B = rearrange(B_flat, "(g n) -> g n", g=self.num_groups)
+        C = rearrange(C_flat, "(g n) -> g n", g=self.num_groups)
+
+        y, new_ssm_state = self._step(x_ssm, B, C, dt_log, state.ssm_state)
+
+        y = y + self.skip_connection_weight[:, None] * x_ssm
+        y = rearrange(y, "h p -> (h p)")
+        gated = y * jax.nn.silu(gate + self.gate_bias)
+        (output,) = self.out_projection(gated)
+
+        return Mamba2Result(
+            outputs=output[None, :],
+            state=Mamba2StateLayer(new_conv_state, new_ssm_state),
+        )
+
     def _scan(
         self,
         hidden_states: Float[Array, "suffix_tokens heads head_channels"],
@@ -424,6 +507,163 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         return outputs, final_state
 
+    def _chunked_scan(
+        self,
+        X: Float[Array, "seq heads head_dim"],
+        B: Float[Array, "seq groups state_dim"],
+        C: Float[Array, "seq groups state_dim"],
+        dt: Float[Array, "seq heads"],
+        initial_state: Float[Array, "heads head_dim state_dim"],
+        chunk_size: int,
+        num_steps: Int[Array, ""] | int,
+        D: Float[Array, " heads"] | None = None,
+        z: Float[Array, "seq heads head_dim"] | None = None,
+        z_bias: Float[Array, "heads head_dim"] | None = None,
+    ) -> tuple[Float[Array, "seq heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+        """Chunked parallel scan implementing the SSD algorithm.
+
+        Complexity:
+            - Parallel depth: O(log n) total
+              - O(log chunk_size) for intra-chunk (segsum + einsum)
+              - O(log n/chunk_size) for inter-chunk (cumsum + matrix multiply)
+            - Work: O(n * chunk_size) for intra-chunk + O((n/chunk_size)²) for inter-chunk
+
+        The inter-chunk recurrence uses a matrix formulation (segsum + einsum) that
+        computes all chunk boundary states in parallel, not sequentially.
+
+        Args:
+            num_steps: Number of actual tokens (ignoring padding). The final state
+                will be computed only up to this position.
+            D: Skip connection weight (fused into scan). Shape: (heads,)
+            z: Gate values for output gating (fused). Shape: (seq, heads, head_dim)
+            z_bias: Gate bias. Shape: (heads, head_dim)
+        """
+        seq_len = X.shape[0]
+        num_steps = jnp.asarray(num_steps, dtype=jnp.int32)
+
+        # Pad to multiple of chunk_size FIRST, before any masking
+        # This ensures consistent shapes for JIT compilation
+        pad_len = (chunk_size - seq_len % chunk_size) % chunk_size
+        if pad_len > 0:
+            X = jnp.pad(X, ((0, pad_len), (0, 0), (0, 0)))
+            B = jnp.pad(B, ((0, pad_len), (0, 0), (0, 0)))
+            C = jnp.pad(C, ((0, pad_len), (0, 0), (0, 0)))
+            dt = jnp.pad(dt, ((0, pad_len), (0, 0)))
+            if z is not None:
+                z = jnp.pad(z, ((0, pad_len), (0, 0), (0, 0)))
+
+        # Store padded original X, B, dt for computing final state at exact position
+        X_orig = X
+        B_orig = B
+        dt_orig = dt
+
+        # Now apply mask to inputs - positions beyond num_steps contribute nothing
+        # Use padded length for mask
+        padded_len = X.shape[0]
+        position_indices = jnp.arange(padded_len)
+        valid_mask = (position_indices < num_steps).astype(X.dtype)
+        X = X * valid_mask[:, None, None]
+        B = B * valid_mask[:, None, None]
+        # Note: dt is not masked because decay should still apply, but the contribution
+        # from masked X and B will be zero
+
+        # Reshape into chunks, exposing group structure to avoid B/C repeat
+        X = rearrange(X, "(c l) (g r) p -> c l g r p", l=chunk_size, g=self.num_groups)
+        A = rearrange(-dt, "(c l) (g r) -> g r c l", l=chunk_size, g=self.num_groups)
+        B = rearrange(B, "(c l) g n -> c l g n", l=chunk_size)
+        C = rearrange(C, "(c l) g n -> c l g n", l=chunk_size)
+        A_cumsum = jnp.cumsum(A, axis=-1)
+
+        # 1. Intra-chunk outputs (parallel within chunk)
+        L = jnp.exp(segsum(A))
+        Y_diag = einsum(C, B, L, X, "c l g n, c s g n, g r c l s, c s g r p -> c l g r p")
+
+        # 2. Chunk-end states
+        decay_states = jnp.exp(A_cumsum[:, :, :, -1:] - A_cumsum)
+        states = einsum(B, decay_states, X, "c l g n, g r c l, c l g r p -> c g r p n")
+
+        # 3. Inter-chunk recurrence
+        initial_state_grouped = rearrange(initial_state, "(g r) p n -> g r p n", g=self.num_groups)
+        states = jnp.concatenate([initial_state_grouped[None, ...], states], axis=0)
+        A_chunk_ends = jnp.pad(A_cumsum[:, :, :, -1], ((0, 0), (0, 0), (1, 0)))
+        decay_chunk = jnp.exp(segsum(A_chunk_ends))
+        new_states = einsum(decay_chunk, states, "g r z c, c g r p n -> z g r p n")
+        states = new_states[:-1]
+
+        # 4. Off-diagonal contributions (state -> output)
+        state_decay_out = jnp.exp(A_cumsum)
+        Y_off = einsum(C, states, state_decay_out, "c l g n, c g r p n, g r c l -> c l g r p")
+
+        Y = Y_diag + Y_off
+        if D is not None:
+            D_grouped = rearrange(D, "(g r) -> g r", g=self.num_groups)
+            Y = Y + D_grouped[None, None, :, :, None] * X
+        Y = rearrange(Y, "c l g r p -> (c l) (g r) p")
+
+        if z is not None:
+            gate = z + z_bias[None, :, :] if z_bias is not None else z
+            Y = Y * jax.nn.silu(gate)
+
+        Y = Y[:seq_len]
+
+        new_states_flat = rearrange(new_states, "c g r p n -> c (g r) p n")
+        final_state = self._compute_final_state(X_orig, B_orig, dt_orig, new_states_flat, num_steps, chunk_size)
+
+        return Y, final_state
+
+    def _compute_final_state(
+        self,
+        X: Float[Array, "seq heads head_dim"],
+        B: Float[Array, "seq groups state_dim"],
+        dt: Float[Array, "seq heads"],
+        chunk_states: Float[Array, "chunks_plus_1 heads head_dim state_dim"],
+        num_steps: Int[Array, ""],
+        chunk_size: int,
+    ) -> Float[Array, "heads head_dim state_dim"]:
+        """Compute the exact final state at position num_steps using parallel ops.
+
+        Uses precomputed chunk_states and parallel einsum instead of sequential scan.
+        The SSM recurrence is linear, so state at position k can be expressed as:
+            state[k] = exp(A_cumsum[k]) * chunk_start_state
+                     + sum_{i=0}^{k} exp(A_cumsum[k] - A_cumsum[i]) * B[i] * X[i]
+
+        Args:
+            chunk_states: States at chunk boundaries from inter-chunk recurrence.
+                chunk_states[k] is the state at the START of chunk k.
+        """
+        heads_per_group = self.num_heads // self.num_groups
+
+        chunk_idx = num_steps // chunk_size
+        pos_in_chunk = num_steps % chunk_size
+        chunk_start_state = jax.lax.dynamic_index_in_dim(chunk_states, chunk_idx, axis=0, keepdims=False)
+
+        def at_boundary() -> Float[Array, "heads head_dim state_dim"]:
+            return chunk_start_state
+
+        def within_chunk() -> Float[Array, "heads head_dim state_dim"]:
+            chunk_start_pos = chunk_idx * chunk_size
+            X_chunk = jax.lax.dynamic_slice(X, (chunk_start_pos, 0, 0), (chunk_size, X.shape[1], X.shape[2]))
+            B_chunk = jax.lax.dynamic_slice(B, (chunk_start_pos, 0, 0), (chunk_size, B.shape[1], B.shape[2]))
+            dt_chunk = jax.lax.dynamic_slice(dt, (chunk_start_pos, 0), (chunk_size, dt.shape[1]))
+
+            A_cumsum = jnp.cumsum(-dt_chunk, axis=0)
+            k = pos_in_chunk - 1
+            A_cumsum_at_k = jax.lax.dynamic_index_in_dim(A_cumsum, k, axis=0, keepdims=False)
+
+            # Decay chunk_start_state to position k
+            decayed_start = jnp.exp(A_cumsum_at_k)[:, None, None] * chunk_start_state
+
+            # Input contributions from positions 0..k
+            decay_to_k = jnp.exp(A_cumsum_at_k[None, :] - A_cumsum)
+            mask = jnp.arange(chunk_size) <= k
+            masked_decay = jnp.where(mask[:, None], decay_to_k, 0.0)
+            B_expanded = jnp.repeat(B_chunk, heads_per_group, axis=1)
+            input_contrib = einsum(masked_decay, B_expanded, X_chunk, "l h, l h n, l h p -> h p n")
+
+            return decayed_start + input_contrib
+
+        return jax.lax.cond(pos_in_chunk == 0, at_boundary, within_chunk)
+
     @eqx.filter_jit
     def __call__(
         self,
@@ -436,8 +676,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
 
-        conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(inputs)
-
         if state is None:
             state = Mamba2StateLayer.init(
                 self.config.kernel_size,
@@ -448,6 +686,15 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
                 self.state_dim,
                 self.activation_precision,
             )
+
+        seq_len, _ = inputs.shape
+
+        # Optimized single-token decode path - avoids scan machinery entirely
+        if seq_len == 1 and return_updated_state:
+            return self._decode_step(inputs, state)
+
+        # Multi-token path (prefill or when state not needed)
+        conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(inputs)
 
         conv_output, updated_conv_state = self.conv(
             conv_inputs,
@@ -481,35 +728,43 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
             groups=self.num_groups,
         )
-        time_delta_log = rearrange(
-            time_delta_log,
-            "suffix_tokens heads -> suffix_tokens heads",
-            heads=self.num_heads,
-        )
 
         if length_without_padding is None:
             length_without_padding, _ = inputs.shape
 
-        ssm_outputs, final_ssm_state = self._scan(
+        # Reshape gate values and bias for fusion into chunked scan
+        gate_values_reshaped = rearrange(
+            gate_values,
+            "suffix_tokens (heads head_channels) -> suffix_tokens heads head_channels",
+            heads=self.num_heads,
+        )
+        gate_bias_reshaped = rearrange(
+            self.gate_bias,
+            "(heads head_channels) -> heads head_channels",
+            heads=self.num_heads,
+        )
+
+        # Chunked scan with fused D (skip connection) and z (gating)
+        dt = jax.nn.softplus(time_delta_log)
+        ssm_outputs, final_ssm_state = self._chunked_scan(
             hidden_states,
             input_projection,
             output_projection,
-            time_delta_log,
+            dt,
             state.ssm_state,
+            self.config.chunk_size,
             length_without_padding,
+            D=self.skip_connection_weight,
+            z=gate_values_reshaped,
+            z_bias=gate_bias_reshaped,
         )
 
-        skip_contribution = self.skip_connection_weight[None, :, None] * hidden_states
-        ssm_outputs = ssm_outputs + skip_contribution
-
-        ssm_outputs = rearrange(
+        # Flatten (heads, head_dim) to inner_dim for output projection
+        ssm_outputs_flat = rearrange(
             ssm_outputs,
             "suffix_tokens heads head_channels -> suffix_tokens (heads head_channels)",
         )
-
-        gated_outputs = ssm_outputs * jax.nn.silu(gate_values + self.gate_bias)
-
-        (outputs,) = vmap(self.out_projection)(gated_outputs)
+        (outputs,) = vmap(self.out_projection)(ssm_outputs_flat)
 
         if return_updated_state:
             assert updated_conv_state is not None
