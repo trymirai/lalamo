@@ -122,7 +122,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         batch_size, sequence_length = token_ids.shape
 
         if sequence_length > chunked_prefill_cutoff:
-            assert state_capacity is not None, "state_capacity must be provided for chunked prefill"
             return self._chunked_prefill(
                 token_ids,
                 lengths_without_padding,
@@ -164,7 +163,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         self,
         token_ids: Int[Array, "batch tokens"],
         lengths_without_padding: Int[Array, " batch"] | None,
-        state_capacity: int,
+        state_capacity: int | None,
         chunk_size: int = 1024,
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> PrefillResults:
@@ -198,7 +197,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         chunk_starts = jnp.arange(num_chunks, dtype=jnp.int32)[:, None] * chunk_size
         per_chunk_lengths = jnp.clip(effective_lengths[None, :] - chunk_starts, 0, chunk_size)
 
-        state = self.model.init_static_state(batch_size, state_capacity + padding_length)
+        if state_capacity is not None:
+            total_capacity = state_capacity + padding_length
+        else:
+            total_capacity = chunked_length
+        state = self.model.init_static_state(batch_size, total_capacity)
 
         def apply_chunk(state: State, chunk_data: tuple) -> tuple[State, Float[Array, "batch chunk_size vocab"]]:
             chunk_tokens, chunk_positions, chunk_lengths = chunk_data
@@ -451,6 +454,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                         else None,
                     )
 
+        assert inference_config.batch_size is not None
         yield from decrease_batchsize_on_oom(
             process_batches,
             starting_batch_size=inference_config.batch_size,
@@ -516,7 +520,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 inference_config,
             )
         buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=4)
-        print(batch_size_per_bucket)
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):

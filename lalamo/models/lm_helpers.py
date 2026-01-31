@@ -9,6 +9,8 @@ from jax.errors import JaxRuntimeError
 from lalamo.common import LalamoWarning, get_usable_memory_from_bytes
 from lalamo.models.common import InferenceConfig
 
+type TokenSequence = list[int] | np.ndarray
+
 __all__ = [
     "BatchSizeEstimatingEvent",
     "decrease_batchsize_on_oom",
@@ -27,17 +29,17 @@ class BatchSizeEstimatingEvent:
     hi: int | None
 
 
-def merge_small_buckets(
-    buckets: dict[int, list[tuple[int, np.ndarray]]],
+def merge_small_buckets[T: TokenSequence](
+    buckets: dict[int, list[tuple[int, T]]],
     batch_size_for_length: dict[int, int],
     min_batches: int = 4,
-) -> dict[int, list[tuple[int, np.ndarray]]]:
+) -> dict[int, list[tuple[int, T]]]:
     # Merge buckets that are too small into larger buckets.
     # Buckets smaller than min_batches * batch_size are merged into the next larger bucket.
     # The last bucket absorbs all overflow.
     sorted_lengths = sorted(buckets.keys())
-    merged: dict[int, list[tuple[int, np.ndarray]]] = {}
-    overflow: list[tuple[int, np.ndarray]] = []
+    merged: dict[int, list[tuple[int, T]]] = {}
+    overflow: list[tuple[int, T]] = []
 
     for i, padded_len in enumerate(sorted_lengths):
         batch_size = batch_size_for_length.get(padded_len, 1)  # note how with i's increment batch_size decreases
