@@ -151,6 +151,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             last_logits_indices = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
 
         last_token_logits = vmap(lambda logits, index: logits[index])(decoder_outputs.logits, last_logits_indices)
+        jax.debug.print("Prefill: last_logits_indices={x}", x=last_logits_indices)
+        jax.debug.print("Prefill: last_token_logits min={min} max={max}", min=last_token_logits.min(), max=last_token_logits.max())
+        jax.debug.print("Prefill: top5 token ids per batch: {x}", x=jnp.argsort(last_token_logits, axis=-1)[:, -5:])
 
         assert decoder_outputs.updated_state is not None
         return PrefillResults(
@@ -238,6 +241,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             state=final_state,
         )
 
+    @eqx.filter_jit
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
@@ -418,6 +422,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             new_inference_config = replace(inference_config, batch_size=batch_size)
             for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
                 real_batch, batch_keys = zip(*batch_items, strict=True)
+                print(batch_keys)
                 batch_padding = batch_size - len(real_batch)
                 batch = (*real_batch, *(np.array([0], dtype=np.int32),) * batch_padding)
 
@@ -436,12 +441,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     ),
                 )
                 lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
+                print(f"Padded shape: {padded.shape}, lengths: {lengths}")
 
-                generate_tokens = self.compile_generate_tokens(new_inference_config, forward_pass_config)
-                results = generate_tokens(
-                    self,
+                # generate_tokens = self.compile_generate_tokens(new_inference_config, forward_pass_config)
+                results = self.generate_tokens(
                     prompt_token_ids=padded,
                     prompt_lengths_without_padding=lengths,
+                    max_output_length=new_inference_config.max_output_length,
+                    num_top_logits_to_return=new_inference_config.num_top_logits_to_return,
                     keys=padded_keys,
                 )
 
@@ -526,6 +533,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             batch_size = batch_size_per_bucket[padded_length]
+            print(sequence_ids, keys[np.array(sequence_ids)])
 
             bucket_inference_config = replace(inference_config, batch_size=batch_size, padded_length=padded_length)
 
@@ -537,6 +545,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             )
 
             for idx, result in zip(sequence_ids, all_results, strict=True):
+                print(f"Raw tokens for {idx}: {result.token_ids[:20].tolist()}")
                 response = self.message_processor.parse_tokenized_response(result.token_ids.tolist())
                 yield (idx, response)
 
