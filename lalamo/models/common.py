@@ -30,7 +30,7 @@ class InferenceConfig:
     max_output_length: int = 8192
     padded_length: int = 8192
     num_top_logits_to_return: int | None = None
-    batch_size: int = 1
+    batch_size: int | None = None
 
 
 @dataclass(frozen=True)

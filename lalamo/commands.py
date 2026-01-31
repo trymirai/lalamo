@@ -11,8 +11,6 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters, get_default_device_bytes
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.models.common import InferenceConfig
-from lalamo.models.lm_helpers import BatchSizeEstimatingEvent, estimate_batchsize_from_bytes
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -24,6 +22,8 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.models import LanguageModelConfig
+from lalamo.models.common import InferenceConfig
+from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces

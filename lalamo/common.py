@@ -16,7 +16,6 @@ __all__ = [
     "LalamoWarning",
     "ParameterPath",
     "ParameterTree",
-    "decrease_batchsize_on_oom",
     "dummy_array",
     "flatten_parameters",
     "require_array",

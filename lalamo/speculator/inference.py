@@ -4,9 +4,9 @@ from typing import NamedTuple
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
-from lalamo.models.common import InferenceConfig
 from lalamo.message_processor import Message
 from lalamo.models import LanguageModel
+from lalamo.models.common import InferenceConfig
 
 
 class CollectTracesEvent(NamedTuple):
@@ -42,7 +42,7 @@ def inference_collect_traces(
         model.generate_tokens_many(
             filtered_prefixes,
             inference_config=config,
-        )
+        ),
     ):
         token_ids = generated.token_ids.tolist()
         seqlen = next(

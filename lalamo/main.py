@@ -46,11 +46,11 @@ from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
-from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.common import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
 )
+from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec

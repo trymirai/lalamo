@@ -1,4 +1,3 @@
-import functools
 import itertools
 import warnings
 from collections.abc import Callable, Iterable
@@ -12,9 +11,9 @@ from lalamo.models.common import InferenceConfig
 
 __all__ = [
     "BatchSizeEstimatingEvent",
+    "decrease_batchsize_on_oom",
     "estimate_batchsize_from_bytes",
     "estimate_batchsizes_from_vram",
-    "make_buckets_by_length",
     "merge_small_buckets",
 ]
 
