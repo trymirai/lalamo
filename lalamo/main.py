@@ -35,6 +35,7 @@ from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    GenerateRepliesCallbacks,
     Precision,
     TraceCallbacks,
     TrainCallbacks,
@@ -42,17 +43,18 @@ from lalamo.commands import (
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
+from lalamo.common import (
+    get_default_device_bytes,
+    get_usable_memory_from_bytes,
+)
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.speculator.estimator import (
-    get_default_device_bytes,
-    get_usable_memory_from_bytes,
-)
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -490,6 +492,138 @@ def list_models(
             spec.repo,
         )
     console.print(table)
+
+
+@dataclass
+class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    estimating_task: TaskID | None = None
+    generation_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                transient=True,
+            ),
+        )
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]", total=None)
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]", total=None)
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+        assert self.progress is not None
+        hi_str = str(hi) if hi is not None else "?"
+        description = (
+            f"📐 [cyan]Computing batch size for the prompt length of {sequence_length}... ({lo}..{hi_str})[/cyan]"
+        )
+        if self.estimating_task is None:
+            self.estimating_task = self.progress.add_task(description)
+        else:
+            self.progress.update(self.estimating_task, description=description)
+
+    def batch_sizes_estimated(self) -> None:
+        assert self.progress is not None
+        if self.estimating_task is not None:
+            self.progress.remove_task(self.estimating_task)
+            self.estimating_task = None
+
+        self.generation_task = self.progress.add_task(
+            "🔮 [cyan]Generating replies...[/cyan]",
+            total=self.total_rows,
+        )
+
+    def generation_progress(self, rows_processed: int) -> None:
+        assert self.progress is not None
+        assert self.generation_task is not None
+        self.progress.update(self.generation_task, completed=rows_processed + 1)
+
+    def finished_generation(self) -> None:
+        assert self.progress is not None
+        assert self.generation_task is not None
+        self.progress.update(self.generation_task, description="✅ Completed")
+        self.stack.close()
+        console.print(f"💾 Replies saved to [cyan]{self.output_path}[/cyan]")
+
+
+@app.command(help="Generate replies for conversations in a parquet file.")
+def generate_replies(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the input parquet file with conversations.",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="Path to save the output parquet file.",
+        ),
+    ],
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
+            show_default="max on default device",
+        ),
+    ] = None,
+    max_output_length: Annotated[
+        int,
+        Option(help="Maximum number of tokens to generate per reply."),
+    ] = 8192,
+    batch_size: Annotated[
+        int | None,
+        Option(help="Fixed batch size to use, skipping automatic estimation."),
+    ] = None,
+) -> None:
+    if batch_size is not None and vram_gb is not None:
+        err_console.print("Cannot use both --batch-size and --vram-gb")
+        raise Exit(1)
+
+    max_vram: int | None = None
+    if batch_size is None:
+        if vram_gb is not None:
+            mem_bytes = vram_gb * 1000 * 1000 * 1000
+        elif (mem_bytes := get_default_device_bytes()) is None:
+            err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
+            raise Exit(1)
+
+        max_vram = get_usable_memory_from_bytes(mem_bytes)
+
+    _generate_replies(
+        model_path,
+        dataset_path,
+        output_path,
+        max_vram,
+        max_output_length,
+        batch_size,
+        CliGenerateRepliesCallbacks,
+    )
 
 
 speculator_app = Typer()

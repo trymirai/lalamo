@@ -30,10 +30,12 @@ class HFMessage:
                 raise ValueError(f"Cannot convert {other} message")
 
 
-def import_hf_parquet(path: Path | str) -> Iterable[list[Message]]:
+def import_hf_parquet(path: Path | str, shuffle: bool = True) -> Iterable[list[Message]]:
     path = Path(path)
 
     dataframe = pl.scan_parquet(path).collect()
+    conversations = dataframe.get_column("conversation")
+    conversations = conversations.shuffle(1337) if shuffle else conversations
 
-    for conversation in dataframe.get_column("conversation").shuffle(1337):
+    for conversation in conversations:
         yield [HFMessage.from_dict(message).as_message() for message in conversation]
