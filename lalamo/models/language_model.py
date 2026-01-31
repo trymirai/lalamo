@@ -516,10 +516,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 inference_config,
             )
         buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=4)
+        print(batch_size_per_bucket)
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):
-            sequence_ids, sequence_tokenized = zip(*buckets[padded_length])
+            sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             batch_size = batch_size_per_bucket[padded_length]
 

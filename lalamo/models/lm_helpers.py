@@ -62,7 +62,7 @@ def merge_small_buckets(
 
 
 def estimate_batchsizes_from_vram(
-    memory_per_batchsize_callback: Callable[[int], int],
+    memory_consumption_callback: Callable[[InferenceConfig], int],
     sorted_lengths: list[int],
     vram_bytes: int,
     inference_config: InferenceConfig,
@@ -73,13 +73,22 @@ def estimate_batchsizes_from_vram(
     min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
     assert min_len <= max_len
 
-    estimate_batchsize_for_seq_len = functools.partial(
-        estimate_batchsize_from_bytes,
-        memory_per_batchsize_callback=memory_per_batchsize_callback,
-        max_output_length=inference_config.max_output_length,
-        progress_callback=lambda *_: None,
-        target_mem=get_usable_memory_from_bytes(vram_bytes),
-    )
+    def estimate_batchsize_for_seq_len(seq_len: int) -> int:
+        def memory_per_batchsize(batch_size: int) -> int:
+            config = InferenceConfig(
+                max_output_length=inference_config.max_output_length,
+                padded_length=seq_len,
+                num_top_logits_to_return=inference_config.num_top_logits_to_return,
+                batch_size=batch_size,
+                sampling_policy=inference_config.sampling_policy,
+            )
+            return memory_consumption_callback(config)
+
+        return estimate_batchsize_from_bytes(
+            memory_per_batchsize,
+            get_usable_memory_from_bytes(vram_bytes),
+            progress=None,
+        )
 
     if min_len == max_len:
         bs = estimate_batchsize_for_seq_len(min_len)

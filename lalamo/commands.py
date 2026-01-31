@@ -8,14 +8,11 @@ from pathlib import Path
 import polars as pl
 from jaxtyping import DTypeLike
 
-from lalamo.common import flatten_parameters
+from lalamo.common import flatten_parameters, get_default_device_bytes
 from lalamo.data import import_hf_parquet
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.inference import (
-    EstimateBatchsizeFromMemoryEvent,
-    InferenceConfig,
-    estimate_batchsize_from_memory,
-)
+from lalamo.models.common import InferenceConfig
+from lalamo.models.lm_helpers import BatchSizeEstimatingEvent, estimate_batchsize_from_bytes
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -249,16 +246,19 @@ def estimate_batchsize(
     model = LanguageModelConfig.load_model(model_path)
     callbacks.finished_loading_model()
 
-    def progress_callback(event: EstimateBatchsizeFromMemoryEvent) -> None:
-        callbacks.estimating_batchsize(event.lo, event.hi)
+    def memory_per_batchsize(batch_size: int) -> int:
+        inference_config = InferenceConfig(
+            max_output_length=max_output_length,
+            padded_length=max_input_length,
+            num_top_logits_to_return=num_logits_per_token,
+            batch_size=batch_size,
+        )
+        return model.memory_consumption(inference_config)
 
-    bs = estimate_batchsize_from_memory(
-        model,
-        max_input_length,
-        max_output_length,
-        num_logits_per_token,
+    bs = estimate_batchsize_from_bytes(
+        memory_per_batchsize,
         mem,
-        progress_callback,
+        lambda event: callbacks.estimating_batchsize(event.lo, event.hi),
     )
 
     callbacks.finished_estimating_batchsize(bs)
@@ -487,6 +487,14 @@ def generate_replies(
         GenerateRepliesCallbacks,
     ] = GenerateRepliesCallbacks,
 ) -> None:
+    # figure out max_vram if neither batch_size nor max_vram is set
+    if max_vram is None and batch_size is None:
+        max_vram = get_default_device_bytes()
+        if max_vram is None:
+            raise ValueError(
+                "Unable to determine default defice memory capacity; please specify either --vram-gb or --batch-size",
+            )
+
     # Count rows without loading full dataset
     total_rows = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
 
@@ -510,9 +518,12 @@ def generate_replies(
 
     inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)
 
+    callbacks.batch_sizes_estimated()
+
     replies: list[tuple[int, AssistantMessage]] = []
-    for rows_processed, (idx, reply) in enumerate(model.reply_many(dataset, inference_config)):
+    for rows_processed, (idx, reply) in enumerate(model.reply_many(dataset, inference_config, vram_bytes=max_vram)):
         replies.append((idx, reply))
+        callbacks.generation_progress(rows_processed)
 
     # Sort by original index to restore input order
     replies.sort(key=lambda x: x[0])

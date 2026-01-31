@@ -47,7 +47,7 @@ from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.inference import (
+from lalamo.common import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
 )
