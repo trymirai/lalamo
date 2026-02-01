@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import pytest
+from einops import einsum as einops_einsum
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
@@ -11,8 +12,6 @@ from lalamo.modules import (
     Mamba2Config,
     SeparableCausalConvConfig,
 )
-from einops import einsum as einops_einsum
-
 from lalamo.modules.token_mixers.mamba import exp_segsum, fused_ssd_intra_chunk
 from tests.common import assert_close
 
@@ -82,37 +81,37 @@ def test_mamba_state_respects_length_without_padding(
     assert_close(result=padded_result.state.conv_state, reference=reference_result.state.conv_state)
 
 
-@pytest.mark.parametrize("T", [4, 64, 256])
-def test_exp_segsum_numerical_properties(T: int) -> None:
+@pytest.mark.parametrize("seq_len", [4, 64, 256])
+def test_exp_segsum_numerical_properties(seq_len: int) -> None:
     """Test that exp_segsum handles edge cases correctly."""
     key = jax.random.PRNGKey(123)
-    x = jax.random.uniform(key, (2, 3, T), dtype=jnp.float32, minval=-5.0, maxval=-0.1)
+    x = jax.random.uniform(key, (2, 3, seq_len), dtype=jnp.float32, minval=-5.0, maxval=-0.1)
 
     result = exp_segsum(x)
 
     assert jnp.all(result >= 0), "exp_segsum should produce non-negative values"
 
-    mask = jnp.triu(jnp.ones((T, T), dtype=bool), k=1)
+    mask = jnp.triu(jnp.ones((seq_len, seq_len), dtype=bool), k=1)
     upper_triangle = result[..., mask]
     assert jnp.allclose(upper_triangle, 0.0), "Upper triangle should be exactly 0"
 
     diagonal = jnp.diagonal(result, axis1=-2, axis2=-1)
     assert jnp.allclose(diagonal, 1.0), "Diagonal should be 1"
 
-    for i in range(1, min(T, 5)):
+    for i in range(1, min(seq_len, 5)):
         current_diag = jnp.diagonal(result, offset=-i, axis1=-2, axis2=-1)
         prev_diag = jnp.diagonal(result, offset=-(i - 1), axis1=-2, axis2=-1)
         min_len = min(current_diag.shape[-1], prev_diag.shape[-1])
         assert jnp.all(
-            current_diag[..., :min_len] <= prev_diag[..., :min_len] + 1e-5
+            current_diag[..., :min_len] <= prev_diag[..., :min_len] + 1e-5,
         ), f"Decay property violated at diagonal {i}"
 
 
-def _ssd_intra_chunk_reference(A_cumsum, CB, X):
+def _ssd_intra_chunk_reference(a_cumsum: jnp.ndarray, cb: jnp.ndarray, x: jnp.ndarray) -> jnp.ndarray:
     """Reference implementation using exp_segsum + einsum."""
-    A = jnp.diff(A_cumsum, axis=-1, prepend=jnp.zeros_like(A_cumsum[..., :1]))
-    L = exp_segsum(A)
-    return einops_einsum(CB, L, X, "c l s g, g r c l s, c s g r p -> c l g r p")
+    a = jnp.diff(a_cumsum, axis=-1, prepend=jnp.zeros_like(a_cumsum[..., :1]))
+    decay = exp_segsum(a)
+    return einops_einsum(cb, decay, x, "c l s g, g r c l s, c s g r p -> c l g r p")
 
 
 @pytest.mark.parametrize("chunk_size", [16, 64])
@@ -127,17 +126,17 @@ def test_fused_ssd_intra_chunk_matches_reference(chunk_size: int, num_chunks: in
     key = jax.random.PRNGKey(42)
     keys = jax.random.split(key, 4)
 
-    A = -jnp.abs(jax.random.normal(keys[0], (groups, heads_per_group, num_chunks, chunk_size), dtype=jnp.float32))
-    A_cumsum = jnp.cumsum(A, axis=-1)
+    a = -jnp.abs(jax.random.normal(keys[0], (groups, heads_per_group, num_chunks, chunk_size), dtype=jnp.float32))
+    a_cumsum = jnp.cumsum(a, axis=-1)
 
-    C = jax.random.normal(keys[1], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
-    B = jax.random.normal(keys[2], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
-    CB = einops_einsum(C, B, "c l g n, c s g n -> c l s g")
+    c = jax.random.normal(keys[1], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
+    b = jax.random.normal(keys[2], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
+    cb = einops_einsum(c, b, "c l g n, c s g n -> c l s g")
 
-    X = jax.random.normal(keys[3], (num_chunks, chunk_size, groups, heads_per_group, head_dim), dtype=jnp.float32)
+    x = jax.random.normal(keys[3], (num_chunks, chunk_size, groups, heads_per_group, head_dim), dtype=jnp.float32)
 
-    reference_result = _ssd_intra_chunk_reference(A_cumsum, CB, X)
-    fused_result = fused_ssd_intra_chunk(A_cumsum, CB, X)
+    reference_result = _ssd_intra_chunk_reference(a_cumsum, cb, x)
+    fused_result = fused_ssd_intra_chunk(a_cumsum, cb, x)
 
     assert_close(
         result=fused_result,
@@ -158,23 +157,23 @@ def test_fused_ssd_preserves_causality(chunk_size: int) -> None:
     key = jax.random.PRNGKey(999)
     keys = jax.random.split(key, 4)
 
-    A = -jnp.abs(jax.random.normal(keys[0], (groups, heads_per_group, num_chunks, chunk_size), dtype=jnp.float32))
-    A_cumsum = jnp.cumsum(A, axis=-1)
+    a = -jnp.abs(jax.random.normal(keys[0], (groups, heads_per_group, num_chunks, chunk_size), dtype=jnp.float32))
+    a_cumsum = jnp.cumsum(a, axis=-1)
 
-    C = jax.random.normal(keys[1], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
-    B = jax.random.normal(keys[2], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
-    CB = einops_einsum(C, B, "c l g n, c s g n -> c l s g")
+    c = jax.random.normal(keys[1], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
+    b = jax.random.normal(keys[2], (num_chunks, chunk_size, groups, state_dim), dtype=jnp.float32)
+    cb = einops_einsum(c, b, "c l g n, c s g n -> c l s g")
 
-    X_base = jnp.arange(1, chunk_size + 1, dtype=jnp.float32)
-    X = jnp.broadcast_to(
-        X_base[None, :, None, None, None],
-        (num_chunks, chunk_size, groups, heads_per_group, head_dim)
+    x_base = jnp.arange(1, chunk_size + 1, dtype=jnp.float32)
+    x = jnp.broadcast_to(
+        x_base[None, :, None, None, None],
+        (num_chunks, chunk_size, groups, heads_per_group, head_dim),
     )
 
-    result = fused_ssd_intra_chunk(A_cumsum, CB, X)
+    result = fused_ssd_intra_chunk(a_cumsum, cb, x)
 
-    X_modified = X.at[0, chunk_size // 2:, :, :, :].set(1000.0)
-    result_modified = fused_ssd_intra_chunk(A_cumsum, CB, X_modified)
+    x_modified = x.at[0, chunk_size // 2:, :, :, :].set(1000.0)
+    result_modified = fused_ssd_intra_chunk(a_cumsum, cb, x_modified)
 
     assert_close(
         result=result_modified[0, :chunk_size // 2, :, :, :],
