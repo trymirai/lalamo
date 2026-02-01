@@ -523,13 +523,16 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         """Chunked parallel scan implementing the SSD algorithm.
 
         Complexity:
-            - Parallel depth: O(log n) total
+            - Parallel depth (on an ideal parallel machine):
               - O(log chunk_size) for intra-chunk (segsum + einsum)
-              - O(log n/chunk_size) for inter-chunk (cumsum + matrix multiply)
-            - Work: O(n * chunk_size) for intra-chunk + O((n/chunk_size)²) for inter-chunk
+              - O(n / chunk_size) for inter-chunk (segsum / cumsum over chunks + matrix multiply)
+            - Work (total operations):
+              - O(n * chunk_size) for intra-chunk
+              - O((n / chunk_size) ** 2) for inter-chunk due to the triangular segsum structure
 
         The inter-chunk recurrence uses a matrix formulation (segsum + einsum) that
-        computes all chunk boundary states in parallel, not sequentially.
+        computes all chunk boundary states in parallel over chunks, rather than sequentially
+        stepping through them.
 
         Args:
             num_steps: Number of actual tokens (ignoring padding). The final state
@@ -647,16 +650,17 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             dt_chunk = jax.lax.dynamic_slice(dt, (chunk_start_pos, 0), (chunk_size, dt.shape[1]))
 
             A_cumsum = jnp.cumsum(-dt_chunk, axis=0)
-            k = pos_in_chunk - 1
-            A_cumsum_at_k = jax.lax.dynamic_index_in_dim(A_cumsum, k, axis=0, keepdims=False)
+            # 0-indexed position within the chunk; state is after processing last_pos_idx
+            last_pos_idx = pos_in_chunk - 1
+            A_cumsum_at_last = jax.lax.dynamic_index_in_dim(A_cumsum, last_pos_idx, axis=0, keepdims=False)
 
-            # Decay chunk_start_state to position k
-            decayed_start = jnp.exp(A_cumsum_at_k)[:, None, None] * chunk_start_state
+            # Decay chunk_start_state to position last_pos_idx
+            decayed_start = jnp.exp(A_cumsum_at_last)[:, None, None] * chunk_start_state
 
-            # Input contributions from positions 0..k
-            decay_to_k = jnp.exp(A_cumsum_at_k[None, :] - A_cumsum)
-            mask = jnp.arange(chunk_size) <= k
-            masked_decay = jnp.where(mask[:, None], decay_to_k, 0.0)
+            # Input contributions from positions 0..last_pos_idx
+            decay_to_last = jnp.exp(A_cumsum_at_last[None, :] - A_cumsum)
+            mask = jnp.arange(chunk_size) <= last_pos_idx
+            masked_decay = jnp.where(mask[:, None], decay_to_last, 0.0)
             B_expanded = jnp.repeat(B_chunk, heads_per_group, axis=1)
             input_contrib = einsum(masked_decay, B_expanded, X_chunk, "l h, l h n, l h p -> h p n")
 

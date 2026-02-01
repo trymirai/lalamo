@@ -85,6 +85,7 @@ def run_benchmark(
     sequences_processed = 0
     tokens_at_warmup = 0
     prefill_at_warmup = 0
+    sequences_at_warmup = 0
     first_batch_start = time.perf_counter()
     first_batch_time: float | None = None
     start_time = time.perf_counter()
@@ -93,7 +94,7 @@ def run_benchmark(
 
     def progress_callback(event: CollectTracesEvent) -> None:
         nonlocal tokens_generated, prefill_tokens, sequences_processed, last_report_time
-        nonlocal warmup_done, start_time, tokens_at_warmup, prefill_at_warmup
+        nonlocal warmup_done, start_time, tokens_at_warmup, prefill_at_warmup, sequences_at_warmup
         nonlocal first_batch_time, first_batch_start
         tokens_generated = event.tokens_generated
         prefill_tokens = event.prefill_tokens
@@ -109,6 +110,7 @@ def run_benchmark(
             warmup_done = True
             tokens_at_warmup = tokens_generated
             prefill_at_warmup = prefill_tokens
+            sequences_at_warmup = sequences_processed
             start_time = time.perf_counter()
             last_report_time = start_time
             print("  (Resetting timer for benchmark measurements)")
@@ -154,7 +156,7 @@ def run_benchmark(
     gen_since_warmup = tokens_generated - tokens_at_warmup
     prefill_since_warmup = prefill_tokens - prefill_at_warmup
     total_tokens = gen_since_warmup + prefill_since_warmup
-    num_sequences = max(sequences_processed - 1, 1)
+    num_sequences = sequences_processed - sequences_at_warmup
 
     print("\n" + "=" * 60)
     print("BENCHMARK RESULTS (excluding first batch / JIT warmup)")
