@@ -1,5 +1,6 @@
 from .bitshift_codebook import BitShiftCodebook
-from .bitshift_codebook_config import BitshiftCodebookConfig
+from .bitshift_codebook_config import BitShiftCodebookConfig
+from .bitshift_codebook_states import BitShiftCodebookStates
 from .lut_provider import (
     GaussianLUTProvider,
     LUTProvider,
@@ -10,7 +11,8 @@ from .lut_provider import (
 
 __all__ = [
     "BitShiftCodebook",
-    "BitshiftCodebookConfig",
+    "BitShiftCodebookConfig",
+    "BitShiftCodebookStates",
     "GaussianLUTProvider",
     "LUTProvider",
     "OneMultiplyAddHashLUTProvider",

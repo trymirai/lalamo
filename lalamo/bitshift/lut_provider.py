@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import jax.random
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from .bitshift_codebook_config import BitshiftCodebookConfig
+from .bitshift_codebook_config import BitShiftCodebookConfig
 
 __all__ = [
     "GaussianLUTProvider",
@@ -21,20 +21,20 @@ class LUTProvider(eqx.Module):
     lut: Float[Array, "values_per_step number_of_states"]
 
     @classmethod
-    def create(cls, config: BitshiftCodebookConfig, key: PRNGKeyArray) -> "LUTProvider":
+    def create(cls, config: BitShiftCodebookConfig, key: PRNGKeyArray) -> "LUTProvider":
         return cls(lut=cls._initialize_lut(config, key))
 
     @staticmethod
     @abstractmethod
     def _initialize_lut(
-        config: BitshiftCodebookConfig, key: PRNGKeyArray
+        config: BitShiftCodebookConfig, key: PRNGKeyArray
     ) -> Float[Array, "values_per_step number_of_states"]: ...
 
 
 class GaussianLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitshiftCodebookConfig, key: PRNGKeyArray
+        config: BitShiftCodebookConfig, key: PRNGKeyArray
     ) -> Float[Array, "values_per_step number_of_states"]:
         return jax.random.normal(key, (config.values_per_step, config.number_of_states))
 
@@ -42,7 +42,7 @@ class GaussianLUTProvider(LUTProvider):
 class OneMultiplyAddHashLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitshiftCodebookConfig, key: PRNGKeyArray
+        config: BitShiftCodebookConfig, key: PRNGKeyArray
     ) -> Float[Array, "values_per_step number_of_states"]:
         _ = key
         assert config.values_per_step == 1
@@ -64,7 +64,7 @@ class OneMultiplyAddHashLUTProvider(LUTProvider):
 class TwoMultiplyAddHashLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitshiftCodebookConfig, key: PRNGKeyArray
+        config: BitShiftCodebookConfig, key: PRNGKeyArray
     ) -> Float[Array, "values_per_step number_of_states"]:
         _ = key
         assert config.values_per_step == 1
@@ -97,7 +97,7 @@ class TwoMultiplyAddHashLUTProvider(LUTProvider):
 class ThreeInstructionHashLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitshiftCodebookConfig, key: PRNGKeyArray
+        config: BitShiftCodebookConfig, key: PRNGKeyArray
     ) -> Float[Array, "values_per_step number_of_states"]:
         _ = key
         assert config.values_per_step == 1
