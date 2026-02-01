@@ -129,6 +129,75 @@ def _suggest_similar_models(query: str, available_models: list[RemoteModelSpec],
     return [match[0] for match in matches if match[1] >= 50]
 
 
+def pull(
+    query: str,
+    output_dir: Path,
+    callbacks_type: Callable[
+        [RemoteModelSpec, Path, bool],
+        PullCallbacks,
+    ] = PullCallbacks,
+    overwrite: bool = False,
+) -> None:
+    """Pull a pre-converted model from the Mirai SDK repository.
+
+    Args:
+        query: Model repo ID or name
+        output_dir: Directory to save the model
+        callbacks_type: Callback class for progress tracking
+        overwrite: Whether to overwrite existing files
+    """
+    from lalamo.model_import.remote_registry import fetch_available_models
+
+    # Fetch available models
+    try:
+        available_models = fetch_available_models()
+    except requests.RequestException as e:
+        raise RuntimeError(f"Failed to fetch model list from SDK. Check your internet connection. Error: {e}") from e
+
+    # Match model
+    model_spec = _match_model(query, available_models)
+    if model_spec is None:
+        suggestions = _suggest_similar_models(query, available_models)
+        error_msg = f'Model "{query}" not found.'
+        if suggestions:
+            error_msg += f' Did you mean: {", ".join(suggestions)}?'
+        raise ValueError(error_msg)
+
+    # Initialize callbacks
+    callbacks = callbacks_type(model_spec, output_dir, overwrite)
+
+    # Check output directory
+    if output_dir.exists():
+        callbacks.output_dir_exists()
+
+    callbacks.started()
+
+    # Create temp directory for downloads
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_path = Path(temp_dir)
+
+        # Download all files
+        for file_spec in model_spec.files:
+            callbacks.downloading(file_spec)
+
+            file_path = temp_path / file_spec.name
+            try:
+                _download_file(file_spec.url, file_path)
+            except requests.RequestException as e:
+                raise RuntimeError(f"Failed to download {file_spec.name}: {e}") from e
+
+            callbacks.finished_downloading(file_spec)
+
+        # All files downloaded, move to output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for file_spec in model_spec.files:
+            src = temp_path / file_spec.name
+            dst = output_dir / file_spec.name
+            shutil.move(str(src), str(dst))
+
+    callbacks.finished()
+
+
 class Precision(Enum):
     FLOAT32 = "float32"
     FLOAT16 = "float16"
