@@ -4,8 +4,9 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import chain, repeat, tee
 from math import exp
-from typing import Self
-
+from typing import Optional, Self
+import jax
+import jax.numpy as jnp
 import xxhash
 
 from .common import Speculator
@@ -56,9 +57,54 @@ def update_probs(old_mean: dict[int, float], sample: dict[int, float], new_count
 
     return new_probs_norm
 
+def generate_gumbel_noise(key: jax.Array, shape: tuple) -> jax.Array:
+    """
+    Generates Gumbel(0, 1) noise.
+    G = -log(-log(U)) where U ~ Uniform(0, 1)
+    """
+    u = jax.random.uniform(key, shape=shape, minval=1e-10, maxval=1.0)
+    return -jnp.log(-jnp.log(u))
+
+def update_gumbels(
+    old_scores: dict[int, float], 
+    new_logits: dict[int, float], 
+    rng_key: jax.Array, 
+    top_k: int
+) -> dict[int, float]:
+    """
+    Performs the Max-Coupling update.
+    1. Add Gumbel noise to the new logits (and fix)
+    2. Take the element-wise MAX val between old scores and new scores.
+    3. Select to Top-K.
+    """
+    
+    token_ids = list(new_logits.keys())
+    logits_val = jnp.array(list(new_logits.values()))
+    
+    noise = generate_gumbel_noise(rng_key, logits_val.shape)
+    new_scores_val = logits_val + noise
+    
+    current_step_scores = dict(zip(token_ids, new_scores_val.tolist(), strict=True))
+
+    all_keys = set(old_scores.keys()).union(current_step_scores.keys())
+
+    merged_scores = {}
+    for k in all_keys:
+        val_old = old_scores.get(k, -1e9)
+        val_new = current_step_scores.get(k, -1e9)
+        merged_scores[k] = max(val_old, val_new)
+
+    
+    top_k_items = sorted(merged_scores.items(), key=lambda x: (-x[1], x[0]))[:top_k]
+    
+    return dict(top_k_items)
+
 
 @dataclass(frozen=True, eq=False)
 class NGramSpeculator(Speculator):
+    '''
+    Basic NGramSpeculator with Gumbel-Max trick
+    '''
     hashtable_size: int
     ngram_k: int
     ngram_n: int
@@ -90,29 +136,45 @@ class NGramSpeculator(Speculator):
             array("I", [0]) * hashtable_size,
         )
 
-    def train(self, token_ids: Iterable[int], token_logits: Iterable[dict[int, float]]) -> None:
+    def train(self, token_ids: Iterable[int], token_logits: Iterable[dict[int, float]], 
+              rng_key: Optional[jax.Array] = None) -> None:
         ngram_ctx = self.ngram_n - 1
+        if rng_key is None:
+            rng_key = jax.random.PRNGKey(42)
         if ngram_ctx > 0:
             contexts = padded_sliding_window(token_ids, ngram_ctx, self.ngram_pad)
         else:
             contexts = repeat(())
 
         for ctx, cur_logits in zip(contexts, token_logits, strict=False):
+            rng_key, step_key = jax.random.split(rng_key)
             ngram_keys, ngram_values, ngram_counts = self._seq_slice(ctx)
 
             ngram_counts[0] = new_count = ngram_counts[0] + 1
+            old_scores = {}
+            for k, v in zip(ngram_keys, ngram_values, strict=True):
+                if v > -1e8:
+                    old_scores[k] = v
+            new_scores = update_gumbels(old_scores, cur_logits, step_key, self.ngram_k)
 
-            old_mean = dict(zip(ngram_keys, ngram_values, strict=True))
-            sample = dict(zip(cur_logits.keys(), softmax(cur_logits.values()), strict=True))
+            sorted_keys = list(new_scores.keys())
+            sorted_vals = list(new_scores.values())
+            
+            while len(sorted_keys) < self.ngram_k:
+                sorted_keys.append(0)
+                sorted_vals.append(-1e9)
 
-            new_probs = update_probs(old_mean, sample, new_count, self.ngram_k)
-
-            ngram_keys[:] = array("I", new_probs.keys())
-            ngram_values[:] = array("f", new_probs.values())
+            # Write back to memoryview (arrays)
+            ngram_keys[:] = array("I", sorted_keys)
+            ngram_values[:] = array("f", sorted_vals)
 
     def probs(self, seq: Iterable[int]) -> dict[int, float]:
         ngram_keys, ngram_values, _ = self._seq_slice(seq)
-        return dict(zip(ngram_keys, ngram_values, strict=True))
+        res = {}
+        for k, v in zip(ngram_keys, ngram_values, strict=True):
+            if v > -1e8: 
+                res[k] = v
+        return res
 
     # python < 3.13 doesn't support memoryview[T], but if T is not specified typechecker incorrectly assumes it's int
     def _seq_slice(self, seq: Iterable[int]) -> tuple["memoryview[int]", "memoryview[float]", "memoryview[int]"]:
