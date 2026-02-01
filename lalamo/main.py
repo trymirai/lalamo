@@ -368,6 +368,76 @@ def convert(
     )
 
 
+@app.command(help="Pull a pre-converted model from the SDK repository.")
+def pull(
+    model_identifier: Annotated[
+        str,
+        Argument(
+            help=(
+                "Model repository ID or name from the pre-converted catalog. "
+                "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan] or [cyan]'Llama-3.2-1B-Instruct'[/cyan]."
+            ),
+            metavar="MODEL_IDENTIFIER",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the pulled model to.",
+            show_default="Saves the pulled model in the `models/<model_name>` directory",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing model files without prompting.",
+        ),
+    ] = False,
+) -> None:
+    from lalamo.commands import pull as _pull
+    from lalamo.model_import.remote_registry import fetch_available_models
+
+    # Fetch models to determine default output directory
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        transient=True,
+    ) as progress:
+        progress.add_task("🔍 Fetching available models...")
+        try:
+            available_models = fetch_available_models()
+        except Exception as e:
+            _error(f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}")
+
+    # Match model to get name for default output dir
+    from lalamo.commands import _match_model
+
+    model_spec = _match_model(model_identifier, available_models)
+    if model_spec is None:
+        from lalamo.commands import _suggest_similar_models
+
+        suggestions = _suggest_similar_models(model_identifier, available_models)
+        error_msg = f'Model "{model_identifier}" not found.'
+        if suggestions:
+            error_msg += f'\n\nDid you mean one of these?\n' + '\n'.join(f'  - {s}' for s in suggestions)
+        _error(error_msg)
+
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR / model_spec.name
+
+    try:
+        _pull(
+            model_identifier,
+            output_dir,
+            partial(CliPullCallbacks, overwrite=overwrite),
+            overwrite=overwrite,
+        )
+    except ValueError as e:
+        _error(str(e))
+    except RuntimeError as e:
+        _error(str(e))
+
+
 @dataclass
 class CliTraceCallbacks(TraceCallbacks):
     overwrite: bool = False
