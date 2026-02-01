@@ -20,6 +20,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
+from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec
 from lalamo.models import LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -27,6 +28,34 @@ from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estima
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
+
+
+@dataclass
+class PullCallbacks:
+    """Callbacks for pull command progress tracking."""
+    model_spec: RemoteModelSpec
+    output_dir: Path
+    overwrite: bool
+
+    def started(self) -> None:
+        """Called when pull command starts."""
+        pass
+
+    def output_dir_exists(self) -> None:
+        """Called when output directory already exists."""
+        raise RuntimeError(f"{self.output_dir=} already exists, refusing to overwrite!")
+
+    def downloading(self, file_spec: RemoteFileSpec) -> None:
+        """Called when file download starts."""
+        pass
+
+    def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
+        """Called when file download completes."""
+        pass
+
+    def finished(self) -> None:
+        """Called when pull command completes successfully."""
+        pass
 
 
 class Precision(Enum):
