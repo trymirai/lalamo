@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 
-@dataclass
+@dataclass(frozen=True)
 class RemoteFileSpec:
     """Specification for a remote file to download."""
     name: str
@@ -10,7 +10,7 @@ class RemoteFileSpec:
     crc32c: str
 
 
-@dataclass
+@dataclass(frozen=True)
 class RemoteModelSpec:
     """Specification for a pre-converted model in the remote registry."""
     id: str
