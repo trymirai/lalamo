@@ -432,6 +432,8 @@ def pull(
             partial(CliPullCallbacks),
             overwrite=overwrite,
         )
+    except Exit:
+        raise
     except ValueError as e:
         _error(str(e))
     except RuntimeError as e:
