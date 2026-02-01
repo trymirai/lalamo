@@ -26,6 +26,7 @@ __all__ = [
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
     "exp_segsum",
+    "fused_ssd_intra_chunk",
 ]
 
 
