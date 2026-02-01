@@ -429,7 +429,7 @@ def pull(
         _pull(
             model_identifier,
             output_dir,
-            partial(CliPullCallbacks, overwrite=overwrite),
+            partial(CliPullCallbacks),
             overwrite=overwrite,
         )
     except ValueError as e:
