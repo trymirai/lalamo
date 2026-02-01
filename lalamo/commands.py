@@ -8,6 +8,7 @@ from itertools import chain
 from pathlib import Path
 
 import requests
+import thefuzz.process
 from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters
@@ -78,6 +79,54 @@ def _download_file(url: str, dest_path: Path) -> None:
         for chunk in response.iter_content(chunk_size=8192):
             if chunk:
                 f.write(chunk)
+
+
+def _match_model(query: str, available_models: list[RemoteModelSpec]) -> RemoteModelSpec | None:
+    """Match user query to a model using exact and fuzzy matching.
+
+    Args:
+        query: User's model query (repo ID or name)
+        available_models: List of available models
+
+    Returns:
+        Matched RemoteModelSpec or None if no match found
+    """
+    # Try exact match on repo_id
+    for model in available_models:
+        if model.repo_id == query:
+            return model
+
+    # Try exact match on name
+    for model in available_models:
+        if model.name == query:
+            return model
+
+    # Try fuzzy matching on repo_id
+    repo_ids = [m.repo_id for m in available_models]
+    matches = thefuzz.process.extract(query, repo_ids, limit=1)
+    if matches and matches[0][1] >= 80:
+        matched_repo_id = matches[0][0]
+        for model in available_models:
+            if model.repo_id == matched_repo_id:
+                return model
+
+    return None
+
+
+def _suggest_similar_models(query: str, available_models: list[RemoteModelSpec], limit: int = 3) -> list[str]:
+    """Find similar model names for suggestions.
+
+    Args:
+        query: User's model query
+        available_models: List of available models
+        limit: Maximum number of suggestions
+
+    Returns:
+        List of similar model repo IDs
+    """
+    repo_ids = [m.repo_id for m in available_models]
+    matches = thefuzz.process.extract(query, repo_ids, limit=limit)
+    return [match[0] for match in matches if match[1] >= 50]
 
 
 class Precision(Enum):
