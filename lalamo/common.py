@@ -146,18 +146,11 @@ def get_default_device_bytes() -> int | None:
     if memory_stats is None or "bytes_limit" not in memory_stats:
         return None
 
-    mem_fraction_raw = os.getenv("XLA_PYTHON_CLIENT_MEM_FRACTION", "")
-    try:
-        mem_fraction = float(mem_fraction_raw)
-    except ValueError:
-        mem_fraction = 0.75  # jax default https://docs.jax.dev/en/latest/gpu_memory_allocation.html
-
-    # 500mb is seemingly the usually observed overhead; this tries to match the actual capacity of the gpu
-    # so it should correspond to something you'd see in nvidia-smi
-    memory_limit = memory_stats["bytes_limit"] / min(mem_fraction, 1.0) + (500 * 1000 * 1000)
+    # 500mb is seemingly the usually observed overhead
+    memory_limit = memory_stats["bytes_limit"] - (500 * 1000 * 1000)
 
     return memory_limit
 
 
 def get_usable_memory_from_bytes(limit_bytes: int) -> int:
-    return int(limit_bytes * 0.93)
+    return int(limit_bytes * 0.95)

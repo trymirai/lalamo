@@ -21,7 +21,6 @@ CODESTRAL = [
         config_type=HFMistralConfig,
         weights_type=WeightsType.SAFETENSORS,
         use_cases=(UseCase.CODE,),
-        configs=ConfigMap(chat_template="chat_template.jinja"),
     ),
 ]
 

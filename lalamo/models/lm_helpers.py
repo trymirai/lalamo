@@ -1,3 +1,4 @@
+import functools
 import itertools
 import warnings
 from collections.abc import Callable, Iterable
@@ -68,41 +69,31 @@ def estimate_batchsizes_from_vram(
     vram_bytes: int,
     inference_config: InferenceConfig,
 ) -> dict[int, int]:
-    # Estimate batch size for each bucket length via linear interpolation.
-    # Since the map batch_size -> memory is convex, it can
-    # be 'guaranteed' (as far as anything can be guaranteed in JAX) that this is a valid upper bound
-    min_len, max_len = sorted_lengths[0], sorted_lengths[-1]
-    assert min_len <= max_len
+    assert sorted_lengths[0] < sorted_lengths[-1]
+    usable_memory = get_usable_memory_from_bytes(vram_bytes)
 
-    def estimate_batchsize_for_seq_len(seq_len: int) -> int:
-        def memory_per_batchsize(batch_size: int) -> int:
-            config = InferenceConfig(
-                max_output_length=inference_config.max_output_length,
-                padded_length=seq_len,
-                num_top_logits_to_return=inference_config.num_top_logits_to_return,
-                batch_size=batch_size,
-                sampling_policy=inference_config.sampling_policy,
-            )
-            return memory_consumption_callback(config)
-
-        return estimate_batchsize_from_bytes(
-            memory_per_batchsize,
-            get_usable_memory_from_bytes(vram_bytes),
-            progress=None,
+    def memory_consumption(bs: int, seq_len: int) -> int:
+        config = InferenceConfig(
+            max_output_length=inference_config.max_output_length,
+            padded_length=seq_len,
+            num_top_logits_to_return=inference_config.num_top_logits_to_return,
+            batch_size=bs,
+            sampling_policy=inference_config.sampling_policy,
         )
+        return memory_consumption_callback(config)
 
-    if min_len == max_len:
-        bs = estimate_batchsize_for_seq_len(min_len)
-        return {min_len: max(1, bs)}
+    result: dict[int, int] = {}
 
-    bs_at_min = max(1, estimate_batchsize_for_seq_len(min_len))
-    bs_at_max = max(1, estimate_batchsize_for_seq_len(max_len))
+    first_seq_len = sorted_lengths[0]
+    bs = estimate_batchsize_from_bytes(functools.partial(memory_consumption, seq_len=sorted_lengths[0]), usable_memory)
+    result[first_seq_len] = bs
+    for seq_len in sorted_lengths[1:]:
+        while bs > 1 and memory_consumption(bs, seq_len) > usable_memory:
+            bs = max(1, int(bs * 0.8))
 
-    def interpolate(length: int) -> int:
-        t = (length - min_len) / (max_len - min_len)
-        return max(1, int(bs_at_min + t * (bs_at_max - bs_at_min)))
+        result[seq_len] = bs
 
-    return {length: interpolate(length) for length in sorted_lengths}
+    return result
 
 
 def estimate_batchsize_from_bytes(
@@ -114,7 +105,7 @@ def estimate_batchsize_from_bytes(
     hi = 0
     for candidate_exp in itertools.count():
         lo = hi
-        hi = 2**candidate_exp
+        hi = 4**candidate_exp
 
         if progress is not None:
             progress(BatchSizeEstimatingEvent(lo, None))

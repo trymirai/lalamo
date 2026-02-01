@@ -110,6 +110,115 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
 
+    def _prefill_first_chunk(
+        self,
+        token_ids: Int[Array, "batch tokens"],
+        first_chunk_size: int,
+        effective_lengths: Int[Array, " batch"],
+        state: State | None,
+        forward_pass_config: ForwardPassConfig | None,
+    ) -> tuple[Float[Array, "batch vocabulary"], State]:
+        batch_size = token_ids.shape[0]
+        first_positions = jnp.repeat(jnp.arange(first_chunk_size, dtype=jnp.int32)[None, :], batch_size, axis=0)
+        first_lengths = jnp.clip(effective_lengths, 0, first_chunk_size)
+
+        first_outputs = self.model(
+            token_ids[:, :first_chunk_size],
+            first_positions,
+            state,
+            return_updated_state=True,
+            lengths_without_padding=first_lengths,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+            forward_pass_config=forward_pass_config,
+        )
+        assert first_outputs.updated_state is not None
+
+        last_logits_indices = effective_lengths - 1
+        in_first_chunk = last_logits_indices < first_chunk_size
+        first_local_indices = jnp.clip(last_logits_indices, 0, first_chunk_size - 1)
+        vocab_size = first_outputs.logits.shape[-1]
+
+        last_token_logits = vmap(
+            lambda in_chunk, logits, idx: jax.lax.cond(
+                in_chunk,
+                lambda: logits[idx].astype(jnp.float32),
+                lambda: jnp.zeros(vocab_size, dtype=jnp.float32),
+            ),
+        )(in_first_chunk, first_outputs.logits, first_local_indices)
+
+        return last_token_logits, first_outputs.updated_state
+
+    def _process_remaining_chunks(
+        self,
+        token_ids: Int[Array, "batch tokens"],
+        chunk_size: int,
+        effective_lengths: Int[Array, " batch"],
+        last_token_logits: Float[Array, "batch vocabulary"],  # we need prev logits just to infer vocab size
+        state: State,
+        forward_pass_config: ForwardPassConfig | None,
+    ) -> tuple[Float[Array, "batch vocabulary"], State]:
+        batch_size, sequence_length = token_ids.shape
+        last_logits_indices = effective_lengths - 1
+
+        remaining_length = sequence_length - chunk_size
+        num_remaining_chunks = (remaining_length + chunk_size - 1) // chunk_size
+        padding_length = num_remaining_chunks * chunk_size - remaining_length
+        total_length = chunk_size * (1 + num_remaining_chunks)
+
+        remaining_tokens = jnp.pad(token_ids[:, chunk_size:], [(0, 0), (0, padding_length)])
+        remaining_token_ids = rearrange(
+            remaining_tokens,
+            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
+            chunk_size=chunk_size,
+        )
+
+        remaining_pos = jnp.arange(chunk_size, total_length, dtype=jnp.int32)
+        remaining_positions = jnp.repeat(remaining_pos[None, :], batch_size, axis=0)
+        remaining_positions = rearrange(
+            remaining_positions,
+            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
+            chunk_size=chunk_size,
+        )
+
+        chunk_starts = chunk_size + jnp.arange(num_remaining_chunks, dtype=jnp.int32) * chunk_size
+        per_chunk_lengths = jnp.clip(effective_lengths[None, :] - chunk_starts[:, None], 0, chunk_size)
+
+        def apply_chunk(carry: tuple, chunk_data: tuple) -> tuple:
+            current_state, current_logits = carry
+            chunk_tokens, chunk_positions, chunk_lengths, chunk_start = chunk_data
+
+            decoder_outputs = self.model(
+                chunk_tokens,
+                chunk_positions,
+                current_state,
+                return_updated_state=True,
+                lengths_without_padding=chunk_lengths,
+                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+                forward_pass_config=forward_pass_config,
+            )
+            assert decoder_outputs.updated_state is not None
+
+            in_this_chunk = (last_logits_indices >= chunk_start) & (last_logits_indices < chunk_start + chunk_size)
+            local_indices = jnp.clip(last_logits_indices - chunk_start, 0, chunk_size - 1)
+
+            new_logits = vmap(
+                lambda in_chunk, old, logits, idx: jax.lax.cond(
+                    in_chunk,
+                    lambda: logits[idx].astype(jnp.float32),
+                    lambda: old,
+                ),
+            )(in_this_chunk, current_logits, decoder_outputs.logits, local_indices)
+
+            return (decoder_outputs.updated_state, new_logits), None
+
+        (final_state, final_logits), _ = jax.lax.scan(
+            apply_chunk,
+            (state, last_token_logits),
+            (remaining_token_ids, remaining_positions, per_chunk_lengths, chunk_starts),
+        )
+
+        return final_logits, final_state
+
     @eqx.filter_jit
     def _prefill(
         self,
@@ -117,131 +226,63 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         state_capacity: int | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
-        chunked_prefill_cutoff: int = 2048,
+        chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
-
-        if sequence_length > chunked_prefill_cutoff:
-            return self._chunked_prefill(
-                token_ids,
-                lengths_without_padding,
-                state_capacity,
-                forward_pass_config=forward_pass_config,
-            )
-
-        token_positions = jnp.repeat(jnp.arange(sequence_length, dtype=jnp.int32)[None, ...], batch_size, axis=0)
-        if state_capacity is not None:
-            state = self.model.init_static_state(batch_size, state_capacity)
-        else:
-            state = None
-
-        decoder_outputs = self.model(
-            token_ids,
-            token_positions,
-            state,
-            return_updated_state=True,
-            lengths_without_padding=lengths_without_padding,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-            forward_pass_config=forward_pass_config,
-        )
-
-        if lengths_without_padding is not None:
-            last_logits_indices = lengths_without_padding - 1
-        else:
-            last_logits_indices = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
-
-        last_token_logits = vmap(lambda logits, index: logits[index])(decoder_outputs.logits, last_logits_indices)
-        jax.debug.print("Prefill: last_logits_indices={x}", x=last_logits_indices)
-        jax.debug.print("Prefill: last_token_logits min={min} max={max}", min=last_token_logits.min(), max=last_token_logits.max())
-        jax.debug.print("Prefill: top5 token ids per batch: {x}", x=jnp.argsort(last_token_logits, axis=-1)[:, -5:])
-
-        assert decoder_outputs.updated_state is not None
-        return PrefillResults(
-            last_token_logits=last_token_logits,
-            last_token_indices=last_logits_indices,
-            state=decoder_outputs.updated_state,
-        )
-
-    def _chunked_prefill(
-        self,
-        token_ids: Int[Array, "batch tokens"],
-        lengths_without_padding: Int[Array, " batch"] | None,
-        state_capacity: int | None,
-        chunk_size: int = 1024,
-        forward_pass_config: ForwardPassConfig | None = None,
-    ) -> PrefillResults:
-        batch_size, sequence_length = token_ids.shape
-        num_chunks = (sequence_length + chunk_size - 1) // chunk_size
-        chunked_length = num_chunks * chunk_size
-        padding_length = chunked_length - sequence_length
-
-        token_ids = jnp.pad(token_ids, [(0, 0), (0, padding_length)])
-        token_positions = jnp.repeat(
-            jnp.arange(chunked_length, dtype=jnp.int32)[None, :],
-            batch_size,
-            axis=0,
-        )
-
-        chunked_token_ids = rearrange(
-            token_ids,
-            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
-            chunk_size=chunk_size,
-        )
-        chunked_positions = rearrange(
-            token_positions,
-            "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
-            chunk_size=chunk_size,
-        )
+        first_chunk_size = min(sequence_length, chunk_size)
+        remaining_length = sequence_length - first_chunk_size
+        num_remaining_chunks = (remaining_length + chunk_size - 1) // chunk_size if remaining_length > 0 else 0
 
         if lengths_without_padding is not None:
             effective_lengths = lengths_without_padding
         else:
             effective_lengths = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
-        chunk_starts = jnp.arange(num_chunks, dtype=jnp.int32)[:, None] * chunk_size
-        per_chunk_lengths = jnp.clip(effective_lengths[None, :] - chunk_starts, 0, chunk_size)
+        last_logits_indices = effective_lengths - 1
+
+        if num_remaining_chunks > 0:
+            padding_length = num_remaining_chunks * chunk_size - remaining_length
+            total_length = first_chunk_size + num_remaining_chunks * chunk_size
+        else:
+            padding_length = 0
+            total_length = first_chunk_size
 
         if state_capacity is not None:
-            total_capacity = state_capacity + padding_length
+            state = self.model.init_static_state(batch_size, state_capacity + padding_length)
+        elif num_remaining_chunks > 0:
+            state = self.model.init_static_state(batch_size, total_length)
         else:
-            total_capacity = chunked_length
-        state = self.model.init_static_state(batch_size, total_capacity)
+            state = None
 
-        def apply_chunk(state: State, chunk_data: tuple) -> tuple[State, Float[Array, "batch chunk_size vocab"]]:
-            chunk_tokens, chunk_positions, chunk_lengths = chunk_data
-            decoder_outputs = self.model(
-                chunk_tokens,
-                chunk_positions,
-                state,
-                return_updated_state=True,
-                lengths_without_padding=chunk_lengths,
-                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=forward_pass_config,
-            )
-            assert decoder_outputs.updated_state is not None
-            return decoder_outputs.updated_state, decoder_outputs.logits
-
-        final_state, all_logits = jax.lax.scan(
-            apply_chunk,
+        last_token_logits, updated_state = self._prefill_first_chunk(
+            token_ids,
+            first_chunk_size,
+            effective_lengths,
             state,
-            (chunked_token_ids, chunked_positions, per_chunk_lengths),
+            forward_pass_config,
         )
 
-        all_logits = rearrange(all_logits, "num_chunks batch chunk_size vocab -> batch (num_chunks chunk_size) vocab")
+        if num_remaining_chunks == 0:
+            return PrefillResults(
+                last_token_logits=last_token_logits,
+                last_token_indices=last_logits_indices,
+                state=updated_state,
+            )
 
-        if lengths_without_padding is not None:
-            last_logits_indices = lengths_without_padding - 1
-        else:
-            last_logits_indices = jnp.array([sequence_length - 1] * batch_size, dtype=jnp.int32)
-
-        last_token_logits = vmap(lambda logits, index: logits[index])(all_logits, last_logits_indices)
+        final_logits, final_state = self._process_remaining_chunks(
+            token_ids,
+            chunk_size,
+            effective_lengths,
+            last_token_logits,
+            updated_state,
+            forward_pass_config,
+        )
 
         return PrefillResults(
-            last_token_logits=last_token_logits,
+            last_token_logits=final_logits,
             last_token_indices=last_logits_indices,
             state=final_state,
         )
 
-    @eqx.filter_jit
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
@@ -284,12 +325,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         def loop_iteration(
             state: DecodingState,
-            key: PRNGKeyArray,
+            keys: Key[Array, " batch"],
         ) -> tuple[DecodingState, GenerationStepResults]:
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
                 processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
-                next_token_ids = jax.random.categorical(key, processed_logits)
+                next_token_ids = jax.vmap(lambda k, logits: jax.random.categorical(k, logits))(keys, processed_logits)
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 if num_top_logits_to_return is not None:
                     next_top_k_token_logits, next_top_k_token_ids = jax.lax.top_k(
@@ -318,7 +359,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 )
                 assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
-                    decoder_outputs.logits.squeeze(1),
+                    decoder_outputs.logits.squeeze(1).astype(jnp.float32),
                     next_token_indices,
                     decoder_outputs.updated_state,
                     stop_flags,
@@ -338,7 +379,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        _, generated = jax.lax.scan(loop_iteration, initial_state, keys)
+        per_step_keys: Key[Array, "batch max_len"] = jax.vmap(lambda k: jax.random.split(k, max_output_length))(keys)
+        per_step_keys: Key[Array, "max_len batch"] = per_step_keys.T
+        _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_keys)
 
         token_ids = rearrange(generated.token_ids, "iteration batch -> batch iteration")
 
@@ -422,7 +465,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             new_inference_config = replace(inference_config, batch_size=batch_size)
             for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
                 real_batch, batch_keys = zip(*batch_items, strict=True)
-                print(batch_keys)
                 batch_padding = batch_size - len(real_batch)
                 batch = (*real_batch, *(np.array([0], dtype=np.int32),) * batch_padding)
 
@@ -441,14 +483,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     ),
                 )
                 lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
-                print(f"Padded shape: {padded.shape}, lengths: {lengths}")
 
-                # generate_tokens = self.compile_generate_tokens(new_inference_config, forward_pass_config)
-                results = self.generate_tokens(
+                generate_tokens = self.compile_generate_tokens(new_inference_config, forward_pass_config)
+                results = generate_tokens(
+                    self,
                     prompt_token_ids=padded,
                     prompt_lengths_without_padding=lengths,
-                    max_output_length=new_inference_config.max_output_length,
-                    num_top_logits_to_return=new_inference_config.num_top_logits_to_return,
                     keys=padded_keys,
                 )
 
@@ -526,6 +566,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 vram_bytes,  # type: ignore
                 inference_config,
             )
+
         buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=4)
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
@@ -533,7 +574,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             batch_size = batch_size_per_bucket[padded_length]
-            print(sequence_ids, keys[np.array(sequence_ids)])
 
             bucket_inference_config = replace(inference_config, batch_size=batch_size, padded_length=padded_length)
 
@@ -545,7 +585,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             )
 
             for idx, result in zip(sequence_ids, all_results, strict=True):
-                print(f"Raw tokens for {idx}: {result.token_ids[:20].tolist()}")
                 response = self.message_processor.parse_tokenized_response(result.token_ids.tolist())
                 yield (idx, response)
 
