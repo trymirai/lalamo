@@ -36,6 +36,7 @@ from lalamo.commands import (
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
     Precision,
+    PullCallbacks,
     TraceCallbacks,
     TrainCallbacks,
 )
@@ -48,6 +49,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
+from lalamo.model_import.remote_registry import RemoteFileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.speculator.estimator import (
     get_default_device_bytes,
@@ -264,6 +266,50 @@ class CliConversionCallbacks(ConversionCallbacks):
         self.progress.remove_task(self.saving_task)
         self.stack.close()
         console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
+
+
+@dataclass
+class CliPullCallbacks(PullCallbacks):
+    """CLI callbacks for pull command with rich UI."""
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    downloading_tasks: dict[RemoteFileSpec, TaskID] = field(default_factory=dict)
+
+    def started(self) -> None:
+        console.print(f"📦 Pulling [cyan]{self.model_spec.name}[/cyan] by [cyan]{self.model_spec.vendor}[/cyan]")
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        shutil.rmtree(self.output_dir)
+
+    def downloading(self, file_spec: RemoteFileSpec) -> None:
+        assert self.progress is not None
+
+        self.downloading_tasks[file_spec] = self.progress.add_task(f"⬇️  Downloading {file_spec.name}...")
+
+    def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
+        assert self.progress is not None
+
+        self.progress.remove_task(self.downloading_tasks[file_spec])
+
+    def finished(self) -> None:
+        assert self.progress is not None
+
+        self.stack.close()
+        console.print(f"🎉 Model successfully pulled to [cyan]{self.output_dir}[/cyan]!")
 
 
 @app.command(help="Convert the model for use with the Uzu inference engine.")
