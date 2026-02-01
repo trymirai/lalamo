@@ -3,43 +3,70 @@ from abc import abstractmethod
 import equinox as eqx
 import jax.lax
 import jax.numpy as jnp
-from jaxtyping import Array, Float
+import jax.random
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from .bitshift_codebook_config import BitshiftCodebookConfig
 
 __all__ = [
+    "GaussianLUTProvider",
     "LUTProvider",
     "OneMultiplyAddHashLUTProvider",
-    "TwoMultiplyAddHashLUTProvider",
     "ThreeInstructionHashLUTProvider",
+    "TwoMultiplyAddHashLUTProvider",
 ]
 
 
 class LUTProvider(eqx.Module):
+    lut: Float[Array, "values_per_step number_of_states"]
+
+    @classmethod
+    def create(cls, config: BitshiftCodebookConfig, key: PRNGKeyArray) -> "LUTProvider":
+        return cls(lut=cls._initialize_lut(config, key))
+
+    @staticmethod
     @abstractmethod
-    def build_lut(self, config: BitshiftCodebookConfig) -> Float[Array, "values_per_step number_of_states"]: ...
+    def _initialize_lut(
+        config: BitshiftCodebookConfig, key: PRNGKeyArray
+    ) -> Float[Array, "values_per_step number_of_states"]: ...
+
+
+class GaussianLUTProvider(LUTProvider):
+    @staticmethod
+    def _initialize_lut(
+        config: BitshiftCodebookConfig, key: PRNGKeyArray
+    ) -> Float[Array, "values_per_step number_of_states"]:
+        return jax.random.normal(key, (config.values_per_step, config.number_of_states))
 
 
 class OneMultiplyAddHashLUTProvider(LUTProvider):
-    def build_lut(self, config: BitshiftCodebookConfig) -> Float[Array, "values_per_step number_of_states"]:
+    @staticmethod
+    def _initialize_lut(
+        config: BitshiftCodebookConfig, key: PRNGKeyArray
+    ) -> Float[Array, "values_per_step number_of_states"]:
+        _ = key
         assert config.values_per_step == 1
 
         state_indices = jnp.arange(config.number_of_states, dtype=jnp.uint32)
-        hash_result = state_indices * jnp.uint32(34038481) + jnp.uint32(76625530)
 
-        byte_sum = (
+        hash_result = state_indices * jnp.uint32(34038481) + jnp.uint32(76625530)
+        hash_result = (
             (hash_result & jnp.uint32(255))
             + ((hash_result >> 8) & jnp.uint32(255))
             + ((hash_result >> 16) & jnp.uint32(255))
             + ((hash_result >> 24) & jnp.uint32(255))
         )
 
-        normalized_values = (byte_sum.astype(jnp.float32) - 510.0) / 147.800537109375
+        normalized_values = (hash_result.astype(jnp.float32) - 510.0) / 147.800537109375
         return jnp.expand_dims(normalized_values, axis=0)
 
 
 class TwoMultiplyAddHashLUTProvider(LUTProvider):
-    def build_lut(self, config: BitshiftCodebookConfig) -> Float[Array, "values_per_step number_of_states"]:
+    @staticmethod
+    def _initialize_lut(
+        config: BitshiftCodebookConfig, key: PRNGKeyArray
+    ) -> Float[Array, "values_per_step number_of_states"]:
+        _ = key
         assert config.values_per_step == 1
 
         state_indices = jnp.arange(config.number_of_states, dtype=jnp.uint32)
@@ -56,20 +83,23 @@ class TwoMultiplyAddHashLUTProvider(LUTProvider):
         )
         hash_result_upper_product = hash_result_upper_half * multiplier_upper_half + (hash_result_middle_product >> 16)
         hash_result = hash_result_upper_product + hash_result
-
-        byte_sum = (
+        hash_result = (
             (hash_result & jnp.uint32(255))
             + ((hash_result >> 8) & jnp.uint32(255))
             + ((hash_result >> 16) & jnp.uint32(255))
             + ((hash_result >> 24) & jnp.uint32(255))
         )
 
-        normalized_values = (byte_sum.astype(jnp.float32) - 510.0) / 147.800537109375
+        normalized_values = (hash_result.astype(jnp.float32) - 510.0) / 147.800537109375
         return jnp.expand_dims(normalized_values, axis=0)
 
 
 class ThreeInstructionHashLUTProvider(LUTProvider):
-    def build_lut(self, config: BitshiftCodebookConfig) -> Float[Array, "values_per_step number_of_states"]:
+    @staticmethod
+    def _initialize_lut(
+        config: BitshiftCodebookConfig, key: PRNGKeyArray
+    ) -> Float[Array, "values_per_step number_of_states"]:
+        _ = key
         assert config.values_per_step == 1
 
         state_indices = jnp.arange(config.number_of_states, dtype=jnp.uint32)
