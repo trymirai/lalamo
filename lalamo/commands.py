@@ -5,6 +5,7 @@ from enum import Enum
 from itertools import chain
 from pathlib import Path
 
+import requests
 from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters
@@ -56,6 +57,25 @@ class PullCallbacks:
     def finished(self) -> None:
         """Called when pull command completes successfully."""
         pass
+
+
+def _download_file(url: str, dest_path: Path) -> None:
+    """Download file from URL to destination path.
+
+    Args:
+        url: URL to download from
+        dest_path: Local path to save the file
+
+    Raises:
+        requests.RequestException: If download fails
+    """
+    response = requests.get(url, stream=True, timeout=60)
+    response.raise_for_status()
+
+    with open(dest_path, "wb") as f:
+        for chunk in response.iter_content(chunk_size=8192):
+            if chunk:
+                f.write(chunk)
 
 
 class Precision(Enum):
