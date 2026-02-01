@@ -25,18 +25,53 @@ __all__ = [
     "Mamba2Result",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
+    "exp_segsum",
 ]
 
 
-def segsum(x: Float[Array, "... T"]) -> Float[Array, "... T T"]:
-    """Stable segment sum for causal cumulative computation."""
+def exp_segsum(x: Float[Array, "... T"]) -> Float[Array, "... T T"]:
+    """Compute exp(segsum(x)) as lower-triangular matrix using cumsum difference."""
     T = x.shape[-1]
-    x = jnp.broadcast_to(x[..., None], (*x.shape, T))  # ... T -> ... T T
-    mask = jnp.tril(jnp.ones((T, T), dtype=bool), k=-1)
-    x = jnp.where(mask, x, 0)
-    x_segsum = jnp.cumsum(x, axis=-2)
-    mask = jnp.tril(jnp.ones((T, T), dtype=bool), k=0)
-    return jnp.where(mask, x_segsum, -jnp.inf)
+    cs = jnp.cumsum(x, axis=-1)
+    diff = cs[..., :, None] - cs[..., None, :]
+    mask = jnp.tril(jnp.ones((T, T), dtype=bool))
+    return jnp.where(mask, jnp.exp(diff), 0.0)
+
+
+def fused_ssd_intra_chunk(
+    A_cumsum: Float[Array, "groups heads_per_group chunks chunk_size"],
+    CB: Float[Array, "chunks chunk_size chunk_size groups"],
+    X: Float[Array, "chunks chunk_size groups heads_per_group head_dim"],
+) -> Float[Array, "chunks chunk_size groups heads_per_group head_dim"]:
+    """Compute intra-chunk diagonal block outputs for SSD.
+
+    Avoids materializing the full global L matrix by computing decay locally per (chunk, group, head).
+    """
+    groups, heads_per_group, chunks, chunk_size = A_cumsum.shape
+
+    def compute_one(
+        a_cs: Float[Array, " chunk_size"],
+        cb: Float[Array, "chunk_size chunk_size"],
+        x: Float[Array, "chunk_size head_dim"],
+    ) -> Float[Array, "chunk_size head_dim"]:
+        diff = a_cs[:, None] - a_cs[None, :]
+        mask = jnp.tril(jnp.ones((chunk_size, chunk_size), dtype=jnp.bool_))
+        L_local = jnp.where(mask, jnp.exp(diff), 0.0)
+        W = L_local * cb
+        return W @ x
+
+    def compute_chunk_group_head(c: int, g: int, r: int) -> Float[Array, "chunk_size head_dim"]:
+        return compute_one(A_cumsum[g, r, c, :], CB[c, :, :, g], X[c, :, g, r, :])
+
+    result = jax.vmap(
+        lambda c: jax.vmap(
+            lambda g: jax.vmap(
+                lambda r: compute_chunk_group_head(c, g, r)
+            )(jnp.arange(heads_per_group))
+        )(jnp.arange(groups))
+    )(jnp.arange(chunks))
+
+    return jnp.transpose(result, (0, 3, 1, 2, 4))
 
 
 Mamba2Result = TokenMixerResult[Mamba2StateLayer]
@@ -520,32 +555,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         z: Float[Array, "seq heads head_dim"] | None = None,
         z_bias: Float[Array, "heads head_dim"] | None = None,
     ) -> tuple[Float[Array, "seq heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
-        """Chunked parallel scan implementing the SSD algorithm.
-
-        Complexity:
-            - Parallel depth (on an ideal parallel machine):
-              - O(log chunk_size) for intra-chunk (segsum + einsum)
-              - O(n / chunk_size) for inter-chunk (segsum / cumsum over chunks + matrix multiply)
-            - Work (total operations):
-              - O(n * chunk_size) for intra-chunk
-              - O((n / chunk_size) ** 2) for inter-chunk due to the triangular segsum structure
-
-        The inter-chunk recurrence uses a matrix formulation (segsum + einsum) that
-        computes all chunk boundary states in parallel over chunks, rather than sequentially
-        stepping through them.
-
-        Args:
-            num_steps: Number of actual tokens (ignoring padding). The final state
-                will be computed only up to this position.
-            D: Skip connection weight (fused into scan). Shape: (heads,)
-            z: Gate values for output gating (fused). Shape: (seq, heads, head_dim)
-            z_bias: Gate bias. Shape: (heads, head_dim)
-        """
+        """Chunked parallel scan implementing the SSD algorithm."""
         seq_len = X.shape[0]
         num_steps = jnp.asarray(num_steps, dtype=jnp.int32)
 
-        # Pad to multiple of chunk_size FIRST, before any masking
-        # This ensures consistent shapes for JIT compilation
         pad_len = (chunk_size - seq_len % chunk_size) % chunk_size
         if pad_len > 0:
             X = jnp.pad(X, ((0, pad_len), (0, 0), (0, 0)))
@@ -555,45 +568,35 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             if z is not None:
                 z = jnp.pad(z, ((0, pad_len), (0, 0), (0, 0)))
 
-        # Store padded original X, B, dt for computing final state at exact position
         X_orig = X
         B_orig = B
         dt_orig = dt
 
-        # Now apply mask to inputs - positions beyond num_steps contribute nothing
-        # Use padded length for mask
         padded_len = X.shape[0]
         position_indices = jnp.arange(padded_len)
         valid_mask = (position_indices < num_steps).astype(X.dtype)
         X = X * valid_mask[:, None, None]
         B = B * valid_mask[:, None, None]
-        # Note: dt is not masked because decay should still apply, but the contribution
-        # from masked X and B will be zero
 
-        # Reshape into chunks, exposing group structure to avoid B/C repeat
         X = rearrange(X, "(c l) (g r) p -> c l g r p", l=chunk_size, g=self.num_groups)
         A = rearrange(-dt, "(c l) (g r) -> g r c l", l=chunk_size, g=self.num_groups)
         B = rearrange(B, "(c l) g n -> c l g n", l=chunk_size)
         C = rearrange(C, "(c l) g n -> c l g n", l=chunk_size)
         A_cumsum = jnp.cumsum(A, axis=-1)
 
-        # 1. Intra-chunk outputs (parallel within chunk)
-        L = jnp.exp(segsum(A))
-        Y_diag = einsum(C, B, L, X, "c l g n, c s g n, g r c l s, c s g r p -> c l g r p")
+        CB = einsum(C, B, "c l g n, c s g n -> c l s g")
+        Y_diag = fused_ssd_intra_chunk(A_cumsum, CB, X)
 
-        # 2. Chunk-end states
         decay_states = jnp.exp(A_cumsum[:, :, :, -1:] - A_cumsum)
         states = einsum(B, decay_states, X, "c l g n, g r c l, c l g r p -> c g r p n")
 
-        # 3. Inter-chunk recurrence
         initial_state_grouped = rearrange(initial_state, "(g r) p n -> g r p n", g=self.num_groups)
         states = jnp.concatenate([initial_state_grouped[None, ...], states], axis=0)
         A_chunk_ends = jnp.pad(A_cumsum[:, :, :, -1], ((0, 0), (0, 0), (1, 0)))
-        decay_chunk = jnp.exp(segsum(A_chunk_ends))
+        decay_chunk = exp_segsum(A_chunk_ends)
         new_states = einsum(decay_chunk, states, "g r z c, c g r p n -> z g r p n")
         states = new_states[:-1]
 
-        # 4. Off-diagonal contributions (state -> output)
         state_decay_out = jnp.exp(A_cumsum)
         Y_off = einsum(C, states, state_decay_out, "c l g n, c g r p n, g r c l -> c l g r p")
 
@@ -623,17 +626,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         num_steps: Int[Array, ""],
         chunk_size: int,
     ) -> Float[Array, "heads head_dim state_dim"]:
-        """Compute the exact final state at position num_steps using parallel ops.
-
-        Uses precomputed chunk_states and parallel einsum instead of sequential scan.
-        The SSM recurrence is linear, so state at position k can be expressed as:
-            state[k] = exp(A_cumsum[k]) * chunk_start_state
-                     + sum_{i=0}^{k} exp(A_cumsum[k] - A_cumsum[i]) * B[i] * X[i]
-
-        Args:
-            chunk_states: States at chunk boundaries from inter-chunk recurrence.
-                chunk_states[k] is the state at the START of chunk k.
-        """
+        """Compute the exact final state at position num_steps using precomputed chunk_states."""
         heads_per_group = self.num_heads // self.num_groups
 
         chunk_idx = num_steps // chunk_size
@@ -650,14 +643,11 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             dt_chunk = jax.lax.dynamic_slice(dt, (chunk_start_pos, 0), (chunk_size, dt.shape[1]))
 
             A_cumsum = jnp.cumsum(-dt_chunk, axis=0)
-            # 0-indexed position within the chunk; state is after processing last_pos_idx
             last_pos_idx = pos_in_chunk - 1
             A_cumsum_at_last = jax.lax.dynamic_index_in_dim(A_cumsum, last_pos_idx, axis=0, keepdims=False)
 
-            # Decay chunk_start_state to position last_pos_idx
             decayed_start = jnp.exp(A_cumsum_at_last)[:, None, None] * chunk_start_state
 
-            # Input contributions from positions 0..last_pos_idx
             decay_to_last = jnp.exp(A_cumsum_at_last[None, :] - A_cumsum)
             mask = jnp.arange(chunk_size) <= last_pos_idx
             masked_decay = jnp.where(mask[:, None], decay_to_last, 0.0)
@@ -693,11 +683,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         seq_len, _ = inputs.shape
 
-        # Optimized single-token decode path - avoids scan machinery entirely
         if seq_len == 1 and return_updated_state:
             return self._decode_step(inputs, state)
 
-        # Multi-token path (prefill or when state not needed)
         conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(inputs)
 
         conv_output, updated_conv_state = self.conv(
@@ -736,7 +724,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         if length_without_padding is None:
             length_without_padding, _ = inputs.shape
 
-        # Reshape gate values and bias for fusion into chunked scan
         gate_values_reshaped = rearrange(
             gate_values,
             "suffix_tokens (heads head_channels) -> suffix_tokens heads head_channels",
@@ -748,7 +735,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             heads=self.num_heads,
         )
 
-        # Chunked scan with fused D (skip connection) and z (gating)
         dt = jax.nn.softplus(time_delta_log)
         ssm_outputs, final_ssm_state = self._chunked_scan(
             hidden_states,
@@ -763,7 +749,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             z_bias=gate_bias_reshaped,
         )
 
-        # Flatten (heads, head_dim) to inner_dim for output projection
         ssm_outputs_flat = rearrange(
             ssm_outputs,
             "suffix_tokens heads head_channels -> suffix_tokens (heads head_channels)",
