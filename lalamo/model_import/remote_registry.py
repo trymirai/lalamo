@@ -5,7 +5,6 @@ import requests
 
 @dataclass(frozen=True)
 class RemoteFileSpec:
-    """Specification for a remote file to download."""
     name: str
     url: str
     size: int
@@ -14,7 +13,6 @@ class RemoteFileSpec:
 
 @dataclass(frozen=True)
 class RemoteModelSpec:
-    """Specification for a pre-converted model in the remote registry."""
     id: str
     vendor: str
     name: str
@@ -26,14 +24,6 @@ class RemoteModelSpec:
 
 
 def fetch_available_models() -> list[RemoteModelSpec]:
-    """Fetch list of pre-converted models from Mirai SDK API.
-
-    Returns:
-        List of RemoteModelSpec objects representing available models.
-
-    Raises:
-        requests.RequestException: If API request fails.
-    """
     api_url = "https://sdk.trymirai.com/api/v1/models/list/lalamo"
     response = requests.get(api_url, timeout=30)
     response.raise_for_status()

@@ -36,42 +36,27 @@ from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
 
 @dataclass
 class PullCallbacks:
-    """Callbacks for pull command progress tracking."""
     model_spec: RemoteModelSpec
     output_dir: Path
     overwrite: bool
 
     def started(self) -> None:
-        """Called when pull command starts."""
         pass
 
     def output_dir_exists(self) -> None:
-        """Called when output directory already exists."""
         raise RuntimeError(f"{self.output_dir=} already exists, refusing to overwrite!")
 
     def downloading(self, file_spec: RemoteFileSpec) -> None:
-        """Called when file download starts."""
         pass
 
     def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
-        """Called when file download completes."""
         pass
 
     def finished(self) -> None:
-        """Called when pull command completes successfully."""
         pass
 
 
 def _download_file(url: str, dest_path: Path) -> None:
-    """Download file from URL to destination path.
-
-    Args:
-        url: URL to download from
-        dest_path: Local path to save the file
-
-    Raises:
-        requests.RequestException: If download fails
-    """
     response = requests.get(url, stream=True, timeout=60)
     response.raise_for_status()
 
@@ -82,15 +67,7 @@ def _download_file(url: str, dest_path: Path) -> None:
 
 
 def _match_model(query: str, available_models: list[RemoteModelSpec]) -> RemoteModelSpec | None:
-    """Match user query to a model using exact and fuzzy matching.
-
-    Args:
-        query: User's model query (repo ID or name)
-        available_models: List of available models
-
-    Returns:
-        Matched RemoteModelSpec or None if no match found
-    """
+    """Match user query to a model using exact and fuzzy matching. """
     # Try exact match on repo_id
     for model in available_models:
         if model.repo_id == query:
@@ -114,16 +91,6 @@ def _match_model(query: str, available_models: list[RemoteModelSpec]) -> RemoteM
 
 
 def _suggest_similar_models(query: str, available_models: list[RemoteModelSpec], limit: int = 3) -> list[str]:
-    """Find similar model names for suggestions.
-
-    Args:
-        query: User's model query
-        available_models: List of available models
-        limit: Maximum number of suggestions
-
-    Returns:
-        List of similar model repo IDs
-    """
     repo_ids = [m.repo_id for m in available_models]
     matches = thefuzz.process.extract(query, repo_ids, limit=limit)
     return [match[0] for match in matches if match[1] >= 50]
@@ -143,7 +110,6 @@ def pull(
     except requests.RequestException as e:
         raise RuntimeError(f"Failed to fetch model list from SDK. Check your internet connection. Error: {e}") from e
 
-    # Match model
     model_spec = _match_model(query, available_models)
     if model_spec is None:
         suggestions = _suggest_similar_models(query, available_models)
@@ -152,20 +118,16 @@ def pull(
             error_msg += f' Did you mean: {", ".join(suggestions)}?'
         raise ValueError(error_msg)
 
-    # Initialize callbacks
     callbacks = callbacks_type(model_spec, output_dir, overwrite)
 
-    # Check output directory
     if output_dir.exists():
         callbacks.output_dir_exists()
 
     callbacks.started()
 
-    # Create temp directory for downloads
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
 
-        # Download all files
         for file_spec in model_spec.files:
             callbacks.downloading(file_spec)
 
@@ -177,7 +139,6 @@ def pull(
 
             callbacks.finished_downloading(file_spec)
 
-        # All files downloaded, move to output directory
         output_dir.mkdir(parents=True, exist_ok=True)
         for file_spec in model_spec.files:
             src = temp_path / file_spec.name
