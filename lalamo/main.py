@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import jax.profiler
+import requests
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -37,13 +38,16 @@ from lalamo.commands import (
     EstimateBatchsizeCallbacks,
     GenerateRepliesCallbacks,
     Precision,
+    PullCallbacks,
     TraceCallbacks,
     TrainCallbacks,
+    _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import generate_replies as _generate_replies
+from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.common import (
@@ -54,6 +58,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
+from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.speculator.ngram import NGramSpeculator
@@ -79,7 +84,7 @@ class ModelParser(ParamType):
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
         result = REPO_TO_MODEL.get(value)
         if result is None:
-            closest_repo = _closest_repo(value)
+            closest_repo = _closest_repo(value, list(REPO_TO_MODEL))
             error_message_parts = [
                 f'"{value}".',
             ]
@@ -95,10 +100,37 @@ class ModelParser(ParamType):
         return result
 
 
-def _closest_repo(query: str, min_score: float = 80) -> str | None:
-    if not REPO_TO_MODEL:
+class RemoteModelParser(ParamType):
+    name: str = "Pre-converted Model"
+
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> "RegistryModel":
+        try:
+            available_models = fetch_available_models()
+        except (requests.RequestException, ValueError) as e:
+            error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
+            return self.fail(error_message, param, ctx)
+
+        repo_to_model = {m.repo_id: m for m in available_models}
+        model_spec = repo_to_model.get(value)
+        if model_spec is None:
+            closest_repo = _closest_repo(value, list(repo_to_model))
+            if closest_repo:
+                model_spec = repo_to_model[closest_repo]
+
+        if model_spec is None:
+            suggestions = _suggest_similar_models(value, available_models)
+            error_message = f'Model "{value}" not found.'
+            if suggestions:
+                error_message += "\n\nDid you mean one of these?\n" + "\n".join(f"  - {s}" for s in suggestions)
+            return self.fail(error_message, param, ctx)
+
+        return model_spec
+
+
+def _closest_repo(query: str, repo_ids: list[str], min_score: float = 80) -> str | None:
+    if not repo_ids:
         return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, list(REPO_TO_MODEL))
+    (closest_match, score), *_ = thefuzz.process.extract(query, repo_ids)
     if closest_match and score >= min_score:
         return closest_match
     return None
@@ -269,6 +301,49 @@ class CliConversionCallbacks(ConversionCallbacks):
         console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
 
 
+@dataclass
+class CliPullCallbacks(PullCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    downloading_tasks: dict[RegistryModelFile, TaskID] = field(default_factory=dict)
+
+    def started(self) -> None:
+        console.print(f"📦 Pulling [cyan]{self.model_spec.name}[/cyan] by [cyan]{self.model_spec.vendor}[/cyan]")
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        shutil.rmtree(self.output_dir)
+
+    def downloading(self, file_spec: RegistryModelFile) -> None:
+        assert self.progress is not None
+
+        self.downloading_tasks[file_spec] = self.progress.add_task(f"⬇️  Downloading {file_spec.name}...")
+
+    def finished_downloading(self, file_spec: RegistryModelFile) -> None:
+        assert self.progress is not None
+
+        self.progress.remove_task(self.downloading_tasks[file_spec])
+
+    def finished(self) -> None:
+        assert self.progress is not None
+
+        self.stack.close()
+        console.print(f"🎉 Model successfully pulled to [cyan]{self.output_dir}[/cyan]!")
+
+
 @app.command(help="Convert the model for use with the Uzu inference engine.")
 def convert(
     model_repo: Annotated[
@@ -322,6 +397,46 @@ def convert(
         precision,
         context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@app.command(help="Pull a pre-converted model from the SDK repository.")
+def pull(
+    model_spec: Annotated[
+        RegistryModel,
+        Argument(
+            help=(
+                "Model repository ID from the pre-converted catalog. "
+                "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan]. "
+                "Fuzzy matching is supported for typos and partial names."
+            ),
+            click_type=RemoteModelParser(),
+            show_default=False,
+            metavar="MODEL_IDENTIFIER",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the pulled model to.",
+            show_default="Saves the pulled model in the `models/<model_name>` directory",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing model files without prompting.",
+        ),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR / model_spec.name
+
+    _pull(
+        model_spec,
+        output_dir,
+        partial(CliPullCallbacks),
+        overwrite=overwrite,
     )
 
 
@@ -875,10 +990,12 @@ def view_traces(
         table.add_column("Prefix")
         table.add_column("Completion")
 
+        from rich.text import Text
+
         for completion in islice(traces, num_completions):
             detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
             detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
-            table.add_row(detokenized_prefix, detokenized_completion)
+            table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
 
         console.print(table)
 
