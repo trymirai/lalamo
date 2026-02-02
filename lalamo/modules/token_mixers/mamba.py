@@ -61,16 +61,22 @@ def fused_ssd_intra_chunk(
         weighted = decay_local * cb_slice
         return weighted @ x_slice
 
-    def compute_chunk_group_head(c: int, g: int, r: int) -> Float[Array, "chunk_size head_dim"]:
-        return compute_one(a_cumsum[g, r, c, :], cb[c, :, :, g], x[c, :, g, r, :])
+    def compute_chunk_group_head(chunk_idx: int, group_idx: int, head_idx: int) -> Float[Array, "chunk_size head_dim"]:
+        return compute_one(
+            a_cumsum[group_idx, head_idx, chunk_idx, :],
+            cb[chunk_idx, :, :, group_idx],
+            x[chunk_idx, :, group_idx, head_idx, :],
+        )
 
-    result = jax.vmap(
-        lambda c: jax.vmap(
-            lambda g: jax.vmap(
-                lambda r: compute_chunk_group_head(c, g, r),
-            )(jnp.arange(heads_per_group)),
-        )(jnp.arange(groups)),
-    )(jnp.arange(chunks))
+    def over_heads(chunk_idx: int, group_idx: int) -> Float[Array, "heads_per_group chunk_size head_dim"]:
+        return jax.vmap(lambda head_idx: compute_chunk_group_head(chunk_idx, group_idx, head_idx))(
+            jnp.arange(heads_per_group),
+        )
+
+    def over_groups(chunk_idx: int) -> Float[Array, "groups heads_per_group chunk_size head_dim"]:
+        return jax.vmap(lambda group_idx: over_heads(chunk_idx, group_idx))(jnp.arange(groups))
+
+    result = jax.vmap(over_groups)(jnp.arange(chunks))
 
     return rearrange(
         result,
@@ -205,6 +211,19 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
             results,
             updated_state,
         )
+
+    def step(
+        self,
+        token: Float[Array, " channels"],
+        state: Float[Array, "kernel_minus_1 channels"],
+    ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
+        """Single-token conv update without full convolution overhead."""
+        full_input = jnp.concatenate([state, token[None, :]], axis=0)
+        output = einsum(full_input, self.weights, "kernel channels, channels kernel -> channels")
+        if self.biases is not None:
+            output = output + self.biases
+        new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
+        return output, new_state
 
     def export_weights(self) -> ParameterTree:
         result: dict[str, Array] = {"weights": self.weights}
@@ -407,19 +426,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         return output, new_state
 
-    def _conv_step(
-        self,
-        token: Float[Array, " channels"],
-        state: Float[Array, "kernel_minus_1 channels"],
-    ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
-        """Single-token conv update without full convolution."""
-        full_input = jnp.concatenate([state, token[None, :]], axis=0)
-        output = einsum(full_input, self.conv.weights, "kernel channels, channels kernel -> channels")
-        if self.conv.biases is not None:
-            output = output + self.conv.biases
-        new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
-        return output, new_state
-
     def _decode_step(
         self,
         inputs: Float[Array, "1 channels"],
@@ -429,7 +435,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         token = inputs[0]
 
         conv_in, gate, dt_log = self.in_projection(token)
-        conv_out, new_conv_state = self._conv_step(conv_in, state.conv_state)
+        conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
         conv_activated = self.config.activation(conv_out)
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(
@@ -579,7 +585,12 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             "chunks groups heads_per_group head_dim state_dim -> chunks (groups heads_per_group) head_dim state_dim",
         )
         final_state = self._compute_final_state(
-            values_orig, keys_orig, dt_orig, new_states_flat, num_steps, chunk_size,
+            values_orig,
+            keys_orig,
+            dt_orig,
+            new_states_flat,
+            num_steps,
+            chunk_size,
         )
 
         return y, final_state
@@ -606,7 +617,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         def within_chunk() -> Float[Array, "heads head_dim state_dim"]:
             chunk_start_pos = chunk_idx * chunk_size
             values_chunk = jax.lax.dynamic_slice(
-                values, (chunk_start_pos, 0, 0), (chunk_size, values.shape[1], values.shape[2]),
+                values,
+                (chunk_start_pos, 0, 0),
+                (chunk_size, values.shape[1], values.shape[2]),
             )
             keys_chunk = jax.lax.dynamic_slice(
                 keys,
@@ -618,7 +631,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             log_decay_cumsum = jnp.cumsum(-dt_chunk, axis=0)
             last_pos_idx = pos_in_chunk - 1
             log_decay_cumsum_at_last = jax.lax.dynamic_index_in_dim(
-                log_decay_cumsum, last_pos_idx, axis=0, keepdims=False,
+                log_decay_cumsum,
+                last_pos_idx,
+                axis=0,
+                keepdims=False,
             )
 
             decayed_start = jnp.exp(log_decay_cumsum_at_last)[:, None, None] * chunk_start_state
