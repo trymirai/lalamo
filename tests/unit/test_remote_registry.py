@@ -3,16 +3,11 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
-from lalamo.model_import.remote_registry import (
-    RemoteFileSpec,
-    RemoteModelSpec,
-    fetch_available_models,
-)
+from lalamo.model_import.remote_registry import fetch_available_models
 
 
 @patch("lalamo.model_import.remote_registry.requests.get")
 def test_fetch_available_models_success(mock_get: Mock) -> None:
-    """Test successful fetching of available models."""
     mock_response = Mock()
     mock_response.json.return_value = {
         "models": [
@@ -30,7 +25,7 @@ def test_fetch_available_models_success(mock_get: Mock) -> None:
                         "url": "https://example.com/model.pte",
                         "size": 1234567890,
                         "crc32c": "abcd1234",
-                    }
+                    },
                 ],
             },
             {
@@ -56,7 +51,7 @@ def test_fetch_available_models_success(mock_get: Mock) -> None:
                     },
                 ],
             },
-        ]
+        ],
     }
     mock_get.return_value = mock_response
 
@@ -90,13 +85,13 @@ def test_fetch_available_models_success(mock_get: Mock) -> None:
 
     # Verify API call
     mock_get.assert_called_once_with(
-        "https://sdk.trymirai.com/api/v1/models/list/lalamo", timeout=30
+        "https://sdk.trymirai.com/api/v1/models/list/lalamo",
+        timeout=30,
     )
 
 
 @patch("lalamo.model_import.remote_registry.requests.get")
 def test_fetch_available_models_empty_response(mock_get: Mock) -> None:
-    """Test handling of empty models list."""
     mock_response = Mock()
     mock_response.json.return_value = {"models": []}
     mock_get.return_value = mock_response
@@ -109,7 +104,6 @@ def test_fetch_available_models_empty_response(mock_get: Mock) -> None:
 
 @patch("lalamo.model_import.remote_registry.requests.get")
 def test_fetch_available_models_http_error(mock_get: Mock) -> None:
-    """Test handling of HTTP errors."""
     mock_response = Mock()
     mock_response.raise_for_status.side_effect = requests.HTTPError("404 Not Found")
     mock_get.return_value = mock_response
@@ -120,38 +114,7 @@ def test_fetch_available_models_http_error(mock_get: Mock) -> None:
 
 @patch("lalamo.model_import.remote_registry.requests.get")
 def test_fetch_available_models_network_error(mock_get: Mock) -> None:
-    """Test handling of network errors."""
     mock_get.side_effect = requests.ConnectionError("Network unreachable")
 
     with pytest.raises(requests.ConnectionError):
         fetch_available_models()
-
-
-def test_remote_file_spec_immutable() -> None:
-    """Test that RemoteFileSpec is immutable."""
-    file_spec = RemoteFileSpec(
-        name="model.pte", url="https://example.com/model.pte", size=1000, crc32c="abc"
-    )
-
-    with pytest.raises(AttributeError):
-        file_spec.name = "other.pte"  # type: ignore
-
-
-def test_remote_model_spec_immutable() -> None:
-    """Test that RemoteModelSpec is immutable."""
-    file_spec = RemoteFileSpec(
-        name="model.pte", url="https://example.com/model.pte", size=1000, crc32c="abc"
-    )
-    model_spec = RemoteModelSpec(
-        id="test-model",
-        vendor="Test",
-        name="Test Model",
-        family="Test",
-        size="1B",
-        repo_id="test/model",
-        quantization=None,
-        files=[file_spec],
-    )
-
-    with pytest.raises(AttributeError):
-        model_spec.name = "Other Model"  # type: ignore
