@@ -78,6 +78,7 @@ class MessageProcessorConfig:
     assistant_role_name: str
     eos_token: str
     bos_token: str | None
+    eos_token: str | None
 
     def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
         return MessageProcessor(
