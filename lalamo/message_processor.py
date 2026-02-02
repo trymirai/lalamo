@@ -39,7 +39,7 @@ class HuggingFaceMessage(TypedDict):
 class HuggingFaceRequest(TypedDict):
     add_generation_prompt: bool
     bos_token: str | None
-    eos_token: str | None
+    eos_token: str
     messages: list[HuggingFaceMessage]
     enable_thinking: NotRequired[bool]
     tools: NotRequired[dict]
@@ -76,8 +76,8 @@ class MessageProcessorConfig:
     system_role_name: str
     user_role_name: str
     assistant_role_name: str
+    eos_token: str
     bos_token: str | None
-    eos_token: str | None
 
     def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
         return MessageProcessor(
@@ -118,7 +118,7 @@ class MessageProcessor:
         return self.config.bos_token
 
     @property
-    def eos_token(self) -> str | None:
+    def eos_token(self) -> str:
         return self.config.eos_token
 
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
@@ -146,8 +146,8 @@ class MessageProcessor:
         result = HuggingFaceRequest(
             add_generation_prompt=True,
             messages=converted_messages,
-            bos_token=self.bos_token,
-            eos_token=self.eos_token or "",
+            bos_token=self.bos_token or "",
+            eos_token=self.eos_token,
         )
         if enable_thinking is not None:
             result["enable_thinking"] = enable_thinking
