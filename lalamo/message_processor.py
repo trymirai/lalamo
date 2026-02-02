@@ -118,7 +118,7 @@ class MessageProcessor:
         return self.config.bos_token
 
     @property
-    def eos_token(self) -> str:
+    def eos_token(self) -> str | None:
         return self.config.eos_token
 
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
