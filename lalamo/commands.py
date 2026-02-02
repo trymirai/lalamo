@@ -24,7 +24,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec
+from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -36,7 +36,7 @@ from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
 
 @dataclass
 class PullCallbacks:
-    model_spec: RemoteModelSpec
+    model_spec: RegistryModel
     output_dir: Path
     overwrite: bool
 
@@ -46,10 +46,10 @@ class PullCallbacks:
     def output_dir_exists(self) -> None:
         raise RuntimeError(f"{self.output_dir=} already exists, refusing to overwrite!")
 
-    def downloading(self, file_spec: RemoteFileSpec) -> None:
+    def downloading(self, file_spec: RegistryModelFile) -> None:
         pass
 
-    def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
+    def finished_downloading(self, file_spec: RegistryModelFile) -> None:
         pass
 
     def finished(self) -> None:
@@ -66,18 +66,18 @@ def _download_file(url: str, dest_path: Path) -> None:
                 f.write(chunk)
 
 
-def _suggest_similar_models(query: str, available_models: list[RemoteModelSpec], limit: int = 3) -> list[str]:
+def _suggest_similar_models(query: str, available_models: list[RegistryModel], limit: int = 3) -> list[str]:
     repo_ids = [m.repo_id for m in available_models]
     matches = thefuzz.process.extract(query, repo_ids, limit=limit)
     return [match[0] for match in matches if match[1] >= 50]
 
 
 def pull(
-    model_spec: RemoteModelSpec,
+    model_spec: RegistryModel,
     output_dir: Path,
     callbacks_type: Callable[
         [
-            RemoteModelSpec,
+            RegistryModel,
             Path,
             bool,
         ],

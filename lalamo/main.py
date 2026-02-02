@@ -52,7 +52,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
-from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec, fetch_available_models
+from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.speculator.estimator import (
     get_default_device_bytes,
@@ -100,7 +100,7 @@ class ModelParser(ParamType):
 class RemoteModelParser(ParamType):
     name: str = "Pre-converted Model"
 
-    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> "RemoteModelSpec":
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> "RegistryModel":
         try:
             available_models = fetch_available_models()
         except (requests.RequestException, ValueError) as e:
@@ -302,7 +302,7 @@ class CliConversionCallbacks(ConversionCallbacks):
 class CliPullCallbacks(PullCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
-    downloading_tasks: dict[RemoteFileSpec, TaskID] = field(default_factory=dict)
+    downloading_tasks: dict[RegistryModelFile, TaskID] = field(default_factory=dict)
 
     def started(self) -> None:
         console.print(f"📦 Pulling [cyan]{self.model_spec.name}[/cyan] by [cyan]{self.model_spec.vendor}[/cyan]")
@@ -324,12 +324,12 @@ class CliPullCallbacks(PullCallbacks):
 
         shutil.rmtree(self.output_dir)
 
-    def downloading(self, file_spec: RemoteFileSpec) -> None:
+    def downloading(self, file_spec: RegistryModelFile) -> None:
         assert self.progress is not None
 
         self.downloading_tasks[file_spec] = self.progress.add_task(f"⬇️  Downloading {file_spec.name}...")
 
-    def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
+    def finished_downloading(self, file_spec: RegistryModelFile) -> None:
         assert self.progress is not None
 
         self.progress.remove_task(self.downloading_tasks[file_spec])
@@ -400,7 +400,7 @@ def convert(
 @app.command(help="Pull a pre-converted model from the SDK repository.")
 def pull(
     model_spec: Annotated[
-        RemoteModelSpec,
+        RegistryModel,
         Argument(
             help=(
                 "Model repository ID from the pre-converted catalog. "

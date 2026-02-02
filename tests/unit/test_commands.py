@@ -5,13 +5,13 @@ import pytest
 import requests
 
 from lalamo.commands import PullCallbacks, pull
-from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec
+from lalamo.model_import.remote_registry import RegistryModelFile, RegistryModel
 
 
-def _create_test_models() -> list[RemoteModelSpec]:
+def _create_test_models() -> list[RegistryModel]:
     """Create test models for matching tests."""
     return [
-        RemoteModelSpec(
+        RegistryModel(
             id="meta-llama-3.2-1b-instruct",
             vendor="Meta",
             name="Llama-3.2-1B-Instruct",
@@ -20,7 +20,7 @@ def _create_test_models() -> list[RemoteModelSpec]:
             repo_id="meta-llama/Llama-3.2-1B-Instruct",
             quantization=None,
             files=[
-                RemoteFileSpec(
+                RegistryModelFile(
                     name="model.safetensors",
                     url="https://example.com/model.safetensors",
                     size=1000,
@@ -28,7 +28,7 @@ def _create_test_models() -> list[RemoteModelSpec]:
                 ),
             ],
         ),
-        RemoteModelSpec(
+        RegistryModel(
             id="meta-llama-3.2-3b-instruct",
             vendor="Meta",
             name="Llama-3.2-3B-Instruct",
@@ -37,7 +37,7 @@ def _create_test_models() -> list[RemoteModelSpec]:
             repo_id="meta-llama/Llama-3.2-3B-Instruct",
             quantization=None,
             files=[
-                RemoteFileSpec(
+                RegistryModelFile(
                     name="model.safetensors",
                     url="https://example.com/model.safetensors",
                     size=3000,
@@ -45,7 +45,7 @@ def _create_test_models() -> list[RemoteModelSpec]:
                 ),
             ],
         ),
-        RemoteModelSpec(
+        RegistryModel(
             id="google-gemma-2-2b-instruct",
             vendor="Google",
             name="Gemma-2-2B-Instruct",
@@ -54,7 +54,7 @@ def _create_test_models() -> list[RemoteModelSpec]:
             repo_id="google/gemma-2-2b-it",
             quantization=None,
             files=[
-                RemoteFileSpec(
+                RegistryModelFile(
                     name="model.safetensors",
                     url="https://example.com/model.safetensors",
                     size=2000,
@@ -80,10 +80,10 @@ def test_pull_success(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> N
         def started(self) -> None:
             callback_calls.append("started")
 
-        def downloading(self, file_spec: RemoteFileSpec) -> None:
+        def downloading(self, file_spec: RegistryModelFile) -> None:
             callback_calls.append(f"downloading:{file_spec.name}")
 
-        def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
+        def finished_downloading(self, file_spec: RegistryModelFile) -> None:
             callback_calls.append(f"finished_downloading:{file_spec.name}")
 
         def finished(self) -> None:
@@ -131,7 +131,7 @@ def test_pull_output_dir_exists_error(tmp_path: Path) -> None:
 @patch("lalamo.commands.shutil.move")
 def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
     # Create model with multiple files
-    model_with_multiple_files = RemoteModelSpec(
+    model_with_multiple_files = RegistryModel(
         id="test-model",
         vendor="Test",
         name="Test-Model",
@@ -140,19 +140,19 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Pat
         repo_id="test/model",
         quantization=None,
         files=[
-            RemoteFileSpec(
+            RegistryModelFile(
                 name="model.safetensors",
                 url="https://example.com/model.safetensors",
                 size=1000,
                 crc32c="abc",
             ),
-            RemoteFileSpec(
+            RegistryModelFile(
                 name="tokenizer.json",
                 url="https://example.com/tokenizer.json",
                 size=100,
                 crc32c="def",
             ),
-            RemoteFileSpec(
+            RegistryModelFile(
                 name="config.json",
                 url="https://example.com/config.json",
                 size=50,
@@ -166,10 +166,10 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Pat
     callback_calls = []
 
     class TestCallbacks(PullCallbacks):
-        def downloading(self, file_spec: RemoteFileSpec) -> None:
+        def downloading(self, file_spec: RegistryModelFile) -> None:
             callback_calls.append(f"downloading:{file_spec.name}")
 
-        def finished_downloading(self, file_spec: RemoteFileSpec) -> None:
+        def finished_downloading(self, file_spec: RegistryModelFile) -> None:
             callback_calls.append(f"finished_downloading:{file_spec.name}")
 
     # Execute
@@ -191,7 +191,7 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Pat
 @patch("lalamo.commands._download_file")
 def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> None:
     """Test that pull rejects filenames with path traversal attempts."""
-    malicious_model = RemoteModelSpec(
+    malicious_model = RegistryModel(
         id="malicious-model",
         vendor="Evil",
         name="Malicious-Model",
@@ -200,7 +200,7 @@ def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> Non
         repo_id="evil/malicious",
         quantization=None,
         files=[
-            RemoteFileSpec(
+            RegistryModelFile(
                 name="../../../etc/passwd",
                 url="https://example.com/evil.txt",
                 size=100,
@@ -221,7 +221,7 @@ def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> Non
 @patch("lalamo.commands._download_file")
 def test_pull_rejects_subdirectory_paths(mock_download: Mock, tmp_path: Path) -> None:
     """Test that pull rejects filenames containing subdirectories."""
-    malicious_model = RemoteModelSpec(
+    malicious_model = RegistryModel(
         id="malicious-model",
         vendor="Evil",
         name="Malicious-Model",
@@ -230,7 +230,7 @@ def test_pull_rejects_subdirectory_paths(mock_download: Mock, tmp_path: Path) ->
         repo_id="evil/malicious",
         quantization=None,
         files=[
-            RemoteFileSpec(
+            RegistryModelFile(
                 name="subdir/evil.txt",
                 url="https://example.com/evil.txt",
                 size=100,
