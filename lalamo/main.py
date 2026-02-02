@@ -727,10 +727,12 @@ def view_traces(
         table.add_column("Prefix")
         table.add_column("Completion")
 
+        from rich.text import Text
+
         for completion in islice(traces, num_completions):
             detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
             detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
-            table.add_row(detokenized_prefix, detokenized_completion)
+            table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
 
         console.print(table)
 
