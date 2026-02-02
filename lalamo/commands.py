@@ -66,23 +66,6 @@ def _download_file(url: str, dest_path: Path) -> None:
                 f.write(chunk)
 
 
-def _match_model(query: str, available_models: list[RemoteModelSpec]) -> RemoteModelSpec | None:
-    repo_ids = []
-    for model in available_models:
-        repo_ids.append(model.repo_id)
-        if query == model.repo_id:
-            return model
-
-    matches = thefuzz.process.extract(query, repo_ids, limit=1)
-    if matches and matches[0][1] >= 80:
-        matched_repo_id = matches[0][0]
-        for model in available_models:
-            if model.repo_id == matched_repo_id:
-                return model
-
-    return None
-
-
 def _suggest_similar_models(query: str, available_models: list[RemoteModelSpec], limit: int = 3) -> list[str]:
     repo_ids = [m.repo_id for m in available_models]
     matches = thefuzz.process.extract(query, repo_ids, limit=limit)

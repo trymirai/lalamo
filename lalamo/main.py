@@ -40,7 +40,6 @@ from lalamo.commands import (
     PullCallbacks,
     TraceCallbacks,
     TrainCallbacks,
-    _match_model,
     _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
@@ -82,7 +81,7 @@ class ModelParser(ParamType):
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
         result = REPO_TO_MODEL.get(value)
         if result is None:
-            closest_repo = _closest_repo(value)
+            closest_repo = _closest_repo(value, list(REPO_TO_MODEL))
             error_message_parts = [
                 f'"{value}".',
             ]
@@ -108,7 +107,13 @@ class RemoteModelParser(ParamType):
             error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
             return self.fail(error_message, param, ctx)
 
-        model_spec = _match_model(value, available_models)
+        repo_to_model = {m.repo_id: m for m in available_models}
+        model_spec = repo_to_model.get(value)
+        if model_spec is None:
+            closest_repo = _closest_repo(value, list(repo_to_model))
+            if closest_repo:
+                model_spec = repo_to_model[closest_repo]
+
         if model_spec is None:
             suggestions = _suggest_similar_models(value, available_models)
             error_message = f'Model "{value}" not found.'
@@ -119,10 +124,10 @@ class RemoteModelParser(ParamType):
         return model_spec
 
 
-def _closest_repo(query: str, min_score: float = 80) -> str | None:
-    if not REPO_TO_MODEL:
+def _closest_repo(query: str, repo_ids: list[str], min_score: float = 80) -> str | None:
+    if not repo_ids:
         return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, list(REPO_TO_MODEL))
+    (closest_match, score), *_ = thefuzz.process.extract(query, repo_ids)
     if closest_match and score >= min_score:
         return closest_match
     return None
