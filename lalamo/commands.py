@@ -100,7 +100,11 @@ def pull(
     model_spec: RemoteModelSpec,
     output_dir: Path,
     callbacks_type: Callable[
-        [RemoteModelSpec, Path, bool],
+        [
+            RemoteModelSpec,
+            Path,
+            bool,
+        ],
         PullCallbacks,
     ] = PullCallbacks,
     overwrite: bool = False,

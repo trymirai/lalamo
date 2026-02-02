@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import jax.profiler
+import requests
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -39,6 +40,8 @@ from lalamo.commands import (
     PullCallbacks,
     TraceCallbacks,
     TrainCallbacks,
+    _match_model,
+    _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
@@ -46,7 +49,6 @@ from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
-from lalamo.commands import _match_model, _suggest_similar_models
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
@@ -102,7 +104,7 @@ class RemoteModelParser(ParamType):
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> "RemoteModelSpec":
         try:
             available_models = fetch_available_models()
-        except Exception as e:
+        except (requests.RequestException, ValueError) as e:
             error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
             return self.fail(error_message, param, ctx)
 
@@ -111,7 +113,7 @@ class RemoteModelParser(ParamType):
             suggestions = _suggest_similar_models(value, available_models)
             error_message = f'Model "{value}" not found.'
             if suggestions:
-                error_message += f'\n\nDid you mean one of these?\n' + '\n'.join(f'  - {s}' for s in suggestions)
+                error_message += "\n\nDid you mean one of these?\n" + "\n".join(f"  - {s}" for s in suggestions)
             return self.fail(error_message, param, ctx)
 
         return model_spec
