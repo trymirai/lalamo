@@ -77,3 +77,12 @@ def test_viterbi() -> None:
         assert reconstruction_error < 0.01, f"Reconstruction error too high for {test_case.name}"
         assert actual_states.shape == expected_states.shape
         assert jnp.array_equal(actual_states, expected_states), f"States mismatch for {test_case.name}"
+
+        block_rows, block_columns, number_of_steps = actual_states.shape
+        packed_states = Quantizer.pack_states(actual_states, config)
+        expected_packed_size = (config.state_bits + (number_of_steps - 1) * config.bits_per_step + 7) // 8
+        assert packed_states.shape == (block_rows * block_columns, expected_packed_size), (
+            f"Packed shape mismatch for {test_case.name}"
+        )
+        unpacked_states = Quantizer.unpack_states(packed_states, number_of_steps, block_rows, block_columns, config)
+        assert jnp.array_equal(actual_states, unpacked_states), f"Pack/unpack mismatch for {test_case.name}"
