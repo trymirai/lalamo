@@ -138,6 +138,7 @@ def import_message_processor(
         progress_callback,
     )
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
+
     if tokenizer_config.chat_template is None:
         match model_spec.configs.chat_template:
             case JSONFieldSpec(file_spec, field_name):
@@ -172,6 +173,7 @@ def import_message_processor(
         user_role_name=model_spec.user_role_name,
         assistant_role_name=model_spec.assistant_role_name,
         bos_token=tokenizer_config.bos_token,
+        eos_token=tokenizer_config.eos_token,
     )
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 

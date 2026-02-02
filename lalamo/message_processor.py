@@ -39,6 +39,7 @@ class HuggingFaceMessage(TypedDict):
 class HuggingFaceRequest(TypedDict):
     add_generation_prompt: bool
     bos_token: str | None
+    eos_token: str | None
     messages: list[HuggingFaceMessage]
     enable_thinking: NotRequired[bool]
     tools: NotRequired[dict]
@@ -76,6 +77,7 @@ class MessageProcessorConfig:
     user_role_name: str
     assistant_role_name: str
     bos_token: str | None
+    eos_token: str | None = None
 
     def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
         return MessageProcessor(
@@ -115,6 +117,10 @@ class MessageProcessor:
     def bos_token(self) -> str | None:
         return self.config.bos_token
 
+    @property
+    def eos_token(self) -> str | None:
+        return self.config.eos_token
+
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         match message:
             case UserMessage(content=content):
@@ -137,7 +143,12 @@ class MessageProcessor:
         enable_thinking: bool | None = None,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
-        result = HuggingFaceRequest(add_generation_prompt=True, messages=converted_messages, bos_token=self.bos_token)
+        result = HuggingFaceRequest(
+            add_generation_prompt=True,
+            messages=converted_messages,
+            bos_token=self.bos_token,
+            eos_token=self.eos_token or "",
+        )
         if enable_thinking is not None:
             result["enable_thinking"] = enable_thinking
         if tools is not None:
