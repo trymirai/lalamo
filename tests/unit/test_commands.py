@@ -186,3 +186,63 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Pat
     assert "finished_downloading:model.safetensors" in callback_calls
     assert "finished_downloading:tokenizer.json" in callback_calls
     assert "finished_downloading:config.json" in callback_calls
+
+
+@patch("lalamo.commands._download_file")
+def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> None:
+    """Test that pull rejects filenames with path traversal attempts."""
+    malicious_model = RemoteModelSpec(
+        id="malicious-model",
+        vendor="Evil",
+        name="Malicious-Model",
+        family="Evil",
+        size="1B",
+        repo_id="evil/malicious",
+        quantization=None,
+        files=[
+            RemoteFileSpec(
+                name="../../../etc/passwd",
+                url="https://example.com/evil.txt",
+                size=100,
+                crc32c="evil",
+            ),
+        ],
+    )
+
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(RuntimeError, match="Invalid filename from registry"):
+        pull(malicious_model, output_dir)
+
+    # Verify download was never attempted
+    assert mock_download.call_count == 0
+
+
+@patch("lalamo.commands._download_file")
+def test_pull_rejects_subdirectory_paths(mock_download: Mock, tmp_path: Path) -> None:
+    """Test that pull rejects filenames containing subdirectories."""
+    malicious_model = RemoteModelSpec(
+        id="malicious-model",
+        vendor="Evil",
+        name="Malicious-Model",
+        family="Evil",
+        size="1B",
+        repo_id="evil/malicious",
+        quantization=None,
+        files=[
+            RemoteFileSpec(
+                name="subdir/evil.txt",
+                url="https://example.com/evil.txt",
+                size=100,
+                crc32c="evil",
+            ),
+        ],
+    )
+
+    output_dir = tmp_path / "output"
+
+    with pytest.raises(RuntimeError, match="Invalid filename from registry"):
+        pull(malicious_model, output_dir)
+
+    # Verify download was never attempted
+    assert mock_download.call_count == 0

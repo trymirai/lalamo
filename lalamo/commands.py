@@ -116,18 +116,27 @@ def pull(
         for file_spec in model_spec.files:
             callbacks.downloading(file_spec)
 
-            file_path = temp_path / file_spec.name
+            # Security: validate filename to prevent path traversal attacks
+            safe_name = Path(file_spec.name).name
+            if not safe_name or safe_name != file_spec.name:
+                raise RuntimeError(
+                    f"Invalid filename from registry: {file_spec.name!r}. "
+                    f"Filenames must not contain path separators or traversal sequences.",
+                )
+
+            file_path = temp_path / safe_name
             try:
                 _download_file(file_spec.url, file_path)
             except requests.RequestException as e:
-                raise RuntimeError(f"Failed to download {file_spec.name}: {e}") from e
+                raise RuntimeError(f"Failed to download {safe_name}: {e}") from e
 
             callbacks.finished_downloading(file_spec)
 
         output_dir.mkdir(parents=True, exist_ok=True)
         for file_spec in model_spec.files:
-            src = temp_path / file_spec.name
-            dst = output_dir / file_spec.name
+            safe_name = Path(file_spec.name).name
+            src = temp_path / safe_name
+            dst = output_dir / safe_name
             shutil.move(str(src), str(dst))
 
     callbacks.finished()
