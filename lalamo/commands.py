@@ -24,7 +24,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec, fetch_available_models
+from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec
 from lalamo.models import LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -71,7 +71,7 @@ def _match_model(query: str, available_models: list[RemoteModelSpec]) -> RemoteM
     repo_ids = []
     for model in available_models:
         repo_ids.append(model.repo_id)
-        if model.repo_id == query or model.name == query:
+        if query in (model.repo_id, model.name):
             return model
 
     matches = thefuzz.process.extract(query, repo_ids, limit=1)
