@@ -19,6 +19,8 @@ from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
 
 __all__ = [
+    "BatchSizeInfo",
+    "BatchSizesComputedEvent",
     "TextModel",
     "TextModelConfig",
 ]
@@ -31,6 +33,18 @@ class InferenceConfig:
     padded_length: int = 8192
     num_top_logits_to_return: int | None = None
     batch_size: int | None = None
+
+
+@dataclass(frozen=True)
+class BatchSizeInfo:
+    prefix_length: int
+    num_elements: int
+    batch_size: int
+
+
+@dataclass(frozen=True)
+class BatchSizesComputedEvent:
+    batch_sizes: tuple[BatchSizeInfo, ...]
 
 
 @dataclass(frozen=True)

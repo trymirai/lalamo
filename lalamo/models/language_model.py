@@ -1,5 +1,5 @@
 import functools
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
@@ -25,7 +25,7 @@ from lalamo.modules import (
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
-from .common import InferenceConfig, TextModel, TextModelConfig
+from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, TextModel, TextModelConfig
 from .lm_helpers import decrease_batchsize_on_oom, estimate_batchsizes_from_vram, merge_small_buckets
 
 __all__ = [
@@ -239,19 +239,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             effective_lengths = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
         last_logits_indices = effective_lengths - 1
 
-        if num_remaining_chunks > 0:
-            padding_length = num_remaining_chunks * chunk_size - remaining_length
-            total_length = first_chunk_size + num_remaining_chunks * chunk_size
-        else:
-            padding_length = 0
-            total_length = first_chunk_size
-
+        state = None
         if state_capacity is not None:
-            state = self.model.init_static_state(batch_size, state_capacity + padding_length)
-        elif num_remaining_chunks > 0:
-            state = self.model.init_static_state(batch_size, total_length)
-        else:
-            state = None
+            state = self.model.init_static_state(batch_size, state_capacity)
 
         last_token_logits, updated_state = self._prefill_first_chunk(
             token_ids,
@@ -531,6 +521,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         vram_bytes: int | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
+        batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
         dataset = list(dataset)  # eagerly load the dataset into RAM
 
@@ -568,6 +559,18 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             )
 
         buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=2)
+        assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
+
+        if batch_sizes_callback is not None:
+            batch_sizes = tuple(
+                BatchSizeInfo(
+                    prefix_length=padded_length,
+                    num_elements=len(buckets[padded_length]),
+                    batch_size=batch_size_per_bucket.get(padded_length, 1),
+                )
+                for padded_length in sorted(buckets.keys())
+            )
+            batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):

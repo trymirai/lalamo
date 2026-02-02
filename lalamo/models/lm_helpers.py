@@ -30,6 +30,10 @@ class BatchSizeEstimatingEvent:
     hi: int | None
 
 
+def _assert_sorted(values: list[int]) -> None:
+    assert all(values[i] <= values[i + 1] for i in range(len(values) - 1)), "expected sorted inputs"
+
+
 def merge_small_buckets[T: TokenSequence](
     buckets: dict[int, list[tuple[int, T]]],
     batch_size_for_length: dict[int, int],
@@ -48,7 +52,7 @@ def merge_small_buckets[T: TokenSequence](
 
         if len(items) < min_batches * batch_size:
             # the bucket is too small, push the items into a bigger one
-            overflow += items
+            overflow = items
         else:
             # the bucket is big enough, keep _all_ the items and move on
             # keeping all the items avoids a funny problem with spill over into _very_ long ctx length
@@ -69,6 +73,7 @@ def estimate_batchsizes_from_vram(
     vram_bytes: int,
     inference_config: InferenceConfig,
 ) -> dict[int, int]:
+    _assert_sorted(sorted_lengths)
     assert len(sorted_lengths) > 0
     usable_memory = get_usable_memory_from_bytes(vram_bytes)
 

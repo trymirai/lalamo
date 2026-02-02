@@ -55,6 +55,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -541,10 +542,23 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
 
     def batch_sizes_estimated(self) -> None:
         assert self.progress is not None
+        if self.estimating_task is None:
+            self.estimating_task = self.progress.add_task(
+                "📐 [cyan]Estimating the best batch sizes...[/cyan]",
+                total=None,
+            )
+
+    def batch_sizes_computed(self, event: BatchSizesComputedEvent) -> None:
+        assert self.progress is not None
         if self.estimating_task is not None:
             self.progress.remove_task(self.estimating_task)
             self.estimating_task = None
-
+        output_console = self.progress.console if self.progress is not None else console
+        for info in event.batch_sizes:
+            output_console.print(
+                f"Prefix length {info.prefix_length} has {info.num_elements} elements, "
+                f"with batchsize of {info.batch_size}",
+            )
         self.generation_task = self.progress.add_task(
             "🔮 [cyan]Generating replies...[/cyan]",
             total=self.total_rows,

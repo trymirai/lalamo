@@ -22,7 +22,7 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.models import LanguageModelConfig
-from lalamo.models.common import InferenceConfig
+from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -461,6 +461,9 @@ class GenerateRepliesCallbacks:
     def batch_sizes_estimated(self) -> None:
         pass
 
+    def batch_sizes_computed(self, event: BatchSizesComputedEvent) -> None:
+        pass
+
     def generation_progress(self, rows_processed: int) -> None:
         pass
 
@@ -528,7 +531,14 @@ def generate_replies(
     callbacks.batch_sizes_estimated()
 
     replies: list[tuple[int, AssistantMessage]] = []
-    for rows_processed, (idx, reply) in enumerate(model.reply_many(dataset, inference_config, vram_bytes=max_vram)):
+    for rows_processed, (idx, reply) in enumerate(
+        model.reply_many(
+            dataset,
+            inference_config,
+            vram_bytes=max_vram,
+            batch_sizes_callback=callbacks.batch_sizes_computed,
+        ),
+    ):
         replies.append((idx, reply))
         callbacks.generation_progress(rows_processed)
 
