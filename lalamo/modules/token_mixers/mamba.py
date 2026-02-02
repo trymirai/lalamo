@@ -72,7 +72,10 @@ def fused_ssd_intra_chunk(
         )(jnp.arange(groups)),
     )(jnp.arange(chunks))
 
-    return jnp.transpose(result, (0, 3, 1, 2, 4))
+    return rearrange(
+        result,
+        "chunks groups heads_per_group chunk_size head_dim -> chunks chunk_size groups heads_per_group head_dim",
+    )
 
 
 Mamba2Result = TokenMixerResult[Mamba2StateLayer]
@@ -381,9 +384,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
     def _step(
         self,
-        x: Float[Array, "heads head_dim"],
-        b: Float[Array, "groups state_dim"],
-        c: Float[Array, "groups state_dim"],
+        values: Float[Array, "heads head_dim"],
+        keys: Float[Array, "groups state_dim"],
+        queries: Float[Array, "groups state_dim"],
         dt_log: Float[Array, " heads"],
         state: Float[Array, "heads head_dim state_dim"],
     ) -> tuple[Float[Array, "heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
@@ -394,27 +397,27 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         decay = jnp.exp(-dt)[:, None, None]
         mix = dt[:, None, None]
 
-        b_expanded = jnp.repeat(b, heads_per_group, axis=0)
-        c_expanded = jnp.repeat(c, heads_per_group, axis=0)
-        x_norm = x / (dt[:, None] + 1e-8)
+        keys_expanded = jnp.repeat(keys, heads_per_group, axis=0)
+        queries_expanded = jnp.repeat(queries, heads_per_group, axis=0)
+        values_norm = values / (dt[:, None] + 1e-8)
 
-        input_contribution = mix * x_norm[:, :, None] * b_expanded[:, None, :]
+        input_contribution = mix * values_norm[:, :, None] * keys_expanded[:, None, :]
         new_state = decay * state + input_contribution
-        output = einsum(new_state, c_expanded, "h p n, h n -> h p")
+        output = einsum(new_state, queries_expanded, "heads head_dim state_dim, heads state_dim -> heads head_dim")
 
         return output, new_state
 
     def _conv_step(
         self,
-        x: Float[Array, " channels"],
+        token: Float[Array, " channels"],
         state: Float[Array, "kernel_minus_1 channels"],
     ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
         """Single-token conv update without full convolution."""
-        full_input = jnp.concatenate([state, x[None, :]], axis=0)
-        output = einsum(full_input, self.conv.weights, "k c, c k -> c")
+        full_input = jnp.concatenate([state, token[None, :]], axis=0)
+        output = einsum(full_input, self.conv.weights, "kernel channels, channels kernel -> channels")
         if self.conv.biases is not None:
             output = output + self.conv.biases
-        new_state = jnp.concatenate([state[1:], x[None, :]], axis=0)
+        new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
         return output, new_state
 
     def _decode_step(
@@ -423,24 +426,24 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         state: Mamba2StateLayer,
     ) -> Mamba2Result:
         """Optimized path for single-token decode without scan machinery."""
-        x = inputs[0]
+        token = inputs[0]
 
-        conv_in, gate, dt_log = self.in_projection(x)
+        conv_in, gate, dt_log = self.in_projection(token)
         conv_out, new_conv_state = self._conv_step(conv_in, state.conv_state)
         conv_activated = self.config.activation(conv_out)
 
-        x_ssm, b_flat, c_flat = jnp.split(
+        values_flat, input_proj_flat, output_proj_flat = jnp.split(
             conv_activated,
             [self.inner_dim, self.inner_dim + self.num_groups * self.state_dim],
         )
-        x_ssm = rearrange(x_ssm, "(h p) -> h p", h=self.num_heads)
-        b = rearrange(b_flat, "(g n) -> g n", g=self.num_groups)
-        c = rearrange(c_flat, "(g n) -> g n", g=self.num_groups)
+        values = rearrange(values_flat, "(heads head_dim) -> heads head_dim", heads=self.num_heads)
+        keys = rearrange(input_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.num_groups)
+        queries = rearrange(output_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.num_groups)
 
-        y, new_ssm_state = self._step(x_ssm, b, c, dt_log, state.ssm_state)
+        y, new_ssm_state = self._step(values, keys, queries, dt_log, state.ssm_state)
 
-        y = y + self.skip_connection_weight[:, None] * x_ssm
-        y = rearrange(y, "h p -> (h p)")
+        y = y + self.skip_connection_weight[:, None] * values
+        y = rearrange(y, "heads head_dim -> (heads head_dim)")
         gated = y * jax.nn.silu(gate + self.gate_bias)
         (output,) = self.out_projection(gated)
 
@@ -451,67 +454,119 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
     def _chunked_scan(
         self,
-        x: Float[Array, "seq heads head_dim"],
-        b: Float[Array, "seq groups state_dim"],
-        c: Float[Array, "seq groups state_dim"],
-        dt: Float[Array, "seq heads"],
+        values: Float[Array, "suffix_tokens heads head_dim"],
+        keys: Float[Array, "suffix_tokens groups state_dim"],
+        queries: Float[Array, "suffix_tokens groups state_dim"],
+        dt: Float[Array, "suffix_tokens heads"],
         initial_state: Float[Array, "heads head_dim state_dim"],
         chunk_size: int,
         num_steps: Int[Array, ""] | int,
         d: Float[Array, " heads"] | None = None,
-        z: Float[Array, "seq heads head_dim"] | None = None,
+        z: Float[Array, "suffix_tokens heads head_dim"] | None = None,
         z_bias: Float[Array, "heads head_dim"] | None = None,
-    ) -> tuple[Float[Array, "seq heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
+    ) -> tuple[Float[Array, "suffix_tokens heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
         """Chunked parallel scan implementing the SSD algorithm."""
-        seq_len = x.shape[0]
+        seq_len = values.shape[0]
         num_steps = jnp.asarray(num_steps, dtype=jnp.int32)
 
         pad_len = (chunk_size - seq_len % chunk_size) % chunk_size
         if pad_len > 0:
-            x = jnp.pad(x, ((0, pad_len), (0, 0), (0, 0)))
-            b = jnp.pad(b, ((0, pad_len), (0, 0), (0, 0)))
-            c = jnp.pad(c, ((0, pad_len), (0, 0), (0, 0)))
+            values = jnp.pad(values, ((0, pad_len), (0, 0), (0, 0)))
+            keys = jnp.pad(keys, ((0, pad_len), (0, 0), (0, 0)))
+            queries = jnp.pad(queries, ((0, pad_len), (0, 0), (0, 0)))
             dt = jnp.pad(dt, ((0, pad_len), (0, 0)))
             if z is not None:
                 z = jnp.pad(z, ((0, pad_len), (0, 0), (0, 0)))
 
-        x_orig = x
-        b_orig = b
+        values_orig = values
+        keys_orig = keys
         dt_orig = dt
 
-        padded_len = x.shape[0]
+        padded_len = values.shape[0]
         position_indices = jnp.arange(padded_len)
-        valid_mask = (position_indices < num_steps).astype(x.dtype)
-        x = x * valid_mask[:, None, None]
-        b = b * valid_mask[:, None, None]
+        valid_mask = (position_indices < num_steps).astype(values.dtype)
+        values = values * valid_mask[:, None, None]
+        keys = keys * valid_mask[:, None, None]
 
-        x = rearrange(x, "(c l) (g r) p -> c l g r p", l=chunk_size, g=self.num_groups)
-        a = rearrange(-dt, "(c l) (g r) -> g r c l", l=chunk_size, g=self.num_groups)
-        b = rearrange(b, "(c l) g n -> c l g n", l=chunk_size)
-        c = rearrange(c, "(c l) g n -> c l g n", l=chunk_size)
-        a_cumsum = jnp.cumsum(a, axis=-1)
+        values = rearrange(
+            values,
+            "(chunks chunk_size) (groups heads_per_group) head_dim"
+            " -> chunks chunk_size groups heads_per_group head_dim",
+            chunk_size=chunk_size,
+            groups=self.num_groups,
+        )
+        log_decay = rearrange(
+            -dt,
+            "(chunks chunk_size) (groups heads_per_group) -> groups heads_per_group chunks chunk_size",
+            chunk_size=chunk_size,
+            groups=self.num_groups,
+        )
+        keys_chunked = rearrange(
+            keys,
+            "(chunks chunk_size) groups state_dim -> chunks chunk_size groups state_dim",
+            chunk_size=chunk_size,
+        )
+        queries_chunked = rearrange(
+            queries,
+            "(chunks chunk_size) groups state_dim -> chunks chunk_size groups state_dim",
+            chunk_size=chunk_size,
+        )
+        log_decay_cumsum = jnp.cumsum(log_decay, axis=-1)
 
-        cb = einsum(c, b, "c l g n, c s g n -> c l s g")
-        y_diag = fused_ssd_intra_chunk(a_cumsum, cb, x)
+        queries_keys_prod = einsum(
+            queries_chunked,
+            keys_chunked,
+            "chunks query_pos groups state_dim, chunks key_pos groups state_dim -> chunks query_pos key_pos groups",
+        )
+        y_diag = fused_ssd_intra_chunk(log_decay_cumsum, queries_keys_prod, values)
 
-        decay_states = jnp.exp(a_cumsum[:, :, :, -1:] - a_cumsum)
-        states = einsum(b, decay_states, x, "c l g n, g r c l, c l g r p -> c g r p n")
+        decay_states = jnp.exp(log_decay_cumsum[:, :, :, -1:] - log_decay_cumsum)
+        states = einsum(
+            keys_chunked,
+            decay_states,
+            values,
+            "chunks chunk_size groups state_dim, groups heads_per_group chunks chunk_size,"
+            " chunks chunk_size groups heads_per_group head_dim"
+            " -> chunks groups heads_per_group head_dim state_dim",
+        )
 
-        initial_state_grouped = rearrange(initial_state, "(g r) p n -> g r p n", g=self.num_groups)
+        initial_state_grouped = rearrange(
+            initial_state,
+            "(groups heads_per_group) head_dim state_dim -> groups heads_per_group head_dim state_dim",
+            groups=self.num_groups,
+        )
         states = jnp.concatenate([initial_state_grouped[None, ...], states], axis=0)
-        a_chunk_ends = jnp.pad(a_cumsum[:, :, :, -1], ((0, 0), (0, 0), (1, 0)))
-        decay_chunk = exp_segsum(a_chunk_ends)
-        new_states = einsum(decay_chunk, states, "g r z c, c g r p n -> z g r p n")
+        log_decay_chunk_ends = jnp.pad(log_decay_cumsum[:, :, :, -1], ((0, 0), (0, 0), (1, 0)))
+        decay_chunk = exp_segsum(log_decay_chunk_ends)
+        new_states = einsum(
+            decay_chunk,
+            states,
+            "groups heads_per_group out_idx chunks,"
+            " chunks groups heads_per_group head_dim state_dim"
+            " -> out_idx groups heads_per_group head_dim state_dim",
+        )
         states = new_states[:-1]
 
-        state_decay_out = jnp.exp(a_cumsum)
-        y_off = einsum(c, states, state_decay_out, "c l g n, c g r p n, g r c l -> c l g r p")
+        state_decay_out = jnp.exp(log_decay_cumsum)
+        y_off = einsum(
+            queries_chunked,
+            states,
+            state_decay_out,
+            "chunks chunk_size groups state_dim,"
+            " chunks groups heads_per_group head_dim state_dim,"
+            " groups heads_per_group chunks chunk_size"
+            " -> chunks chunk_size groups heads_per_group head_dim",
+        )
 
         y = y_diag + y_off
         if d is not None:
-            d_grouped = rearrange(d, "(g r) -> g r", g=self.num_groups)
-            y = y + d_grouped[None, None, :, :, None] * x
-        y = rearrange(y, "c l g r p -> (c l) (g r) p")
+            d_grouped = rearrange(d, "(groups heads_per_group) -> groups heads_per_group", groups=self.num_groups)
+            y = y + d_grouped[None, None, :, :, None] * values
+        y = rearrange(
+            y,
+            "chunks chunk_size groups heads_per_group head_dim"
+            " -> (chunks chunk_size) (groups heads_per_group) head_dim",
+        )
 
         if z is not None:
             gate = z + z_bias[None, :, :] if z_bias is not None else z
@@ -519,16 +574,21 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         y = y[:seq_len]
 
-        new_states_flat = rearrange(new_states, "c g r p n -> c (g r) p n")
-        final_state = self._compute_final_state(x_orig, b_orig, dt_orig, new_states_flat, num_steps, chunk_size)
+        new_states_flat = rearrange(
+            new_states,
+            "chunks groups heads_per_group head_dim state_dim -> chunks (groups heads_per_group) head_dim state_dim",
+        )
+        final_state = self._compute_final_state(
+            values_orig, keys_orig, dt_orig, new_states_flat, num_steps, chunk_size,
+        )
 
         return y, final_state
 
     def _compute_final_state(
         self,
-        x: Float[Array, "seq heads head_dim"],
-        b: Float[Array, "seq groups state_dim"],
-        dt: Float[Array, "seq heads"],
+        values: Float[Array, "suffix_tokens heads head_dim"],
+        keys: Float[Array, "suffix_tokens groups state_dim"],
+        dt: Float[Array, "suffix_tokens heads"],
         chunk_states: Float[Array, "chunks_plus_1 heads head_dim state_dim"],
         num_steps: Int[Array, ""],
         chunk_size: int,
@@ -545,21 +605,34 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         def within_chunk() -> Float[Array, "heads head_dim state_dim"]:
             chunk_start_pos = chunk_idx * chunk_size
-            x_chunk = jax.lax.dynamic_slice(x, (chunk_start_pos, 0, 0), (chunk_size, x.shape[1], x.shape[2]))
-            b_chunk = jax.lax.dynamic_slice(b, (chunk_start_pos, 0, 0), (chunk_size, b.shape[1], b.shape[2]))
+            values_chunk = jax.lax.dynamic_slice(
+                values, (chunk_start_pos, 0, 0), (chunk_size, values.shape[1], values.shape[2]),
+            )
+            keys_chunk = jax.lax.dynamic_slice(
+                keys,
+                (chunk_start_pos, 0, 0),
+                (chunk_size, keys.shape[1], keys.shape[2]),
+            )
             dt_chunk = jax.lax.dynamic_slice(dt, (chunk_start_pos, 0), (chunk_size, dt.shape[1]))
 
-            a_cumsum = jnp.cumsum(-dt_chunk, axis=0)
+            log_decay_cumsum = jnp.cumsum(-dt_chunk, axis=0)
             last_pos_idx = pos_in_chunk - 1
-            a_cumsum_at_last = jax.lax.dynamic_index_in_dim(a_cumsum, last_pos_idx, axis=0, keepdims=False)
+            log_decay_cumsum_at_last = jax.lax.dynamic_index_in_dim(
+                log_decay_cumsum, last_pos_idx, axis=0, keepdims=False,
+            )
 
-            decayed_start = jnp.exp(a_cumsum_at_last)[:, None, None] * chunk_start_state
+            decayed_start = jnp.exp(log_decay_cumsum_at_last)[:, None, None] * chunk_start_state
 
-            decay_to_last = jnp.exp(a_cumsum_at_last[None, :] - a_cumsum)
+            decay_to_last = jnp.exp(log_decay_cumsum_at_last[None, :] - log_decay_cumsum)
             mask = jnp.arange(chunk_size) <= last_pos_idx
             masked_decay = jnp.where(mask[:, None], decay_to_last, 0.0)
-            b_expanded = jnp.repeat(b_chunk, heads_per_group, axis=1)
-            input_contrib = einsum(masked_decay, b_expanded, x_chunk, "l h, l h n, l h p -> h p n")
+            keys_expanded = jnp.repeat(keys_chunk, heads_per_group, axis=1)
+            input_contrib = einsum(
+                masked_decay,
+                keys_expanded,
+                values_chunk,
+                "chunk_size heads, chunk_size heads state_dim, chunk_size heads head_dim -> heads head_dim state_dim",
+            )
 
             return decayed_start + input_contrib
 
@@ -612,17 +685,17 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             axis=-1,
         )
 
-        hidden_states = rearrange(
+        values = rearrange(
             x_channels,
             "suffix_tokens (heads head_channels) -> suffix_tokens heads head_channels",
             heads=self.num_heads,
         )
-        input_projection = rearrange(
+        keys = rearrange(
             input_proj_channels,
             "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
             groups=self.num_groups,
         )
-        output_projection = rearrange(
+        queries = rearrange(
             output_proj_channels,
             "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
             groups=self.num_groups,
@@ -644,9 +717,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         dt = jax.nn.softplus(time_delta_log)
         ssm_outputs, final_ssm_state = self._chunked_scan(
-            hidden_states,
-            input_projection,
-            output_projection,
+            values,
+            keys,
+            queries,
             dt,
             state.ssm_state,
             self.config.chunk_size,
