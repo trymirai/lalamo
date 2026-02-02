@@ -24,7 +24,7 @@ from lalamo.model_import.common import (
     InitializingModelEvent,
     StatusEvent,
 )
-from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec
+from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec, fetch_available_models
 from lalamo.models import LanguageModelConfig
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -138,17 +138,6 @@ def pull(
     ] = PullCallbacks,
     overwrite: bool = False,
 ) -> None:
-    """Pull a pre-converted model from the Mirai SDK repository.
-
-    Args:
-        query: Model repo ID or name
-        output_dir: Directory to save the model
-        callbacks_type: Callback class for progress tracking
-        overwrite: Whether to overwrite existing files
-    """
-    from lalamo.model_import.remote_registry import fetch_available_models
-
-    # Fetch available models
     try:
         available_models = fetch_available_models()
     except requests.RequestException as e:

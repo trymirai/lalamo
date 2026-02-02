@@ -43,13 +43,15 @@ from lalamo.commands import (
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
+from lalamo.commands import _match_model, _suggest_similar_models
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
-from lalamo.model_import.remote_registry import RemoteFileSpec
+from lalamo.model_import.remote_registry import RemoteFileSpec, fetch_available_models
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.speculator.estimator import (
     get_default_device_bytes,
@@ -270,7 +272,6 @@ class CliConversionCallbacks(ConversionCallbacks):
 
 @dataclass
 class CliPullCallbacks(PullCallbacks):
-    """CLI callbacks for pull command with rich UI."""
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
     downloading_tasks: dict[RemoteFileSpec, TaskID] = field(default_factory=dict)
@@ -394,9 +395,6 @@ def pull(
         ),
     ] = False,
 ) -> None:
-    from lalamo.commands import pull as _pull
-    from lalamo.model_import.remote_registry import fetch_available_models
-
     # Fetch models to determine default output directory
     with Progress(
         SpinnerColumn(),
@@ -410,12 +408,8 @@ def pull(
             _error(f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}")
 
     # Match model to get name for default output dir
-    from lalamo.commands import _match_model
-
     model_spec = _match_model(model_identifier, available_models)
     if model_spec is None:
-        from lalamo.commands import _suggest_similar_models
-
         suggestions = _suggest_similar_models(model_identifier, available_models)
         error_msg = f'Model "{model_identifier}" not found.'
         if suggestions:
