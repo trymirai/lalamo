@@ -250,14 +250,13 @@ def test_suggest_similar_models_returns_repo_ids() -> None:
         assert "/" in suggestion  # repo_ids have format "vendor/name"
 
 
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
 @patch("lalamo.commands._download_file")
 @patch("lalamo.commands.shutil.move")
-def test_pull_success(mock_move: Mock, mock_download: Mock, mock_fetch: Mock, tmp_path: Path) -> None:
+def test_pull_success(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
     """Test successful model pull operation."""
     # Setup
     models = _create_test_models()
-    mock_fetch.return_value = models
+    model_spec = models[0]  # Use first test model
     output_dir = tmp_path / "output"
 
     # Create a mock callback to track calls
@@ -277,10 +276,9 @@ def test_pull_success(mock_move: Mock, mock_download: Mock, mock_fetch: Mock, tm
             callback_calls.append("finished")
 
     # Execute
-    pull("meta-llama/Llama-3.2-1B-Instruct", output_dir, callbacks_type=TestCallbacks)
+    pull(model_spec, output_dir, callbacks_type=TestCallbacks)
 
     # Verify
-    mock_fetch.assert_called_once()
     assert mock_download.call_count == 1  # One file in test model
     assert output_dir.exists()
 
@@ -294,68 +292,34 @@ def test_pull_success(mock_move: Mock, mock_download: Mock, mock_fetch: Mock, tm
     assert mock_move.call_count == 1
 
 
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
-def test_pull_model_not_found(mock_fetch: Mock, tmp_path: Path) -> None:
-    """Test pull with non-existent model."""
-    models = _create_test_models()
-    mock_fetch.return_value = models
-    output_dir = tmp_path / "output"
-
-    with pytest.raises(ValueError, match='Model "nonexistent-model" not found'):
-        pull("nonexistent-model", output_dir)
 
 
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
-def test_pull_model_not_found_with_suggestions(mock_fetch: Mock, tmp_path: Path) -> None:
-    """Test pull with non-existent model provides suggestions."""
-    models = _create_test_models()
-    mock_fetch.return_value = models
-    output_dir = tmp_path / "output"
-
-    # Use a query that's close enough to get suggestions but not match (score 50-79)
-    with pytest.raises(ValueError, match="Did you mean:"):
-        pull("lamaa-model", output_dir)
-
-
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
-def test_pull_api_error(mock_fetch: Mock, tmp_path: Path) -> None:
-    """Test pull handles API fetch errors."""
-    mock_fetch.side_effect = requests.ConnectionError("Network error")
-    output_dir = tmp_path / "output"
-
-    with pytest.raises(RuntimeError, match="Failed to fetch model list from SDK"):
-        pull("any-model", output_dir)
-
-
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
 @patch("lalamo.commands._download_file")
-def test_pull_download_error(mock_download: Mock, mock_fetch: Mock, tmp_path: Path) -> None:
+def test_pull_download_error(mock_download: Mock, tmp_path: Path) -> None:
     """Test pull handles download errors."""
     models = _create_test_models()
-    mock_fetch.return_value = models
+    model_spec = models[0]
     mock_download.side_effect = requests.HTTPError("404 Not Found")
     output_dir = tmp_path / "output"
 
     with pytest.raises(RuntimeError, match="Failed to download"):
-        pull("meta-llama/Llama-3.2-1B-Instruct", output_dir)
+        pull(model_spec, output_dir)
 
 
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
-def test_pull_output_dir_exists_error(mock_fetch: Mock, tmp_path: Path) -> None:
+def test_pull_output_dir_exists_error(tmp_path: Path) -> None:
     """Test pull raises error when output directory exists."""
     models = _create_test_models()
-    mock_fetch.return_value = models
+    model_spec = models[0]
     output_dir = tmp_path / "output"
     output_dir.mkdir()
 
     with pytest.raises(RuntimeError, match="already exists"):
-        pull("meta-llama/Llama-3.2-1B-Instruct", output_dir)
+        pull(model_spec, output_dir)
 
 
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
 @patch("lalamo.commands._download_file")
 @patch("lalamo.commands.shutil.move")
-def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, mock_fetch: Mock, tmp_path: Path) -> None:
+def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
     """Test pull with model containing multiple files."""
     # Create model with multiple files
     model_with_multiple_files = RemoteModelSpec(
@@ -373,7 +337,6 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, mock_fetch: M
         ],
     )
 
-    mock_fetch.return_value = [model_with_multiple_files]
     output_dir = tmp_path / "output"
 
     callback_calls = []
@@ -386,7 +349,7 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, mock_fetch: M
             callback_calls.append(f"finished_downloading:{file_spec.name}")
 
     # Execute
-    pull("test/model", output_dir, callbacks_type=TestCallbacks)
+    pull(model_with_multiple_files, output_dir, callbacks_type=TestCallbacks)
 
     # Verify all files were downloaded
     assert mock_download.call_count == 3
@@ -401,35 +364,3 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, mock_fetch: M
     assert "finished_downloading:config.json" in callback_calls
 
 
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
-@patch("lalamo.commands._download_file")
-@patch("lalamo.commands.shutil.move")
-def test_pull_exact_name_match(mock_move: Mock, mock_download: Mock, mock_fetch: Mock, tmp_path: Path) -> None:
-    """Test pull using exact model name instead of repo_id."""
-    models = _create_test_models()
-    mock_fetch.return_value = models
-    output_dir = tmp_path / "output"
-
-    # Use name instead of repo_id
-    pull("Llama-3.2-1B-Instruct", output_dir)
-
-    # Verify it still works
-    mock_download.assert_called_once()
-    assert output_dir.exists()
-
-
-@patch("lalamo.model_import.remote_registry.fetch_available_models")
-@patch("lalamo.commands._download_file")
-@patch("lalamo.commands.shutil.move")
-def test_pull_fuzzy_match(mock_move: Mock, mock_download: Mock, mock_fetch: Mock, tmp_path: Path) -> None:
-    """Test pull with fuzzy matching on query."""
-    models = _create_test_models()
-    mock_fetch.return_value = models
-    output_dir = tmp_path / "output"
-
-    # Use fuzzy query (close to actual repo_id)
-    pull("meta-llama/Llama-3.2-1B-Instruct-typo", output_dir)
-
-    # Should still match due to fuzzy matching
-    mock_download.assert_called_once()
-    assert output_dir.exists()

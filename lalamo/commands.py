@@ -97,7 +97,7 @@ def _suggest_similar_models(query: str, available_models: list[RemoteModelSpec],
 
 
 def pull(
-    query: str,
+    model_spec: RemoteModelSpec,
     output_dir: Path,
     callbacks_type: Callable[
         [RemoteModelSpec, Path, bool],
@@ -105,19 +105,6 @@ def pull(
     ] = PullCallbacks,
     overwrite: bool = False,
 ) -> None:
-    try:
-        available_models = fetch_available_models()
-    except requests.RequestException as e:
-        raise RuntimeError(f"Failed to fetch model list from SDK. Check your internet connection. Error: {e}") from e
-
-    model_spec = _match_model(query, available_models)
-    if model_spec is None:
-        suggestions = _suggest_similar_models(query, available_models)
-        error_msg = f'Model "{query}" not found.'
-        if suggestions:
-            error_msg += f' Did you mean: {", ".join(suggestions)}?'
-        raise ValueError(error_msg)
-
     callbacks = callbacks_type(model_spec, output_dir, overwrite)
 
     if output_dir.exists():

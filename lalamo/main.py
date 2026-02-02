@@ -421,15 +421,13 @@ def pull(
 
     try:
         _pull(
-            model_identifier,
+            model_spec,
             output_dir,
             partial(CliPullCallbacks),
             overwrite=overwrite,
         )
     except Exit:
         raise
-    except ValueError as e:
-        _error(str(e))
     except RuntimeError as e:
         _error(str(e))
 
