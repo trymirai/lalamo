@@ -36,7 +36,8 @@ def forward_step(
     best_transition_indices = jnp.argmin(candidate_cost, axis=-1)
     best_transition_cost = jnp.min(candidate_cost, axis=-1)
 
-    history_entry = codebook.transitions[jnp.arange(codebook.config.number_of_reduced_states), best_transition_indices]
+    reduced_state_indices = jnp.arange(codebook.config.number_of_reduced_states)[None, :]
+    history_entry = codebook.transitions[reduced_state_indices, best_transition_indices]
     new_cost = reconstruction_error + jnp.repeat(best_transition_cost, codebook.config.transitions_per_state, axis=-1)
 
     return new_cost, history_entry

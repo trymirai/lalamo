@@ -11,6 +11,12 @@ class BitShiftCodebookConfig:
     bits_per_weight: int
     chunk_size: int
 
+    def __post_init__(self) -> None:
+        if self.bits_per_step > self.state_bits:
+            raise ValueError(
+                f"bits_per_step ({self.bits_per_step}) must be <= state_bits ({self.state_bits})",
+            )
+
     @property
     def number_of_states(self) -> int:
         return 2**self.state_bits
