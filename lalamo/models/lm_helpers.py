@@ -42,23 +42,19 @@ def merge_small_buckets[T: TokenSequence](
     merged: dict[int, list[tuple[int, T]]] = {}
     overflow: list[tuple[int, T]] = []
 
-    for i, padded_len in enumerate(sorted_lengths):
+    for padded_len in sorted_lengths:
         batch_size = batch_size_for_length.get(padded_len, 1)  # note how with i's increment batch_size decreases
         items = overflow + buckets[padded_len]
-        is_last = i == len(sorted_lengths) - 1
 
-        if is_last:
-            # add all the leftover items into the last bucket
-            if items:
-                merged[padded_len] = items
-        elif len(items) < min_batches * batch_size:
+        if len(items) < min_batches * batch_size:
             # the bucket is too small, push the items into a bigger one
-            overflow = items
+            overflow += items
         else:
             # the bucket is big enough, keep rounded number of items and move on
-            keep_count = (len(items) // batch_size) * batch_size
-            merged[padded_len] = items[:keep_count]
-            overflow = items[keep_count:]
+            # the bucket is big enough, keep _all_ the items and move on
+            # keeping all the items avoids a funny problem with spill over into _very_ long ctx length
+            merged[padded_len] = items
+            overflow = []
 
     return merged
 

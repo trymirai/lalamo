@@ -513,7 +513,14 @@ def generate_replies(
 
     callbacks.loading_dataset()
     dataset = iter(import_hf_parquet(dataset_path, shuffle=False))
-    dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
+    try:
+        first_row = next(dataset)
+    except StopIteration:
+        callbacks.finished_loading_dataset()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"response": [], "chain_of_thought": []}).write_parquet(output_path)
+        return
+    dataset = chain([first_row], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
 
     inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)

@@ -380,7 +380,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
         per_step_keys: Key[Array, "batch max_len"] = jax.vmap(lambda k: jax.random.split(k, max_output_length))(keys)
-        per_step_keys: Key[Array, "max_len batch"] = per_step_keys.T
+        per_step_keys: Key[Array, "max_len batch"] = jnp.swapaxes(per_step_keys, 0, 1)
         _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_keys)
 
         token_ids = rearrange(generated.token_ids, "iteration batch -> batch iteration")
@@ -567,7 +567,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 inference_config,
             )
 
-        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=4)
+        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=2)
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):
