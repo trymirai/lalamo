@@ -1,3 +1,4 @@
+import logging
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -13,6 +14,9 @@ from tests.tts.cambai.nanocodec_torch_stuff import (
     load_nemo_data,
     try_locate_fish_audio_model_path,
 )
+from tests.tts.utils import generate_pseudo_voice_signal, generate_harmonic_row
+
+_testlog = logging.getLogger("tts_test_logger")
 
 
 @pytest.fixture
@@ -273,3 +277,120 @@ def test_audio_codec_model_decode_deterministic(cached_nemo_model: tuple[Mapping
         audio2, _ = model.decode(tokens=tokens, tokens_len=tokens_len)
 
     assert torch.allclose(audio1, audio2), "Decode should be deterministic"
+
+
+def test_audio_codec_model_encode_decode_roundtrip(cached_nemo_model: tuple[Mapping, Mapping, Path]) -> None:
+    """Test encode/decode roundtrip with pseudo-voice signal."""
+    from matplotlib import pyplot as plt
+
+    state_dict, config, _ = cached_nemo_model
+
+    cfg = DictConfig(config)
+    model = AudioCodecModel(cfg)
+    model.load_state_dict(state_dict, strict=False)
+    model.eval()
+
+    sample_rate = config["sample_rate"]
+
+    # Generate pseudo-voice signal at model's sample rate
+    audio_np = generate_pseudo_voice_signal(
+        fs=sample_rate,
+        duration_sec=3.0,
+        f0=150.0,
+    )
+    # audio_np, _ = generate_harmonic_row(sample_rate, int(sample_rate * 2.0), 120.0, 50, flat_frequency=True)
+    audio = torch.from_numpy(audio_np).float().unsqueeze(0).float()  # [1, samples]
+
+    # Convert to torch tensor with batch dimension
+    audio_len = torch.tensor([audio.shape[1]])
+
+    _testlog.info(
+        f"Input Signal - Shape: {audio.shape}, Length: {audio_len.item()}, "
+        f"Range: [{audio.min().item():.4f}, {audio.max().item():.4f}], "
+        f"RMS: {torch.sqrt(torch.mean(audio**2)).item():.4f}"
+    )
+
+    with torch.no_grad():
+        # Encode audio to tokens
+        tokens, tokens_len = model.encode(audio=audio, audio_len=audio_len)
+
+        _testlog.info(
+            f"Encoded Tokens - Shape: {tokens.shape} (batch, codebooks, frames), "
+            f"Length: {tokens_len.item()}, Value range: [{tokens.min().item()}, {tokens.max().item()}]"
+        )
+
+        # Decode tokens back to audio
+        reconstructed, reconstructed_len = model.decode(tokens=tokens, tokens_len=tokens_len)
+
+    _testlog.info(
+        f"Reconstructed Signal - Shape: {reconstructed.shape}, Length: {reconstructed_len.item()}, "
+        f"Range: [{reconstructed.min().item():.4f}, {reconstructed.max().item():.4f}], "
+        f"RMS: {torch.sqrt(torch.mean(reconstructed**2)).item():.4f}"
+    )
+
+    # Compare input vs reconstructed (truncate to shorter length)
+    min_len = min(audio.shape[1], reconstructed.shape[1])
+    audio_truncated = audio[:, :min_len]
+    reconstructed_truncated = reconstructed[:, :min_len]
+
+    diff = audio_truncated - reconstructed_truncated
+    mse = torch.mean(diff**2).item()
+    mae = torch.mean(torch.abs(diff)).item()
+    max_diff = torch.max(torch.abs(diff)).item()
+
+    _testlog.info(
+        f"Reconstruction Difference - Compared length: {min_len}, "
+        f"MSE: {mse:.6f}, MAE: {mae:.6f}, Max abs diff: {max_diff:.4f}"
+    )
+
+    # Plot input vs reconstructed
+    _, axes = plt.subplots(3, 1, figsize=(12, 8))
+
+    time_input = np.arange(audio.shape[1]) / sample_rate
+    time_recon = np.arange(reconstructed.shape[1]) / sample_rate
+    time_diff = np.arange(min_len) / sample_rate
+
+    axes[0].plot(time_input, audio[0].numpy(), alpha=0.8)
+    axes[0].set_title(f"Input Signal (shape={audio.shape})")
+    axes[0].set_xlabel("Time (s)")
+    axes[0].set_ylabel("Amplitude")
+    axes[0].grid(visible=True, alpha=0.3)
+
+    axes[1].plot(time_recon, reconstructed[0].numpy(), alpha=0.8, color="orange")
+    axes[1].set_title(f"Reconstructed Signal (shape={reconstructed.shape})")
+    axes[1].set_xlabel("Time (s)")
+    axes[1].set_ylabel("Amplitude")
+    axes[1].grid(visible=True, alpha=0.3)
+
+    axes[2].plot(time_diff, diff[0].numpy(), alpha=0.8, color="red")
+    axes[2].set_title(f"Difference (MSE={mse:.6f}, MAE={mae:.6f})")
+    axes[2].set_xlabel("Time (s)")
+    axes[2].set_ylabel("Amplitude")
+    axes[2].grid(visible=True, alpha=0.3)
+
+    plt.tight_layout()
+    plot_path = Path(__file__).parent / "roundtrip_comparison.png"
+    plt.savefig(plot_path, dpi=150)
+    plt.close()
+    _testlog.info(f"Plot saved to: {plot_path}")
+
+    # Verify shapes
+    num_codebooks = config["vector_quantizer"]["num_groups"]
+    assert tokens.shape[0] == 1, "Batch size should be 1"
+    assert tokens.shape[1] == num_codebooks, f"Expected {num_codebooks} codebooks"
+
+    # Reconstructed audio should have valid range
+    assert reconstructed.min() >= -1.0, "Audio should be >= -1.0"
+    assert reconstructed.max() <= 1.0, "Audio should be <= 1.0"
+
+    # Reconstructed length should match expected based on token frames
+    samples_per_frame = int(np.prod(config["audio_decoder"]["up_sample_rates"]))
+    expected_len = tokens.shape[2] * samples_per_frame
+    assert reconstructed.shape[1] == expected_len, f"Expected {expected_len} samples, got {reconstructed.shape[1]}"
+
+    import soundfile as sf
+
+    with open("original.wav", "wb") as f:
+        sf.write(f, audio_np, sample_rate)
+    with open("reconstructed.wav", "wb") as f:
+        sf.write(f, reconstructed.numpy().T, sample_rate)

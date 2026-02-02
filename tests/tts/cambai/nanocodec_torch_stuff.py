@@ -11,6 +11,7 @@ from typing import Any, Optional
 import einops
 import huggingface_hub
 import torch
+import torch.nn.functional as F
 import yaml
 from einops import rearrange
 from omegaconf import DictConfig, OmegaConf
@@ -94,6 +95,10 @@ def mask_sequence_tensor(tensor: torch.Tensor, lengths: torch.Tensor):
 
 def get_padding(kernel_size: int, dilation: int = 1) -> int:
     return (kernel_size * dilation - dilation) // 2
+
+
+def get_down_sample_padding(kernel_size: int, stride: int) -> int:
+    return (kernel_size - stride + 1) // 2
 
 
 class VectorQuantizerBase(torch.nn.Module):
@@ -365,6 +370,16 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
         return dequantized
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ) -> None:
+        print(f"Loading with prefix: '{prefix}'")
+        # print(f"Keys: {[k for k in state_dict.keys() if k.startswith(prefix)]}")
+
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs
+        )
+
 
 class CausalConv1dNorm(torch.nn.Module):
     """Conv1d with causal padding and normalization."""
@@ -417,7 +432,7 @@ class CausalConv1dNorm(torch.nn.Module):
         self.conv = nn.utils.parametrizations.weight_norm(self.conv)
 
     def remove_weight_norm(self):
-        nn.utils.remove_weight_norm(self.conv)
+        torch.nn.utils.parametrize.remove_parametrizations(self.conv, "weight")
 
     # Copied from transformers.models.encodec.modeling_encodec.EncodecConv1d._get_extra_padding_for_conv1d
     def _get_extra_padding_for_conv1d(
@@ -587,7 +602,7 @@ class CausalConvTranspose1dNorm(torch.nn.Module):
         weight_norm(self.conv)
 
     def remove_weight_norm(self):
-        nn.utils.remove_weight_norm(self.conv)
+        torch.nn.utils.parametrize.remove_parametrizations(self.conv, "weight")
 
     def forward(self, inputs, input_len):
         hidden_states = self.conv(inputs)
@@ -626,7 +641,7 @@ class Conv1dNorm(torch.nn.Module):
         self.conv = nn.utils.parametrizations.weight_norm(conv)
 
     def remove_weight_norm(self):
-        nn.utils.remove_weight_norm(self.conv)
+        torch.nn.utils.parametrize.remove_parametrizations(self.conv, "weight")
 
     # @typecheck()
     def forward(self, inputs, input_len):
@@ -796,6 +811,16 @@ class HiFiGANResLayer(torch.nn.Module):
         out = sum(residuals) / len(residuals)
         return out
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ) -> None:
+        print(f"Loading with prefix: '{prefix}'")
+        # print(f"Keys: {[k for k in state_dict.keys() if k.startswith(prefix)]}")
+
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs
+        )
+
 
 class CausalHiFiGANDecoder(torch.nn.Module):
     """
@@ -912,6 +937,16 @@ class CausalHiFiGANDecoder(torch.nn.Module):
         audio = rearrange(audio, "B 1 T -> B T")
         return audio, audio_len
 
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+    ) -> None:
+        print(f"Loading with prefix: '{prefix}'")
+        # print(f"Keys: {[k for k in state_dict.keys() if k.startswith(prefix)]}")
+
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs
+        )
+
 
 def convert_model_config_to_dict_config(cfg: Mapping[Any, Any]) -> "DictConfig":
     """
@@ -939,6 +974,113 @@ def convert_model_config_to_dict_config(cfg: Mapping[Any, Any]) -> "DictConfig":
     config = OmegaConf.create(config)
     assert isinstance(config, DictConfig)
     return config
+
+
+class HiFiGANEncoder(torch.nn.Module):
+    """
+    Audio encoder created by inverting the HiFi-GAN decoder.
+
+    Args:
+        encoded_dim: Dimension of encoder output.
+        down_sample_rates: Rate to upsample for each decoder block. The product of the downsample rates will
+            determine the output token rate. For example 2 * 2 * 8 * 8 = 256 samples per token.
+        base_channels: Number of filters in the first convolution. The number of channels will be doubled after each
+            downsample layer.
+        in_kernel_size: Kernel size of the input convolution.
+        out_kernel_size: Kernel size of the output convolution.
+        resblock_kernel_sizes: List of kernel sizes to use in each residual block.
+        resblock_dilation_sizes: List of dilations to use in each residual block.
+        activation: Activation to use in residual and downsample layers, defaults to leaky relu.
+    """
+
+    def __init__(
+        self,
+        encoded_dim: int,
+        down_sample_rates: Iterable[int] = (2, 2, 8, 8),
+        base_channels: int = 32,
+        in_kernel_size: int = 7,
+        out_kernel_size: int = 7,
+        resblock_kernel_sizes: Iterable[int] = (3, 7, 11),
+        resblock_dilation_sizes: Iterable[int] = (1, 3, 5),
+        activation: str = "lrelu",
+        pad_mode: str = "reflect",
+        **args,
+    ):
+        assert in_kernel_size > 0
+        assert out_kernel_size > 0
+
+        super().__init__()
+
+        self.down_sample_rates = down_sample_rates
+        self.pre_conv = Conv1dNorm(
+            in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+        )
+
+        in_channels = base_channels
+        self.activations = nn.ModuleList([])
+        self.down_sample_conv_layers = nn.ModuleList([])
+        self.res_layers = nn.ModuleList([])
+        for i, down_sample_rate in enumerate(self.down_sample_rates):
+            res_layer = HiFiGANResLayer(
+                channels=in_channels,
+                kernel_sizes=resblock_kernel_sizes,
+                dilations=resblock_dilation_sizes,
+                activation=activation,
+                pad_mode=pad_mode,
+            )
+            self.res_layers.append(res_layer)
+
+            act = CodecActivation(activation, channels=in_channels)
+            self.activations.append(act)
+
+            out_channels = 2 * in_channels
+            kernel_size = 2 * down_sample_rate
+
+            padding = get_down_sample_padding(kernel_size=kernel_size, stride=down_sample_rate)
+            down_sample_conv = Conv1dNorm(
+                in_channels=in_channels,
+                out_channels=out_channels,
+                kernel_size=kernel_size,
+                stride=down_sample_rate,
+                padding=padding,
+                pad_mode=pad_mode,
+            )
+            in_channels = out_channels
+            self.down_sample_conv_layers.append(down_sample_conv)
+
+        self.post_activation = CodecActivation(activation, channels=in_channels)
+        self.post_conv = Conv1dNorm(
+            in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size, pad_mode=pad_mode
+        )
+
+    def remove_weight_norm(self):
+        self.pre_conv.remove_weight_norm()
+        self.post_conv.remove_weight_norm()
+        for res_layer in self.res_layers:
+            res_layer.remove_weight_norm()
+        for down_sample_conv in self.down_sample_conv_layers:
+            down_sample_conv.remove_weight_norm()
+
+    def forward(self, audio, audio_len):
+        encoded_len = audio_len
+        audio = rearrange(audio, "B T -> B 1 T")
+        # [B, C, T_audio]
+        out = self.pre_conv(inputs=audio, input_len=encoded_len)
+        for act, res_layer, down_sample_conv, down_sample_rate in zip(
+            self.activations, self.res_layers, self.down_sample_conv_layers, self.down_sample_rates
+        ):
+            # [B, C, T]
+            out = res_layer(inputs=out, input_len=encoded_len)
+            out = act(out)
+
+            encoded_len = encoded_len // down_sample_rate
+            # [B, 2 * C, T / down_sample_rate]
+            out = down_sample_conv(inputs=out, input_len=encoded_len)
+
+        out = self.post_activation(out)
+        # [B, encoded_dim, T_encoded]
+        encoded = self.post_conv(inputs=out, input_len=encoded_len)
+        return encoded, encoded_len
 
 
 class AudioCodecModel(torch.nn.Module):
@@ -977,6 +1119,7 @@ class AudioCodecModel(torch.nn.Module):
             self.vector_quantizer = None
 
         self.audio_decoder = CausalHiFiGANDecoder(**cfg.audio_decoder)
+        self.audio_encoder = HiFiGANEncoder(**cfg.audio_encoder)
 
     def state_dict(self, destination=None, prefix="", keep_vars=False) -> dict[Any, Any]:
         if hasattr(self, "_no_state_dict") and self._no_state_dict:
@@ -1069,3 +1212,136 @@ class AudioCodecModel(torch.nn.Module):
         audio, audio_len = self.decode_audio(inputs=dequantized, input_len=tokens_len)
 
         return audio, audio_len
+
+    def encode_audio(self, audio: torch.Tensor, audio_len: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Apply encoder on the input audio signal. Input will be padded with zeros so
+        the last frame has full `self.samples_per_frame` samples.
+
+        Args:
+            audio: input time-domain signal
+            audio_len: valid length for each example in the batch
+
+        Returns:
+            Encoder output `encoded` and its length in number of frames `encoded_len`
+        """
+        audio, audio_len = self.pad_audio(audio, audio_len)
+        encoded, encoded_len = self.audio_encoder(audio=audio, audio_len=audio_len)
+        return encoded, encoded_len
+
+    def encode(self, audio: torch.Tensor, audio_len: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """Convert input time-domain audio signal into a discrete representation (tokens).
+
+        Args:
+            audio: input time-domain signal, shape `(batch, number of samples)`
+            audio_len: valid length for each example in the batch, shape `(batch size,)`
+
+        Returns:
+            Tokens for each codebook for each frame, shape `(batch, number of codebooks, number of frames)`,
+            and the corresponding valid lengths, shape `(batch,)`
+        """
+        # Apply encoder to obtain a continuous vector for each frame
+        encoded, encoded_len = self.encode_audio(audio=audio, audio_len=audio_len)
+        # Apply quantizer to obtain discrete representation per frame
+        tokens = self.quantize(encoded=encoded, encoded_len=encoded_len)
+        return tokens, encoded_len
+
+    def pad_audio(self, audio, audio_len):
+        """Zero pad the end of the audio so that we do not have a partial end frame.
+        The output will be zero-padded to have an integer number of frames of
+        length `self.samples_per_frame`.
+
+        Args:
+            audio: input time-domain signal
+            audio_len: valid length for each example in the batch
+
+        Returns:
+            Padded time-domain signal `padded_audio` and its length `padded_len`.
+        """
+        padded_len = self.samples_per_frame * torch.ceil(audio_len / self.samples_per_frame).int()
+        max_len = padded_len.max().item()
+        num_padding = max_len - audio.shape[1]
+        padded_audio = F.pad(audio, (0, num_padding))
+        return padded_audio, padded_len
+
+
+def validate_model_weights(
+    model: AudioCodecModel,
+    state_dict: dict,
+    verbose: bool = True,
+) -> dict:
+    """Validate that model weights are loaded correctly from NeMo state_dict.
+
+    This utility helps diagnose weight loading issues by:
+    1. Checking key format compatibility
+    2. Verifying weights were actually loaded (not random)
+    3. Reporting any missing or unexpected keys
+
+    Args:
+        model: AudioCodecModel instance (after load_state_dict)
+        state_dict: Original state_dict from load_nemo_data()
+        verbose: If True, print detailed diagnostics
+
+    Returns:
+        Dict with validation results:
+        - "keys_match": bool - True if all relevant keys match
+        - "weights_loaded": int - Number of weights that changed from init
+        - "missing_keys": list - Keys expected but not in state_dict
+        - "extra_keys": list - Keys in state_dict but not in model
+        - "encoder_output_range": tuple - (min, max) of encoder output
+    """
+    results: dict = {
+        "keys_match": True,
+        "weights_loaded": 0,
+        "missing_keys": [],
+        "extra_keys": [],
+        "encoder_output_range": None,
+    }
+
+    # Filter to relevant prefixes
+    relevant_prefixes = ("audio_encoder.", "audio_decoder.", "vector_quantizer.")
+
+    nemo_keys = {k for k in state_dict if any(k.startswith(p) for p in relevant_prefixes)}
+    model_keys = {k for k in model.state_dict() if any(k.startswith(p) for p in relevant_prefixes)}
+
+    results["missing_keys"] = sorted(model_keys - nemo_keys)
+    results["extra_keys"] = sorted(nemo_keys - model_keys)
+    results["keys_match"] = len(results["missing_keys"]) == 0 and len(results["extra_keys"]) == 0
+
+    if verbose:
+        print(f"Key validation: {'PASS' if results['keys_match'] else 'FAIL'}")
+        print(f"  Model expects {len(model_keys)} keys, NeMo has {len(nemo_keys)} keys")
+        if results["missing_keys"]:
+            print(f"  Missing from NeMo: {results['missing_keys'][:5]}...")
+        if results["extra_keys"]:
+            print(f"  Extra in NeMo: {results['extra_keys'][:5]}...")
+
+    # Check if weights were loaded by comparing to fresh model
+    fresh_model = AudioCodecModel(model._cfg)
+    fresh_state = fresh_model.state_dict()
+    loaded_state = model.state_dict()
+
+    for key in model_keys:
+        if key in fresh_state and key in loaded_state and not torch.equal(fresh_state[key], loaded_state[key]):
+            results["weights_loaded"] += 1
+
+    if verbose:
+        print(f"Weights loaded: {results['weights_loaded']} / {len(model_keys)} changed from init")
+
+    # Test encoder output range with a simple signal
+    model.eval()
+    sample_rate = model.sample_rate
+    t = torch.linspace(0, 0.5, int(sample_rate * 0.5))
+    audio = torch.sin(2 * 3.14159 * 440 * t).unsqueeze(0)
+    audio_len = torch.tensor([audio.shape[1]])
+
+    with torch.no_grad():
+        encoded, _ = model.encode_audio(audio=audio, audio_len=audio_len)
+        results["encoder_output_range"] = (encoded.min().item(), encoded.max().item())
+
+    if verbose:
+        enc_min, enc_max = results["encoder_output_range"]
+        print(f"Encoder output range: [{enc_min:.2f}, {enc_max:.2f}]")
+        if abs(enc_min) > 2 or abs(enc_max) > 2:
+            print("  Note: Large encoder output is EXPECTED - FSQ uses tanh compression")
+
+    return results
