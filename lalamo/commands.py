@@ -67,19 +67,13 @@ def _download_file(url: str, dest_path: Path) -> None:
 
 
 def _match_model(query: str, available_models: list[RemoteModelSpec]) -> RemoteModelSpec | None:
-    """Match user query to a model using exact and fuzzy matching. """
-    # Try exact match on repo_id
+    # Try exact match on repo_id or name, and collect repo_ids for fuzzy matching
+    repo_ids = []
     for model in available_models:
-        if model.repo_id == query:
+        repo_ids.append(model.repo_id)
+        if model.repo_id == query or model.name == query:
             return model
 
-    # Try exact match on name
-    for model in available_models:
-        if model.name == query:
-            return model
-
-    # Try fuzzy matching on repo_id
-    repo_ids = [m.repo_id for m in available_models]
     matches = thefuzz.process.extract(query, repo_ids, limit=1)
     if matches and matches[0][1] >= 80:
         matched_repo_id = matches[0][0]
