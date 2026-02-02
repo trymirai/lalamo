@@ -613,7 +613,7 @@ def generate_replies(
             err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
             raise Exit(1)
 
-        max_vram = get_usable_memory_from_bytes(mem_bytes)
+        max_vram = mem_bytes
 
     _generate_replies(
         model_path,

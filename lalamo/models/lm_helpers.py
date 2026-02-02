@@ -50,11 +50,15 @@ def merge_small_buckets[T: TokenSequence](
             # the bucket is too small, push the items into a bigger one
             overflow += items
         else:
-            # the bucket is big enough, keep rounded number of items and move on
             # the bucket is big enough, keep _all_ the items and move on
             # keeping all the items avoids a funny problem with spill over into _very_ long ctx length
             merged[padded_len] = items
             overflow = []
+
+    if overflow:
+        # any leftover items go into the largest bucket
+        largest_len = sorted_lengths[-1]
+        merged.setdefault(largest_len, []).extend(overflow)
 
     return merged
 
@@ -65,7 +69,7 @@ def estimate_batchsizes_from_vram(
     vram_bytes: int,
     inference_config: InferenceConfig,
 ) -> dict[int, int]:
-    assert sorted_lengths[0] < sorted_lengths[-1]
+    assert len(sorted_lengths) > 0
     usable_memory = get_usable_memory_from_bytes(vram_bytes)
 
     def memory_consumption(bs: int, seq_len: int) -> int:

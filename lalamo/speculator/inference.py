@@ -69,7 +69,7 @@ def inference_collect_traces(
         yield LalamoCompletion(filtered_prefixes[idx], token_ids, token_logits)
 
         if progress_callback is not None:
-            progress_callback(CollectTracesEvent(idx, tokens_generated))
+            progress_callback(CollectTracesEvent(idx + 1, tokens_generated))
 
         if tokens_to_generate is not None and tokens_generated >= tokens_to_generate:
             break
