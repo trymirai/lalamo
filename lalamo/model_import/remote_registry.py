@@ -1,5 +1,7 @@
 from dataclasses import dataclass
+from typing import Any, ClassVar
 
+import cattrs
 import requests
 
 
@@ -13,6 +15,8 @@ class RemoteFileSpec:
 
 @dataclass(frozen=True)
 class RemoteModelSpec:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
     id: str
     vendor: str
     name: str
@@ -22,6 +26,12 @@ class RemoteModelSpec:
     quantization: str | None
     files: list[RemoteFileSpec]
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RemoteModelSpec":
+        if "repoId" in data:
+            data = {**data, "repo_id": data.pop("repoId")}
+        return cls._converter.structure(data, cls)
+
 
 def fetch_available_models() -> list[RemoteModelSpec]:
     api_url = "https://sdk.trymirai.com/api/v1/models/list/lalamo"
@@ -29,29 +39,6 @@ def fetch_available_models() -> list[RemoteModelSpec]:
     response.raise_for_status()
 
     data = response.json()
-    models = []
+    models_data = data.get("models", [])
 
-    for model_data in data.get("models", []):
-        files = [
-            RemoteFileSpec(
-                name=f["name"],
-                url=f["url"],
-                size=f["size"],
-                crc32c=f["crc32c"],
-            )
-            for f in model_data.get("files", [])
-        ]
-
-        model = RemoteModelSpec(
-            id=model_data["id"],
-            vendor=model_data["vendor"],
-            name=model_data["name"],
-            family=model_data["family"],
-            size=model_data["size"],
-            repo_id=model_data["repoId"],
-            quantization=model_data.get("quantization"),
-            files=files,
-        )
-        models.append(model)
-
-    return models
+    return [RemoteModelSpec.from_dict(model_data) for model_data in models_data]
