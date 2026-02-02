@@ -180,12 +180,6 @@ def import_message_processor(
         if eos_token is None:
             eos_token = foreign_decoder_json.get("eos_token_id")
 
-    # We throw if either is None, cuz it might lead to funny issues downstream with models not stopping generation
-    if eos_token is None:
-        raise ValueError("eos_token was not found neither in tokenizer_config.json nor config.json")
-    if bos_token is None:
-        raise ValueError("bos_token was not found neither in tokenizer_config.json nor config.json")
-
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
         output_parser_regex=model_spec.output_parser_regex,

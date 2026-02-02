@@ -76,8 +76,8 @@ class MessageProcessorConfig:
     system_role_name: str
     user_role_name: str
     assistant_role_name: str
-    bos_token: str | None
     eos_token: str | None
+    bos_token: str | None
 
     def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
         return MessageProcessor(
@@ -147,7 +147,7 @@ class MessageProcessor:
             add_generation_prompt=True,
             messages=converted_messages,
             bos_token=self.bos_token,
-            eos_token=self.eos_token or "",
+            eos_token=self.eos_token,
         )
         if enable_thinking is not None:
             result["enable_thinking"] = enable_thinking
