@@ -398,8 +398,9 @@ def pull(
         RemoteModelSpec,
         Argument(
             help=(
-                "Model repository ID or name from the pre-converted catalog. "
-                "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan] or [cyan]'Llama-3.2-1B-Instruct'[/cyan]."
+                "Model repository ID from the pre-converted catalog. "
+                "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan]. "
+                "Fuzzy matching is supported for typos and partial names."
             ),
             click_type=RemoteModelParser(),
             show_default=False,
