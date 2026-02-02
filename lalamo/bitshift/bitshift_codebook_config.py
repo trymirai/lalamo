@@ -9,7 +9,7 @@ __all__ = [
 class BitShiftCodebookConfig:
     state_bits: int
     bits_per_weight: int
-    values_per_step: int
+    chunk_size: int
 
     @property
     def number_of_states(self) -> int:
@@ -17,8 +17,12 @@ class BitShiftCodebookConfig:
 
     @property
     def bits_per_step(self) -> int:
-        return self.bits_per_weight * self.values_per_step
+        return self.bits_per_weight * self.chunk_size
 
     @property
-    def number_of_deltas(self) -> int:
+    def transitions_per_state(self) -> int:
         return 2**self.bits_per_step
+
+    @property
+    def number_of_reduced_states(self) -> int:
+        return self.number_of_states // self.transitions_per_state

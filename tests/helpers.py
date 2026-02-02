@@ -1,4 +1,5 @@
 import contextlib
+import json
 import math
 from collections.abc import Generator, Sequence
 from pathlib import Path
@@ -6,6 +7,8 @@ from tempfile import TemporaryDirectory
 from typing import Any
 
 from memray import FileReader, Tracker
+
+DATA_DIR = Path(__file__).parent / "data"
 
 
 class MemoryLimitExceededError(RuntimeError):
@@ -40,4 +43,10 @@ def unsi(x: str, base: int = 1024, units: Sequence[str] = UNITS) -> int:
     return int(float(val) * (base ** units.index(unit)))
 
 
-__all__ = ["UNITS", "limit_memory", "si", "unsi"]
+def read_test_json(name: str) -> list | dict:
+    path = DATA_DIR / f"{name}.json"
+    with open(path) as file:
+        return json.load(file)
+
+
+__all__ = ["UNITS", "limit_memory", "read_test_json", "si", "unsi"]

@@ -9,6 +9,7 @@ from jaxtyping import Array, Float, PRNGKeyArray
 from .bitshift_codebook_config import BitShiftCodebookConfig
 
 __all__ = [
+    "FixedLUTProvider",
     "GaussianLUTProvider",
     "LUTProvider",
     "OneMultiplyAddHashLUTProvider",
@@ -18,7 +19,7 @@ __all__ = [
 
 
 class LUTProvider(eqx.Module):
-    lut: Float[Array, "values_per_step number_of_states"]
+    lut: Float[Array, "chunk_size number_of_states"]
 
     @classmethod
     def create(cls, config: BitShiftCodebookConfig, key: PRNGKeyArray) -> "LUTProvider":
@@ -27,25 +28,41 @@ class LUTProvider(eqx.Module):
     @staticmethod
     @abstractmethod
     def _initialize_lut(
-        config: BitShiftCodebookConfig, key: PRNGKeyArray
-    ) -> Float[Array, "values_per_step number_of_states"]: ...
+        config: BitShiftCodebookConfig,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "chunk_size number_of_states"]: ...
+
+
+class FixedLUTProvider(LUTProvider):
+    @staticmethod
+    def _initialize_lut(
+        config: BitShiftCodebookConfig,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "chunk_size number_of_states"]:
+        raise NotImplementedError("Use create_from_lut instead")
+
+    @classmethod
+    def create_from_lut(cls, lut: Float[Array, "chunk_size number_of_states"]) -> "FixedLUTProvider":
+        return cls(lut=lut)
 
 
 class GaussianLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitShiftCodebookConfig, key: PRNGKeyArray
-    ) -> Float[Array, "values_per_step number_of_states"]:
-        return jax.random.normal(key, (config.values_per_step, config.number_of_states))
+        config: BitShiftCodebookConfig,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "chunk_size number_of_states"]:
+        return jax.random.normal(key, (config.chunk_size, config.number_of_states))
 
 
 class OneMultiplyAddHashLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitShiftCodebookConfig, key: PRNGKeyArray
-    ) -> Float[Array, "values_per_step number_of_states"]:
+        config: BitShiftCodebookConfig,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "chunk_size number_of_states"]:
         _ = key
-        assert config.values_per_step == 1
+        assert config.chunk_size == 1
 
         state_indices = jnp.arange(config.number_of_states, dtype=jnp.uint32)
 
@@ -64,10 +81,11 @@ class OneMultiplyAddHashLUTProvider(LUTProvider):
 class TwoMultiplyAddHashLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitShiftCodebookConfig, key: PRNGKeyArray
-    ) -> Float[Array, "values_per_step number_of_states"]:
+        config: BitShiftCodebookConfig,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "chunk_size number_of_states"]:
         _ = key
-        assert config.values_per_step == 1
+        assert config.chunk_size == 1
 
         state_indices = jnp.arange(config.number_of_states, dtype=jnp.uint32)
 
@@ -97,10 +115,11 @@ class TwoMultiplyAddHashLUTProvider(LUTProvider):
 class ThreeInstructionHashLUTProvider(LUTProvider):
     @staticmethod
     def _initialize_lut(
-        config: BitShiftCodebookConfig, key: PRNGKeyArray
-    ) -> Float[Array, "values_per_step number_of_states"]:
+        config: BitShiftCodebookConfig,
+        key: PRNGKeyArray,
+    ) -> Float[Array, "chunk_size number_of_states"]:
         _ = key
-        assert config.values_per_step == 1
+        assert config.chunk_size == 1
 
         state_indices = jnp.arange(config.number_of_states, dtype=jnp.uint32)
 
