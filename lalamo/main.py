@@ -51,7 +51,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
-from lalamo.model_import.remote_registry import RemoteFileSpec, fetch_available_models
+from lalamo.model_import.remote_registry import RemoteFileSpec, RemoteModelSpec, fetch_available_models
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.speculator.estimator import (
     get_default_device_bytes,
@@ -94,6 +94,27 @@ class ModelParser(ParamType):
             error_message = "".join(error_message_parts)
             return self.fail(error_message, param, ctx)
         return result
+
+
+class RemoteModelParser(ParamType):
+    name: str = "Pre-converted Model"
+
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> "RemoteModelSpec":
+        try:
+            available_models = fetch_available_models()
+        except Exception as e:
+            error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
+            return self.fail(error_message, param, ctx)
+
+        model_spec = _match_model(value, available_models)
+        if model_spec is None:
+            suggestions = _suggest_similar_models(value, available_models)
+            error_message = f'Model "{value}" not found.'
+            if suggestions:
+                error_message += f'\n\nDid you mean one of these?\n' + '\n'.join(f'  - {s}' for s in suggestions)
+            return self.fail(error_message, param, ctx)
+
+        return model_spec
 
 
 def _closest_repo(query: str, min_score: float = 80) -> str | None:
@@ -371,13 +392,15 @@ def convert(
 
 @app.command(help="Pull a pre-converted model from the SDK repository.")
 def pull(
-    model_identifier: Annotated[
-        str,
+    model_spec: Annotated[
+        RemoteModelSpec,
         Argument(
             help=(
                 "Model repository ID or name from the pre-converted catalog. "
                 "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan] or [cyan]'Llama-3.2-1B-Instruct'[/cyan]."
             ),
+            click_type=RemoteModelParser(),
+            show_default=False,
             metavar="MODEL_IDENTIFIER",
         ),
     ],
@@ -395,41 +418,15 @@ def pull(
         ),
     ] = False,
 ) -> None:
-    # Fetch models to determine default output directory
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        transient=True,
-    ) as progress:
-        progress.add_task("🔍 Fetching available models...")
-        try:
-            available_models = fetch_available_models()
-        except Exception as e:
-            _error(f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}")
-
-    # Match model to get name for default output dir
-    model_spec = _match_model(model_identifier, available_models)
-    if model_spec is None:
-        suggestions = _suggest_similar_models(model_identifier, available_models)
-        error_msg = f'Model "{model_identifier}" not found.'
-        if suggestions:
-            error_msg += f'\n\nDid you mean one of these?\n' + '\n'.join(f'  - {s}' for s in suggestions)
-        _error(error_msg)
-
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_spec.name
 
-    try:
-        _pull(
-            model_spec,
-            output_dir,
-            partial(CliPullCallbacks),
-            overwrite=overwrite,
-        )
-    except Exit:
-        raise
-    except RuntimeError as e:
-        _error(str(e))
+    _pull(
+        model_spec,
+        output_dir,
+        partial(CliPullCallbacks),
+        overwrite=overwrite,
+    )
 
 
 @dataclass
