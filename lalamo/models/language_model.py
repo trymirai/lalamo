@@ -110,6 +110,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
 
+    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+        if not self.stop_token_ids:
+            return token_ids
+        stop_set = set(self.stop_token_ids)
+        end = next((i for i, token_id in enumerate(token_ids) if token_id in stop_set), len(token_ids))
+        return token_ids[: end + 1]
+
     def _prefill_first_chunk(
         self,
         token_ids: Int[Array, "batch tokens"],
@@ -400,7 +407,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
             keys=key[None, ...] if key is not None else None,
         ).token_ids.squeeze(0)
-        response_text = self.message_processor.detokenize(response_ids.tolist())
+        trimmed_ids = self._trim_at_eos(response_ids.tolist())
+        response_text = self.message_processor.detokenize(trimmed_ids)
         return self.message_processor.parse_response(response_text)
 
     def compile_generate_tokens(
@@ -588,7 +596,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             )
 
             for idx, result in zip(sequence_ids, all_results, strict=True):
-                response = self.message_processor.parse_tokenized_response(result.token_ids.tolist())
+                trimmed_ids = self._trim_at_eos(result.token_ids.tolist())
+                response = self.message_processor.parse_tokenized_response(trimmed_ids)
                 yield (idx, response)
 
     def stream_reply_text(
