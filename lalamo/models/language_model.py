@@ -550,7 +550,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         tokenized: list[list[int]] = self.message_processor.tokenize_requests(dataset)
 
         buckets: dict[int, list[tuple[int, list[int]]]] = {}
+        max_prompt_length = max(_COMPILED_PROMPT_LENGTHS)
         for idx, sequence in enumerate(tokenized):
+            assert (
+                len(sequence) <= max_prompt_length
+            ), f"Sequence length {len(sequence)} exceeds largest bucket {max_prompt_length}"
             # we choose the smallest size from precomputed ones that is longer or equal to the current sequence
             padded_len = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= len(sequence))
             buckets.setdefault(padded_len, []).append((idx, sequence))
