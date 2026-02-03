@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 from evals.types import EvalPrompt, InferenceOutput
@@ -55,7 +56,7 @@ class LalamoInferenceEngine(InferenceEngine):
         self,
         input_path: Path,
         output_path: Path,
-        **engine_params,
+        **engine_params: Any,  # noqa: ANN401
     ) -> Path:
         """Run generate_replies() on the input with progress reporting."""
 
@@ -64,6 +65,7 @@ class LalamoInferenceEngine(InferenceEngine):
         max_output_length = engine_params.get("max_output_length", self.max_output_length)
 
         from lalamo.evals.inference.runner import GenerateRepliesCallbacks, generate_replies
+        from lalamo.models.common import BatchSizesComputedEvent
 
         # Custom callbacks for progress reporting
         console = Console()
@@ -84,7 +86,7 @@ class LalamoInferenceEngine(InferenceEngine):
             def batch_sizes_estimated(self) -> None:
                 console.print("      Estimating optimal batch sizes...")
 
-            def batch_sizes_computed(self, event) -> None:
+            def batch_sizes_computed(self, _event: BatchSizesComputedEvent) -> None:
                 console.print("      ✓ Batch sizes computed")
                 console.print("      Warming up model...")
 
@@ -94,9 +96,15 @@ class LalamoInferenceEngine(InferenceEngine):
 
                 # Report every 10% or on first/last
                 report_threshold = max(1, self.total_rows // 10)
-                if actual_processed == 1 or actual_processed == self.total_rows or actual_processed - self.last_reported >= report_threshold:
+                if (
+                    actual_processed in (1, self.total_rows)
+                    or actual_processed - self.last_reported >= report_threshold
+                ):
                     percentage = (actual_processed / self.total_rows * 100) if self.total_rows > 0 else 0
-                    console.print(f"      Generating replies... {actual_processed}/{self.total_rows} ({percentage:.0f}%)")
+                    console.print(
+                        f"      Generating replies... {actual_processed}/{self.total_rows} "
+                        f"({percentage:.0f}%)",
+                    )
                     self.last_reported = actual_processed
 
             def finished_generation(self) -> None:
@@ -138,14 +146,12 @@ class LalamoInferenceEngine(InferenceEngine):
                 f"Input/output length mismatch: {len(ids)} inputs, {len(output_df)} outputs",
             )
 
-        outputs = []
-        for i in range(len(output_df)):
-            outputs.append(
-                InferenceOutput(
-                    id=ids[i],
-                    response=output_df["response"][i],
-                    chain_of_thought=output_df["chain_of_thought"][i],
-                ),
+        outputs = [
+            InferenceOutput(
+                id=ids[i],
+                response=output_df["response"][i],
+                chain_of_thought=output_df["chain_of_thought"][i],
             )
-
+            for i in range(len(output_df))
+        ]
         return outputs

@@ -52,8 +52,7 @@ def _list_parquet_files_for_split(repo_id: str, split: str) -> list[str]:
         for filename in all_files
         if filename.endswith(".parquet")
         and (
-            filename.startswith(f"{split}/")
-            or filename.startswith(f"{split}-")
+            filename.startswith((f"{split}/", f"{split}-"))
             or f"/{split}-" in filename
         )
     ]
@@ -229,8 +228,8 @@ def run_inference(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    max_output_length: int,
-    batch_size: int,
+    _max_output_length: int,
+    _batch_size: int,
     callbacks: type[InferenceCallbacks],
 ) -> None:
     """Run model inference on eval dataset and save predictions.

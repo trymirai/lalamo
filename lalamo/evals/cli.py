@@ -5,6 +5,9 @@ from pathlib import Path
 from typing import Annotated
 
 import polars as pl
+from click import Context as ClickContext
+from click import Parameter as ClickParameter
+from click.types import ParamType
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 from rich.prompt import Confirm
@@ -56,7 +59,7 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):
         assert self.progress is not None
         self.converting_task = self.progress.add_task(f"Converting {split} split to internal format...")
 
-    def finished_converting_split(self, split: str) -> None:
+    def finished_converting_split(self, _split: str) -> None:
         assert self.progress is not None
         assert self.converting_task is not None
         self.progress.remove_task(self.converting_task)
@@ -71,10 +74,6 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):
 
 
 # Import EvalParser from main.py - need to copy this too
-from click import Context as ClickContext
-from click import Parameter as ClickParameter
-from click.types import ParamType
-
 
 class EvalParser(ParamType):
     name: str = "Huggingface Eval Repo"
@@ -241,7 +240,7 @@ def infer(
         )
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠[/yellow] Inference interrupted by user")
-        raise Exit(130)  # Standard exit code for CTRL-C
+        raise Exit(130) from None  # Standard exit code for CTRL-C
 
     console.print()
     console.print(f"[green]✓[/green] Predictions saved to: {predictions_path}")
@@ -299,12 +298,13 @@ def benchmark(
     # 1. Load predictions
     with console.status("[bold green]Loading predictions..."):
         pred_df = pl.read_parquet(predictions_path)
-        predictions = []
-        for row in pred_df.iter_rows(named=True):
-            predictions.append(PredictionRecord(
+        predictions = [
+            PredictionRecord(
                 id=row["id"],
                 model_output=row["model_output"],
-            ))
+            )
+            for row in pred_df.iter_rows(named=True)
+        ]
         console.print(f"✓ Loaded {len(predictions)} predictions")
 
     # 2. Load ground truth (filtered to matching predictions)
@@ -318,15 +318,18 @@ def benchmark(
 
         # Filter to only records that have predictions
         prediction_ids = {p.id for p in predictions}
-        ground_truth = []
-        for row in gt_df.iter_rows(named=True):
-            if row["id"] in prediction_ids:
-                ground_truth.append(InternalEvalRecord(**row))
-
+        ground_truth = [
+            InternalEvalRecord(**row)
+            for row in gt_df.iter_rows(named=True)
+            if row["id"] in prediction_ids
+        ]
         console.print(f"✓ Loaded {len(ground_truth)} ground truth records (matched to predictions)")
 
         if len(ground_truth) != len(predictions):
-            console.print(f"[yellow]⚠[/yellow] Mismatch: {len(predictions)} predictions but {len(ground_truth)} ground truth")
+            console.print(
+                f"[yellow]⚠[/yellow] Mismatch: {len(predictions)} predictions "
+                f"but {len(ground_truth)} ground truth",
+            )
             console.print("[yellow]⚠[/yellow] Some prediction IDs may not exist in ground truth")
 
         # Sort both by ID to ensure matching order
