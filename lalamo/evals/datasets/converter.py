@@ -3,6 +3,7 @@ import json
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Callable
 
 import huggingface_hub
 import pyarrow as pa
@@ -248,3 +249,21 @@ def run_inference(
     )
     cb.started()
     raise NotImplementedError("run_inference not yet implemented")
+
+
+def convert_dataset(
+    eval_spec: EvalSpec,
+    output_dir: Path,
+    callbacks_type: Callable[[EvalSpec, Path], EvalConversionCallbacks] = EvalConversionCallbacks,
+    max_examples: int | None = None,
+) -> None:
+    callbacks = callbacks_type(eval_spec, output_dir)
+
+    if output_dir.exists():
+        callbacks.output_dir_exists()
+
+    callbacks.started()
+
+    import_eval(eval_spec, output_dir, callbacks, max_examples=max_examples)
+
+    callbacks.finished()
