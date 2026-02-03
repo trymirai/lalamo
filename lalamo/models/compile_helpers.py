@@ -13,7 +13,10 @@ if TYPE_CHECKING:
 
     from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 
-_compile_cache: dict[tuple[GenerationConfig | None, InferenceConfig, ForwardPassConfig | None], Compiled] = {}
+_compile_cache: dict[
+    tuple[int, GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None],
+    Compiled,
+] = {}
 
 
 def compile_generate_tokens(
@@ -23,10 +26,12 @@ def compile_generate_tokens(
     *,
     forward_pass_config: ForwardPassConfig | None = None,
 ) -> Compiled:
-    key = (generation_config, inference_config, forward_pass_config)
+    from .language_model import LanguageModel
+
+    key = (id(model), generation_config, inference_config, forward_pass_config)
     if key not in _compile_cache:
         generate_tokens_fn = functools.partial(
-            model.generate_tokens,
+            LanguageModel.generate_tokens,
             generation_config=generation_config,
             max_output_length=inference_config.max_output_length,
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
@@ -35,6 +40,7 @@ def compile_generate_tokens(
         _compile_cache[key] = (
             jax.jit(generate_tokens_fn)
             .lower(
+                model,
                 prompt_token_ids=jax.ShapeDtypeStruct(
                     (inference_config.batch_size, inference_config.padded_length),
                     jnp.int32,
@@ -42,6 +48,11 @@ def compile_generate_tokens(
                 prompt_lengths_without_padding=jax.ShapeDtypeStruct((inference_config.batch_size,), jnp.int32),
                 keys=jax.ShapeDtypeStruct((inference_config.batch_size,), jax.random.key(0).dtype),
             )
+            # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
+            # 0 - no autotune, gpu shouldn't be touched
+            # 1 - basic level, gpu should be touched veeery little
+            # 2,3 - gpu touched more and more
+            # 4 (default) - gpu might allocate more memory than the run would require!
             .compile(compiler_options={"xla_gpu_autotune_level": "0"})
         )
     return _compile_cache[key]

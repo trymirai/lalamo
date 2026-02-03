@@ -420,7 +420,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         *,
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> int:
-        memory_analysis = self.compile_generate_tokens(
+        memory_analysis = compile_generate_tokens(
+            self,
             generation_config=generation_config,
             inference_config=inference_config,
             forward_pass_config=forward_pass_config,
