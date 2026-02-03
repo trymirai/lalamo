@@ -19,6 +19,7 @@ from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
 
 from lalamo.common import ParameterPath
+from lalamo.modules.audio.cambai.cambai_audio_decoding import NanoCodec
 from lalamo.modules.audio.cambai.nanocodec_modules import (
     CausalHiFiGANDecoder,
     CausalTransposeConv1d,
@@ -39,6 +40,7 @@ __all__ = [
     "load_half_snake",
     "load_hifigan_res_block",
     "load_hifigan_res_layer",
+    "load_nanocodec",
     "load_residual_block",
     "load_snake1d",
     "transform_pytorch_transpose_conv_weights",
@@ -552,4 +554,56 @@ def load_causal_hifigan_decoder(
         ),
         module,
         (pre_conv, activations, upsample_convs, res_layers, post_activation, post_conv),
+    )
+
+
+# =============================================================================
+# Full Model Loaders
+# =============================================================================
+
+
+def load_nanocodec(
+    module: NanoCodec,
+    weights_dict: Mapping[str, Array],
+) -> NanoCodec:
+    """Load a NanoCodec model from weights.
+
+    Loads the CausalHiFiGANDecoder weights from the audio_decoder prefix.
+    The GroupFiniteScalarQuantizer uses FSQ which has no learnable weights -
+    its buffers are computed from the config.
+
+    Expected weight structure (from NeMo AudioCodecModel state_dict):
+        audio_decoder:
+            - audio_decoder.pre_conv.conv.weight
+            - audio_decoder.pre_conv.conv.bias
+            - audio_decoder.activations.0.activation.snake_act.alpha
+            - audio_decoder.up_sample_conv_layers.0.conv.weight
+            - audio_decoder.res_layers.0.res_blocks.0.res_blocks.0...
+            - audio_decoder.post_activation.activation.snake_act.alpha
+            - audio_decoder.post_conv.conv.weight
+            - audio_decoder.post_conv.conv.bias
+
+        vector_quantizer (not loaded - FSQ has no learnable weights):
+            - vector_quantizer.fsqs.0.num_levels (buffer, not weight)
+            - vector_quantizer.fsqs.0.dim_base_index (buffer, not weight)
+
+    Args:
+        module: The NanoCodec module to load weights into.
+        weights_dict: Dictionary mapping parameter paths to weight arrays.
+            Should contain keys with "audio_decoder." prefix.
+
+    Returns:
+        NanoCodec module with loaded decoder weights.
+    """
+    # Load decoder with "audio_decoder" prefix
+    decoder = load_causal_hifigan_decoder(
+        module.decoder,
+        weights_dict,
+        ParameterPath("audio_decoder"),
+    )
+
+    return load_parameters(
+        lambda m: (m.decoder,),
+        module,
+        (decoder,),
     )

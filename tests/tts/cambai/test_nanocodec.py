@@ -2,11 +2,28 @@ import logging
 from collections.abc import Mapping
 from pathlib import Path
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
 from omegaconf import DictConfig
 
+from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
+from lalamo.modules.audio.cambai.cambai_audio_decoding import NanoCodecConfig
+from lalamo.modules.audio.cambai.nanocodec_modules import (
+    CausalHiFiGANDecoderConfig,
+    CausalTransposeConv1dConfig,
+    FiniteScalarQuantizerConfig,
+    GroupFiniteScalarQuantizerConfig,
+    HalfSnakeConfig,
+    HiFiGANResBlockConfig,
+    HiFiGANResLayerConfig,
+    ResidualBlockConfig,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+    CausalConv1dConfig,
+    Snake1dConfig,
+)
 from tests.tts.cambai.nanocodec_torch_stuff import (
     AudioCodecModel,
     CausalHiFiGANDecoder,
@@ -14,9 +31,7 @@ from tests.tts.cambai.nanocodec_torch_stuff import (
     load_nemo_data,
     try_locate_fish_audio_model_path,
 )
-from tests.tts.utils import generate_pseudo_voice_signal
-
-_testlog = logging.getLogger("tts_test_logger")
+from tests.tts.utils import generate_harmonic_row, prepare_state_dict_for_lalamo_loaders
 
 
 @pytest.fixture
@@ -277,3 +292,123 @@ def test_audio_codec_model_decode_deterministic(cached_nemo_model: tuple[Mapping
         audio2, _ = model.decode(tokens=tokens, tokens_len=tokens_len)
 
     assert torch.allclose(audio1, audio2), "Decode should be deterministic"
+
+
+# =============================================================================
+# End-to-End Lalamo vs PyTorch Tests
+# =============================================================================
+
+
+def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
+    """Create Lalamo NanoCodecConfig from NeMo config dict."""
+    vq_cfg = config["vector_quantizer"]
+
+    # FSQ config for each group
+    fsq_config = FiniteScalarQuantizerConfig(
+        num_levels=tuple(vq_cfg["num_levels_per_group"]),
+        eps=1e-3,
+        precision=jnp.float32,
+    )
+
+    # Group FSQ config
+    quantizer_config = GroupFiniteScalarQuantizerConfig(
+        num_groups=vq_cfg["num_groups"],
+        quantizer_config=fsq_config,
+    )
+
+    # Build decoder config hierarchy
+    snake_config = Snake1dConfig(precision=jnp.float32)
+    activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
+    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+
+    residual_block_config = ResidualBlockConfig(
+        activation_config=activation_config,
+        conv_config=conv_config,
+    )
+    hifigan_res_block_config = HiFiGANResBlockConfig(residual_block_config=residual_block_config)
+    res_layer_config = HiFiGANResLayerConfig(hifigan_res_block_config=hifigan_res_block_config)
+
+    decoder_config = CausalHiFiGANDecoderConfig(
+        activation_config=activation_config,
+        pre_conv_config=conv_config,
+        transpose_conv_config=transpose_conv_config,
+        res_layer_config=res_layer_config,
+        post_conv_config=conv_config,
+    )
+
+    return NanoCodecConfig(
+        precision=jnp.float32,
+        quantizer_config=quantizer_config,
+        decoder_config=decoder_config,
+        sample_rate=config["sample_rate"],
+    )
+
+
+def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mapping, Path]) -> None:
+    """Test that Lalamo NanoCodec produces same output as PyTorch AudioCodecModel.
+
+    Uses a harmonic signal encoded by PyTorch and decoded by both implementations.
+    """
+    state_dict, config, _ = cached_nemo_model
+
+    # Create and load PyTorch model
+    cfg = DictConfig(config)
+    torch_model = AudioCodecModel(cfg)
+    torch_model.load_state_dict(state_dict, strict=False)
+    torch_model.eval()
+
+    # Create Lalamo config and model
+    lalamo_config = _create_lalamo_nanocodec_config(config)
+    dec_cfg = config["audio_decoder"]
+
+    lalamo_model = lalamo_config.empty(
+        base_channels=dec_cfg["base_channels"],
+        up_sample_rates=tuple(dec_cfg["up_sample_rates"]),
+        in_kernel_size=dec_cfg.get("in_kernel_size", 7),
+        out_kernel_size=dec_cfg.get("out_kernel_size", 3),
+        resblock_kernel_sizes=tuple(dec_cfg.get("resblock_kernel_sizes", (3, 7, 11))),
+        resblock_dilations=tuple(dec_cfg.get("resblock_dilation_sizes", (1, 3, 5))),
+    )
+
+    # Load weights into Lalamo model
+    weights_dict = prepare_state_dict_for_lalamo_loaders(dict(state_dict))
+    lalamo_model = load_nanocodec(lalamo_model, weights_dict)
+
+    # Generate a harmonic signal for encoding (2 seconds)
+    sample_rate = config["sample_rate"]
+    duration_samples = sample_rate * 2  # 2 seconds of audio
+    f0 = 200.0  # fundamental frequency
+    harmonic_signal, _ = generate_harmonic_row(sample_rate, duration_samples, f0)
+    harmonic_signal = harmonic_signal.astype(np.float32)
+
+    # Encode with PyTorch model
+    audio_torch_input = torch.from_numpy(harmonic_signal).unsqueeze(0)  # [1, T]
+    audio_len = torch.tensor([len(harmonic_signal)])
+
+    with torch.no_grad():
+        tokens_torch, tokens_len = torch_model.encode(audio=audio_torch_input, audio_len=audio_len)
+        # tokens_torch shape: [B, C, T] where C is num_codebooks
+        audio_torch_decoded, _ = torch_model.decode(tokens=tokens_torch, tokens_len=tokens_len)
+
+    # Get tokens for single batch item: [C, T]
+    tokens_np = tokens_torch[0].numpy()
+
+    # Lalamo forward using audio_from_codes (expects [C, T] format)
+    tokens_jax = jnp.array(tokens_np)
+    audio_lalamo = lalamo_model.audio_from_codes(tokens_jax)
+
+    # # Save decoded audio files for manual comparison
+    # import soundfile as sf
+    # sf.write("decoded_audio_torch.wav", audio_torch_decoded[0].numpy(), sample_rate)
+    # sf.write("decoded_audio_lalamo.wav", np.array(audio_lalamo), sample_rate)
+
+    # Compare outputs
+    # Use relaxed tolerances for end-to-end test as small numerical differences
+    # accumulate through the many layers of the HiFiGAN decoder
+    np.testing.assert_allclose(
+        np.array(audio_lalamo),
+        audio_torch_decoded[0].numpy(),
+        rtol=5e-2,
+        atol=5e-2,
+    )

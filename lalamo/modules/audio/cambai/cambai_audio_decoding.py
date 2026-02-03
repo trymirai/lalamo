@@ -18,16 +18,52 @@ from .nanocodec_modules import (
 
 @dataclass(frozen=True)
 class NanoCodecConfig:
+    """Configuration for NanoCodec audio decoder.
+
+    This combines GroupFiniteScalarQuantizer and CausalHiFiGANDecoder
+    to decode discrete tokens into audio waveforms.
+
+    Args:
+        precision: Data type for computations.
+        quantizer_config: Configuration for the group FSQ.
+        decoder_config: Configuration for the HiFiGAN decoder.
+        sample_rate: Audio sample rate in Hz.
+    """
+
     precision: DTypeLike
     quantizer_config: GroupFiniteScalarQuantizerConfig
     decoder_config: CausalHiFiGANDecoderConfig
-    samplerate: int
+    sample_rate: int
 
     def empty(
         self,
+        base_channels: int,
+        up_sample_rates: tuple[int, ...],
+        in_kernel_size: int,
+        out_kernel_size: int,
+        resblock_kernel_sizes: tuple[int, ...],
+        resblock_dilations: tuple[int, ...],
     ) -> "NanoCodec":
+        """Create NanoCodec with placeholder weights.
+
+        Args:
+            base_channels: Initial number of channels after pre_conv in decoder.
+            up_sample_rates: Upsample rate for each decoder stage.
+            in_kernel_size: Kernel size for decoder pre_conv.
+            out_kernel_size: Kernel size for decoder post_conv.
+            resblock_kernel_sizes: Kernel sizes for HiFiGAN residual blocks.
+            resblock_dilations: Dilations for HiFiGAN residual blocks.
+        """
         quantizer = self.quantizer_config.empty()
-        decoder = self.decoder_config.empty()
+        decoder = self.decoder_config.empty(
+            input_dim=self.quantizer_config.codebook_dim,
+            base_channels=base_channels,
+            up_sample_rates=up_sample_rates,
+            in_kernel_size=in_kernel_size,
+            out_kernel_size=out_kernel_size,
+            resblock_kernel_sizes=resblock_kernel_sizes,
+            resblock_dilations=resblock_dilations,
+        )
 
         return NanoCodec(
             config=self,
@@ -37,13 +73,29 @@ class NanoCodecConfig:
 
     def random_init(
         self,
+        base_channels: int,
+        up_sample_rates: tuple[int, ...],
+        in_kernel_size: int,
+        out_kernel_size: int,
+        resblock_kernel_sizes: tuple[int, ...],
+        resblock_dilations: tuple[int, ...],
         *,
         key: PRNGKeyArray,
     ) -> "NanoCodec":
+        """Create NanoCodec with randomly initialized weights."""
         key_quantizer, key_decoder = jax.random.split(key)
 
         quantizer = self.quantizer_config.random_init(key=key_quantizer)
-        decoder = self.decoder_config.random_init(key=key_decoder)
+        decoder = self.decoder_config.random_init(
+            input_dim=self.quantizer_config.codebook_dim,
+            base_channels=base_channels,
+            up_sample_rates=up_sample_rates,
+            in_kernel_size=in_kernel_size,
+            out_kernel_size=out_kernel_size,
+            resblock_kernel_sizes=resblock_kernel_sizes,
+            resblock_dilations=resblock_dilations,
+            key=key_decoder,
+        )
 
         return NanoCodec(
             config=self,
@@ -53,11 +105,16 @@ class NanoCodecConfig:
 
 
 class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
-    """Lalamo implementation of decoder part of NanoCodec from NVidia
+    """Lalamo implementation of decoder part of NanoCodec from NVidia.
+
     Original code: https://github.com/NVIDIA-NeMo/NeMo/blob/v2.3.0/nemo/collections/tts/modules/audio_codec_modules.py
+
     The decoding pipeline:
     1. GroupFiniteScalarQuantizer decodes integer codes to continuous latent representations
     2. CausalHiFiGANDecoder upsamples and converts latents to audio waveform
+
+    Input format: indices [batch, num_codebooks, tokens] - matches PyTorch AudioCodecModel
+    Output format: audio [batch, audio_samples]
     """
 
     quantizer: GroupFiniteScalarQuantizer
@@ -65,8 +122,7 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
 
     @property
     def samplerate(self) -> int:
-        # return self.config.samplerate
-        return 123
+        return self.config.sample_rate
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -74,13 +130,28 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
 
     @property
     def n_codebooks(self) -> int:
-        return -1
+        return self.quantizer.num_groups
 
     def __call__(
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
-    ) -> Float[Array, "batch audio_samples 1"]:
-        z = self.quantizer.decode(indices)
+    ) -> Float[Array, "batch audio_samples"]:
+        """Decode discrete tokens to audio waveform.
+
+        Args:
+            indices: Token indices of shape [batch, num_codebooks, tokens].
+                     Each codebook corresponds to one FSQ group.
+
+        Returns:
+            Audio waveform of shape [batch, audio_samples] in range [-1, 1].
+        """
+        # Transpose from [B, C, T] to [B, T, C] for Lalamo quantizer (NSC format)
+        indices_nsc = indices.transpose((0, 2, 1))
+
+        # Decode indices to continuous representation [B, T, D]
+        z = self.quantizer.decode(indices_nsc)
+
+        # Decode to audio [B, T_audio]
         audio = self.decoder(z)
 
         return audio
@@ -107,6 +178,14 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         )
 
     def audio_from_codes(self, indices: Array) -> Array:
+        """Convenience method to decode a single sequence of codes to audio.
+
+        Args:
+            indices: Token indices of shape [num_codebooks, tokens] or [batch, num_codebooks, tokens].
+
+        Returns:
+            Audio waveform of shape [audio_samples].
+        """
         if len(indices.shape) == 2:
-            indices = indices[None, :]
-        return self(indices)[0, :, 0]
+            indices = indices[None, :, :]
+        return self(indices)[0, :]

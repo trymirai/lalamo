@@ -440,10 +440,9 @@ class HalfSnakeConfig:
         """Create HalfSnake with placeholder weights.
 
         Args:
-            channels: Total number of input channels. Must be even.
+            channels: Total number of input channels. Snake gets floor(channels/2),
+                      LeakyReLU gets the rest.
         """
-        if channels % 2 != 0:
-            raise ValueError(f"HalfSnake requires even number of channels, got {channels}")
         snake_channels = channels // 2
         snake = self.snake_config.empty(snake_channels)
         return HalfSnake(config=self, snake=snake, total_channels=channels)
@@ -457,11 +456,10 @@ class HalfSnakeConfig:
         """Create HalfSnake with initialized weights.
 
         Args:
-            channels: Total number of input channels. Must be even.
+            channels: Total number of input channels. Snake gets floor(channels/2),
+                      LeakyReLU gets the rest.
             key: PRNG key (unused, Snake uses ones initialization).
         """
-        if channels % 2 != 0:
-            raise ValueError(f"HalfSnake requires even number of channels, got {channels}")
         snake_channels = channels // 2
         snake = self.snake_config.random_init(snake_channels)
         return HalfSnake(config=self, snake=snake, total_channels=channels)

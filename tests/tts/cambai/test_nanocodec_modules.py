@@ -7,6 +7,7 @@ that match the PyTorch reference implementation from NeMo.
 import jax.numpy as jnp
 import numpy as np
 import torch
+from jax.random import PRNGKey
 
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.nanocodec_loaders import (
@@ -88,7 +89,12 @@ def test_fsq_decode_matches_torch() -> None:
     input_len = torch.tensor([codebook_size])
     decoded_torch = torch_quantizer.decode(torch.from_numpy(indices_np).reshape((1, -1, 1)), input_len)
 
-    np.testing.assert_allclose(np.array(decoded_lalamo), decoded_torch.numpy().transpose((2, 0, 1)), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        np.array(decoded_lalamo),
+        decoded_torch.numpy().transpose((2, 0, 1)),
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 def test_group_fsq_encode_matches_torch() -> None:
@@ -146,7 +152,12 @@ def test_group_fsq_decode_matches_torch() -> None:
     indices_torch = torch.from_numpy(indices_np).permute((2, 0, 1))
     decoded_torch = torch_quantizer.decode(indices_torch, input_len)
 
-    np.testing.assert_allclose(np.array(decoded_lalamo), decoded_torch.numpy().transpose((0, 2, 1)), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(
+        np.array(decoded_lalamo),
+        decoded_torch.numpy().transpose((0, 2, 1)),
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 # =============================================================================
@@ -164,7 +175,7 @@ def test_half_snake_forward_matches_torch() -> None:
     # Create Lalamo HalfSnake
     snake_config = Snake1dConfig(precision=jnp.float32)
     lalamo_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    lalamo_half_snake = lalamo_config.random_init(channels, key=None)
+    lalamo_half_snake = lalamo_config.random_init(channels, key=PRNGKey(123))
 
     # Create PyTorch HalfSnake
     torch_half_snake = nanocodec_torch.HalfSnake(channels)
