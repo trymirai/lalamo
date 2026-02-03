@@ -64,7 +64,7 @@ class LalamoInferenceEngine(InferenceEngine):
         batch_size = engine_params.get("batch_size", self.batch_size)
         max_output_length = engine_params.get("max_output_length", self.max_output_length)
 
-        from lalamo.commands import generate_replies, GenerateRepliesCallbacks
+        from lalamo.evals.inference.runner import generate_replies, GenerateRepliesCallbacks
 
         # Custom callbacks for progress reporting
         console = Console()
