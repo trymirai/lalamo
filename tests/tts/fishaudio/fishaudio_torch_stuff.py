@@ -131,7 +131,7 @@ class ConfigMapping:
             precision=precision,
             base=config.rope_base,
         )
-        # TODO: use usual RoPE with half-rotation later
+        # TODO (peter.glushkvo): use usual RoPE with half-rotation later
         # global_rope_config = UnscaledRoPEConfig(
         #     precision=precision,
         #     base=config.rope_base,

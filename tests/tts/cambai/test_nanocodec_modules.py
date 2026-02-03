@@ -1,6 +1,6 @@
-"""Tests comparing JAX and PyTorch implementations of NanoCodec modules.
+"""Tests comparing Lalamo and PyTorch implementations of NanoCodec modules.
 
-These tests verify that the Lalamo JAX implementation produces outputs
+These tests verify that the Lalamo implementation produces outputs
 that match the PyTorch reference implementation from NeMo.
 """
 
@@ -18,107 +18,106 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
     load_hifigan_res_layer,
     load_residual_block,
 )
-from lalamo.modules.audio.cambai.cambai_modules import (
-    CausalHiFiGANDecoderConfig as JaxCausalHiFiGANDecoderConfig,
-    CausalTransposeConv1dConfig as JaxCausalTransposeConv1dConfig,
-    FiniteScalarQuantizerConfig as JaxFSQConfig,
-    GroupFiniteScalarQuantizerConfig as JaxGroupFSQConfig,
-    HalfSnakeConfig as JaxHalfSnakeConfig,
-    HiFiGANResBlockConfig as JaxHiFiGANResBlockConfig,
-    HiFiGANResLayerConfig as JaxHiFiGANResLayerConfig,
-    ResidualBlockConfig as JaxResidualBlockConfig,
+from lalamo.modules.audio.cambai.nanocodec_modules import (
+    CausalHiFiGANDecoderConfig,
+    CausalTransposeConv1dConfig,
+    FiniteScalarQuantizerConfig,
+    GroupFiniteScalarQuantizerConfig,
+    HalfSnakeConfig,
+    HiFiGANResBlockConfig,
+    HiFiGANResLayerConfig,
+    ResidualBlockConfig,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalConv1dConfig as JaxCausalConv1dConfig,
-    Snake1dConfig as JaxSnake1dConfig,
+    CausalConv1dConfig,
+    Snake1dConfig,
 )
-from tests.tts.cambai.nanocodec_torch_stuff import (
-    CausalConv1dNorm as TorchCausalConv1dNorm,
-    CausalConvTranspose1dNorm as TorchCausalConvTranspose1dNorm,
-    CausalHiFiGANDecoder as TorchCausalHiFiGANDecoder,
-    FiniteScalarQuantizer as TorchFSQ,
-    GroupFiniteScalarQuantizer as TorchGroupFSQ,
-    HalfSnake as TorchHalfSnake,
-    HiFiGANResBlock as TorchHiFiGANResBlock,
-    HiFiGANResLayer as TorchHiFiGANResLayer,
-    ResidualBlock as TorchResidualBlock,
-)
+from tests.tts.cambai import nanocodec_torch_stuff as nanocodec_torch
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
+
+
+def random_normal(*shape: int, seed: int = 42) -> np.ndarray:
+    """Generate a normally distributed float32 array with a fixed seed."""
+    rng = np.random.default_rng(seed)
+    return rng.standard_normal(shape).astype(np.float32)
+
 
 # =============================================================================
 # Quantizer Tests
 # =============================================================================
 
 
-def test_fsq_forward_matches_torch() -> None:
+def test_fsq_encode_matches_torch() -> None:
     """Test FSQ forward pass produces same codes and indices as PyTorch."""
     num_levels = [8, 7, 6, 6]
 
-    jax_config = JaxFSQConfig(num_levels=tuple(num_levels), eps=1e-3)
-    jax_quantizer = jax_config.empty()
-    torch_quantizer = TorchFSQ(num_levels=num_levels, eps=1e-3)
+    lalamo_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels), eps=1e-3)
+    lalamo_quantizer = lalamo_config.empty()
+    torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 10
-    inputs_np = np.random.randn(batch_size, 4, seq_len).astype(np.float32)
+    inputs_np = random_normal(batch_size, 4, seq_len)
 
-    # JAX
-    codes_jax, indices_jax = jax_quantizer(jnp.array(inputs_np))
+    # Lalamo
+    codes_lalamo = lalamo_quantizer.encode(jnp.array(inputs_np))
 
     # PyTorch
     input_len = torch.tensor([seq_len, seq_len])
-    codes_torch, indices_torch = torch_quantizer(torch.from_numpy(inputs_np), input_len)
+    _, indices_torch = torch_quantizer(torch.from_numpy(inputs_np), input_len)
 
-    np.testing.assert_allclose(np.array(codes_jax), codes_torch.numpy(), rtol=1e-5, atol=1e-5)
-    np.testing.assert_array_equal(np.array(indices_jax), indices_torch.numpy())
+    np.testing.assert_allclose(np.array(codes_lalamo), indices_torch[0].numpy(), rtol=1e-5, atol=1e-5)
+    # np.testing.assert_array_equal(np.array(indices_lalamo), indices_torch.numpy())
 
 
 def test_fsq_decode_matches_torch() -> None:
     """Test FSQ decode produces same outputs as PyTorch for all codebook entries."""
     num_levels = [8, 7, 6, 6]
 
-    jax_config = JaxFSQConfig(num_levels=tuple(num_levels), eps=1e-3)
-    jax_quantizer = jax_config.empty()
-    torch_quantizer = TorchFSQ(num_levels=num_levels, eps=1e-3)
+    lalamo_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels), eps=1e-3)
+    lalamo_quantizer = lalamo_config.empty()
+    torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
     # Test all codebook entries
-    codebook_size = jax_quantizer.codebook_size
-    indices_np = np.arange(codebook_size).reshape(1, 1, -1).astype(np.int32)
+    codebook_size = lalamo_quantizer.codebook_size
+    indices_np = np.arange(codebook_size).reshape(1, -1).astype(np.int32)
 
-    # JAX
-    decoded_jax = jax_quantizer.decode(jnp.array(indices_np))
+    # Lalamo
+    decoded_lalamo = lalamo_quantizer(jnp.array(indices_np))
 
     # PyTorch
     input_len = torch.tensor([codebook_size])
-    decoded_torch = torch_quantizer.decode(torch.from_numpy(indices_np), input_len)
+    decoded_torch = torch_quantizer.decode(torch.from_numpy(indices_np).reshape((1, -1, 1)), input_len)
 
-    np.testing.assert_allclose(np.array(decoded_jax), decoded_torch.numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.array(decoded_lalamo), decoded_torch.numpy().transpose((2, 0, 1)), rtol=1e-5, atol=1e-5)
 
 
-def test_group_fsq_forward_matches_torch() -> None:
+def test_group_fsq_encode_matches_torch() -> None:
     """Test GroupFSQ forward pass produces same codes and indices as PyTorch."""
     num_groups = 13
     num_levels_per_group = [8, 7, 6, 6]
 
-    fsq_config = JaxFSQConfig(num_levels=tuple(num_levels_per_group), eps=1e-3)
-    jax_config = JaxGroupFSQConfig(num_groups=num_groups, quantizer_config=fsq_config)
-    jax_quantizer = jax_config.empty()
-    torch_quantizer = TorchGroupFSQ(num_groups=num_groups, num_levels_per_group=num_levels_per_group, eps=1e-3)
+    fsq_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels_per_group), eps=1e-3)
+    lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
+    lalamo_quantizer = lalamo_config.empty()
+    torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(
+        num_groups=num_groups,
+        num_levels_per_group=num_levels_per_group,
+        eps=1e-3,
+    )
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 10
-    channels = jax_quantizer.codebook_dim  # 52
-    inputs_np = np.random.randn(batch_size, channels, seq_len).astype(np.float32)
+    channels = lalamo_quantizer.codebook_dim  # 52
+    inputs_np = random_normal(batch_size, channels, seq_len)
 
-    # JAX
-    codes_jax, indices_jax = jax_quantizer(jnp.array(inputs_np))
+    # Lalamo
+    codes_lalamo = lalamo_quantizer.encode(jnp.array(inputs_np))
 
     # PyTorch
     input_len = torch.tensor([seq_len, seq_len])
-    codes_torch, indices_torch = torch_quantizer(torch.from_numpy(inputs_np), input_len)
+    _, indices_torch = torch_quantizer(torch.from_numpy(inputs_np), input_len)
 
-    np.testing.assert_allclose(np.array(codes_jax), codes_torch.numpy(), rtol=1e-5, atol=1e-5)
-    np.testing.assert_array_equal(np.array(indices_jax), indices_torch.numpy())
+    np.testing.assert_allclose(np.array(codes_lalamo), indices_torch.numpy(), rtol=1e-5, atol=1e-5)
+    # np.testing.assert_array_equal(np.array(indices_lalamo), indices_torch.numpy())
 
 
 def test_group_fsq_decode_matches_torch() -> None:
@@ -126,24 +125,28 @@ def test_group_fsq_decode_matches_torch() -> None:
     num_groups = 13
     num_levels_per_group = [8, 7, 6, 6]
 
-    fsq_config = JaxFSQConfig(num_levels=tuple(num_levels_per_group), eps=1e-3)
-    jax_config = JaxGroupFSQConfig(num_groups=num_groups, quantizer_config=fsq_config)
-    jax_quantizer = jax_config.empty()
-    torch_quantizer = TorchGroupFSQ(num_groups=num_groups, num_levels_per_group=num_levels_per_group, eps=1e-3)
+    fsq_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels_per_group), eps=1e-3)
+    lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
+    lalamo_quantizer = lalamo_config.empty()
+    torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(
+        num_groups=num_groups,
+        num_levels_per_group=num_levels_per_group,
+        eps=1e-3,
+    )
 
-    np.random.seed(42)
+    rng = np.random.default_rng(42)
     batch_size, seq_len = 2, 10
     codebook_size_per_group = 8 * 7 * 6 * 6  # 2016
-    indices_np = np.random.randint(0, codebook_size_per_group, (num_groups, batch_size, seq_len)).astype(np.int32)
+    indices_np = rng.integers(0, codebook_size_per_group, (batch_size, seq_len, num_groups), dtype=np.int32)
 
-    # JAX
-    decoded_jax = jax_quantizer.decode(jnp.array(indices_np))
-
+    # Lalamo
+    decoded_lalamo = lalamo_quantizer.decode(jnp.array(indices_np))
     # PyTorch
     input_len = torch.tensor([seq_len, seq_len])
-    decoded_torch = torch_quantizer.decode(torch.from_numpy(indices_np), input_len)
+    indices_torch = torch.from_numpy(indices_np).permute((2, 0, 1))
+    decoded_torch = torch_quantizer.decode(indices_torch, input_len)
 
-    np.testing.assert_allclose(np.array(decoded_jax), decoded_torch.numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.array(decoded_lalamo), decoded_torch.numpy().transpose((0, 2, 1)), rtol=1e-5, atol=1e-5)
 
 
 # =============================================================================
@@ -158,41 +161,39 @@ def test_half_snake_forward_matches_torch() -> None:
     """
     channels = 128
 
-    # Create JAX HalfSnake
-    snake_config = JaxSnake1dConfig(precision=jnp.float32)
-    jax_config = JaxHalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    jax_half_snake = jax_config.random_init(channels, key=None)
+    # Create Lalamo HalfSnake
+    snake_config = Snake1dConfig(precision=jnp.float32)
+    lalamo_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
+    lalamo_half_snake = lalamo_config.random_init(channels, key=None)
 
     # Create PyTorch HalfSnake
-    torch_half_snake = TorchHalfSnake(channels)
+    torch_half_snake = nanocodec_torch.HalfSnake(channels)
 
     # Set custom alpha values and load using loader
-    np.random.seed(123)
     snake_channels = channels // 2
-    custom_alpha = np.random.randn(snake_channels).astype(np.float32) * 0.5 + 1.0
+    custom_alpha = random_normal(snake_channels, seed=123) * 0.5 + 1.0
 
     # Update PyTorch alpha: shape is (1, snake_channels, 1)
     torch_half_snake.snake_act.alpha.data = torch.from_numpy(custom_alpha).reshape(1, -1, 1)
 
     # Get state_dict and load using loader
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_half_snake.state_dict())
-    jax_half_snake = load_half_snake(jax_half_snake, weights_dict, ParameterPath())
+    lalamo_half_snake = load_half_snake(lalamo_half_snake, weights_dict, ParameterPath())
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 100
     # PyTorch uses NCT format: (batch, channels, time)
-    inputs_nct = np.random.randn(batch_size, channels, seq_len).astype(np.float32)
-    # JAX uses NSC format: (batch, sequence, channels)
+    inputs_nct = random_normal(batch_size, channels, seq_len)
+    # Lalamo uses NSC format: (batch, sequence, channels)
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward
-    output_jax_nsc = jax_half_snake(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    # Lalamo forward
+    output_lalamo_nsc = lalamo_half_snake(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     # PyTorch forward
     output_torch_nct = torch_half_snake(torch.from_numpy(inputs_nct))
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 # =============================================================================
@@ -209,7 +210,7 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     dilation = 1
 
     # Create PyTorch conv and remove weight norm to get fused weights
-    torch_conv = TorchCausalConv1dNorm(
+    torch_conv = nanocodec_torch.CausalConv1dNorm(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -218,9 +219,9 @@ def test_causal_conv1d_forward_matches_torch() -> None:
         bias=True,
     )
 
-    # Create JAX conv
-    jax_config = JaxCausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    jax_conv = jax_config.empty(
+    # Create Lalamo conv
+    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -231,24 +232,23 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     # Load weights using loader
     # state_dict already has 'conv.' prefix from TorchCausalConv1dNorm's self.conv
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_conv.state_dict())
-    jax_conv = load_causal_conv1d(jax_conv, weights_dict, ParameterPath("conv"))
+    lalamo_conv = load_causal_conv1d(lalamo_conv, weights_dict, ParameterPath("conv"))
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 50
     # PyTorch uses NCT format
-    inputs_nct = np.random.randn(batch_size, in_channels, seq_len).astype(np.float32)
-    # JAX uses NSC format
+    inputs_nct = random_normal(batch_size, in_channels, seq_len)
+    # Lalamo uses NSC format
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward
-    output_jax_nsc = jax_conv(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    # Lalamo forward
+    output_lalamo_nsc = lalamo_conv(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     # PyTorch forward
     input_len = torch.tensor([seq_len, seq_len])
     output_torch_nct = torch_conv(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_causal_conv1d_with_dilation_matches_torch() -> None:
@@ -259,7 +259,7 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
     stride = 1
     dilation = 3
 
-    torch_conv = TorchCausalConv1dNorm(
+    torch_conv = nanocodec_torch.CausalConv1dNorm(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -268,8 +268,8 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
         bias=True,
     )
 
-    jax_config = JaxCausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    jax_conv = jax_config.empty(
+    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -280,20 +280,19 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
     # Load weights using loader
     # state_dict already has 'conv.' prefix from TorchCausalConv1dNorm's self.conv
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_conv.state_dict())
-    jax_conv = load_causal_conv1d(jax_conv, weights_dict, ParameterPath("conv"))
+    lalamo_conv = load_causal_conv1d(lalamo_conv, weights_dict, ParameterPath("conv"))
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 50
-    inputs_nct = np.random.randn(batch_size, in_channels, seq_len).astype(np.float32)
+    inputs_nct = random_normal(batch_size, in_channels, seq_len)
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    output_jax_nsc = jax_conv(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    output_lalamo_nsc = lalamo_conv(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     input_len = torch.tensor([seq_len, seq_len])
     output_torch_nct = torch_conv(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_causal_transpose_conv1d_forward_matches_torch() -> None:
@@ -304,7 +303,7 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
     stride = 7
 
     # Create PyTorch transposed conv (groups=out_channels by default in NanoCodec)
-    torch_conv = TorchCausalConvTranspose1dNorm(
+    torch_conv = nanocodec_torch.CausalConvTranspose1dNorm(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -313,9 +312,9 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
         bias=True,
     )
 
-    # Create JAX transposed conv
-    jax_config = JaxCausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
-    jax_conv = jax_config.empty(
+    # Create Lalamo transposed conv
+    lalamo_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_conv = lalamo_config.empty(
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -326,18 +325,17 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
     # Load weights using loader (handles weight transformation automatically)
     # state_dict already has 'conv.' prefix from TorchCausalConvTranspose1dNorm's self.conv
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_conv.state_dict())
-    jax_conv = load_causal_transpose_conv1d(jax_conv, weights_dict, ParameterPath("conv"))
+    lalamo_conv = load_causal_transpose_conv1d(lalamo_conv, weights_dict, ParameterPath("conv"))
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 10
     # PyTorch uses NCT format
-    inputs_nct = np.random.randn(batch_size, in_channels, seq_len).astype(np.float32)
-    # JAX uses NSC format
+    inputs_nct = random_normal(batch_size, in_channels, seq_len)
+    # Lalamo uses NSC format
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward
-    output_jax_nsc = jax_conv(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    # Lalamo forward
+    output_lalamo_nsc = lalamo_conv(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     # PyTorch forward - manually apply conv and trimming without mask
     # (PyTorch's forward() applies mask_sequence_tensor which zeros out positions > input_len)
@@ -347,7 +345,7 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
         end = hidden_states.shape[-1] - torch_conv.padding_right
         output_torch_nct = hidden_states[..., torch_conv.padding_left : end]
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 # =============================================================================
@@ -362,7 +360,7 @@ def test_residual_block_forward_matches_torch() -> None:
     dilation = 3
 
     # Create PyTorch residual block (causal with half_snake activation)
-    torch_block = TorchResidualBlock(
+    torch_block = nanocodec_torch.ResidualBlock(
         channels=channels,
         filters=channels,
         kernel_size=kernel_size,
@@ -370,18 +368,17 @@ def test_residual_block_forward_matches_torch() -> None:
         activation="half_snake",
         is_causal=True,
     )
-    torch_block.remove_weight_norm()
 
-    # Create JAX residual block
-    snake_config = JaxSnake1dConfig(precision=jnp.float32)
-    activation_config = JaxHalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = JaxCausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    # Create Lalamo residual block
+    snake_config = Snake1dConfig(precision=jnp.float32)
+    activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
+    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
 
-    jax_block_config = JaxResidualBlockConfig(
+    lalamo_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
     )
-    jax_block = jax_block_config.empty(
+    lalamo_block = lalamo_block_config.empty(
         channels=channels,
         kernel_size=kernel_size,
         dilation=dilation,
@@ -389,25 +386,24 @@ def test_residual_block_forward_matches_torch() -> None:
 
     # Load weights using loader
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_block.state_dict())
-    jax_block = load_residual_block(jax_block, weights_dict, ParameterPath())
+    lalamo_block = load_residual_block(lalamo_block, weights_dict, ParameterPath())
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 50
     # PyTorch uses NCT format
-    inputs_nct = np.random.randn(batch_size, channels, seq_len).astype(np.float32)
-    # JAX uses NSC format
+    inputs_nct = random_normal(batch_size, channels, seq_len)
+    # Lalamo uses NSC format
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward
-    output_jax_nsc = jax_block(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    # Lalamo forward
+    output_lalamo_nsc = lalamo_block(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     # PyTorch forward (without masking)
     with torch.no_grad():
         input_len = torch.tensor([seq_len, seq_len])
         output_torch_nct = torch_block(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_hifigan_res_block_forward_matches_torch() -> None:
@@ -417,27 +413,25 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
     dilations = (1, 3, 5)
 
     # Create PyTorch HiFiGANResBlock (causal with half_snake activation)
-    torch_block = TorchHiFiGANResBlock(
+    torch_block = nanocodec_torch.HiFiGANResBlock(
         channels=channels,
         kernel_size=kernel_size,
         dilations=dilations,
         activation="half_snake",
         is_causal=True,
     )
-    for res_block in torch_block.res_blocks:
-        res_block.remove_weight_norm()
 
-    # Create JAX HiFiGANResBlock
-    snake_config = JaxSnake1dConfig(precision=jnp.float32)
-    activation_config = JaxHalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = JaxCausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    residual_block_config = JaxResidualBlockConfig(
+    # Create Lalamo HiFiGANResBlock
+    snake_config = Snake1dConfig(precision=jnp.float32)
+    activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
+    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
     )
 
-    jax_block_config = JaxHiFiGANResBlockConfig(residual_block_config=residual_block_config)
-    jax_block = jax_block_config.empty(
+    lalamo_block_config = HiFiGANResBlockConfig(residual_block_config=residual_block_config)
+    lalamo_block = lalamo_block_config.empty(
         channels=channels,
         kernel_size=kernel_size,
         dilations=dilations,
@@ -445,25 +439,24 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
 
     # Load weights using loader
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_block.state_dict())
-    jax_block = load_hifigan_res_block(jax_block, weights_dict, ParameterPath())
+    lalamo_block = load_hifigan_res_block(lalamo_block, weights_dict, ParameterPath())
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 50
     # PyTorch uses NCT format
-    inputs_nct = np.random.randn(batch_size, channels, seq_len).astype(np.float32)
-    # JAX uses NSC format
+    inputs_nct = random_normal(batch_size, channels, seq_len)
+    # Lalamo uses NSC format
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward
-    output_jax_nsc = jax_block(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    # Lalamo forward
+    output_lalamo_nsc = lalamo_block(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     # PyTorch forward
     with torch.no_grad():
         input_len = torch.tensor([seq_len, seq_len])
         output_torch_nct = torch_block(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_hifigan_res_layer_forward_matches_torch() -> None:
@@ -473,29 +466,26 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
     dilations = (1, 3, 5)
 
     # Create PyTorch HiFiGANResLayer (causal with half_snake activation)
-    torch_layer = TorchHiFiGANResLayer(
+    torch_layer = nanocodec_torch.HiFiGANResLayer(
         channels=channels,
         kernel_sizes=kernel_sizes,
         dilations=dilations,
         activation="half_snake",
         is_causal=True,
     )
-    for hifigan_res_block in torch_layer.res_blocks:
-        for res_block in hifigan_res_block.res_blocks:
-            res_block.remove_weight_norm()
 
-    # Create JAX HiFiGANResLayer
-    snake_config = JaxSnake1dConfig(precision=jnp.float32)
-    activation_config = JaxHalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = JaxCausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    residual_block_config = JaxResidualBlockConfig(
+    # Create Lalamo HiFiGANResLayer
+    snake_config = Snake1dConfig(precision=jnp.float32)
+    activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
+    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
     )
-    hifigan_res_block_config = JaxHiFiGANResBlockConfig(residual_block_config=residual_block_config)
+    hifigan_res_block_config = HiFiGANResBlockConfig(residual_block_config=residual_block_config)
 
-    jax_layer_config = JaxHiFiGANResLayerConfig(hifigan_res_block_config=hifigan_res_block_config)
-    jax_layer = jax_layer_config.empty(
+    lalamo_layer_config = HiFiGANResLayerConfig(hifigan_res_block_config=hifigan_res_block_config)
+    lalamo_layer = lalamo_layer_config.empty(
         channels=channels,
         kernel_sizes=kernel_sizes,
         dilations=dilations,
@@ -503,25 +493,24 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
 
     # Load weights using loader
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_layer.state_dict())
-    jax_layer = load_hifigan_res_layer(jax_layer, weights_dict, ParameterPath())
+    lalamo_layer = load_hifigan_res_layer(lalamo_layer, weights_dict, ParameterPath())
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 50
     # PyTorch uses NCT format
-    inputs_nct = np.random.randn(batch_size, channels, seq_len).astype(np.float32)
-    # JAX uses NSC format
+    inputs_nct = random_normal(batch_size, channels, seq_len)
+    # Lalamo uses NSC format
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward
-    output_jax_nsc = jax_layer(jnp.array(inputs_nsc))
-    output_jax_nct = np.transpose(np.array(output_jax_nsc), (0, 2, 1))
+    # Lalamo forward
+    output_lalamo_nsc = lalamo_layer(jnp.array(inputs_nsc))
+    output_lalamo_nct = np.transpose(np.array(output_lalamo_nsc), (0, 2, 1))
 
     # PyTorch forward
     with torch.no_grad():
         input_len = torch.tensor([seq_len, seq_len])
         output_torch_nct = torch_layer(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_jax_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_causal_hifigan_decoder_forward_matches_torch() -> None:
@@ -536,7 +525,7 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
     resblock_dilations = (1, 3)  # Reduced from (1, 3, 5)
 
     # Create PyTorch decoder
-    torch_decoder = TorchCausalHiFiGANDecoder(
+    torch_decoder = nanocodec_torch.CausalHiFiGANDecoder(
         input_dim=input_dim,
         up_sample_rates=up_sample_rates,
         base_channels=base_channels,
@@ -547,29 +536,28 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
         activation="half_snake",
         output_activation="tanh",
     )
-    torch_decoder.remove_weight_norm()
 
-    # Create JAX decoder
-    snake_config = JaxSnake1dConfig(precision=jnp.float32)
-    activation_config = JaxHalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = JaxCausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    transpose_conv_config = JaxCausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+    # Create Lalamo decoder
+    snake_config = Snake1dConfig(precision=jnp.float32)
+    activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
+    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
 
-    residual_block_config = JaxResidualBlockConfig(
+    residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
     )
-    hifigan_res_block_config = JaxHiFiGANResBlockConfig(residual_block_config=residual_block_config)
-    res_layer_config = JaxHiFiGANResLayerConfig(hifigan_res_block_config=hifigan_res_block_config)
+    hifigan_res_block_config = HiFiGANResBlockConfig(residual_block_config=residual_block_config)
+    res_layer_config = HiFiGANResLayerConfig(hifigan_res_block_config=hifigan_res_block_config)
 
-    jax_decoder_config = JaxCausalHiFiGANDecoderConfig(
+    lalamo_decoder_config = CausalHiFiGANDecoderConfig(
         activation_config=activation_config,
         pre_conv_config=conv_config,
         transpose_conv_config=transpose_conv_config,
         res_layer_config=res_layer_config,
         post_conv_config=conv_config,
     )
-    jax_decoder = jax_decoder_config.empty(
+    lalamo_decoder = lalamo_decoder_config.empty(
         input_dim=input_dim,
         base_channels=base_channels,
         up_sample_rates=up_sample_rates,
@@ -581,21 +569,20 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
 
     # Load weights using loader
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder.state_dict())
-    jax_decoder = load_causal_hifigan_decoder(jax_decoder, weights_dict)
+    lalamo_decoder = load_causal_hifigan_decoder(lalamo_decoder, weights_dict)
 
-    np.random.seed(42)
     batch_size, seq_len = 2, 10
     # PyTorch uses NCT format
-    inputs_nct = np.random.randn(batch_size, input_dim, seq_len).astype(np.float32)
-    # JAX uses NSC format
+    inputs_nct = random_normal(batch_size, input_dim, seq_len)
+    # Lalamo uses NSC format
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
 
-    # JAX forward - returns (batch, audio_length)
-    output_jax = jax_decoder(jnp.array(inputs_nsc))
+    # Lalamo forward - returns (batch, audio_length)
+    output_lalamo = lalamo_decoder(jnp.array(inputs_nsc))
 
     # PyTorch forward - returns (audio, audio_len)
     with torch.no_grad():
         input_len = torch.tensor([seq_len, seq_len])
         output_torch, _ = torch_decoder(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(np.array(output_jax), output_torch.detach().numpy(), rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(np.array(output_lalamo), output_torch.detach().numpy(), rtol=1e-5, atol=1e-5)

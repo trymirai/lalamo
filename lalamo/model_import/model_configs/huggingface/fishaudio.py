@@ -310,7 +310,7 @@ class FishAudioConfig(ForeignTTSConfig):
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
         global_rope_config = RoPEConfigCis(precision=precision, base=self.rope_base)
-        # TODO: use regular unscaled rope later
+        # TODO (peter.glushkov): use regular unscaled rope later
         # global_rope_config = UnscaledRoPEConfig(
         #     precision=precision, base=self.rope_base, max_sequence_length=self.max_seq_len
         # )

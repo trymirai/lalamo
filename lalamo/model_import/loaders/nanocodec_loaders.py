@@ -19,7 +19,7 @@ from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
 
 from lalamo.common import ParameterPath
-from lalamo.modules.audio.cambai.cambai_modules import (
+from lalamo.modules.audio.cambai.nanocodec_modules import (
     CausalHiFiGANDecoder,
     CausalTransposeConv1d,
     HalfSnake,
@@ -50,7 +50,7 @@ __all__ = [
 # =============================================================================
 
 
-# TODO: Move this function to loaders/common.py once fishaudio code is merged,
+# TODO(peter.glushkov):  Move this function to loaders/common.py once fishaudio code is merged,
 # as fishaudio_loaders.py has an identical _fuse_parametrized_weight_norm_conv1d function.
 def _fuse_parametrized_weight_norm_conv1d(
     weights_dict: Mapping[str, Array],

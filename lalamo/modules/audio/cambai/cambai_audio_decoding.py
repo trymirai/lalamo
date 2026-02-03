@@ -1,23 +1,14 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import Any, Self
+from typing import Self
 
 import jax
-from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
-from lalamo.modules.linear import FullPrecisionLinearConfig
-from lalamo.modules.mlp import DenseMLPConfig
-from lalamo.modules.normalization import LayerScaleConfig, NormalizationConfig, UpcastMode
-from lalamo.modules.rope import RoPEConfigCis
-from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.transformer import TransformerConfig
-from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .cambai_modules import (
+from .nanocodec_modules import (
     CausalHiFiGANDecoder,
     CausalHiFiGANDecoderConfig,
     GroupFiniteScalarQuantizer,
@@ -49,10 +40,10 @@ class NanoCodecConfig:
         *,
         key: PRNGKeyArray,
     ) -> "NanoCodec":
-        key1, key2 = jax.random.split(key)
+        key_quantizer, key_decoder = jax.random.split(key)
 
-        quantizer = self.quantizer_config.random_init(key=key1)
-        decoder = self.decoder_config.random_init(key=key2)
+        quantizer = self.quantizer_config.random_init(key=key_quantizer)
+        decoder = self.decoder_config.random_init(key=key_decoder)
 
         return NanoCodec(
             config=self,
@@ -82,19 +73,7 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         return self.config.precision
 
     @property
-    def semantic_codebook_size(self) -> int:
-        # return self.quantizer.semantic_codebook_size
-        return -1
-
-    @property
-    def quantizer_codebook_size(self) -> int:
-        # return self.quantizer.quantizer_codebook_size
-        return -1
-
-    @property
     def n_codebooks(self) -> int:
-        # NOTE: 1 semantic + n residuals
-        # return 1 + self.quantizer.quantizer.n_codebooks
         return -1
 
     def __call__(

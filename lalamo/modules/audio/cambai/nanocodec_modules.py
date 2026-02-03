@@ -98,9 +98,12 @@ class FiniteScalarQuantizerConfig:
             dim_base_index=dim_base_index,
         )
 
-    def random_init(self, *, key: PRNGKeyArray) -> "FiniteScalarQuantizer":
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002 (unused - FSQ has no learnable weights)
+    ) -> "FiniteScalarQuantizer":
         """Create quantizer (FSQ has no learnable weights)."""
-        del key
         return self.empty()
 
 
@@ -187,11 +190,11 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         offset = scale
         return scale[None, :, None] * codes + offset[None, :, None]
 
-    def _nonnegative_to_codes(self, codes_nonneg: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
+    def _nonnegative_to_codes(self, codes_nonneg: Float[Array, "dim"]) -> Float[Array, "dim"]:
         """Convert nonnegative indices back to codes centered around zero."""
         scale = (self.num_levels_buffer // 2).astype(self.config.precision)
         offset = scale
-        return (codes_nonneg - offset[None, :, None]) / scale[None, :, None]
+        return (codes_nonneg - offset) / scale
 
     def _codes_to_indices(self, codes: Float[Array, "batch dim seq"]) -> Int[Array, "batch seq"]:
         """Convert per-dimension code vectors to single indices.
@@ -203,25 +206,18 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         indices = jnp.sum(nonneg * self.dim_base_index[None, :, None].astype(self.config.precision), axis=1)
         return indices.astype(jnp.int32)
 
-    def _indices_to_codes(self, indices: Int[Array, "batch seq"]) -> Float[Array, "batch dim seq"]:
-        """Convert single indices back to per-dimension code vectors.
-
+    def _indices_to_codes(self, index: Int[Array, " 1"]) -> Float[Array, " dim"]:
+        """Convert single indices to per-dimension code vectors.
         Reverses the indexing: code_d = (index // base_d) % levels_d
         """
-        # indices: [batch, seq] -> expand to [batch, dim, seq]
-        indices_expanded = indices[:, None, :]
 
-        # Compute per-dimension nonnegative indices
-        num_levels = self.num_levels_buffer[None, :, None].astype(jnp.int32)
-        dim_base = self.dim_base_index[None, :, None].astype(jnp.int32)
-        codes_nonneg = (indices_expanded // dim_base) % num_levels
-
-        return self._nonnegative_to_codes(codes_nonneg.astype(self.config.precision))
+        codes_nonnegative = (index // self.dim_base_index) % self.num_levels_buffer
+        return self._nonnegative_to_codes(codes_nonnegative.astype(self.config.precision))
 
     def encode(
         self,
         inputs: Float[Array, "batch dim seq"],
-    ) -> Int[Array, "1 batch seq"]:
+    ) -> Int[Array, "batch seq"]:
         """Encode continuous inputs to discrete indices.
 
         Args:
@@ -233,12 +229,12 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         codes = self._inputs_to_codes(inputs)
         indices = self._codes_to_indices(codes)
         # Add codebook dimension for compatibility with RVQ API
-        return indices[None, :, :]
+        return indices
 
     def decode(
         self,
-        indices: Int[Array, "1 batch seq"],
-    ) -> Float[Array, "batch dim seq"]:
+        indices: Int[Array, " seq"],
+    ) -> Float[Array, "seq dim"]:
         """Decode discrete indices back to continuous code vectors.
 
         Args:
@@ -247,28 +243,16 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         Returns:
             Decoded codes tensor of shape [batch, dim, seq] in range [-1, 1]
         """
-        if indices.shape[0] != 1:
-            raise ValueError(f"Expected 1 codebook, got {indices.shape[0]}")
-        indices_squeezed = indices[0]  # Remove codebook dimension
-        return self._indices_to_codes(indices_squeezed)
+        return jax.vmap(self._indices_to_codes)(indices)
 
     def __call__(
         self,
-        inputs: Float[Array, "batch dim seq"],
-    ) -> tuple[Float[Array, "batch dim seq"], Int[Array, "1 batch seq"]]:
-        """Forward pass: quantize inputs and return both codes and indices.
-
-        Args:
-            inputs: Input tensor of shape [batch, dim, seq]
-
-        Returns:
-            Tuple of (quantized_codes, indices) where:
-            - quantized_codes: shape [batch, dim, seq], values in [-1, 1]
-            - indices: shape [1, batch, seq], integer indices
+        inputs: Float[Array, "batch seq"],
+    ) -> Float[Array, "batch seq dim"]:
         """
-        codes = self._inputs_to_codes(inputs)
-        indices = self._codes_to_indices(codes)
-        return codes, indices[None, :, :]
+        Forward pass: dequantize batch of input indices vectors to continous representation.
+        """
+        return jax.vmap(self.decode, in_axes=0)(inputs)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
@@ -327,9 +311,12 @@ class GroupFiniteScalarQuantizerConfig:
         quantizers = tuple(self.quantizer_config.empty() for _ in range(self.num_groups))
         return GroupFiniteScalarQuantizer(config=self, quantizers=quantizers)
 
-    def random_init(self, *, key: PRNGKeyArray) -> "GroupFiniteScalarQuantizer":
+    def random_init(
+        self,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002 (unused - FSQ has no learnable weights)
+    ) -> "GroupFiniteScalarQuantizer":
         """Create group quantizer (FSQ has no learnable weights)."""
-        del key
         return self.empty()
 
 
@@ -381,7 +368,7 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
         indices_list = []
         for in_group, quantizer in zip(inputs_grouped, self.quantizers, strict=True):
-            idx = quantizer.encode(in_group)  # [1, batch, seq]
+            idx = quantizer.encode(in_group)[None, :, :]  # [1, batch, seq]
             indices_list.append(idx)
 
         # Concatenate along codebook/group dimension
@@ -389,55 +376,24 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
     def decode(
         self,
-        indices: Int[Array, "num_groups batch seq"],
-    ) -> Float[Array, "batch channels seq"]:
-        """Decode indices back to continuous representation.
-
-        Args:
-            indices: Indices tensor of shape [num_groups, batch, seq]
-
-        Returns:
-            Decoded tensor of shape [batch, channels, seq]
-        """
-        # Split indices along group dimension
-        indices_grouped = jnp.split(indices, self.num_groups, axis=0)
+        indices: Int[Array, "batch seq num_groups"],
+    ) -> Float[Array, "batch seq channels"]:
+        """Decode batch of indices vectors back to continuous representation."""
+        # # Split indices along group dimension
+        indices_grouped = jnp.split(indices, self.num_groups, axis=2)
 
         dequantized_list = []
         for idx_group, quantizer in zip(indices_grouped, self.quantizers, strict=True):
-            deq = quantizer.decode(idx_group)  # [batch, dim_per_group, seq]
+            deq = quantizer(idx_group)
             dequantized_list.append(deq)
 
-        # Concatenate along channel dimension
-        return jnp.concatenate(dequantized_list, axis=1)
+        return jnp.concatenate(dequantized_list, axis=2)
 
     def __call__(
         self,
-        inputs: Float[Array, "batch channels seq"],
-    ) -> tuple[Float[Array, "batch channels seq"], Int[Array, "num_groups batch seq"]]:
-        """Forward pass: quantize and return both codes and indices.
-
-        Args:
-            inputs: Input tensor of shape [batch, channels, seq]
-
-        Returns:
-            Tuple of (quantized_codes, indices) where:
-            - quantized_codes: shape [batch, channels, seq]
-            - indices: shape [num_groups, batch, seq]
-        """
-        inputs_grouped = jnp.split(inputs, self.num_groups, axis=1)
-
-        dequantized_list = []
-        indices_list = []
-
-        for in_group, quantizer in zip(inputs_grouped, self.quantizers, strict=True):
-            deq, idx = quantizer(in_group)
-            dequantized_list.append(deq)
-            indices_list.append(idx)
-
-        dequantized = jnp.concatenate(dequantized_list, axis=1)
-        indices = jnp.concatenate(indices_list, axis=0)
-
-        return dequantized, indices
+        inputs: Float[Array, "batch seq num_groups"],
+    ) -> Float[Array, "batch seq channels"]:
+        return self.decode(inputs)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
@@ -492,14 +448,18 @@ class HalfSnakeConfig:
         snake = self.snake_config.empty(snake_channels)
         return HalfSnake(config=self, snake=snake, total_channels=channels)
 
-    def random_init(self, channels: int, *, key: PRNGKeyArray) -> "HalfSnake":
+    def random_init(
+        self,
+        channels: int,
+        *,
+        key: PRNGKeyArray,  # noqa: ARG002 (unused - Snake uses ones initialization)
+    ) -> "HalfSnake":
         """Create HalfSnake with initialized weights.
 
         Args:
             channels: Total number of input channels. Must be even.
             key: PRNG key (unused, Snake uses ones initialization).
         """
-        del key
         if channels % 2 != 0:
             raise ValueError(f"HalfSnake requires even number of channels, got {channels}")
         snake_channels = channels // 2
@@ -567,7 +527,7 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 # =============================================================================
 @dataclass(frozen=True)
 class CausalTransposeConv1dConfig:
-    # TODO: (peter.glushkov) Once FishAudio is merged, add groups support to
+    # TODO(peter.glushkov):  Once FishAudio is merged, add groups support to
     # fishaudio's CausalTransposeConv1d and reuse it here instead of this variant.
 
     """Configuration for CausalTransposeConv1d with groups support.
@@ -1019,8 +979,7 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
         assert isinstance(block_weights, Sequence)
 
         new_blocks = tuple(
-            block.import_weights(require_tree(w))
-            for block, w in zip(self.res_blocks, block_weights, strict=True)
+            block.import_weights(require_tree(w)) for block, w in zip(self.res_blocks, block_weights, strict=True)
         )
         return replace(self, res_blocks=new_blocks)
 
@@ -1127,8 +1086,7 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
         assert isinstance(block_weights, Sequence)
 
         new_blocks = tuple(
-            block.import_weights(require_tree(w))
-            for block, w in zip(self.res_blocks, block_weights, strict=True)
+            block.import_weights(require_tree(w)) for block, w in zip(self.res_blocks, block_weights, strict=True)
         )
         return replace(self, res_blocks=new_blocks)
 
@@ -1358,7 +1316,10 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
 
         # Upsample stages
         for activation, upsample_conv, res_layer in zip(
-            self.activations, self.upsample_convs, self.res_layers, strict=True,
+            self.activations,
+            self.upsample_convs,
+            self.res_layers,
+            strict=True,
         ):
             out = activation(out)
             out = upsample_conv(out)
@@ -1399,16 +1360,14 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
         assert isinstance(res_layers_weights, Sequence)
 
         new_activations = tuple(
-            act.import_weights(require_tree(w))
-            for act, w in zip(self.activations, activations_weights, strict=True)
+            act.import_weights(require_tree(w)) for act, w in zip(self.activations, activations_weights, strict=True)
         )
         new_upsample_convs = tuple(
             conv.import_weights(require_tree(w))
             for conv, w in zip(self.upsample_convs, upsample_convs_weights, strict=True)
         )
         new_res_layers = tuple(
-            layer.import_weights(require_tree(w))
-            for layer, w in zip(self.res_layers, res_layers_weights, strict=True)
+            layer.import_weights(require_tree(w)) for layer, w in zip(self.res_layers, res_layers_weights, strict=True)
         )
 
         return replace(
