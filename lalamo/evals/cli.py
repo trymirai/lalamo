@@ -6,11 +6,11 @@ from typing import Annotated
 
 import polars as pl
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, TaskID
+from rich.progress import Progress, SpinnerColumn, TaskID, TextColumn
 from rich.prompt import Confirm
-from typer import Typer, Argument, Option, Exit
+from typer import Argument, Exit, Option, Typer
 
-from lalamo.evals.datasets import convert_dataset, EvalConversionCallbacks, EvalSpec, REPO_TO_EVAL
+from lalamo.evals.datasets import REPO_TO_EVAL, EvalConversionCallbacks, EvalSpec, convert_dataset
 
 console = Console()
 eval_app = Typer()
@@ -40,7 +40,7 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):
 
     def output_dir_exists(self) -> None:
         if not self.overwrite and not Confirm().ask(
-            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists. Continue?"
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists. Continue?",
         ):
             raise Exit(0)
 
@@ -71,7 +71,8 @@ class CliEvalConversionCallbacks(EvalConversionCallbacks):
 
 
 # Import EvalParser from main.py - need to copy this too
-from click import Parameter as ClickParameter, Context as ClickContext
+from click import Context as ClickContext
+from click import Parameter as ClickParameter
 from click.types import ParamType
 
 
@@ -157,10 +158,10 @@ def infer(
     max_examples: Annotated[int | None, Option(help="Limit number of examples")] = None,
     category: Annotated[str | None, Option(help="Filter to specific category (e.g., 'business', 'math')")] = None,
     batch_size: Annotated[
-        int | None, Option("--batch-size", help="Batch size for inference (auto-computed if not set)")
+        int | None, Option("--batch-size", help="Batch size for inference (auto-computed if not set)"),
     ] = None,
     vram_gb: Annotated[
-        float | None, Option(help="VRAM limit in GB (auto-detected if not set)")
+        float | None, Option(help="VRAM limit in GB (auto-detected if not set)"),
     ] = None,
     max_output_length: Annotated[int, Option(help="Max tokens to generate per response")] = 2048,
 ) -> None:
@@ -184,9 +185,9 @@ def infer(
         # Limit to 100 examples from math category
         lalamo eval infer MMLU-Pro models/llama-3.2-1B datasets/MMLU-Pro results/ --category math --max-examples 100
     """
+    from lalamo.evals.datasets.specs import REPO_TO_EVAL
     from lalamo.evals.inference import LalamoInferenceEngine
     from lalamo.evals.inference import run_inference as run_eval_inference
-    from lalamo.evals.datasets.specs import REPO_TO_EVAL
 
     # Load eval spec
     if eval_name not in REPO_TO_EVAL:
@@ -212,7 +213,7 @@ def infer(
     eval_adapter = eval_spec.handler_type()
 
     # Run inference
-    console.print(f"[bold]Configuration:[/bold]")
+    console.print("[bold]Configuration:[/bold]")
     console.print(f"  Eval: {eval_name}")
     console.print(f"  Model: {model_path}")
     console.print(f"  Split: {split}")
@@ -244,7 +245,7 @@ def infer(
 
     console.print()
     console.print(f"[green]✓[/green] Predictions saved to: {predictions_path}")
-    console.print(f"\nNext steps:")
+    console.print("\nNext steps:")
     console.print(f"  lalamo eval benchmark {eval_name} {predictions_path} {dataset_dir}")
 
 
@@ -271,8 +272,8 @@ def benchmark(
         # With custom model name
         lalamo eval benchmark MMLU-Pro results/predictions.parquet datasets/MMLU-Pro --model-name "my-model"
     """
-    import polars as pl
     from evals.types import InternalEvalRecord, PredictionRecord
+
     from lalamo.evals.datasets.specs import REPO_TO_EVAL
 
     # Load eval spec
@@ -288,7 +289,7 @@ def benchmark(
     if model_name is None:
         model_name = predictions_path.parent.name or "unknown"
 
-    console.print(f"[bold]Benchmark Configuration:[/bold]")
+    console.print("[bold]Benchmark Configuration:[/bold]")
     console.print(f"  Eval: {eval_spec.name}")
     console.print(f"  Model: {model_name}")
     console.print(f"  Split: {split}")
@@ -326,7 +327,7 @@ def benchmark(
 
         if len(ground_truth) != len(predictions):
             console.print(f"[yellow]⚠[/yellow] Mismatch: {len(predictions)} predictions but {len(ground_truth)} ground truth")
-            console.print(f"[yellow]⚠[/yellow] Some prediction IDs may not exist in ground truth")
+            console.print("[yellow]⚠[/yellow] Some prediction IDs may not exist in ground truth")
 
         # Sort both by ID to ensure matching order
         predictions.sort(key=lambda p: p.id)

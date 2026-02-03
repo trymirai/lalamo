@@ -1,9 +1,9 @@
 import importlib.metadata
 import json
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
 
 import huggingface_hub
 import pyarrow as pa
@@ -11,7 +11,6 @@ import pyarrow.parquet as pq
 from evals import BenchmarkMetrics, DatasetMetadata, InternalEvalRecord
 
 from lalamo.evals.datasets.specs import EvalSpec
-
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")
 

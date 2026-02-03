@@ -1,12 +1,11 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 import polars as pl
+from evals.types import EvalPrompt, InferenceOutput
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 
 from lalamo.evals.inference.engines.base import InferenceEngine
-from evals.types import EvalPrompt, InferenceOutput
 
 
 @dataclass(frozen=True)
@@ -64,7 +63,7 @@ class LalamoInferenceEngine(InferenceEngine):
         batch_size = engine_params.get("batch_size", self.batch_size)
         max_output_length = engine_params.get("max_output_length", self.max_output_length)
 
-        from lalamo.evals.inference.runner import generate_replies, GenerateRepliesCallbacks
+        from lalamo.evals.inference.runner import GenerateRepliesCallbacks, generate_replies
 
         # Custom callbacks for progress reporting
         console = Console()
@@ -136,7 +135,7 @@ class LalamoInferenceEngine(InferenceEngine):
 
         if len(ids) != len(output_df):
             raise ValueError(
-                f"Input/output length mismatch: {len(ids)} inputs, {len(output_df)} outputs"
+                f"Input/output length mismatch: {len(ids)} inputs, {len(output_df)} outputs",
             )
 
         outputs = []
@@ -146,7 +145,7 @@ class LalamoInferenceEngine(InferenceEngine):
                     id=ids[i],
                     response=output_df["response"][i],
                     chain_of_thought=output_df["chain_of_thought"][i],
-                )
+                ),
             )
 
         return outputs

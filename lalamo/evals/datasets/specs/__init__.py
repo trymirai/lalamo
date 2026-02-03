@@ -7,4 +7,4 @@ REPO_TO_EVAL = {
     for spec in [MMLU_PRO]
 }
 
-__all__ = ["EvalSpec", "REPO_TO_EVAL"]
+__all__ = ["REPO_TO_EVAL", "EvalSpec"]

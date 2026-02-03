@@ -1,14 +1,14 @@
-from pathlib import Path
-from typing import Callable
-from itertools import chain
+from collections.abc import Callable
 from dataclasses import dataclass
+from itertools import chain
+from pathlib import Path
 
 import polars as pl
-
-from lalamo.evals.inference.engines import InferenceEngine
 from evals.protocols import EvalAdapter
 from evals.types import InferenceOutput, InternalEvalRecord
+
 from lalamo.evals.datasets.specs import EvalSpec
+from lalamo.evals.inference.engines import InferenceEngine
 
 
 def run_inference(
@@ -81,7 +81,7 @@ def run_inference(
     console.print("  [cyan]5/6[/cyan] Running inference (this may take a while)...")
     raw_output_path = output_dir / "inference_output.parquet"
     inference_engine.run_inference(input_path, raw_output_path)
-    console.print(f"      ✓ Inference complete")
+    console.print("      ✓ Inference complete")
 
     # 6. Parse output (engine-specific)
     console.print("  [cyan]6/6[/cyan] Parsing outputs and saving predictions...")
@@ -133,7 +133,7 @@ def _save_predictions(
             "id": [o.id for o in outputs],
             "model_output": [o.response for o in outputs],
             "chain_of_thought": [o.chain_of_thought for o in outputs],
-        }
+        },
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -196,11 +196,11 @@ def generate_replies(
         GenerateRepliesCallbacks,
     ] = GenerateRepliesCallbacks,
 ) -> None:
-    from lalamo.models.language_model import LanguageModelConfig
-    from lalamo.models.common import InferenceConfig, BatchSizesComputedEvent
     from lalamo.common import get_default_device_bytes
     from lalamo.data.huggingface_message import import_hf_parquet
     from lalamo.message_processor import AssistantMessage
+    from lalamo.models.common import InferenceConfig
+    from lalamo.models.language_model import LanguageModelConfig
 
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:

@@ -1,16 +1,14 @@
-"""Evaluation tools for lalamo models."""
-
 from .cli import eval_app
-from .datasets import convert_dataset, EvalSpec, REPO_TO_EVAL
-from .inference import run_inference, generate_replies, InferenceEngine, LalamoInferenceEngine
+from .datasets import REPO_TO_EVAL, EvalSpec, convert_dataset
+from .inference import InferenceEngine, LalamoInferenceEngine, generate_replies, run_inference
 
 __all__ = [
-    "eval_app",
-    "convert_dataset",
-    "EvalSpec",
     "REPO_TO_EVAL",
-    "run_inference",
-    "generate_replies",
+    "EvalSpec",
     "InferenceEngine",
     "LalamoInferenceEngine",
+    "convert_dataset",
+    "eval_app",
+    "generate_replies",
+    "run_inference",
 ]

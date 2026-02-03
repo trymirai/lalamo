@@ -1,10 +1,10 @@
 from .engines import InferenceEngine, LalamoInferenceEngine
-from .runner import run_inference, generate_replies, GenerateRepliesCallbacks
+from .runner import GenerateRepliesCallbacks, generate_replies, run_inference
 
 __all__ = [
+    "GenerateRepliesCallbacks",
     "InferenceEngine",
     "LalamoInferenceEngine",
-    "run_inference",
     "generate_replies",
-    "GenerateRepliesCallbacks",
+    "run_inference",
 ]
