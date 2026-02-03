@@ -1,4 +1,7 @@
 from pathlib import Path
+from typing import Callable
+from itertools import chain
+from dataclasses import dataclass
 
 import polars as pl
 
@@ -135,3 +138,133 @@ def _save_predictions(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.write_parquet(output_path)
+
+
+@dataclass
+class GenerateRepliesCallbacks:
+    model_path: Path
+    dataset_path: Path
+    output_path: Path
+    max_vram: int | None
+    batch_size: int | None
+    total_rows: int
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self) -> None:
+        pass
+
+    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+        pass
+
+    def batch_sizes_estimated(self) -> None:
+        pass
+
+    def batch_sizes_computed(self, event) -> None:
+        pass
+
+    def generation_progress(self, rows_processed: int) -> None:
+        pass
+
+    def finished_generation(self) -> None:
+        pass
+
+
+def generate_replies(
+    model_path: Path,
+    dataset_path: Path,
+    output_path: Path,
+    max_vram: int | None,
+    max_output_length: int = 8192,
+    batch_size: int | None = None,
+    callbacks_type: Callable[
+        [
+            Path,
+            Path,
+            Path,
+            int | None,
+            int | None,
+            int,
+        ],
+        GenerateRepliesCallbacks,
+    ] = GenerateRepliesCallbacks,
+) -> None:
+    from lalamo.config.model import LanguageModelConfig
+    from lalamo.config.inference import InferenceConfig
+    from lalamo.vram import get_default_device_bytes
+    from lalamo.data.hf import import_hf_parquet
+    from lalamo.types import AssistantMessage, BatchSizesComputedEvent
+
+    # figure out max_vram if neither batch_size nor max_vram is set
+    if max_vram is None and batch_size is None:
+        max_vram = get_default_device_bytes()
+        if max_vram is None:
+            raise ValueError(
+                "Unable to determine default defice memory capacity; please specify either --vram-gb or --batch-size",
+            )
+
+    # Count rows without loading full dataset
+    total_rows = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
+
+    callbacks = callbacks_type(
+        model_path,
+        dataset_path,
+        output_path,
+        max_vram,
+        batch_size,
+        total_rows,
+    )
+
+    callbacks.loading_model()
+    model = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
+
+    callbacks.loading_dataset()
+    dataset = iter(import_hf_parquet(dataset_path, shuffle=False))
+    try:
+        first_row = next(dataset)
+    except StopIteration:
+        callbacks.finished_loading_dataset()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"response": [], "chain_of_thought": []}).write_parquet(output_path)
+        return
+    dataset = chain([first_row], dataset)  # iterator is lazy, force it to actually open the file
+    callbacks.finished_loading_dataset()
+
+    inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)
+
+    callbacks.batch_sizes_estimated()
+
+    replies: list[tuple[int, AssistantMessage]] = []
+    for rows_processed, (idx, reply) in enumerate(
+        model.reply_many(
+            dataset,
+            inference_config,
+            vram_bytes=max_vram,
+            batch_sizes_callback=callbacks.batch_sizes_computed,
+        ),
+    ):
+        replies.append((idx, reply))
+        callbacks.generation_progress(rows_processed)
+
+    # Sort by original index to restore input order
+    replies.sort(key=lambda x: x[0])
+
+    df = pl.DataFrame(
+        {
+            "response": [reply.response for _, reply in replies],
+            "chain_of_thought": [reply.chain_of_thought for _, reply in replies],
+        },
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(output_path)
+
+    callbacks.finished_generation()
