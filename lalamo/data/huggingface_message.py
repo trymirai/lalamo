@@ -34,5 +34,5 @@ def load_hf_parquet(path: Path | str) -> pl.LazyFrame:
     return pl.scan_parquet(path)
 
 
-def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.LazyFrame:
-    return frame.sample(fraction=1.0, shuffle=True, seed=seed)
+def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.DataFrame:
+    return frame.collect().sample(fraction=1.0, shuffle=True, seed=seed)

@@ -187,6 +187,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         forward_pass_config: ForwardPassConfig | None = None,
         chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
+        print(f"Prefill recompile: {token_ids.shape}")
         batch_size, sequence_length = token_ids.shape
 
         if lengths_without_padding is None:
@@ -239,6 +240,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         keys: Key[Array, " batch"] | None = None,
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
+        print(f"Recompile: {prompt_token_ids.shape}")
 
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
@@ -371,6 +373,45 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             )
         return _compile_cache[key]
 
+    def _generate_tokens_batch(
+        self,
+        batch: tuple[list[int], ...],
+        batch_keys: tuple[Key[Array, ""], ...],
+        *,
+        generation_config: GenerationConfig | None,
+        inference_config: InferenceConfig,
+        forward_pass_config: ForwardPassConfig | None,
+    ) -> Iterator[GenerationResults]:
+        padded_token_ids = pad_sequences(
+            batch,
+            (inference_config.batch_size, inference_config.padded_length),
+            pad_value=0,
+            dtype=np.int32,
+        )
+
+        lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
+        padded_lengths = jnp.pad(lengths, (0, inference_config.batch_size - len(batch)))
+
+        padded_keys = pad_keys_to_batch(batch_keys, inference_config.batch_size, seed=0)
+
+        generate_tokens_fn = self.compile_generate_tokens(
+            generation_config,
+            inference_config,
+            forward_pass_config=forward_pass_config,
+        )
+        results = generate_tokens_fn(
+            self,
+            prompt_token_ids=padded_token_ids,
+            prompt_lengths_without_padding=padded_lengths,
+            keys=padded_keys,
+        )
+        for i in range(len(batch)):
+            yield GenerationResults(
+                token_ids=results.token_ids[i],
+                top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
+                top_k_token_logits=results.top_k_token_logits[i] if results.top_k_token_logits is not None else None,
+            )
+
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
@@ -395,39 +436,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
                 real_batch, batch_keys = zip(*batch_items, strict=True)
-
-                padded_token_ids = pad_sequences(
+                yield from self._generate_tokens_batch(
                     real_batch,
-                    (batch_size, inference_config.padded_length),
-                    pad_value=0,
-                    dtype=np.int32,
-                )
-
-                lengths = jnp.array([len(tokens) for tokens in real_batch], dtype=jnp.int32)
-                padded_lengths = jnp.pad(lengths, (0, batch_size - len(real_batch)))
-
-                padded_keys = pad_keys_to_batch(batch_keys, batch_size, seed=0)
-
-                generate_tokens_fn = self.compile_generate_tokens(
-                    generation_config,
-                    new_inference_config,
+                    batch_keys,
+                    generation_config=generation_config,
+                    inference_config=new_inference_config,
                     forward_pass_config=forward_pass_config,
                 )
-                results = generate_tokens_fn(
-                    self,
-                    prompt_token_ids=padded_token_ids,
-                    prompt_lengths_without_padding=padded_lengths,
-                    keys=padded_keys,
-                )
-
-                for i in range(len(real_batch)):
-                    yield GenerationResults(
-                        token_ids=results.token_ids[i],
-                        top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
-                        top_k_token_logits=results.top_k_token_logits[i]
-                        if results.top_k_token_logits is not None
-                        else None,
-                    )
 
         assert inference_config.batch_size is not None
         yield from decrease_batchsize_on_oom(
@@ -550,7 +565,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
-        for padded_length in sorted(buckets.keys(), reverse=True):
+        for padded_length in sorted(buckets.keys()):  # , reverse=True):
             sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             batch_size = batch_size_per_bucket[padded_length]

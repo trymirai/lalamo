@@ -430,7 +430,7 @@ def collect_traces(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataframe = shuffle_dataset(load_hf_parquet(dataset_path)).collect()
+    dataframe = shuffle_dataset(load_hf_parquet(dataset_path))
     conversations = dataframe.get_column("conversation")
     dataset = iter(
         [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
