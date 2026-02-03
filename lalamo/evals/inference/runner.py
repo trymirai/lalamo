@@ -196,11 +196,11 @@ def generate_replies(
         GenerateRepliesCallbacks,
     ] = GenerateRepliesCallbacks,
 ) -> None:
-    from lalamo.config.model import LanguageModelConfig
-    from lalamo.config.inference import InferenceConfig
-    from lalamo.vram import get_default_device_bytes
-    from lalamo.data.hf import import_hf_parquet
-    from lalamo.types import AssistantMessage, BatchSizesComputedEvent
+    from lalamo.models.language_model import LanguageModelConfig
+    from lalamo.models.common import InferenceConfig, BatchSizesComputedEvent
+    from lalamo.common import get_default_device_bytes
+    from lalamo.data.huggingface_message import import_hf_parquet
+    from lalamo.message_processor import AssistantMessage
 
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
