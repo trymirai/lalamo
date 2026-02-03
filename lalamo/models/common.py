@@ -18,9 +18,31 @@ from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
 
 __all__ = [
+    "BatchSizeInfo",
+    "BatchSizesComputedEvent",
     "TextModel",
     "TextModelConfig",
 ]
+
+
+@dataclass(frozen=True)
+class InferenceConfig:
+    max_output_length: int = 8192
+    padded_length: int = 8192
+    num_top_logits_to_return: int | None = None
+    batch_size: int | None = None
+
+
+@dataclass(frozen=True)
+class BatchSizeInfo:
+    prefix_length: int
+    num_elements: int
+    batch_size: int
+
+
+@dataclass(frozen=True)
+class BatchSizesComputedEvent:
+    batch_sizes: tuple[BatchSizeInfo, ...]
 
 
 @dataclass(frozen=True)

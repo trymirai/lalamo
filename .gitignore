@@ -43,6 +43,15 @@ sync.bb
 memray-*.bin
 memray-*.html
 *.prof
+profile-data/
 
 # temporary data
 tmp/
+_tmp
+
+# parquet (dataset) files in the root
+*parquet
+
+# Git worktrees
+.worktrees/
+

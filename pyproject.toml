@@ -92,8 +92,8 @@ torch = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
 ]
-cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-metal" }
-cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="da3abff" , subdirectory = "cartesia-mlx" }
+cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-metal" }
+cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-mlx" }
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.

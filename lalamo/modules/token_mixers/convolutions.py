@@ -5,6 +5,7 @@ from typing import NamedTuple
 
 import jax
 import jax.numpy as jnp
+from einops import einsum
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array
@@ -141,6 +142,19 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
             results,
             updated_state,
         )
+
+    def step(
+        self,
+        token: Float[Array, " channels"],
+        state: Float[Array, "kernel_minus_1 channels"],
+    ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
+        """Single-token conv update without full convolution overhead."""
+        full_input = jnp.concatenate([state, token[None, :]], axis=0)
+        output = einsum(full_input, self.weights, "kernel channels, channels kernel -> channels")
+        if self.biases is not None:
+            output = output + self.biases
+        new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
+        return output, new_state
 
     def export_weights(self) -> ParameterTree:
         result: dict[str, Array] = {"weights": self.weights}

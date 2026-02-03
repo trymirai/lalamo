@@ -1,7 +1,9 @@
+import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from typing import cast
 
+import jax
 import jax.numpy as jnp
 from jax._src.api import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
@@ -11,6 +13,7 @@ from lalamo.utils import MapDictValues, MapSequence
 __all__ = [
     "DEFAULT_PRECISION",
     "ArrayLike",
+    "LalamoWarning",
     "ParameterPath",
     "ParameterTree",
     "dummy_array",
@@ -21,6 +24,10 @@ __all__ = [
 ]
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
+
+
+class LalamoWarning(UserWarning):
+    """Custom warning class for Lalamo-specific warnings."""
 
 
 type ArrayLike = Array | ShapeDtypeStruct
@@ -121,3 +128,29 @@ class ParameterPath(str):
         if not self:
             return ParameterPath(str(other))
         return ParameterPath(self + "." + str(other))
+
+
+def get_default_device_bytes() -> int | None:
+    dynamic_allocate = False
+
+    preallocate = os.getenv("XLA_PYTHON_CLIENT_PREALLOCATE", "")
+    dynamic_allocate |= preallocate.strip().lower() in {"0", "false", "no", "off"}
+
+    allocator = os.getenv("XLA_PYTHON_CLIENT_ALLOCATOR", "")
+    dynamic_allocate |= allocator.strip().lower() in {"platform", "cuda_malloc_async"}
+
+    if dynamic_allocate:
+        return None
+
+    memory_stats = jax.local_devices()[0].memory_stats()
+    if memory_stats is None or "bytes_limit" not in memory_stats:
+        return None
+
+    # 500mb is seemingly the usually observed overhead
+    memory_limit = memory_stats["bytes_limit"] - (500 * 1000 * 1000)
+
+    return memory_limit
+
+
+def get_usable_memory_from_bytes(limit_bytes: int) -> int:
+    return int(limit_bytes * 0.95)

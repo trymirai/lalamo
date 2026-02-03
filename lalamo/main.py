@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import jax.profiler
+import requests
 import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
@@ -35,21 +36,31 @@ from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    GenerateRepliesCallbacks,
     Precision,
+    PullCallbacks,
     TraceCallbacks,
     TrainCallbacks,
+    _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
+from lalamo.commands import generate_replies as _generate_replies
+from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
+from lalamo.common import (
+    get_default_device_bytes,
+    get_usable_memory_from_bytes,
+)
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
+from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
-from lalamo.speculator.estimator import get_default_device_memory
+from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -73,7 +84,7 @@ class ModelParser(ParamType):
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
         result = REPO_TO_MODEL.get(value)
         if result is None:
-            closest_repo = _closest_repo(value)
+            closest_repo = _closest_repo(value, list(REPO_TO_MODEL))
             error_message_parts = [
                 f'"{value}".',
             ]
@@ -89,10 +100,37 @@ class ModelParser(ParamType):
         return result
 
 
-def _closest_repo(query: str, min_score: float = 80) -> str | None:
-    if not REPO_TO_MODEL:
+class RemoteModelParser(ParamType):
+    name: str = "Pre-converted Model"
+
+    def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> "RegistryModel":
+        try:
+            available_models = fetch_available_models()
+        except (requests.RequestException, ValueError) as e:
+            error_message = f"Failed to fetch model list from SDK. Check your internet connection.\n\nError: {e}"
+            return self.fail(error_message, param, ctx)
+
+        repo_to_model = {m.repo_id: m for m in available_models}
+        model_spec = repo_to_model.get(value)
+        if model_spec is None:
+            closest_repo = _closest_repo(value, list(repo_to_model))
+            if closest_repo:
+                model_spec = repo_to_model[closest_repo]
+
+        if model_spec is None:
+            suggestions = _suggest_similar_models(value, available_models)
+            error_message = f'Model "{value}" not found.'
+            if suggestions:
+                error_message += "\n\nDid you mean one of these?\n" + "\n".join(f"  - {s}" for s in suggestions)
+            return self.fail(error_message, param, ctx)
+
+        return model_spec
+
+
+def _closest_repo(query: str, repo_ids: list[str], min_score: float = 80) -> str | None:
+    if not repo_ids:
         return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, list(REPO_TO_MODEL))
+    (closest_match, score), *_ = thefuzz.process.extract(query, repo_ids)
     if closest_match and score >= min_score:
         return closest_match
     return None
@@ -263,6 +301,49 @@ class CliConversionCallbacks(ConversionCallbacks):
         console.print(f"🧑‍🍳 Model successfully cooked and saved to [cyan]`{self.output_dir}`[/cyan]!")
 
 
+@dataclass
+class CliPullCallbacks(PullCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    downloading_tasks: dict[RegistryModelFile, TaskID] = field(default_factory=dict)
+
+    def started(self) -> None:
+        console.print(f"📦 Pulling [cyan]{self.model_spec.name}[/cyan] by [cyan]{self.model_spec.vendor}[/cyan]")
+
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            ),
+        )
+
+    def output_dir_exists(self) -> None:
+        if not self.overwrite and not Confirm().ask(
+            rf"⚠️ Output directory [cyan]{self.output_dir}[/cyan] already exists."
+            r" Do you want to overwrite it?",
+        ):
+            raise Exit
+
+        shutil.rmtree(self.output_dir)
+
+    def downloading(self, file_spec: RegistryModelFile) -> None:
+        assert self.progress is not None
+
+        self.downloading_tasks[file_spec] = self.progress.add_task(f"⬇️  Downloading {file_spec.name}...")
+
+    def finished_downloading(self, file_spec: RegistryModelFile) -> None:
+        assert self.progress is not None
+
+        self.progress.remove_task(self.downloading_tasks[file_spec])
+
+    def finished(self) -> None:
+        assert self.progress is not None
+
+        self.stack.close()
+        console.print(f"🎉 Model successfully pulled to [cyan]{self.output_dir}[/cyan]!")
+
+
 @app.command(help="Convert the model for use with the Uzu inference engine.")
 def convert(
     model_repo: Annotated[
@@ -316,6 +397,46 @@ def convert(
         precision,
         context_length,
         partial(CliConversionCallbacks, overwrite=overwrite),
+    )
+
+
+@app.command(help="Pull a pre-converted model from the SDK repository.")
+def pull(
+    model_spec: Annotated[
+        RegistryModel,
+        Argument(
+            help=(
+                "Model repository ID from the pre-converted catalog. "
+                "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan]. "
+                "Fuzzy matching is supported for typos and partial names."
+            ),
+            click_type=RemoteModelParser(),
+            show_default=False,
+            metavar="MODEL_IDENTIFIER",
+        ),
+    ],
+    output_dir: Annotated[
+        Path | None,
+        Option(
+            help="Directory to save the pulled model to.",
+            show_default="Saves the pulled model in the `models/<model_name>` directory",
+        ),
+    ] = None,
+    overwrite: Annotated[
+        bool,
+        Option(
+            help="Overwrite existing model files without prompting.",
+        ),
+    ] = False,
+) -> None:
+    if output_dir is None:
+        output_dir = DEFAULT_OUTPUT_DIR / model_spec.name
+
+    _pull(
+        model_spec,
+        output_dir,
+        partial(CliPullCallbacks),
+        overwrite=overwrite,
     )
 
 
@@ -383,6 +504,7 @@ class CliTraceCallbacks(TraceCallbacks):
         self.progress.remove_task(self.saving_task)
         self.stack.close()
         console.print(f"💾 Trace saved to [cyan]{self.output_path}[/cyan]")
+
 
 @app.command(help="Trace a model.")
 def trace(
@@ -488,6 +610,151 @@ def list_models(
     console.print(table)
 
 
+@dataclass
+class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    estimating_task: TaskID | None = None
+    generation_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                transient=True,
+            ),
+        )
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]", total=None)
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]", total=None)
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+        assert self.progress is not None
+        hi_str = str(hi) if hi is not None else "?"
+        description = (
+            f"📐 [cyan]Computing batch size for the prompt length of {sequence_length}... ({lo}..{hi_str})[/cyan]"
+        )
+        if self.estimating_task is None:
+            self.estimating_task = self.progress.add_task(description)
+        else:
+            self.progress.update(self.estimating_task, description=description)
+
+    def batch_sizes_estimated(self) -> None:
+        assert self.progress is not None
+        if self.estimating_task is None:
+            self.estimating_task = self.progress.add_task(
+                "📐 [cyan]Estimating the best batch sizes...[/cyan]",
+                total=None,
+            )
+
+    def batch_sizes_computed(self, event: BatchSizesComputedEvent) -> None:
+        assert self.progress is not None
+        if self.estimating_task is not None:
+            self.progress.remove_task(self.estimating_task)
+            self.estimating_task = None
+        output_console = self.progress.console if self.progress is not None else console
+        for info in event.batch_sizes:
+            output_console.print(
+                f"Prefix length {info.prefix_length} has {info.num_elements} elements, "
+                f"with batchsize of {info.batch_size}",
+            )
+        self.generation_task = self.progress.add_task(
+            "🔮 [cyan]Generating replies...[/cyan]",
+            total=self.total_rows,
+        )
+
+    def generation_progress(self, rows_processed: int) -> None:
+        assert self.progress is not None
+        assert self.generation_task is not None
+        self.progress.update(self.generation_task, completed=rows_processed + 1)
+
+    def finished_generation(self) -> None:
+        assert self.progress is not None
+        assert self.generation_task is not None
+        self.progress.update(self.generation_task, description="✅ Completed")
+        self.stack.close()
+        console.print(f"💾 Replies saved to [cyan]{self.output_path}[/cyan]")
+
+
+@app.command(help="Generate replies for conversations in a parquet file.")
+def generate_replies(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the input parquet file with conversations.",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="Path to save the output parquet file.",
+        ),
+    ],
+    vram_gb: Annotated[
+        int | None,
+        Option(
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
+            show_default="max on default device",
+        ),
+    ] = None,
+    max_output_length: Annotated[
+        int,
+        Option(help="Maximum number of tokens to generate per reply."),
+    ] = 8192,
+    batch_size: Annotated[
+        int | None,
+        Option(help="Fixed batch size to use, skipping automatic estimation."),
+    ] = None,
+) -> None:
+    if batch_size is not None and vram_gb is not None:
+        err_console.print("Cannot use both --batch-size and --vram-gb")
+        raise Exit(1)
+
+    max_vram: int | None = None
+    if batch_size is None:
+        if vram_gb is not None:
+            mem_bytes = vram_gb * 1000 * 1000 * 1000
+        elif (mem_bytes := get_default_device_bytes()) is None:
+            err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
+            raise Exit(1)
+
+        max_vram = mem_bytes
+
+    _generate_replies(
+        model_path,
+        dataset_path,
+        output_path,
+        max_vram,
+        max_output_length,
+        batch_size,
+        CliGenerateRepliesCallbacks,
+    )
+
+
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
 
@@ -557,14 +824,24 @@ def estimate_batchsize(
     ] = None,
 ) -> None:
     if vram_gb is not None:
-        mem = vram_gb * 1024 * 1024 * 1024
-    elif (mem := get_default_device_memory()) is None:
+        # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
+        mem_bytes = vram_gb * 1000 * 1000 * 1000
+    elif (mem_bytes := get_default_device_bytes()) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 
+    usable_mem = get_usable_memory_from_bytes(mem_bytes)
+
     callbacks_type = CliEstimateBatchsizeCallbacks
 
-    _estimate_batchsize(model_path, mem, max_input_length, max_output_length, num_logits_per_token, callbacks_type)
+    _estimate_batchsize(
+        model_path,
+        usable_mem,
+        max_input_length,
+        max_output_length,
+        num_logits_per_token,
+        callbacks_type,
+    )
 
 
 @dataclass
@@ -713,10 +990,12 @@ def view_traces(
         table.add_column("Prefix")
         table.add_column("Completion")
 
+        from rich.text import Text
+
         for completion in islice(traces, num_completions):
             detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
             detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
-            table.add_row(detokenized_prefix, detokenized_completion)
+            table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
 
         console.print(table)
 
