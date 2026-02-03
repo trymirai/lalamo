@@ -135,6 +135,7 @@ line-length = 119
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
+    "ANN101",
     "C408",
     "C901",
     "D",
