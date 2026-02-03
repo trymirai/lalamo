@@ -12,16 +12,16 @@ from jax.errors import JaxRuntimeError
 from lalamo.common import LalamoWarning, get_usable_memory_from_bytes
 from lalamo.models.common import InferenceConfig
 
-type TokenSequence = list[int] | np.ndarray
+type TokenSequence = list[int] | np.ndarray | jnp.ndarray
 
 __all__ = [
     "BatchSizeEstimatingEvent",
     "decrease_batchsize_on_oom",
     "estimate_batchsize_from_bytes",
     "estimate_batchsizes_from_vram",
-    "pad_keys_to_batch",
-    "pad_sequences",
     "merge_small_buckets",
+    "pad_keys_to_size",
+    "pad_sequences",
 ]
 
 
@@ -68,44 +68,37 @@ def merge_small_buckets[T: TokenSequence](
     return merged
 
 
-def pad_sequences[T: TokenSequence](
-    sequences: Iterable[T],
+def pad_sequences(
+    sequences: Iterable[TokenSequence],
     shape: tuple[int, int],
     *,
     pad_value: int = 0,
-    dtype: np.dtype = np.int32,
-    pad_sequence: T | None = None,
 ) -> jnp.ndarray:
     batch_size, seq_len = shape
     sequences_list = list(sequences)
     if len(sequences_list) > batch_size:
         raise ValueError(f"Expected at most {batch_size} sequences, got {len(sequences_list)}")
 
-    if pad_sequence is None:
-        pad_sequence = np.array([pad_value], dtype=dtype)
-
     if len(sequences_list) < batch_size:
-        sequences_list.extend([pad_sequence] * (batch_size - len(sequences_list)))
+        sequences_list.extend([np.array([pad_value], dtype=np.int32)] * (batch_size - len(sequences_list)))
 
-    padded = np.full((batch_size, seq_len), pad_value, dtype=dtype)
-    lengths: list[int] = []
+    padded = np.full((batch_size, seq_len), pad_value, dtype=np.int32)
     for i, seq in enumerate(sequences_list):
-        seq_arr = np.asarray(seq, dtype=dtype)
+        seq_arr = np.asarray(seq, dtype=np.int32)
         if seq_arr.size > seq_len:
             raise ValueError(f"Sequence length {seq_arr.size} exceeds target length {seq_len}")
         padded[i, : seq_arr.size] = seq_arr
-        lengths.append(seq_arr.size)
 
     return jnp.array(padded)
 
 
-def pad_keys_to_batch(keys: Iterable, batch_size: int, *, seed: int = 0) -> jnp.ndarray:
+def pad_keys_to_size(keys: Iterable, size: int, *, seed: int = 0) -> jnp.ndarray:
     keys_list = list(keys)
-    if len(keys_list) > batch_size:
-        raise ValueError(f"Expected at most {batch_size} keys, got {len(keys_list)}")
-    if len(keys_list) == batch_size:
+    if len(keys_list) > size:
+        raise ValueError(f"Expected at most {size} keys, got {len(keys_list)}")
+    if len(keys_list) == size:
         return jnp.array(keys_list)
-    dummy_keys = jax.random.split(jax.random.key(seed), batch_size - len(keys_list))
+    dummy_keys = jax.random.split(jax.random.key(seed), size - len(keys_list))
     return jnp.concatenate([jnp.array(keys_list), dummy_keys])
 
 
@@ -126,7 +119,7 @@ def estimate_batchsizes_from_vram(
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             batch_size=bs,
         )
-        return memory_consumption_callback(inference_config=config)
+        return memory_consumption_callback(config)
 
     result: dict[int, int] = {}
 

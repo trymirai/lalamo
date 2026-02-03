@@ -1,4 +1,3 @@
-import functools
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from itertools import batched
@@ -11,7 +10,6 @@ import jax.numpy as jnp
 import numpy as np
 from einops import rearrange, repeat
 from jax import vmap
-from jax._src.stages import Compiled
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
@@ -26,11 +24,12 @@ from lalamo.modules import (
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, TextModel, TextModelConfig
+from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
     decrease_batchsize_on_oom,
     estimate_batchsizes_from_vram,
     merge_small_buckets,
-    pad_keys_to_batch,
+    pad_keys_to_size,
     pad_sequences,
 )
 
@@ -105,9 +104,6 @@ class LanguageModelConfig(TextModelConfig[DecoderConfig]):
         return result
 
 
-_compile_cache = {}
-
-
 class Chunk(eqx.Module):
     tokens: Int[Array, "num_chunks batch chunk_size"]
     indices: Int[Array, "num_chunks batch chunk_size"]
@@ -131,6 +127,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         chunk_size: int,
     ) -> Chunk:
         batch_size, sequence_length = token_ids.shape
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
         # If all sequences fit in a single chunk, use sequence_length as the chunk size
         chunk_size = min(chunk_size, sequence_length)
@@ -187,7 +185,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         forward_pass_config: ForwardPassConfig | None = None,
         chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
-        print(f"Prefill recompile: {token_ids.shape}")
         batch_size, sequence_length = token_ids.shape
 
         if lengths_without_padding is None:
@@ -240,7 +237,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         keys: Key[Array, " batch"] | None = None,
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
-        print(f"Recompile: {prompt_token_ids.shape}")
 
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
@@ -341,38 +337,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits)
 
-    def compile_generate_tokens(
-        self,
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
-        *,
-        forward_pass_config: ForwardPassConfig | None = None,
-    ) -> Compiled:
-        key = (generation_config, inference_config, forward_pass_config)
-        if key not in _compile_cache:
-            _compile_cache[key] = (
-                jax.jit(
-                    functools.partial(
-                        LanguageModel.generate_tokens,
-                        generation_config=generation_config,
-                        max_output_length=inference_config.max_output_length,
-                        num_top_logits_to_return=inference_config.num_top_logits_to_return,
-                        forward_pass_config=forward_pass_config,
-                    ),
-                )
-                .lower(
-                    self,
-                    prompt_token_ids=jax.ShapeDtypeStruct(
-                        (inference_config.batch_size, inference_config.padded_length),
-                        jnp.int32,
-                    ),
-                    prompt_lengths_without_padding=jax.ShapeDtypeStruct((inference_config.batch_size,), jnp.int32),
-                    keys=jax.ShapeDtypeStruct((inference_config.batch_size,), jax.random.key(0).dtype),
-                )
-                .compile(compiler_options={"xla_gpu_autotune_level": "0"})
-            )
-        return _compile_cache[key]
-
     def _generate_tokens_batch(
         self,
         batch: tuple[list[int], ...],
@@ -382,19 +346,18 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig,
         forward_pass_config: ForwardPassConfig | None,
     ) -> Iterator[GenerationResults]:
-        padded_token_ids = pad_sequences(
-            batch,
-            (inference_config.batch_size, inference_config.padded_length),
-            pad_value=0,
-            dtype=np.int32,
-        )
+        assert inference_config.batch_size is not None
+        batch_size = inference_config.batch_size
+
+        padded_token_ids = pad_sequences(batch, (batch_size, inference_config.padded_length))
 
         lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
-        padded_lengths = jnp.pad(lengths, (0, inference_config.batch_size - len(batch)))
+        padded_lengths = jnp.pad(lengths, (0, batch_size - len(batch)))
 
-        padded_keys = pad_keys_to_batch(batch_keys, inference_config.batch_size, seed=0)
+        padded_keys = pad_keys_to_size(batch_keys, batch_size)
 
-        generate_tokens_fn = self.compile_generate_tokens(
+        generate_tokens_fn = compile_generate_tokens(
+            self,
             generation_config,
             inference_config,
             forward_pass_config=forward_pass_config,
@@ -544,7 +507,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
         else:
             batch_size_per_bucket = estimate_batchsizes_from_vram(
-                self.estimate_memory_consumption,
+                lambda config: self.estimate_memory_consumption(inference_config=config),
                 sorted_lengths,
                 vram_bytes,  # type: ignore
                 inference_config,
@@ -565,7 +528,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
-        for padded_length in sorted(buckets.keys()):  # , reverse=True):
+        for padded_length in sorted(buckets.keys(), reverse=True):
             sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
             sequence_ids = list(sequence_ids)
             batch_size = batch_size_per_bucket[padded_length]
