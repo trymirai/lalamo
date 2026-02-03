@@ -349,7 +349,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         assert inference_config.batch_size is not None
         batch_size = inference_config.batch_size
 
-        padded_token_ids = pad_sequences(batch, (batch_size, inference_config.padded_length))
+        padded_token_ids = pad_sequences(batch, (batch_size, inference_config.padded_length), dtype=jnp.int32)
 
         lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
         padded_lengths = jnp.pad(lengths, (0, batch_size - len(batch)))

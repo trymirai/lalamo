@@ -8,6 +8,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from jax.errors import JaxRuntimeError
+from jaxtyping import DTypeLike
 
 from lalamo.common import LalamoWarning, get_usable_memory_from_bytes
 from lalamo.models.common import InferenceConfig
@@ -72,6 +73,7 @@ def pad_sequences(
     sequences: Iterable[TokenSequence],
     shape: tuple[int, int],
     *,
+    dtype: DTypeLike,
     pad_value: int = 0,
 ) -> jnp.ndarray:
     batch_size, seq_len = shape
@@ -80,11 +82,11 @@ def pad_sequences(
         raise ValueError(f"Expected at most {batch_size} sequences, got {len(sequences_list)}")
 
     if len(sequences_list) < batch_size:
-        sequences_list.extend([np.array([pad_value], dtype=np.int32)] * (batch_size - len(sequences_list)))
+        sequences_list.extend([jnp.array([pad_value], dtype=dtype)] * (batch_size - len(sequences_list)))
 
-    padded = np.full((batch_size, seq_len), pad_value, dtype=np.int32)
+    padded = np.full((batch_size, seq_len), pad_value, dtype=dtype)
     for i, seq in enumerate(sequences_list):
-        seq_arr = np.asarray(seq, dtype=np.int32)
+        seq_arr = np.asarray(seq, dtype=dtype)
         if seq_arr.size > seq_len:
             raise ValueError(f"Sequence length {seq_arr.size} exceeds target length {seq_len}")
         padded[i, : seq_arr.size] = seq_arr
