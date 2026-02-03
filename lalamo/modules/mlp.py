@@ -3,7 +3,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Self
+from typing import Self, cast
 
 import equinox as eqx
 import jax
@@ -293,26 +293,65 @@ class MixtureOfExpertsConfig(ABC):
     num_experts_per_token: int
     router_has_biases: bool
 
+    gate_config: LinearConfig | None = None
+    num_shared_experts: int = 0
+    expert_hidden_dim: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.num_shared_experts < 0:
+            raise ValueError("num_shared_experts must be non-negative.")
+        if self.num_shared_experts >= self.mixture_size:
+            raise ValueError("num_shared_experts must be less than mixture_size.")
+
+    @property
+    def num_routed_experts(self) -> int:
+        return self.mixture_size - self.num_shared_experts
+
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "MixtureOfExperts":
-        experts_key, router_key = jax.random.split(key)
+        experts_key, router_key, gate_key = jax.random.split(key, 3)
         router = self.router_config.random_init(
             model_dim,
-            (self.mixture_size,),
+            (self.num_routed_experts,),
             has_biases=self.router_has_biases,
             key=router_key,
         )
-        experts = self.expert_config.random_init_mixture(self.mixture_size, model_dim, hidden_dim, key=experts_key)
-        return MixtureOfExperts(self, router, experts)
+        expert_hidden_dim = self.expert_hidden_dim or hidden_dim
+        experts = self.expert_config.random_init_mixture(
+            self.mixture_size,
+            model_dim,
+            expert_hidden_dim,
+            key=experts_key,
+        )
+
+        gate = None
+        if self.gate_config is not None:
+            gate = self.gate_config.random_init(
+                model_dim,
+                (1,),
+                has_biases=False,
+                key=gate_key,
+            )
+
+        return MixtureOfExperts(self, router, experts, gate)
 
     def empty(self, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":
-        router = self.router_config.empty(model_dim, (self.mixture_size,), has_biases=self.router_has_biases)
-        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, hidden_dim)
-        return MixtureOfExperts(self, router, experts)
+        router = self.router_config.empty(
+            model_dim, (self.num_routed_experts,), has_biases=self.router_has_biases,
+        )
+        expert_hidden_dim = self.expert_hidden_dim or hidden_dim
+        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, expert_hidden_dim)
+
+        gate = None
+        if self.gate_config is not None:
+            gate = self.gate_config.empty(model_dim, (1,), has_biases=False)
+
+        return MixtureOfExperts(self, router, experts, gate)
 
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: LinearBase
     experts: DenseMLP
+    gate: LinearBase | None
 
     @property
     def mixture_size(self) -> int:
@@ -321,6 +360,14 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     @property
     def num_experts_per_token(self) -> int:
         return self.config.num_experts_per_token
+
+    @property
+    def num_shared_experts(self) -> int:
+        return self.config.num_shared_experts
+
+    @property
+    def num_routed_experts(self) -> int:
+        return self.config.num_routed_experts
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -342,9 +389,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             )
 
         (router_output_dim,) = self.router.output_dims
-        if router_output_dim != self.mixture_size:
+        if router_output_dim != self.num_routed_experts:
             raise ValueError(
-                f"Router output dimension ({router_output_dim}) must equal mixture_size ({self.mixture_size}).",
+                f"Router output dimension ({router_output_dim}) must equal"
+                f" number of routed experts ({self.num_routed_experts}).",
             )
 
         if self.experts.mixture_size != self.mixture_size:
@@ -366,29 +414,49 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             case ForwardPassMode.SINGLE_TOKEN:
                 return self.call_decode_mode(inputs)
 
+    def _shared_expert_weight(self, inputs: Float[Array, " channels"]) -> Float[Array, " one"]:
+        """Compute the weight for shared experts: sigmoid(gate(x)) if gated, else 1."""
+        if self.gate is not None:
+            (gate_value,) = self.gate(inputs)
+            return jax.nn.sigmoid(gate_value)
+        return jnp.ones((1,), dtype=inputs.dtype)
+
     @eqx.filter_jit
     def call_decode_mode(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        def per_token(x: Float[Array, " channels"]) -> Float[Array, " channels"]:
-            (router_logits,) = self.router(x)
+        def per_token(token_input: Float[Array, " channels"]) -> Float[Array, " channels"]:
+            (router_logits,) = self.router(token_input)
             routing = self.config.routing_function.call_unbatched(
                 router_logits,
                 num_active=self.num_experts_per_token,
             )
-            active_indices = jnp.flatnonzero(routing.expert_mask, size=self.num_experts_per_token)
-            active_weights = routing.expert_weights[active_indices]
 
-            def apply_one(idx: Int[Array, ""], w: Float[Array, ""]) -> Float[Array, " channels"]:
+            if self.num_shared_experts > 0:
+                shared_mask = jnp.ones(self.num_shared_experts, dtype=bool)
+                expert_mask = jnp.concatenate([routing.expert_mask, shared_mask])
+                shared_weight = self._shared_expert_weight(token_input)
+                shared_weights = jnp.broadcast_to(shared_weight, (self.num_shared_experts,))
+                expert_weights = jnp.concatenate([routing.expert_weights, shared_weights])
+            else:
+                expert_mask = routing.expert_mask
+                expert_weights = routing.expert_weights
+
+            num_active = self.num_experts_per_token + self.num_shared_experts
+            active_indices = jnp.flatnonzero(expert_mask, size=num_active)
+            active_weights = expert_weights[active_indices]
+
+            def apply_one(
+                idx: Int[Array, ""], weight: Float[Array, ""],
+            ) -> Float[Array, " channels"]:
                 selected_expert = jax.tree_util.tree_map(
                     lambda leaf: jax.lax.dynamic_index_in_dim(leaf, idx, axis=0, keepdims=False),
                     self.experts,
                 )
-                return selected_expert.call_unbatched(x) * w
+                return selected_expert.call_unbatched(token_input) * weight
 
-            contributions = vmap(apply_one)(active_indices, active_weights)
-            return jnp.sum(contributions, axis=0)
+            return vmap(apply_one)(active_indices, active_weights).sum(axis=0)
 
         return vmap_twice(per_token)(inputs)
 
@@ -411,19 +479,32 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
         routing_map = self.config.routing_function(router_logits, self.num_experts_per_token)
+
+        if self.num_shared_experts > 0:
+            shared_mask = jnp.ones((num_tokens, self.num_shared_experts), dtype=bool)
+            full_expert_mask = jnp.concatenate([routing_map.expert_mask, shared_mask], axis=-1)
+            shared_weights = vmap(self._shared_expert_weight)(flattened_inputs)
+            shared_weights = jnp.broadcast_to(shared_weights, (num_tokens, self.num_shared_experts))
+            full_expert_weights = jnp.concatenate([routing_map.expert_weights, shared_weights], axis=-1)
+        else:
+            full_expert_mask = routing_map.expert_mask
+            full_expert_weights = routing_map.expert_weights
+
         token_mask = rearrange(
-            routing_map.expert_mask & flattened_padding_mask[:, None],
+            full_expert_mask & flattened_padding_mask[:, None],
             "tokens experts -> experts tokens",
         )
         expert_weights = rearrange(
-            routing_map.expert_weights,
+            full_expert_weights,
             "tokens experts -> experts tokens",
         )
         expert_weights = jnp.where(token_mask, expert_weights, 0.0)
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
         num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
-        token_indices = vmap(lambda m: jnp.flatnonzero(m, size=num_padded_tokens, fill_value=_SENTINEL))(token_mask)
+        token_indices = vmap(lambda mask: jnp.flatnonzero(mask, size=num_padded_tokens, fill_value=_SENTINEL))(
+            token_mask,
+        )
         chunked_token_indices = rearrange(
             token_indices,
             "experts (chunks chunk_tokens) -> chunks experts chunk_tokens",
@@ -431,10 +512,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         def loop_iteration(
-            accumulator: Float[Array, "tokens channels"],
+            expert_accumulator: Float[Array, "tokens channels"],
             token_indices_for_chunk: Int[Array, "experts chunk_tokens"],
         ) -> tuple[Float[Array, "tokens channels"], None]:
-            def inner() -> Float[Array, "tokens channels"]:
+            def run_experts(
+                expert_accumulator: Float[Array, "tokens channels"],
+            ) -> Float[Array, "tokens channels"]:
                 weights_for_chunk = jnp.take_along_axis(
                     expert_weights,
                     token_indices_for_chunk,
@@ -448,27 +531,32 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     indices: Int[Array, " tokens_per_chunk"],
                     weights: Float[Array, " tokens_per_chunk"],
                 ) -> Float[Array, "tokens_per_chunk channels"]:
-                    inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
-                    return vmap(expert.call_unbatched)(inputs) * weights[:, None]
+                    chunk_inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
+                    return vmap(expert.call_unbatched)(chunk_inputs) * weights[:, None]
 
                 expert_outputs = vmap(run_expert)(self.experts, token_indices_for_chunk, weights_for_chunk)
-                return accumulator.at[token_indices_for_chunk].add(
+                return expert_accumulator.at[token_indices_for_chunk].add(
                     expert_outputs,
                     mode="drop",
                 )
 
-            return (
-                jax.lax.cond(
-                    jnp.any(token_indices_for_chunk != _SENTINEL),
-                    inner,
-                    lambda: accumulator,
-                ),
-                None,
+            expert_accumulator = jax.lax.cond(
+                jnp.any(token_indices_for_chunk != _SENTINEL),
+                run_experts,
+                lambda acc: acc,
+                expert_accumulator,
             )
 
-        result, _ = jax.lax.scan(loop_iteration, jnp.zeros_like(flattened_inputs), chunked_token_indices)
+            return expert_accumulator, None
+
+        expert_result, _ = jax.lax.scan(
+            loop_iteration,
+            jnp.zeros_like(flattened_inputs),
+            chunked_token_indices,
+        )
+
         return rearrange(
-            result,
+            expert_result,
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
         )
@@ -476,17 +564,31 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def export_weights(
         self,
     ) -> ParameterTree[Array]:
-        return {
+        result: dict[str, ParameterTree[Array]] = {
             "router": self.router.export_weights(),
             "experts": self.experts.export_weights(),
         }
 
+        if self.gate is not None:
+            result["gate"] = self.gate.export_weights()
+
+        return result
+
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
+        mapping_weights = cast("Mapping[str, Array | ParameterTree[Array]]", weights)
+
+        gate = None
+        if "gate" in mapping_weights:
+            if self.gate is None:
+                raise ValueError("Cannot import gate weights without configured gating.")
+            gate = self.gate.import_weights(require_tree(mapping_weights["gate"]))
+
         return replace(
             self,
-            router=self.router.import_weights(require_tree(weights["router"])),
-            experts=self.experts.import_weights(require_tree(weights["experts"])),
+            router=self.router.import_weights(require_tree(mapping_weights["router"])),
+            experts=self.experts.import_weights(require_tree(mapping_weights["experts"])),
+            gate=gate,
         )
 
 

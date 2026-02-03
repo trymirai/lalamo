@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, ClassVar, cast, get_args, get_origin
 
 import cattrs
+import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
@@ -124,7 +125,7 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
     if isinstance(value, str):
         return value
     if isinstance(value, dict):
-        value = cast("dict[Any, Any]", value) # ty bug??? Why is just `dict` != `dict[Any, Any]`?
+        value = cast("dict[Any, Any]", value)  # ty bug??? Why is just `dict` != `dict[Any, Any]`?
         if "file_spec" in value and "field_name" in value:
             return JSONFieldSpec(
                 file_spec=FileSpec(**value["file_spec"]),

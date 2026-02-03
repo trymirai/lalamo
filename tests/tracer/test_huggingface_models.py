@@ -11,12 +11,14 @@ MODEL_LIST = [
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
     # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
+    ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32),
 ]
 
 MODEL_LIST += (
     [
         ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16),
         ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16),
+        ModelTestSpec("mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", DType.FLOAT16),
     ]
     if torch.cuda.is_available()
     else []
