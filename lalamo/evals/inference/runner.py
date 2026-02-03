@@ -2,6 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from itertools import chain
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import polars as pl
 from evals.protocols import EvalAdapter
@@ -9,13 +10,17 @@ from evals.types import InferenceOutput, InternalEvalRecord
 
 from lalamo.evals.datasets.specs import EvalSpec
 from lalamo.evals.inference.engines import InferenceEngine
+from lalamo.models.common import BatchSizesComputedEvent
+
+if TYPE_CHECKING:
+    from lalamo.message_processor import AssistantMessage
 
 
 def run_inference(
-    eval_spec: EvalSpec,
+    _eval_spec: EvalSpec,
     dataset_dir: Path,
     split: str,
-    model_path: Path,
+    _model_path: Path,
     output_dir: Path,
     inference_engine: InferenceEngine,
     eval_adapter: EvalAdapter,
@@ -115,10 +120,7 @@ def _load_internal_dataset(
     if max_examples:
         df = df.head(max_examples)
 
-    records = []
-    for row in df.iter_rows(named=True):
-        records.append(InternalEvalRecord(**row))
-
+    records = [InternalEvalRecord(**row) for row in df.iter_rows(named=True)]
     return records
 
 
@@ -167,7 +169,7 @@ class GenerateRepliesCallbacks:
     def batch_sizes_estimated(self) -> None:
         pass
 
-    def batch_sizes_computed(self, event) -> None:
+    def batch_sizes_computed(self, event: BatchSizesComputedEvent) -> None:
         pass
 
     def generation_progress(self, rows_processed: int) -> None:
@@ -198,7 +200,6 @@ def generate_replies(
 ) -> None:
     from lalamo.common import get_default_device_bytes
     from lalamo.data.huggingface_message import import_hf_parquet
-    from lalamo.message_processor import AssistantMessage
     from lalamo.models.common import InferenceConfig
     from lalamo.models.language_model import LanguageModelConfig
 
