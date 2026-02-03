@@ -327,16 +327,6 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
 
     experts_path = path / "experts"
 
-    # Debug: print keys that contain "expert" for the first layer
-    if "layers.0" in str(path):
-        expert_keys = [k for k in weights_dict if "expert" in str(k).lower() and "layers.0" in str(k)]
-        print(f"DEBUG: Expert keys for layer 0 (first 20): {expert_keys[:20]}")
-        print(f"DEBUG: Total expert keys for layer 0: {len(expert_keys)}")
-        # Also check what the expected paths look like
-        print(f"DEBUG: experts_path = {experts_path}")
-        print(f"DEBUG: Looking for: {experts_path / 'gate_up_proj.weight'}")
-        print(f"DEBUG: Looking for: {experts_path / 'gate_up_proj' / 'weight'}")
-
     # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
         fused = decode_mxfp4(
@@ -348,13 +338,16 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
         up_weights, gate_weights = deinterleave_pairwise_columns(fused_eio, first="odd")
         combined_up_gate_weights = jnp.swapaxes(
-            jnp.concatenate([up_weights, gate_weights], axis=-1), -1, -2,
+            jnp.concatenate([up_weights, gate_weights], axis=-1),
+            -1,
+            -2,
         )
 
         gate_up_bias = weights_dict[experts_path / "gate_up_proj_bias"]
         if gate_up_bias.ndim == 1:
             gate_up_bias = jnp.broadcast_to(
-                gate_up_bias, (combined_up_gate_weights.shape[0], gate_up_bias.shape[0]),
+                gate_up_bias,
+                (combined_up_gate_weights.shape[0], gate_up_bias.shape[0]),
             )
         up_bias, gate_bias = deinterleave_pairwise_columns(gate_up_bias, first="odd")
         combined_up_gate_biases = jnp.concatenate([up_bias + 1.0, gate_bias], axis=-1)
@@ -411,7 +404,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             if gate_up_key is None:
                 raise KeyError(f"Could not find gate_up_proj weights under {gate_up_path}")
             # Infer the weight key suffix
-            suffix = str(gate_up_key)[len(str(gate_up_path)):]
+            suffix = str(gate_up_key)[len(str(gate_up_path)) :]
             gate_up_weights = weights_dict[gate_up_key]
             down_key = str(down_path) + suffix
             down_weights = weights_dict[ParameterPath(down_key)]
@@ -454,8 +447,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
                     raise ValueError("Single shared expert path found but num_shared_experts != 1.")
                 expert_paths.append(path / "shared_expert")
             elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
-                for idx in range(num_shared):
-                    expert_paths.append(path / "shared_experts" / str(idx))
+                expert_paths.extend(path / "shared_experts" / str(idx) for idx in range(num_shared))
             else:
                 raise KeyError("Could not find shared expert weights in HF checkpoint.")
 

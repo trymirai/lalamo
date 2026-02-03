@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any, ClassVar, cast, get_args, get_origin
 
 import cattrs
-import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
