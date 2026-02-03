@@ -30,16 +30,19 @@ class TestPrefillChunkingConsistency:
     ) -> None:
         random_generator = np.random.default_rng(seed)
         sequence_length = int(random_generator.integers(10, 300))
+        state_capacity = sequence_length + 128
         token_ids = jnp.arange(sequence_length, dtype=jnp.int32) % 1000
         token_ids = token_ids[None, :]
 
         reference_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=None,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
         test_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=None,
             chunk_size=chunk_size,
         ).last_token_logits
@@ -64,6 +67,7 @@ class TestPrefillChunkingConsistency:
         batch_size = 4
         lengths = [int(value) for value in random_generator.integers(10, 200, size=batch_size)]
         max_length = max(lengths)
+        state_capacity = max_length + 128
         token_ids_by_sequence = [
             jnp.pad(
                 jnp.arange(length, dtype=jnp.int32) % 1000,
@@ -76,11 +80,13 @@ class TestPrefillChunkingConsistency:
         lengths_without_padding = jnp.array(lengths, dtype=jnp.int32)
         reference_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=lengths_without_padding,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
         test_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=lengths_without_padding,
             chunk_size=chunk_size,
         ).last_token_logits
@@ -110,6 +116,7 @@ class TestPrefillChunkingConsistency:
             chunk_size * 2 + 1,
         ]
         max_length = max(lengths)
+        state_capacity = max_length + 128
         token_ids_by_sequence = [
             jnp.pad(
                 jnp.arange(length, dtype=jnp.int32) % 1000,
@@ -122,11 +129,13 @@ class TestPrefillChunkingConsistency:
         lengths_without_padding = jnp.array(lengths, dtype=jnp.int32)
         reference_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=lengths_without_padding,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
         test_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=lengths_without_padding,
             chunk_size=chunk_size,
         ).last_token_logits
@@ -151,6 +160,7 @@ class TestPrefillChunkingConsistency:
     ) -> None:
         base_chunk_size = 64
         sequence_length = base_chunk_size + length_offset
+        state_capacity = sequence_length + 128
 
         token_ids = jnp.arange(sequence_length, dtype=jnp.int32) % 1000
         token_ids = token_ids[None, :]
@@ -158,11 +168,13 @@ class TestPrefillChunkingConsistency:
         small_chunk = 32
         small_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=None,
             chunk_size=small_chunk,
         ).last_token_logits
         reference_logits = language_model._prefill(
             token_ids,
+            state_capacity,
             lengths_without_padding=None,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
@@ -191,7 +203,7 @@ class TestPrefillChunkingConsistency:
 
         reference_result = language_model._prefill(
             token_ids,
-            state_capacity=state_capacity,
+            state_capacity,
             chunk_size=NO_CHUNK_SIZE,
         )
         reference_logits = reference_result.last_token_logits
@@ -199,7 +211,7 @@ class TestPrefillChunkingConsistency:
         for chunk_size in [32, 64, 128]:
             result = language_model._prefill(
                 token_ids,
-                state_capacity=state_capacity,
+                state_capacity,
                 chunk_size=chunk_size,
             )
             assert_close(

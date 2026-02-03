@@ -1,4 +1,3 @@
-from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
@@ -30,12 +29,10 @@ class HFMessage:
                 raise ValueError(f"Cannot convert {other} message")
 
 
-def import_hf_parquet(path: Path | str, shuffle: bool = True) -> Iterable[list[Message]]:
+def load_hf_parquet(path: Path | str) -> pl.LazyFrame:
     path = Path(path)
+    return pl.scan_parquet(path)
 
-    dataframe = pl.scan_parquet(path).collect()
-    conversations = dataframe.get_column("conversation")
-    conversations = conversations.shuffle(1337) if shuffle else conversations
 
-    for conversation in conversations:
-        yield [HFMessage.from_dict(message).as_message() for message in conversation]
+def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.LazyFrame:
+    return frame.sample(fraction=1.0, shuffle=True, seed=seed)

@@ -9,7 +9,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from einops import rearrange
+from einops import rearrange, repeat
 from jax import vmap
 from jax._src.stages import Compiled
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
@@ -26,7 +26,13 @@ from lalamo.modules import (
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, TextModel, TextModelConfig
-from .lm_helpers import decrease_batchsize_on_oom, estimate_batchsizes_from_vram, merge_small_buckets
+from .lm_helpers import (
+    decrease_batchsize_on_oom,
+    estimate_batchsizes_from_vram,
+    merge_small_buckets,
+    pad_keys_to_batch,
+    pad_sequences,
+)
 
 __all__ = [
     "ForwardPassConfig",
@@ -102,6 +108,13 @@ class LanguageModelConfig(TextModelConfig[DecoderConfig]):
 _compile_cache = {}
 
 
+class Chunk(eqx.Module):
+    tokens: Int[Array, "num_chunks batch chunk_size"]
+    indices: Int[Array, "num_chunks batch chunk_size"]
+    sequence_ends: Int[Array, "num_chunks batch"]
+    is_last_token_inside: Bool[Array, "num_chunks batch"]
+
+
 class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     @property
     def stop_token_ids(self) -> tuple[int, ...]:
@@ -110,180 +123,113 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy()
 
-    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
-        if not self.stop_token_ids:
-            return token_ids
-        stop_set = set(self.stop_token_ids)
-        end = next((i for i, token_id in enumerate(token_ids) if token_id in stop_set), len(token_ids))
-        return token_ids[: end + 1]
-
-    def _prefill_first_chunk(
+    @eqx.filter_jit
+    def _make_chunks(
         self,
         token_ids: Int[Array, "batch tokens"],
-        first_chunk_size: int,
-        effective_lengths: Int[Array, " batch"],
-        state: State | None,
-        forward_pass_config: ForwardPassConfig | None,
-    ) -> tuple[Float[Array, "batch vocabulary"], State]:
-        batch_size = token_ids.shape[0]
-        first_positions = jnp.repeat(jnp.arange(first_chunk_size, dtype=jnp.int32)[None, :], batch_size, axis=0)
-        first_lengths = jnp.clip(effective_lengths, 0, first_chunk_size)
-
-        first_outputs = self.model(
-            token_ids[:, :first_chunk_size],
-            first_positions,
-            state,
-            return_updated_state=True,
-            lengths_without_padding=first_lengths,
-            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-            forward_pass_config=forward_pass_config,
-        )
-        assert first_outputs.updated_state is not None
-
-        last_logits_indices = effective_lengths - 1
-        in_first_chunk = last_logits_indices < first_chunk_size
-        first_local_indices = jnp.clip(last_logits_indices, 0, first_chunk_size - 1)
-        vocab_size = first_outputs.logits.shape[-1]
-
-        last_token_logits = vmap(
-            lambda in_chunk, logits, idx: jax.lax.cond(
-                in_chunk,
-                lambda: logits[idx].astype(jnp.float32),
-                lambda: jnp.zeros(vocab_size, dtype=jnp.float32),
-            ),
-        )(in_first_chunk, first_outputs.logits, first_local_indices)
-
-        return last_token_logits, first_outputs.updated_state
-
-    def _process_remaining_chunks(
-        self,
-        token_ids: Int[Array, "batch tokens"],
+        lengths_without_padding: Int[Array, " batch"] | None,
         chunk_size: int,
-        effective_lengths: Int[Array, " batch"],
-        last_token_logits: Float[Array, "batch vocabulary"],  # we need prev logits just to infer vocab size
-        state: State,
-        forward_pass_config: ForwardPassConfig | None,
-    ) -> tuple[Float[Array, "batch vocabulary"], State]:
+    ) -> Chunk:
         batch_size, sequence_length = token_ids.shape
-        last_logits_indices = effective_lengths - 1
 
-        remaining_length = sequence_length - chunk_size
-        num_remaining_chunks = (remaining_length + chunk_size - 1) // chunk_size
-        padding_length = num_remaining_chunks * chunk_size - remaining_length
-        total_length = chunk_size * (1 + num_remaining_chunks)
+        # If all sequences fit in a single chunk, use sequence_length as the chunk size
+        chunk_size = min(chunk_size, sequence_length)
 
-        remaining_tokens = jnp.pad(token_ids[:, chunk_size:], [(0, 0), (0, padding_length)])
-        remaining_token_ids = rearrange(
-            remaining_tokens,
+        n_chunks = (sequence_length + chunk_size - 1) // chunk_size
+        padded_length = n_chunks * chunk_size
+
+        token_ids = jnp.pad(token_ids, [(0, 0), (0, padded_length - sequence_length)])
+
+        # Reshape tokens to (num_chunks, batch, chunk_size)
+        tokens = rearrange(
+            token_ids,
             "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
             chunk_size=chunk_size,
         )
 
-        remaining_pos = jnp.arange(chunk_size, total_length, dtype=jnp.int32)
-        remaining_positions = jnp.repeat(remaining_pos[None, :], batch_size, axis=0)
-        remaining_positions = rearrange(
-            remaining_positions,
+        # Create position indices (num_chunks, batch, chunk_size)
+        indices = jnp.arange(padded_length, dtype=jnp.int32)
+        indices = repeat(indices, "token_idx -> batch token_idx", batch=batch_size)
+        indices = rearrange(
+            indices,
             "batch (num_chunks chunk_size) -> num_chunks batch chunk_size",
             chunk_size=chunk_size,
         )
 
-        chunk_starts = chunk_size + jnp.arange(num_remaining_chunks, dtype=jnp.int32) * chunk_size
-        per_chunk_lengths = jnp.clip(effective_lengths[None, :] - chunk_starts[:, None], 0, chunk_size)
-
-        def apply_chunk(carry: tuple, chunk_data: tuple) -> tuple:
-            current_state, current_logits = carry
-            chunk_tokens, chunk_positions, chunk_lengths, chunk_start = chunk_data
-
-            decoder_outputs = self.model(
-                chunk_tokens,
-                chunk_positions,
-                current_state,
-                return_updated_state=True,
-                lengths_without_padding=chunk_lengths,
-                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=forward_pass_config,
-            )
-            assert decoder_outputs.updated_state is not None
-
-            in_this_chunk = (last_logits_indices >= chunk_start) & (last_logits_indices < chunk_start + chunk_size)
-            local_indices = jnp.clip(last_logits_indices - chunk_start, 0, chunk_size - 1)
-
-            new_logits = vmap(
-                lambda in_chunk, old, logits, idx: jax.lax.cond(
-                    in_chunk,
-                    lambda: logits[idx].astype(jnp.float32),
-                    lambda: old,
-                ),
-            )(in_this_chunk, current_logits, decoder_outputs.logits, local_indices)
-
-            return (decoder_outputs.updated_state, new_logits), None
-
-        (final_state, final_logits), _ = jax.lax.scan(
-            apply_chunk,
-            (state, last_token_logits),
-            (remaining_token_ids, remaining_positions, per_chunk_lengths, chunk_starts),
+        # sequence_ends: for each chunk, how many valid tokens per batch item
+        chunk_starts = jnp.arange(n_chunks, dtype=jnp.int32) * chunk_size
+        sequence_ends = jnp.clip(
+            lengths_without_padding[None, :] - chunk_starts[:, None],
+            0,
+            chunk_size,
         )
 
-        return final_logits, final_state
+        # last_token_inside: whether the last valid token (at index length-1) is in this chunk
+        last_token_idx = lengths_without_padding - 1
+        chunk_ends = chunk_starts + chunk_size
+        is_last_token_inside = (last_token_idx[None, :] >= chunk_starts[:, None]) & (
+            last_token_idx[None, :] < chunk_ends[:, None]
+        )
+
+        return Chunk(
+            tokens=tokens,
+            indices=indices,
+            sequence_ends=sequence_ends,
+            is_last_token_inside=is_last_token_inside,
+        )
 
     @eqx.filter_jit
     def _prefill(
         self,
         token_ids: Int[Array, "batch tokens"],
+        state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        state_capacity: int | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
-        first_chunk_size = min(sequence_length, chunk_size)
-        remaining_length = sequence_length - first_chunk_size
-        num_remaining_chunks = (remaining_length + chunk_size - 1) // chunk_size if remaining_length > 0 else 0
 
-        if lengths_without_padding is not None:
-            effective_lengths = lengths_without_padding
-        else:
-            effective_lengths = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
-        last_logits_indices = effective_lengths - 1
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
-        state = None
-        if state_capacity is not None:
-            state = self.model.init_static_state(batch_size, state_capacity)
+        chunks = self._make_chunks(token_ids, lengths_without_padding, chunk_size)
 
-        last_token_logits, updated_state = self._prefill_first_chunk(
-            token_ids,
-            first_chunk_size,
-            effective_lengths,
-            state,
-            forward_pass_config,
-        )
+        num_chunks, _, chunk_size = chunks.tokens.shape
+        state_capacity = max(state_capacity, num_chunks * chunk_size)
 
-        if num_remaining_chunks == 0:
-            return PrefillResults(
-                last_token_logits=last_token_logits,
-                last_token_indices=last_logits_indices,
-                state=updated_state,
+        state = self.model.init_static_state(batch_size, state_capacity)
+        logits_like = jnp.zeros((batch_size, self.model.vocab_size), dtype=jnp.float32)
+
+        def apply_chunk(state_and_logits: tuple, chunk: Chunk) -> tuple:
+            state, prev_logits = state_and_logits
+            decoder_outputs = self.model(
+                chunk.tokens,
+                chunk.indices,
+                state,
+                return_updated_state=True,
+                lengths_without_padding=chunk.sequence_ends,
+                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+                forward_pass_config=forward_pass_config,
             )
+            assert decoder_outputs.updated_state is not None
 
-        final_logits, final_state = self._process_remaining_chunks(
-            token_ids,
-            chunk_size,
-            effective_lengths,
-            last_token_logits,
-            updated_state,
-            forward_pass_config,
-        )
+            chunk_logits = decoder_outputs.logits[jnp.arange(batch_size), chunk.sequence_ends - 1, :]
+            new_logits = jnp.where(chunk.is_last_token_inside[:, None], chunk_logits, prev_logits)
+
+            return (decoder_outputs.updated_state, new_logits), None
+
+        (final_state, final_logits), _ = jax.lax.scan(apply_chunk, (state, logits_like), chunks)
 
         return PrefillResults(
             last_token_logits=final_logits,
-            last_token_indices=last_logits_indices,
+            last_token_indices=jnp.maximum(lengths_without_padding - 1, 0),
             state=final_state,
         )
 
     def generate_tokens(
         self,
         prompt_token_ids: Int[Array, "batch prompt_tokens"],
-        sampling_policy: SamplingPolicy | None = None,
+        generation_config: GenerationConfig | None = None,
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
@@ -294,8 +240,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
 
-        if sampling_policy is None:
-            sampling_policy = self.default_sampling_policy()
+        sampling_policy = self.default_sampling_policy()
+        if generation_config is not None:
+            sampling_policy = generation_config.default_policy()
+
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
         if keys is None:
@@ -308,8 +256,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         prefill_results = self._prefill(
             prompt_token_ids,
-            prompt_lengths_without_padding,
             sequence_length + max_output_length,
+            prompt_lengths_without_padding,
             forward_pass_config=forward_pass_config,
         )
 
@@ -391,38 +339,20 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits)
 
-    def reply(
-        self,
-        messages: Iterable[Message],
-        sampling_policy: SamplingPolicy | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
-        *,
-        key: PRNGKeyArray | None = None,
-    ) -> AssistantMessage:
-        formatted_messages = self.message_processor.render_request(messages)
-        token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
-        response_ids = self.generate_tokens(
-            token_ids,
-            sampling_policy,
-            forward_pass_config=forward_pass_config,
-            keys=key[None, ...] if key is not None else None,
-        ).token_ids.squeeze(0)
-        trimmed_ids = self._trim_at_eos(response_ids.tolist())
-        response_text = self.message_processor.detokenize(trimmed_ids)
-        return self.message_processor.parse_response(response_text)
-
     def compile_generate_tokens(
         self,
-        inference_config: InferenceConfig,
+        generation_config: GenerationConfig | None = None,
+        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        *,
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> Compiled:
-        key = (inference_config, forward_pass_config)
+        key = (generation_config, inference_config, forward_pass_config)
         if key not in _compile_cache:
             _compile_cache[key] = (
                 jax.jit(
                     functools.partial(
                         LanguageModel.generate_tokens,
-                        sampling_policy=inference_config.sampling_policy,
+                        generation_config=generation_config,
                         max_output_length=inference_config.max_output_length,
                         num_top_logits_to_return=inference_config.num_top_logits_to_return,
                         forward_pass_config=forward_pass_config,
@@ -444,9 +374,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def generate_tokens_many(
         self,
         tokenized: Iterable[list[int]],
-        inference_config: InferenceConfig,
-        forward_pass_config: ForwardPassConfig | None = None,
+        generation_config: GenerationConfig | None = None,
+        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
+        forward_pass_config: ForwardPassConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
         tokenized = list(tokenized)  # load eagerly to RAM
@@ -461,32 +392,31 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         def process_batches(batch_size: int) -> Iterator[tuple[int, GenerationResults]]:
             new_inference_config = replace(inference_config, batch_size=batch_size)
+
             for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
                 real_batch, batch_keys = zip(*batch_items, strict=True)
-                batch_padding = batch_size - len(real_batch)
-                batch = (*real_batch, *(np.array([0], dtype=np.int32),) * batch_padding)
 
-                # Pad keys if necessary
-                padded_keys = jnp.array(batch_keys)
-                if batch_padding > 0:
-                    dummy_keys = jax.random.split(jax.random.key(0), batch_padding)
-                    padded_keys = jnp.concatenate([jnp.array(batch_keys), dummy_keys])
-
-                padded = jnp.array(
-                    np.array(
-                        [
-                            np.pad(tokens, (0, inference_config.padded_length - len(tokens)), constant_values=0)
-                            for tokens in batch
-                        ],
-                    ),
+                padded_token_ids = pad_sequences(
+                    real_batch,
+                    (batch_size, inference_config.padded_length),
+                    pad_value=0,
+                    dtype=np.int32,
                 )
-                lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
 
-                generate_tokens = self.compile_generate_tokens(new_inference_config, forward_pass_config)
-                results = generate_tokens(
+                lengths = jnp.array([len(tokens) for tokens in real_batch], dtype=jnp.int32)
+                padded_lengths = jnp.pad(lengths, (0, batch_size - len(real_batch)))
+
+                padded_keys = pad_keys_to_batch(batch_keys, batch_size, seed=0)
+
+                generate_tokens_fn = self.compile_generate_tokens(
+                    generation_config,
+                    new_inference_config,
+                    forward_pass_config=forward_pass_config,
+                )
+                results = generate_tokens_fn(
                     self,
-                    prompt_token_ids=padded,
-                    prompt_lengths_without_padding=lengths,
+                    prompt_token_ids=padded_token_ids,
+                    prompt_lengths_without_padding=padded_lengths,
                     keys=padded_keys,
                 )
 
@@ -505,12 +435,18 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             starting_batch_size=inference_config.batch_size,
         )
 
-    def memory_consumption(
+    def estimate_memory_consumption(
         self,
-        inference_config: InferenceConfig,
+        generation_config: GenerationConfig | None = None,
+        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        *,
         forward_pass_config: ForwardPassConfig | None = None,
     ) -> int:
-        memory_analysis = self.compile_generate_tokens(inference_config, forward_pass_config).memory_analysis()
+        memory_analysis = self.compile_generate_tokens(
+            generation_config=generation_config,
+            inference_config=inference_config,
+            forward_pass_config=forward_pass_config,
+        ).memory_analysis()
 
         assert hasattr(memory_analysis, "argument_size_in_bytes")
         assert hasattr(memory_analysis, "output_size_in_bytes")
@@ -522,21 +458,50 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             + memory_analysis.temp_size_in_bytes
         )
 
+    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+        if not self.stop_token_ids:
+            return token_ids
+        stop_set = set(self.stop_token_ids)
+        end = next((i for i, token_id in enumerate(token_ids) if token_id in stop_set), len(token_ids))
+        return token_ids[: end + 1]
+
+    def reply(
+        self,
+        messages: Iterable[Message],
+        generation_config: GenerationConfig | None = None,
+        *,
+        forward_pass_config: ForwardPassConfig | None = None,
+        key: PRNGKeyArray | None = None,
+    ) -> AssistantMessage:
+        formatted_messages = self.message_processor.render_request(messages)
+        token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
+        response_ids = self.generate_tokens(
+            token_ids,
+            generation_config,
+            forward_pass_config=forward_pass_config,
+            keys=key[None, ...] if key is not None else None,
+        ).token_ids.squeeze(0)
+        trimmed_ids = self._trim_at_eos(response_ids.tolist())
+        response_text = self.message_processor.detokenize(trimmed_ids)
+        return self.message_processor.parse_response(response_text)
+
     def reply_many(
         self,
-        dataset: Iterable[Iterable[Message]],
-        inference_config: InferenceConfig,
-        vram_bytes: int | None = None,
-        keys: Key[Array, " num_sequences"] | None = None,
+        messages: Iterable[Iterable[Message]],
+        generation_config: GenerationConfig | None = None,
+        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        *,
         forward_pass_config: ForwardPassConfig | None = None,
+        keys: Key[Array, " num_sequences"] | None = None,
+        vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
-        dataset = list(dataset)  # eagerly load the dataset into RAM
+        messages = list(messages)  # eagerly load the dataset into RAM
 
         if keys is None:
-            keys = jax.random.split(jax.random.key(0), num=len(dataset))
+            keys = jax.random.split(jax.random.key(0), num=len(messages))
 
-        if len(keys) != len(dataset):
+        if len(keys) != len(messages):
             raise ValueError(
                 f"Length of 'keys' should be equal to the number of sequences passed or None; got {len(keys)}",
             )
@@ -547,14 +512,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if vram_bytes is None and inference_config.batch_size is None:
             raise ValueError("You have to specify either batch_size or vram_gb, but you provided neither.")
 
-        tokenized: list[list[int]] = self.message_processor.tokenize_requests(dataset)
+        tokenized: list[list[int]] = self.message_processor.tokenize_requests(messages)
 
         buckets: dict[int, list[tuple[int, list[int]]]] = {}
         max_prompt_length = max(_COMPILED_PROMPT_LENGTHS)
         for idx, sequence in enumerate(tokenized):
-            assert (
-                len(sequence) <= max_prompt_length
-            ), f"Sequence length {len(sequence)} exceeds largest bucket {max_prompt_length}"
+            assert len(sequence) <= max_prompt_length, (
+                f"Sequence length {len(sequence)} exceeds largest bucket {max_prompt_length}"
+            )
             # we choose the smallest size from precomputed ones that is longer or equal to the current sequence
             padded_len = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= len(sequence))
             buckets.setdefault(padded_len, []).append((idx, sequence))
@@ -564,7 +529,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
         else:
             batch_size_per_bucket = estimate_batchsizes_from_vram(
-                self.memory_consumption,
+                self.estimate_memory_consumption,
                 sorted_lengths,
                 vram_bytes,  # type: ignore
                 inference_config,
@@ -594,8 +559,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             all_results = self.generate_tokens_many(
                 sequence_tokenized,
-                bucket_inference_config,
-                forward_pass_config,
+                generation_config=generation_config,
+                inference_config=bucket_inference_config,
+                forward_pass_config=forward_pass_config,
                 keys=keys[np.array(sequence_ids)],
             )
 
@@ -647,8 +613,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         prefill_results = self._prefill(
             padded_token_ids[None, :],
-            jnp.array([input_length], dtype=jnp.int32),
             padded_input_length + max_output_length,
+            lengths_without_padding=jnp.array([input_length], dtype=jnp.int32),
             forward_pass_config=forward_pass_config,
         )
 

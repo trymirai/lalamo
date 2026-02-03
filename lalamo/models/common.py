@@ -16,7 +16,6 @@ from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
-from lalamo.sampling import SamplingPolicy
 
 __all__ = [
     "BatchSizeInfo",
@@ -28,7 +27,6 @@ __all__ = [
 
 @dataclass(frozen=True)
 class InferenceConfig:
-    sampling_policy: SamplingPolicy | None = None
     max_output_length: int = 8192
     padded_length: int = 8192
     num_top_logits_to_return: int | None = None

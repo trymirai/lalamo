@@ -4,6 +4,8 @@ import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 from jax.errors import JaxRuntimeError
 
@@ -17,6 +19,8 @@ __all__ = [
     "decrease_batchsize_on_oom",
     "estimate_batchsize_from_bytes",
     "estimate_batchsizes_from_vram",
+    "pad_keys_to_batch",
+    "pad_sequences",
     "merge_small_buckets",
 ]
 
@@ -64,6 +68,47 @@ def merge_small_buckets[T: TokenSequence](
     return merged
 
 
+def pad_sequences[T: TokenSequence](
+    sequences: Iterable[T],
+    shape: tuple[int, int],
+    *,
+    pad_value: int = 0,
+    dtype: np.dtype = np.int32,
+    pad_sequence: T | None = None,
+) -> jnp.ndarray:
+    batch_size, seq_len = shape
+    sequences_list = list(sequences)
+    if len(sequences_list) > batch_size:
+        raise ValueError(f"Expected at most {batch_size} sequences, got {len(sequences_list)}")
+
+    if pad_sequence is None:
+        pad_sequence = np.array([pad_value], dtype=dtype)
+
+    if len(sequences_list) < batch_size:
+        sequences_list.extend([pad_sequence] * (batch_size - len(sequences_list)))
+
+    padded = np.full((batch_size, seq_len), pad_value, dtype=dtype)
+    lengths: list[int] = []
+    for i, seq in enumerate(sequences_list):
+        seq_arr = np.asarray(seq, dtype=dtype)
+        if seq_arr.size > seq_len:
+            raise ValueError(f"Sequence length {seq_arr.size} exceeds target length {seq_len}")
+        padded[i, : seq_arr.size] = seq_arr
+        lengths.append(seq_arr.size)
+
+    return jnp.array(padded)
+
+
+def pad_keys_to_batch(keys: Iterable, batch_size: int, *, seed: int = 0) -> jnp.ndarray:
+    keys_list = list(keys)
+    if len(keys_list) > batch_size:
+        raise ValueError(f"Expected at most {batch_size} keys, got {len(keys_list)}")
+    if len(keys_list) == batch_size:
+        return jnp.array(keys_list)
+    dummy_keys = jax.random.split(jax.random.key(seed), batch_size - len(keys_list))
+    return jnp.concatenate([jnp.array(keys_list), dummy_keys])
+
+
 def estimate_batchsizes_from_vram(
     memory_consumption_callback: Callable[[InferenceConfig], int],
     sorted_lengths: list[int],
@@ -80,9 +125,8 @@ def estimate_batchsizes_from_vram(
             padded_length=seq_len,
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             batch_size=bs,
-            sampling_policy=inference_config.sampling_policy,
         )
-        return memory_consumption_callback(config)
+        return memory_consumption_callback(inference_config=config)
 
     result: dict[int, int] = {}
 

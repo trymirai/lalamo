@@ -13,7 +13,8 @@ import thefuzz.process
 from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters, get_default_device_bytes
-from lalamo.data import import_hf_parquet
+from lalamo.data import load_hf_parquet, shuffle_dataset
+from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
@@ -348,7 +349,7 @@ def estimate_batchsize(
             num_top_logits_to_return=num_logits_per_token,
             batch_size=batch_size,
         )
-        return model.memory_consumption(inference_config)
+        return model.estimate_memory_consumption(inference_config=inference_config)
 
     bs = estimate_batchsize_from_bytes(
         memory_per_batchsize,
@@ -429,7 +430,11 @@ def collect_traces(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataset = iter(import_hf_parquet(dataset_path))
+    dataframe = shuffle_dataset(load_hf_parquet(dataset_path)).collect()
+    conversations = dataframe.get_column("conversation")
+    dataset = iter(
+        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
+    )
     dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
 
@@ -610,7 +615,11 @@ def generate_replies(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataset = iter(import_hf_parquet(dataset_path, shuffle=False))
+    dataframe = load_hf_parquet(dataset_path).collect()
+    conversations = dataframe.get_column("conversation")
+    dataset = iter(
+        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
+    )
     try:
         first_row = next(dataset)
     except StopIteration:
@@ -629,7 +638,7 @@ def generate_replies(
     for rows_processed, (idx, reply) in enumerate(
         model.reply_many(
             dataset,
-            inference_config,
+            inference_config=inference_config,
             vram_bytes=max_vram,
             batch_sizes_callback=callbacks.batch_sizes_computed,
         ),
