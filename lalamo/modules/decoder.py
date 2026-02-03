@@ -122,6 +122,10 @@ class Decoder(LalamoModule[DecoderConfig]):
     transformer: Transformer
 
     @property
+    def vocab_size(self) -> int:
+        return self.embedding.vocab_size
+
+    @property
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
 

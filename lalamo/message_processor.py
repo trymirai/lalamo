@@ -174,8 +174,15 @@ class MessageProcessor:
         rendered = self.render_request(messages)
         return self.tokenize_text(rendered)
 
+    def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
+        return [self.tokenize_request(messages) for messages in dataset]
+
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
+
+    def parse_tokenized_response(self, tokens: list[int]) -> AssistantMessage:
+        detokenized = self.detokenize(tokens)
+        return self.parse_response(detokenized)
 
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:
