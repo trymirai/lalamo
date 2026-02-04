@@ -1,6 +1,6 @@
 from evals import MMLUProAdapter
 
-from .base import EvalSpec
+from lalamo.evals.datasets.specs.base import EvalSpec
 
 MMLU_PRO = EvalSpec(
     name="MMLU-Pro",

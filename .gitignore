@@ -55,6 +55,5 @@ _tmp
 # Git worktrees
 .worktrees/
 
-# Eval data directories
-/evals/datasets/
-/evals/results/
+# Data directories
+/data/

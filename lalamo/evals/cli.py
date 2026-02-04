@@ -33,7 +33,7 @@ def convert_dataset_command(
         Path | None,
         Option(
             help="Directory to save the dataset to.",
-            show_default="Saves the dataset in the `evals/datasets/<name>` directory (using eval's short name)",
+            show_default="Saves the dataset in the `data/evals/datasets/<name>` directory (using eval's short name)",
         ),
     ] = None,
     overwrite: Annotated[
@@ -51,7 +51,7 @@ def convert_dataset_command(
     eval_spec = REPO_TO_EVAL[eval_name]
 
     if output_dir is None:
-        output_dir = Path("evals/datasets") / eval_spec.name
+        output_dir = Path("data/evals/datasets") / eval_spec.name
 
     try:
         convert_dataset_handler(
