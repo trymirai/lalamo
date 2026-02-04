@@ -19,7 +19,6 @@ from lalamo.modules import (
     LinearBase,
     MLPBase,
     Normalization,
-    RoPE,
     Transformer,
     TransformerLayer,
 )
