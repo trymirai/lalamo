@@ -7,6 +7,7 @@ dependencies = [
     "click>=8.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.11",
+    "evals",
     "huggingface-hub[hf-transfer]>=0.27.1",
     "jax>=0.8.1",
     "jaxtyping>=0.2.36",
@@ -98,6 +99,7 @@ publish-url = "https://test.pypi.org/legacy/"
 explicit = true
 
 [tool.uv.sources]
+evals = { git = "ssh://git@github.com/trymirai/evals.git", branch = "main" }
 torch = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },

@@ -4,29 +4,14 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
-import huggingface_hub
 import pyarrow as pa
 import pyarrow.parquet as pq
-from evals import DatasetMetadata, InternalEvalRecord
 
+from evals import DatasetMetadata, InternalEvalRecord
 from lalamo.evals.datasets.callbacks import BaseConversionCallbacks
 from lalamo.evals.datasets.specs import EvalSpec
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")
-
-
-def _list_parquet_files_for_split(repo_id: str, split: str) -> list[str]:
-    all_files = huggingface_hub.list_repo_files(repo_id, repo_type="dataset")
-    parquet_files = [
-        filename
-        for filename in all_files
-        if filename.endswith(".parquet")
-        and (
-            filename.startswith((f"{split}/", f"{split}-"))
-            or f"/{split}-" in filename
-        )
-    ]
-    return parquet_files
 
 
 def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
@@ -50,21 +35,12 @@ def _download_and_convert_split(
     temp_dir: Path,
     callbacks: BaseConversionCallbacks,
 ) -> list[InternalEvalRecord]:
-    parquet_files = _list_parquet_files_for_split(repo_id, split)
-    all_records = []
-
-    for filename in parquet_files:
-        callbacks.downloading_file(filename)
-        downloaded_path = huggingface_hub.hf_hub_download(
-            repo_id=repo_id,
-            repo_type="dataset",
-            filename=filename,
-            local_dir=str(temp_dir),
-        )
-        records = handler.convert_split(Path(downloaded_path))
-        all_records.extend(records)
-
-    return all_records
+    callbacks.downloading_file(f"Downloading {split} split...")
+    return handler.download_split(
+        repo_id=repo_id,
+        split=split,
+        temp_dir=temp_dir,
+    )
 
 
 def download_and_convert(
