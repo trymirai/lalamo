@@ -285,20 +285,20 @@ QWEN3_NEXT = [
         repo="Qwen/Qwen3-Next-80B-A3B-Instruct",
         config_type=HFQwen3NextConfig,
     ),
-    ModelSpec(
-        vendor="Alibaba",
-        family="Qwen3-Next",
-        name="Qwen3-Next-80B-A3B-Instruct-4bit",
-        size="80B",
-        quantization=QuantizationMode.UINT4,
-        repo="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
-        config_type=HFQwen3NextConfig,
-        configs=ConfigMap(
-            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
-        ),
-    ),
+    # ModelSpec(
+    #     vendor="Alibaba",
+    #     family="Qwen3-Next",
+    #     name="Qwen3-Next-80B-A3B-Instruct-4bit",
+    #     size="80B",
+    #     quantization=QuantizationMode.UINT4,
+    #     repo="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+    #     config_type=HFQwen3NextConfig,
+    #     configs=ConfigMap(
+    #         tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
+    #         tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
+    #         generation_config=FileSpec("generation_config.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
+    #     ),
+    # ),
 ]
 
 QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT

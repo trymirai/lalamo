@@ -18,7 +18,6 @@ MODEL_LIST += (
     [
         ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16),
         ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16),
-        ModelTestSpec("mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit", DType.FLOAT16),
     ]
     if torch.cuda.is_available()
     else []
