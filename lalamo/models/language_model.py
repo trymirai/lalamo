@@ -552,7 +552,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def stream_reply_text(
         self,
         messages: Iterable[Message],
-        sampling_policy: SamplingPolicy | None = None,
+        generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         forward_pass_config: ForwardPassConfig | None = None,
         *,
@@ -562,7 +562,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)
         for token_id in self.stream_tokens(
             token_ids,
-            sampling_policy,
+            generation_config,
             max_output_length,
             forward_pass_config=forward_pass_config,
             key=key,
@@ -572,15 +572,17 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def stream_tokens(
         self,
         prompt_token_ids: Int[Array, " prompt_tokens"],
-        sampling_policy: SamplingPolicy | None = None,
+        generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
-        if sampling_policy is None:
-            sampling_policy = self.default_sampling_policy()
+        sampling_policy = self.default_sampling_policy()
+        if generation_config is not None:
+            sampling_policy = generation_config.default_policy()
+
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
 
@@ -624,6 +626,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 next_token_indices.reshape(1, 1),
                 state.state,
                 return_updated_state=True,
+                forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
                 forward_pass_config=forward_pass_config,
             )
             assert decoder_outputs.updated_state is not None, "updated_state should not be None"
