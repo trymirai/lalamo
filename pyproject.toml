@@ -102,7 +102,7 @@ addopts = ["--dist=loadgroup"]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
-JAX_DEBUG_KEY_REUSE = "True"
+JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
 XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
 TORCH_COMPILE_DISABLE = "1"

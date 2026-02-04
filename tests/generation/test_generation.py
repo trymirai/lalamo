@@ -4,6 +4,7 @@ import pytest
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, import_model
 from lalamo.models import LanguageModel
+from lalamo.models.language_model import GenerationConfig
 from lalamo.sampling import GreedyPolicy
 
 MODEL_LIST = [
@@ -95,8 +96,10 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         ],
     )
 
+    generation_config = GenerationConfig(top_k=1)
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
+        generation_config=generation_config,
         prompt_lengths_without_padding=batched_prompt_lengths,
         max_output_length=32,
     ).token_ids
@@ -121,19 +124,17 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
     token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
 
-    sampling_policy = GreedyPolicy()
+    generation_config = GenerationConfig(top_k=1)
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],
-        sampling_policy=sampling_policy,
-        max_output_length=32,
-        eos_token_ids=jnp.array([-1]),  # Never stop.
+        generation_config=generation_config,
+        max_output_length=10,
     ).token_ids.squeeze(0)
 
     streaming_token_generator = language_model.stream_tokens(
         token_ids,
-        sampling_policy=sampling_policy,
-        max_output_length=32,
-        eos_token_ids=jnp.array([-1]),  # Never stop.
+        generation_config=generation_config,
+        max_output_length=10,
     )
     streaming_token_ids = jnp.array(list(streaming_token_generator))
 
