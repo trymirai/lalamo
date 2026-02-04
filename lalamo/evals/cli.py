@@ -117,6 +117,23 @@ def infer_command(
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")
         raise Exit(1) from None
+    except FileNotFoundError as e:
+        # Extract the path from the error message
+        error_msg = str(e)
+        if "config.json" in error_msg:
+            console.print(f"[red]✗[/red] Model not found: {model_path}")
+            console.print("    Make sure the model directory exists and contains config.json")
+        elif ".parquet" in error_msg:
+            # Extract file path from polars error message
+            if ": " in error_msg and "\n" in error_msg:
+                file_path = error_msg.split(": ", 1)[1].split("\n", 1)[0]
+            else:
+                file_path = "dataset file"
+            console.print(f"[red]✗[/red] Dataset not found: {file_path}")
+            console.print(f"    Run: lalamo eval convert-dataset {eval_name}")
+        else:
+            console.print(f"[red]✗[/red] File not found: {e}")
+        raise Exit(1) from None
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠[/yellow] Inference interrupted by user")
         raise Exit(130) from None
