@@ -13,6 +13,7 @@ from lalamo.message_processor import AssistantMessage, Message, UserMessage
 @dataclass(frozen=True)
 class HFMessage:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+    _converter.register_structure_hook(dict | list | str | None, lambda v, _: v)
     role: str
     content: dict | list | str | None
 
