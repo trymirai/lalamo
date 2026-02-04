@@ -153,6 +153,7 @@ def import_message_processor(
         progress_callback,
     )
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
+
     if tokenizer_config.chat_template is None:
         match model_spec.configs.chat_template:
             case JSONFieldSpec(file_spec, field_name):
@@ -180,13 +181,28 @@ def import_message_processor(
     tokenizer.add_special_tokens(added_special_tokens)
     tokenizer.add_tokens(added_not_special_tokens)
 
+    bos_token = tokenizer_config.bos_token
+    eos_token = tokenizer_config.eos_token
+
+    # If we were not able to identify bos/eos - they are probably somewhere else, so we check config.json
+    if eos_token is None or bos_token is None:
+        foreign_decoder_config_file = download_config_file(model_spec, output_dir, progress_callback)
+        with open(foreign_decoder_config_file) as foreign_decoder_file:
+            foreign_decoder_json = json.load(foreign_decoder_file)
+
+        if bos_token is None:
+            bos_token = foreign_decoder_json.get("bos_token_id")
+        if eos_token is None:
+            eos_token = foreign_decoder_json.get("eos_token_id")
+
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
         output_parser_regex=model_spec.output_parser_regex,
         system_role_name=model_spec.system_role_name,
         user_role_name=model_spec.user_role_name,
         assistant_role_name=model_spec.assistant_role_name,
-        bos_token=tokenizer_config.bos_token,
+        bos_token=bos_token,
+        eos_token=eos_token,
     )
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 

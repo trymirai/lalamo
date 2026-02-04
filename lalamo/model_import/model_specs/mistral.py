@@ -10,6 +10,8 @@ from .common import (
 
 __all__ = ["MISTRAL_MODELS"]
 
+CODESTRAL_TOKENIZER_REPO = "mistralai/Codestral-22B-v0.1"
+
 CODESTRAL = [
     ModelSpec(
         vendor="Mistral",
@@ -21,6 +23,9 @@ CODESTRAL = [
         config_type=HFMistralConfig,
         weights_type=WeightsType.SAFETENSORS,
         use_cases=(UseCase.CODE,),
+        configs=ConfigMap(
+            tokenizer_config=FileSpec(repo=CODESTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"),
+        ),
     ),
 ]
 
