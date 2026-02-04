@@ -32,7 +32,6 @@ from lalamo.modules.audio.text_to_speech import TTSConfig, TTSMessageProcessor, 
 from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
-from lalamo.modules.rope import RoPEConfigCis
 from lalamo.modules.torch_interop import DTypeConvert, torch_to_jax
 
 from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
@@ -127,16 +126,11 @@ class ConfigMapping:
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         config: BaseModelArgs, precision: DTypeLike
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-        global_rope_config = RoPEConfigCis(
+        global_rope_config = UnscaledRoPEConfig(
             precision=precision,
             base=config.rope_base,
+            max_sequence_length=config.max_seq_len,
         )
-        # TODO: use usual RoPE with half-rotation later
-        # global_rope_config = UnscaledRoPEConfig(
-        #     precision=precision,
-        #     base=config.rope_base,
-        #     max_sequence_length=config.max_seq_len,
-        # )
         local_rope_config = None
 
         norm_config = NormalizationConfig(

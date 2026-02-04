@@ -23,7 +23,7 @@ from lalamo.modules.utils import vmap_twice
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
-from .rope import PositionalEmbeddings, PositionalEmbeddingsCis
+from .rope import PositionalEmbeddings
 from .transformer_layer import TransformerLayerResult
 
 __all__ = [
@@ -134,8 +134,8 @@ class ClassifierActivationTrace(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     token_positions: Int[Array, "batch tokens"]
 
-    local_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis
-    global_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis
+    local_positional_embeddings: PositionalEmbeddings
+    global_positional_embeddings: PositionalEmbeddings
 
     embedding_norm_output: Float[Array, "batch tokens channels"]
     layer_results: tuple[TransformerLayerResult, ...]

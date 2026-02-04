@@ -13,7 +13,7 @@ from lalamo.modules.utils import vmap_twice
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings, PositionalEmbeddingsCis, RoPE, RoPECis, RoPEConfig, RoPEConfigCis
+from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
 from .transformer_layer import (
     TransformerLayer,
@@ -36,8 +36,8 @@ class TransformerResult(eqx.Module):
     outputs: Float[Array, "batch suffix_tokens channels"]
     updated_state: State | None = None
     layer_results: tuple[TransformerLayerResult, ...] | None = None
-    global_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None = None
-    local_positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None = None
+    global_positional_embeddings: PositionalEmbeddings | None = None
+    local_positional_embeddings: PositionalEmbeddings | None = None
 
     def export(self) -> ParameterTree:
         result: dict[str, ParameterTree | Array] = dict(
@@ -56,8 +56,8 @@ class TransformerResult(eqx.Module):
 
 @dataclass(frozen=True)
 class TransformerConfig:
-    global_rope_config: RoPEConfig | RoPEConfigCis | None
-    local_rope_config: RoPEConfig | RoPEConfigCis | None
+    global_rope_config: RoPEConfig | None
+    local_rope_config: RoPEConfig | None
     layer_configs: tuple[TransformerLayerConfig, ...]
     output_norm_config: NormalizationConfig
     model_dim: int
@@ -158,8 +158,8 @@ class TransformerConfig:
 
 
 class Transformer(LalamoModule[TransformerConfig]):
-    global_rope: RoPE | RoPECis | None
-    local_rope: RoPE | RoPECis | None
+    global_rope: RoPE | None
+    local_rope: RoPE | None
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 

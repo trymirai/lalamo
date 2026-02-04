@@ -1,5 +1,4 @@
-from collections.abc import Mapping, MutableMapping
-from enum import Enum
+from collections.abc import Mapping
 from typing import Any
 
 import torch
@@ -42,11 +41,6 @@ from lalamo.modules.torch_interop import jax_to_torch
 
 from .common import load_parameters
 from .huggingface import load_rmsnorm, load_tied_embedding
-
-
-class FuseDimension(Enum):
-    SCALE_FOR_INPUT = "scale_input"
-    SCALE_FOR_OUTPUT = "scale_output"
 
 
 def _permute_for_rope_rotate_half(
@@ -233,24 +227,6 @@ def _fuse_parametrized_weight_norm_conv1d(
     return fused_weight, fused_bias
 
 
-def _fuse_layer_scaling_with_linear(
-    weight_dict: MutableMapping[str, Array],
-    fuse_target_path: ParameterPath,
-    weights_to_fuse_path: ParameterPath,
-    fuse_dim: FuseDimension,
-) -> None:
-    """Fuse layer scaling into linear layer weights by mutating weight_dict."""
-    fuse_target = weight_dict[fuse_target_path]
-    weights_to_fuse = weight_dict[weights_to_fuse_path]
-    match fuse_dim:
-        case FuseDimension.SCALE_FOR_INPUT:
-            fused_weights = fuse_target * weights_to_fuse
-        case FuseDimension.SCALE_FOR_OUTPUT:
-            fused_weights = fuse_target * weights_to_fuse[:, None]
-
-    weight_dict[fuse_target_path] = fused_weights
-
-
 def load_linear_with_scaling_fusing(
     module: LinearBase,
     weights_dict: Mapping[str, Array],
@@ -348,6 +324,17 @@ def load_transformer_block(
 
         if attn_module.key_norm is not None:
             key_norm = load_rmsnorm(attn_module.key_norm, weights_dict, path / "k_norm")
+            if use_rotate_half_rope:
+                permuted_scales = _permute_for_rope_rotate_half(
+                    key_norm.scales,
+                    1,
+                    key_norm.scales.shape[0],
+                )
+                key_norm = load_parameters(
+                    lambda m: (m.scales,),
+                    key_norm,
+                    (permuted_scales,),
+                )
         else:
             key_norm = None
 
