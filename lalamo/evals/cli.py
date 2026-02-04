@@ -33,7 +33,7 @@ def convert_dataset_command(
         Path | None,
         Option(
             help="Directory to save the dataset to.",
-            show_default="Saves the dataset in the `datasets/<eval_name>` directory",
+            show_default="Saves the dataset in the `evals/datasets/<name>` directory (using eval's short name)",
         ),
     ] = None,
     overwrite: Annotated[
@@ -43,8 +43,15 @@ def convert_dataset_command(
         ),
     ] = False,
 ) -> None:
+    if eval_name not in REPO_TO_EVAL:
+        available = ", ".join(REPO_TO_EVAL.keys())
+        console.print(f"[red]✗[/red] Unknown eval: {eval_name}. Available evals: {available}")
+        raise Exit(1)
+
+    eval_spec = REPO_TO_EVAL[eval_name]
+
     if output_dir is None:
-        output_dir = Path("datasets") / eval_name
+        output_dir = Path("evals/datasets") / eval_spec.name
 
     try:
         convert_dataset_handler(
