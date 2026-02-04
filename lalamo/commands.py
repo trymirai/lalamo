@@ -7,14 +7,16 @@ from enum import Enum
 from itertools import chain
 from pathlib import Path
 
+import polars as pl
 import requests
 import thefuzz.process
 from jaxtyping import DTypeLike
 
-from lalamo.common import flatten_parameters
-from lalamo.data import import_hf_parquet
+from lalamo.common import flatten_parameters, get_default_device_bytes
+from lalamo.data import load_hf_parquet, shuffle_dataset
+from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.message_processor import Message
+from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
     DownloadingFileEvent,
@@ -26,9 +28,10 @@ from lalamo.model_import.common import (
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import LanguageModelConfig
+from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
+from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
-from lalamo.speculator.estimator import EstimateBatchsizeFromMemoryEvent, estimate_batchsize_from_memory
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
@@ -339,16 +342,19 @@ def estimate_batchsize(
     model = LanguageModelConfig.load_model(model_path)
     callbacks.finished_loading_model()
 
-    def progress_callback(event: EstimateBatchsizeFromMemoryEvent) -> None:
-        callbacks.estimating_batchsize(event.lo, event.hi)
+    def memory_per_batchsize(batch_size: int) -> int:
+        inference_config = InferenceConfig(
+            max_output_length=max_output_length,
+            padded_length=max_input_length,
+            num_top_logits_to_return=num_logits_per_token,
+            batch_size=batch_size,
+        )
+        return model.estimate_memory_consumption(inference_config=inference_config)
 
-    bs = estimate_batchsize_from_memory(
-        model,
-        max_input_length,
-        max_output_length,
-        num_logits_per_token,
+    bs = estimate_batchsize_from_bytes(
+        memory_per_batchsize,
         mem,
-        progress_callback,
+        lambda event: callbacks.estimating_batchsize(event.lo, event.hi),
     )
 
     callbacks.finished_estimating_batchsize(bs)
@@ -424,7 +430,11 @@ def collect_traces(
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
-    dataset = iter(import_hf_parquet(dataset_path))
+    dataframe = shuffle_dataset(load_hf_parquet(dataset_path))
+    conversations = dataframe.get_column("conversation")
+    dataset = iter(
+        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
+    )
     dataset = chain([next(dataset)], dataset)  # iterator is lazy, force it to actually open the file
     callbacks.finished_loading_dataset()
 
@@ -522,3 +532,131 @@ def train(
     with open(output_path, "wb") as fd:
         fd.write(speculator.serialize())
     callbacks.finished_saving_speculator()
+
+
+@dataclass
+class GenerateRepliesCallbacks:
+    model_path: Path
+    dataset_path: Path
+    output_path: Path
+    max_vram: int | None
+    batch_size: int | None
+    total_rows: int
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self) -> None:
+        pass
+
+    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+        pass
+
+    def batch_sizes_estimated(self) -> None:
+        pass
+
+    def batch_sizes_computed(self, event: BatchSizesComputedEvent) -> None:
+        pass
+
+    def generation_progress(self, rows_processed: int) -> None:
+        pass
+
+    def finished_generation(self) -> None:
+        pass
+
+
+def generate_replies(
+    model_path: Path,
+    dataset_path: Path,
+    output_path: Path,
+    max_vram: int | None,
+    max_output_length: int = 8192,
+    batch_size: int | None = None,
+    callbacks_type: Callable[
+        [
+            Path,
+            Path,
+            Path,
+            int | None,
+            int | None,
+            int,
+        ],
+        GenerateRepliesCallbacks,
+    ] = GenerateRepliesCallbacks,
+) -> None:
+    # figure out max_vram if neither batch_size nor max_vram is set
+    if max_vram is None and batch_size is None:
+        max_vram = get_default_device_bytes()
+        if max_vram is None:
+            raise ValueError(
+                "Unable to determine default defice memory capacity; please specify either --vram-gb or --batch-size",
+            )
+
+    # Count rows without loading full dataset
+    total_rows = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
+
+    callbacks = callbacks_type(
+        model_path,
+        dataset_path,
+        output_path,
+        max_vram,
+        batch_size,
+        total_rows,
+    )
+
+    callbacks.loading_model()
+    model = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
+
+    callbacks.loading_dataset()
+    dataframe = load_hf_parquet(dataset_path).collect()
+    conversations = dataframe.get_column("conversation")
+    dataset = iter(
+        [HFMessage.from_dict(message).as_message() for message in conversation] for conversation in conversations
+    )
+    try:
+        first_row = next(dataset)
+    except StopIteration:
+        callbacks.finished_loading_dataset()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        pl.DataFrame({"response": [], "chain_of_thought": []}).write_parquet(output_path)
+        return
+    dataset = chain([first_row], dataset)  # iterator is lazy, force it to actually open the file
+    callbacks.finished_loading_dataset()
+
+    inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)
+
+    callbacks.batch_sizes_estimated()
+
+    replies: list[tuple[int, AssistantMessage]] = []
+    for rows_processed, (idx, reply) in enumerate(
+        model.reply_many(
+            dataset,
+            inference_config=inference_config,
+            vram_bytes=max_vram,
+            batch_sizes_callback=callbacks.batch_sizes_computed,
+        ),
+    ):
+        replies.append((idx, reply))
+        callbacks.generation_progress(rows_processed)
+
+    # Sort by original index to restore input order
+    replies.sort(key=lambda x: x[0])
+
+    df = pl.DataFrame(
+        {
+            "response": [reply.response for _, reply in replies],
+            "chain_of_thought": [reply.chain_of_thought for _, reply in replies],
+        },
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(output_path)
+
+    callbacks.finished_generation()
