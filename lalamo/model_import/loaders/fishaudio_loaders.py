@@ -2,8 +2,9 @@ from collections.abc import Mapping
 from typing import Any
 
 import torch
+from einops import rearrange
 from jax import numpy as jnp
-from jaxtyping import Array
+from jaxtyping import Array, Float
 from torch import nn
 from torch.nn.utils import remove_weight_norm, weight_norm
 from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
@@ -63,28 +64,24 @@ def _permute_for_rope_rotate_half(
     https://github.com/huggingface/transformers/blob/e42587f596181396e1c4b63660abf0c736b10dae/src/transformers/models/llama/convert_llama_weights_to_hf.py
     """
     if len(weight.shape) == 1:
-        # shortcut for vectors
-        in_features = weight.shape[0]
-        weight = weight.reshape(head_dim // 2, 2)
-        weight = jnp.transpose(weight, (1, 0))
-        return weight.reshape(in_features)
+        # For 1D vectors: swap interleaved pairs to grouped halves
+        return rearrange(weight, "(half_dim pair) -> (pair half_dim)", pair=2)
 
-    out_features, in_features = weight.shape
+    out_features, _ = weight.shape
     assert out_features == num_heads * head_dim, (
         f"Output features {out_features} must equal num_heads * head_dim = {num_heads * head_dim}"
     )
-    # Reshape: (num_heads * head_dim, in) -> (num_heads, head_dim // 2, 2, in)
-    weight = weight.reshape(num_heads, head_dim // 2, 2, in_features)
-
-    # Transpose: (num_heads, head_dim // 2, 2, in) -> (num_heads, 2, head_dim // 2, in)
-    weight = jnp.transpose(weight, (0, 2, 1, 3))
-
-    # Reshape back: (num_heads, 2, head_dim // 2, in) -> (num_heads * head_dim, in)
-    return weight.reshape(out_features, in_features)
+    # For 2D matrices: swap interleaved pairs to grouped halves within each head
+    return rearrange(
+        weight,
+        "(heads half_dim pair) in_features -> (heads pair half_dim) in_features",
+        heads=num_heads,
+        pair=2,
+    )
 
 
 def _permute_qkv_for_rope_rotate_half(
-    qkv_weight: Array,
+    qkv_weight: Float[Array, "q_dim+k_dim+v_dim in_features"],
     num_heads: int,
     num_groups: int,
     head_dim: int,
@@ -227,13 +224,25 @@ def _fuse_parametrized_weight_norm_conv1d(
     return fused_weight, fused_bias
 
 
-def load_linear_with_scaling_fusing(
+def load_linear_and_fuse_scaling(
     module: LinearBase,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None = None,
-    scaling_to_fuze: Array | None = None,
+    scaling_to_fuse: Array | None = None,
 ) -> LinearBase:
+    """Load linear layer directly or fuse several sum-matrices into one linear layer.
+    Additionally fuse final result with scaling weights that would follow after the layer.
+    Args:
+        module: target linear module into which weights will be loaded
+        weights_dict: mapping with weights
+        path: path to linear layer within the given weights mapping
+        sublayers_to_fuse: optional list of names of matrices that we want to fuse into single linear layer
+        scaling_to_fuze: optional array of scales we want to fuse into given linear module
+
+    Returns:
+        Linear layer with weights loaded into it
+    """
     assert isinstance(module, FullPrecisionLinear)
     if not module.has_biases:
         if sublayers_to_fuse:
@@ -254,10 +263,10 @@ def load_linear_with_scaling_fusing(
 
     weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
 
-    if scaling_to_fuze is not None:
-        weights = weights * scaling_to_fuze[:, None]
+    if scaling_to_fuse is not None:
+        weights = weights * scaling_to_fuse[:, None]
         if bias is not None:
-            bias = bias * scaling_to_fuze
+            bias = bias * scaling_to_fuse
 
     return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
@@ -268,15 +277,13 @@ def load_transformer_block(
     fast: bool = False,
     path: ParameterPath | None = None,
 ) -> Transformer:
-    use_rotate_half_rope = isinstance(module.global_rope, RoPE)
-
     def load_attention_local(
         attn_module: Attention,
         weights_dict: Mapping[str, Array],
         path: ParameterPath,
         scaling_to_fuze: Array | None = None,
     ) -> Attention:
-        qkv_projection = load_linear_with_scaling_fusing(
+        qkv_projection = load_linear_and_fuse_scaling(
             attn_module.qkv_projection,
             weights_dict,
             path / "wqkv",
@@ -285,56 +292,53 @@ def load_transformer_block(
         assert isinstance(qkv_projection, FullPrecisionLinear)
 
         # Permute QKV weights from interleaved RoPE format to rotate-half format
-        if use_rotate_half_rope:
-            permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
-                qkv_projection.weights,
-                num_heads=attn_module.num_heads,
-                num_groups=attn_module.num_groups,
-                head_dim=attn_module.head_dim,
-            )
-            qkv_projection = load_parameters(
-                lambda m: (m.weights,),
-                qkv_projection,
-                (permuted_qkv_weights,),
-            )
+        permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
+            qkv_projection.weights,
+            num_heads=attn_module.num_heads,
+            num_groups=attn_module.num_groups,
+            head_dim=attn_module.head_dim,
+        )
+        qkv_projection = load_parameters(
+            lambda m: (m.weights,),
+            qkv_projection,
+            (permuted_qkv_weights,),
+        )
         assert isinstance(qkv_projection, FullPrecisionLinear)
 
-        out_projection = load_linear_with_scaling_fusing(
+        out_projection = load_linear_and_fuse_scaling(
             attn_module.out_projection,
             weights_dict,
             path / "wo",
-            scaling_to_fuze=scaling_to_fuze,
+            scaling_to_fuse=scaling_to_fuze,
         )
 
         if attn_module.query_norm is not None:
             query_norm = load_rmsnorm(attn_module.query_norm, weights_dict, path / "q_norm")
-            if use_rotate_half_rope:
-                permuted_scales = _permute_for_rope_rotate_half(
-                    query_norm.scales,
-                    1,
-                    query_norm.scales.shape[0],
-                )
-                query_norm = load_parameters(
-                    lambda m: (m.scales,),
-                    query_norm,
-                    (permuted_scales,),
-                )
+            permuted_scales = _permute_for_rope_rotate_half(
+                query_norm.scales,
+                1,
+                query_norm.scales.shape[0],
+            )
+            query_norm = load_parameters(
+                lambda m: (m.scales,),
+                query_norm,
+                (permuted_scales,),
+            )
         else:
             query_norm = None
 
         if attn_module.key_norm is not None:
             key_norm = load_rmsnorm(attn_module.key_norm, weights_dict, path / "k_norm")
-            if use_rotate_half_rope:
-                permuted_scales = _permute_for_rope_rotate_half(
-                    key_norm.scales,
-                    1,
-                    key_norm.scales.shape[0],
-                )
-                key_norm = load_parameters(
-                    lambda m: (m.scales,),
-                    key_norm,
-                    (permuted_scales,),
-                )
+            permuted_scales = _permute_for_rope_rotate_half(
+                key_norm.scales,
+                1,
+                key_norm.scales.shape[0],
+            )
+            key_norm = load_parameters(
+                lambda m: (m.scales,),
+                key_norm,
+                (permuted_scales,),
+            )
         else:
             key_norm = None
 
@@ -355,17 +359,17 @@ def load_transformer_block(
     ) -> MLPBase:
         assert isinstance(module, DenseMLP)
         # Standard dense MLP with separate sublayers.
-        up_projection = load_linear_with_scaling_fusing(
+        up_projection = load_linear_and_fuse_scaling(
             module.up_projection,
             weights_dict,
             path,
             sublayers_to_fuse=[up_proj_key, gate_proj_key],
         )
-        down_projection = load_linear_with_scaling_fusing(
+        down_projection = load_linear_and_fuse_scaling(
             module.down_projection,
             weights_dict,
             path / down_proj_key,
-            scaling_to_fuze=scaling_to_fuze,
+            scaling_to_fuse=scaling_to_fuze,
         )
         return load_parameters(
             lambda m: (m.up_projection, m.down_projection),
@@ -477,7 +481,7 @@ def load_fish_audio_text_decoding_modules(
 
     base_path = ParameterPath()
     output_linear_name = "output" if not fast else "fast_output"
-    output_linear = load_linear_with_scaling_fusing(output, weights_dict, base_path / output_linear_name)
+    output_linear = load_linear_and_fuse_scaling(output, weights_dict, base_path / output_linear_name)
     output = load_parameters(
         lambda m: (m,),
         output,
@@ -520,10 +524,10 @@ def load_vector_quantize(
 
     # Load out_proj with weight norm fusion
     # The original is a Conv1d with kernel_size=1, so weight shape is (out, in, 1)
-    # Our FullPrecisionLinear expects (out, in), so we squeeze the last dim
+    # Our FullPrecisionLinear expects (out, in), so we remove the kernel dimension
     out_proj_weight, out_proj_bias = _fuse_weight_norm_conv1d(weights_dict, path / "out_proj")
-    # Squeeze kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
-    out_proj_weight = jnp.squeeze(out_proj_weight, axis=-1)
+    # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
+    out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
     out_proj = load_parameters(
         lambda m: (m.weights, m.biases),
         module.out_proj,
@@ -838,8 +842,8 @@ def load_snake1d(
         Snake1d module with loaded weights.
     """
     alpha = weights_dict[path / "alpha"]
-    # PyTorch shape: (1, channels, 1) -> squeeze to (channels,)
-    alpha = jnp.squeeze(alpha)
+    # PyTorch shape: (1, channels, 1) -> (channels,)
+    alpha = rearrange(alpha, "1 channels 1 -> channels")
 
     return load_parameters(
         lambda m: (m.alpha,),
@@ -1065,7 +1069,7 @@ def load_fishaudio_text_decoder(
     )
 
     if isinstance(module.fast_model_projection, FullPrecisionLinear):
-        fast_model_projection = load_linear_with_scaling_fusing(
+        fast_model_projection = load_linear_and_fuse_scaling(
             module.fast_model_projection,
             weights_dict,
             basepath / "fast_project_in",
