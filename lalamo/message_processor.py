@@ -6,7 +6,7 @@ from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
 
-from jinja2 import Template
+from jinja2 import Environment, Template
 from tokenizers import Tokenizer
 
 __all__ = [
@@ -27,6 +27,10 @@ type Image = None  # WIP
 
 def _strftime_now(format_string: str) -> str:
     return datetime.now().strftime(format_string)  # noqa: DTZ005
+
+
+def _raise_exception(message: str) -> None:
+    raise ValueError(message)
 
 
 class HuggingFaceMessage(TypedDict):
@@ -93,7 +97,9 @@ class MessageProcessor:
 
     @cached_property
     def prompt_template(self) -> Template:
-        return Template(self.config.prompt_template)
+        env = Environment()
+        env.globals["raise_exception"] = _raise_exception
+        return env.from_string(self.config.prompt_template)
 
     @cached_property
     def output_parser_regex(self) -> Pattern | None:

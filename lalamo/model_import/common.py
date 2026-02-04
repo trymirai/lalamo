@@ -233,6 +233,11 @@ def _import_language_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
+    hf_generation_config: HFGenerationConfig | None = None
+    if isinstance(model_spec.configs.generation_config, FileSpec):
+        hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
+        hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
+
     foreign_decoder_config_file = download_config_file(model_spec)
     foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
     assert isinstance(foreign_decoder_config, ForeignLMConfig)
@@ -254,13 +259,19 @@ def _import_language_model(
 
     message_processor = import_message_processor(model_spec)
 
-    stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
+    stop_token_ids: tuple[int, ...] = ()
+    eos_token_id = getattr(foreign_decoder_config, "eos_token_id", None)
+    if eos_token_id is not None:
+        stop_token_ids = tuple([eos_token_id] if isinstance(eos_token_id, int) else eos_token_id)
+
+    if not stop_token_ids and hf_generation_config is not None and hf_generation_config.eos_token_id is not None:
+        eos_token_id = hf_generation_config.eos_token_id
+        stop_token_ids = tuple([eos_token_id] if isinstance(eos_token_id, int) else eos_token_id)
 
     if isinstance(model_spec.configs.generation_config, GenerationConfig):
         generation_config = replace(model_spec.configs.generation_config, stop_token_ids=stop_token_ids)
     elif isinstance(model_spec.configs.generation_config, FileSpec):
-        hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
-        hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
+        assert hf_generation_config is not None
         generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids)
     else:
         generation_config = GenerationConfig(stop_token_ids)

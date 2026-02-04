@@ -235,21 +235,22 @@ class HFGemma3VisionConfig:
 
 @dataclass(frozen=True)
 class HFGemma3Config(HuggingFaceLMConfig):
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[Literal["Gemma3ForConditionalGeneration"]]
     boi_token_index: int
     eoi_token_index: int
-    eos_token_id: int | list[int]
     image_token_index: int
     initializer_range: float
     mm_tokens_per_image: int
     model_type: Literal["gemma3"]
     text_config: HFGemma3TextConfigRaw
     transformers_version: str
-    vision_config: HFGemma3VisionConfig
+    vision_config: HFGemma3VisionConfig | None = None
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
+    torch_dtype: Literal["bfloat16", "float16", "float32"] | None = None
+    dtype: Literal["bfloat16", "float16", "float32"] | None = None
+    eos_token_id: int | list[int] | None = None
 
     def to_decoder_config(
         self,

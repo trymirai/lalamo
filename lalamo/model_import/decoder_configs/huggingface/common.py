@@ -95,6 +95,7 @@ def _structure_quantization_config(v: object, _: object) -> QuantizationConfigTy
 class HuggingFaceLMConfig(ForeignLMConfig):
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
     _converter.register_structure_hook(int | list[int], lambda v, _: v)
+    _converter.register_structure_hook(int | list[int] | None, lambda v, _: v)
     _converter.register_structure_hook(QuantizationConfigType, _structure_quantization_config)
 
     @property
@@ -110,7 +111,9 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 
     @property
     def default_precision(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
+        torch_dtype = getattr(self, "torch_dtype", None)
+        dtype = getattr(self, "dtype", None)
+        return jnp.dtype(torch_dtype or dtype or "bfloat16")
 
     def _load_weights(
         self,

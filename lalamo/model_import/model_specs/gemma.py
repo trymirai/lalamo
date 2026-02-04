@@ -118,6 +118,45 @@ GEMMA3 = [
         weights_type=WeightsType.SAFETENSORS,
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "google/gemma-3-27b-it")),
     ),
+    ModelSpec(
+        vendor="Google",
+        family="Gemma-3",
+        name="TranslateGemma-4B-Instruct",
+        size="4B",
+        quantization=None,
+        repo="google/translategemma-4b-it",
+        config_type=HFGemma3Config,
+        weights_type=WeightsType.SAFETENSORS,
+        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+    ),
+    ModelSpec(
+        vendor="Google",
+        family="Gemma-3",
+        name="TranslateGemma-4B-Instruct-8bit",
+        size="4B",
+        quantization=QuantizationMode.UINT8,
+        repo="mlx-community/translategemma-4b-it-8bit",
+        config_type=HFGemma3Config,
+        weights_type=WeightsType.SAFETENSORS,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "google/translategemma-4b-it"),
+            chat_template=FileSpec("chat_template.jinja", "google/translategemma-4b-it"),
+        ),
+    ),
+    ModelSpec(
+        vendor="Google",
+        family="Gemma-3",
+        name="TranslateGemma-4B-Instruct-4bit",
+        size="4B",
+        quantization=QuantizationMode.UINT4,
+        repo="mlx-community/translategemma-4b-it-4bit",
+        config_type=HFGemma3Config,
+        weights_type=WeightsType.SAFETENSORS,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "google/translategemma-4b-it"),
+            chat_template=FileSpec("chat_template.jinja", "google/translategemma-4b-it"),
+        ),
+    ),
 ]
 
 
