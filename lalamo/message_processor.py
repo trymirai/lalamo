@@ -144,10 +144,11 @@ class MessageProcessor:
         enable_thinking: bool | None = None,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
-        if self.config.default_system_prompt is not None:
+        if self.config.default_system_prompt is not None:  # noqa: SIM102
             if not converted_messages or converted_messages[0]["role"] != self.system_role_name:
                 converted_messages.insert(
-                    0, HuggingFaceMessage(role=self.system_role_name, content=self.config.default_system_prompt)
+                    0,
+                    HuggingFaceMessage(role=self.system_role_name, content=self.config.default_system_prompt),
                 )
         result = HuggingFaceRequest(
             add_generation_prompt=True,
