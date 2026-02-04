@@ -42,10 +42,8 @@ def infer_command_handler(
     callbacks.started()
 
     predictions_path = run_eval_inference(
-        eval_spec=eval_spec,
         dataset_dir=dataset_dir,
         split=split,
-        model_path=model_path,
         output_dir=output_dir,
         inference_engine=inference_engine,
         eval_adapter=eval_adapter,

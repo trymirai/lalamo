@@ -55,6 +55,7 @@ from lalamo.common import (
     get_usable_memory_from_bytes,
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.evals import eval_app
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -754,6 +755,8 @@ def generate_replies(
         CliGenerateRepliesCallbacks,
     )
 
+
+app.add_typer(eval_app, name="eval", help="Evaluation commands for running benchmarks.")
 
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")

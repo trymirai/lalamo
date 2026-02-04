@@ -58,32 +58,6 @@ def convert_dataset_command(
 
 
 @eval_app.command(
-    name="benchmark",
-    help="Run benchmark evaluation on model predictions.",
-)
-def benchmark_command(
-    eval_name: Annotated[str, Argument(help="Eval name (e.g., MMLU-Pro)")],
-    predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
-    dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
-    split: Annotated[str, Option(help="Dataset split to use")] = "test",
-) -> None:
-    try:
-        benchmark_command_handler(
-            eval_name=eval_name,
-            predictions_path=predictions_path,
-            dataset_dir=dataset_dir,
-            callbacks=BenchmarkConsoleCallbacks(),
-            split=split,
-        )
-    except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise Exit(1) from None
-    except FileNotFoundError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise Exit(1) from None
-
-
-@eval_app.command(
     name="infer",
     help="Run model inference on evaluation dataset.",
 )
@@ -139,3 +113,30 @@ def infer_command(
     except KeyboardInterrupt:
         console.print("\n[yellow]⚠[/yellow] Inference interrupted by user")
         raise Exit(130) from None
+
+
+@eval_app.command(
+    name="benchmark",
+    help="Run benchmark evaluation on model predictions.",
+)
+def benchmark_command(
+    eval_name: Annotated[str, Argument(help="Eval name (e.g., MMLU-Pro)")],
+    predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
+    dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
+    split: Annotated[str, Option(help="Dataset split to use")] = "test",
+) -> None:
+    try:
+        benchmark_command_handler(
+            eval_name=eval_name,
+            predictions_path=predictions_path,
+            dataset_dir=dataset_dir,
+            callbacks=BenchmarkConsoleCallbacks(),
+            split=split,
+        )
+    except ValueError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise Exit(1) from None
+    except FileNotFoundError as e:
+        console.print(f"[red]✗[/red] {e}")
+        raise Exit(1) from None
+
