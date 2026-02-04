@@ -1,4 +1,3 @@
-from itertools import chain
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -7,8 +6,7 @@ from evals.protocols import EvalAdapter
 from evals.types import InferenceOutput, InternalEvalRecord
 
 from lalamo.common import get_default_device_bytes
-from lalamo.data.huggingface_message import import_hf_parquet
-from lalamo.evals.datasets.specs import EvalSpec
+from lalamo.data.huggingface_message import HFMessage, load_hf_parquet
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 from lalamo.evals.inference.engines import InferenceEngine
 from lalamo.models.common import InferenceConfig
@@ -19,10 +17,8 @@ if TYPE_CHECKING:
 
 
 def run_inference(
-    _eval_spec: EvalSpec,
     dataset_dir: Path,
     split: str,
-    _model_path: Path,
     output_dir: Path,
     inference_engine: InferenceEngine,
     eval_adapter: EvalAdapter,
@@ -31,7 +27,6 @@ def run_inference(
     category: str | None,
     callbacks: BaseRunInferenceCallbacks,
 ) -> Path:
-
     output_dir.mkdir(parents=True, exist_ok=True)
 
     callbacks.loading_test_dataset()
@@ -134,14 +129,22 @@ def run_batch_generation(
     callbacks.loading_model()
     model = LanguageModelConfig.load_model(model_path)
 
-    dataset = iter(import_hf_parquet(dataset_path, shuffle=False))
-    try:
-        first_row = next(dataset)
-    except StopIteration:
+    # Load and collect the LazyFrame
+    lazy_df = load_hf_parquet(dataset_path)
+    collected_df = lazy_df.collect()
+
+    # Handle empty dataset
+    if len(collected_df) == 0:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         pl.DataFrame({"response": [], "chain_of_thought": []}).write_parquet(output_path)
         return
-    dataset = chain([first_row], dataset)
+
+    # Convert to iterator of conversations (convert HF dictionaries to Message objects)
+    conversations = collected_df.get_column("conversation")
+    dataset = iter(
+        [HFMessage.from_dict(message).as_message() for message in conversation]
+        for conversation in conversations
+    )
 
     inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)
 
@@ -149,7 +152,7 @@ def run_batch_generation(
     for rows_processed, (idx, reply) in enumerate(
         model.reply_many(
             dataset,
-            inference_config,
+            inference_config=inference_config,
             vram_bytes=max_vram,
             batch_sizes_callback=callbacks.batch_sizes_computed,
         ),
