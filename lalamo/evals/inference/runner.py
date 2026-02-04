@@ -1,5 +1,4 @@
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import polars as pl
 from evals.protocols import EvalAdapter
@@ -9,11 +8,9 @@ from lalamo.common import get_default_device_bytes
 from lalamo.data.huggingface_message import HFMessage, load_hf_parquet
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 from lalamo.evals.inference.engines import InferenceEngine
+from lalamo.message_processor import AssistantMessage
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import LanguageModelConfig
-
-if TYPE_CHECKING:
-    from lalamo.message_processor import AssistantMessage
 
 
 def run_inference(
@@ -73,11 +70,9 @@ def _load_internal_dataset(
     split_file = dataset_dir / f"{split}.parquet"
     df = pl.read_parquet(split_file)
 
-    # Filter by category if specified
     if category:
         df = df.filter(pl.col("category") == category)
 
-    # Limit examples if specified
     if max_examples:
         df = df.head(max_examples)
 
@@ -110,7 +105,6 @@ def run_batch_generation(
     max_output_length: int = 8192,
     batch_size: int | None = None,
 ) -> None:
-    # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
         max_vram = get_default_device_bytes()
         if max_vram is None:
@@ -118,7 +112,6 @@ def run_batch_generation(
                 "Unable to determine default defice memory capacity; please specify either --vram-gb or --batch-size",
             )
 
-    # Count rows without loading full dataset
     total_rows = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
 
     callbacks.dataset_path = dataset_path
@@ -129,17 +122,14 @@ def run_batch_generation(
     callbacks.loading_model()
     model = LanguageModelConfig.load_model(model_path)
 
-    # Load and collect the LazyFrame
     lazy_df = load_hf_parquet(dataset_path)
     collected_df = lazy_df.collect()
 
-    # Handle empty dataset
     if len(collected_df) == 0:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         pl.DataFrame({"response": [], "chain_of_thought": []}).write_parquet(output_path)
         return
 
-    # Convert to iterator of conversations (convert HF dictionaries to Message objects)
     conversations = collected_df.get_column("conversation")
     dataset = iter(
         [HFMessage.from_dict(message).as_message() for message in conversation]
