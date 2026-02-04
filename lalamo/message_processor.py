@@ -1,4 +1,6 @@
+import json
 import re
+import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -130,10 +132,8 @@ class MessageProcessor:
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         match message:
             case UserMessage(content=content):
-                assert isinstance(content, str)
                 return HuggingFaceMessage(role=self.user_role_name, content=content)
             case SystemMessage(content=content):
-                assert isinstance(content, str)
                 return HuggingFaceMessage(role=self.system_role_name, content=content)
             case AssistantMessage(chain_of_thought=chain_of_thought, response=response):
                 result = HuggingFaceMessage(role=self.assistant_role_name, content=response)

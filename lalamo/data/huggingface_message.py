@@ -1,3 +1,5 @@
+import ast
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
@@ -11,20 +13,30 @@ from lalamo.message_processor import AssistantMessage, Message, UserMessage
 @dataclass(frozen=True)
 class HFMessage:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
-
     role: str
-    content: str
+    content: dict | list | str | None
 
     @classmethod
     def from_dict(cls, obj: dict) -> Self:
         return cls._converter.structure(obj, cls)
 
     def as_message(self) -> Message:
+        content = self.content
+        if isinstance(content, str):
+            stripped = content.lstrip()
+            if stripped.startswith("{") or stripped.startswith("["):
+                try:
+                    content = json.loads(content)
+                except json.JSONDecodeError:
+                    try:
+                        content = ast.literal_eval(content)
+                    except (ValueError, SyntaxError):
+                        content = self.content
         match self.role:
             case "user":
-                return UserMessage(self.content)
+                return UserMessage(content)
             case "assistant":
-                return AssistantMessage(None, self.content)
+                return AssistantMessage(None, content)
             case other:
                 raise ValueError(f"Cannot convert {other} message")
 
