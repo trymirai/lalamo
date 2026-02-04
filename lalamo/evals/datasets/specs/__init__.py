@@ -1,10 +1,10 @@
-from .base import EvalSpec
-from .mmlu import MMLU_PRO
+from lalamo.evals.datasets.specs.base import EvalSpec
+from lalamo.evals.datasets.specs.ifeval import IFEVAL
+from lalamo.evals.datasets.specs.mmlu import MMLU_PRO
 
-# Build registry
 REPO_TO_EVAL = {
     spec.repo: spec
-    for spec in [MMLU_PRO]
+    for spec in [MMLU_PRO, IFEVAL]
 }
 
 __all__ = ["REPO_TO_EVAL", "EvalSpec"]
