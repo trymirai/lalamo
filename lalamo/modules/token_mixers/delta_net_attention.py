@@ -249,7 +249,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
+        num_tokens, *_ = inputs.shape
         proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap(self.in_proj)(inputs)
+        assert proj_query.shape[0] == num_tokens
+
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
         beta = jax.nn.sigmoid(beta_logits)
 
@@ -267,13 +270,14 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             state.conv_state,
             return_updated_state=return_updated_state,
         )
+        assert conv_output.shape[0] == num_tokens
         conv_output = jax.nn.silu(conv_output)
 
         query, key, value = jnp.split(conv_output, [self.key_dim, 2 * self.key_dim], axis=-1)
 
-        query = query.reshape(query.shape[0], self.num_groups, self.head_dim)
-        key = key.reshape(key.shape[0], self.num_groups, self.head_dim)
-        value = value.reshape(value.shape[0], self.num_heads, self.value_head_dim)
+        query = query.reshape(num_tokens, self.num_groups, self.head_dim)
+        key = key.reshape(num_tokens, self.num_groups, self.head_dim)
+        value = value.reshape(num_tokens, self.num_heads, self.value_head_dim)
 
         # since we work with exponentials, we (possibly?) uplift dtype to make sure numbers are nice
         decay_factor = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
@@ -293,9 +297,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         query = query * scale
 
         if length_without_padding is None:
-            length_without_padding = inputs.shape[0]
+            length_without_padding = num_tokens
+
         length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
-        length_without_padding = jnp.clip(length_without_padding, 0, inputs.shape[0])
+        length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
         core_attn_out, final_state = self._scan(
             query,
@@ -310,9 +315,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
             return self.norm(x) * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
 
-        gate = gate.reshape(gate.shape[0], self.num_heads, self.value_head_dim)
+        num_tokens, *_ = gate.shape
+        gate = gate.reshape(num_tokens, self.num_heads, self.value_head_dim)
         core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
-        core_attn_out = core_attn_out.reshape(core_attn_out.shape[0], -1)
+        core_attn_out = core_attn_out.reshape(num_tokens, -1)
 
         (outputs,) = vmap(self.out_proj)(core_attn_out)
 
