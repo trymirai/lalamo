@@ -1,4 +1,3 @@
-import ast
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,20 +22,12 @@ class HFMessage:
 
     def as_message(self) -> Message:
         content = self.content
-        if isinstance(content, str):
-            stripped = content.lstrip()
-            if stripped.startswith("{") or stripped.startswith("["):
-                try:
-                    content = json.loads(content)
-                except json.JSONDecodeError:
-                    try:
-                        content = ast.literal_eval(content)
-                    except (ValueError, SyntaxError):
-                        content = self.content
         match self.role:
             case "user":
                 return UserMessage(content)
             case "assistant":
+                if not isinstance(content, str):
+                    content = json.dumps(content, ensure_ascii=False, default=str)
                 return AssistantMessage(None, content)
             case other:
                 raise ValueError(f"Cannot convert {other} message")

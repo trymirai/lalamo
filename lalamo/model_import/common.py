@@ -188,6 +188,7 @@ def import_message_processor(
         assistant_role_name=model_spec.assistant_role_name,
         bos_token=bos_token,
         eos_token=eos_token,
+        input_kind=model_spec.input_kind,
     )
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 

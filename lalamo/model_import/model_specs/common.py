@@ -13,6 +13,7 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
+from lalamo.input_kind import InputKind
 from lalamo.model_import.decoder_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
@@ -22,6 +23,7 @@ from lalamo.utils import MapDictValues
 __all__ = [
     "ConfigMap",
     "FileSpec",
+    "InputKind",
     "JSONFieldSpec",
     "ModelSpec",
     "ModelType",
@@ -68,6 +70,7 @@ class WeightsType(Enum):
 
 class UseCase(Enum):
     CODE = "code"
+
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,8 @@ class ModelSpec:
     _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
     _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
     _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
+    _converter.register_structure_hook(InputKind, lambda v, _: InputKind(v))
+    _converter.register_unstructure_hook(InputKind, lambda v: v.value)
 
     vendor: str
     family: str
@@ -155,6 +160,7 @@ class ModelSpec:
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
     tool_role_name: str = "tool"
+    input_kind: InputKind = InputKind.TEXT
     weights_type: WeightsType = WeightsType.SAFETENSORS
     model_type: ModelType = ModelType.LANGUAGE_MODEL
     configs: ConfigMap = field(default=ConfigMap())

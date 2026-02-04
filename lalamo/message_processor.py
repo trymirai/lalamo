@@ -1,6 +1,6 @@
+import ast
 import json
 import re
-import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
@@ -10,6 +10,8 @@ from typing import NotRequired, TypedDict
 
 from jinja2 import Environment, Template
 from tokenizers import Tokenizer
+
+from lalamo.input_kind import InputKind
 
 __all__ = [
     "AssistantMessage",
@@ -37,7 +39,7 @@ def _raise_exception(message: str) -> None:
 
 class HuggingFaceMessage(TypedDict):
     role: str
-    content: str
+    content: object
     tool_calls: NotRequired[list[dict]]
     reasoning_content: NotRequired[str]
 
@@ -56,7 +58,7 @@ class Message:
     pass
 
 
-type ContentBlock = str | Image
+type ContentBlock = str | dict | list | Image
 
 
 @dataclass(frozen=True)
@@ -84,6 +86,7 @@ class MessageProcessorConfig:
     assistant_role_name: str
     eos_token: str | None
     bos_token: str | None
+    input_kind: InputKind = InputKind.TEXT
 
     def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
         return MessageProcessor(
@@ -132,8 +135,20 @@ class MessageProcessor:
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         match message:
             case UserMessage(content=content):
-                return HuggingFaceMessage(role=self.user_role_name, content=content)
+                if self.config.input_kind == InputKind.TEXT:
+                    assert isinstance(content, str)
+                    return HuggingFaceMessage(role=self.user_role_name, content=content)
+                if self.config.input_kind == InputKind.JSON:
+                    if isinstance(content, str):
+                        try:
+                            content = json.loads(content)
+                        except json.JSONDecodeError:
+                            content = ast.literal_eval(content)
+                    return HuggingFaceMessage(role=self.user_role_name, content=content)
+                raise ValueError(f"Undefined input kind: {self.config.input_kind}")
             case SystemMessage(content=content):
+                if self.config.input_kind == InputKind.TEXT:
+                    assert isinstance(content, str)
                 return HuggingFaceMessage(role=self.system_role_name, content=content)
             case AssistantMessage(chain_of_thought=chain_of_thought, response=response):
                 result = HuggingFaceMessage(role=self.assistant_role_name, content=response)

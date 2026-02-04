@@ -1,3 +1,4 @@
+from lalamo.input_kind import InputKind
 from lalamo.model_import.decoder_configs import (
     HFGemma2Config,
     HFGemma3Config,
@@ -127,6 +128,7 @@ GEMMA3 = [
         repo="google/translategemma-4b-it",
         config_type=HFGemma3Config,
         weights_type=WeightsType.SAFETENSORS,
+        input_kind=InputKind.JSON,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
     ),
     ModelSpec(
@@ -138,6 +140,7 @@ GEMMA3 = [
         repo="mlx-community/translategemma-4b-it-8bit",
         config_type=HFGemma3Config,
         weights_type=WeightsType.SAFETENSORS,
+        input_kind=InputKind.JSON,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "google/translategemma-4b-it"),
             chat_template=FileSpec("chat_template.jinja", "google/translategemma-4b-it"),
@@ -152,6 +155,7 @@ GEMMA3 = [
         repo="mlx-community/translategemma-4b-it-4bit",
         config_type=HFGemma3Config,
         weights_type=WeightsType.SAFETENSORS,
+        input_kind=InputKind.JSON,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "google/translategemma-4b-it"),
             chat_template=FileSpec("chat_template.jinja", "google/translategemma-4b-it"),
