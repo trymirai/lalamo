@@ -1,10 +1,12 @@
-from .engines import InferenceEngine, LalamoInferenceEngine
-from .runner import GenerateRepliesCallbacks, generate_replies, run_inference
+from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks, ConsoleRunInferenceCallbacks
+from lalamo.evals.inference.engines import InferenceEngine, LalamoInferenceEngine
+from lalamo.evals.inference.runner import run_batch_generation, run_inference
 
 __all__ = [
-    "GenerateRepliesCallbacks",
+    "BaseRunInferenceCallbacks",
+    "ConsoleRunInferenceCallbacks",
     "InferenceEngine",
     "LalamoInferenceEngine",
-    "generate_replies",
+    "run_batch_generation",
     "run_inference",
 ]

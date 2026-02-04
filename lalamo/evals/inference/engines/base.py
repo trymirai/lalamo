@@ -5,34 +5,18 @@ from typing import Any
 
 from evals.types import EvalPrompt, InferenceOutput
 
+from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
+
 
 @dataclass(frozen=True)
 class InferenceEngine(ABC):
-    """Abstract interface for inference engines.
-
-    Supports multiple engines: lalamo, uzu, llama.cpp, OpenAI API, etc.
-    """
-
     @abstractmethod
     def prepare_input(
         self,
         prompts: list[EvalPrompt],
         output_path: Path,
     ) -> Path:
-        """Convert prompts to engine-specific format and save.
-
-        Examples:
-        - lalamo: writes parquet with 'conversation' column
-        - llama.cpp: writes JSONL with raw strings
-        - OpenAI: returns in-memory format, no file needed
-
-        Args:
-            prompts: List of prompts to convert
-            output_path: Where to save the engine-specific format
-
-        Returns:
-            Path to prepared input file
-        """
+        """Convert prompts to engine-specific format and save. """
         ...
 
     @abstractmethod
@@ -40,18 +24,10 @@ class InferenceEngine(ABC):
         self,
         input_path: Path,
         output_path: Path,
+        callbacks: BaseRunInferenceCallbacks,
         **engine_params: Any,  # noqa: ANN401
     ) -> Path:
-        """Run inference and save outputs.
-
-        Args:
-            input_path: Path to prepared input file
-            output_path: Where to save inference outputs
-            **engine_params: Engine-specific parameters
-
-        Returns:
-            Path to output file with responses
-        """
+        """Run inference and save outputs. """
         ...
 
     @abstractmethod
@@ -60,13 +36,5 @@ class InferenceEngine(ABC):
         output_path: Path,
         input_path: Path,
     ) -> list[InferenceOutput]:
-        """Parse engine output to standardized format.
-
-        Args:
-            output_path: Path to engine output file
-            input_path: Path to original input (for ID matching)
-
-        Returns:
-            List of standardized inference outputs
-        """
+        """Parse engine output to standardized format. """
         ...
