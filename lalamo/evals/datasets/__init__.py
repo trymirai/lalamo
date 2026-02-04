@@ -1,6 +1,6 @@
-from .callbacks import BaseConversionCallbacks
-from .converter import convert_dataset, download_and_convert
-from .specs import REPO_TO_EVAL, EvalSpec
+from lalamo.evals.datasets.callbacks import BaseConversionCallbacks
+from lalamo.evals.datasets.converter import convert_dataset, download_and_convert
+from lalamo.evals.datasets.specs import REPO_TO_EVAL, EvalSpec
 
 __all__ = [
     "REPO_TO_EVAL",
