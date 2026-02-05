@@ -1,4 +1,5 @@
 from evals import IFEvalAdapter
+
 from lalamo.evals.datasets.specs.base import EvalSpec
 
 IFEVAL = EvalSpec(
