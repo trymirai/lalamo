@@ -236,7 +236,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
         return result
 
-    def slice(self, start: int, stop: int) -> Self:
+    def slice_mixture(self, start: int, stop: int) -> Self:
         if self.mixture_size is None:
             raise ValueError("DenseMLP.slice() requires a mixture DenseMLP.")
 
@@ -316,15 +316,13 @@ class MixtureOfExpertsConfig(ABC):
 
     def __post_init__(self) -> None:
         if self.num_routed_experts <= 0:
-            raise ValueError("num_routed_experts must be positive.")
+            raise ValueError("num_routed_experts (total size of the pool of experts-to-be-routed) must be positive.")
         if self.num_shared_experts < 0:
             raise ValueError("num_shared_experts must be non-negative.")
         if self.num_active_routed_experts <= 0:
             raise ValueError("num_active_routed_experts must be positive.")
-        if self.num_active_routed_experts > self.num_routed_experts:
+        if self.num_active_routed_experts <= self.num_routed_experts:
             raise ValueError("num_active_routed_experts must be <= num_routed_experts.")
-        if self.expert_hidden_dim <= 0:
-            raise ValueError("expert_hidden_dim must be positive.")
 
     @property
     def mixture_size(self) -> int:
@@ -519,7 +517,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "tokens experts -> experts tokens",
         )
         expert_weights = jnp.where(token_mask, expert_weights, 0.0)
-        routed_experts = self.experts.slice(0, self.num_routed_experts)
+        routed_experts = self.experts.slice_mixture(0, self.num_routed_experts)
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
         num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
@@ -578,7 +576,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
 
         expert_result = routed_expert_result
         if self.num_shared_experts > 0:
-            shared_experts = self.experts.slice(self.num_routed_experts, self.mixture_size)
+            shared_experts = self.experts.slice_mixture(self.num_routed_experts, self.mixture_size)
             shared_weights = vmap(self._shared_expert_weight)(flattened_inputs)
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
 
