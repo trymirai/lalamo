@@ -72,7 +72,6 @@ def infer_command(
     model_path: Annotated[Path, Argument(help="Path to converted model")],
     dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
     output_dir: Annotated[Path, Argument(help="Output directory for results")],
-    split: Annotated[str, Option(help="Dataset split to use")] = "test",
     engine: Annotated[str, Option(help="Inference engine")] = "lalamo",
     num_few_shot: Annotated[
         int,
@@ -97,14 +96,12 @@ def infer_command(
             callbacks=ConsoleRunInferenceCallbacks(
                 eval_name=eval_name,
                 model_path=model_path,
-                split=split,
                 num_few_shot=num_few_shot,
                 category=category,
                 max_examples=max_examples,
                 batch_size=batch_size,
                 vram_gb=vram_gb,
             ),
-            split=split,
             engine=engine,
             num_few_shot=num_few_shot,
             max_examples=max_examples,
@@ -146,7 +143,6 @@ def benchmark_command(
     eval_name: Annotated[str, Argument(help="Eval name (e.g., MMLU-Pro)")],
     predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
     dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
-    split: Annotated[str, Option(help="Dataset split to use")] = "test",
 ) -> None:
     try:
         benchmark_command_handler(
@@ -154,7 +150,6 @@ def benchmark_command(
             predictions_path=predictions_path,
             dataset_dir=dataset_dir,
             callbacks=BenchmarkConsoleCallbacks(),
-            split=split,
         )
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")
