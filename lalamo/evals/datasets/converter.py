@@ -6,12 +6,13 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-
 from evals import DatasetMetadata, InternalEvalRecord
+
 from lalamo.evals.datasets.callbacks import BaseConversionCallbacks
 from lalamo.evals.datasets.specs import EvalSpec
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")
+DATASET_SCHEMA_VERSION = "1.0"
 
 
 def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
@@ -35,7 +36,7 @@ def _download_and_convert_split(
     temp_dir: Path,
     callbacks: BaseConversionCallbacks,
 ) -> list[InternalEvalRecord]:
-    callbacks.downloading_file(f"Downloading {split} split...")
+    callbacks.downloading_file(f"{split} split")
     return handler.download_split(
         repo_id=repo_id,
         split=split,
@@ -43,7 +44,7 @@ def _download_and_convert_split(
     )
 
 
-def download_and_convert(
+def _download_and_convert(
     eval_spec: EvalSpec,
     output_dir: Path,
     callbacks: BaseConversionCallbacks,
@@ -51,7 +52,7 @@ def download_and_convert(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     handler = eval_spec.handler_type()
-    total_examples: dict[str, int] = {}
+    split_counts: dict[str, int] = {}
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -66,7 +67,7 @@ def download_and_convert(
             )
 
             callbacks.saving_dataset()
-            total_examples[split] = len(all_split_records)
+            split_counts[split] = len(all_split_records)
             internal_table = _records_to_table(all_split_records)
             output_parquet = output_dir / f"{split}.parquet"
             pq.write_table(internal_table, output_parquet)
@@ -76,8 +77,8 @@ def download_and_convert(
         name=eval_spec.name,
         repo=eval_spec.repo,
         splits=tuple(eval_spec.splits),
-        schema_version="1.0",
-        total_examples=total_examples,
+        schema_version=DATASET_SCHEMA_VERSION,
+        split_counts=split_counts,
     )
 
     metadata_dict = asdict(metadata)
@@ -97,6 +98,6 @@ def convert_dataset(
 
     callbacks.started()
 
-    download_and_convert(eval_spec, output_dir, callbacks)
+    _download_and_convert(eval_spec, output_dir, callbacks)
 
     callbacks.finished()
