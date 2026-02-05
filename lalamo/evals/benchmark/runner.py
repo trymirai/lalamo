@@ -11,12 +11,12 @@ def compute_metrics(
     eval_spec: EvalSpec,
     predictions_path: Path,
     dataset_dir: Path,
-    split: str,
     callbacks: BaseBenchmarkCallbacks,
 ) -> tuple[Path, BenchmarkMetrics]:
     eval_adapter = eval_spec.handler_type()
+    benchmark_split = eval_adapter.get_benchmark_split()
 
-    callbacks.started(eval_spec.name, split, predictions_path)
+    callbacks.started(eval_spec.name, benchmark_split, predictions_path)
 
     callbacks.loading_predictions()
     pred_df = pl.read_parquet(predictions_path)
@@ -32,7 +32,7 @@ def compute_metrics(
     model_name = pred_df["model_name"][0] if "model_name" in pred_df.columns else "unknown"
 
     callbacks.loading_ground_truth()
-    gt_path = dataset_dir / f"{split}.parquet"
+    gt_path = dataset_dir / f"{benchmark_split}.parquet"
     if not gt_path.exists():
         raise FileNotFoundError(f"Ground truth not found: {gt_path}")
 
@@ -57,7 +57,7 @@ def compute_metrics(
         prepared_data_path=prepared_path,
         eval_name=eval_spec.name,
         model_name=model_name,
-        split=split,
+        split=benchmark_split,
     )
 
     callbacks.completed(metrics)
