@@ -12,7 +12,6 @@ console = Console()
 class BaseRunInferenceCallbacks:
     eval_name: str
     model_path: Path
-    split: str
     num_few_shot: int
     category: str | None
     max_examples: int | None
@@ -66,7 +65,6 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
         console.print("[bold]Configuration:[/bold]")
         console.print(f"  Eval: {self.eval_name}")
         console.print(f"  Model: {self.model_path}")
-        console.print(f"  Split: {self.split}")
         console.print(f"  Few-shot (k): {self.num_few_shot}")
         console.print(f"  Batch size: {self.batch_size or 'auto'}")
         console.print(f"  VRAM limit: {f'{self.vram_gb} GB' if self.vram_gb else 'auto-detect'}")
