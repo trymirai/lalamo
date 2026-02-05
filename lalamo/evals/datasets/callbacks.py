@@ -24,6 +24,9 @@ class BaseConversionCallbacks:
     def downloading_file(self, filename: str) -> None:
         pass
 
+    def finished_downloading_file(self, filename: str) -> None:
+        pass
+
     def saving_dataset(self) -> None:
         pass
 
@@ -59,6 +62,10 @@ class ConsoleCallbacks(BaseConversionCallbacks):
     def downloading_file(self, filename: str) -> None:
         assert self.progress is not None
         self.downloading_tasks[filename] = self.progress.add_task(f"Retrieving {filename}...")
+
+    def finished_downloading_file(self, filename: str) -> None:
+        assert self.progress is not None
+        self.progress.remove_task(self.downloading_tasks[filename])
 
     def saving_dataset(self) -> None:
         pass

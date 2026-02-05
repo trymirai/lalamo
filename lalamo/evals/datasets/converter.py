@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from evals import DatasetMetadata, InternalEvalRecord
+from evals import DatasetMetadata, InternalEvalRecord, EvalAdapter
 
 from lalamo.evals.datasets.callbacks import BaseConversionCallbacks
 from lalamo.evals.datasets.specs import EvalSpec
@@ -32,16 +32,18 @@ def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
 def _download_and_convert_split(
     repo_id: str,
     split: str,
-    handler: type,
+    handler: type[EvalAdapter],
     temp_dir: Path,
     callbacks: BaseConversionCallbacks,
 ) -> list[InternalEvalRecord]:
     callbacks.downloading_file(f"{split} split")
-    return handler.download_split(
+    records = handler.download_split(
         repo_id=repo_id,
         split=split,
         temp_dir=temp_dir,
     )
+    callbacks.finished_downloading_file(f"{split} split")
+    return records
 
 
 def _download_and_convert(
