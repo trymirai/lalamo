@@ -260,11 +260,7 @@ def _import_language_model(
 
     message_processor = import_message_processor(model_spec)
 
-    stop_token_ids: tuple[int, ...] = ()
-    eos_token_id = getattr(foreign_decoder_config, "eos_token_id", None)
-    if eos_token_id is not None:
-        stop_token_ids = tuple([eos_token_id] if isinstance(eos_token_id, int) else eos_token_id)
-
+    stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
     if not stop_token_ids and hf_generation_config is not None and hf_generation_config.eos_token_id is not None:
         eos_token_id = hf_generation_config.eos_token_id
         stop_token_ids = tuple([eos_token_id] if isinstance(eos_token_id, int) else eos_token_id)
