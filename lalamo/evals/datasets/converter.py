@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
-from evals import DatasetMetadata, InternalEvalRecord, EvalAdapter
+from evals import DatasetMetadata, EvalAdapter, InternalEvalRecord
 
 from lalamo.evals.datasets.callbacks import BaseConversionCallbacks
 from lalamo.evals.datasets.specs import EvalSpec
@@ -46,11 +46,16 @@ def _download_and_convert_split(
     return records
 
 
-def _download_and_convert(
+def convert_dataset(
     eval_spec: EvalSpec,
     output_dir: Path,
     callbacks: BaseConversionCallbacks,
 ) -> None:
+    if output_dir.exists():
+        callbacks.output_dir_exists()
+
+    callbacks.started()
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     handler = eval_spec.handler_type()
@@ -76,27 +81,12 @@ def _download_and_convert(
         lalamo_version=LALAMO_VERSION,
         name=eval_spec.name,
         repo=eval_spec.repo,
-        splits=tuple(eval_spec.splits),
+        splits=eval_spec.splits,
         schema_version=DATASET_SCHEMA_VERSION,
     )
 
-    metadata_dict = asdict(metadata)
-    metadata_dict["splits"] = list(metadata_dict["splits"])
-
     with open(output_dir / "config.json", "w") as f:
-        json.dump(metadata_dict, f, indent=4)
-
-
-def convert_dataset(
-    eval_spec: EvalSpec,
-    output_dir: Path,
-    callbacks: BaseConversionCallbacks,
-) -> None:
-    if output_dir.exists():
-        callbacks.output_dir_exists()
-
-    callbacks.started()
-
-    _download_and_convert(eval_spec, output_dir, callbacks)
+        json.dump(asdict(metadata), f, indent=4)
 
     callbacks.finished()
+
