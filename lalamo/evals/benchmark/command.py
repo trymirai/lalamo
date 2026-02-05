@@ -10,7 +10,6 @@ def benchmark_command_handler(
     predictions_path: Path,
     dataset_dir: Path,
     callbacks: BaseBenchmarkCallbacks,
-    split: str,
 ) -> None:
     if eval_name not in REPO_TO_EVAL:
         available = ", ".join(REPO_TO_EVAL.keys())
@@ -20,6 +19,5 @@ def benchmark_command_handler(
         eval_spec=REPO_TO_EVAL[eval_name],
         predictions_path=predictions_path,
         dataset_dir=dataset_dir,
-        split=split,
         callbacks=callbacks,
     )
