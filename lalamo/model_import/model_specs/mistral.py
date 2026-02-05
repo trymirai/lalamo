@@ -3,6 +3,7 @@ from lalamo.model_import.decoder_configs import HFMistralConfig
 from .common import (
     ConfigMap,
     FileSpec,
+    JSONFieldSpec,
     ModelSpec,
     UseCase,
     WeightsType,
@@ -31,6 +32,7 @@ CODESTRAL = [
 
 
 DEVSTRAL_TOKENIZER_REPO = "mistralai/Mistral-Small-3.1-24B-Base-2503"
+DEVSTRAL_CHAT_REPO = "mistralai/Mistral-Small-3.1-24B-Instruct-2503"
 
 DEVSTRAL = [
     ModelSpec(
@@ -45,6 +47,11 @@ DEVSTRAL = [
             tokenizer=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer.json"),
             tokenizer_config=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"),
             generation_config=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="generation_config.json"),
+            chat_template=JSONFieldSpec(
+                FileSpec(repo=DEVSTRAL_CHAT_REPO, filename="chat_template.json"),
+                "chat_template",
+            ),
+            system_prompt=FileSpec("SYSTEM_PROMPT.txt"),
         ),
         use_cases=(UseCase.CODE,),
     ),

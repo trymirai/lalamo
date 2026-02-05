@@ -180,6 +180,15 @@ def import_message_processor(
         if eos_token is None:
             eos_token = foreign_decoder_json.get("eos_token_id")
 
+    system_prompt_text = None
+    match model_spec.configs.system_prompt:
+        case FileSpec(_) as file_spec:
+            system_prompt_file = download_file(file_spec, model_spec.repo, output_dir, progress_callback)
+            system_prompt_text = system_prompt_file.read_text()
+        case str() as sp:
+            system_prompt_text = sp
+        case None:
+            pass
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
         output_parser_regex=model_spec.output_parser_regex,
@@ -188,6 +197,7 @@ def import_message_processor(
         assistant_role_name=model_spec.assistant_role_name,
         bos_token=bos_token,
         eos_token=eos_token,
+        default_system_prompt=system_prompt_text,
     )
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
