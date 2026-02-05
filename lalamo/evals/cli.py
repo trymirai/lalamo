@@ -21,10 +21,10 @@ eval_app = Typer()
     help="Download and convert evaluation dataset.",
 )
 def convert_dataset_command(
-    eval_name: Annotated[
+    eval_repo: Annotated[
         str,
         Argument(
-            help="Eval name. Example: [cyan]'MMLU-Pro'[/cyan].",
+            help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
             metavar="EVAL_NAME",
             autocompletion=lambda: list(REPO_TO_EVAL.keys()),
         ),
@@ -43,21 +43,20 @@ def convert_dataset_command(
         ),
     ] = False,
 ) -> None:
-    if eval_name not in REPO_TO_EVAL:
+    eval_spec = REPO_TO_EVAL.get(eval_repo)
+    if eval_spec is None:
         available = ", ".join(REPO_TO_EVAL.keys())
-        console.print(f"[red]✗[/red] Unknown eval: {eval_name}. Available evals: {available}")
+        console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
         raise Exit(1)
-
-    eval_spec = REPO_TO_EVAL[eval_name]
 
     if output_dir is None:
         output_dir = Path("data/evals/datasets") / eval_spec.name
 
     try:
         convert_dataset_handler(
-            eval_name=eval_name,
+            eval_repo=eval_repo,
             output_dir=output_dir,
-            callbacks=DatasetConsoleCallbacks(eval_name=eval_name, output_dir=output_dir, overwrite=overwrite),
+            callbacks=DatasetConsoleCallbacks(eval_repo=eval_repo, output_dir=output_dir, overwrite=overwrite),
         )
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")

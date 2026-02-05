@@ -12,7 +12,7 @@ console = Console()
 
 @dataclass
 class BaseConversionCallbacks:
-    eval_name: str
+    eval_repo: str
     output_dir: Path
 
     def output_dir_exists(self) -> None:
@@ -40,7 +40,7 @@ class ConsoleCallbacks(BaseConversionCallbacks):
     downloading_tasks: dict[str, TaskID] = field(default_factory=dict)
 
     def started(self) -> None:
-        console.print(f"🚀 Converting eval dataset [cyan]{self.eval_name}[/cyan].")
+        console.print(f"🚀 Converting eval dataset [cyan]{self.eval_repo}[/cyan].")
 
         self.progress = self.stack.enter_context(
             Progress(
