@@ -52,7 +52,6 @@ def _download_and_convert(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     handler = eval_spec.handler_type()
-    split_counts: dict[str, int] = {}
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -67,7 +66,6 @@ def _download_and_convert(
             )
 
             callbacks.saving_dataset()
-            split_counts[split] = len(all_split_records)
             internal_table = _records_to_table(all_split_records)
             output_parquet = output_dir / f"{split}.parquet"
             pq.write_table(internal_table, output_parquet)
@@ -78,7 +76,6 @@ def _download_and_convert(
         repo=eval_spec.repo,
         splits=tuple(eval_spec.splits),
         schema_version=DATASET_SCHEMA_VERSION,
-        split_counts=split_counts,
     )
 
     metadata_dict = asdict(metadata)
