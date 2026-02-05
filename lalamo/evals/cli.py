@@ -25,7 +25,6 @@ def convert_dataset_command(
         str,
         Argument(
             help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
-            metavar="EVAL_NAME",
             autocompletion=lambda: list(REPO_TO_EVAL.keys()),
         ),
     ],
