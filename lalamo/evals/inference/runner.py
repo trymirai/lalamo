@@ -15,7 +15,6 @@ from lalamo.models.language_model import LanguageModelConfig
 
 def run_inference(
     dataset_dir: Path,
-    split: str,
     output_dir: Path,
     inference_engine: InferenceEngine,
     eval_adapter: EvalAdapter,
@@ -26,13 +25,17 @@ def run_inference(
 ) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Get splits from adapter
+    inference_split = eval_adapter.get_inference_split()
+    few_shot_split = eval_adapter.get_few_shot_split()
+
     callbacks.loading_test_dataset()
-    test_records = _load_internal_dataset(dataset_dir, split, max_examples, category)
+    test_records = _load_internal_dataset(dataset_dir, inference_split, max_examples, category)
 
     few_shot_records = None
-    if num_few_shot > 0:
+    if num_few_shot > 0 and few_shot_split is not None:
         callbacks.loading_validation_dataset()
-        few_shot_records = _load_internal_dataset(dataset_dir, "validation", None)
+        few_shot_records = _load_internal_dataset(dataset_dir, few_shot_split, None)
     else:
         callbacks.skipped_validation_dataset()
 
@@ -54,7 +57,7 @@ def run_inference(
     callbacks.parsing_output()
     outputs = inference_engine.parse_output(raw_output_path, input_path)
 
-    predictions_path = output_dir / f"predictions_{split}.parquet"
+    predictions_path = output_dir / f"predictions_{inference_split}.parquet"
     _save_predictions(outputs, predictions_path)
     callbacks.completed(predictions_path, len(outputs))
 
