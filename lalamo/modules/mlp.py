@@ -321,8 +321,11 @@ class MixtureOfExpertsConfig(ABC):
             raise ValueError("num_shared_experts must be non-negative.")
         if self.num_active_routed_experts <= 0:
             raise ValueError("num_active_routed_experts must be positive.")
-        if self.num_active_routed_experts <= self.num_routed_experts:
-            raise ValueError("num_active_routed_experts must be <= num_routed_experts.")
+        if self.num_active_routed_experts > self.num_routed_experts:
+            raise ValueError(
+                "num_active_routed_experts must be <= num_routed_experts, got "
+                f"{self.num_active_routed_experts} > {self.num_routed_experts}",
+            )
 
     @property
     def mixture_size(self) -> int:
