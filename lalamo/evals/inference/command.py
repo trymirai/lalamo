@@ -12,7 +12,6 @@ def infer_command_handler(
     dataset_dir: Path,
     output_dir: Path,
     callbacks: BaseRunInferenceCallbacks,
-    split: str = "test",
     engine: str = "lalamo",
     num_few_shot: int = 5,
     max_examples: int | None = None,
@@ -43,7 +42,6 @@ def infer_command_handler(
 
     predictions_path = run_eval_inference(
         dataset_dir=dataset_dir,
-        split=split,
         output_dir=output_dir,
         inference_engine=inference_engine,
         eval_adapter=eval_adapter,
