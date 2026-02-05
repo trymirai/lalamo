@@ -140,12 +140,14 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
             gate_clipping=(None, self.swiglu_limit),
         )
         moe_config = MixtureOfExpertsConfig(
-            mixture_size=self.num_local_experts,
-            num_experts_per_token=(self.num_experts_per_tok or self.experts_per_token or 1),
+            num_routed_experts=self.num_local_experts,
+            num_active_routed_experts=(self.num_experts_per_tok or self.experts_per_token or 1),
             routing_function=SoftmaxRouting(),
             router_config=linear_config,
             router_has_biases=True,
+            num_shared_experts=0,
             expert_config=experts_config,
+            expert_hidden_dim=self.intermediate_size,
         )
 
         # Per-layer sliding-window
