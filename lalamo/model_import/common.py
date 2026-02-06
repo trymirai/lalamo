@@ -125,31 +125,15 @@ class ImportResults(NamedTuple):
     metadata: ModelMetadata
 
 
-def _token_id_to_text(tokenizer: Tokenizer, token_id: int) -> str:
-    token = tokenizer.id_to_token(token_id)
-    if token is not None:
-        return token
-    decoded = tokenizer.decode([token_id], skip_special_tokens=False)
-    if decoded == "":
-        raise ValueError(f"Could not map token id {token_id} to text.")
+def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -> str | None:
+    if isinstance(token_ids, int):
+        token_ids = [token_ids]
+
+    if not isinstance(token_ids, list) or any((not isinstance(el, int)) for el in token_ids):
+        return None
+
+    decoded = tokenizer.decode(token_ids[:1], skip_special_tokens=False)
     return decoded
-
-
-def _token_ids_to_text(tokenizer: Tokenizer, token_value: object) -> str | None:
-    match token_value:
-        case None:
-            return None
-        case int() as token_id:
-            return _token_id_to_text(tokenizer, token_id)
-        case list() as token_ids:
-            if not token_ids:
-                return None
-            first_token_id = token_ids[0]
-            if not isinstance(first_token_id, int):
-                raise ValueError(f"Invalid token ids: {token_ids}")  # noqa: TRY004
-            return _token_id_to_text(tokenizer, first_token_id)
-        case _:
-            raise ValueError(f"Invalid token value: {token_value}")
 
 
 def import_message_processor(
@@ -205,10 +189,10 @@ def import_message_processor(
 
         if bos_token is None:
             bos_token = foreign_decoder_json.get("bos_token_id")
-            bos_token = _token_ids_to_text(tokenizer, bos_token)
+            bos_token = token_ids_to_text(tokenizer, bos_token)
         if eos_token is None:
             eos_token = foreign_decoder_json.get("eos_token_id")
-            eos_token = _token_ids_to_text(tokenizer, eos_token)
+            eos_token = token_ids_to_text(tokenizer, eos_token)
 
     system_prompt_text = None
     match model_spec.configs.system_prompt:
