@@ -1,3 +1,4 @@
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import polars as pl
@@ -33,22 +34,41 @@ def infer_command_handler(
     limit: int | None = None,
     batch_size: int | None = None,
     vram_gb: float | None = None,
-    max_output_length: int = 2048,
+    # Inference config overrides (None = use adapter's reference value)
+    temperature: float | None = None,
+    max_output_length: int | None = None,
+    max_model_len: int | None = None,
+    top_p: float | None = None,
+    top_k: int | None = None,
+    stop_tokens: list[str] | None = None,
 ) -> Path:
     eval_spec = REPO_TO_EVAL[eval_repo]
+    eval_adapter = eval_spec.handler_type()
+
+    adapter_config = eval_adapter.get_inference_config()
+    user_overrides = {
+        "temperature": temperature,
+        "max_output_length": max_output_length,
+        "max_model_len": max_model_len,
+        "top_p": top_p,
+        "top_k": top_k,
+        "stop_tokens": stop_tokens,
+    }
+    overrides = {k: v for k, v in user_overrides.items() if v is not None}
+    inference_config = replace(adapter_config, **overrides)
+
+    callbacks.started()
+    callbacks.inference_config_loaded(asdict(adapter_config), overrides)
+
     if engine == "lalamo":
         inference_engine = LalamoInferenceEngine(
             model_path=model_path,
+            inference_config=inference_config,
             max_vram=int(vram_gb * 1024**3) if vram_gb else None,
             batch_size=batch_size,
-            max_output_length=max_output_length,
         )
     else:
         raise ValueError(f"Unsupported engine: {engine}. Supported: lalamo")
-
-    eval_adapter = eval_spec.handler_type()
-
-    callbacks.started()
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

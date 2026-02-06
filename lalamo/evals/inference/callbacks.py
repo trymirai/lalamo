@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from rich.console import Console
 
@@ -21,6 +22,9 @@ class BaseRunInferenceCallbacks:
     total_rows: int = 0
 
     def started(self) -> None:
+        pass
+
+    def inference_config_loaded(self, adapter_config: dict[str, Any], overrides: dict[str, Any]) -> None:
         pass
 
     def loading_datasets(self) -> None:
@@ -60,6 +64,13 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
         console.print(f"  Batch size: {self.batch_size or 'auto'}")
         console.print(f"  VRAM limit: {f'{self.vram_gb} GB' if self.vram_gb else 'auto-detect'}")
         console.print(f"  Limit: {self.limit or 'all'}")
+
+    def inference_config_loaded(self, adapter_config: dict[str, Any], overrides: dict[str, Any]) -> None:
+        if overrides:
+            changes = [f"{k}: {adapter_config[k]} → {v}" for k, v in overrides.items()]
+            console.print(f"  [dim]Inference config overrides: {', '.join(changes)}[/dim]")
+        else:
+            console.print(f"  [dim]Using adapter defaults for inference config[/dim]")
         console.print()
         console.print("[bold]Running inference...[/bold]")
 
