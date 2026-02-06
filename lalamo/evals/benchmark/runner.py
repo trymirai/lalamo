@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import polars as pl
-from evals.types import BenchmarkMetrics, InternalEvalRecord, PredictionRecord
+from evals.types import BenchmarkMetrics, InferenceOutput
 
 from lalamo.evals.benchmark.callbacks import BaseBenchmarkCallbacks
 from lalamo.evals.datasets.specs import EvalSpec
@@ -10,7 +10,6 @@ from lalamo.evals.datasets.specs import EvalSpec
 def compute_metrics(
     eval_spec: EvalSpec,
     predictions_path: Path,
-    dataset_dir: Path,
     callbacks: BaseBenchmarkCallbacks,
 ) -> tuple[Path, BenchmarkMetrics]:
     eval_adapter = eval_spec.handler_type()
@@ -20,10 +19,15 @@ def compute_metrics(
 
     callbacks.loading_predictions()
     pred_df = pl.read_parquet(predictions_path)
+
     predictions = [
-        PredictionRecord(
+        InferenceOutput(
             id=row["id"],
-            model_output=row["model_output"],
+            response=row["model_output"],
+            chain_of_thought=row.get("chain_of_thought"),
+            question=row["question"],
+            answer=row["answer"],
+            metadata=row.get("metadata"),
         )
         for row in pred_df.iter_rows(named=True)
     ]
@@ -31,24 +35,10 @@ def compute_metrics(
     # TODO(mullakhmetov): reconsider how to extract model_name from predictions
     model_name = pred_df["model_name"][0] if "model_name" in pred_df.columns else "unknown"
 
-    callbacks.loading_ground_truth()
-    gt_path = dataset_dir / f"{benchmark_split}.parquet"
-    if not gt_path.exists():
-        raise FileNotFoundError(f"Ground truth not found: {gt_path}")
-
-    gt_df = pl.read_parquet(gt_path)
-    prediction_ids = {p.id for p in predictions}
-    ground_truth = [InternalEvalRecord(**row) for row in gt_df.iter_rows(named=True) if row["id"] in prediction_ids]
-
-    # TODO(mullakhmetov): think about avoiding sorting predictions and ground truth
-    predictions.sort(key=lambda p: p.id)
-    ground_truth.sort(key=lambda g: g.id)
-
     callbacks.preparing_benchmark()
     output_dir = predictions_path.parent / "benchmark_data"
     prepared_path = eval_adapter.prepare_for_benchmark(
         predictions=predictions,
-        ground_truth=ground_truth,
         output_dir=output_dir,
     )
 

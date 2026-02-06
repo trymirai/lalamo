@@ -3,9 +3,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from evals.types import EvalPrompt, InferenceOutput
-
-from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
+from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
 
 
 @dataclass(frozen=True)
@@ -14,6 +12,7 @@ class InferenceEngine(ABC):
     def prepare_input(
         self,
         prompts: list[EvalPrompt],
+        records: list[InternalEvalRecord],
         output_path: Path,
     ) -> Path:
         """Convert prompts to engine-specific format and save. """
@@ -24,7 +23,6 @@ class InferenceEngine(ABC):
         self,
         input_path: Path,
         output_path: Path,
-        callbacks: BaseRunInferenceCallbacks,
         **engine_params: Any,  # noqa: ANN401
     ) -> Path:
         """Run inference and save outputs. """
