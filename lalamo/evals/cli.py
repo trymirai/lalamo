@@ -85,7 +85,31 @@ def infer_command(
     vram_gb: Annotated[
         float | None, Option(help="VRAM limit in GB (auto-detected if not set)"),
     ] = None,
-    max_output_length: Annotated[int, Option(help="Max tokens to generate per response")] = 2048,
+    # Inference config overrides (use adapter's reference values if not set)
+    temperature: Annotated[
+        float | None,
+        Option(help="Sampling temperature (uses adapter's reference value if not set)"),
+    ] = None,
+    max_output_length: Annotated[
+        int | None,
+        Option(help="Max tokens to generate per response (uses adapter's reference value if not set)"),
+    ] = None,
+    max_model_len: Annotated[
+        int | None,
+        Option(help="Max total sequence length (uses adapter's reference value if not set)"),
+    ] = None,
+    top_p: Annotated[
+        float | None,
+        Option(help="Nucleus sampling top_p (uses adapter's reference value if not set)"),
+    ] = None,
+    top_k: Annotated[
+        int | None,
+        Option(help="Top-k sampling (uses adapter's reference value if not set)"),
+    ] = None,
+    stop_tokens: Annotated[
+        list[str] | None,
+        Option(help="Stop token strings (uses adapter's reference value if not set)"),
+    ] = None,
 ) -> None:
     eval_spec = REPO_TO_EVAL.get(eval_repo)
     if eval_spec is None:
@@ -110,7 +134,12 @@ def infer_command(
             limit=limit,
             batch_size=batch_size,
             vram_gb=vram_gb,
+            temperature=temperature,
             max_output_length=max_output_length,
+            max_model_len=max_model_len,
+            top_p=top_p,
+            top_k=top_k,
+            stop_tokens=stop_tokens,
         )
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")
