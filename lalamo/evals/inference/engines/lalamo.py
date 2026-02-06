@@ -5,9 +5,10 @@ from typing import Any
 import polars as pl
 from evals.types import EvalPrompt, InferenceOutput
 
+from lalamo.commands import generate_replies
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 from lalamo.evals.inference.engines.base import InferenceEngine
-from lalamo.evals.inference.runner import run_batch_generation
+from lalamo.main import CliGenerateRepliesCallbacks
 
 
 @dataclass(frozen=True)
@@ -55,14 +56,18 @@ class LalamoInferenceEngine(InferenceEngine):
         batch_size = engine_params.get("batch_size", self.batch_size)
         max_output_length = engine_params.get("max_output_length", self.max_output_length)
 
-        run_batch_generation(
+        # Count rows for callback initialization
+        total_rows = pl.scan_parquet(input_path).select(pl.len()).collect().item()
+
+        # Use CliGenerateRepliesCallbacks for the batch generation
+        generate_replies(
             model_path=self.model_path,
             dataset_path=input_path,
             output_path=output_path,
             max_vram=max_vram,
-            callbacks=callbacks,
             max_output_length=max_output_length,
             batch_size=batch_size,
+            callbacks_type=CliGenerateRepliesCallbacks,
         )
 
         return output_path
