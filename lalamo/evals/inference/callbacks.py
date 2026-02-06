@@ -10,7 +10,7 @@ console = Console()
 
 @dataclass
 class BaseRunInferenceCallbacks:
-    eval_name: str
+    eval_repo: str
     model_path: Path
     num_few_shot: int
     category: str | None
@@ -63,7 +63,7 @@ class BaseRunInferenceCallbacks:
 class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
     def started(self) -> None:
         console.print("[bold]Configuration:[/bold]")
-        console.print(f"  Eval: {self.eval_name}")
+        console.print(f"  Eval: {self.eval_repo}")
         console.print(f"  Model: {self.model_path}")
         console.print(f"  Few-shot (k): {self.num_few_shot}")
         console.print(f"  Batch size: {self.batch_size or 'auto'}")

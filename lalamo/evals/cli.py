@@ -67,7 +67,13 @@ def convert_dataset_command(
     help="Run model inference on evaluation dataset.",
 )
 def infer_command(
-    eval_name: Annotated[str, Argument(help="Eval name (e.g., MMLU-Pro)")],
+    eval_repo: Annotated[
+        str,
+        Argument(
+            help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
+            autocompletion=lambda: list(REPO_TO_EVAL.keys()),
+        ),
+    ],
     model_path: Annotated[Path, Argument(help="Path to converted model")],
     dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
     output_dir: Annotated[Path, Argument(help="Output directory for results")],
@@ -86,14 +92,20 @@ def infer_command(
     ] = None,
     max_output_length: Annotated[int, Option(help="Max tokens to generate per response")] = 2048,
 ) -> None:
+    eval_spec = REPO_TO_EVAL.get(eval_repo)
+    if eval_spec is None:
+        available = ", ".join(REPO_TO_EVAL.keys())
+        console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
+        raise Exit(1)
+
     try:
         _predictions_path = infer_command_handler(
-            eval_name=eval_name,
+            eval_repo=eval_repo,
             model_path=model_path,
             dataset_dir=dataset_dir,
             output_dir=output_dir,
             callbacks=ConsoleRunInferenceCallbacks(
-                eval_name=eval_name,
+                eval_repo=eval_repo,
                 model_path=model_path,
                 num_few_shot=num_few_shot,
                 category=category,
@@ -125,7 +137,7 @@ def infer_command(
             else:
                 file_path = "dataset file"
             console.print(f"[red]✗[/red] Dataset not found: {file_path}")
-            console.print(f"    Run: lalamo eval convert-dataset {eval_name}")
+            console.print(f"    Run: lalamo eval convert-dataset {eval_repo}")
         else:
             console.print(f"[red]✗[/red] File not found: {e}")
         raise Exit(1) from None

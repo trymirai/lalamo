@@ -7,7 +7,7 @@ from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 
 
 def infer_command_handler(
-    eval_name: str,
+    eval_repo: str,
     model_path: Path,
     dataset_dir: Path,
     output_dir: Path,
@@ -20,12 +20,7 @@ def infer_command_handler(
     vram_gb: float | None = None,
     max_output_length: int = 2048,
 ) -> Path:
-    if eval_name not in REPO_TO_EVAL:
-        available = ", ".join(REPO_TO_EVAL.keys())
-        raise ValueError(f"Unknown eval: {eval_name}. Available evals: {available}")
-
-    eval_spec = REPO_TO_EVAL[eval_name]
-
+    eval_spec = REPO_TO_EVAL[eval_repo]
     if engine == "lalamo":
         inference_engine = LalamoInferenceEngine(
             model_path=model_path,
