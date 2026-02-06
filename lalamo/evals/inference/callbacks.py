@@ -13,7 +13,7 @@ class BaseRunInferenceCallbacks:
     eval_repo: str
     model_path: Path
     num_few_shot: int
-    max_examples: int | None
+    limit: int | None
     batch_size: int | None
     vram_gb: float | None
     dataset_path: Path | None = None
@@ -67,7 +67,7 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
         console.print(f"  Few-shot (k): {self.num_few_shot}")
         console.print(f"  Batch size: {self.batch_size or 'auto'}")
         console.print(f"  VRAM limit: {f'{self.vram_gb} GB' if self.vram_gb else 'auto-detect'}")
-        console.print(f"  Max examples: {self.max_examples or 'all'}")
+        console.print(f"  Limit: {self.limit or 'all'}")
         console.print()
         console.print(f"[bold]Running {self.num_few_shot}-shot inference...[/bold]")
 
