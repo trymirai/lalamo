@@ -19,8 +19,8 @@ from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
 
 from lalamo.common import ParameterPath
-from lalamo.modules.audio.cambai.cambai_audio_decoding import NanoCodec
-from lalamo.modules.audio.cambai.nanocodec_modules import (
+from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
+from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoder,
     CausalTransposeConv1d,
     HalfSnake,

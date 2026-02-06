@@ -42,6 +42,7 @@ class ModelType(StrEnum):
 class WeightsType(Enum):
     SAFETENSORS = "safetensors"
     TORCH = "torch"
+    NEMO = "nemo"
 
     @contextmanager
     def load(
@@ -53,6 +54,39 @@ class WeightsType(Enum):
             with Path(filename).open("rb") as fd:
                 (metadata_dict, weights_dict) = safe_read(fd)
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
+        elif self == WeightsType.NEMO:
+            import io
+            import json
+            import tarfile
+
+            import torch
+            import yaml
+
+            from lalamo.modules.torch_interop import torch_to_jax
+
+            with tarfile.open(filename, "r") as tar:
+                state_dict = None
+                config_yaml = None
+                for member in tar.getmembers():
+                    if member.name.endswith(".ckpt"):
+                        f = tar.extractfile(member)
+                        if f is None:
+                            raise ValueError(f"Failed to extract checkpoint from {filename}")
+                        state_dict = torch.load(io.BytesIO(f.read()), map_location="cpu", weights_only=True)
+                    elif member.name.endswith(".yaml"):
+                        f = tar.extractfile(member)
+                        if f is None:
+                            raise ValueError(f"Failed to extract config from {filename}")
+                        config_yaml = yaml.safe_load(f)
+
+                if state_dict is None:
+                    raise ValueError(f"No .ckpt file found in {filename}")
+
+                metadata: dict[str, str] = {}
+                if config_yaml is not None:
+                    metadata["nemo_config"] = json.dumps(config_yaml)
+
+                yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), state_dict), metadata
         else:
             import torch
 

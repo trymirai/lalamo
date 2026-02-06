@@ -35,6 +35,7 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("mlx-community/LFM2-350M-4bit", convert_memory_limit=unsi("1.2 G")),
     ModelTestSpec("LiquidAI/LFM2-2.6B"),
     ModelTestSpec("fishaudio/openaudio-s1-mini"),
+    ModelTestSpec("nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps"),
 ]
 
 MODEL_LIST += (

@@ -1,3 +1,4 @@
+from lalamo.models.tts_model import TTSGenerationResult
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -9,8 +10,19 @@ import torch
 from omegaconf import DictConfig
 
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
-from lalamo.modules.audio.cambai.cambai_audio_decoding import NanoCodecConfig
-from lalamo.modules.audio.cambai.nanocodec_modules import (
+from lalamo.models import TTSGenerator
+from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+    CausalConv1dConfig,
+    Snake1dConfig,
+)
+from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodecConfig
+from lalamo.modules.audio.nanocodec.nanocodec_consts import (
+    DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
+    DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
+    DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
+    DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
+)
+from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
     CausalTransposeConv1dConfig,
     FiniteScalarQuantizerConfig,
@@ -20,11 +32,7 @@ from lalamo.modules.audio.cambai.nanocodec_modules import (
     HiFiGANResLayerConfig,
     ResidualBlockConfig,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalConv1dConfig,
-    Snake1dConfig,
-)
-from tests.tts.cambai.nanocodec_torch_stuff import (
+from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
     CausalHiFiGANDecoder,
     GroupFiniteScalarQuantizer,
@@ -301,18 +309,19 @@ def test_audio_codec_model_decode_deterministic(cached_nemo_model: tuple[Mapping
 
 def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     """Create Lalamo NanoCodecConfig from NeMo config dict."""
-    vq_cfg = config["vector_quantizer"]
+    nemo_quantizer_config = config["vector_quantizer"]
+    nemo_decoder_config = config["audio_decoder"]
 
     # FSQ config for each group
     fsq_config = FiniteScalarQuantizerConfig(
-        num_levels=tuple(vq_cfg["num_levels_per_group"]),
+        num_levels=tuple(nemo_quantizer_config["num_levels_per_group"]),
         eps=1e-3,
         precision=jnp.float32,
     )
 
     # Group FSQ config
     quantizer_config = GroupFiniteScalarQuantizerConfig(
-        num_groups=vq_cfg["num_groups"],
+        num_groups=nemo_quantizer_config["num_groups"],
         quantizer_config=fsq_config,
     )
 
@@ -337,11 +346,26 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
         post_conv_config=conv_config,
     )
 
+    in_kernel_size = nemo_decoder_config.get("in_kernel_size", DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE)
+    out_kernel_size = nemo_decoder_config.get("out_kernel_size", DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE)
+    resblock_kernel_sizes = (
+        nemo_decoder_config.get("resblock_kernel_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES),
+    )
+    resblock_dilation_sizes = (
+        nemo_decoder_config.get("resblock_dilation_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS),
+    )
+
     return NanoCodecConfig(
         precision=jnp.float32,
         quantizer_config=quantizer_config,
         decoder_config=decoder_config,
-        sample_rate=config["sample_rate"],
+        samplerate=config["sample_rate"],
+        base_channels=nemo_decoder_config["base_channels"],
+        up_sample_rates=tuple(nemo_decoder_config["up_sample_rates"]),
+        in_kernel_size=in_kernel_size,
+        out_kernel_size=out_kernel_size,
+        resblock_kernel_sizes=resblock_kernel_sizes,
+        resblock_dilations=resblock_dilation_sizes,
     )
 
 
@@ -360,16 +384,7 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
 
     # Create Lalamo config and model
     lalamo_config = _create_lalamo_nanocodec_config(config)
-    dec_cfg = config["audio_decoder"]
-
-    lalamo_model = lalamo_config.empty(
-        base_channels=dec_cfg["base_channels"],
-        up_sample_rates=tuple(dec_cfg["up_sample_rates"]),
-        in_kernel_size=dec_cfg.get("in_kernel_size", 7),
-        out_kernel_size=dec_cfg.get("out_kernel_size", 3),
-        resblock_kernel_sizes=tuple(dec_cfg.get("resblock_kernel_sizes", (3, 7, 11))),
-        resblock_dilations=tuple(dec_cfg.get("resblock_dilation_sizes", (1, 3, 5))),
-    )
+    lalamo_model = lalamo_config.empty()
 
     # Load weights into Lalamo model
     weights_dict = prepare_state_dict_for_lalamo_loaders(dict(state_dict))
@@ -398,11 +413,6 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
     tokens_jax = jnp.array(tokens_np)
     audio_lalamo = lalamo_model.audio_from_codes(tokens_jax)
 
-    # # Save decoded audio files for manual comparison
-    # import soundfile as sf
-    # sf.write("decoded_audio_torch.wav", audio_torch_decoded[0].numpy(), sample_rate)
-    # sf.write("decoded_audio_lalamo.wav", np.array(audio_lalamo), sample_rate)
-
     # Compare outputs
     # Use relaxed tolerances for end-to-end test as small numerical differences
     # accumulate through the many layers of the HiFiGAN decoder
@@ -412,3 +422,30 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
         rtol=5e-2,
         atol=5e-2,
     )
+
+
+def test_nanocodec_model_spec_loading() -> None:
+    """Test end-to-end model loading via NanoCodecForeignConfig (model spec path).
+
+    Exercises the full pipeline: NanoCodecForeignConfig -> TTSConfig -> TTSModel
+    with StubTextDecoder + NanoCodec audio decoder, then runs generate_speech.
+    """
+    from lalamo.model_import.common import import_model
+    from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
+    from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
+    from lalamo.modules.audio.text_to_speech import TTSMessage, TTSModel
+
+    message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
+
+    generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", precision=jnp.float32)
+
+    assert isinstance(generator, TTSGenerator)
+    assert isinstance(generator.tts_model, TTSModel)
+    assert isinstance(generator.tts_model.text_decoder, StubTextDecoder)
+    assert isinstance(generator.tts_model.audio_decoder, NanoCodec)
+
+    generation_result: TTSGenerationResult = generator.generate_speech([message_to_generate])
+    audio = generation_result.audio
+
+    assert float(jnp.min(audio)) >= -1.0
+    assert float(jnp.max(audio)) <= 1.0

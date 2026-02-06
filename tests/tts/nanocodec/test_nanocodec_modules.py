@@ -19,7 +19,7 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
     load_hifigan_res_layer,
     load_residual_block,
 )
-from lalamo.modules.audio.cambai.nanocodec_modules import (
+from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
     CausalTransposeConv1dConfig,
     FiniteScalarQuantizerConfig,
@@ -33,7 +33,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     CausalConv1dConfig,
     Snake1dConfig,
 )
-from tests.tts.cambai import nanocodec_torch_stuff as nanocodec_torch
+from tests.tts.nanocodec import nanocodec_torch_stuff as nanocodec_torch
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
 
 

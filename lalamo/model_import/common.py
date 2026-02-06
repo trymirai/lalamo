@@ -15,6 +15,7 @@ from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
+from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
@@ -114,6 +115,8 @@ def list_weight_files(model_repo: str, weights_type: WeightsType) -> list[FileSp
             return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
         case WeightsType.TORCH:
             return [FileSpec(filename) for filename in all_files if filename.endswith(".pth")]
+        case WeightsType.NEMO:
+            return [FileSpec(filename) for filename in all_files if filename.endswith(".nemo")]
 
 
 def download_weights(
@@ -336,12 +339,44 @@ def _import_tts_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[TTSGenerator, TTSGeneratorConfig]:
-    foreign_tts_config_file = download_config_file(model_spec)
-    tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
+    if model_spec.weights_type == WeightsType.NEMO:
+        # TODO (peter.glushkov): uglu, refactor it
+        # NeMo models: config + weights are both inside the .nemo archive.
+        # WeightsType.NEMO.load() extracts both, storing the YAML config in metadata.
+        weights_paths = download_weights(model_spec, progress_callback=progress_callback)
+        assert len(weights_paths) == 1, f"Expected exactly one .nemo file, got {len(weights_paths)}"
 
-    if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
+        from tokenizers.models import WordLevel
+        # from tokenizers.pre_tokenizers import Whitespace
+
+        tokenizer = Tokenizer(WordLevel(vocab={"[UNK]": 0}, unk_token="[UNK]"))
+        # tokenizer.pre_tokenizer = Whitespace()
+
+        with ExitStack() as stack:
+            weights_dict, metadata_dict = stack.enter_context(
+                model_spec.weights_type.load(weights_paths[0], jnp.float32),
+            )
+            assert "nemo_config" in metadata_dict, "NeMo archive missing YAML config"
+            nemo_config = json.loads(metadata_dict["nemo_config"])
+            foreign_tts_config = NanoCodecForeignConfig.from_nemo_config(nemo_config)
+            precision = foreign_tts_config.default_precision
+
+            if progress_callback is not None:
+                progress_callback(InitializingModelEvent())
+
+            tts_model = foreign_tts_config.load(
+                context_length,
+                precision,
+                accumulation_precision,
+                weights_dict,
+                metadata_dict,
+            )
+        assert isinstance(tts_model, TTSModel)
+    elif model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
         # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
         # so we load the Tokenizer and update config using data from it
+        foreign_tts_config_file = download_config_file(model_spec)
+        tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
 
         tokenizer_special_tokens_path = download_file(
             FileSpec(filename="special_tokens.json"),
@@ -359,21 +394,33 @@ def _import_tts_model(
             semantic_token_end_id=special_inference_tokens.semantic_end_id,
             im_end_token_id=special_inference_tokens.im_end_token_id,
         )
+        if precision is None:
+            precision = foreign_tts_config.default_precision
+        tts_model = _load_main_processing_module(
+            model_spec,
+            precision,
+            foreign_tts_config,
+            progress_callback,
+            context_length,
+            accumulation_precision,
+        )
+        assert isinstance(tts_model, TTSModel)
     else:
+        foreign_tts_config_file = download_config_file(model_spec)
+        tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
         tokenizer = Tokenizer.from_file(str(tokenizer_path))
         foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
-    if precision is None:
-        precision = foreign_tts_config.default_precision
-
-    tts_model = _load_main_processing_module(
-        model_spec,
-        precision,
-        foreign_tts_config,
-        progress_callback,
-        context_length,
-        accumulation_precision,
-    )
-    assert isinstance(tts_model, TTSModel)
+        if precision is None:
+            precision = foreign_tts_config.default_precision
+        tts_model = _load_main_processing_module(
+            model_spec,
+            precision,
+            foreign_tts_config,
+            progress_callback,
+            context_length,
+            accumulation_precision,
+        )
+        assert isinstance(tts_model, TTSModel)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())

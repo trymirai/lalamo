@@ -6,7 +6,7 @@ import jax
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.audio.audio_decoder import TTSAudioDecoder
+from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 
 from .nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -17,7 +17,7 @@ from .nanocodec_modules import (
 
 
 @dataclass(frozen=True)
-class NanoCodecConfig:
+class NanoCodecConfig(TTSAudioDecoderConfigBase):
     """Configuration for NanoCodec audio decoder.
 
     This combines GroupFiniteScalarQuantizer and CausalHiFiGANDecoder
@@ -27,42 +27,37 @@ class NanoCodecConfig:
         precision: Data type for computations.
         quantizer_config: Configuration for the group FSQ.
         decoder_config: Configuration for the HiFiGAN decoder.
-        sample_rate: Audio sample rate in Hz.
+        samplerate: Audio sample rate in Hz.
+        base_channels: Initial number of channels after pre_conv in decoder.
+        up_sample_rates: Upsample rate for each decoder stage.
+        in_kernel_size: Kernel size for decoder pre_conv.
+        out_kernel_size: Kernel size for decoder post_conv.
+        resblock_kernel_sizes: Kernel sizes for HiFiGAN residual blocks.
+        resblock_dilations: Dilations for HiFiGAN residual blocks.
     """
 
     precision: DTypeLike
     quantizer_config: GroupFiniteScalarQuantizerConfig
     decoder_config: CausalHiFiGANDecoderConfig
-    sample_rate: int
+    samplerate: int
+    base_channels: int
+    up_sample_rates: tuple[int, ...]
+    in_kernel_size: int
+    out_kernel_size: int
+    resblock_kernel_sizes: tuple[int, ...]
+    resblock_dilations: tuple[int, ...]
 
-    def empty(
-        self,
-        base_channels: int,
-        up_sample_rates: tuple[int, ...],
-        in_kernel_size: int,
-        out_kernel_size: int,
-        resblock_kernel_sizes: tuple[int, ...],
-        resblock_dilations: tuple[int, ...],
-    ) -> "NanoCodec":
-        """Create NanoCodec with placeholder weights.
-
-        Args:
-            base_channels: Initial number of channels after pre_conv in decoder.
-            up_sample_rates: Upsample rate for each decoder stage.
-            in_kernel_size: Kernel size for decoder pre_conv.
-            out_kernel_size: Kernel size for decoder post_conv.
-            resblock_kernel_sizes: Kernel sizes for HiFiGAN residual blocks.
-            resblock_dilations: Dilations for HiFiGAN residual blocks.
-        """
+    def empty(self) -> "NanoCodec":
+        """Create NanoCodec with placeholder weights."""
         quantizer = self.quantizer_config.empty()
         decoder = self.decoder_config.empty(
             input_dim=self.quantizer_config.codebook_dim,
-            base_channels=base_channels,
-            up_sample_rates=up_sample_rates,
-            in_kernel_size=in_kernel_size,
-            out_kernel_size=out_kernel_size,
-            resblock_kernel_sizes=resblock_kernel_sizes,
-            resblock_dilations=resblock_dilations,
+            base_channels=self.base_channels,
+            up_sample_rates=self.up_sample_rates,
+            in_kernel_size=self.in_kernel_size,
+            out_kernel_size=self.out_kernel_size,
+            resblock_kernel_sizes=self.resblock_kernel_sizes,
+            resblock_dilations=self.resblock_dilations,
         )
 
         return NanoCodec(
@@ -73,12 +68,6 @@ class NanoCodecConfig:
 
     def random_init(
         self,
-        base_channels: int,
-        up_sample_rates: tuple[int, ...],
-        in_kernel_size: int,
-        out_kernel_size: int,
-        resblock_kernel_sizes: tuple[int, ...],
-        resblock_dilations: tuple[int, ...],
         *,
         key: PRNGKeyArray,
     ) -> "NanoCodec":
@@ -88,12 +77,12 @@ class NanoCodecConfig:
         quantizer = self.quantizer_config.random_init(key=key_quantizer)
         decoder = self.decoder_config.random_init(
             input_dim=self.quantizer_config.codebook_dim,
-            base_channels=base_channels,
-            up_sample_rates=up_sample_rates,
-            in_kernel_size=in_kernel_size,
-            out_kernel_size=out_kernel_size,
-            resblock_kernel_sizes=resblock_kernel_sizes,
-            resblock_dilations=resblock_dilations,
+            base_channels=self.base_channels,
+            up_sample_rates=self.up_sample_rates,
+            in_kernel_size=self.in_kernel_size,
+            out_kernel_size=self.out_kernel_size,
+            resblock_kernel_sizes=self.resblock_kernel_sizes,
+            resblock_dilations=self.resblock_dilations,
             key=key_decoder,
         )
 
@@ -122,7 +111,7 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
 
     @property
     def samplerate(self) -> int:
-        return self.config.sample_rate
+        return self.config.samplerate
 
     @property
     def activation_precision(self) -> DTypeLike:
