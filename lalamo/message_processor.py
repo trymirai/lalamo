@@ -39,6 +39,7 @@ class HuggingFaceMessage(TypedDict):
 class HuggingFaceRequest(TypedDict):
     add_generation_prompt: bool
     bos_token: str | None
+    eos_token: str | None
     messages: list[HuggingFaceMessage]
     enable_thinking: NotRequired[bool]
     tools: NotRequired[dict]
@@ -75,6 +76,7 @@ class MessageProcessorConfig:
     system_role_name: str
     user_role_name: str
     assistant_role_name: str
+    eos_token: str | None
     bos_token: str | None
 
     def init(self, tokenizer: Tokenizer) -> "MessageProcessor":
@@ -115,6 +117,10 @@ class MessageProcessor:
     def bos_token(self) -> str | None:
         return self.config.bos_token
 
+    @property
+    def eos_token(self) -> str | None:
+        return self.config.eos_token
+
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         match message:
             case UserMessage(content=content):
@@ -137,7 +143,12 @@ class MessageProcessor:
         enable_thinking: bool | None = None,
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
-        result = HuggingFaceRequest(add_generation_prompt=True, messages=converted_messages, bos_token=self.bos_token)
+        result = HuggingFaceRequest(
+            add_generation_prompt=True,
+            messages=converted_messages,
+            bos_token=self.bos_token,
+            eos_token=self.eos_token,
+        )
         if enable_thinking is not None:
             result["enable_thinking"] = enable_thinking
         if tools is not None:
@@ -163,8 +174,15 @@ class MessageProcessor:
         rendered = self.render_request(messages)
         return self.tokenize_text(rendered)
 
+    def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
+        return [self.tokenize_request(messages) for messages in dataset]
+
     def detokenize(self, tokens: list[int]) -> str:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
+
+    def parse_tokenized_response(self, tokens: list[int]) -> AssistantMessage:
+        detokenized = self.detokenize(tokens)
+        return self.parse_response(detokenized)
 
     def __post_init__(self) -> None:
         if self.output_parser_regex is not None:

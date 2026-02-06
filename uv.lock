@@ -416,7 +416,7 @@ wheels = [
 [[package]]
 name = "cartesia-metal"
 version = "0.0.2"
-source = { git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-metal&tag=da3abff#da3abffcab0f3961374cefc8c96f00969829938c" }
+source = { git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-metal&tag=5e28bfc5#5e28bfc58372c0bfa5a88f920a19907807900cf2" }
 dependencies = [
     { name = "mlx", marker = "sys_platform == 'darwin'" },
     { name = "nanobind", marker = "sys_platform == 'darwin'" },
@@ -425,7 +425,7 @@ dependencies = [
 [[package]]
 name = "cartesia-mlx"
 version = "0.0.2"
-source = { git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-mlx&tag=da3abff#da3abffcab0f3961374cefc8c96f00969829938c" }
+source = { git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-mlx&tag=5e28bfc5#5e28bfc58372c0bfa5a88f920a19907807900cf2" }
 dependencies = [
     { name = "datasets", marker = "sys_platform == 'darwin'" },
     { name = "huggingface-hub", marker = "sys_platform == 'darwin'" },
@@ -2073,8 +2073,8 @@ dev = [
     { name = "beartype", specifier = ">=0.19.0" },
     { name = "bidict", specifier = ">=0.23.1" },
     { name = "blobfile", specifier = ">=3.1.0" },
-    { name = "cartesia-metal", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-metal&tag=da3abff" },
-    { name = "cartesia-mlx", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-mlx&tag=da3abff" },
+    { name = "cartesia-metal", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-metal&tag=5e28bfc5" },
+    { name = "cartesia-mlx", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-mlx&tag=5e28bfc5" },
     { name = "fish-speech", git = "https://github.com/trymirai/fish-speech.git?tag=1d542fd" },
     { name = "hypothesis", specifier = ">=6.150.0" },
     { name = "ipykernel", specifier = ">=6.29.5" },

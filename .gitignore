@@ -52,3 +52,6 @@ _tmp
 # parquet (dataset) files in the root
 *parquet
 
+# Git worktrees
+.worktrees/
+

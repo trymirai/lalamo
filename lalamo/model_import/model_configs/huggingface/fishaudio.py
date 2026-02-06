@@ -52,7 +52,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
-from lalamo.modules.rope import RoPEConfigCis
 
 __all__ = ["FishAudioConfig"]
 
@@ -309,11 +308,11 @@ class FishAudioConfig(ForeignTTSConfig):
         head_dim = self.fast_head_dim if fast_module else self.head_dim
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
-        global_rope_config = RoPEConfigCis(precision=precision, base=self.rope_base)
-        # TODO (peter.glushkov): use regular unscaled rope later
-        # global_rope_config = UnscaledRoPEConfig(
-        #     precision=precision, base=self.rope_base, max_sequence_length=self.max_seq_len
-        # )
+        global_rope_config = UnscaledRoPEConfig(
+            precision=precision,
+            base=self.rope_base,
+            max_sequence_length=self.max_seq_len,
+        )
         local_rope_config = None
 
         norm_config = NormalizationConfig(

@@ -14,7 +14,7 @@ from lalamo.common import ParameterTree, require_tree
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings, PositionalEmbeddingsCis
+from .rope import PositionalEmbeddings
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
 from .utils import vmap_twice
 
@@ -32,7 +32,7 @@ type TransformerLayerForwardPassConfig = MLPForwardPassConfig
 
 class TransformerLayerActivationTrace(eqx.Module):
     inputs: Float[Array, "batch suffix_tokens channels"]
-    positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None
+    positional_embeddings: PositionalEmbeddings | None
     state: StateLayerBase | None
 
     mlp_inputs: Float[Array, "batch suffix_tokens channels"]
@@ -207,7 +207,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     def __call__(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        positional_embeddings: PositionalEmbeddings | PositionalEmbeddingsCis | None,
+        positional_embeddings: PositionalEmbeddings | None,
         state: StateLayerBase | None = None,
         return_updated_state: bool = False,
         return_activation_trace: bool = False,
