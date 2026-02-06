@@ -130,10 +130,11 @@ def infer_command(
                 batch_size=batch_size,
                 vram_gb=vram_gb,
             ),
-            engine=engine,
             limit=limit,
             batch_size=batch_size,
+            # TODO(mullakhmetov): properly handle vram_gb, convert to bytes (see generate-replies cmd implementation)
             vram_gb=vram_gb,
+            engine=engine,
             temperature=temperature,
             max_output_length=max_output_length,
             max_model_len=max_model_len,
