@@ -1,7 +1,6 @@
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
-from typing import NamedTuple, Self
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -12,12 +11,13 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.common import LalamoModule, PositionalEmbeddingSelector
+from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
-from .state import Mamba2StateLayer
+from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 
 __all__ = [
     "Mamba2",
@@ -29,6 +29,7 @@ __all__ = [
     "fused_ssd_intra_chunk",
 ]
 
+Mamba2Result = TokenMixerResult[SSMStateLayer]
 
 def exp_segsum(x: Float[Array, "... T"]) -> Float[Array, "... T T"]:
     """Compute exp(segsum(x)) as lower-triangular matrix using cumsum difference."""
@@ -84,162 +85,6 @@ def fused_ssd_intra_chunk(
     )
 
 
-Mamba2Result = TokenMixerResult[Mamba2StateLayer]
-
-
-class CausalConvResult(NamedTuple):
-    outputs: Float[Array, "*batch suffix_tokens channels"]
-    state: Float[Array, "*batch tokens channels"] | None = None
-
-
-@dataclass(frozen=True)
-class SeparableCausalConvConfig:
-    precision: DTypeLike
-    has_biases: bool
-
-    def random_init(
-        self,
-        input_dim: int,
-        kernel_size: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "SeparableCausalConv":
-        scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = jax.random.uniform(
-            key,
-            (input_dim, kernel_size),
-            minval=-scale,
-            maxval=scale,
-            dtype=self.precision,
-        )
-        if self.has_biases:
-            biases = jnp.zeros((input_dim,), dtype=self.precision)
-        else:
-            biases = None
-        return SeparableCausalConv(self, weights=weights, biases=biases)
-
-    def empty(
-        self,
-        input_dim: int,
-        kernel_size: int,
-    ) -> "SeparableCausalConv":
-        weights = dummy_array(
-            (input_dim, kernel_size),
-            dtype=self.precision,
-        )
-        if self.has_biases:
-            biases = dummy_array((input_dim,), dtype=self.precision)
-        else:
-            biases = None
-        return SeparableCausalConv(self, weights=weights, biases=biases)
-
-
-class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
-    weights: Float[Array, "channels kernel"]
-    biases: Float[Array, " channels"] | None
-
-    def __post_init__(self) -> None:
-        input_dim, _ = self.weights.shape
-        if self.biases is not None:
-            (output_dim,) = self.biases.shape
-            if output_dim != input_dim:
-                raise ValueError(
-                    f"Output dimension of biases ({output_dim}) must match input dimension ({input_dim})",
-                )
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def input_dim(self) -> int:
-        input_dim, _ = self.weights.shape
-        return input_dim
-
-    @property
-    def kernel_size(self) -> int:
-        _, kernel_size = self.weights.shape
-        return kernel_size
-
-    @property
-    def has_biases(self) -> bool:
-        return self.biases is not None
-
-    def __call__(
-        self,
-        inputs: Float[Array, "suffix_tokens channels"],
-        length_without_padding: Int[Array, ""] | int | None = None,
-        state: Float[Array, "prefix_tokens channels"] | None = None,
-        return_updated_state: bool = False,
-    ) -> CausalConvResult:
-        num_suffix_tokens, input_dim = inputs.shape
-
-        if state is None:
-            state = jnp.zeros((self.kernel_size - 1, input_dim), dtype=inputs.dtype)
-
-        required_context = num_suffix_tokens + self.kernel_size - 1
-
-        inputs_with_history = jnp.concatenate([state, inputs], axis=0)
-        conv_outputs = jax.lax.conv_general_dilated(
-            inputs_with_history[None, -required_context:, :],
-            self.weights[:, :, None],
-            window_strides=(1,),
-            feature_group_count=input_dim,
-            padding="VALID",
-            dimension_numbers=("NTC", "OTI", "NTC"),
-        )
-
-        results = conv_outputs.squeeze(0)
-        if self.biases is not None:
-            results = results + self.biases
-
-        if return_updated_state:
-            if length_without_padding is None:
-                length_without_padding = num_suffix_tokens
-            length_without_padding = jnp.asarray(length_without_padding, dtype=jnp.int32)
-            length_without_padding = jnp.clip(length_without_padding, 0, num_suffix_tokens)
-            updated_state = jax.lax.dynamic_slice_in_dim(
-                inputs_with_history,
-                start_index=length_without_padding,
-                slice_size=self.kernel_size - 1,
-                axis=0,
-            )
-        else:
-            updated_state = None
-
-        return CausalConvResult(
-            results,
-            updated_state,
-        )
-
-    def step(
-        self,
-        token: Float[Array, " channels"],
-        state: Float[Array, "kernel_minus_1 channels"],
-    ) -> tuple[Float[Array, " channels"], Float[Array, "kernel_minus_1 channels"]]:
-        """Single-token conv update without full convolution overhead."""
-        full_input = jnp.concatenate([state, token[None, :]], axis=0)
-        output = einsum(full_input, self.weights, "kernel channels, channels kernel -> channels")
-        if self.biases is not None:
-            output = output + self.biases
-        new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
-        return output, new_state
-
-    def export_weights(self) -> ParameterTree:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "SeparableCausalConv":
-        assert isinstance(weights, Mapping)
-        return replace(
-            self,
-            weights=require_array(weights["weights"]),
-            biases=require_array(weights["biases"]) if self.biases is not None else None,
-        )
-
-
 @dataclass(frozen=True)
 class Mamba2Config(TokenMixerConfigBase):
     in_projection_config: LinearConfig
@@ -262,6 +107,10 @@ class Mamba2Config(TokenMixerConfigBase):
     @property
     def inner_dim(self) -> int:
         return self.num_heads * self.head_dim
+
+    @property
+    def conv_dim(self) -> int:
+        return self.inner_dim + 2 * self.num_groups * self.state_dim
 
     @property
     def rope_dim(self) -> None:
@@ -293,8 +142,7 @@ class Mamba2Config(TokenMixerConfigBase):
             key=out_key,
         )
 
-        conv_channels = self.inner_dim + 2 * self.num_groups * self.state_dim
-        conv = self.conv_config.random_init(conv_channels, self.kernel_size, key=conv_key)
+        conv = self.conv_config.random_init(self.conv_dim, self.kernel_size, key=conv_key)
 
         skip_connection_weight = jax.random.normal(
             skip_key,
@@ -337,8 +185,7 @@ class Mamba2Config(TokenMixerConfigBase):
             has_biases=self.has_out_biases,
         )
 
-        conv_channels = self.inner_dim + 2 * self.num_groups * self.state_dim
-        conv = self.conv_config.empty(conv_channels, self.kernel_size)
+        conv = self.conv_config.empty(self.conv_dim, self.kernel_size)
 
         skip_connection_weight = dummy_array((self.num_heads,), in_projection.activation_precision)
         gate_bias = dummy_array((self.inner_dim,), in_projection.activation_precision)
@@ -357,7 +204,7 @@ class Mamba2Config(TokenMixerConfigBase):
         )
 
 
-class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
+class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     in_projection: LinearBase
     conv: SeparableCausalConv
     out_projection: LinearBase
@@ -429,7 +276,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
     def _decode_step(
         self,
         inputs: Float[Array, "1 channels"],
-        state: Mamba2StateLayer,
+        state: SSMStateLayer,
     ) -> Mamba2Result:
         """Optimized path for single-token decode without scan machinery."""
         token = inputs[0]
@@ -455,7 +302,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         return Mamba2Result(
             outputs=output[None, :],
-            state=Mamba2StateLayer(new_conv_state, new_ssm_state),
+            state=SSMStateLayer(new_conv_state, new_ssm_state),
         )
 
     def _chunked_scan(
@@ -659,7 +506,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
         self,
         inputs: Float[Array, "suffix_tokens channels"],
         positional_embeddings: PositionalEmbeddings | None,
-        state: Mamba2StateLayer | None = None,
+        state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> Mamba2Result:
@@ -667,13 +514,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             raise ValueError("Positional embeddings are not supported for Mamba2.")
 
         if state is None:
-            state = Mamba2StateLayer.init(
+            state = SSMStateLayer.init(
                 self.config.kernel_size,
-                self.inner_dim,
-                self.num_heads,
-                self.num_groups,
-                self.head_dim,
-                self.state_dim,
+                self.config.conv_dim,
+                (self.num_heads, self.head_dim, self.state_dim),
                 self.activation_precision,
             )
 
@@ -753,7 +597,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
 
         if return_updated_state:
             assert updated_conv_state is not None
-            updated_state = Mamba2StateLayer(updated_conv_state, final_ssm_state)
+            updated_state = SSMStateLayer(updated_conv_state, final_ssm_state)
         else:
             updated_state = None
 
@@ -762,14 +606,11 @@ class Mamba2(TokenMixerBase[Mamba2Config, Mamba2StateLayer]):
             state=updated_state,
         )
 
-    def init_static_state(self, capacity: int) -> Mamba2StateLayer:  # noqa: ARG002
-        return Mamba2StateLayer.init(
+    def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
+        return SSMStateLayer.init(
             self.config.kernel_size,
-            self.inner_dim,
-            self.num_heads,
-            self.num_groups,
-            self.head_dim,
-            self.state_dim,
+            self.config.conv_dim,
+            (self.num_heads, self.head_dim, self.state_dim),
             self.activation_precision,
         )
 

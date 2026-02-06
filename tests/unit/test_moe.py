@@ -16,8 +16,8 @@ def test_moe_prefill_vs_decode_match() -> None:
     # Model hyperparameters (kept small for speed)
     model_dim = 64
     hidden_dim = 512
-    mixture_size = 16
-    num_experts_per_token = 2
+    num_routed_experts = 16
+    num_active_routed_experts = 2
 
     # Build Mixture-of-Experts config with full-precision linear layers
     router_config = FullPrecisionLinearConfig(precision=jnp.float32)
@@ -32,12 +32,14 @@ def test_moe_prefill_vs_decode_match() -> None:
     )
 
     moe_config = MixtureOfExpertsConfig(
-        mixture_size=mixture_size,
-        num_experts_per_token=num_experts_per_token,
+        num_routed_experts=num_routed_experts,
+        num_active_routed_experts=num_active_routed_experts,
         routing_function=SoftmaxRouting(),
         router_config=router_config,
         router_has_biases=False,
+        num_shared_experts=0,
         expert_config=expert_config,
+        expert_hidden_dim=hidden_dim,
     )
 
     # Initialize MoE

@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs import HFQwen3Config
+from lalamo.model_import.model_configs import HFQwen3Config
 
 from .common import ConfigMap, FileSpec, ModelSpec
 

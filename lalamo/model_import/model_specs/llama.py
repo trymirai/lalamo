@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs import HFLlamaConfig
+from lalamo.model_import.model_configs import HFLlamaConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec

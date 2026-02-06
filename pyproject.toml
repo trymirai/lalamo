@@ -28,6 +28,7 @@ dynamic = ["version"]
 cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
 tpu = ["jax[tpu]>=0.8.1"]
+pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 
 [dependency-groups]
 dev = [
@@ -47,10 +48,14 @@ dev = [
     "torchao>=0.7.0",
     "transformers>=4.56.0",
     "twine>=6.1.0",
-    "ruff==0.14.0",
+    "ruff>=0.14.0",
     "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
     "hypothesis>=6.150.0",
+    "fish-speech",
+    "bidict>=0.23.1",
+    "tiktoken>=0.12.0",
+    "blobfile>=3.1.0"
 ]
 
 [project.scripts]
@@ -94,6 +99,7 @@ torch = [
 ]
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-mlx" }
+fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="1d542fd"}
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
@@ -134,10 +140,13 @@ ignore = [
     "PD008",
     "PGH003",
     "PLC0415",
+    "PLR0904",
     "PLR0912",
     "PLR0913",
     "PLR0915",
+    "PLR0917",
     "PLR2004",
+    "PLR6301",
     "PT",
     "PTH123",
     "RET503",
@@ -148,4 +157,5 @@ ignore = [
     "T20",
     "TD003",
     "TRY003",
+    "CPY001"
 ]

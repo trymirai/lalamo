@@ -31,8 +31,10 @@ class SiLU(ActivationBase):
 
 @dataclass(frozen=True)
 class GELU(ActivationBase):
+    approximate: bool = True
+
     def __call__(self, x: Float[Array, "*dims"]) -> Float[Array, "*dims"]:
-        return jax.nn.gelu(x)
+        return jax.nn.gelu(x, approximate=self.approximate)
 
 
 @dataclass(frozen=True)
