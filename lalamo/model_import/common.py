@@ -14,16 +14,27 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.models import ClassifierModel, ClassifierModelConfig, GenerationConfig, LanguageModel, LanguageModelConfig
-from lalamo.modules import Classifier, Decoder, LalamoModule
+from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
+from lalamo.models import (
+    ClassifierModel,
+    ClassifierModelConfig,
+    GenerationConfig,
+    LanguageModel,
+    LanguageModelConfig,
+    TTSGenerator,
+    TTSGeneratorConfig,
+)
+from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
+from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
-from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
 from .huggingface_tokenizer_config import HFTokenizerConfig
+from .model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
-from .model_specs.common import JSONFieldSpec
+from .model_specs.common import JSONFieldSpec, WeightsType
 
 __all__ = [
     "REPO_TO_MODEL",
@@ -74,7 +85,7 @@ class ModelMetadata:
     repo: str
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
-    model_config: LanguageModelConfig | ClassifierModelConfig
+    model_config: LanguageModelConfig | ClassifierModelConfig | TTSGeneratorConfig
     grammar_start_tokens: tuple[str, ...]
 
 
@@ -96,9 +107,13 @@ def download_file(
     return Path(result)
 
 
-def list_weight_files(model_repo: str) -> list[FileSpec]:
+def list_weight_files(model_repo: str, weights_type: WeightsType) -> list[FileSpec]:
     all_files = huggingface_hub.list_repo_files(model_repo)
-    return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
+    match weights_type:
+        case WeightsType.SAFETENSORS:
+            return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
+        case WeightsType.TORCH:
+            return [FileSpec(filename) for filename in all_files if filename.endswith(".pth")]
 
 
 def download_weights(
@@ -108,7 +123,7 @@ def download_weights(
 ) -> list[Path]:
     return [
         download_file(file_spec, model_spec.repo, output_dir, progress_callback)
-        for file_spec in list_weight_files(model_spec.repo)
+        for file_spec in list_weight_files(model_spec.repo, model_spec.weights_type)
     ]
 
 
@@ -121,7 +136,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel | ClassifierModel
+    model: LanguageModel | ClassifierModel | TTSGenerator
     metadata: ModelMetadata
 
 
@@ -313,6 +328,76 @@ def _import_classifier(
     return classifier_model, classifier_model_config
 
 
+def _import_tts_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[TTSGenerator, TTSGeneratorConfig]:
+    foreign_tts_config_file = download_config_file(model_spec)
+    tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
+
+    if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
+        # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
+        # so we load the Tokenizer and update config using data from it
+
+        tokenizer_special_tokens_path = download_file(
+            FileSpec(filename="special_tokens.json"),
+            model_repo=model_spec.repo,
+        )
+        tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
+            tokenizer_path,
+            tokenizer_special_tokens_path,
+        )
+        foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
+        assert isinstance(foreign_tts_config, FishAudioConfig)
+        foreign_tts_config = replace(
+            foreign_tts_config,
+            semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
+            semantic_token_end_id=special_inference_tokens.semantic_end_id,
+            im_end_token_id=special_inference_tokens.im_end_token_id,
+        )
+    else:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
+    if precision is None:
+        precision = foreign_tts_config.default_precision
+
+    tts_model = _load_main_processing_module(
+        model_spec,
+        precision,
+        foreign_tts_config,
+        progress_callback,
+        context_length,
+        accumulation_precision,
+    )
+    assert isinstance(tts_model, TTSModel)
+
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
+    assert isinstance(model_spec.configs.chat_template, str)
+    tts_request_factory_config = TTSMessageProcessorConfig(
+        prompt_template=model_spec.configs.chat_template,
+    )
+    message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
+
+    tts_generator_config = TTSGeneratorConfig(
+        tts_config=foreign_tts_config.to_lalamo_config(
+            context_length=context_length,
+            activation_precision=precision,
+            accumulation_precision=precision,
+            metadata_dict={},
+        ),
+        message_processor_config=message_processor.config,
+    )
+    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+
+    return (tts_generator, tts_generator_config)
+
+
 def import_model(
     model_spec: ModelSpec | str,
     *,
@@ -338,6 +423,14 @@ def import_model(
             )
         case ModelType.CLASSIFIER_MODEL:
             model, config = _import_classifier(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                accumulation_precision=accumulation_precision,
+                progress_callback=progress_callback,
+            )
+        case ModelType.TTS_MODEL:
+            model, config = _import_tts_model(
                 model_spec,
                 context_length=context_length,
                 precision=precision,

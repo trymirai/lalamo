@@ -13,7 +13,7 @@ import torch
 from lalamo.common import flatten_parameters
 from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, import_model
 from lalamo.model_import.model_specs import ModelType
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models import ClassifierModelConfig, LanguageModelConfig, TTSGenerator
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
 from tests.helpers import limit_memory, unsi
@@ -34,6 +34,7 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("LiquidAI/LFM2-350M", convert_memory_limit=unsi("800 M")),
     ModelTestSpec("mlx-community/LFM2-350M-4bit", convert_memory_limit=unsi("1.2 G")),
     ModelTestSpec("LiquidAI/LFM2-2.6B"),
+    ModelTestSpec("fishaudio/s1-mini"),
 ]
 
 MODEL_LIST += (
@@ -105,5 +106,7 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
             model = LanguageModelConfig.load_model(tmp_path)
         case ModelType.CLASSIFIER_MODEL:
             model = ClassifierModelConfig.load_model(tmp_path)
+        case ModelType.TTS_MODEL:
+            model = TTSGenerator.load_model(tmp_path)
     assert model is not None, f"Failed to load model {model_repo}"
     del model

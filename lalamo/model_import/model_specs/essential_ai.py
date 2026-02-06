@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs.huggingface import HFGemma3TextConfig
+from lalamo.model_import.model_configs.huggingface import HFGemma3TextConfig
 
 from .common import ModelSpec
 

@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs import (
+from lalamo.model_import.model_configs import (
     HFGemma2Config,
     HFGemma3Config,
     HFGemma3TextConfig,
