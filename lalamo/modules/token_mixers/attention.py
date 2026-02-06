@@ -4,7 +4,7 @@ from typing import Self
 
 import equinox as eqx
 import jax
-from einops import einsum, rearrange, repeat
+from einops import einsum, rearrange
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
@@ -30,11 +30,7 @@ def _repeat_kv(
     keys_or_values: Float[Array, "tokens groups channels"],
     group_size: int,
 ) -> Float[Array, "tokens groups*group_size channels"]:
-    return repeat(
-        keys_or_values,
-        "tokens groups channels -> tokens (groups group_size) channels",
-        group_size=group_size,
-    )
+    return jnp.repeat(keys_or_values, group_size, axis=1)
 
 
 def _soft_capped_attention_kernel(
@@ -100,10 +96,13 @@ class AttentionConfig(TokenMixerConfigBase):
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
+    has_gate: bool = False
+    # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
+    partial_rope_dim: int | None = None
 
     @property
     def rope_dim(self) -> int:
-        return self.head_dim
+        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
 
     def random_init(
         self,
@@ -112,13 +111,17 @@ class AttentionConfig(TokenMixerConfigBase):
         key: PRNGKeyArray,
     ) -> "Attention":
         qkv_key, out_key = jax.random.split(key)
+        q_output_dim = self.num_heads * self.head_dim
+        output_dims = (
+            q_output_dim,
+            self.num_groups * self.head_dim,
+            self.num_groups * self.head_dim,
+        )
+        if self.has_gate:
+            output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.random_init(
             input_dim=model_dim,
-            output_dims=(
-                self.num_heads * self.head_dim,
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
+            output_dims=output_dims,
             has_biases=self.has_qkv_biases,
             key=qkv_key,
         )
@@ -167,13 +170,17 @@ class AttentionConfig(TokenMixerConfigBase):
         self,
         model_dim: int,
     ) -> "Attention":
+        q_output_dim = self.num_heads * self.head_dim
+        output_dims = (
+            q_output_dim,
+            self.num_groups * self.head_dim,
+            self.num_groups * self.head_dim,
+        )
+        if self.has_gate:
+            output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.empty(
             input_dim=model_dim,
-            output_dims=(
-                self.num_heads * self.head_dim,
-                self.num_groups * self.head_dim,
-                self.num_groups * self.head_dim,
-            ),
+            output_dims=output_dims,
             has_biases=self.has_qkv_biases,
         )
         out_projection = self.out_projection_config.empty(
@@ -293,12 +300,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
                 f" got {self.out_projection.input_dim}",
             )
-        q_output_dim, k_output_dim, v_output_dim = self.qkv_projection.output_dims
-        if q_output_dim != self.num_heads * self.head_dim:
+        output_dims = self.qkv_projection.output_dims
+        if len(output_dims) not in (3, 4):
             raise ValueError(
-                f"Query projection output dimension must be num_heads * head_dim"
-                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
-                f" got {q_output_dim}",
+                f"QKV projection must have 3 (qkv) or 4 (qkvz) output dims, got {len(output_dims)}",
+            )
+        q_output_dim, k_output_dim, v_output_dim = output_dims[:3]
+        expected_q = self.num_heads * self.head_dim
+        if q_output_dim != expected_q:
+            raise ValueError(
+                f"Query projection output dimension must be {expected_q}, got {q_output_dim}",
             )
         if k_output_dim != self.num_groups * self.head_dim:
             raise ValueError(
@@ -312,6 +323,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
                 f" got {v_output_dim}",
             )
+        if self.config.has_gate:
+            if len(output_dims) != 4:
+                raise ValueError("QKVZ projection must have 4 output dims when has_gate is enabled.")
+            gate_output_dim = output_dims[3]
+            if gate_output_dim != expected_q:
+                raise ValueError(
+                    f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
+                )
+        elif len(output_dims) != 3:
+            raise ValueError("QKV projection must have 3 output dims when has_gate is disabled.")
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:
@@ -328,7 +349,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
-        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
+        if self.config.has_gate:
+            queries, keys, values, gate = vmap(self.qkv_projection, in_axes=0)(inputs)
+        else:
+            queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
+            gate = None
+
         queries = rearrange(
             queries,
             "tokens (heads head_channels) -> tokens heads head_channels",
@@ -400,6 +426,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             heads=self.num_heads,
             head_channels=self.head_dim,
         )
+        if gate is not None:
+            attention_output = attention_output * jax.nn.sigmoid(gate)
         (result,) = vmap(self.out_projection, in_axes=0)(attention_output)
 
         if not return_updated_state:

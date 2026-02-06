@@ -12,7 +12,7 @@ from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
-from .mamba import SeparableCausalConv, SeparableCausalConvConfig
+from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .state import ShortConvStateLayer
 
 __all__ = [
