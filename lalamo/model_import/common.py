@@ -203,11 +203,11 @@ def import_message_processor(
             foreign_decoder_json = json.load(foreign_decoder_file)
 
         if bos_token is None:
-            bos_token = foreign_decoder_json.get("bos_token_id")
-            bos_token = token_ids_to_text(tokenizer, bos_token)
+            bos_token_id: int | list[int] | None = foreign_decoder_json.get("bos_token_id")
+            bos_token = token_ids_to_text(tokenizer, bos_token_id)
         if eos_token is None:
-            eos_token = foreign_decoder_json.get("eos_token_id")
-            eos_token = token_ids_to_text(tokenizer, eos_token)
+            eos_token_id: int | list[int] | None = foreign_decoder_json.get("eos_token_id")
+            eos_token = token_ids_to_text(tokenizer, eos_token_id)
 
     system_prompt_text = None
     match model_spec.configs.system_prompt:
