@@ -83,7 +83,6 @@ def infer_command(
         Option("-k", "--num-few-shot", help="Number of few-shot examples (k-shot learning)"),
     ] = 5,
     max_examples: Annotated[int | None, Option(help="Limit number of examples")] = None,
-    category: Annotated[str | None, Option(help="Filter to specific category (e.g., 'business', 'math')")] = None,
     batch_size: Annotated[
         int | None, Option("--batch-size", help="Batch size for inference (auto-computed if not set)"),
     ] = None,
@@ -108,7 +107,6 @@ def infer_command(
                 eval_repo=eval_repo,
                 model_path=model_path,
                 num_few_shot=num_few_shot,
-                category=category,
                 max_examples=max_examples,
                 batch_size=batch_size,
                 vram_gb=vram_gb,
@@ -116,7 +114,6 @@ def infer_command(
             engine=engine,
             num_few_shot=num_few_shot,
             max_examples=max_examples,
-            category=category,
             batch_size=batch_size,
             vram_gb=vram_gb,
             max_output_length=max_output_length,

@@ -9,7 +9,7 @@ import pyarrow.parquet as pq
 from evals import DatasetMetadata, EvalAdapter, InternalEvalRecord
 
 from lalamo.evals.datasets.callbacks import BaseConversionCallbacks
-from lalamo.evals.datasets.specs import REPO_TO_EVAL, EvalSpec
+from lalamo.evals.datasets.specs import REPO_TO_EVAL
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")
 DATASET_SCHEMA_VERSION = "1.0"
@@ -20,11 +20,7 @@ def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
         "id": [r.id for r in records],
         "question": [r.question for r in records],
         "answer": [r.answer for r in records],
-        "options": [r.options for r in records],
-        "answer_index": [r.answer_index for r in records],
-        "reasoning": [r.reasoning for r in records],
-        "category": [r.category for r in records],
-        "metadata": [json.dumps(r.metadata) if r.metadata else None for r in records],
+        "metadata": [r.metadata for r in records],
     }
     return pa.table(data)
 
