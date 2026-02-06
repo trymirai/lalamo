@@ -11,13 +11,13 @@ from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 def _load_internal_dataset(
     dataset_dir: Path,
     split: str,
-    max_examples: int | None,
+    limit: int | None,
 ) -> list[InternalEvalRecord]:
     split_file = dataset_dir / f"{split}.parquet"
     df = pl.read_parquet(split_file)
 
-    if max_examples:
-        df = df.head(max_examples)
+    if limit:
+        df = df.head(limit)
 
     records = [InternalEvalRecord(**row) for row in df.iter_rows(named=True)]
     return records
@@ -31,7 +31,7 @@ def infer_command_handler(
     callbacks: BaseRunInferenceCallbacks,
     engine: str = "lalamo",
     num_few_shot: int = 5,
-    max_examples: int | None = None,
+    limit: int | None = None,
     batch_size: int | None = None,
     vram_gb: float | None = None,
     max_output_length: int = 2048,
@@ -58,7 +58,7 @@ def infer_command_handler(
     few_shot_split = eval_adapter.get_few_shot_split()
 
     callbacks.loading_test_dataset()
-    test_records = _load_internal_dataset(dataset_dir, inference_split, max_examples)
+    test_records = _load_internal_dataset(dataset_dir, inference_split, limit)
 
     few_shot_records = None
     if num_few_shot > 0 and few_shot_split is not None:
