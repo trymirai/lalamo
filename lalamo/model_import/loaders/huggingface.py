@@ -10,6 +10,8 @@ from lalamo.modules import (
     Attention,
     AttentionConfig,
     Decoder,
+    DeltaNetAttention,
+    DeltaNetAttentionConfig,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
@@ -90,16 +92,27 @@ def _process_quantized_tensor(
     return unpacked.astype(activation_precision)
 
 
+def _maybe_reorder(array: Array, reorder: tuple[Array, int] | None) -> Array:
+    if reorder is None:
+        return array
+    perm, axis = reorder
+    return jnp.take(array, perm, axis=axis)
+
+
 def _fuse_full_precision_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
+    *,
+    param_name: str = "weight",
+    reorder: tuple[Array, int] | None = None,
 ) -> Array:
     if sublayers_to_fuse is None:
-        return weights_dict[path / "weight"]
+        return _maybe_reorder(weights_dict[path / param_name], reorder)
 
-    weights = [weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse]
-    return jnp.concatenate(weights, axis=0)
+    weights = [weights_dict[path / layer_name / param_name] for layer_name in sublayers_to_fuse]
+    fused = jnp.concatenate(weights, axis=0)
+    return _maybe_reorder(fused, reorder)
 
 
 @dataclass(frozen=True)
@@ -114,11 +127,29 @@ AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros"
 MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
 
 
+def _build_qkv_gate_reorder(
+    q_len: int,
+    k_len: int,
+    v_len: int,
+    q_perm: Array,
+    q_output_dim: int,
+) -> Array:
+    if q_perm.shape[0] != q_len:
+        raise ValueError(f"q_perm length {q_perm.shape[0]} does not match q_proj length {q_len}.")
+    q_indices = q_perm[:q_output_dim]
+    gate_indices = q_perm[q_output_dim:]
+    k_indices = jnp.arange(k_len, dtype=jnp.int32) + q_len
+    v_indices = jnp.arange(v_len, dtype=jnp.int32) + q_len + k_len
+    return jnp.concatenate([q_indices, k_indices, v_indices, gate_indices], axis=0)
+
+
 def _fuse_quantized_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
     quantized_param_layout: QuantizedParamLayout,
+    *,
+    reorder: tuple[Array, int] | None = None,
 ) -> tuple[Array, Array, Array]:
     # Note that AWQ quantized weights are stored transposed relative to full-precision weights
 
@@ -126,7 +157,11 @@ def _fuse_quantized_weights(
         qweights = weights_dict[path / quantized_param_layout.weight]
         qzeros = weights_dict[path / quantized_param_layout.bias]
         scales = weights_dict[path / quantized_param_layout.scale]
-        return qweights, qzeros, scales
+        return (
+            _maybe_reorder(qweights, reorder),
+            _maybe_reorder(qzeros, reorder),
+            _maybe_reorder(scales, reorder),
+        )
 
     qweights = [weights_dict[path / layer_name / quantized_param_layout.weight] for layer_name in sublayers_to_fuse]
     qzeros = [weights_dict[path / layer_name / quantized_param_layout.bias] for layer_name in sublayers_to_fuse]
@@ -136,7 +171,11 @@ def _fuse_quantized_weights(
     fused_qzeros = jnp.concatenate(qzeros, axis=int(quantized_param_layout.transposed))
     fused_scales = jnp.concatenate(scales, axis=int(quantized_param_layout.transposed))
 
-    return fused_qweights, fused_qzeros, fused_scales
+    return (
+        _maybe_reorder(fused_qweights, reorder),
+        _maybe_reorder(fused_qzeros, reorder),
+        _maybe_reorder(fused_scales, reorder),
+    )
 
 
 def load_linear(
@@ -212,9 +251,20 @@ def load_linear(
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
 
+        # MLX models can have per-layer quantization (e.g., 8-bit for MoE router, 4-bit elsewhere).
+        # Detect actual quantization from weight shape: UINT4 packs 8 values per int32, UINT8 packs 4.
+        expected_in_dim = module.weights.shape[1]
+        packed_dim = qweights.shape[1]
+        if packed_dim * 8 == expected_in_dim:
+            actual_quantization = QuantizationMode.UINT4
+        elif packed_dim * 4 == expected_in_dim:
+            actual_quantization = QuantizationMode.UINT8
+        else:
+            actual_quantization = weight_quantization
+
         weights = _process_quantized_tensor(
             qweights,
-            weight_quantization,
+            actual_quantization,
             activation_precision,
             None,
         )
@@ -260,58 +310,126 @@ def load_mlp(
 
 
 def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:
-    # Load router via the standard linear loader
-    router = load_linear(module.router, weights_dict, path / "router")
+    # Load router via the standard linear loader.
+    # Qwen-MoE often names the router layer "gate" in HF weights.
+    if (path / "router.weight") in weights_dict or (path / "router.qweight") in weights_dict:
+        router_path = path / "router"
+    elif (path / "gate.weight") in weights_dict or (path / "gate.qweight") in weights_dict:
+        router_path = path / "gate"
+    else:
+        router_path = path / "router"
+    router = load_linear(module.router, weights_dict, router_path)
+
+    num_routed = module.num_routed_experts
+    num_shared = module.num_shared_experts
+    has_up_biases = module.experts.up_projection.has_biases
+    has_down_biases = module.experts.down_projection.has_biases
 
     experts_path = path / "experts"
-    # Handle fused MXFP4 experts layout if present
+
+    # GPT-OSS uses fused MXFP4 expert weights; detect and decode those.
     if (experts_path / "gate_up_proj_blocks") in weights_dict:
-        # Decode fused gate/up (interleaved), split into (up, gate), and add +1.0 to up bias
         fused = decode_mxfp4(
             weights_dict[experts_path / "gate_up_proj_blocks"],
             weights_dict[experts_path / "gate_up_proj_scales"],
             dtype=module.activation_precision,
             flatten=False,
         )
-        # Stored as (experts, outputs=2*hidden_dim, input_blocks, input_block_elems)
-        # Merge blocks and move outputs last
         fused_eio = rearrange(fused, "e o ib ie -> e (ib ie) o")
-        up_w, gate_w = deinterleave_pairwise_columns(fused_eio, first="odd")
-        combined_up_gate = jnp.concatenate([up_w, gate_w], axis=-1)
-        # Transpose to new layout: (experts, outputs, inputs)
-        combined_up_gate_w = jnp.swapaxes(combined_up_gate, -1, -2)
+        up_weights, gate_weights = deinterleave_pairwise_columns(fused_eio, first="odd")
+        combined_up_gate_weights = jnp.swapaxes(
+            jnp.concatenate([up_weights, gate_weights], axis=-1),
+            -1,
+            -2,
+        )
 
-        gub = weights_dict[experts_path / "gate_up_proj_bias"]
-        if gub.ndim == 1:
-            # Broadcast to (experts, 2*hidden_dim)
-            gub = jnp.broadcast_to(gub, (combined_up_gate_w.shape[0], gub.shape[0]))
-        up_b, gate_b = deinterleave_pairwise_columns(gub, first="odd")
-        combined_up_gate_b = jnp.concatenate([up_b + 1.0, gate_b], axis=-1)
+        gate_up_bias = weights_dict[experts_path / "gate_up_proj_bias"]
+        if gate_up_bias.ndim == 1:
+            gate_up_bias = jnp.broadcast_to(
+                gate_up_bias,
+                (combined_up_gate_weights.shape[0], gate_up_bias.shape[0]),
+            )
+        up_bias, gate_bias = deinterleave_pairwise_columns(gate_up_bias, first="odd")
+        combined_up_gate_biases = jnp.concatenate([up_bias + 1.0, gate_bias], axis=-1)
 
         up_projection = load_parameters(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (combined_up_gate_w, combined_up_gate_b),
+            (combined_up_gate_weights, combined_up_gate_biases),
         )
 
-        # Down projection: decode MXFP4 to dense
-        down_w = decode_mxfp4(
+        down_weights = decode_mxfp4(
             weights_dict[experts_path / "down_proj_blocks"],
             weights_dict[experts_path / "down_proj_scales"],
             dtype=module.activation_precision,
             flatten=False,
         )
-        # Stored as (experts, outputs=model_dim, input_blocks, input_block_elems)
-        # Merge blocks and move outputs last
-        down_w = rearrange(down_w, "e o ib ie -> e o (ib ie)")
-        down_b = weights_dict[experts_path / "down_proj_bias"]
-        if down_b.ndim == 1:
-            down_b = jnp.broadcast_to(down_b, (*down_w.shape[:-1], down_b.shape[0]))
+        down_weights = rearrange(down_weights, "e o ib ie -> e o (ib ie)")
+        down_biases = weights_dict[experts_path / "down_proj_bias"]
+        if down_biases.ndim == 1:
+            down_biases = jnp.broadcast_to(down_biases, (*down_weights.shape[:-1], down_biases.shape[0]))
 
         down_projection = load_parameters(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (down_w, down_b),
+            (down_weights, down_biases),
+        )
+
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+    elif (
+        (experts_path / "gate_up_proj.weight") in weights_dict
+        or (experts_path / "gate_up_proj" / "weight") in weights_dict
+        or any(str(k).startswith(str(experts_path) + ".gate_up_proj") for k in weights_dict)
+    ):
+        # MLX/Qwen2Moe batched expert format: gate_up_proj fused, shape (num_experts, hidden*2, model_dim)
+        # Check for both flat and nested key formats
+        gate_up_path = experts_path / "gate_up_proj"
+        down_path = experts_path / "down_proj"
+        if (gate_up_path / "weight") in weights_dict:
+            gate_up_weights = weights_dict[gate_up_path / "weight"]
+            down_weights = weights_dict[down_path / "weight"]
+        elif (experts_path / "gate_up_proj.weight") in weights_dict:
+            gate_up_weights = weights_dict[experts_path / "gate_up_proj.weight"]
+            down_weights = weights_dict[experts_path / "down_proj.weight"]
+        else:
+            # Find the actual key format
+            gate_up_key = next(
+                (k for k in weights_dict if str(k).startswith(str(gate_up_path))),
+                None,
+            )
+            if gate_up_key is None:
+                raise KeyError(f"Could not find gate_up_proj weights under {gate_up_path}")
+            # Infer the weight key suffix
+            suffix = str(gate_up_key)[len(str(gate_up_path)) :]
+            gate_up_weights = weights_dict[gate_up_key]
+            down_key = str(down_path) + suffix
+            down_weights = weights_dict[ParameterPath(down_key)]
+
+        # gate_up_proj is [num_experts, intermediate_size*2, hidden_size] - split into gate and up
+        intermediate_size_2 = gate_up_weights.shape[1]
+        intermediate_size = intermediate_size_2 // 2
+
+        # Split gate and up: first half is gate, second half is up (or vice versa depending on model)
+        gate_weights = gate_up_weights[:, :intermediate_size, :]
+        up_weights = gate_up_weights[:, intermediate_size:, :]
+
+        # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
+        combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
+
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (combined_up_gate_weights, None),
+        )
+
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (down_weights, None),
         )
 
         experts = load_parameters(
@@ -320,20 +438,83 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             (up_projection, down_projection),
         )
     else:
-        # Fallback: recursively load a standard DenseMLP experts module
-        experts = load_mlp(
-            module.experts,
-            weights_dict,
-            experts_path,
-            "up_proj",
-            "gate_proj",
-            "down_proj",
+        # Collect expert weight paths: routed experts first, then shared experts.
+        expert_paths: list[ParameterPath] = [experts_path / str(idx) for idx in range(num_routed)]
+
+        if num_shared > 0:
+            if (path / "shared_expert" / "up_proj.weight") in weights_dict:
+                if num_shared != 1:
+                    raise ValueError("Single shared expert path found but num_shared_experts != 1.")
+                expert_paths.append(path / "shared_expert")
+            elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
+                expert_paths.extend(path / "shared_experts" / str(idx) for idx in range(num_shared))
+            else:
+                raise KeyError("Could not find shared expert weights in HF checkpoint.")
+
+        up_weight_list: list[Array] = []
+        gate_weight_list: list[Array] = []
+        down_weight_list: list[Array] = []
+        up_bias_list: list[Array] | None = [] if has_up_biases else None
+        gate_bias_list: list[Array] | None = [] if has_up_biases else None
+        down_bias_list: list[Array] | None = [] if has_down_biases else None
+
+        for expert_path in expert_paths:
+            up_weight_list.append(weights_dict[expert_path / "up_proj.weight"])
+            gate_weight_list.append(weights_dict[expert_path / "gate_proj.weight"])
+            down_weight_list.append(weights_dict[expert_path / "down_proj.weight"])
+            if up_bias_list is not None:
+                assert gate_bias_list is not None
+                up_bias_list.append(weights_dict[expert_path / "up_proj.bias"])
+                gate_bias_list.append(weights_dict[expert_path / "gate_proj.bias"])
+            if down_bias_list is not None:
+                down_bias_list.append(weights_dict[expert_path / "down_proj.bias"])
+
+        stacked_up = jnp.stack(up_weight_list, axis=0)
+        stacked_gate = jnp.stack(gate_weight_list, axis=0)
+        combined_up_gate_weights = jnp.concatenate([stacked_up, stacked_gate], axis=1)
+        if up_bias_list is None:
+            combined_up_gate_biases = None
+        else:
+            assert gate_bias_list is not None
+            stacked_up_biases = jnp.stack(up_bias_list, axis=0)
+            stacked_gate_biases = jnp.stack(gate_bias_list, axis=0)
+            combined_up_gate_biases = jnp.concatenate([stacked_up_biases, stacked_gate_biases], axis=1)
+
+        up_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (combined_up_gate_weights, combined_up_gate_biases),
         )
 
+        stacked_down = jnp.stack(down_weight_list, axis=0)
+        stacked_down_biases = jnp.stack(down_bias_list, axis=0) if down_bias_list is not None else None
+        down_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (stacked_down, stacked_down_biases),
+        )
+
+        experts = load_parameters(
+            lambda m: (m.up_projection, m.down_projection),
+            module.experts,
+            (up_projection, down_projection),
+        )
+
+    gate = None
+    if module.gate is not None:
+        gate_path = None
+        for candidate in ("shared_expert_gate", "shared_experts_gate", "shared_gate"):
+            if (path / candidate / "weight") in weights_dict or (path / candidate / "qweight") in weights_dict:
+                gate_path = path / candidate
+                break
+        if gate_path is None:
+            raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
+        gate = load_linear(module.gate, weights_dict, gate_path)
+
     return load_parameters(
-        lambda m: (m.router, m.experts),
+        lambda m: (m.router, m.experts, m.gate),
         module,
-        (router, experts),
+        (router, experts, gate),
     )
 
 
@@ -350,6 +531,8 @@ def load_attention(
     module: Attention,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
+    *,
+    reorder_q_proj_gate: bool = True,
 ) -> Attention:
     if (path / "o_proj.weight") in weights_dict or (path / "o_proj.qweight") in weights_dict:
         o_proj_name = "o_proj"
@@ -358,12 +541,131 @@ def load_attention(
     else:
         raise NotImplementedError("Can't determine attention output projection name")
 
-    qkv_projection = load_linear(
-        module.qkv_projection,
-        weights_dict,
-        path,
-        sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
-    )
+    if module.config.has_gate:
+        q_output_dim, k_output_dim, v_output_dim = module.qkv_projection.output_dims[:3]
+        q_len = q_output_dim * 2
+        head_dim = module.head_dim
+        num_heads = module.num_heads
+        if reorder_q_proj_gate:
+            base = jnp.arange(num_heads, dtype=jnp.int32) * (2 * head_dim)
+            q = base[:, None] + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
+            gate = base[:, None] + head_dim + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
+            q_perm = jnp.concatenate([q.reshape(-1), gate.reshape(-1)], axis=0)
+        else:
+            q_perm = jnp.arange(q_len, dtype=jnp.int32)
+        reorder = (_build_qkv_gate_reorder(q_len, k_output_dim, v_output_dim, q_perm, q_output_dim), 0)
+
+        def fuse_bias() -> Array | None:
+            if not module.qkv_projection.has_biases:
+                for proj in ("q_proj", "k_proj", "v_proj"):
+                    if (path / proj / "bias") in weights_dict:
+                        raise ValueError(
+                            f"Bias tensor found at {path / proj / 'bias'} but module does not support it.",
+                        )
+                return None
+            return _fuse_full_precision_weights(
+                weights_dict,
+                path,
+                ["q_proj", "k_proj", "v_proj"],
+                param_name="bias",
+                reorder=reorder,
+            )
+
+        if isinstance(module.qkv_projection, FullPrecisionLinear):
+            weights = _fuse_full_precision_weights(
+                weights_dict,
+                path,
+                ["q_proj", "k_proj", "v_proj"],
+                reorder=reorder,
+            )
+            bias = fuse_bias()
+
+            qkv_projection = load_parameters(
+                lambda m: (m.weights, m.biases),
+                module.qkv_projection,
+                (weights, bias),
+            )
+        elif isinstance(module.qkv_projection, GroupQuantizedLinear):
+            layout = AWQ_QUANTIZED_WEIGHT_LAYOUT
+            axis = int(layout.transposed)
+            reorder_with_axis = (reorder[0], axis)
+            fused_qweights, fused_qzeros, fused_scales = _fuse_quantized_weights(
+                weights_dict,
+                path,
+                ["q_proj", "k_proj", "v_proj"],
+                layout,
+                reorder=reorder_with_axis,
+            )
+            bias = fuse_bias()
+
+            weight_quantization = module.qkv_projection.config.weight_quantization_mode
+            activation_precision = module.qkv_projection.activation_precision
+            reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
+
+            weights = _process_quantized_tensor(
+                fused_qweights,
+                weight_quantization,
+                activation_precision,
+                reverse_order,
+            )
+            zeros = _process_quantized_tensor(
+                fused_qzeros,
+                weight_quantization,
+                activation_precision,
+                reverse_order,
+            )
+            scales = fused_scales.astype(activation_precision)
+
+            qkv_projection = load_parameters(
+                lambda m: (m.weights, m.scales, m.zero_points, m.biases),
+                module.qkv_projection,
+                (weights.T, scales.T, zeros.T, bias),
+            )
+        elif isinstance(module.qkv_projection, MLXQuantizedLinear):
+            layout = MLX_QUANTIZED_WEIGHT_LAYOUT
+            axis = int(layout.transposed)
+            reorder_with_axis = (reorder[0], axis)
+            fused_qweights, fused_qzeros, fused_scales = _fuse_quantized_weights(
+                weights_dict,
+                path,
+                ["q_proj", "k_proj", "v_proj"],
+                layout,
+                reorder=reorder_with_axis,
+            )
+            bias = fuse_bias()
+
+            weight_quantization = module.qkv_projection.config.weight_quantization_mode
+            activation_precision = module.qkv_projection.activation_precision
+
+            weights = _process_quantized_tensor(
+                fused_qweights,
+                weight_quantization,
+                activation_precision,
+                None,
+            )
+            deq_biases = _process_quantized_tensor(
+                fused_qzeros,
+                weight_quantization,
+                activation_precision,
+                None,
+            )
+            scales = fused_scales.astype(activation_precision)
+
+            qkv_projection = load_parameters(
+                lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
+                module.qkv_projection,
+                (weights, scales, deq_biases, bias),
+            )
+        else:
+            raise NotImplementedError("Unsupported qkv projection type for gated attention.")
+    else:
+        qkv_projection = load_linear(
+            module.qkv_projection,
+            weights_dict,
+            path,
+            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+        )
+
     out_projection = load_linear(module.out_projection, weights_dict, path / o_proj_name)
 
     if module.query_norm is not None:
@@ -427,7 +729,13 @@ def _load_conv(
         raw = weights_dict[weight_path]
         if permute_conv:
             raw = jnp.matrix_transpose(raw)
-        conv_weight = raw.squeeze(1) if raw.ndim == 3 else raw
+        if raw.ndim == 3:
+            # PyTorch Conv1d: (channels, 1, kernel) -> squeeze axis 1
+            # MLX Conv1d: (channels, kernel, 1) -> squeeze axis 2
+            axis_to_squeeze = 1 if raw.shape[1] == 1 else 2
+            conv_weight = raw.squeeze(axis_to_squeeze)
+        else:
+            conv_weight = raw
     else:
         conv_weight = conv_module.weights
 
@@ -503,6 +811,180 @@ def load_short_conv(
     )
 
 
+def load_delta_net_attention(
+    module: DeltaNetAttention,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    permute_conv: bool,
+) -> DeltaNetAttention:
+    def _delta_net_qkvz_perm() -> Array:
+        v_per_k = module.num_heads // module.num_groups
+        key_block = 2 * module.head_dim
+        value_block = module.value_head_dim * v_per_k
+        per_group = key_block + 2 * value_block
+
+        base = jnp.arange(module.num_groups, dtype=jnp.int32) * per_group
+        q = base[:, None] + jnp.arange(module.head_dim, dtype=jnp.int32)[None, :]
+        k = base[:, None] + module.head_dim + jnp.arange(module.head_dim, dtype=jnp.int32)[None, :]
+        v = base[:, None] + key_block + jnp.arange(value_block, dtype=jnp.int32)[None, :]
+        z = base[:, None] + key_block + value_block + jnp.arange(value_block, dtype=jnp.int32)[None, :]
+        return jnp.concatenate([q.reshape(-1), k.reshape(-1), v.reshape(-1), z.reshape(-1)], axis=0)
+
+    def _delta_net_ba_perm() -> Array:
+        v_per_k = module.num_heads // module.num_groups
+        per_group = 2 * v_per_k
+        base = jnp.arange(module.num_groups, dtype=jnp.int32) * per_group
+        b = base[:, None] + jnp.arange(v_per_k, dtype=jnp.int32)[None, :]
+        a = base[:, None] + v_per_k + jnp.arange(v_per_k, dtype=jnp.int32)[None, :]
+        return jnp.concatenate([b.reshape(-1), a.reshape(-1)], axis=0)
+
+    in_proj_path = path / "in_proj"
+    in_proj_weight_path = in_proj_path / "weight"
+    if in_proj_weight_path in weights_dict:
+        in_proj = load_linear(module.in_proj, weights_dict, in_proj_path)
+    else:
+        qkvz_path = path / "in_proj_qkvz"
+        ba_path = path / "in_proj_ba"
+        qkvz_weight_path = qkvz_path / "weight"
+        ba_weight_path = ba_path / "weight"
+        if not (qkvz_weight_path in weights_dict and ba_weight_path in weights_dict):
+            raise ValueError("Expected in_proj or in_proj_qkvz/in_proj_ba weights for DeltaNetAttention.")
+
+        qkvz_perm = _delta_net_qkvz_perm()
+        ba_perm = _delta_net_ba_perm()
+
+        def _reorder(array: Array, perm: Array, axis: int) -> Array:
+            return jnp.take(array, perm, axis=axis)
+
+        if isinstance(module.in_proj, FullPrecisionLinear):
+            qkvz_weight = _fuse_full_precision_weights(weights_dict, qkvz_path, None)
+            ba_weight = _fuse_full_precision_weights(weights_dict, ba_path, None)
+            qkvz_weight = _reorder(qkvz_weight, qkvz_perm, axis=0)
+            ba_weight = _reorder(ba_weight, ba_perm, axis=0)
+            merged = jnp.concatenate([qkvz_weight, ba_weight], axis=0)
+            in_proj = load_parameters(lambda m: (m.weights, m.biases), module.in_proj, (merged, None))
+        elif isinstance(module.in_proj, GroupQuantizedLinear):
+            qweights, qzeros, qscales = _fuse_quantized_weights(
+                weights_dict,
+                qkvz_path,
+                None,
+                AWQ_QUANTIZED_WEIGHT_LAYOUT,
+            )
+            bweights, bzeros, bscales = _fuse_quantized_weights(
+                weights_dict,
+                ba_path,
+                None,
+                AWQ_QUANTIZED_WEIGHT_LAYOUT,
+            )
+            axis = int(AWQ_QUANTIZED_WEIGHT_LAYOUT.transposed)
+            qweights = _reorder(qweights, qkvz_perm, axis=axis)
+            qzeros = _reorder(qzeros, qkvz_perm, axis=axis)
+            qscales = _reorder(qscales, qkvz_perm, axis=axis)
+            bweights = _reorder(bweights, ba_perm, axis=axis)
+            bzeros = _reorder(bzeros, ba_perm, axis=axis)
+            bscales = _reorder(bscales, ba_perm, axis=axis)
+
+            fused_qweights = jnp.concatenate([qweights, bweights], axis=axis)
+            fused_qzeros = jnp.concatenate([qzeros, bzeros], axis=axis)
+            fused_scales = jnp.concatenate([qscales, bscales], axis=axis)
+
+            weight_quantization = module.in_proj.config.weight_quantization_mode
+            activation_precision = module.in_proj.activation_precision
+            reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
+
+            weights = _process_quantized_tensor(
+                fused_qweights,
+                weight_quantization,
+                activation_precision,
+                reverse_order,
+            )
+            zeros = _process_quantized_tensor(
+                fused_qzeros,
+                weight_quantization,
+                activation_precision,
+                reverse_order,
+            )
+            scales = fused_scales.astype(activation_precision)
+
+            in_proj = load_parameters(
+                lambda m: (m.weights, m.scales, m.zero_points, m.biases),
+                module.in_proj,
+                (weights.T, scales.T, zeros.T, None),
+            )
+        elif isinstance(module.in_proj, MLXQuantizedLinear):
+            qweights, qdeq_biases, qscales = _fuse_quantized_weights(
+                weights_dict,
+                qkvz_path,
+                None,
+                MLX_QUANTIZED_WEIGHT_LAYOUT,
+            )
+            bweights, bdeq_biases, bscales = _fuse_quantized_weights(
+                weights_dict,
+                ba_path,
+                None,
+                MLX_QUANTIZED_WEIGHT_LAYOUT,
+            )
+            axis = int(MLX_QUANTIZED_WEIGHT_LAYOUT.transposed)
+            qweights = _reorder(qweights, qkvz_perm, axis=axis)
+            qdeq_biases = _reorder(qdeq_biases, qkvz_perm, axis=axis)
+            qscales = _reorder(qscales, qkvz_perm, axis=axis)
+            bweights = _reorder(bweights, ba_perm, axis=axis)
+            bdeq_biases = _reorder(bdeq_biases, ba_perm, axis=axis)
+            bscales = _reorder(bscales, ba_perm, axis=axis)
+
+            fused_qweights = jnp.concatenate([qweights, bweights], axis=axis)
+            fused_deq_biases = jnp.concatenate([qdeq_biases, bdeq_biases], axis=axis)
+            fused_scales = jnp.concatenate([qscales, bscales], axis=axis)
+
+            weight_quantization = module.in_proj.config.weight_quantization_mode
+            activation_precision = module.in_proj.activation_precision
+
+            weights = _process_quantized_tensor(
+                fused_qweights,
+                weight_quantization,
+                activation_precision,
+                None,
+            )
+            scales = fused_scales.astype(activation_precision)
+            deq_biases = fused_deq_biases.astype(activation_precision)
+
+            in_proj = load_parameters(
+                lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
+                module.in_proj,
+                (weights, scales, deq_biases, None),
+            )
+        else:
+            raise TypeError(f"Unsupported DeltaNetAttention in_proj type: {type(module.in_proj)}")
+    conv = _load_conv(module.conv, weights_dict, path, permute_conv)
+    out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj")
+    norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
+
+    dt_bias_path = path / "dt_bias"
+    if dt_bias_path in weights_dict:
+        dt_bias = weights_dict[dt_bias_path]
+    else:
+        dt_bias = module.dt_bias
+
+    a_log_path = path / "A_log"
+    if a_log_path in weights_dict:
+        a_log = weights_dict[a_log_path]
+    else:
+        a_log = module.a_log
+
+    return load_parameters(
+        lambda m: (
+            m.in_proj,
+            m.conv,
+            m.out_proj,
+            m.norm,
+            m.dt_bias,
+            m.a_log,
+        ),
+        module,
+        (in_proj, conv, out_proj, norm, dt_bias, a_log),
+    )
+
+
 def load_transformer_layer(
     module: TransformerLayer,
     weights_dict: Mapping[str, Array],
@@ -516,6 +998,8 @@ def load_transformer_layer(
     gate_proj_key: str,
     down_proj_key: str,
     permute_conv: bool,
+    *,
+    reorder_q_proj_gate: bool = True,
 ) -> TransformerLayer:
     if module.pre_mixer_norm is not None:
         assert isinstance(module.pre_mixer_norm, Normalization)
@@ -529,7 +1013,14 @@ def load_transformer_layer(
         pre_attention_norm = None
     # Load mixer (attention or mamba)
     if isinstance(module.mixer, Attention):
-        mixer = load_attention(module.mixer, weights_dict, mixer_path / mixer_key)
+        mixer = load_attention(
+            module.mixer,
+            weights_dict,
+            mixer_path / mixer_key,
+            reorder_q_proj_gate=reorder_q_proj_gate,
+        )
+    elif isinstance(module.mixer, DeltaNetAttention):
+        mixer = load_delta_net_attention(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, Mamba2):
         mixer = load_mamba2(module.mixer, weights_dict, mixer_path / mixer_key, permute_conv)
     elif isinstance(module.mixer, ShortConv):
@@ -721,6 +1212,8 @@ def load_untied_embedding(
 def load_huggingface_decoder(
     module: Decoder,
     weights_dict: Mapping[str, Array],
+    *,
+    reorder_q_proj_gate: bool = True,
 ) -> Decoder:
     if any(key.startswith("language_model.") for key in weights_dict):
         base_path = ParameterPath("language_model")
@@ -776,7 +1269,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {AttentionConfig: "self_attn"}
+        mixer_key = {AttentionConfig: "self_attn", DeltaNetAttentionConfig: "linear_attn"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -819,6 +1312,7 @@ def load_huggingface_decoder(
             gate_proj_key,
             down_proj_key,
             permute_conv,
+            reorder_q_proj_gate=reorder_q_proj_gate,
         )
         for i, layer in enumerate(module.transformer.layers)
     )

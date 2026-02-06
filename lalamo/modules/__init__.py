@@ -69,6 +69,8 @@ from .rope import (
 from .token_mixers import (
     Attention,
     AttentionConfig,
+    DeltaNetAttention,
+    DeltaNetAttentionConfig,
     DynamicKVCacheLayer,
     KVCacheLayer,
     Mamba2,
@@ -102,6 +104,8 @@ __all__ = [
     "DecoderConfig",
     "DecoderForwardPassConfig",
     "DecoderResult",
+    "DeltaNetAttention",
+    "DeltaNetAttentionConfig",
     "DenseMLP",
     "DenseMLPConfig",
     "DynamicKVCacheLayer",
