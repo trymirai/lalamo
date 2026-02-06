@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
 
@@ -23,7 +22,6 @@ class InferenceEngine(ABC):
         self,
         input_path: Path,
         output_path: Path,
-        **engine_params: Any,  # noqa: ANN401
     ) -> Path:
         """Run inference and save outputs. """
         ...

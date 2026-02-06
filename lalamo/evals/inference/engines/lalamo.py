@@ -1,20 +1,23 @@
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import polars as pl
-from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
+from evals.types import EvalPrompt, InferenceConfig, InferenceOutput, InternalEvalRecord
 
 from lalamo.commands import generate_replies
 from lalamo.evals.inference.engines.base import InferenceEngine
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class LalamoInferenceEngine(InferenceEngine):
     model_path: Path
+    inference_config: InferenceConfig
     max_vram: int | None = None
     batch_size: int | None = None
-    max_output_length: int = 8192
 
     def prepare_input(
         self,
@@ -69,21 +72,46 @@ class LalamoInferenceEngine(InferenceEngine):
         self,
         input_path: Path,
         output_path: Path,
-        **engine_params: Any,  # noqa: ANN401
     ) -> Path:
         from lalamo.main import CliGenerateRepliesCallbacks
 
-        max_vram = engine_params.get("max_vram", self.max_vram)
-        batch_size = engine_params.get("batch_size", self.batch_size)
-        max_output_length = engine_params.get("max_output_length", self.max_output_length)
+        # Check for unsupported inference config parameters and warn
+        unsupported = []
+        # Required fields - always set in config
+        unsupported.append(f"temperature={self.inference_config.temperature}")
+        unsupported.append(f"max_model_len={self.inference_config.max_model_len}")
+        # Optional fields - only warn if explicitly set
+        if self.inference_config.top_p is not None:
+            unsupported.append(f"top_p={self.inference_config.top_p}")
+        if self.inference_config.top_k is not None:
+            unsupported.append(f"top_k={self.inference_config.top_k}")
+        if self.inference_config.stop_tokens:
+            unsupported.append(f"stop_tokens={self.inference_config.stop_tokens}")
 
+        if unsupported:
+            logger.warning(
+                "The following inference config parameters are set but not yet supported: %s. "
+                "Only max_output_length is currently used.",
+                ", ".join(unsupported),
+            )
+
+        # TODO: Add support for remaining inference config parameters:
+        # - temperature = self.inference_config.temperature
+        # - top_p = self.inference_config.top_p
+        # - top_k = self.inference_config.top_k
+        # - stop_tokens = self.inference_config.stop_tokens (needs tokenization)
+        # - max_model_len = self.inference_config.max_model_len
+        #
+        # This requires updating generate_replies() signature to accept these parameters.
+
+        max_output_length = self.inference_config.max_output_length
         generate_replies(
             model_path=self.model_path,
             dataset_path=input_path,
             output_path=output_path,
-            max_vram=max_vram,
+            max_vram=self.max_vram,
             max_output_length=max_output_length,
-            batch_size=batch_size,
+            batch_size=self.batch_size,
             callbacks_type=CliGenerateRepliesCallbacks,
         )
 
