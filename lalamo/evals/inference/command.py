@@ -11,7 +11,7 @@ from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 def _load_internal_dataset(
     dataset_dir: Path,
     split: str,
-    limit: int | None,
+    limit: int | None = None,
 ) -> list[InternalEvalRecord]:
     split_file = dataset_dir / f"{split}.parquet"
     df = pl.read_parquet(split_file)
@@ -30,7 +30,6 @@ def infer_command_handler(
     output_dir: Path,
     callbacks: BaseRunInferenceCallbacks,
     engine: str = "lalamo",
-    num_few_shot: int = 5,
     limit: int | None = None,
     batch_size: int | None = None,
     vram_gb: float | None = None,
@@ -53,26 +52,16 @@ def infer_command_handler(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Get splits from adapter
-    inference_split = eval_adapter.get_inference_split()
-    few_shot_split = eval_adapter.get_few_shot_split()
+    loading_config = eval_adapter.get_loading_config(limit)
 
-    callbacks.loading_test_dataset()
-    test_records = _load_internal_dataset(dataset_dir, inference_split, limit)
-
-    few_shot_records = None
-    if num_few_shot > 0 and few_shot_split is not None:
-        callbacks.loading_validation_dataset()
-        few_shot_records = _load_internal_dataset(dataset_dir, few_shot_split, None)
-    else:
-        callbacks.skipped_validation_dataset()
+    callbacks.loading_datasets()
+    datasets = {
+        config.split: _load_internal_dataset(dataset_dir, config.split, config.limit)
+        for config in loading_config
+    }
 
     callbacks.formatting_prompts()
-    prompts = eval_adapter.format_prompts(
-        records=test_records,
-        few_shot_source=few_shot_records,
-        num_few_shot=num_few_shot,
-    )
+    prompts = eval_adapter.format_prompts(datasets)
 
     callbacks.preparing_input()
     input_path = output_dir / "inference_input.parquet"
@@ -85,7 +74,7 @@ def infer_command_handler(
     callbacks.parsing_output()
     outputs = inference_engine.parse_output(raw_output_path, input_path)
 
-    predictions_path = output_dir / f"predictions_{inference_split}.parquet"
+    predictions_path = output_dir / "predictions.parquet"
     predictions_df = pl.DataFrame(
         {
             "id": [o.id for o in outputs],

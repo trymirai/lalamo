@@ -78,10 +78,6 @@ def infer_command(
     dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
     output_dir: Annotated[Path, Argument(help="Output directory for results")],
     engine: Annotated[str, Option(help="Inference engine")] = "lalamo",
-    num_few_shot: Annotated[
-        int,
-        Option("-k", "--num-few-shot", help="Number of few-shot examples (k-shot learning)"),
-    ] = 5,
     limit: Annotated[int | None, Option(help="Limit number of test examples to run")] = None,
     batch_size: Annotated[
         int | None, Option("--batch-size", help="Batch size for inference (auto-computed if not set)"),
@@ -106,13 +102,11 @@ def infer_command(
             callbacks=ConsoleRunInferenceCallbacks(
                 eval_repo=eval_repo,
                 model_path=model_path,
-                num_few_shot=num_few_shot,
                 limit=limit,
                 batch_size=batch_size,
                 vram_gb=vram_gb,
             ),
             engine=engine,
-            num_few_shot=num_few_shot,
             limit=limit,
             batch_size=batch_size,
             vram_gb=vram_gb,
