@@ -12,13 +12,9 @@ def _load_internal_dataset(
     dataset_dir: Path,
     split: str,
     max_examples: int | None,
-    category: str | None = None,
 ) -> list[InternalEvalRecord]:
     split_file = dataset_dir / f"{split}.parquet"
     df = pl.read_parquet(split_file)
-
-    if category:
-        df = df.filter(pl.col("category") == category)
 
     if max_examples:
         df = df.head(max_examples)
@@ -36,7 +32,6 @@ def infer_command_handler(
     engine: str = "lalamo",
     num_few_shot: int = 5,
     max_examples: int | None = None,
-    category: str | None = None,
     batch_size: int | None = None,
     vram_gb: float | None = None,
     max_output_length: int = 2048,
@@ -63,7 +58,7 @@ def infer_command_handler(
     few_shot_split = eval_adapter.get_few_shot_split()
 
     callbacks.loading_test_dataset()
-    test_records = _load_internal_dataset(dataset_dir, inference_split, max_examples, category)
+    test_records = _load_internal_dataset(dataset_dir, inference_split, max_examples)
 
     few_shot_records = None
     if num_few_shot > 0 and few_shot_split is not None:
