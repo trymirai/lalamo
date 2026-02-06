@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import shutil
 import tempfile
@@ -27,7 +28,7 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import LanguageModelConfig
+from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
@@ -578,6 +579,7 @@ def generate_replies(
     max_vram: int | None,
     max_output_length: int = 8192,
     batch_size: int | None = None,
+    generation_config: GenerationConfig | None = None,
     callbacks_type: Callable[
         [
             Path,
@@ -595,7 +597,7 @@ def generate_replies(
         max_vram = get_default_device_bytes()
         if max_vram is None:
             raise ValueError(
-                "Unable to determine default defice memory capacity; please specify either --vram-gb or --batch-size",
+                "Unable to determine default device memory capacity; please specify either --vram-gb or --batch-size",
             )
 
     # Count rows without loading full dataset
@@ -634,10 +636,23 @@ def generate_replies(
 
     callbacks.batch_sizes_estimated()
 
+    if generation_config is not None:
+        if generation_config.stop_token_ids:
+            raise ValueError(
+                "Do not set generation_config.stop_token_ids for this command; "
+                "the model's configured stop tokens are always used instead.",
+            )
+
+        generation_config = dataclasses.replace(
+            generation_config,
+            stop_token_ids=model.config.generation_config.stop_token_ids,
+        )
+
     replies: list[tuple[int, AssistantMessage]] = []
     for rows_processed, (idx, reply) in enumerate(
         model.reply_many(
             dataset,
+            generation_config=generation_config,
             inference_config=inference_config,
             vram_bytes=max_vram,
             batch_sizes_callback=callbacks.batch_sizes_computed,
