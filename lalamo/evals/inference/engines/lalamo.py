@@ -3,10 +3,9 @@ from pathlib import Path
 from typing import Any
 
 import polars as pl
-from evals.types import EvalPrompt, InferenceOutput
+from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
 
 from lalamo.commands import generate_replies
-from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 from lalamo.evals.inference.engines.base import InferenceEngine
 
 
@@ -20,24 +19,46 @@ class LalamoInferenceEngine(InferenceEngine):
     def prepare_input(
         self,
         prompts: list[EvalPrompt],
+        records: list[InternalEvalRecord],
         output_path: Path,
     ) -> Path:
+        if len(prompts) != len(records):
+            raise ValueError(
+                f"Prompts/records length mismatch: {len(prompts)} prompts != {len(records)} records",
+            )
+
         conversations = []
         ids = []
-        for prompt in prompts:
-            # Convert PromptMessage to HF format
+        questions = []
+        answers = []
+        metadatas = []
+
+        for prompt, record in zip(prompts, records, strict=True):
+            # verify ID alignment
+            if prompt.id != record.id:
+                raise ValueError(
+                    f"Order mismatch: prompt.id={prompt.id!r} != record.id={record.id!r}. "
+                    "format_prompts must maintain dataset order.",
+                )
+
             conversation = [
                 {"role": msg.role, "content": msg.content}
                 for msg in prompt.messages
             ]
+
             conversations.append(conversation)
             ids.append(prompt.id)
+            questions.append(record.question)
+            answers.append(record.answer)
+            metadatas.append(record.metadata)
 
-        # Note: id is stored for later matching by order
-        # TODO(mullakhmetov): confirm if we need id it
         input_data = pl.DataFrame({
-            "id": ids,
             "conversation": conversations,
+            # following columns are not used for inference but included for output parsing and metadata preservation
+            "id": ids,
+            "question": questions,
+            "answer": answers,
+            "metadata": metadatas,
         })
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -48,7 +69,6 @@ class LalamoInferenceEngine(InferenceEngine):
         self,
         input_path: Path,
         output_path: Path,
-        callbacks: BaseRunInferenceCallbacks,
         **engine_params: Any,  # noqa: ANN401
     ) -> Path:
         from lalamo.main import CliGenerateRepliesCallbacks
@@ -56,8 +76,6 @@ class LalamoInferenceEngine(InferenceEngine):
         max_vram = engine_params.get("max_vram", self.max_vram)
         batch_size = engine_params.get("batch_size", self.batch_size)
         max_output_length = engine_params.get("max_output_length", self.max_output_length)
-
-        total_rows = pl.scan_parquet(input_path).select(pl.len()).collect().item()
 
         generate_replies(
             model_path=self.model_path,
@@ -77,20 +95,22 @@ class LalamoInferenceEngine(InferenceEngine):
         input_path: Path,
     ) -> list[InferenceOutput]:
         input_df = pl.read_parquet(input_path)
-        ids = input_df["id"].to_list()
-
         output_df = pl.read_parquet(output_path)
 
-        if len(ids) != len(output_df):
+        if len(input_df) != len(output_df):
             raise ValueError(
-                f"Input/output length mismatch: {len(ids)} inputs, {len(output_df)} outputs",
+                f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs",
             )
 
+        # match by position - we assume input and output are in the same order
         outputs = [
             InferenceOutput(
-                id=ids[i],
+                id=input_df["id"][i],
                 response=output_df["response"][i],
                 chain_of_thought=output_df["chain_of_thought"][i],
+                question=input_df["question"][i],
+                answer=input_df["answer"][i],
+                metadata=input_df["metadata"][i],
             )
             for i in range(len(output_df))
         ]

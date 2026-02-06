@@ -8,7 +8,6 @@ from lalamo.evals.datasets.specs import REPO_TO_EVAL
 def benchmark_command_handler(
     eval_name: str,
     predictions_path: Path,
-    dataset_dir: Path,
     callbacks: BaseBenchmarkCallbacks,
 ) -> None:
     if eval_name not in REPO_TO_EVAL:
@@ -18,6 +17,5 @@ def benchmark_command_handler(
     compute_metrics(
         eval_spec=REPO_TO_EVAL[eval_name],
         predictions_path=predictions_path,
-        dataset_dir=dataset_dir,
         callbacks=callbacks,
     )

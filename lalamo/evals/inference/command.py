@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import polars as pl
-from evals.types import InferenceOutput, InternalEvalRecord
+from evals.types import InternalEvalRecord
 
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference import LalamoInferenceEngine
@@ -63,13 +63,16 @@ def infer_command_handler(
     callbacks.formatting_prompts()
     prompts = eval_adapter.format_prompts(datasets)
 
+    benchmark_split = eval_adapter.get_benchmark_split()
+    benchmark_records = datasets[benchmark_split]
+
     callbacks.preparing_input()
     input_path = output_dir / "inference_input.parquet"
-    inference_engine.prepare_input(prompts, input_path)
+    inference_engine.prepare_input(prompts, benchmark_records, input_path)
 
     callbacks.running_inference()
     raw_output_path = output_dir / "inference_output.parquet"
-    inference_engine.run_inference(input_path, raw_output_path, callbacks)
+    inference_engine.run_inference(input_path, raw_output_path)
 
     callbacks.parsing_output()
     outputs = inference_engine.parse_output(raw_output_path, input_path)
@@ -78,8 +81,11 @@ def infer_command_handler(
     predictions_df = pl.DataFrame(
         {
             "id": [o.id for o in outputs],
+            "question": [o.question for o in outputs],
             "model_output": [o.response for o in outputs],
             "chain_of_thought": [o.chain_of_thought for o in outputs],
+            "answer": [o.answer for o in outputs],
+            "metadata": [o.metadata for o in outputs],
         },
     )
     predictions_path.parent.mkdir(parents=True, exist_ok=True)

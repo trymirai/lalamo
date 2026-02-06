@@ -144,13 +144,11 @@ def infer_command(
 def benchmark_command(
     eval_name: Annotated[str, Argument(help="Eval name (e.g., MMLU-Pro)")],
     predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
-    dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
 ) -> None:
     try:
         benchmark_command_handler(
             eval_name=eval_name,
             predictions_path=predictions_path,
-            dataset_dir=dataset_dir,
             callbacks=BenchmarkConsoleCallbacks(),
         )
     except ValueError as e:

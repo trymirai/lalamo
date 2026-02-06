@@ -15,9 +15,6 @@ class BaseBenchmarkCallbacks:
     def loading_predictions(self) -> None:
         pass
 
-    def loading_ground_truth(self) -> None:
-        pass
-
     def preparing_benchmark(self) -> None:
         pass
 
@@ -38,16 +35,13 @@ class ConsoleCallbacks(BaseBenchmarkCallbacks):
         console.print()
 
     def loading_predictions(self) -> None:
-        console.print("  [cyan]1/4[/cyan] Loading predictions...")
-
-    def loading_ground_truth(self) -> None:
-        console.print("  [cyan]2/4[/cyan] Loading ground truth...")
+        console.print("  [cyan]1/3[/cyan] Loading predictions...")
 
     def preparing_benchmark(self) -> None:
-        console.print("  [cyan]3/4[/cyan] Preparing benchmark data...")
+        console.print("  [cyan]2/3[/cyan] Preparing benchmark data...")
 
     def running_benchmark(self) -> None:
-        console.print("  [cyan]4/4[/cyan] Running benchmark...")
+        console.print("  [cyan]3/3[/cyan] Running benchmark...")
 
     def completed(self, metrics: BenchmarkMetrics) -> None:
         console.print()
