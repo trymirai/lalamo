@@ -309,7 +309,6 @@ def _import_language_model(
     else:
         generation_config = GenerationConfig(stop_token_ids)
 
-    print(f"eos tokens: {generation_config.stop_token_ids}")
     language_model_config = LanguageModelConfig(
         model_config=decoder.config,
         message_processor_config=message_processor.config,
