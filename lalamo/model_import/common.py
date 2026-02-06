@@ -20,7 +20,7 @@ from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
 from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
-from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
+from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
 from .model_specs.common import JSONFieldSpec
@@ -125,6 +125,33 @@ class ImportResults(NamedTuple):
     metadata: ModelMetadata
 
 
+def _token_id_to_text(tokenizer: Tokenizer, token_id: int) -> str:
+    token = tokenizer.id_to_token(token_id)
+    if token is not None:
+        return token
+    decoded = tokenizer.decode([token_id], skip_special_tokens=False)
+    if decoded == "":
+        raise ValueError(f"Could not map token id {token_id} to text.")
+    return decoded
+
+
+def _token_ids_to_text(tokenizer: Tokenizer, token_value: object) -> str | None:
+    match token_value:
+        case None:
+            return None
+        case int() as token_id:
+            return _token_id_to_text(tokenizer, token_id)
+        case list() as token_ids:
+            if not token_ids:
+                return None
+            first_token_id = token_ids[0]
+            if not isinstance(first_token_id, int):
+                raise ValueError(f"Invalid token ids: {token_ids}")  # noqa: TRY004
+            return _token_id_to_text(tokenizer, first_token_id)
+        case _:
+            raise ValueError(f"Invalid token value: {token_value}")
+
+
 def import_message_processor(
     model_spec: ModelSpec,
     output_dir: Path | str | None = None,
@@ -157,6 +184,7 @@ def import_message_processor(
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
+
     prompt_template = process_chat_template(prompt_template)
     tokenizer = Tokenizer.from_file(str(tokenizer_file))
 
@@ -166,8 +194,8 @@ def import_message_processor(
     tokenizer.add_special_tokens(added_special_tokens)
     tokenizer.add_tokens(added_not_special_tokens)
 
-    bos_token = tokenizer_config.bos_token
-    eos_token = tokenizer_config.eos_token
+    bos_token = getattr(tokenizer_config, "bos_token", None)
+    eos_token = getattr(tokenizer_config, "eos_token", None)
 
     # If we were not able to identify bos/eos - they are probably somewhere else, so we check config.json
     if eos_token is None or bos_token is None:
@@ -177,8 +205,10 @@ def import_message_processor(
 
         if bos_token is None:
             bos_token = foreign_decoder_json.get("bos_token_id")
+            bos_token = _token_ids_to_text(tokenizer, bos_token)
         if eos_token is None:
             eos_token = foreign_decoder_json.get("eos_token_id")
+            eos_token = _token_ids_to_text(tokenizer, eos_token)
 
     system_prompt_text = None
     match model_spec.configs.system_prompt:
@@ -189,6 +219,7 @@ def import_message_processor(
             system_prompt_text = sp
         case None:
             pass
+
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
         output_parser_regex=model_spec.output_parser_regex,
@@ -264,17 +295,21 @@ def _import_language_model(
 
     message_processor = import_message_processor(model_spec)
 
-    stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
+    stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
 
     if isinstance(model_spec.configs.generation_config, GenerationConfig):
-        generation_config = replace(model_spec.configs.generation_config, stop_token_ids=stop_token_ids)
+        candidate_generation_config = model_spec.configs.generation_config
+        stop_token_ids = merge_token_ids(candidate_generation_config.stop_token_ids, stop_token_ids)
+        generation_config = replace(candidate_generation_config, stop_token_ids=stop_token_ids)
     elif isinstance(model_spec.configs.generation_config, FileSpec):
         hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
         hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
-        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids)
+        stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
+        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
     else:
         generation_config = GenerationConfig(stop_token_ids)
 
+    print(f"eos tokens: {generation_config.stop_token_ids}")
     language_model_config = LanguageModelConfig(
         model_config=decoder.config,
         message_processor_config=message_processor.config,
