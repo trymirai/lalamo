@@ -5,7 +5,6 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, import_model
 from lalamo.models import LanguageModel
 from lalamo.models.language_model import GenerationConfig
-from lalamo.sampling import GreedyPolicy
 
 MODEL_LIST = [
     "Qwen/Qwen2.5-0.5B-Instruct",
