@@ -37,21 +37,6 @@ from lalamo.modules.torch_interop import DTypeConvert, torch_to_jax
 from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
 
-def try_locate_fish_audio_model_path() -> Optional[Path]:
-    fish_audiod_repo_id = "fishaudio/openaudio-s1-mini"
-
-    repos = huggingface_hub.scan_cache_dir().repos
-    try:
-        fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-
-        api = huggingface_hub.HfApi()
-        cache_info = api.model_info(fish_audiod_repo_id)
-        commit_hash = cache_info.sha
-        return fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    except StopIteration:
-        return None
-
-
 def from_fish_audio_config(
     fish_audio_cfg: DualARModelArgs,
     tokenizer: FishTokenizer,
