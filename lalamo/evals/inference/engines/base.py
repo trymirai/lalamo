@@ -4,6 +4,8 @@ from pathlib import Path
 
 from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
 
+from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
+
 
 @dataclass(frozen=True)
 class InferenceEngine(ABC):
@@ -22,6 +24,7 @@ class InferenceEngine(ABC):
         self,
         input_path: Path,
         output_path: Path,
+        callbacks: BaseEngineCallbacks,
     ) -> Path:
         """Run inference and save outputs. """
         ...

@@ -30,10 +30,10 @@ def infer_command_handler(
     dataset_dir: Path,
     output_dir: Path,
     callbacks: BaseRunInferenceCallbacks,
-    engine: str = "lalamo",
     limit: int | None = None,
     batch_size: int | None = None,
     vram_gb: float | None = None,
+    engine: str = "lalamo",
     # Inference config overrides (None = use adapter's reference value)
     temperature: float | None = None,
     max_output_length: int | None = None,
@@ -74,27 +74,22 @@ def infer_command_handler(
 
     loading_config = eval_adapter.get_loading_config(limit)
 
-    callbacks.loading_datasets()
     datasets = {
         config.split: _load_internal_dataset(dataset_dir, config.split, config.limit)
         for config in loading_config
     }
 
-    callbacks.formatting_prompts()
     prompts = eval_adapter.format_prompts(datasets)
 
     benchmark_split = eval_adapter.get_benchmark_split()
     benchmark_records = datasets[benchmark_split]
 
-    callbacks.preparing_input()
     input_path = output_dir / "inference_input.parquet"
     inference_engine.prepare_input(prompts, benchmark_records, input_path)
 
-    callbacks.running_inference()
     raw_output_path = output_dir / "inference_output.parquet"
-    inference_engine.run_inference(input_path, raw_output_path)
+    inference_engine.run_inference(input_path, raw_output_path, callbacks)
 
-    callbacks.parsing_output()
     outputs = inference_engine.parse_output(raw_output_path, input_path)
 
     predictions_path = output_dir / "predictions.parquet"

@@ -1,15 +1,12 @@
-import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
 
 import polars as pl
 from evals.types import EvalPrompt, InferenceConfig, InferenceOutput, InternalEvalRecord
 
 from lalamo.commands import generate_replies
 from lalamo.evals.inference.engines.base import InferenceEngine
-
-logger = logging.getLogger(__name__)
+from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 
 
 @dataclass(frozen=True)
@@ -72,6 +69,7 @@ class LalamoInferenceEngine(InferenceEngine):
         self,
         input_path: Path,
         output_path: Path,
+        callbacks: BaseEngineCallbacks,
     ) -> Path:
         from lalamo.main import CliGenerateRepliesCallbacks
 
@@ -89,13 +87,9 @@ class LalamoInferenceEngine(InferenceEngine):
             unsupported.append(f"stop_tokens={self.inference_config.stop_tokens}")
 
         if unsupported:
-            logger.warning(
-                "The following inference config parameters are set but not yet supported: %s. "
-                "Only max_output_length is currently used.",
-                ", ".join(unsupported),
-            )
+            callbacks.unsupported_inference_params(unsupported)
 
-        # TODO: Add support for remaining inference config parameters:
+        # TODO(mullakhmetov): Add support for remaining inference config parameters:
         # - temperature = self.inference_config.temperature
         # - top_p = self.inference_config.top_p
         # - top_k = self.inference_config.top_k
