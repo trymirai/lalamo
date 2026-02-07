@@ -15,6 +15,7 @@ from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
+from lalamo.model_registry import get_model_registry
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
@@ -28,7 +29,6 @@ from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.model_registry import get_model_registry
 from lalamo.utils import process_chat_template
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
