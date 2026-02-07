@@ -592,6 +592,23 @@ def generate_replies(
         GenerateRepliesCallbacks,
     ] = GenerateRepliesCallbacks,
 ) -> None:
+    """Generate replies for every conversation in a dataset.
+
+    Loads a locally-converted model from ``model_path``, reads a Parquet dataset from ``dataset_path`` (expected to
+    have a ``conversation`` column of HuggingFace-style message lists), and writes a Parquet file to ``output_path``
+    with ``response`` and ``chain_of_thought`` columns.
+
+    Exactly one of ``max_vram`` or ``batch_size`` should be provided.  When ``max_vram`` is given (in bytes), batch
+    sizes are estimated automatically per sequence length.  If neither is set, an estimate for the device memory is
+    used.  Prefer setting ``max_output_length`` to a value no larger than you actually need, since it directly affects
+    memory consumption and therefore the batch sizes that fit in VRAM.
+
+    If ``generation_config_override`` is provided it replaces the model's default generation config entirely
+    (temperature, top-k, etc.).  Do not set ``stop_token_ids`` on it: the model's own stop tokens are always
+    injected automatically, and providing them will throw a ValueError.
+
+    ``callbacks_type`` is used internally (cli) for progress visualisation.
+    """
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
         max_vram = get_default_device_bytes()
@@ -636,6 +653,7 @@ def generate_replies(
 
     callbacks.batch_sizes_estimated()
 
+    generation_config = None
     if generation_config_override is not None:
         if generation_config_override.stop_token_ids:
             raise ValueError(
