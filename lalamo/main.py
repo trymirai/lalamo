@@ -59,12 +59,13 @@ from lalamo.common import (
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import REPO_TO_MODEL, ModelSpec
+from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.registry import ModelRegistry
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -75,6 +76,7 @@ DEFAULT_OUTPUT_DIR = Path("models")
 
 console = Console()
 err_console = Console(stderr=True)
+_registry: ModelRegistry | None = None
 app = Typer(
     rich_markup_mode="rich",
     add_completion=False,
@@ -82,13 +84,21 @@ app = Typer(
 )
 
 
+def _get_registry() -> ModelRegistry:
+    global _registry
+    if _registry is None:
+        _registry = ModelRegistry()
+    return _registry
+
+
 class ModelParser(ParamType):
     name: str = "Huggingface Model Repo"
 
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
-        result = REPO_TO_MODEL.get(value)
+        repo_to_model = _get_registry().repo_to_model
+        result = repo_to_model.get(value)
         if result is None:
-            closest_repo = _closest_repo(value, list(REPO_TO_MODEL))
+            closest_repo = _closest_repo(value, list(repo_to_model))
             error_message_parts = [
                 f'"{value}".',
             ]
@@ -425,7 +435,7 @@ def convert(
             click_type=ModelParser(),
             show_default=False,
             metavar="MODEL_REPO",
-            autocompletion=lambda: list(REPO_TO_MODEL),
+            autocompletion=lambda: list(_get_registry().repo_to_model),
         ),
     ],
     precision: Annotated[
@@ -641,8 +651,9 @@ def list_models(
         ),
     ] = False,
 ) -> None:
+    registry = _get_registry()
     sorted_specs = sorted(
-        REPO_TO_MODEL.values(),
+        registry.repo_to_model.values(),
         key=lambda spec: (
             spec.vendor.lower(),
             spec.family.lower(),

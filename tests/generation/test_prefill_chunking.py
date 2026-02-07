@@ -2,7 +2,8 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from lalamo.model_import import REPO_TO_MODEL, import_model
+from lalamo.model_import import import_model
+from lalamo.registry import ModelRegistry
 from lalamo.models import LanguageModel
 
 from ..common import assert_close
@@ -13,8 +14,8 @@ NO_CHUNK_SIZE = 100_000
 
 
 @pytest.fixture
-def language_model() -> LanguageModel:
-    model = import_model(REPO_TO_MODEL["Qwen/Qwen2.5-0.5B-Instruct"]).model
+def language_model(model_registry: ModelRegistry) -> LanguageModel:
+    model = import_model(model_registry.repo_to_model["Qwen/Qwen2.5-0.5B-Instruct"]).model
     assert isinstance(model, LanguageModel)
     return model
 

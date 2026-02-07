@@ -28,16 +28,16 @@ from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
+from lalamo.registry import ModelRegistry
 from lalamo.utils import process_chat_template
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
 from .model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
-from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
+from .model_specs import FileSpec, ModelSpec, ModelType, UseCase
 from .model_specs.common import JSONFieldSpec, WeightsType
 
 __all__ = [
-    "REPO_TO_MODEL",
     "DownloadingFileEvent",
     "FinishedDownloadingFileEvent",
     "InitializingModelEvent",
@@ -436,7 +436,7 @@ def import_model(
 ) -> ImportResults:
     if isinstance(model_spec, str):
         try:
-            model_spec = REPO_TO_MODEL[model_spec]
+            model_spec = ModelRegistry().repo_to_model[model_spec]
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
