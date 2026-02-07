@@ -65,7 +65,7 @@ from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.registry import get_model_registry
+from lalamo.model_registry import get_model_registry
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 

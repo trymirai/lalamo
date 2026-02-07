@@ -1,4 +1,4 @@
-from lalamo.registry import get_model_registry
+from lalamo.model_registry import get_model_registry
 
 from .common import ModelMetadata, ModelSpec, import_model
 

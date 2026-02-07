@@ -15,7 +15,7 @@ from lalamo.model_import.common import FileSpec, download_file
 from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
 from lalamo.model_import.model_configs.huggingface import HuggingFaceLMConfig
 from lalamo.model_import.model_specs.common import ModelSpec
-from lalamo.registry import ModelRegistry
+from lalamo.model_registry import ModelRegistry
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
 

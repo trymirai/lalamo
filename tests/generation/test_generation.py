@@ -3,7 +3,7 @@ import pytest
 
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import import_model
-from lalamo.registry import ModelRegistry
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import LanguageModel
 from lalamo.models.language_model import GenerationConfig
 

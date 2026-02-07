@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from lalamo.model_import import import_model
-from lalamo.registry import ModelRegistry
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import LanguageModel
 
 from ..common import assert_close

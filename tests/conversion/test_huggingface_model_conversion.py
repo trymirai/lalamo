@@ -13,7 +13,7 @@ import torch
 from lalamo.common import flatten_parameters
 from lalamo.model_import import ModelMetadata, import_model
 from lalamo.model_import.model_specs import ModelType
-from lalamo.registry import ModelRegistry
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig, TTSGenerator
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
