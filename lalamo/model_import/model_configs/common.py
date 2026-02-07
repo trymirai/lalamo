@@ -58,7 +58,7 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         metadata_dict: Mapping[str, str],
     ) -> LalamoModule[ConfigT]:
         config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
-        model = config.empty()
+        model = config.empty()  # type: ignore
         return self._load_weights(model, weights_dict)
 
 

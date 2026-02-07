@@ -67,7 +67,7 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
             weights = unflatten_parameters(weights_dict)
-            model = config.model_config.empty().import_weights(weights)
+            model = config.model_config.empty().import_weights(weights)  # type: ignore
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return config.init(model, message_processor)
@@ -82,7 +82,7 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
         return self.model.activation_precision
 
     def export_weights(self) -> ParameterTree:
-        return self.model.export_weights()
+        return self.model.export_weights()  # type: ignore
 
     def import_weights(
         self,
@@ -90,7 +90,7 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     ) -> Self:
         return replace(
             self,
-            model=self.model.import_weights(weights),
+            model=self.model.import_weights(weights),  # type: ignore
         )
 
     def record_trace(self, messages: Iterable[Message] | None = None) -> ClassifierResult | DecoderResult:

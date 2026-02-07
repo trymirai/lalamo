@@ -2,7 +2,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from typing import Self, cast
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -1098,8 +1098,8 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     def import_weights(
         self,
         weights: ParameterTree[Array],
-    ) -> Self:
-        base = cast("Self", super().import_weights(weights)) # ty bug
+    ) -> "QLoRALinear":
+        base = super().import_weights(weights)
         assert isinstance(weights, Mapping)
         assert isinstance(weights["up_weights"], Sequence)
         return replace(
