@@ -15,7 +15,7 @@ defaults:
 jobs:
   linters:
     name: Linters
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, gpu, l40s]
 
     steps:
       - uses: actions/checkout@v6
@@ -39,8 +39,8 @@ jobs:
           git diff --exit-code -- uv.lock
 
   unit:
-    name: Unit Tests
-    runs-on: ubuntu-latest
+    name: Tests
+    runs-on: [self-hosted, linux, gpu, l40s]
 
     steps:
       - uses: actions/checkout@v6
@@ -50,11 +50,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=auto tests/unit
+          pytest -n=auto
 
   cli:
     name: CLI
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, gpu, l40s]
 
     env:
       MODEL: Qwen/Qwen2.5-0.5B-Instruct

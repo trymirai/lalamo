@@ -18,6 +18,7 @@ runs:
     - run: |
         echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
         echo "HF_XET_HIGH_PERFORMANCE=1" >> "$GITHUB_ENV"
+        echo "HF_HOME=/data/huggingface" >> "$GITHUB_ENV"
         echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
         echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
       shell: bash
