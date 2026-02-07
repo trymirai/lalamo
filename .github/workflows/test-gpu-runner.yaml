@@ -1,0 +1,16 @@
+name: Test GPU Runner
+on: workflow_dispatch
+
+jobs:
+  test-gpu:
+    runs-on: [self-hosted, linux, gpu, l40s]
+    steps:
+      - run: |
+          echo "=== GPU ==="
+          nvidia-smi
+          echo ""
+          echo "=== System ==="
+          uname -a
+          nproc
+          free -h
+          df -h /data
