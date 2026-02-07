@@ -1,7 +1,9 @@
+import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol, Self
 
+import jax
 import torch
 from jaxtyping import Array
 from torch import LongTensor, Tensor, nn
@@ -20,6 +22,7 @@ from transformers.models.gemma3.modeling_gemma3 import (
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.models.modernbert.modeling_modernbert import ModernBertEncoderLayer
 from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
+from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDecoderLayer, Qwen3NextGatedDeltaNet
 from transformers.processing_utils import Unpack
 
 from lalamo.modules import DecoderResult
@@ -56,6 +59,16 @@ class HFAttention(Protocol):
         past_key_value: Cache | None = None,
         cache_position: Tensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
+    ) -> Tensor: ...
+
+
+class HFDeltaNetAttention(Protocol):
+    def forward(
+        self,
+        hidden_states: Tensor,
+        cache_params: Any | None = None,
+        cache_position: Tensor | None = None,
+        attention_mask: Tensor | None = None,
     ) -> Tensor: ...
 
 
@@ -170,16 +183,44 @@ def _load_hf_model(
     else:
         device = torch.device("cpu")
 
-    model = model_type.from_pretrained(
-        model_repo,
-        dtype=dtype.torch_dtype if dtype is not None else None,
-        device_map=device,
-    )
+    device_map: str | torch.device = device
+    max_memory: dict[str, str] | None = None
+    device_map_env = os.getenv("LALAMO_HF_DEVICE_MAP")
+    is_qwen3_next = "qwen3_next" in model_repo.lower().replace("-", "_")
+
+    if device_map_env is not None:
+        device_map = device_map_env
+    if is_qwen3_next:
+        device_map = "auto"
+
+    if device_map == "auto":
+        gpu_devices = [d for d in jax.devices() if d.platform == "gpu"]
+        if gpu_devices:
+            gib = 1024**3
+            try:
+                bytes_limit = gpu_devices[0].memory_stats().get("bytes_limit")
+            except:
+                bytes_limit = 60 * gib
+            if bytes_limit is not None:
+                safe_bytes = int(bytes_limit * 0.9)
+                safe_gib = max(1, safe_bytes // gib)
+                max_memory = {0: f"{safe_gib}GiB", "cpu": "1000GiB"}
+
+    model_kwargs: dict[str, Any] = {
+        "dtype": dtype.torch_dtype if dtype is not None else None,
+        "device_map": device_map,
+    }
+    if max_memory is not None:
+        model_kwargs["max_memory"] = max_memory
+    model = model_type.from_pretrained(model_repo, **model_kwargs)
 
     return model, device
 
 
-def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention | Gemma3Attention) -> Tensor:
+def _build_hf_attention_mask(
+    hidden_states: Tensor,
+    hf_attention: HFAttention | Gemma3Attention | HFDeltaNetAttention,
+) -> Tensor:
     batch, seqlen, _ = hidden_states.shape
     q_len = seqlen
     k_len = seqlen
@@ -218,13 +259,25 @@ def _build_hf_attention_mask(hidden_states: Tensor, hf_attention: HFAttention | 
     return attention_mask
 
 
+def _module_device(module: nn.Module, fallback_device: torch.device) -> torch.device:
+    for param in module.parameters():
+        if param.device.type == "meta":
+            continue
+        return param.device
+    for buffer in module.buffers():
+        if buffer.device.type == "meta":
+            continue
+        return buffer.device
+    return fallback_device
+
+
 @dataclass(frozen=True)
 class HFDecoderTracer(
     ModelTracer[
         torch.Tensor,
         HFTransformerLayer | Gemma3DecoderLayer,
         HFRMSNorm,
-        HFAttention | Gemma3Attention,
+        HFAttention | Gemma3Attention | HFDeltaNetAttention,
         HFMLP,
     ],
 ):
@@ -232,30 +285,47 @@ class HFDecoderTracer(
     device: torch.device
 
     def from_jax(self, array: Array) -> torch.Tensor:
-        return jax_to_torch(array).to(self.device)
+        return jax_to_torch(array)
 
     def to_jax(self, array: torch.Tensor) -> Array:
         return torch_to_jax(array)
 
     def embedding(self, token_ids: torch.Tensor) -> torch.Tensor:
-        return self.hf_model.model.embed_tokens.forward(token_ids)
+        embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
+        return self.hf_model.model.embed_tokens.forward(token_ids.to(embed_device))
 
     def global_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self.hf_model.model.rotary_emb.forward(x, position_ids)
+        rope_device = _module_device(self.hf_model.model.rotary_emb, self.device)
+        return self.hf_model.model.rotary_emb.forward(x.to(rope_device), position_ids.to(rope_device))
 
     def local_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
-        return hf_rope.forward(x, position_ids)
+        rope_device = _module_device(hf_rope, self.device)
+        return hf_rope.forward(x.to(rope_device), position_ids.to(rope_device))
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
-        return rmsnorm.forward(x)
+        rmsnorm_device = _module_device(rmsnorm, self.device)  # type: ignore[arg-type]
+        return rmsnorm.forward(x.to(rmsnorm_device))
 
     def attention(
         self,
-        attention: HFAttention | Gemma3Attention,
+        attention: HFAttention | Gemma3Attention | HFDeltaNetAttention,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
     ) -> torch.Tensor:
+        attention_device = _module_device(attention, self.device)  # type: ignore[arg-type]
+        if Qwen3NextGatedDeltaNet is not None and isinstance(attention, Qwen3NextGatedDeltaNet):
+            # DeltaNet does not have attention
+            return attention.forward(
+                hidden_states=hidden_states.to(attention_device),
+                attention_mask=None,
+            )
+        hidden_states = hidden_states.to(attention_device)
+        if position_embeddings is not None:
+            position_embeddings = (
+                position_embeddings[0].to(attention_device),
+                position_embeddings[1].to(attention_device),
+            )
         attention_mask = _build_hf_attention_mask(hidden_states, attention)
 
         attention_output, _ = attention.forward(  # type: ignore
@@ -266,7 +336,8 @@ class HFDecoderTracer(
         return attention_output
 
     def mlp(self, mlp: HFMLP, x: torch.Tensor) -> torch.Tensor:
-        forward_outputs = mlp.forward(x)
+        mlp_device = _module_device(mlp, self.device)  # type: ignore[arg-type]
+        forward_outputs = mlp.forward(x.to(mlp_device))
         if isinstance(forward_outputs, tuple):
             forward_outputs, _ = forward_outputs
         return forward_outputs
@@ -277,6 +348,13 @@ class HFDecoderTracer(
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
     ) -> torch.Tensor:
+        layer_device = _module_device(layer, self.device)  # type: ignore[arg-type]
+        hidden_states = hidden_states.to(layer_device)
+        if position_embeddings is not None:
+            position_embeddings = (
+                position_embeddings[0].to(layer_device),
+                position_embeddings[1].to(layer_device),
+            )
         if isinstance(layer, Gemma3DecoderLayer):
             torch_outputs, *_ = layer.forward(
                 hidden_states=hidden_states,
@@ -308,7 +386,12 @@ class HFDecoderTracer(
 
         return layer.post_attention_layernorm
 
-    def layer_attention(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFAttention | Gemma3Attention:
+    def layer_attention(
+        self,
+        layer: HFTransformerLayer | Gemma3DecoderLayer | Qwen3NextDecoderLayer,
+    ) -> HFAttention | Gemma3Attention | HFDeltaNetAttention:
+        if getattr(layer, "layer_type", None) == "linear_attention" and hasattr(layer, "linear_attn"):
+            return layer.linear_attn
         return layer.self_attn
 
     def layer_mlp(self, layer: HFTransformerLayer | Gemma3DecoderLayer) -> HFMLP:
@@ -324,13 +407,17 @@ class HFDecoderTracer(
         return self.hf_model.model.norm
 
     def readout(self, x: torch.Tensor) -> torch.Tensor:
-        return self.hf_model.lm_head(x)
+        head_device = _module_device(self.hf_model.lm_head, self.device)
+        return self.hf_model.lm_head(x.to(head_device))
 
     def forward(
         self,
         input_ids: torch.Tensor,
         position_ids: torch.Tensor,
     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
+        embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
+        input_ids = input_ids.to(embed_device)
+        position_ids = position_ids.to(embed_device)
         hf_outputs = self.hf_model.forward(
             input_ids=input_ids,
             position_ids=position_ids,

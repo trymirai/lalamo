@@ -14,16 +14,27 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
-from lalamo.models import ClassifierModel, ClassifierModelConfig, GenerationConfig, LanguageModel, LanguageModelConfig
-from lalamo.modules import Classifier, Decoder, LalamoModule
+from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
+from lalamo.models import (
+    ClassifierModel,
+    ClassifierModelConfig,
+    GenerationConfig,
+    LanguageModel,
+    LanguageModelConfig,
+    TTSGenerator,
+    TTSGeneratorConfig,
+)
+from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
+from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
-from .decoder_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
-from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
+from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
+from .model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
-from .model_specs.common import JSONFieldSpec
+from .model_specs.common import JSONFieldSpec, WeightsType
 
 __all__ = [
     "REPO_TO_MODEL",
@@ -74,7 +85,7 @@ class ModelMetadata:
     repo: str
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
-    model_config: LanguageModelConfig | ClassifierModelConfig
+    model_config: LanguageModelConfig | ClassifierModelConfig | TTSGeneratorConfig
     grammar_start_tokens: tuple[str, ...]
 
 
@@ -96,9 +107,13 @@ def download_file(
     return Path(result)
 
 
-def list_weight_files(model_repo: str) -> list[FileSpec]:
+def list_weight_files(model_repo: str, weights_type: WeightsType) -> list[FileSpec]:
     all_files = huggingface_hub.list_repo_files(model_repo)
-    return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
+    match weights_type:
+        case WeightsType.SAFETENSORS:
+            return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
+        case WeightsType.TORCH:
+            return [FileSpec(filename) for filename in all_files if filename.endswith(".pth")]
 
 
 def download_weights(
@@ -108,7 +123,7 @@ def download_weights(
 ) -> list[Path]:
     return [
         download_file(file_spec, model_spec.repo, output_dir, progress_callback)
-        for file_spec in list_weight_files(model_spec.repo)
+        for file_spec in list_weight_files(model_spec.repo, model_spec.weights_type)
     ]
 
 
@@ -121,8 +136,19 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel | ClassifierModel
+    model: LanguageModel | ClassifierModel | TTSGenerator
     metadata: ModelMetadata
+
+
+def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -> str | None:
+    if isinstance(token_ids, int):
+        token_ids = [token_ids]
+
+    if not isinstance(token_ids, list) or any((not isinstance(el, int)) for el in token_ids):
+        return None
+
+    decoded = tokenizer.decode(token_ids[:1], skip_special_tokens=False)
+    return decoded
 
 
 def import_message_processor(
@@ -157,6 +183,7 @@ def import_message_processor(
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
+
     prompt_template = process_chat_template(prompt_template)
     tokenizer = Tokenizer.from_file(str(tokenizer_file))
 
@@ -166,8 +193,8 @@ def import_message_processor(
     tokenizer.add_special_tokens(added_special_tokens)
     tokenizer.add_tokens(added_not_special_tokens)
 
-    bos_token = tokenizer_config.bos_token
-    eos_token = tokenizer_config.eos_token
+    bos_token = getattr(tokenizer_config, "bos_token", None)
+    eos_token = getattr(tokenizer_config, "eos_token", None)
 
     # If we were not able to identify bos/eos - they are probably somewhere else, so we check config.json
     if eos_token is None or bos_token is None:
@@ -176,9 +203,21 @@ def import_message_processor(
             foreign_decoder_json = json.load(foreign_decoder_file)
 
         if bos_token is None:
-            bos_token = foreign_decoder_json.get("bos_token_id")
+            bos_token_id: int | list[int] | None = foreign_decoder_json.get("bos_token_id")
+            bos_token = token_ids_to_text(tokenizer, bos_token_id)
         if eos_token is None:
-            eos_token = foreign_decoder_json.get("eos_token_id")
+            eos_token_id: int | list[int] | None = foreign_decoder_json.get("eos_token_id")
+            eos_token = token_ids_to_text(tokenizer, eos_token_id)
+
+    system_prompt_text = None
+    match model_spec.configs.system_prompt:
+        case FileSpec(_) as file_spec:
+            system_prompt_file = download_file(file_spec, model_spec.repo, output_dir, progress_callback)
+            system_prompt_text = system_prompt_file.read_text()
+        case str() as sp:
+            system_prompt_text = sp
+        case None:
+            pass
 
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
@@ -188,6 +227,7 @@ def import_message_processor(
         assistant_role_name=model_spec.assistant_role_name,
         bos_token=bos_token,
         eos_token=eos_token,
+        default_system_prompt=system_prompt_text,
     )
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
@@ -254,14 +294,17 @@ def _import_language_model(
 
     message_processor = import_message_processor(model_spec)
 
-    stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
+    stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
 
     if isinstance(model_spec.configs.generation_config, GenerationConfig):
-        generation_config = replace(model_spec.configs.generation_config, stop_token_ids=stop_token_ids)
+        candidate_generation_config = model_spec.configs.generation_config
+        stop_token_ids = merge_token_ids(candidate_generation_config.stop_token_ids, stop_token_ids)
+        generation_config = replace(candidate_generation_config, stop_token_ids=stop_token_ids)
     elif isinstance(model_spec.configs.generation_config, FileSpec):
         hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
         hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
-        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids)
+        stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
+        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
     else:
         generation_config = GenerationConfig(stop_token_ids)
 
@@ -313,6 +356,76 @@ def _import_classifier(
     return classifier_model, classifier_model_config
 
 
+def _import_tts_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[TTSGenerator, TTSGeneratorConfig]:
+    foreign_tts_config_file = download_config_file(model_spec)
+    tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
+
+    if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
+        # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
+        # so we load the Tokenizer and update config using data from it
+
+        tokenizer_special_tokens_path = download_file(
+            FileSpec(filename="special_tokens.json"),
+            model_repo=model_spec.repo,
+        )
+        tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
+            tokenizer_path,
+            tokenizer_special_tokens_path,
+        )
+        foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
+        assert isinstance(foreign_tts_config, FishAudioConfig)
+        foreign_tts_config = replace(
+            foreign_tts_config,
+            semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
+            semantic_token_end_id=special_inference_tokens.semantic_end_id,
+            im_end_token_id=special_inference_tokens.im_end_token_id,
+        )
+    else:
+        tokenizer = Tokenizer.from_file(str(tokenizer_path))
+        foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
+    if precision is None:
+        precision = foreign_tts_config.default_precision
+
+    tts_model = _load_main_processing_module(
+        model_spec,
+        precision,
+        foreign_tts_config,
+        progress_callback,
+        context_length,
+        accumulation_precision,
+    )
+    assert isinstance(tts_model, TTSModel)
+
+    if progress_callback is not None:
+        progress_callback(FinishedInitializingModelEvent())
+
+    assert isinstance(model_spec.configs.chat_template, str)
+    tts_request_factory_config = TTSMessageProcessorConfig(
+        prompt_template=model_spec.configs.chat_template,
+    )
+    message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
+
+    tts_generator_config = TTSGeneratorConfig(
+        tts_config=foreign_tts_config.to_lalamo_config(
+            context_length=context_length,
+            activation_precision=precision,
+            accumulation_precision=precision,
+            metadata_dict={},
+        ),
+        message_processor_config=message_processor.config,
+    )
+    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+
+    return (tts_generator, tts_generator_config)
+
+
 def import_model(
     model_spec: ModelSpec | str,
     *,
@@ -338,6 +451,14 @@ def import_model(
             )
         case ModelType.CLASSIFIER_MODEL:
             model, config = _import_classifier(
+                model_spec,
+                context_length=context_length,
+                precision=precision,
+                accumulation_precision=accumulation_precision,
+                progress_callback=progress_callback,
+            )
+        case ModelType.TTS_MODEL:
+            model, config = _import_tts_model(
                 model_spec,
                 context_length=context_length,
                 precision=precision,

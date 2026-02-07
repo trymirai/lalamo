@@ -5,7 +5,7 @@ import pytest
 import requests
 
 from lalamo.commands import PullCallbacks, pull
-from lalamo.model_import.remote_registry import RegistryModelFile, RegistryModel
+from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 
 
 def _create_test_models() -> list[RegistryModel]:

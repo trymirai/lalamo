@@ -1,4 +1,4 @@
-from lalamo.model_import.decoder_configs.huggingface.llama import HFLlamaConfig
+from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelSpec
 
 DIRECT_TEMPLATE = "{% for message in messages %}{{ message.content }}{% endfor %}"

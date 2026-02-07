@@ -1,4 +1,8 @@
 from .activations import GELU, Activation, Identity, SiLU
+from .audio.audio_decoder import TTSAudioDecoder
+from .audio.text_decoder import TTSTextDecoder
+from .audio.text_to_speech import TTSConfig, TTSModel
+from .audio.vocoders import NoopVocoder, Vocoder, VocoderConfig
 from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
@@ -65,6 +69,8 @@ from .rope import (
 from .token_mixers import (
     Attention,
     AttentionConfig,
+    DeltaNetAttention,
+    DeltaNetAttentionConfig,
     DynamicKVCacheLayer,
     KVCacheLayer,
     Mamba2,
@@ -98,6 +104,8 @@ __all__ = [
     "DecoderConfig",
     "DecoderForwardPassConfig",
     "DecoderResult",
+    "DeltaNetAttention",
+    "DeltaNetAttentionConfig",
     "DenseMLP",
     "DenseMLPConfig",
     "DynamicKVCacheLayer",
@@ -130,6 +138,7 @@ __all__ = [
     "Mamba2Config",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
+    "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
     "PositionalEmbeddingSelector",
@@ -150,6 +159,10 @@ __all__ = [
     "SoftmaxRouting",
     "State",
     "StaticKVCacheLayer",
+    "TTSAudioDecoder",
+    "TTSConfig",
+    "TTSModel",
+    "TTSTextDecoder",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "Transformer",
@@ -163,6 +176,8 @@ __all__ = [
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
     "UpcastMode",
+    "Vocoder",
+    "VocoderConfig",
     "YARNRoPEConfig",
     "config_converter",
 ]

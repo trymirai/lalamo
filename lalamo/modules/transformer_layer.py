@@ -144,7 +144,10 @@ class TransformerLayerConfig:
             post_mixer_norm = self.post_mixer_norm_config.empty(model_dim)
         else:
             post_mixer_norm = None
-        pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
+        if self.pre_mlp_norm_config is not None:
+            pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
+        else:
+            pre_mlp_norm = None
         mlp = self.mlp_config.empty(model_dim, hidden_dim)
         if self.post_mlp_norm_config is not None:
             post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
@@ -165,7 +168,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     pre_mixer_norm: Normalization | None
     mixer: TokenMixerBase
     post_mixer_norm: Normalization | None
-    pre_mlp_norm: Normalization
+    pre_mlp_norm: Normalization | None
     mlp: MLPBase
     post_mlp_norm: Normalization | None
 
@@ -189,7 +192,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Post mixer normalization dim {self.post_mixer_norm.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
             )
-        if self.pre_mlp_norm.input_dim != model_dim:
+        if self.pre_mlp_norm and self.pre_mlp_norm.input_dim != model_dim:
             raise ValueError(
                 f"Pre MLP normalization dim {self.pre_mlp_norm.input_dim} does not match"
                 f" the first normalization layer dim {model_dim}",
@@ -238,7 +241,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
-        normalized_mlp_inputs = vmap_twice(self.pre_mlp_norm)(mlp_inputs)
+        normalized_mlp_inputs = (
+            vmap_twice(self.pre_mlp_norm)(mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
+        )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             forward_pass_mode=forward_pass_mode,
@@ -282,7 +287,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     def export_weights(self) -> ParameterTree:
         result = dict(
             mixer=self.mixer.export_weights(),
-            pre_mlp_norm=self.pre_mlp_norm.export_weights(),
             mlp=self.mlp.export_weights(),
         )
         if self.pre_mixer_norm is not None:
@@ -291,6 +295,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             result["post_mixer_norm"] = self.post_mixer_norm.export_weights()
         if self.post_mlp_norm is not None:
             result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
+        if self.pre_mlp_norm is not None:
+            result["pre_mlp_norm"] = self.pre_mlp_norm.export_weights()
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
@@ -307,12 +313,16 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             pre_mixer_norm = self.pre_mixer_norm.import_weights(require_tree(weights["pre_mixer_norm"]))
         else:
             pre_mixer_norm = None
+        if self.pre_mlp_norm is not None:
+            pre_mlp_norm = self.pre_mlp_norm.import_weights(require_tree(weights["pre_mlp_norm"]))
+        else:
+            pre_mlp_norm = None
         return replace(
             self,
             pre_mixer_norm=pre_mixer_norm,
             mixer=self.mixer.import_weights(require_tree(weights["mixer"])),
             post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=self.pre_mlp_norm.import_weights(require_tree(weights["pre_mlp_norm"])),
+            pre_mlp_norm=pre_mlp_norm,
             mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
             post_mlp_norm=post_mlp_norm,
         )
