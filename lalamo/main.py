@@ -813,13 +813,13 @@ def generate_replies(
         max_vram = mem_bytes
 
     _generate_replies(
-        model_path,
-        dataset_path,
-        output_path,
-        max_vram,
-        max_output_length,
-        batch_size,
-        CliGenerateRepliesCallbacks,
+        model_path=model_path,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        max_vram=max_vram,
+        max_output_length=max_output_length,
+        batch_size=batch_size,
+        callbacks_type=CliGenerateRepliesCallbacks,
     )
 
 

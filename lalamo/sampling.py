@@ -37,6 +37,8 @@ class TemperaturePolicy(SamplingPolicy):
     temperature: float = eqx.field(static=True)
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        if self.temperature == 0.0:
+            return jnp.where(logits == jnp.max(logits), 1.0, -jnp.inf)
         return logits / self.temperature
 
 
