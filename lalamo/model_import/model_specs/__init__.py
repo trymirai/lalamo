@@ -15,6 +15,8 @@ from .polaris import POLARIS_MODELS
 from .qwen import QWEN_MODELS
 from .reka import REKA_MODELS
 
+from .third_party import THIRD_PARTY_MODELS
+
 __all__ = [
     "ALL_MODELS",
     "REPO_TO_MODEL",
@@ -40,6 +42,7 @@ ALL_MODEL_LISTS = [
     REKA_MODELS,
     MIRAI_CLASSIFIER_MODELS,
     RNJ_MODELS,
+    THIRD_PARTY_MODELS,
 ]
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
