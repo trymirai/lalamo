@@ -45,6 +45,7 @@ dev = [
     "pytest-env>=1.1.5",
     "pytest>=8.3.4",
     "torch>=2.8.0",
+    "torchaudio>=2.8.0",
     "torchao>=0.7.0",
     "transformers>=4.56.0",
     "twine>=6.1.0",
@@ -94,6 +95,10 @@ explicit = true
 
 [tool.uv.sources]
 torch = [
+    { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
+    { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
+]
+torchaudio = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
 ]
