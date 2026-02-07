@@ -1,3 +1,4 @@
+import functools
 import os
 import traceback as tb
 import warnings
@@ -11,6 +12,7 @@ from lalamo.model_import.model_specs.common import ModelSpec, build_quantized_mo
 
 __all__ = [
     "ModelRegistry",
+    "get_model_registry",
 ]
 
 
@@ -59,3 +61,8 @@ class ModelRegistry:
 
         object.__setattr__(self, "models", models)
         object.__setattr__(self, "repo_to_model", {model.repo: model for model in models})
+
+
+@functools.cache
+def get_model_registry(allow_third_party_plugins: bool = True) -> ModelRegistry:
+    return ModelRegistry(allow_third_party_plugins=allow_third_party_plugins)

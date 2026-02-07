@@ -1,10 +1,10 @@
-from lalamo.registry import ModelRegistry
+from lalamo.registry import get_model_registry
 
 from .common import ModelMetadata, ModelSpec, import_model
 
 __all__ = [
-    "ModelRegistry",
     "ModelMetadata",
     "ModelSpec",
+    "get_model_registry",
     "import_model",
 ]

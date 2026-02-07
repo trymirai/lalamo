@@ -65,7 +65,7 @@ from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.registry import ModelRegistry
+from lalamo.registry import get_model_registry
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -76,7 +76,6 @@ DEFAULT_OUTPUT_DIR = Path("models")
 
 console = Console()
 err_console = Console(stderr=True)
-_registry: ModelRegistry | None = None
 app = Typer(
     rich_markup_mode="rich",
     add_completion=False,
@@ -84,18 +83,11 @@ app = Typer(
 )
 
 
-def _get_registry() -> ModelRegistry:
-    global _registry
-    if _registry is None:
-        _registry = ModelRegistry()
-    return _registry
-
-
 class ModelParser(ParamType):
     name: str = "Huggingface Model Repo"
 
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
-        repo_to_model = _get_registry().repo_to_model
+        repo_to_model = get_model_registry().repo_to_model
         result = repo_to_model.get(value)
         if result is None:
             closest_repo = _closest_repo(value, list(repo_to_model))
@@ -435,7 +427,7 @@ def convert(
             click_type=ModelParser(),
             show_default=False,
             metavar="MODEL_REPO",
-            autocompletion=lambda: list(_get_registry().repo_to_model),
+            autocompletion=lambda: list(get_model_registry().repo_to_model),
         ),
     ],
     precision: Annotated[
@@ -651,7 +643,7 @@ def list_models(
         ),
     ] = False,
 ) -> None:
-    registry = _get_registry()
+    registry = get_model_registry()
     sorted_specs = sorted(
         registry.repo_to_model.values(),
         key=lambda spec: (

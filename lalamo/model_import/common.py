@@ -28,7 +28,7 @@ from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.registry import ModelRegistry
+from lalamo.registry import get_model_registry
 from lalamo.utils import process_chat_template
 
 from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
@@ -436,7 +436,7 @@ def import_model(
 ) -> ImportResults:
     if isinstance(model_spec, str):
         try:
-            model_spec = ModelRegistry().repo_to_model[model_spec]
+            model_spec = get_model_registry().repo_to_model[model_spec]
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
