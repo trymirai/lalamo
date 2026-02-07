@@ -579,7 +579,7 @@ def generate_replies(
     max_vram: int | None,
     max_output_length: int = 8192,
     batch_size: int | None = None,
-    generation_config: GenerationConfig | None = None,
+    generation_config_override: GenerationConfig | None = None,
     callbacks_type: Callable[
         [
             Path,
@@ -636,16 +636,16 @@ def generate_replies(
 
     callbacks.batch_sizes_estimated()
 
-    if generation_config is not None:
-        if generation_config.stop_token_ids:
+    if generation_config_override is not None:
+        if generation_config_override.stop_token_ids:
             raise ValueError(
                 "Do not set generation_config.stop_token_ids for this command; "
                 "the model's configured stop tokens are always used instead.",
             )
 
         generation_config = dataclasses.replace(
-            generation_config,
-            stop_token_ids=model.config.generation_config.stop_token_ids,
+            generation_config_override,
+            stop_token_ids=model.config.generation_config,
         )
 
     replies: list[tuple[int, AssistantMessage]] = []
