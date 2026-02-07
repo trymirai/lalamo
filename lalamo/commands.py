@@ -663,7 +663,7 @@ def generate_replies(
 
         generation_config = dataclasses.replace(
             generation_config_override,
-            stop_token_ids=model.config.generation_config,
+            stop_token_ids=model.config.generation_config.stop_token_ids,
         )
 
     replies: list[tuple[int, AssistantMessage]] = []
