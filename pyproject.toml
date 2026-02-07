@@ -52,6 +52,7 @@ dev = [
     "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
     "hypothesis>=6.150.0",
+    "pre-commit>=4.3.0",
     "fish-speech",
     "bidict>=0.23.1",
     "tiktoken>=0.12.0",

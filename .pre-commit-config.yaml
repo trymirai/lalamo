@@ -1,0 +1,43 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-toml
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=10240]
+        exclude: \.(parquet|safetensors)$
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, master]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+        files: ^lalamo/.*\.py$
+      - id: ruff-format
+        files: ^lalamo/.*\.py$
+
+  - repo: https://github.com/crate-ci/typos
+    rev: v1.43.3
+    hooks:
+      - id: typos
+        exclude: ^(uv\.lock|.*\.parquet|.*\.safetensors)$
+
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.10.0
+    hooks:
+      - id: uv-lock
+
+  - repo: local
+    hooks:
+      - id: ty-check
+        name: ty check
+        language: system
+        entry: ty check
+        args: [lalamo]
+        pass_filenames: false
