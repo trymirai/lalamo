@@ -1,6 +1,12 @@
 name: setup
 description: Setup dependencies
 
+inputs:
+  cuda:
+    description: "Install with CUDA extras"
+    required: false
+    default: 'false'
+
 runs:
   using: composite
   steps:
@@ -12,7 +18,7 @@ runs:
       with:
         enable-cache: true
 
-    - run: uv sync --frozen --dev
+    - run: uv sync --frozen --dev ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
       shell: bash
 
     - run: |
