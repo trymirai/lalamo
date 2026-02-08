@@ -9,7 +9,7 @@ repos:
       - id: check-yaml
       - id: check-added-large-files
         args: [--maxkb=10240]
-        exclude: \.(parquet|safetensors)$
+        exclude: '\.(parquet|safetensors)$'
       - id: no-commit-to-branch
         args: [--branch, main, --branch, master]
 
@@ -17,16 +17,17 @@ repos:
     rev: v0.15.0
     hooks:
       - id: ruff-check
-        args: [--fix]
-        files: ^lalamo/.*\.py$
+        args: [--fix, lalamo]
+        pass_filenames: false
       - id: ruff-format
-        files: ^lalamo/.*\.py$
+        args: [lalamo]
+        pass_filenames: false
 
   - repo: https://github.com/crate-ci/typos
     rev: v1.43.3
     hooks:
       - id: typos
-        exclude: ^(uv\.lock|.*\.parquet|.*\.safetensors)$
+        exclude: '^(uv\.lock|.*\.parquet|.*\.safetensors)$'
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.10.0
@@ -38,6 +39,6 @@ repos:
       - id: ty-check
         name: ty check
         language: system
-        entry: ty check
-        args: [lalamo]
+        entry: ty check lalamo
         pass_filenames: false
+
