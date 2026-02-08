@@ -19,6 +19,7 @@ from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
 from torch.nn.utils.parametrize import remove_parametrizations
 
 from lalamo.common import ParameterPath
+from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d, Snake1d
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -28,7 +29,6 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayer,
     ResidualBlock,
 )
-from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d, Snake1d
 from lalamo.modules.torch_interop import jax_to_torch
 
 from .common import load_parameters

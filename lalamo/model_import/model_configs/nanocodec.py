@@ -180,10 +180,10 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             in_kernel_size=int(audio_decoder_config.get("in_kernel_size", DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE)),
             out_kernel_size=int(audio_decoder_config.get("out_kernel_size", DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE)),
             resblock_kernel_sizes=audio_decoder_config.get(
-                "resblock_kernel_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES
+                "resblock_kernel_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
             ),
             resblock_dilation_sizes=audio_decoder_config.get(
-                "resblock_dilation_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS
+                "resblock_dilation_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
             ),
         )
 

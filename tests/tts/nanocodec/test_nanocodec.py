@@ -348,11 +348,13 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
 
     in_kernel_size = nemo_decoder_config.get("in_kernel_size", DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE)
     out_kernel_size = nemo_decoder_config.get("out_kernel_size", DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE)
-    resblock_kernel_sizes = (
-        nemo_decoder_config.get("resblock_kernel_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES),
+    resblock_kernel_sizes = nemo_decoder_config.get(
+        "resblock_kernel_sizes",
+        DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
     )
-    resblock_dilation_sizes = (
-        nemo_decoder_config.get("resblock_dilation_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS),
+    resblock_dilation_sizes = nemo_decoder_config.get(
+        "resblock_dilation_sizes",
+        DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
     )
 
     return NanoCodecConfig(

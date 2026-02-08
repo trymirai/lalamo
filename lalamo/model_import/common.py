@@ -359,6 +359,7 @@ def _import_tts_model(
             assert "nemo_config" in metadata_dict, "NeMo archive missing YAML config"
             nemo_config = json.loads(metadata_dict["nemo_config"])
             foreign_tts_config = NanoCodecForeignConfig.from_nemo_config(nemo_config)
+            # TODO: don't hardcode the precision
             precision = foreign_tts_config.default_precision
 
             if progress_callback is not None:
