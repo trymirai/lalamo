@@ -14,5 +14,5 @@ jobs:
           nproc
           free -h
           df -h /data
-          df -h /tmp
-          df -h /home
+          du -h -d 1 /home
+          du -sh /tmp
