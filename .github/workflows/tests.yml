@@ -50,7 +50,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=auto
+          pytest -n=2 -vv
 
   cli:
     name: CLI
