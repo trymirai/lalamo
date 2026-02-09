@@ -21,6 +21,10 @@ defaults:
     # For pipefail - https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#exit-codes-and-error-action-preference
     shell: bash
 
+env:
+  PYTEST_FLAGS: "--ci -n=auto --dist=worksteal --maxfail=2"
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
 jobs:
   linters:
     name: Linters
@@ -56,10 +60,8 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run pytest
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=auto tests/unit
+          pytest ${PYTEST_FLAGS} tests/unit
 
   generation:
     name: Generation Tests
@@ -70,14 +72,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
-        with:
-          cuda: 'true'
 
       - name: Run pytest
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest --ci tests/generation
+          pytest ${PYTEST_FLAGS} tests/generation
 
   conversion:
     name: Model Conversion Tests
@@ -90,10 +88,8 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run pytest
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest --ci tests/conversion
+          pytest ${PYTEST_FLAGS} tests/conversion
 
   audio:
     name: Audio Model Tests
@@ -106,10 +102,8 @@ jobs:
       - uses: ./.github/actions/setup
 
       - name: Run pytest
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest --ci tests/tts
+          pytest ${PYTEST_FLAGS} tests/tts
 
   tracer:
     name: Tracer Tests
@@ -125,10 +119,8 @@ jobs:
           cuda: 'true'
 
       - name: Run pytest
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest --ci tests/tracer
+          pytest --ci --maxfail=2 tests/tracer # not using xdist since will try to allocate too much memory
 
   cli:
     name: CLI
