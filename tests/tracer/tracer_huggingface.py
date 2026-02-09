@@ -1,6 +1,7 @@
 import os
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from inspect import signature
 from typing import Any, Protocol, Self
 
 import jax
@@ -328,11 +329,14 @@ class HFDecoderTracer(
             )
         attention_mask = _build_hf_attention_mask(hidden_states, attention)
 
-        attention_output, _ = attention.forward(  # type: ignore
-            hidden_states=hidden_states,
-            position_embeddings=position_embeddings,  # type: ignore
-            attention_mask=attention_mask,
-        )
+        forward_kwargs: dict[str, Any] = {
+            "hidden_states": hidden_states,
+            "attention_mask": attention_mask,
+        }
+        if "position_embeddings" in signature(attention.forward).parameters:
+            forward_kwargs["position_embeddings"] = position_embeddings
+
+        attention_output, _ = attention.forward(**forward_kwargs)  # type: ignore
         return attention_output
 
     def mlp(self, mlp: HFMLP, x: torch.Tensor) -> torch.Tensor:

@@ -1,4 +1,4 @@
-from lalamo.model_import.model_configs import HFLlamaConfig
+from lalamo.model_import.model_configs import HFLlamaConfig, HFSmolLM3Config
 
 from .common import ModelSpec
 
@@ -13,6 +13,16 @@ HUGGINGFACE_MODELS = [
         quantization=None,
         repo="HuggingFaceTB/SmolLM2-1.7B-Instruct",
         config_type=HFLlamaConfig,
+        use_cases=tuple(),
+    ),
+    ModelSpec(
+        vendor="HuggingFace",
+        family="SmolLM3",
+        name="SmolLM3-3B",
+        size="3B",
+        quantization=None,
+        repo="HuggingFaceTB/SmolLM3-3B",
+        config_type=HFSmolLM3Config,
         use_cases=tuple(),
     ),
 ]
