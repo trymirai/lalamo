@@ -4,6 +4,7 @@ from typing import Annotated
 from rich.console import Console
 from typer import Argument, Exit, Option, Typer
 
+from lalamo.common import vram_gb_to_bytes
 from lalamo.evals.benchmark.callbacks import ConsoleCallbacks as BenchmarkConsoleCallbacks
 from lalamo.evals.benchmark.command import benchmark_command_handler
 from lalamo.evals.datasets.callbacks import ConsoleCallbacks as DatasetConsoleCallbacks
@@ -13,6 +14,7 @@ from lalamo.evals.inference.callbacks import ConsoleRunInferenceCallbacks
 from lalamo.evals.inference.command import infer_command_handler
 
 console = Console()
+err_console = Console(stderr=True)
 eval_app = Typer()
 
 
@@ -45,7 +47,7 @@ def convert_dataset_command(
     eval_spec = REPO_TO_EVAL.get(eval_repo)
     if eval_spec is None:
         available = ", ".join(REPO_TO_EVAL.keys())
-        console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
+        err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
         raise Exit(1)
 
     if output_dir is None:
@@ -58,7 +60,7 @@ def convert_dataset_command(
             callbacks=DatasetConsoleCallbacks(eval_repo=eval_repo, output_dir=output_dir, overwrite=overwrite),
         )
     except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
+        err_console.print(f"[red]✗[/red] {e}")
         raise Exit(1) from None
 
 
@@ -80,10 +82,15 @@ def infer_command(
     engine: Annotated[str, Option(help="Inference engine")] = "lalamo",
     limit: Annotated[int | None, Option(help="Limit number of test examples to run")] = None,
     batch_size: Annotated[
-        int | None, Option("--batch-size", help="Batch size for inference (auto-computed if not set)"),
+        int | None,
+        Option(help="Fixed batch size to use, skipping automatic estimation."),
     ] = None,
     vram_gb: Annotated[
-        float | None, Option(help="VRAM limit in GB (auto-detected if not set)"),
+        int | None,
+        Option(
+            help="Maximum VRAM in GB. Batch sizes are estimated automatically.",
+            show_default="max on default device",
+        ),
     ] = None,
     # Inference config overrides (use adapter's reference values if not set)
     temperature: Annotated[
@@ -111,10 +118,21 @@ def infer_command(
         Option(help="Stop token strings (uses adapter's reference value if not set)"),
     ] = None,
 ) -> None:
+    if batch_size is not None and vram_gb is not None:
+        err_console.print("Cannot use both --batch-size and --vram-gb")
+        raise Exit(1)
+
+    max_vram: int | None = None
+    if batch_size is None:
+        max_vram = vram_gb_to_bytes(vram_gb)
+        if max_vram is None:
+            err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
+            raise Exit(1)
+
     eval_spec = REPO_TO_EVAL.get(eval_repo)
     if eval_spec is None:
         available = ", ".join(REPO_TO_EVAL.keys())
-        console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
+        err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
         raise Exit(1)
 
     try:
@@ -132,8 +150,7 @@ def infer_command(
             ),
             limit=limit,
             batch_size=batch_size,
-            # TODO(mullakhmetov): properly handle vram_gb, convert to bytes (see generate-replies cmd implementation)
-            vram_gb=vram_gb,
+            max_vram_bytes=max_vram,
             engine=engine,
             temperature=temperature,
             max_output_length=max_output_length,

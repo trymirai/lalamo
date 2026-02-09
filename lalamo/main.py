@@ -54,8 +54,8 @@ from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.common import (
-    get_default_device_bytes,
     get_usable_memory_from_bytes,
+    vram_gb_to_bytes,
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.evals import eval_app
@@ -804,14 +804,9 @@ def generate_replies(
         raise Exit(1)
 
     max_vram: int | None = None
-    if batch_size is None:
-        if vram_gb is not None:
-            mem_bytes = vram_gb * 1000 * 1000 * 1000
-        elif (mem_bytes := get_default_device_bytes()) is None:
-            err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
-            raise Exit(1)
-
-        max_vram = mem_bytes
+    if batch_size is None and (max_vram := vram_gb_to_bytes(vram_gb)) is None:
+        err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
+        raise Exit(1)
 
     _generate_replies(
         model_path=model_path,
@@ -894,10 +889,7 @@ def estimate_batchsize(
         ),
     ] = None,
 ) -> None:
-    if vram_gb is not None:
-        # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
-        mem_bytes = vram_gb * 1000 * 1000 * 1000
-    elif (mem_bytes := get_default_device_bytes()) is None:
+    if (mem_bytes := vram_gb_to_bytes(vram_gb)) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 

@@ -22,6 +22,7 @@ __all__ = [
     "require_array",
     "require_tree",
     "unflatten_parameters",
+    "vram_gb_to_bytes",
 ]
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
@@ -162,3 +163,11 @@ def get_default_device_bytes() -> int | None:
 
 def get_usable_memory_from_bytes(limit_bytes: int) -> int:
     return int(limit_bytes * 0.95)
+
+
+def vram_gb_to_bytes(vram_gb: int | None) -> int | None:
+    # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
+    if vram_gb is not None:
+        return vram_gb * 1000 * 1000 * 1000
+
+    return get_default_device_bytes()

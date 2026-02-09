@@ -32,7 +32,7 @@ def infer_command_handler(
     callbacks: BaseRunInferenceCallbacks,
     limit: int | None = None,
     batch_size: int | None = None,
-    vram_gb: float | None = None,
+    max_vram_bytes: int | None = None,
     engine: str = "lalamo",
     # Inference config overrides (None = use adapter's reference value)
     temperature: float | None = None,
@@ -64,7 +64,7 @@ def infer_command_handler(
         inference_engine = LalamoInferenceEngine(
             model_path=model_path,
             inference_config=inference_config,
-            max_vram=int(vram_gb * 1024**3) if vram_gb else None,
+            max_vram=max_vram_bytes,
             batch_size=batch_size,
         )
     else:
