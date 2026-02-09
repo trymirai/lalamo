@@ -13,12 +13,13 @@ dependencies = [
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
+    "openai>=1.0.0",
     "optax>=0.2.4",
+    "polars>=1.33.1",
     "rich>=14.0.0",
     "thefuzz>=0.22.1",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
-    "polars>=1.33.1",
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "requests>=2.32.5",
@@ -99,7 +100,7 @@ publish-url = "https://test.pypi.org/legacy/"
 explicit = true
 
 [tool.uv.sources]
-evals = { git = "ssh://git@github.com/trymirai/evals.git", branch = "main" }
+evals = { git = "https://github.com/trymirai/evals.git", branch = "main" }
 torch = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
