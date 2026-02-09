@@ -24,15 +24,27 @@ class BaseRunInferenceCallbacks(BaseEngineCallbacks):
 @dataclass
 class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
     eval_repo: str
-    model_path: Path
+    model_path: Path | None
     limit: int | None
     batch_size: int | None
     vram_gb: float | None
+    engine_type: str | None = None
+    engine_config_dict: dict[str, Any] | None = None
 
     def started(self) -> None:
         console.print("[bold]Configuration:[/bold]")
         console.print(f"  Eval: {self.eval_repo}")
-        console.print(f"  Model: {self.model_path}")
+
+        if self.engine_type:
+            console.print(f"  Engine: [cyan]{self.engine_type}[/cyan]")
+
+        if self.engine_config_dict:
+            console.print("  [dim]Engine config:[/dim]")
+            for key, value in self.engine_config_dict.items():
+                console.print(f"   - [dim]{key}: {value}[/dim]")
+
+        if self.model_path:
+            console.print(f"  Model: {self.model_path}")
         console.print(f"  Batch size: {self.batch_size or 'auto'}")
         console.print(f"  VRAM limit: {f'{self.vram_gb} GB' if self.vram_gb else 'auto-detect'}")
         console.print(f"  Limit: {self.limit or 'all'}")

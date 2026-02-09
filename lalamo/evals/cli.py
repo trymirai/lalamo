@@ -1,3 +1,4 @@
+from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -211,6 +212,8 @@ def infer_command(
                 limit=limit,
                 batch_size=batch_size,
                 vram_gb=vram_gb,
+                engine_type=engine_config.engine_type.value,
+                engine_config_dict=asdict(engine_config),
             ),
         )
     except (ValueError, FileNotFoundError) as e:
