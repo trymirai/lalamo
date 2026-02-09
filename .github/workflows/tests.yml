@@ -81,7 +81,7 @@ jobs:
 
   conversion:
     name: Model Conversion Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -113,7 +113,8 @@ jobs:
 
   tracer:
     name: Tracer Tests
-    runs-on: [self-hosted, linux, cpu]
+    # must run on GPU, because of F16_F16_F32 not support on CPU bug in JAX
+    runs-on: [self-hosted, linux, gpu, l40s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
