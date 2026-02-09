@@ -55,20 +55,6 @@ jobs:
         run: |
           pytest -n=auto tests/unit
 
-  conversion:
-    name: Model Conversion Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-
-      - name: Run pytest
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          pytest tests/conversion
-
   generation:
     name: Generation Tests
     runs-on: [self-hosted, linux, gpu, l40s]
@@ -85,9 +71,25 @@ jobs:
         run: |
           pytest tests/generation
 
+  conversion:
+    name: Model Conversion Tests
+    runs-on: [self-hosted, linux, gpu, l40s]
+    needs: [unit]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+
+      - name: Run pytest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pytest tests/conversion
+
   tracer:
     name: Tracer Tests
     runs-on: [self-hosted, linux, gpu, l40s]
+    needs: [unit, conversion, generation]
 
     steps:
       - uses: actions/checkout@v6
