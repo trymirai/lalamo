@@ -55,7 +55,7 @@ def convert_dataset_handler(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    handler = eval_spec.handler_type()
+    handler = eval_spec.handler_type
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)

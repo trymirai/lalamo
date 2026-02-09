@@ -54,8 +54,10 @@ def infer_command_handler(
     callbacks.inference_config_loaded(asdict(adapter_config), overrides)
 
     if engine_type == InferenceEngineType.LOCAL:
+        assert isinstance(engine_config, LalamoEngineConfig)
         inference_engine = LalamoInferenceEngine(engine_config, inference_config)
     elif engine_type == InferenceEngineType.CUSTOM_API:
+        assert isinstance(engine_config, CustomAPIEngineConfig)
         inference_engine = CustomAPIInferenceEngine(engine_config, inference_config)
     else:
         raise ValueError(f"Unsupported engine type: {engine_type}")

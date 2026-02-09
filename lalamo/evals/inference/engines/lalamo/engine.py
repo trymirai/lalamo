@@ -60,6 +60,7 @@ class LalamoInferenceEngine(InferenceEngine):
         # This requires updating generate_replies() signature to accept these parameters.
 
         max_output_length = self.inference_config.max_output_length
+        assert max_output_length is not None, "Adapter must provide max_output_length"
         generate_replies(
             model_path=self.model_path,
             dataset_path=input_path,
