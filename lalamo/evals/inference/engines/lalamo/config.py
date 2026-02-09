@@ -1,0 +1,19 @@
+from dataclasses import dataclass
+from pathlib import Path
+
+from evals.types import InferenceEngineType
+
+
+@dataclass
+class LalamoEngineConfig:
+    model_path: Path
+    batch_size: int | None = None
+    vram_gb: int | None = None
+
+    def __post_init__(self):
+        if self.batch_size is not None and self.vram_gb is not None:
+            raise ValueError("Cannot specify both batch_size and vram_gb")
+
+    @property
+    def engine_type(self) -> InferenceEngineType:
+        return InferenceEngineType.LOCAL

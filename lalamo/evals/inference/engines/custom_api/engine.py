@@ -6,42 +6,27 @@ from openai import OpenAI
 
 from lalamo.evals.inference.engines.base import InferenceEngine
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
+from lalamo.evals.inference.engines.custom_api.config import CustomAPIEngineConfig
 
 
 class CustomAPIInferenceEngine(InferenceEngine):
-    """Custom/self-hosted OpenAI-compatible API inference engine.
-
-    Supports self-hosted OpenAI-compatible API endpoints:
-    - Ollama (http://localhost:11434/v1)
-    - vLLM server
-    - llama.cpp server
-    - Other self-hosted inference servers
-
-    Uses CUSTOM_API inference config (generous params for long context).
-    """
-
     def __init__(
         self,
-        base_url: str,
-        model: str,
+        config: CustomAPIEngineConfig,
         inference_config: InferenceConfig,
-        api_key: str | None = None,
-        timeout: float = 60.0,
-        max_retries: int = 0,
     ):
-        self.base_url = base_url
-        self.model = model
+        self.base_url = config.base_url
+        self.model = config.model
         self.inference_config = inference_config
-        self.api_key = api_key
-        self.timeout = timeout
-        self.max_retries = max_retries
+        self.api_key = config.api_key
+        self.timeout = config.timeout
+        self.max_retries = config.max_retries
 
-        # Initialize OpenAI client
         self._client = OpenAI(
-            base_url=base_url,
-            api_key=api_key or "dummy-key-for-local-server",
-            timeout=timeout,
-            max_retries=max_retries,
+            base_url=config.base_url,
+            api_key=config.api_key or "dummy-key-for-local-server",
+            timeout=config.timeout,
+            max_retries=config.max_retries,
         )
 
     @property
@@ -52,7 +37,7 @@ class CustomAPIInferenceEngine(InferenceEngine):
         self,
         input_path: Path,
         output_path: Path,
-        callbacks: BaseEngineCallbacks,
+        callbacks: BaseEngineCallbacks,  # noqa: ARG002
     ) -> Path:
         input_df = pl.read_parquet(input_path)
         conversations = input_df["messages"].to_list()
@@ -74,7 +59,7 @@ class CustomAPIInferenceEngine(InferenceEngine):
 
         output_data = pl.DataFrame({
             "response": responses,
-            "chain_of_thought": [""] * len(responses),  # API doesn't separate CoT
+            "chain_of_thought": [""] * len(responses),
         })
 
         output_path.parent.mkdir(parents=True, exist_ok=True)

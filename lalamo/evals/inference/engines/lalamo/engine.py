@@ -4,8 +4,10 @@ from pathlib import Path
 from evals.types import InferenceConfig, InferenceEngineType
 
 from lalamo.commands import generate_replies
+from lalamo.common import vram_gb_to_bytes
 from lalamo.evals.inference.engines.base import InferenceEngine
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
+from lalamo.evals.inference.engines.lalamo.config import LalamoEngineConfig
 
 # Inference config parameters currently supported by generate_replies()
 SUPPORTED_PARAMS = {"max_output_length"}
@@ -14,15 +16,22 @@ SUPPORTED_PARAMS = {"max_output_length"}
 class LalamoInferenceEngine(InferenceEngine):
     def __init__(
         self,
-        model_path: Path,
+        config: LalamoEngineConfig,
         inference_config: InferenceConfig,
-        max_vram: int | None = None,
-        batch_size: int | None = None,
     ):
-        self.model_path = model_path
+        self.model_path = config.model_path
+        self.batch_size = config.batch_size
         self.inference_config = inference_config
-        self.max_vram = max_vram
-        self.batch_size = batch_size
+
+        if config.batch_size is None:
+            self.max_vram = vram_gb_to_bytes(config.vram_gb)
+            if self.max_vram is None:
+                raise ValueError(
+                    "Cannot get default device's memory stats. "
+                    "Specify batch-size or vram-gb"
+                )
+        else:
+            self.max_vram = None
 
     @property
     def engine_type(self) -> InferenceEngineType:

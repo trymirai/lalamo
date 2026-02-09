@@ -2,11 +2,16 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 import polars as pl
-from evals.types import InferenceConfig, InternalEvalRecord
+from evals.types import InferenceConfig, InferenceEngineType, InternalEvalRecord
 
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
-from lalamo.evals.inference import LalamoInferenceEngine
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
+from lalamo.evals.inference.engines import (
+    CustomAPIEngineConfig,
+    CustomAPIInferenceEngine,
+    LalamoEngineConfig,
+    LalamoInferenceEngine,
+)
 
 
 def _load_internal_dataset(
@@ -26,14 +31,11 @@ def _load_internal_dataset(
 
 def infer_command_handler(
     eval_repo: str,
-    model_path: Path,
     dataset_dir: Path,
     output_dir: Path,
+    engine_config: LalamoEngineConfig | CustomAPIEngineConfig,
     inference_overrides: InferenceConfig,
     limit: int | None = None,
-    batch_size: int | None = None,
-    max_vram_bytes: int | None = None,
-    engine: str = "lalamo",
     callbacks: BaseRunInferenceCallbacks | None = None,
 ) -> Path:
     if callbacks is None:
@@ -41,23 +43,21 @@ def infer_command_handler(
 
     eval_spec = REPO_TO_EVAL[eval_repo]
     eval_adapter = eval_spec.handler_type()
+    engine_type = engine_config.engine_type
 
-    adapter_config = eval_adapter.get_inference_config()
+    adapter_config = eval_adapter.get_inference_config(engine_type)
     overrides = {k: v for k, v in asdict(inference_overrides).items() if v is not None}
     inference_config = replace(adapter_config, **overrides)
 
     callbacks.started()
     callbacks.inference_config_loaded(asdict(adapter_config), overrides)
 
-    if engine == "lalamo":
-        inference_engine = LalamoInferenceEngine(
-            model_path=model_path,
-            inference_config=inference_config,
-            max_vram=max_vram_bytes,
-            batch_size=batch_size,
-        )
+    if engine_type == InferenceEngineType.LOCAL:
+        inference_engine = LalamoInferenceEngine(engine_config, inference_config)
+    elif engine_type == InferenceEngineType.CUSTOM_API:
+        inference_engine = CustomAPIInferenceEngine(engine_config, inference_config)
     else:
-        raise ValueError(f"Unsupported engine: {engine}. Supported: lalamo")
+        raise ValueError(f"Unsupported engine type: {engine_type}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
