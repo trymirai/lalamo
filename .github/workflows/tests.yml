@@ -120,7 +120,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest --ci --maxfail=2 tests/tracer # not using xdist since will try to allocate too much memory
+          pytest --ci --maxfail=2 tests/tracer # not using xdist since will likely cause an oom
 
   cli:
     name: CLI
