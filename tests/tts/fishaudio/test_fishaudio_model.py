@@ -52,7 +52,10 @@ def fish_audio_local_model_path() -> Path:
     fish_audiod_repo_id = "fishaudio/s1-mini"
 
     repos = huggingface_hub.scan_cache_dir().repos
-    fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+    try:
+        fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+    except StopIteration:
+        pytest.skip(f"Model {fish_audiod_repo_id} not found in local Hugging Face cache")
 
     try:
         api = HfApi()
