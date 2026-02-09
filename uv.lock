@@ -939,8 +939,8 @@ wheels = [
 
 [[package]]
 name = "evals"
-version = "0.3.0"
-source = { git = "https://github.com/trymirai/evals.git?branch=main#18eb5599098bf391917286bfd16f47b8eea7fd54" }
+version = "0.3.1"
+source = { git = "https://github.com/trymirai/evals.git?branch=main#c2d2e3252c72444384fedeef75cef60169c6dbca" }
 dependencies = [
     { name = "absl-py" },
     { name = "datasets" },
