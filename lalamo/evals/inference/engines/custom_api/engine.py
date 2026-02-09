@@ -37,13 +37,15 @@ class CustomAPIInferenceEngine(InferenceEngine):
         self,
         input_path: Path,
         output_path: Path,
-        callbacks: BaseEngineCallbacks,  # noqa: ARG002
+        callbacks: BaseEngineCallbacks,
     ) -> Path:
         input_df = pl.read_parquet(input_path)
         conversations = input_df["messages"].to_list()
 
+        callbacks.generation_started(len(conversations))
+
         responses = []
-        for messages in conversations:
+        for i, messages in enumerate(conversations):
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -56,6 +58,10 @@ class CustomAPIInferenceEngine(InferenceEngine):
 
             content = response.choices[0].message.content or ""
             responses.append(content)
+
+            callbacks.generation_progress(i + 1)
+
+        callbacks.finished_generation()
 
         output_data = pl.DataFrame({
             "response": responses,

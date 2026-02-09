@@ -1,8 +1,17 @@
-from dataclasses import dataclass
+from contextlib import ExitStack
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.progress import (
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TaskID,
+    TextColumn,
+    TimeElapsedColumn,
+)
 
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 
@@ -30,6 +39,10 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
     vram_gb: float | None
     engine_type: str | None = None
     engine_config_dict: dict[str, Any] | None = None
+
+    _stack: ExitStack = field(default_factory=ExitStack)
+    _progress: Progress | None = None
+    _generation_task: TaskID | None = None
 
     def started(self) -> None:
         console.print("[bold]Configuration:[/bold]")
@@ -66,6 +79,30 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
         console.print("[yellow]Warning: unsupported inference config parameters:[/yellow]")
         for param in params:
             console.print(f" - {param}")
+
+    def generation_started(self, total_rows: int) -> None:
+        self._progress = self._stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                transient=True,
+            ),
+        )
+        self._generation_task = self._progress.add_task(
+            "🔮 [cyan]Generating replies...[/cyan]",
+            total=total_rows,
+        )
+
+    def generation_progress(self, rows_processed: int) -> None:
+        if self._progress is not None and self._generation_task is not None:
+            self._progress.update(self._generation_task, completed=rows_processed)
+
+    def finished_generation(self) -> None:
+        if self._progress is not None and self._generation_task is not None:
+            self._progress.update(self._generation_task, description="✅ Completed")
+        self._stack.close()
 
     def completed(self, predictions_path: Path, count: int) -> None:
         console.print()
