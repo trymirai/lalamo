@@ -1,3 +1,9 @@
+"""Integration tests for the full evals pipeline: convert → infer → benchmark.
+
+These tests validate that data formats and metadata flow correctly through
+all three stages of the evaluation workflow using real parquet I/O operations.
+"""
+
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -13,6 +19,14 @@ from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineCo
 
 class TestFullPipelineIntegration:
     def test_convert_infer_benchmark_pipeline(self, tmp_path: Path) -> None:
+        """Test full pipeline with lalamo engine: convert → infer → benchmark.
+
+        Validates:
+        - Dataset conversion creates correct parquet schema
+        - Inference enriches predictions with ground truth
+        - Metadata propagates through all stages
+        - Benchmark receives properly formatted predictions
+        """
         dataset_dir = tmp_path / "dataset"
         infer_output_dir = tmp_path / "infer_output"
 
@@ -51,6 +65,7 @@ class TestFullPipelineIntegration:
         eval_spec.splits = ["test"]
         eval_spec.handler_type = mock_handler_class
 
+        # Step 1: Convert dataset from external format to internal parquet
         with patch("lalamo.evals.datasets.command.REPO_TO_EVAL", {"test/repo": eval_spec}):
             convert_dataset_handler(
                 eval_repo="test/repo",
@@ -58,6 +73,7 @@ class TestFullPipelineIntegration:
                 callbacks=Mock(),
             )
 
+        # Verify conversion output format
         assert (dataset_dir / "test.parquet").exists()
         assert (dataset_dir / "config.json").exists()
 
@@ -66,6 +82,7 @@ class TestFullPipelineIntegration:
         assert set(converted_df.columns) == {"id", "question", "answer", "metadata"}
         assert converted_df["id"].to_list() == ["q1", "q2"]
 
+        # Step 2: Run inference on converted dataset
         mock_engine = Mock()
         mock_engine.run_inference.return_value = tmp_path / "raw_output.parquet"
         mock_engine.parse_output.return_value = [
@@ -107,6 +124,7 @@ class TestFullPipelineIntegration:
 
         assert predictions_path.exists()
 
+        # Verify predictions format and ground truth enrichment
         predictions_df = pl.read_parquet(predictions_path)
         assert len(predictions_df) == 2
         assert set(predictions_df.columns) == {
@@ -120,12 +138,14 @@ class TestFullPipelineIntegration:
         assert predictions_df["model_output"].to_list() == ["Paris", "8"]
         assert predictions_df["answer"].to_list() == ["Paris", "8"]
 
+        # Verify metadata in parquet schema
         table = pq.read_table(predictions_path)
         schema_metadata = table.schema.metadata
         assert b"model_name" in schema_metadata
         assert b"inference_engine" in schema_metadata
         assert schema_metadata[b"model_name"] == b"test-model"
 
+        # Step 3: Run benchmark on predictions
         eval_spec.handler_type = lambda: mock_adapter
 
         with patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": eval_spec}):
@@ -135,6 +155,7 @@ class TestFullPipelineIntegration:
                 callbacks=Mock(),
             )
 
+            # Verify benchmark received correct metadata
             mock_adapter.prepare_for_benchmark.assert_called_once()
             mock_adapter.run_benchmark.assert_called_once()
 
@@ -143,6 +164,13 @@ class TestFullPipelineIntegration:
             assert benchmark_call.kwargs["inference_engine"] == "local"
 
     def test_pipeline_with_custom_api_engine(self, tmp_path: Path) -> None:
+        """Test full pipeline with custom API engine: convert → infer → benchmark.
+
+        Validates the same workflow as lalamo engine but with:
+        - Custom API engine (different code path)
+        - Different model naming (API model name vs file path)
+        - Different engine type metadata (custom_api vs local)
+        """
         dataset_dir = tmp_path / "dataset"
         infer_output_dir = tmp_path / "infer_output"
 
@@ -181,6 +209,7 @@ class TestFullPipelineIntegration:
         eval_spec.splits = ["test"]
         eval_spec.handler_type = mock_handler_class
 
+        # Step 1: Convert dataset
         with patch("lalamo.evals.datasets.command.REPO_TO_EVAL", {"test/repo": eval_spec}):
             convert_dataset_handler(
                 eval_repo="test/repo",
@@ -195,6 +224,7 @@ class TestFullPipelineIntegration:
         assert len(converted_df) == 2
         assert converted_df["id"].to_list() == ["q1", "q2"]
 
+        # Step 2: Run inference with custom API engine
         mock_engine = Mock()
         mock_engine.run_inference.return_value = tmp_path / "raw_output.parquet"
         mock_engine.parse_output.return_value = [
@@ -238,11 +268,13 @@ class TestFullPipelineIntegration:
 
         assert predictions_path.exists()
 
+        # Verify predictions format
         predictions_df = pl.read_parquet(predictions_path)
         assert len(predictions_df) == 2
         assert predictions_df["model_output"].to_list() == ["Madrid", "7"]
         assert predictions_df["answer"].to_list() == ["Madrid", "7"]
 
+        # Verify API engine metadata
         table = pq.read_table(predictions_path)
         schema_metadata = table.schema.metadata
         assert b"model_name" in schema_metadata
@@ -250,6 +282,7 @@ class TestFullPipelineIntegration:
         assert schema_metadata[b"model_name"] == b"qwen2.5-coder:0.5b"
         assert schema_metadata[b"inference_engine"] == b"custom_api"
 
+        # Step 3: Run benchmark
         eval_spec.handler_type = lambda: mock_adapter
 
         with patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": eval_spec}):
@@ -259,6 +292,7 @@ class TestFullPipelineIntegration:
                 callbacks=Mock(),
             )
 
+            # Verify benchmark received custom_api metadata
             mock_adapter.prepare_for_benchmark.assert_called_once()
             mock_adapter.run_benchmark.assert_called_once()
 
