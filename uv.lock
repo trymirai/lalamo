@@ -1002,7 +1002,7 @@ wheels = [
 [[package]]
 name = "fish-speech"
 version = "0.1.0"
-source = { git = "https://github.com/trymirai/fish-speech.git?tag=1d542fd#1d542fd6d6fd5a5f401c188a5b6f070eff29858f" }
+source = { git = "https://github.com/trymirai/fish-speech.git?tag=cb3f003#cb3f0030c44544dced533e97ae59017ff16ebe02" }
 dependencies = [
     { name = "cachetools" },
     { name = "datasets" },
@@ -2082,7 +2082,7 @@ dev = [
     { name = "blobfile", specifier = ">=3.1.0" },
     { name = "cartesia-metal", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-metal&tag=5e28bfc5" },
     { name = "cartesia-mlx", marker = "sys_platform == 'darwin'", git = "https://github.com/trymirai/cartesia-ai-edge.git?subdirectory=cartesia-mlx&tag=5e28bfc5" },
-    { name = "fish-speech", git = "https://github.com/trymirai/fish-speech.git?tag=1d542fd" },
+    { name = "fish-speech", git = "https://github.com/trymirai/fish-speech.git?tag=cb3f003" },
     { name = "hypothesis", specifier = ">=6.150.0" },
     { name = "ipykernel", specifier = ">=6.29.5" },
     { name = "ipywidgets", specifier = ">=8.1.5" },
