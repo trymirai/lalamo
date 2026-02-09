@@ -5,10 +5,16 @@ on:
     branches:
       - main
   pull_request:
+    # Run only when PR is open & ready (not draft). Job-level `if:` gates drafts.
+    types: [opened, reopened, ready_for_review, synchronize]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: tests-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 defaults:
   run:
@@ -21,7 +27,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - id: setup
         uses: ./.github/actions/setup
 
@@ -44,9 +50,10 @@ jobs:
   unit:
     name: Unit Tests
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
 
       - name: Run pytest
@@ -58,9 +65,11 @@ jobs:
   generation:
     name: Generation Tests
     runs-on: [self-hosted, linux, gpu, l40s]
+    needs: [unit]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
         with:
           cuda: 'true'
@@ -73,11 +82,12 @@ jobs:
 
   conversion:
     name: Model Conversion Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
 
       - name: Run pytest
@@ -86,13 +96,30 @@ jobs:
         run: |
           pytest tests/conversion
 
+  audio:
+    name: Audio Model Tests
+    runs-on: [self-hosted, linux, cpu]
+    needs: [unit]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+
+      - name: Run pytest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pytest tests/audio
+
   tracer:
     name: Tracer Tests
     runs-on: [self-hosted, linux, gpu, l40s]
-    needs: [unit, conversion, generation]
+    needs: [unit]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
         with:
           cuda: 'true'
@@ -111,7 +138,7 @@ jobs:
       MODEL: Qwen/Qwen2.5-0.5B-Instruct
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v4
       - uses: ./.github/actions/setup
 
       - name: lalamo list-models
