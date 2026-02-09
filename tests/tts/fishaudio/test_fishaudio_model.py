@@ -1,10 +1,9 @@
 import logging
 from pathlib import Path
-from typing import Any
-import pytest
 
 import huggingface_hub
 import jax
+import pytest
 import torch
 from fish_speech.tokenizer import FishTokenizer
 from huggingface_hub import HfApi
@@ -127,12 +126,12 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
 
     # Run PyTorch model
     output_pytorch = pytorch_tts_generator.tts_model.text_decoder(
-        tokenized_text, sampling_params=sampling_params_from_policy(sampling_policy)
+        tokenized_text, sampling_params=sampling_params_from_policy(sampling_policy),
     )
 
     # Run Lalamo model
     decode_result = lalamo_text_decoder(
-        text_tokens=tokenized_text, input_pos=input_pos, sampling_policy=sampling_policy, key=key
+        text_tokens=tokenized_text, input_pos=input_pos, sampling_policy=sampling_policy, key=key,
     )
     output_lalamo = decode_result.token_codes
 
@@ -194,7 +193,7 @@ def test_permute_for_rope_rotate_half() -> None:
     # 3. Reshape back (8, 3)
     # Expected row order: [0,1,2,3,4,5,6,7] -> [0,2,4,6,1,3,5,7]
 
-    print(f"\n=== Single head test ===")
+    print("\n=== Single head test ===")
     print(f"num_heads={num_heads}, head_dim={head_dim}, in_features={in_features}")
     print(f"\nInput weight matrix (interleaved format):\n{np.array(weight)}")
     print(f"\nOutput weight matrix (rotate-half format):\n{np.array(result)}")
@@ -218,7 +217,7 @@ def test_permute_for_rope_rotate_half() -> None:
     # === Test 1D vector case ===
     # This is used for bias vectors where we have a single head_dim worth of values
     # The permutation is the same: interleaved pairs -> grouped halves
-    print(f"\n=== 1D vector test ===")
+    print("\n=== 1D vector test ===")
 
     head_dim_1d = 8
     # Create 1D vector with traceable values: [0, 10, 20, 30, 40, 50, 60, 70]
@@ -703,11 +702,11 @@ def test_causal_transpose_conv1d_various_strides() -> None:
         lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
 
         _testlog.info(
-            f"TransConv kernel={kernel_size}, stride={stride} - shapes: {torch_output.shape} vs {lalamo_output.shape}"
+            f"TransConv kernel={kernel_size}, stride={stride} - shapes: {torch_output.shape} vs {lalamo_output.shape}",
         )
         _testlog.info(
             f"TransConv kernel={kernel_size}, stride={stride} - "
-            f"max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+            f"max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}",
         )
 
         assert torch_output_jax.shape == lalamo_output_nct.shape, (
@@ -749,13 +748,13 @@ def test_causal_conv_transpose_roundtrip() -> None:
         {
             "weights": torch_to_jax(torch_conv.conv.weight.detach()),
             "biases": torch_to_jax(torch_conv.conv.bias.detach()),
-        }
+        },
     )
     lalamo_trans = lalamo_trans.import_weights(
         {
             "weights": torch_to_jax(torch_trans.conv.weight.detach()),
             "biases": torch_to_jax(torch_trans.conv.bias.detach()),
-        }
+        },
     )
 
     torch.manual_seed(42)
@@ -1024,7 +1023,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
             ),
         )
         _testlog.info(
-            f"Block {len(block_params) - 1}: in={in_channels}, out={out_channels}, k={kernel_size}, s={stride}"
+            f"Block {len(block_params) - 1}: in={in_channels}, out={out_channels}, k={kernel_size}, s={stride}",
         )
 
     # Create Lalamo Upsampler config - one UpsamplingBlockConfig per block
@@ -1517,7 +1516,7 @@ def test_audio_transformer_inference() -> None:
         f"Lalamo Transformer config: model_dim={transformer_cfg.model_dim}, "
         f"hidden_dim={transformer_cfg.hidden_dim}, "
         f"context_length={transformer_cfg.context_length}, "
-        f"num_layers={len(transformer_cfg.layer_configs)}"
+        f"num_layers={len(transformer_cfg.layer_configs)}",
     )
 
     # Instantiate an empty Lalamo transformer
@@ -1634,15 +1633,15 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
 
     _testlog.info(
         f"DAC - Fish audio: shape={audio_fish.shape}, max={audio_fish.max():.6f}, "
-        f"min={audio_fish.min():.6f}, avg={audio_fish.mean():.6f}"
+        f"min={audio_fish.min():.6f}, avg={audio_fish.mean():.6f}",
     )
     _testlog.info(
         f"DAC - Lalamo audio: shape={audio_lalamo.shape}, max={audio_lalamo.max():.6f}, "
-        f"min={audio_lalamo.min():.6f}, avg={audio_lalamo.mean():.6f}"
+        f"min={audio_lalamo.min():.6f}, avg={audio_lalamo.mean():.6f}",
     )
     _testlog.info(
         f"DAC - audio diff: max={jnp.abs(audio_diff).max():.6f}, "
-        f"avg={audio_diff.mean():.6f}, std={audio_diff.std():.6f}"
+        f"avg={audio_diff.mean():.6f}, std={audio_diff.std():.6f}",
     )
 
     assert audio_fish_ntc.shape == audio_lalamo.shape, (
