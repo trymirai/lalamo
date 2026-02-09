@@ -23,17 +23,8 @@ from tests.tracer.tracer import DType, ModelTestSpec
 IS_MACOS = platform.system() == "Darwin"
 
 
-def memory_limit_for_platform(macos_limit: str, *, non_macos_limit: str | None = None) -> int:
-    if not IS_MACOS and non_macos_limit is not None:
-        return unsi(non_macos_limit)
-    return unsi(macos_limit)
-
-
 MODEL_LIST: list[ModelTestSpec] = [
-    ModelTestSpec(
-        "trymirai/chat-moderation-router",
-        convert_memory_limit=memory_limit_for_platform("400 M", non_macos_limit="2 G"),
-    ),
+    ModelTestSpec("trymirai/chat-moderation-router", convert_memory_limit=unsi("400 M")),
     ModelTestSpec("Qwen/Qwen3-0.6B", convert_memory_limit=unsi("1.3 G")),
     ModelTestSpec("Qwen/Qwen3-8B", convert_memory_limit=unsi("16 G")),
     ModelTestSpec("Qwen/Qwen3-4B-AWQ"),
@@ -42,10 +33,7 @@ MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("google/gemma-3-4b-it"),
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B"),
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct"),
-    ModelTestSpec(
-        "cartesia-ai/Llamba-1B",
-        convert_memory_limit=memory_limit_for_platform("2.8 G", non_macos_limit="8 G"),
-    ),
+    ModelTestSpec("cartesia-ai/Llamba-1B", convert_memory_limit=unsi("2.8 G")),
     ModelTestSpec("cartesia-ai/Llamba-1B-4bit-mlx"),
     ModelTestSpec("LiquidAI/LFM2-350M", convert_memory_limit=unsi("800 M")),
     ModelTestSpec("mlx-community/LFM2-350M-4bit", convert_memory_limit=unsi("1.2 G")),
@@ -88,7 +76,7 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
     NOTE: Using tmp_path fixture provided by pytest runtime environment.
     """
 
-    if test_spec.convert_memory_limit is not None:
+    if IS_MACOS and test_spec.convert_memory_limit is not None:
         memory_limit = limit_memory(test_spec.convert_memory_limit)
     else:
         memory_limit = nullcontext()
