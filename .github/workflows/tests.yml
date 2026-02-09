@@ -77,7 +77,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=auto tests/generation
+          pytest tests/generation
 
   conversion:
     name: Model Conversion Tests
@@ -93,7 +93,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=auto tests/conversion
+          pytest tests/conversion
 
   audio:
     name: Audio Model Tests

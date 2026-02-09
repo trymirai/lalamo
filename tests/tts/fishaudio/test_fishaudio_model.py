@@ -1,5 +1,6 @@
 import logging
 from pathlib import Path
+from typing import Any
 
 import huggingface_hub
 import jax
@@ -45,6 +46,20 @@ from tests.tts.fishaudio.fishaudio_thin_wrapper import (
 from tests.tts.fishaudio.fishaudio_torch_stuff import FishAudioFromTorch
 
 _testlog = logging.getLogger("tts_test_logger")
+
+
+def _load_fish_dac_modules_or_skip() -> tuple[Any, type[Any]]:
+    try:
+        from fish_speech.models.dac import inference as fish_dac_inference
+    except FileNotFoundError as exc:
+        message = str(exc)
+        if "Project root directory not found" in message and ".project-root" in message:
+            pytest.skip("Skipping FishAudio DAC tests: fish_speech root discovery failed")
+        raise
+
+    from fish_speech.models.dac.modded_dac import DAC
+
+    return fish_dac_inference, DAC
 
 
 @fixture
@@ -869,8 +884,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     This test loads a real DAC model checkpoint, extracts the first upsampling block,
     transfers weights to the Lalamo implementation, and compares outputs.
     """
-    from fish_speech.models.dac import inference as fish_dac_inference
-    from fish_speech.models.dac.modded_dac import DAC
+    fish_dac_inference, DAC = _load_fish_dac_modules_or_skip()
 
     audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
@@ -986,8 +1000,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     This test loads a real DAC model checkpoint, extracts all upsampling blocks,
     transfers weights to the Lalamo Upsampler, and compares outputs.
     """
-    from fish_speech.models.dac import inference as fish_dac_inference
-    from fish_speech.models.dac.modded_dac import DAC
+    fish_dac_inference, DAC = _load_fish_dac_modules_or_skip()
 
     audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
@@ -1586,8 +1599,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     using load_descript_audio_codec(), and compares full inference (codes -> audio)
     between both implementations.
     """
-    from fish_speech.models.dac import inference as fish_dac_inference
-    from fish_speech.models.dac.modded_dac import DAC as FishDAC
+    fish_dac_inference, FishDAC = _load_fish_dac_modules_or_skip()
 
     from lalamo.model_import.loaders.fishaudio_loaders import load_descript_audio_codec
 
