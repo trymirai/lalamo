@@ -2,6 +2,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 import polars as pl
+import pyarrow.parquet as pq
 from evals.types import InferenceConfig, InferenceEngineType, InternalEvalRecord
 
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
@@ -81,7 +82,6 @@ def infer_command_handler(
 
     outputs = inference_engine.parse_output(raw_output_path, input_path)
 
-    predictions_path = output_dir / "predictions.parquet"
     predictions_df = pl.DataFrame(
         {
             "id": [o.id for o in outputs],
@@ -90,12 +90,20 @@ def infer_command_handler(
             "chain_of_thought": [o.chain_of_thought for o in outputs],
             "answer": [o.answer for o in outputs],
             "metadata": [o.metadata for o in outputs],
-            "model_name": [engine_config.get_model_name()] * len(outputs),
-            "inference_engine": [engine_type.value] * len(outputs),
         },
     )
+
+    predictions_path = output_dir / "predictions.parquet"
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
-    predictions_df.write_parquet(predictions_path)
+
+    table = predictions_df.to_arrow()
+    file_metadata = {
+        b"model_name": engine_config.get_model_name().encode(),
+        b"inference_engine": engine_type.value.encode(),
+        b"eval_name": eval_repo.encode(),
+    }
+    table = table.replace_schema_metadata(file_metadata)
+    pq.write_table(table, predictions_path)
 
     callbacks.completed(predictions_path, len(outputs))
 
