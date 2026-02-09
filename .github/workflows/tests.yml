@@ -63,7 +63,7 @@ jobs:
 
   generation:
     name: Generation Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -77,11 +77,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=2 tests/generation
+          pytest --ci tests/generation
 
   conversion:
     name: Model Conversion Tests
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [self-hosted, linux, gpu, l40s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -93,7 +93,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=2 tests/conversion
+          pytest --ci tests/conversion
 
   audio:
     name: Audio Model Tests
@@ -109,11 +109,11 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest -n=2 tests/tts
+          pytest --ci tests/tts
 
   tracer:
     name: Tracer Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -127,7 +127,7 @@ jobs:
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          pytest tests/tracer
+          pytest --ci tests/tracer
 
   cli:
     name: CLI
