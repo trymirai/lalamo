@@ -5,9 +5,11 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from evals.types import InferenceOutput
+from evals.types import DatasetLoadConfig, InferenceConfig, InferenceOutput, InternalEvalRecord
 
 from lalamo.evals.benchmark.command import benchmark_command_handler
+from lalamo.evals.inference.command import infer_command_handler
+from lalamo.evals.inference.engines import LalamoEngineConfig
 
 
 def create_predictions_parquet(
@@ -191,3 +193,190 @@ class TestBenchmarkErrorHandling:
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
+
+
+class TestInferCommandHandlerMetadata:
+    def test_writes_metadata_to_predictions_parquet(self, tmp_path: Path) -> None:
+        dataset_dir = tmp_path / "dataset"
+        dataset_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        test_records = [
+            InternalEvalRecord(
+                id="test_1",
+                question="What is 2+2?",
+                answer="4",
+                metadata=None,
+            )
+        ]
+        df = pl.DataFrame([{"id": r.id, "question": r.question, "answer": r.answer, "metadata": r.metadata} for r in test_records])
+        df.write_parquet(dataset_dir / "test.parquet")
+
+        mock_adapter = Mock()
+        mock_adapter.get_inference_config.return_value = InferenceConfig(
+            temperature=0.0,
+            max_output_length=2048,
+        )
+        mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
+        mock_adapter.get_benchmark_split.return_value = "test"
+        mock_adapter.format_prompts.return_value = []
+
+        mock_engine = Mock()
+        mock_engine.run_inference.return_value = tmp_path / "output.parquet"
+        mock_engine.parse_output.return_value = [
+            InferenceOutput(
+                id="test_1",
+                response="4",
+                question="What is 2+2?",
+                answer="4",
+            )
+        ]
+
+        with (
+            patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
+        ):
+            engine_config = LalamoEngineConfig(
+                model_path=Path("test-model"),
+                batch_size=1,
+                vram_gb=None,
+            )
+
+            infer_command_handler(
+                eval_repo="test/repo",
+                dataset_dir=dataset_dir,
+                output_dir=output_dir,
+                engine_config=engine_config,
+                inference_overrides=InferenceConfig(),
+            )
+
+            predictions_path = output_dir / "predictions.parquet"
+            assert predictions_path.exists()
+
+            table = pq.read_table(predictions_path)
+            schema_metadata = table.schema.metadata or {}
+
+            assert b"model_name" in schema_metadata
+            assert b"inference_engine" in schema_metadata
+            assert schema_metadata[b"model_name"] == b"test-model"
+            assert schema_metadata[b"inference_engine"] == b"local"
+
+    def test_enriches_predictions_with_ground_truth(self, tmp_path: Path) -> None:
+        dataset_dir = tmp_path / "dataset"
+        dataset_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        test_records = [
+            InternalEvalRecord(
+                id="test_1",
+                question="What is 2+2?",
+                answer="4",
+                metadata={"category": "math"},
+            ),
+            InternalEvalRecord(
+                id="test_2",
+                question="What is 3+3?",
+                answer="6",
+                metadata={"category": "math"},
+            ),
+        ]
+        df = pl.DataFrame([{"id": r.id, "question": r.question, "answer": r.answer, "metadata": r.metadata} for r in test_records])
+        df.write_parquet(dataset_dir / "test.parquet")
+
+        mock_adapter = Mock()
+        mock_adapter.get_inference_config.return_value = InferenceConfig(max_output_length=2048)
+        mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
+        mock_adapter.get_benchmark_split.return_value = "test"
+        mock_adapter.format_prompts.return_value = []
+
+        mock_engine = Mock()
+        mock_engine.run_inference.return_value = tmp_path / "output.parquet"
+        mock_engine.parse_output.return_value = [
+            InferenceOutput(
+                id="test_1",
+                response="4",
+                question="What is 2+2?",
+                answer="4",
+                metadata={"category": "math"},
+            ),
+            InferenceOutput(
+                id="test_2",
+                response="6",
+                question="What is 3+3?",
+                answer="6",
+                metadata={"category": "math"},
+            ),
+        ]
+
+        with (
+            patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
+        ):
+            engine_config = LalamoEngineConfig(
+                model_path=Path("test-model"),
+                batch_size=1,
+                vram_gb=None,
+            )
+
+            infer_command_handler(
+                eval_repo="test/repo",
+                dataset_dir=dataset_dir,
+                output_dir=output_dir,
+                engine_config=engine_config,
+                inference_overrides=InferenceConfig(),
+            )
+
+            predictions_path = output_dir / "predictions.parquet"
+            df = pl.read_parquet(predictions_path)
+
+            assert "answer" in df.columns
+            assert "question" in df.columns
+            assert df["answer"].to_list() == ["4", "6"]
+            assert df["question"].to_list() == ["What is 2+2?", "What is 3+3?"]
+
+
+class TestInferCommandHandlerDatasetLoading:
+    def test_loads_dataset_with_limit(self, tmp_path: Path) -> None:
+        dataset_dir = tmp_path / "dataset"
+        dataset_dir.mkdir()
+        output_dir = tmp_path / "output"
+
+        test_records = [
+            InternalEvalRecord(id=f"test_{i}", question=f"Q{i}?", answer=f"A{i}")
+            for i in range(100)
+        ]
+        df = pl.DataFrame([{"id": r.id, "question": r.question, "answer": r.answer, "metadata": r.metadata} for r in test_records])
+        df.write_parquet(dataset_dir / "test.parquet")
+
+        mock_adapter = Mock()
+        mock_adapter.get_inference_config.return_value = InferenceConfig(max_output_length=2048)
+        mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=10)]
+        mock_adapter.get_benchmark_split.return_value = "test"
+        mock_adapter.format_prompts.return_value = []
+
+        mock_engine = Mock()
+        mock_engine.run_inference.return_value = tmp_path / "output.parquet"
+        mock_engine.parse_output.return_value = []
+
+        with (
+            patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
+        ):
+            engine_config = LalamoEngineConfig(
+                model_path=Path("test-model"),
+                batch_size=1,
+                vram_gb=None,
+            )
+
+            infer_command_handler(
+                eval_repo="test/repo",
+                dataset_dir=dataset_dir,
+                output_dir=output_dir,
+                engine_config=engine_config,
+                inference_overrides=InferenceConfig(),
+                limit=10,
+            )
+
+            call_args = mock_adapter.format_prompts.call_args[0][0]
+            loaded_records = call_args["test"]
+            assert len(loaded_records) == 10
