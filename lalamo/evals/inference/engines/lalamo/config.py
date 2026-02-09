@@ -17,3 +17,6 @@ class LalamoEngineConfig:
     @property
     def engine_type(self) -> InferenceEngineType:
         return InferenceEngineType.LOCAL
+
+    def get_model_name(self) -> str:
+        return self.model_path.name

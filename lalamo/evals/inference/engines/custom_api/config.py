@@ -14,3 +14,6 @@ class CustomAPIEngineConfig:
     @property
     def engine_type(self) -> InferenceEngineType:
         return InferenceEngineType.CUSTOM_API
+
+    def get_model_name(self) -> str:
+        return self.model

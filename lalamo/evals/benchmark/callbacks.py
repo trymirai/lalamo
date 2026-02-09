@@ -1,10 +1,31 @@
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from evals.types import BenchmarkMetrics
 from rich.console import Console
 
 console = Console()
+
+
+def _format_key(key: str) -> str:
+    return key.replace("_", " ").title()
+
+
+def _format_value(value: Any) -> str:  # noqa: ANN401
+    if isinstance(value, float):
+        return f"{value:.2f}"
+    return str(value)
+
+
+def _format_metrics(metrics: dict[str, Any]) -> None:
+    for key, value in sorted(metrics.items()):
+        if isinstance(value, dict):
+            console.print(f"[bold]{_format_key(key)}:[/bold]")
+            for sub_key, sub_value in sorted(value.items()):
+                console.print(f"  {sub_key:20s} {_format_value(sub_value)}")
+        else:
+            console.print(f"{_format_key(key)}: {_format_value(value)}")
 
 
 @dataclass
@@ -51,20 +72,9 @@ class ConsoleCallbacks(BaseBenchmarkCallbacks):
         console.print(f"Eval: {metrics.eval_name}")
         console.print(f"Model: {metrics.model_name}")
         console.print(f"Split: {metrics.split}")
+        console.print(f"Engine: {metrics.inference_engine}")
+        console.print(f"Samples: {metrics.num_samples}")
         console.print()
-        console.print(f"[bold green]Overall Accuracy: {metrics.overall_accuracy:.2%}[/bold green]")
-        console.print(f"Correct: {metrics.correct}/{metrics.total_examples}")
-        console.print(f"Incorrect: {metrics.incorrect}/{metrics.total_examples}")
 
-        if metrics.category_metrics:
-            console.print()
-            console.print("[bold]Category Breakdown:[/bold]")
-            for category, accuracy in sorted(metrics.category_metrics.items()):
-                console.print(f"  {category:20s} {accuracy:.2%}")
-
-        if metrics.custom_metrics:
-            console.print()
-            console.print("[bold]Custom Metrics:[/bold]")
-            for metric_name, value in metrics.custom_metrics.items():
-                console.print(f"  {metric_name}: {value}")
+        _format_metrics(metrics.metrics)
 

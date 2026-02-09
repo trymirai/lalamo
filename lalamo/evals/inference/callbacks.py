@@ -54,7 +54,11 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
         if self.engine_config_dict:
             console.print("  [dim]Engine config:[/dim]")
             for key, value in self.engine_config_dict.items():
-                console.print(f"   - [dim]{key}: {value}[/dim]")
+                if key == "api_key":
+                    display_value = "***" if value else None
+                else:
+                    display_value = value
+                console.print(f"   - [dim]{key}: {display_value}[/dim]")
 
         if self.model_path:
             console.print(f"  Model: {self.model_path}")

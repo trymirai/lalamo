@@ -37,8 +37,9 @@ def benchmark_command_handler(
         for row in pred_df.iter_rows(named=True)
     ]
 
-    # TODO(mullakhmetov): reconsider how to extract model_name from predictions
+    # TODO(mullakhmetov): reconsider how to extract model_name and inference_engine from predictions
     model_name = pred_df["model_name"][0] if "model_name" in pred_df.columns else "unknown"
+    inference_engine = pred_df["inference_engine"][0] if "inference_engine" in pred_df.columns else "unknown"
 
     callbacks.preparing_benchmark()
     output_dir = predictions_path.parent / "benchmark_data"
@@ -53,6 +54,7 @@ def benchmark_command_handler(
         eval_name=eval_spec.name,
         model_name=model_name,
         split=benchmark_split,
+        inference_engine=inference_engine,
     )
 
     callbacks.completed(metrics)

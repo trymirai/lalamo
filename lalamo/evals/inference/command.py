@@ -90,6 +90,8 @@ def infer_command_handler(
             "chain_of_thought": [o.chain_of_thought for o in outputs],
             "answer": [o.answer for o in outputs],
             "metadata": [o.metadata for o in outputs],
+            "model_name": [engine_config.get_model_name()] * len(outputs),
+            "inference_engine": [engine_type.value] * len(outputs),
         },
     )
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
