@@ -4,7 +4,6 @@ from typing import Any
 
 import huggingface_hub
 import jax
-import pytest
 import torch
 from fish_speech.tokenizer import FishTokenizer
 from huggingface_hub import HfApi
@@ -48,15 +47,8 @@ from tests.tts.fishaudio.fishaudio_torch_stuff import FishAudioFromTorch
 _testlog = logging.getLogger("tts_test_logger")
 
 
-def _load_fish_dac_modules_or_skip() -> tuple[Any, type[Any]]:
-    try:
-        from fish_speech.models.dac import inference as fish_dac_inference
-    except FileNotFoundError as exc:
-        message = str(exc)
-        if "Project root directory not found" in message and ".project-root" in message:
-            pytest.skip("Skipping FishAudio DAC tests: fish_speech root discovery failed")
-        raise
-
+def _load_fish_dac_modules() -> tuple[Any, type[Any]]:
+    from fish_speech.models.dac import inference as fish_dac_inference
     from fish_speech.models.dac.modded_dac import DAC
 
     return fish_dac_inference, DAC
@@ -66,24 +58,32 @@ def _load_fish_dac_modules_or_skip() -> tuple[Any, type[Any]]:
 def fish_audio_local_model_path() -> Path:
     fish_audiod_repo_id = "fishaudio/s1-mini"
 
-    repos = huggingface_hub.scan_cache_dir().repos
-    try:
-        fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
-    except StopIteration:
-        pytest.skip(f"Model {fish_audiod_repo_id} not found in local Hugging Face cache")
+    def try_find_model_locally() -> Path | None:
+        repos = huggingface_hub.scan_cache_dir().repos
+        try:
+            fish_audio_model_info = next(filter(lambda repo: repo.repo_id == fish_audiod_repo_id, repos))
+            api = HfApi()
+            cache_info = api.model_info(fish_audiod_repo_id)
+            commit_hash = cache_info.sha
+            final_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
+        except StopIteration:
+            _testlog.info(f"Model {fish_audiod_repo_id} not found in local Hugging Face cache")
+            return None
+        return final_path
 
-    try:
-        api = HfApi()
-        cache_info = api.model_info(fish_audiod_repo_id)
-        commit_hash = cache_info.sha
-    except ConnectionError:
-        pytest.skip("Failed to connect to Hugging Face to retrieve model info")
+    def try_download_model() -> Path:
+        _testlog.info(f"Trying to download {fish_audiod_repo_id} from HF hub")
+        snapshot_path = huggingface_hub.snapshot_download(fish_audiod_repo_id)
+        return Path(snapshot_path)
 
-    final_path = fish_audio_model_info.repo_path / "snapshots" / str(commit_hash)
-    if not Path.exists(final_path):
-        raise FileNotFoundError(f"Failed to find fishaudio model at: {final_path}")
+    local_model_path = try_find_model_locally()
+    if local_model_path is None:
+        local_model_path = try_download_model()
 
-    return final_path
+    if not Path.exists(local_model_path):
+        raise FileNotFoundError(f"Failed to find fishaudio model at: {local_model_path}")
+
+    return local_model_path
 
 
 def get_tts_message() -> TTSMessage:
@@ -884,7 +884,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     This test loads a real DAC model checkpoint, extracts the first upsampling block,
     transfers weights to the Lalamo implementation, and compares outputs.
     """
-    fish_dac_inference, DAC = _load_fish_dac_modules_or_skip()
+    fish_dac_inference, DAC = _load_fish_dac_modules()
 
     audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
@@ -1000,7 +1000,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     This test loads a real DAC model checkpoint, extracts all upsampling blocks,
     transfers weights to the Lalamo Upsampler, and compares outputs.
     """
-    fish_dac_inference, DAC = _load_fish_dac_modules_or_skip()
+    fish_dac_inference, DAC = _load_fish_dac_modules()
 
     audio_chkpt_path = fish_audio_local_model_path / "codec.pth"
     config_name = "modded_dac_vq"
@@ -1599,7 +1599,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     using load_descript_audio_codec(), and compares full inference (codes -> audio)
     between both implementations.
     """
-    fish_dac_inference, FishDAC = _load_fish_dac_modules_or_skip()
+    fish_dac_inference, FishDAC = _load_fish_dac_modules()
 
     from lalamo.model_import.loaders.fishaudio_loaders import load_descript_audio_codec
 
