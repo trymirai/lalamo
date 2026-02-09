@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import polars as pl
@@ -7,6 +7,9 @@ from evals.types import EvalPrompt, InferenceConfig, InferenceOutput, InternalEv
 from lalamo.commands import generate_replies
 from lalamo.evals.inference.engines.base import InferenceEngine
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
+
+# Inference config parameters currently supported by generate_replies()
+SUPPORTED_PARAMS = {"max_output_length"}
 
 
 @dataclass(frozen=True)
@@ -74,17 +77,12 @@ class LalamoInferenceEngine(InferenceEngine):
         from lalamo.main import CliGenerateRepliesCallbacks
 
         # Check for unsupported inference config parameters and warn
-        unsupported = []
-        # Required fields - always set in config
-        unsupported.append(f"temperature={self.inference_config.temperature}")
-        unsupported.append(f"max_model_len={self.inference_config.max_model_len}")
-        # Optional fields - only warn if explicitly set
-        if self.inference_config.top_p is not None:
-            unsupported.append(f"top_p={self.inference_config.top_p}")
-        if self.inference_config.top_k is not None:
-            unsupported.append(f"top_k={self.inference_config.top_k}")
-        if self.inference_config.stop_tokens:
-            unsupported.append(f"stop_tokens={self.inference_config.stop_tokens}")
+        config_dict = asdict(self.inference_config)
+        unsupported = [
+            f"{k}={v}"
+            for k, v in config_dict.items()
+            if k not in SUPPORTED_PARAMS and v is not None
+        ]
 
         if unsupported:
             callbacks.unsupported_inference_params(unsupported)

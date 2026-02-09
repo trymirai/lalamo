@@ -1,5 +1,6 @@
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 from evals.types import InternalEvalRecord
@@ -7,6 +8,19 @@ from evals.types import InternalEvalRecord
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference import LalamoInferenceEngine
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
+
+
+@dataclass
+class InferenceConfigOverrides:
+    temperature: float | None = None
+    max_output_length: int | None = None
+    max_model_len: int | None = None
+    top_p: float | None = None
+    top_k: int | None = None
+    stop_tokens: list[str] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {k: v for k, v in asdict(self).items() if v is not None}
 
 
 def _load_internal_dataset(
@@ -30,31 +44,17 @@ def infer_command_handler(
     dataset_dir: Path,
     output_dir: Path,
     callbacks: BaseRunInferenceCallbacks,
+    inference_overrides: InferenceConfigOverrides,
     limit: int | None = None,
     batch_size: int | None = None,
     max_vram_bytes: int | None = None,
     engine: str = "lalamo",
-    # Inference config overrides (None = use adapter's reference value)
-    temperature: float | None = None,
-    max_output_length: int | None = None,
-    max_model_len: int | None = None,
-    top_p: float | None = None,
-    top_k: int | None = None,
-    stop_tokens: list[str] | None = None,
 ) -> Path:
     eval_spec = REPO_TO_EVAL[eval_repo]
     eval_adapter = eval_spec.handler_type()
 
     adapter_config = eval_adapter.get_inference_config()
-    user_overrides = {
-        "temperature": temperature,
-        "max_output_length": max_output_length,
-        "max_model_len": max_model_len,
-        "top_p": top_p,
-        "top_k": top_k,
-        "stop_tokens": stop_tokens,
-    }
-    overrides = {k: v for k, v in user_overrides.items() if v is not None}
+    overrides = inference_overrides.to_dict()
     inference_config = replace(adapter_config, **overrides)
 
     callbacks.started()

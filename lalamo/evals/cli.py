@@ -11,7 +11,7 @@ from lalamo.evals.datasets.callbacks import ConsoleCallbacks as DatasetConsoleCa
 from lalamo.evals.datasets.command import convert_dataset_handler
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference.callbacks import ConsoleRunInferenceCallbacks
-from lalamo.evals.inference.command import infer_command_handler
+from lalamo.evals.inference.command import InferenceConfigOverrides, infer_command_handler
 
 console = Console()
 err_console = Console(stderr=True)
@@ -135,6 +135,15 @@ def infer_command(
         err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
         raise Exit(1)
 
+    inference_overrides = InferenceConfigOverrides(
+        temperature=temperature,
+        max_output_length=max_output_length,
+        max_model_len=max_model_len,
+        top_p=top_p,
+        top_k=top_k,
+        stop_tokens=stop_tokens,
+    )
+
     try:
         _predictions_path = infer_command_handler(
             eval_repo=eval_repo,
@@ -148,16 +157,11 @@ def infer_command(
                 batch_size=batch_size,
                 vram_gb=vram_gb,
             ),
+            inference_overrides=inference_overrides,
             limit=limit,
             batch_size=batch_size,
             max_vram_bytes=max_vram,
             engine=engine,
-            temperature=temperature,
-            max_output_length=max_output_length,
-            max_model_len=max_model_len,
-            top_p=top_p,
-            top_k=top_k,
-            stop_tokens=stop_tokens,
         )
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")
