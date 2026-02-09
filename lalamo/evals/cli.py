@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Annotated
 
+from evals.types import InferenceConfig
 from rich.console import Console
 from typer import Argument, Exit, Option, Typer
 
@@ -11,7 +12,7 @@ from lalamo.evals.datasets.callbacks import ConsoleCallbacks as DatasetConsoleCa
 from lalamo.evals.datasets.command import convert_dataset_handler
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference.callbacks import ConsoleRunInferenceCallbacks
-from lalamo.evals.inference.command import InferenceConfigOverrides, infer_command_handler
+from lalamo.evals.inference.command import infer_command_handler
 
 console = Console()
 err_console = Console(stderr=True)
@@ -135,7 +136,7 @@ def infer_command(
         err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
         raise Exit(1)
 
-    inference_overrides = InferenceConfigOverrides(
+    inference_overrides = InferenceConfig(
         temperature=temperature,
         max_output_length=max_output_length,
         max_model_len=max_model_len,

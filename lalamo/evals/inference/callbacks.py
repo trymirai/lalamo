@@ -11,12 +11,6 @@ console = Console()
 
 @dataclass
 class BaseRunInferenceCallbacks(BaseEngineCallbacks):
-    eval_repo: str
-    model_path: Path
-    limit: int | None
-    batch_size: int | None
-    vram_gb: float | None
-
     def started(self) -> None:
         pass
 
@@ -29,6 +23,12 @@ class BaseRunInferenceCallbacks(BaseEngineCallbacks):
 
 @dataclass
 class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
+    eval_repo: str
+    model_path: Path
+    limit: int | None
+    batch_size: int | None
+    vram_gb: float | None
+
     def started(self) -> None:
         console.print("[bold]Configuration:[/bold]")
         console.print(f"  Eval: {self.eval_repo}")

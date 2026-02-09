@@ -1,26 +1,12 @@
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, replace
 from pathlib import Path
-from typing import Any
 
 import polars as pl
-from evals.types import InternalEvalRecord
+from evals.types import InferenceConfig, InternalEvalRecord
 
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference import LalamoInferenceEngine
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
-
-
-@dataclass
-class InferenceConfigOverrides:
-    temperature: float | None = None
-    max_output_length: int | None = None
-    max_model_len: int | None = None
-    top_p: float | None = None
-    top_k: int | None = None
-    stop_tokens: list[str] | None = None
-
-    def to_dict(self) -> dict[str, Any]:
-        return {k: v for k, v in asdict(self).items() if v is not None}
 
 
 def _load_internal_dataset(
@@ -43,18 +29,21 @@ def infer_command_handler(
     model_path: Path,
     dataset_dir: Path,
     output_dir: Path,
-    callbacks: BaseRunInferenceCallbacks,
-    inference_overrides: InferenceConfigOverrides,
+    inference_overrides: InferenceConfig,
     limit: int | None = None,
     batch_size: int | None = None,
     max_vram_bytes: int | None = None,
     engine: str = "lalamo",
+    callbacks: BaseRunInferenceCallbacks | None = None,
 ) -> Path:
+    if callbacks is None:
+        callbacks = BaseRunInferenceCallbacks()
+
     eval_spec = REPO_TO_EVAL[eval_repo]
     eval_adapter = eval_spec.handler_type()
 
     adapter_config = eval_adapter.get_inference_config()
-    overrides = inference_overrides.to_dict()
+    overrides = {k: v for k, v in asdict(inference_overrides).items() if v is not None}
     inference_config = replace(adapter_config, **overrides)
 
     callbacks.started()
