@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
+from dataclasses import asdict
 from pathlib import Path
 
 import polars as pl
-from evals.types import EvalPrompt, InferenceEngineType, InferenceOutput, InternalEvalRecord
+from evals.types import EvalPrompt, InferenceConfig, InferenceEngineType, InferenceOutput, InternalEvalRecord
 
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 
@@ -14,6 +15,18 @@ class InferenceEngine(ABC):
         """Return the engine type for inference config selection."""
         ...
 
+    def _check_unsupported_params(
+        self,
+        inference_config: InferenceConfig,
+        supported_params: set[str],
+    ) -> list[str]:
+        config_dict = asdict(inference_config)
+        return [
+            f"{k}={v}"
+            for k, v in config_dict.items()
+            if k not in supported_params and v is not None
+        ]
+
     def prepare_input(
         self,
         prompts: list[EvalPrompt],
@@ -22,7 +35,7 @@ class InferenceEngine(ABC):
     ) -> Path:
         if len(prompts) != len(records):
             raise ValueError(
-                f"Prompts/records length mismatch: {len(prompts)} prompts != {len(records)} records"
+                f"Prompts/records length mismatch: {len(prompts)} prompts != {len(records)} records",
             )
 
         conversations = []
@@ -34,7 +47,7 @@ class InferenceEngine(ABC):
         for prompt, record in zip(prompts, records, strict=True):
             if prompt.id != record.id:
                 raise ValueError(
-                    f"Order mismatch: prompt.id={prompt.id!r} != record.id={record.id!r}"
+                    f"Order mismatch: prompt.id={prompt.id!r} != record.id={record.id!r}",
                 )
 
             messages = [{"role": msg.role, "content": msg.content} for msg in prompt.messages]
@@ -91,7 +104,7 @@ class InferenceEngine(ABC):
 
         if len(input_df) != len(output_df):
             raise ValueError(
-                f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs"
+                f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs",
             )
 
         return [

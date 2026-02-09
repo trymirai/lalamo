@@ -1,4 +1,3 @@
-from dataclasses import asdict
 from pathlib import Path
 
 from evals.types import InferenceConfig, InferenceEngineType
@@ -9,8 +8,7 @@ from lalamo.evals.inference.engines.base import InferenceEngine
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 from lalamo.evals.inference.engines.lalamo.config import LalamoEngineConfig
 
-# Inference config parameters currently supported by generate_replies()
-SUPPORTED_PARAMS = {"max_output_length"}
+_SUPPORTED_PARAMS = {"max_output_length"}
 
 
 class LalamoInferenceEngine(InferenceEngine):
@@ -18,7 +16,7 @@ class LalamoInferenceEngine(InferenceEngine):
         self,
         config: LalamoEngineConfig,
         inference_config: InferenceConfig,
-    ):
+    ) -> None:
         self.model_path = config.model_path
         self.batch_size = config.batch_size
         self.inference_config = inference_config
@@ -28,7 +26,7 @@ class LalamoInferenceEngine(InferenceEngine):
             if self.max_vram is None:
                 raise ValueError(
                     "Cannot get default device's memory stats. "
-                    "Specify batch-size or vram-gb"
+                    "Specify batch-size or vram-gb",
                 )
         else:
             self.max_vram = None
@@ -48,14 +46,7 @@ class LalamoInferenceEngine(InferenceEngine):
     ) -> Path:
         from lalamo.main import CliGenerateRepliesCallbacks
 
-        # Check for unsupported inference config parameters and warn
-        config_dict = asdict(self.inference_config)
-        unsupported = [
-            f"{k}={v}"
-            for k, v in config_dict.items()
-            if k not in SUPPORTED_PARAMS and v is not None
-        ]
-
+        unsupported = self._check_unsupported_params(self.inference_config, _SUPPORTED_PARAMS)
         if unsupported:
             callbacks.unsupported_inference_params(unsupported)
 

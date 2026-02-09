@@ -8,13 +8,15 @@ from lalamo.evals.inference.engines.base import InferenceEngine
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 from lalamo.evals.inference.engines.custom_api.config import CustomAPIEngineConfig
 
+_SUPPORTED_PARAMS = {"temperature", "max_output_length", "top_p", "stop_tokens"}
+
 
 class CustomAPIInferenceEngine(InferenceEngine):
     def __init__(
         self,
         config: CustomAPIEngineConfig,
         inference_config: InferenceConfig,
-    ):
+    ) -> None:
         self.base_url = config.base_url
         self.model = config.model
         self.inference_config = inference_config
@@ -39,6 +41,10 @@ class CustomAPIInferenceEngine(InferenceEngine):
         output_path: Path,
         callbacks: BaseEngineCallbacks,
     ) -> Path:
+        unsupported = self._check_unsupported_params(self.inference_config, _SUPPORTED_PARAMS)
+        if unsupported:
+            callbacks.unsupported_inference_params(unsupported)
+
         input_df = pl.read_parquet(input_path)
         conversations = input_df["messages"].to_list()
 
@@ -49,8 +55,8 @@ class CustomAPIInferenceEngine(InferenceEngine):
             response = self._client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                temperature=self.inference_config.temperature or 0.0,
-                max_tokens=self.inference_config.max_output_length or 2048,
+                temperature=self.inference_config.temperature,
+                max_tokens=self.inference_config.max_output_length,
                 top_p=self.inference_config.top_p,
                 stop=self.inference_config.stop_tokens,
                 # Note: top_k not supported by OpenAI API

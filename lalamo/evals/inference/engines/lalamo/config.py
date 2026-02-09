@@ -10,7 +10,7 @@ class LalamoEngineConfig:
     batch_size: int | None = None
     vram_gb: int | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.batch_size is not None and self.vram_gb is not None:
             raise ValueError("Cannot specify both batch_size and vram_gb")
 

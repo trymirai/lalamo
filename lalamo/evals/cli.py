@@ -173,7 +173,7 @@ def infer_command(
 
         if batch_size is not None or vram_gb is not None:
             err_console.print(
-                "[yellow]⚠[/yellow] --batch-size and --vram-gb are ignored for --engine custom_api"
+                "[yellow]⚠[/yellow] --batch-size and --vram-gb are ignored for --engine custom_api",
             )
 
         engine_config = CustomAPIEngineConfig(
