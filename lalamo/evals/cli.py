@@ -1,6 +1,7 @@
 from pathlib import Path
 from typing import Annotated
 
+from openai import OpenAIError
 from rich.console import Console
 from typer import Argument, Exit, Option, Typer
 
@@ -13,7 +14,6 @@ from lalamo.evals.inference.callbacks import ConsoleRunInferenceCallbacks
 from lalamo.evals.inference.command import infer_command_handler
 from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineConfig
 
-console = Console()
 err_console = Console(stderr=True)
 eval_app = Typer()
 
@@ -212,8 +212,9 @@ def infer_command(
                 engine_config=engine_config,
             ),
         )
-    except (ValueError, FileNotFoundError) as e:
-        console.print(f"[red]✗[/red] {e}")
+    except (ValueError, FileNotFoundError, OpenAIError) as e:
+        err_console.print("")
+        err_console.print(f"[red]✗[/red] {e}")
         raise Exit(1) from None
 
 
@@ -232,6 +233,6 @@ def benchmark_command(
             callbacks=BenchmarkConsoleCallbacks(),
         )
     except ValueError as e:
-        console.print(f"[red]✗[/red] {e}")
+        err_console.print(f"[red]✗[/red] {e}")
         raise Exit(1) from None
 
