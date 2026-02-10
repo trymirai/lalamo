@@ -2,8 +2,17 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import polars as pl
 import pytest
-from evals.types import DatasetLoadConfig, InferenceConfig, InferenceEngineType
+from evals.types import (
+    DatasetLoadConfig,
+    EvalPrompt,
+    InferenceConfig,
+    InferenceEngineType,
+    InternalEvalRecord,
+    MessageRole,
+    PromptMessage,
+)
 
 from lalamo.evals.inference.command import infer_command_handler
 from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineConfig
@@ -22,20 +31,51 @@ def adapter_default_config() -> InferenceConfig:
 
 
 @pytest.fixture
-def mock_adapter(adapter_default_config: InferenceConfig) -> Mock:
+def test_prompts() -> list[EvalPrompt]:
+    return [
+        EvalPrompt(
+            id="q1",
+            messages=[PromptMessage(role=MessageRole.USER, content="Test question")],
+        ),
+    ]
+
+
+@pytest.fixture
+def test_records() -> list[InternalEvalRecord]:
+    return [
+        InternalEvalRecord(
+            id="q1",
+            question="Test question",
+            answer="Test answer",
+            metadata={"test": "value"},
+        ),
+    ]
+
+
+@pytest.fixture
+def mock_adapter(adapter_default_config: InferenceConfig, test_prompts: list[EvalPrompt]) -> Mock:
     adapter = Mock()
     adapter.get_inference_config.return_value = adapter_default_config
     adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
     adapter.get_benchmark_split.return_value = "test"
-    adapter.format_prompts.return_value = []
+    adapter.format_prompts.return_value = test_prompts
     return adapter
 
 
 @pytest.fixture
-def mock_engine() -> Mock:
+def mock_engine(tmp_path: Path) -> Mock:
+    def mock_run_inference(input_path, output_path, callbacks):
+        output_data = pl.DataFrame({
+            "response": ["Test response"],
+            "chain_of_thought": [""],
+        })
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_data.write_parquet(output_path)
+        return output_path
+
     engine = Mock()
-    engine.run_inference.return_value = Path("output.parquet")
-    engine.parse_output.return_value = []
+    engine.get_conversation_column_name.return_value = "messages"
+    engine.run_inference.side_effect = mock_run_inference
     return engine
 
 
@@ -46,6 +86,7 @@ class TestInferenceConfigMerging:
         mock_adapter: Mock,
         mock_engine: Mock,
         adapter_default_config: InferenceConfig,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -54,7 +95,7 @@ class TestInferenceConfigMerging:
         with (
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = LalamoEngineConfig(
                 model_path=Path("model"),
@@ -78,6 +119,7 @@ class TestInferenceConfigMerging:
         tmp_path: Path,
         mock_adapter: Mock,
         mock_engine: Mock,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -93,7 +135,7 @@ class TestInferenceConfigMerging:
         with (
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", side_effect=capture_engine_init),
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = LalamoEngineConfig(
                 model_path=Path("model"),
@@ -125,6 +167,7 @@ class TestInferenceConfigMerging:
         mock_adapter: Mock,
         mock_engine: Mock,
         adapter_default_config: InferenceConfig,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -140,7 +183,7 @@ class TestInferenceConfigMerging:
         with (
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", side_effect=capture_engine_init),
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = LalamoEngineConfig(
                 model_path=Path("model"),
@@ -165,6 +208,7 @@ class TestInferenceConfigMerging:
         tmp_path: Path,
         mock_adapter: Mock,
         mock_engine: Mock,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -180,7 +224,7 @@ class TestInferenceConfigMerging:
         with (
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", side_effect=capture_engine_init),
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = LalamoEngineConfig(
                 model_path=Path("model"),
@@ -217,6 +261,7 @@ class TestInferenceConfigMerging:
         tmp_path: Path,
         mock_adapter: Mock,
         mock_engine: Mock,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -232,7 +277,7 @@ class TestInferenceConfigMerging:
         with (
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", side_effect=capture_engine_init),
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = LalamoEngineConfig(
                 model_path=Path("model"),
@@ -266,6 +311,7 @@ class TestEngineSelection:
         tmp_path: Path,
         mock_adapter: Mock,
         mock_engine: Mock,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -275,7 +321,7 @@ class TestEngineSelection:
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine) as mock_lalamo,
             patch("lalamo.evals.inference.command.CustomAPIInferenceEngine") as mock_custom,
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = LalamoEngineConfig(
                 model_path=Path("model"),
@@ -299,6 +345,7 @@ class TestEngineSelection:
         tmp_path: Path,
         mock_adapter: Mock,
         mock_engine: Mock,
+        test_records: list[InternalEvalRecord],
     ) -> None:
         dataset_dir = tmp_path / "dataset"
         dataset_dir.mkdir()
@@ -308,7 +355,7 @@ class TestEngineSelection:
             patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine") as mock_lalamo,
             patch("lalamo.evals.inference.command.CustomAPIInferenceEngine", return_value=mock_engine) as mock_custom,
-            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=[]),
+            patch("lalamo.evals.inference.command._load_internal_dataset", return_value=test_records),
         ):
             engine_config = CustomAPIEngineConfig(
                 base_url="http://localhost:8000",

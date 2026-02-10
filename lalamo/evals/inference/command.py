@@ -4,7 +4,7 @@ from typing import Any
 
 import polars as pl
 import pyarrow.parquet as pq
-from evals.types import InferenceConfig, InferenceEngineType, InternalEvalRecord
+from evals.types import InferenceEngineType, InternalEvalRecord
 
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
@@ -14,6 +14,7 @@ from lalamo.evals.inference.engines import (
     LalamoEngineConfig,
     LalamoInferenceEngine,
 )
+from lalamo.evals.inference.formats import build_inference_dataframe, parse_inference_outputs
 
 
 def _load_internal_dataset(
@@ -53,7 +54,7 @@ def infer_command_handler(
         engine_type = InferenceEngineType.CUSTOM_API
         inference_engine = CustomAPIInferenceEngine
     else:
-        raise ValueError(f"Unsupported engine config type: {type(engine_config)}")
+        raise TypeError(f"Unsupported engine config type: {type(engine_config)}")
 
     adapter_config = eval_adapter.get_inference_config(engine_type)
     overrides = {k: v for k, v in inference_overrides.items() if v is not None}
@@ -79,12 +80,20 @@ def infer_command_handler(
     benchmark_records = datasets[benchmark_split]
 
     input_path = output_dir / "inference_input.parquet"
-    inference_engine.prepare_input(prompts, benchmark_records, input_path)
+    input_df = build_inference_dataframe(
+        prompts,
+        benchmark_records,
+        conversation_column=inference_engine.get_conversation_column_name(),
+    )
+    input_path.parent.mkdir(parents=True, exist_ok=True)
+    input_df.write_parquet(input_path)
 
     raw_output_path = output_dir / "inference_output.parquet"
     inference_engine.run_inference(input_path, raw_output_path, callbacks)
 
-    outputs = inference_engine.parse_output(raw_output_path, input_path)
+    output_df = pl.read_parquet(raw_output_path)
+    input_df = pl.read_parquet(input_path)
+    outputs = parse_inference_outputs(output_df, input_df)
 
     predictions_df = pl.DataFrame(
         {

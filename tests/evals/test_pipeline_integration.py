@@ -9,7 +9,15 @@ from unittest.mock import Mock, patch
 
 import polars as pl
 import pyarrow.parquet as pq
-from evals.types import DatasetLoadConfig, InferenceConfig, InferenceOutput, InternalEvalRecord
+from evals.types import (
+    DatasetLoadConfig,
+    EvalPrompt,
+    InferenceConfig,
+    InferenceOutput,
+    InternalEvalRecord,
+    MessageRole,
+    PromptMessage,
+)
 
 from lalamo.evals.benchmark.command import benchmark_command_handler
 from lalamo.evals.datasets.command import convert_dataset_handler
@@ -45,6 +53,21 @@ class TestFullPipelineIntegration:
             ),
         ]
 
+        test_prompts = [
+            EvalPrompt(
+                id="q1",
+                messages=[
+                    PromptMessage(role=MessageRole.USER, content="What is the capital of France?"),
+                ],
+            ),
+            EvalPrompt(
+                id="q2",
+                messages=[
+                    PromptMessage(role=MessageRole.USER, content="What is 5+3?"),
+                ],
+            ),
+        ]
+
         mock_adapter = Mock()
         mock_adapter.get_inference_config.return_value = InferenceConfig(
             temperature=0.0,
@@ -52,7 +75,7 @@ class TestFullPipelineIntegration:
         )
         mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
         mock_adapter.get_benchmark_split.return_value = "test"
-        mock_adapter.format_prompts.return_value = []
+        mock_adapter.format_prompts.return_value = test_prompts
         mock_adapter.prepare_for_benchmark.return_value = tmp_path / "prepared.parquet"
         mock_adapter.run_benchmark.return_value = {"accuracy": 1.0}
 
@@ -83,24 +106,19 @@ class TestFullPipelineIntegration:
         assert converted_df["id"].to_list() == ["q1", "q2"]
 
         # Step 2: Run inference on converted dataset
+        def mock_run_inference(input_path, output_path, callbacks):
+            # Create mock output parquet with expected schema
+            output_data = pl.DataFrame({
+                "response": ["Paris", "8"],
+                "chain_of_thought": ["", ""],
+            })
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_data.write_parquet(output_path)
+            return output_path
+
         mock_engine = Mock()
-        mock_engine.run_inference.return_value = tmp_path / "raw_output.parquet"
-        mock_engine.parse_output.return_value = [
-            InferenceOutput(
-                id="q1",
-                response="Paris",
-                question="What is the capital of France?",
-                answer="Paris",
-                metadata={"category": "geography"},
-            ),
-            InferenceOutput(
-                id="q2",
-                response="8",
-                question="What is 5+3?",
-                answer="8",
-                metadata={"category": "math"},
-            ),
-        ]
+        mock_engine.get_conversation_column_name.return_value = "conversation"
+        mock_engine.run_inference.side_effect = mock_run_inference
 
         eval_spec.handler_type = lambda: mock_adapter
 
@@ -189,6 +207,21 @@ class TestFullPipelineIntegration:
             ),
         ]
 
+        test_prompts = [
+            EvalPrompt(
+                id="q1",
+                messages=[
+                    PromptMessage(role=MessageRole.USER, content="What is the capital of Spain?"),
+                ],
+            ),
+            EvalPrompt(
+                id="q2",
+                messages=[
+                    PromptMessage(role=MessageRole.USER, content="What is 10-3?"),
+                ],
+            ),
+        ]
+
         mock_adapter = Mock()
         mock_adapter.get_inference_config.return_value = InferenceConfig(
             temperature=0.7,
@@ -196,7 +229,7 @@ class TestFullPipelineIntegration:
         )
         mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
         mock_adapter.get_benchmark_split.return_value = "test"
-        mock_adapter.format_prompts.return_value = []
+        mock_adapter.format_prompts.return_value = test_prompts
         mock_adapter.prepare_for_benchmark.return_value = tmp_path / "prepared.parquet"
         mock_adapter.run_benchmark.return_value = {"accuracy": 1.0}
 
@@ -225,24 +258,19 @@ class TestFullPipelineIntegration:
         assert converted_df["id"].to_list() == ["q1", "q2"]
 
         # Step 2: Run inference with custom API engine
+        def mock_run_inference(input_path, output_path, callbacks):
+            # Create mock output parquet with expected schema
+            output_data = pl.DataFrame({
+                "response": ["Madrid", "7"],
+                "chain_of_thought": ["", ""],
+            })
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_data.write_parquet(output_path)
+            return output_path
+
         mock_engine = Mock()
-        mock_engine.run_inference.return_value = tmp_path / "raw_output.parquet"
-        mock_engine.parse_output.return_value = [
-            InferenceOutput(
-                id="q1",
-                response="Madrid",
-                question="What is the capital of Spain?",
-                answer="Madrid",
-                metadata={"category": "geography"},
-            ),
-            InferenceOutput(
-                id="q2",
-                response="7",
-                question="What is 10-3?",
-                answer="7",
-                metadata={"category": "math"},
-            ),
-        ]
+        mock_engine.get_conversation_column_name.return_value = "messages"
+        mock_engine.run_inference.side_effect = mock_run_inference
 
         eval_spec.handler_type = lambda: mock_adapter
 

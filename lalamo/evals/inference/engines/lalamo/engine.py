@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from evals.types import InferenceConfig, InferenceEngineType
+from evals.types import InferenceConfig
 
 from lalamo.commands import generate_replies
 from lalamo.common import vram_gb_to_bytes
@@ -31,7 +31,7 @@ class LalamoInferenceEngine(InferenceEngine):
         else:
             self.max_vram = None
 
-    def _get_conversation_column_name(self) -> str:
+    def get_conversation_column_name(self) -> str:
         return "conversation"
 
     def run_inference(

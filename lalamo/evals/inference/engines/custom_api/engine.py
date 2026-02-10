@@ -1,7 +1,7 @@
 from pathlib import Path
 
 import polars as pl
-from evals.types import InferenceConfig, InferenceEngineType
+from evals.types import InferenceConfig
 from openai import OpenAI
 
 from lalamo.evals.inference.engines.base import InferenceEngine
@@ -30,6 +30,9 @@ class CustomAPIInferenceEngine(InferenceEngine):
             timeout=config.timeout,
             max_retries=config.max_retries,
         )
+
+    def get_conversation_column_name(self) -> str:
+        return "messages"
 
     def run_inference(
         self,
