@@ -940,7 +940,7 @@ wheels = [
 [[package]]
 name = "evals"
 version = "0.3.1"
-source = { git = "https://github.com/trymirai/evals.git?branch=main#c2d2e3252c72444384fedeef75cef60169c6dbca" }
+source = { git = "https://github.com/trymirai/evals.git?rev=c2d2e32#c2d2e3252c72444384fedeef75cef60169c6dbca" }
 dependencies = [
     { name = "absl-py" },
     { name = "datasets" },
@@ -2141,7 +2141,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.8" },
     { name = "einops", specifier = ">=0.8.0" },
     { name = "equinox", specifier = ">=0.11.11" },
-    { name = "evals", git = "https://github.com/trymirai/evals.git?branch=main" },
+    { name = "evals", git = "https://github.com/trymirai/evals.git?rev=c2d2e32" },
     { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.27.1" },
     { name = "jax", specifier = ">=0.8.1" },
     { name = "jax", extras = ["cpu"], marker = "extra == 'cpu'", specifier = ">=0.8.1" },
