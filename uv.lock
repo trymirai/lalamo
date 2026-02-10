@@ -1992,9 +1992,12 @@ dependencies = [
     { name = "jaxtyping" },
     { name = "jinja2" },
     { name = "ml-dtypes" },
+    { name = "omegaconf" },
     { name = "optax" },
     { name = "polars" },
+    { name = "requests" },
     { name = "rich" },
+    { name = "soundfile" },
     { name = "thefuzz" },
     { name = "tokenizers" },
     { name = "typer" },
@@ -2007,6 +2010,15 @@ cpu = [
 ]
 cuda = [
     { name = "jax", extra = ["cuda"] },
+]
+fishaudio = [
+    { name = "bidict" },
+    { name = "blobfile" },
+    { name = "tiktoken" },
+    { name = "torch", version = "2.9.1", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
+    { name = "torch", version = "2.9.1+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "(platform_machine != 'x86_64' and sys_platform == 'linux') or (sys_platform != 'darwin' and sys_platform != 'linux')" },
+    { name = "torch", version = "2.9.1+cu129", source = { registry = "https://download.pytorch.org/whl/cu129" }, marker = "platform_machine == 'x86_64' and sys_platform == 'linux'" },
+    { name = "transformers" },
 ]
 pyaudio = [
     { name = "pyaudio" },
@@ -2050,6 +2062,8 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bidict", marker = "extra == 'fishaudio'", specifier = ">=0.23.1" },
+    { name = "blobfile", marker = "extra == 'fishaudio'", specifier = ">=3.1.0" },
     { name = "cattrs", extras = ["msgpack"], specifier = ">=24.1.2" },
     { name = "click", specifier = ">=8.1.8" },
     { name = "einops", specifier = ">=0.8.0" },
@@ -2062,16 +2076,23 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.2.36" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "ml-dtypes", specifier = ">=0.5.1" },
+    { name = "omegaconf", specifier = ">=2.3.0" },
     { name = "optax", specifier = ">=0.2.4" },
     { name = "polars", specifier = ">=1.33.1" },
     { name = "pyaudio", marker = "extra == 'pyaudio'", specifier = ">=0.2.0" },
+    { name = "requests", specifier = ">=2.32.5" },
     { name = "rich", specifier = ">=14.0.0" },
+    { name = "soundfile", specifier = ">=0.13.1" },
     { name = "thefuzz", specifier = ">=0.22.1" },
+    { name = "tiktoken", marker = "extra == 'fishaudio'", specifier = ">=0.12.0" },
     { name = "tokenizers", specifier = ">=0.21.2" },
+    { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'fishaudio'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cu129" },
+    { name = "torch", marker = "(platform_machine != 'x86_64' and extra == 'fishaudio') or (sys_platform != 'linux' and extra == 'fishaudio')", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
+    { name = "transformers", marker = "extra == 'fishaudio'", specifier = ">=4.56.0" },
     { name = "typer", specifier = ">=0.15.1" },
     { name = "xxhash", specifier = ">=3.5.0" },
 ]
-provides-extras = ["cpu", "cuda", "tpu", "pyaudio"]
+provides-extras = ["cpu", "cuda", "tpu", "pyaudio", "fishaudio"]
 
 [package.metadata.requires-dev]
 dev = [

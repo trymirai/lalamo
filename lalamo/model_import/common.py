@@ -25,7 +25,6 @@ from lalamo.models import (
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
-from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
@@ -370,6 +369,7 @@ def _import_tts_model(
     if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
         # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
         # so we load the Tokenizer and update config using data from it
+        from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
 
         tokenizer_special_tokens_path = download_file(
             FileSpec(filename="special_tokens.json"),
