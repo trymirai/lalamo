@@ -1,5 +1,6 @@
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Any
 
 import polars as pl
 import pyarrow.parquet as pq
@@ -35,7 +36,7 @@ def infer_command_handler(
     dataset_dir: Path,
     output_dir: Path,
     engine_config: LalamoEngineConfig | CustomAPIEngineConfig,
-    inference_overrides: InferenceConfig,
+    inference_overrides: dict[str, Any],
     limit: int | None = None,
     callbacks: BaseRunInferenceCallbacks | None = None,
 ) -> Path:
@@ -55,7 +56,7 @@ def infer_command_handler(
         raise ValueError(f"Unsupported engine config type: {type(engine_config)}")
 
     adapter_config = eval_adapter.get_inference_config(engine_type)
-    overrides = {k: v for k, v in asdict(inference_overrides).items() if v is not None}
+    overrides = {k: v for k, v in inference_overrides.items() if v is not None}
     inference_config = replace(adapter_config, **overrides)
 
     callbacks.started()

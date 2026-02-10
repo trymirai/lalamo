@@ -119,7 +119,7 @@ class TestFullPipelineIntegration:
                 dataset_dir=dataset_dir,
                 output_dir=infer_output_dir,
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
             )
 
         assert predictions_path.exists()
@@ -263,7 +263,7 @@ class TestFullPipelineIntegration:
                 dataset_dir=dataset_dir,
                 output_dir=infer_output_dir,
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
             )
 
         assert predictions_path.exists()

@@ -2,7 +2,6 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
-from evals.types import InferenceConfig
 from rich.console import Console
 from typer import Argument, Exit, Option, Typer
 
@@ -189,14 +188,14 @@ def infer_command(
         raise Exit(1)
 
 
-    inference_overrides = InferenceConfig(
-        temperature=temperature,
-        max_output_length=max_output_length,
-        max_model_len=max_model_len,
-        top_p=top_p,
-        top_k=top_k,
-        stop_tokens=stop_tokens,
-    )
+    inference_overrides = {
+        "temperature": temperature,
+        "max_output_length": max_output_length,
+        "max_model_len": max_model_len,
+        "top_p": top_p,
+        "top_k": top_k,
+        "stop_tokens": stop_tokens,
+    }
 
     try:
         _predictions_path = infer_command_handler(

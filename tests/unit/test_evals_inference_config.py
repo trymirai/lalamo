@@ -61,7 +61,7 @@ class TestInferenceConfigMerging:
                 batch_size=1,
                 vram_gb=None,
             )
-            overrides = InferenceConfig()
+            overrides = {}
 
             infer_command_handler(
                 eval_repo="test/repo",
@@ -100,10 +100,10 @@ class TestInferenceConfigMerging:
                 batch_size=1,
                 vram_gb=None,
             )
-            overrides = InferenceConfig(
-                temperature=0.7,
-                max_output_length=1024,
-            )
+            overrides = {
+                "temperature": 0.7,
+                "max_output_length": 1024,
+            }
 
             infer_command_handler(
                 eval_repo="test/repo",
@@ -147,7 +147,7 @@ class TestInferenceConfigMerging:
                 batch_size=1,
                 vram_gb=None,
             )
-            overrides = InferenceConfig(temperature=None)
+            overrides = {"temperature": None}
 
             infer_command_handler(
                 eval_repo="test/repo",
@@ -187,14 +187,14 @@ class TestInferenceConfigMerging:
                 batch_size=1,
                 vram_gb=None,
             )
-            overrides = InferenceConfig(
-                temperature=0.9,
-                max_output_length=512,
-                max_model_len=2048,
-                top_p=0.95,
-                top_k=50,
-                stop_tokens=["END"],
-            )
+            overrides = {
+                "temperature": 0.9,
+                "max_output_length": 512,
+                "max_model_len": 2048,
+                "top_p": 0.95,
+                "top_k": 50,
+                "stop_tokens": ["END"],
+            }
 
             infer_command_handler(
                 eval_repo="test/repo",
@@ -204,7 +204,13 @@ class TestInferenceConfigMerging:
                 inference_overrides=overrides,
             )
 
-            assert captured_config == overrides
+            assert captured_config is not None
+            assert captured_config.temperature == 0.9
+            assert captured_config.max_output_length == 512
+            assert captured_config.max_model_len == 2048
+            assert captured_config.top_p == 0.95
+            assert captured_config.top_k == 50
+            assert captured_config.stop_tokens == ["END"]
 
     def test_partial_overrides_merge_correctly(
         self,
@@ -233,10 +239,10 @@ class TestInferenceConfigMerging:
                 batch_size=1,
                 vram_gb=None,
             )
-            overrides = InferenceConfig(
-                temperature=0.5,
-                stop_tokens=["STOP"],
-            )
+            overrides = {
+                "temperature": 0.5,
+                "stop_tokens": ["STOP"],
+            }
 
             infer_command_handler(
                 eval_repo="test/repo",
@@ -282,7 +288,7 @@ class TestEngineSelection:
                 dataset_dir=dataset_dir,
                 output_dir=tmp_path / "output",
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
             )
 
             mock_lalamo.assert_called_once()
@@ -317,7 +323,7 @@ class TestEngineSelection:
                 dataset_dir=dataset_dir,
                 output_dir=tmp_path / "output",
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
             )
 
             mock_custom.assert_called_once()
