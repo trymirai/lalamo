@@ -28,12 +28,12 @@ def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
 def _download_and_convert_split(
     repo_id: str,
     split: str,
-    handler: type[EvalAdapter],
+    adapter_cls: type[EvalAdapter],
     temp_dir: Path,
     callbacks: BaseConversionCallbacks,
 ) -> list[InternalEvalRecord]:
     callbacks.downloading_file(f"{split} split")
-    records = handler.download_split(
+    records = adapter_cls.download_split(
         repo_id=repo_id,
         split=split,
         temp_dir=temp_dir,
@@ -55,7 +55,7 @@ def convert_dataset_handler(
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    handler = eval_spec.handler_type
+    adapter_cls = eval_spec.handler_type
 
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
@@ -64,7 +64,7 @@ def convert_dataset_handler(
             all_split_records = _download_and_convert_split(
                 repo_id=eval_spec.repo,
                 split=split,
-                handler=handler,
+                adapter_cls=adapter_cls,
                 temp_dir=temp_path,
                 callbacks=callbacks,
             )
