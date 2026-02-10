@@ -118,6 +118,21 @@ GEMMA3 = [
         weights_type=WeightsType.SAFETENSORS,
         configs=ConfigMap(generation_config=FileSpec("generation_config.json", "google/gemma-3-27b-it")),
     ),
+    ModelSpec(
+        vendor="Google",
+        family="Gemma-3",
+        name="FunctionGemma-270M-IT",
+        size="270M",
+        quantization=None,
+        repo="google/functiongemma-270m-it",
+        config_type=HFGemma3TextConfig,
+        system_role_name="developer",
+        weights_type=WeightsType.SAFETENSORS,
+        configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
+            system_prompt="You are a model that can do function calling with the following functions",
+        ),
+    ),
 ]
 
 

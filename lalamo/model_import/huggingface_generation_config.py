@@ -7,7 +7,7 @@ import cattrs
 
 from lalamo.models import GenerationConfig
 
-__all__ = ["HFGenerationConfig", "_policy_from_hf_config"]
+__all__ = ["HFGenerationConfig", "merge_token_ids"]
 
 
 @dataclass(frozen=True)
@@ -45,6 +45,18 @@ class HFGenerationConfig:
         with open(json_path) as f:
             config = json.load(f)
         return cls._converter.structure(config, cls)
+
+
+def merge_token_ids(*sources: int | list[int] | tuple[int, ...] | None) -> tuple[int, ...]:
+    merged: set[int] = set()
+    for source in sources:
+        if source is None:
+            continue
+        if isinstance(source, int):
+            merged.add(source)
+            continue
+        merged.update(source)
+    return tuple(sorted(merged))
 
 
 def _policy_from_hf_config(

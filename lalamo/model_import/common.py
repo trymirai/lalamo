@@ -26,12 +26,11 @@ from lalamo.models import (
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
-from lalamo.modules.audio.fishaudio.fishaudio_common import load_tokenizer_from_fishaudio_tiktoken
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
-from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
+from .huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config, merge_token_ids
 from .huggingface_tokenizer_config import HFTokenizerConfig
 from .model_configs import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig
 from .model_specs import REPO_TO_MODEL, FileSpec, ModelSpec, ModelType, UseCase
@@ -143,6 +142,17 @@ class ImportResults(NamedTuple):
     metadata: ModelMetadata
 
 
+def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -> str | None:
+    if isinstance(token_ids, int):
+        token_ids = [token_ids]
+
+    if not isinstance(token_ids, list) or any((not isinstance(el, int)) for el in token_ids):
+        return None
+
+    decoded = tokenizer.decode(token_ids[:1], skip_special_tokens=False)
+    return decoded
+
+
 def import_message_processor(
     model_spec: ModelSpec,
     output_dir: Path | str | None = None,
@@ -175,6 +185,7 @@ def import_message_processor(
         if model_spec.configs.chat_template is not None:
             raise ValueError("Conflicting chat template specifications.")
         prompt_template = tokenizer_config.chat_template
+
     prompt_template = process_chat_template(prompt_template)
     tokenizer = Tokenizer.from_file(str(tokenizer_file))
 
@@ -184,8 +195,8 @@ def import_message_processor(
     tokenizer.add_special_tokens(added_special_tokens)
     tokenizer.add_tokens(added_not_special_tokens)
 
-    bos_token = tokenizer_config.bos_token
-    eos_token = tokenizer_config.eos_token
+    bos_token = getattr(tokenizer_config, "bos_token", None)
+    eos_token = getattr(tokenizer_config, "eos_token", None)
 
     # If we were not able to identify bos/eos - they are probably somewhere else, so we check config.json
     if eos_token is None or bos_token is None:
@@ -194,9 +205,21 @@ def import_message_processor(
             foreign_decoder_json = json.load(foreign_decoder_file)
 
         if bos_token is None:
-            bos_token = foreign_decoder_json.get("bos_token_id")
+            bos_token_id: int | list[int] | None = foreign_decoder_json.get("bos_token_id")
+            bos_token = token_ids_to_text(tokenizer, bos_token_id)
         if eos_token is None:
-            eos_token = foreign_decoder_json.get("eos_token_id")
+            eos_token_id: int | list[int] | None = foreign_decoder_json.get("eos_token_id")
+            eos_token = token_ids_to_text(tokenizer, eos_token_id)
+
+    system_prompt_text = None
+    match model_spec.configs.system_prompt:
+        case FileSpec(_) as file_spec:
+            system_prompt_file = download_file(file_spec, model_spec.repo, output_dir, progress_callback)
+            system_prompt_text = system_prompt_file.read_text()
+        case str() as sp:
+            system_prompt_text = sp
+        case None:
+            pass
 
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
@@ -206,6 +229,7 @@ def import_message_processor(
         assistant_role_name=model_spec.assistant_role_name,
         bos_token=bos_token,
         eos_token=eos_token,
+        default_system_prompt=system_prompt_text,
     )
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
@@ -272,14 +296,17 @@ def _import_language_model(
 
     message_processor = import_message_processor(model_spec)
 
-    stop_token_ids = tuple(foreign_decoder_config.eos_token_ids)
+    stop_token_ids = merge_token_ids(foreign_decoder_config.eos_token_ids)
 
     if isinstance(model_spec.configs.generation_config, GenerationConfig):
-        generation_config = replace(model_spec.configs.generation_config, stop_token_ids=stop_token_ids)
+        candidate_generation_config = model_spec.configs.generation_config
+        stop_token_ids = merge_token_ids(candidate_generation_config.stop_token_ids, stop_token_ids)
+        generation_config = replace(candidate_generation_config, stop_token_ids=stop_token_ids)
     elif isinstance(model_spec.configs.generation_config, FileSpec):
         hf_generation_config_file = download_file(model_spec.configs.generation_config, model_spec.repo)
         hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
-        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids)
+        stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
+        generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
     else:
         generation_config = GenerationConfig(stop_token_ids)
 
@@ -376,6 +403,8 @@ def _import_tts_model(
     elif model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
         # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
         # so we load the Tokenizer and update config using data from it
+        from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
+
         foreign_tts_config_file = download_config_file(model_spec)
         tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
 

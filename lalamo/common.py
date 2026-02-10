@@ -1,3 +1,4 @@
+import functools
 import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -136,6 +137,7 @@ def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
     return array
 
 
+@functools.cache
 def get_default_device_bytes() -> int | None:
     dynamic_allocate = False
 

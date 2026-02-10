@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import shutil
 import tempfile
@@ -27,7 +28,7 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import LanguageModelConfig
+from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
@@ -578,6 +579,7 @@ def generate_replies(
     max_vram: int | None,
     max_output_length: int = 8192,
     batch_size: int | None = None,
+    generation_config_override: GenerationConfig | None = None,
     callbacks_type: Callable[
         [
             Path,
@@ -590,12 +592,29 @@ def generate_replies(
         GenerateRepliesCallbacks,
     ] = GenerateRepliesCallbacks,
 ) -> None:
+    """Generate replies for every conversation in a dataset.
+
+    Loads a locally-converted model from ``model_path``, reads a Parquet dataset from ``dataset_path`` (expected to
+    have a ``conversation`` column of HuggingFace-style message lists), and writes a Parquet file to ``output_path``
+    with ``response`` and ``chain_of_thought`` columns.
+
+    Exactly one of ``max_vram`` or ``batch_size`` should be provided.  When ``max_vram`` is given (in bytes), batch
+    sizes are estimated automatically per sequence length.  If neither is set, an estimate for the device memory is
+    used.  Prefer setting ``max_output_length`` to a value no larger than you actually need, since it directly affects
+    memory consumption and therefore the batch sizes that fit in VRAM.
+
+    If ``generation_config_override`` is provided it replaces the model's default generation config entirely
+    (temperature, top-k, etc.).  Do not set ``stop_token_ids`` on it: the model's own stop tokens are always
+    injected automatically, and providing them will throw a ValueError.
+
+    ``callbacks_type`` is used internally (cli) for progress visualisation.
+    """
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
         max_vram = get_default_device_bytes()
         if max_vram is None:
             raise ValueError(
-                "Unable to determine default defice memory capacity; please specify either --vram-gb or --batch-size",
+                "Unable to determine default device memory capacity; please specify either --vram-gb or --batch-size",
             )
 
     # Count rows without loading full dataset
@@ -634,10 +653,24 @@ def generate_replies(
 
     callbacks.batch_sizes_estimated()
 
+    generation_config = None
+    if generation_config_override is not None:
+        if generation_config_override.stop_token_ids:
+            raise ValueError(
+                "Do not set generation_config.stop_token_ids for this command; "
+                "the model's configured stop tokens are always used instead.",
+            )
+
+        generation_config = dataclasses.replace(
+            generation_config_override,
+            stop_token_ids=model.config.generation_config.stop_token_ids,
+        )
+
     replies: list[tuple[int, AssistantMessage]] = []
     for rows_processed, (idx, reply) in enumerate(
         model.reply_many(
             dataset,
+            generation_config=generation_config,
             inference_config=inference_config,
             vram_bytes=max_vram,
             batch_sizes_callback=callbacks.batch_sizes_computed,

@@ -1,9 +1,7 @@
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Optional
 
-import huggingface_hub
 import torch
 from fish_speech.models.text2semantic.llama import (
     BaseModelArgs,
@@ -43,11 +41,11 @@ def from_fish_audio_config(
     precision: DTypeLike,
 ) -> "FishAudioTextDecoderConfig":
     slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        fish_audio_cfg, precision
+        fish_audio_cfg, precision,
     )
     fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
     fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        fast_fish_cfg, precision
+        fast_fish_cfg, precision,
     )
 
     slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
@@ -109,7 +107,7 @@ class ConfigMapping:
 
     @staticmethod
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        config: BaseModelArgs, precision: DTypeLike
+        config: BaseModelArgs, precision: DTypeLike,
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
         global_rope_config = UnscaledRoPEConfig(
             precision=precision,
@@ -204,13 +202,13 @@ class FishAudioFromTorch:
 
     @staticmethod
     def build_foreign_fish_audio_tts_generator(
-        path_to_checkpoints: Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16
+        path_to_checkpoints: Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16,
     ) -> "TTSGenerator":
         from .fishaudio_thin_wrapper import FishAudioTextDecoder_Foreign, load_fish_audio_audio_decoder
 
         text_decoder_config = FishAudioTextDecoderConfig_Foreign.from_config_file(path_to_checkpoints / "config.json")
         text_decoder: FishAudioTextDecoder_Foreign = text_decoder_config.load_model(
-            path_to_checkpoints, device=device, precision=precision
+            path_to_checkpoints, device=device, precision=precision,
         )
         audio_decoder = load_fish_audio_audio_decoder(path_to_checkpoints)
 

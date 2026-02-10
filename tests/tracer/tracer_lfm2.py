@@ -4,7 +4,7 @@ from typing import Self
 
 import torch
 from jaxtyping import Array
-from torch import LongTensor, Tensor
+from torch import Tensor
 from transformers import AutoModelForCausalLM
 from transformers.models.lfm2.modeling_lfm2 import (
     Lfm2Attention,
@@ -122,8 +122,8 @@ class LFM2DecoderTracer(
         position_ids: Tensor,
     ) -> tuple[tuple[Tensor, ...], Tensor, Tensor]:
         hf_outputs = self.hf_model.forward(
-            input_ids=LongTensor(input_ids.long()),
-            position_ids=LongTensor(position_ids.long()),
+            input_ids=input_ids.long(),
+            position_ids=position_ids.long(),
             output_hidden_states=True,
         )
 
