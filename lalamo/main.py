@@ -55,7 +55,7 @@ from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.common import (
     get_usable_memory_from_bytes,
-    vram_gb_to_bytes,
+    get_vram_limit_bytes,
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.evals import eval_app
@@ -804,7 +804,7 @@ def generate_replies(
         raise Exit(1)
 
     max_vram: int | None = None
-    if batch_size is None and (max_vram := vram_gb_to_bytes(vram_gb)) is None:
+    if batch_size is None and (max_vram := get_vram_limit_bytes(vram_gb)) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
         raise Exit(1)
 
@@ -889,7 +889,7 @@ def estimate_batchsize(
         ),
     ] = None,
 ) -> None:
-    if (mem_bytes := vram_gb_to_bytes(vram_gb)) is None:
+    if (mem_bytes := get_vram_limit_bytes(vram_gb)) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 

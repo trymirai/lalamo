@@ -3,7 +3,7 @@ from pathlib import Path
 from evals.types import InferenceConfig
 
 from lalamo.commands import generate_replies
-from lalamo.common import vram_gb_to_bytes
+from lalamo.common import get_vram_limit_bytes
 from lalamo.evals.inference.engines.base import InferenceEngine
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 from lalamo.evals.inference.engines.lalamo.config import LalamoEngineConfig
@@ -22,7 +22,7 @@ class LalamoInferenceEngine(InferenceEngine):
         self.inference_config = inference_config
 
         if config.batch_size is None:
-            self.max_vram = vram_gb_to_bytes(config.vram_gb)
+            self.max_vram = get_vram_limit_bytes(config.vram_gb)
             if self.max_vram is None:
                 raise ValueError(
                     "Cannot get default device's memory stats. "
