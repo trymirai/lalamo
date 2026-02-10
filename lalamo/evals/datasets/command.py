@@ -4,6 +4,7 @@ import tempfile
 from dataclasses import asdict
 from pathlib import Path
 
+import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 from evals import DatasetMetadata, EvalAdapter, InternalEvalRecord
@@ -13,16 +14,6 @@ from lalamo.evals.datasets.specs import REPO_TO_EVAL
 
 LALAMO_VERSION = importlib.metadata.version("lalamo")
 DATASET_SCHEMA_VERSION = "1.0"
-
-
-def _records_to_table(records: list[InternalEvalRecord]) -> pa.Table:
-    data = {
-        "id": [r.id for r in records],
-        "question": [r.question for r in records],
-        "answer": [r.answer for r in records],
-        "metadata": [r.metadata for r in records],
-    }
-    return pa.table(data)
 
 
 def _download_and_convert_split(
@@ -74,9 +65,9 @@ def convert_dataset_handler(
             )
 
             callbacks.saving_dataset()
-            internal_table = _records_to_table(all_split_records)
+            table = pl.DataFrame(all_split_records).to_arrow()
             output_parquet = output_dir / f"{split}.parquet"
-            pq.write_table(internal_table, output_parquet)
+            pq.write_table(table, output_parquet)
 
     metadata = DatasetMetadata(
         lalamo_version=LALAMO_VERSION,
