@@ -2,6 +2,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
+import cattrs
 import polars as pl
 import pyarrow.parquet as pq
 from evals.types import InferenceEngineType, InternalEvalRecord
@@ -96,15 +97,8 @@ def infer_command_handler(
     outputs = parse_inference_outputs(output_df, input_df)
 
     predictions_df = pl.DataFrame(
-        {
-            "id": [o.id for o in outputs],
-            "question": [o.question for o in outputs],
-            "model_output": [o.response for o in outputs],
-            "chain_of_thought": [o.chain_of_thought for o in outputs],
-            "answer": [o.answer for o in outputs],
-            "metadata": [o.metadata for o in outputs],
-        },
-    )
+        [cattrs.unstructure(o) for o in outputs]
+    ).rename({"response": "model_output"})
 
     predictions_path = output_dir / "predictions.parquet"
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
