@@ -1,3 +1,4 @@
+import cattrs
 import polars as pl
 from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
 
@@ -51,14 +52,11 @@ def parse_inference_outputs(
             f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs",
         )
 
-    return [
-        InferenceOutput(
-            id=input_df["id"][i],
-            response=output_df["response"][i],
-            chain_of_thought=output_df["chain_of_thought"][i],
-            question=input_df["question"][i],
-            answer=input_df["answer"][i],
-            metadata=input_df["metadata"][i],
-        )
-        for i in range(len(output_df))
-    ]
+    combined_df = pl.concat(
+        [
+            input_df.select(["id", "question", "answer", "metadata"]),
+            output_df.select(["response", "chain_of_thought"]),
+        ],
+        how="horizontal",
+    )
+    return cattrs.structure(combined_df.to_dicts(), list[InferenceOutput])

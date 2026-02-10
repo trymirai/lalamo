@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import cattrs
 import polars as pl
 import pyarrow.parquet as pq
 from evals.types import InferenceOutput
@@ -26,17 +27,8 @@ def _load_predictions(path: Path) -> list[InferenceOutput]:
     if missing:
         raise ValueError(f"Missing required columns: {missing}")
 
-    predictions = [
-        InferenceOutput(
-            id=row["id"],
-            response=row["model_output"],
-            chain_of_thought=row.get("chain_of_thought"),
-            question=row["question"],
-            answer=row["answer"],
-            metadata=row.get("metadata"),
-        )
-        for row in df.iter_rows(named=True)
-    ]
+    df = df.rename({"model_output": "response"})
+    predictions = cattrs.structure(df.to_dicts(), list[InferenceOutput])
 
     return predictions
 
