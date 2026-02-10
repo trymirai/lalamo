@@ -22,7 +22,7 @@ defaults:
     shell: bash
 
 env:
-  PYTEST_FLAGS: "--ci -n=auto --dist=worksteal --maxfail=2"
+  PYTEST_FLAGS: "--ci -n=auto --dist=worksteal -x"
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
 
 jobs:

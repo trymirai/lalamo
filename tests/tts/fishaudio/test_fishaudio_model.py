@@ -193,17 +193,17 @@ def test_permute_for_rope_rotate_half() -> None:
     # 3. Reshape back (8, 3)
     # Expected row order: [0,1,2,3,4,5,6,7] -> [0,2,4,6,1,3,5,7]
 
-    print("\n=== Single head test ===")
-    print(f"num_heads={num_heads}, head_dim={head_dim}, in_features={in_features}")
-    print(f"\nInput weight matrix (interleaved format):\n{np.array(weight)}")
-    print(f"\nOutput weight matrix (rotate-half format):\n{np.array(result)}")
+    _testlog.debug("=== Single head test ===")
+    _testlog.debug(f"num_heads={num_heads}, head_dim={head_dim}, in_features={in_features}")
+    _testlog.debug(f"Input weight matrix (interleaved format):\n{np.array(weight)}")
+    _testlog.debug(f"Output weight matrix (rotate-half format):\n{np.array(result)}")
 
     # Verify by checking which input row ended up in each output row
     for out_row in range(out_features):
         # Each row has unique first element = row_idx * 10
         first_elem = int(result[out_row, 0])
         source_row = first_elem // 10
-        print(f"  Output row {out_row} <- Input row {source_row}")
+        _testlog.debug(f"  Output row {out_row} <- Input row {source_row}")
 
     # Verify the transformation is correct:
     # First half (rows 0-3 in output) <- even input rows (0,2,4,6)
@@ -212,12 +212,12 @@ def test_permute_for_rope_rotate_half() -> None:
     for out_idx, in_idx in enumerate(expected_mapping):
         assert jnp.allclose(result[out_idx], weight[in_idx]), f"Output row {out_idx} should be input row {in_idx}"
 
-    print("\n2D matrix permutation test passed!")
+    _testlog.debug("2D matrix permutation test passed!")
 
     # === Test 1D vector case ===
     # This is used for bias vectors where we have a single head_dim worth of values
     # The permutation is the same: interleaved pairs -> grouped halves
-    print("\n=== 1D vector test ===")
+    _testlog.debug("=== 1D vector test ===")
 
     head_dim_1d = 8
     # Create 1D vector with traceable values: [0, 10, 20, 30, 40, 50, 60, 70]
@@ -234,15 +234,15 @@ def test_permute_for_rope_rotate_half() -> None:
     #    [0, 20, 40, 60, 10, 30, 50, 70]
     # Expected index mapping: [0,1,2,3,4,5,6,7] -> [0,2,4,6,1,3,5,7]
 
-    print(f"head_dim={head_dim_1d}")
-    print(f"\nInput vector (interleaved format):\n{np.array(vector)}")
-    print(f"\nOutput vector (rotate-half format):\n{np.array(result_1d)}")
+    _testlog.debug(f"head_dim={head_dim_1d}")
+    _testlog.debug(f"Input vector (interleaved format):\n{np.array(vector)}")
+    _testlog.debug(f"Output vector (rotate-half format):\n{np.array(result_1d)}")
 
     # Verify by checking which input index ended up at each output index
     for out_idx in range(head_dim_1d):
         in_value = int(result_1d[out_idx])
         source_idx = in_value // 10
-        print(f"  Output[{out_idx}] = {in_value} <- Input[{source_idx}]")
+        _testlog.debug(f"  Output[{out_idx}] = {in_value} <- Input[{source_idx}]")
 
     # Same mapping as 2D case: [0,2,4,6,1,3,5,7]
     expected_mapping_1d = [0, 2, 4, 6, 1, 3, 5, 7]
@@ -252,7 +252,7 @@ def test_permute_for_rope_rotate_half() -> None:
         f"1D permutation incorrect.\nGot: {result_1d}\nExpected: {expected_1d}"
     )
 
-    print("\n1D vector permutation test passed!")
+    _testlog.debug("1D vector permutation test passed!")
 
 
 @torch.no_grad
