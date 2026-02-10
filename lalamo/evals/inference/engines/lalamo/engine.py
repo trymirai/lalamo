@@ -40,6 +40,7 @@ class LalamoInferenceEngine(InferenceEngine):
         output_path: Path,
         callbacks: BaseEngineCallbacks,
     ) -> Path:
+        # have to import here to avoid circular import issues, since command handlers also use generate_replies
         from lalamo.main import CliGenerateRepliesCallbacks
 
         unsupported = self._check_unsupported_params(self.inference_config, _SUPPORTED_PARAMS)
