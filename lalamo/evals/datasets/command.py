@@ -47,6 +47,10 @@ def convert_dataset_handler(
     output_dir: Path,
     callbacks: BaseConversionCallbacks,
 ) -> None:
+    if eval_repo not in REPO_TO_EVAL:
+        available = ", ".join(REPO_TO_EVAL.keys())
+        raise ValueError(f"Unknown eval repository '{eval_repo}'. Available: {available}")
+
     eval_spec = REPO_TO_EVAL[eval_repo]
     if output_dir.exists():
         callbacks.output_dir_exists()
