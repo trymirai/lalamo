@@ -1,7 +1,7 @@
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Self
+from typing import Self
 
 import torch
 from fish_speech.models.dac.modded_dac import DAC
@@ -52,7 +52,7 @@ class FromFishAudioRepo:
         temperature: torch.Tensor,
         top_p: torch.Tensor,
         repetition_penalty: torch.Tensor,
-        previous_tokens: Optional[torch.Tensor] = None,
+        previous_tokens: torch.Tensor | None = None,
     ) -> torch.Tensor:
         # Apply repetition penalty
         if previous_tokens is not None:
@@ -67,7 +67,9 @@ class FromFishAudioRepo:
         sorted_indices_to_remove = cum_probs > top_p
         sorted_indices_to_remove[0] = False  # keep at least one option
         indices_to_remove = sorted_indices_to_remove.scatter(
-            dim=-1, index=sorted_indices, src=sorted_indices_to_remove
+            dim=-1,
+            index=sorted_indices,
+            src=sorted_indices_to_remove,
         )
         logits = logits.masked_fill(indices_to_remove, -float("Inf"))
         logits = logits / torch.clip(temperature, min=1e-5)
@@ -88,7 +90,7 @@ class FromFishAudioRepo:
         temperature: torch.Tensor,
         top_p: torch.Tensor,
         repetition_penalty: torch.Tensor,
-        previous_tokens: Optional[torch.Tensor] = None,
+        previous_tokens: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         probs = FromFishAudioRepo.logits_to_probs(
             logits=logits[0, -1],
@@ -108,7 +110,7 @@ class FromFishAudioRepo:
         temperature: torch.Tensor,
         top_p: torch.Tensor,
         repetition_penalty: torch.Tensor,
-        previous_tokens: Optional[torch.Tensor] = None,
+        previous_tokens: torch.Tensor | None = None,
         argmax_decoding=False,
     ) -> torch.Tensor:
         forward_result: TransformerForwardResult = model.forward_generate(
@@ -129,7 +131,7 @@ class FromFishAudioRepo:
                     top_p=top_p,
                     repetition_penalty=repetition_penalty,
                     previous_tokens=(previous_tokens[:, 0] if previous_tokens is not None else None),
-                )[0]
+                )[0],
             ]
 
         # Only clear cache for fast_layers, avoid clearing main model cache
@@ -244,7 +246,7 @@ class FromFishAudioRepo:
         T = prompt.size(1)
         prompt = prompt[None].repeat(num_samples, 1, 1)
 
-        if T >= model.config.max_seq_len:
+        if model.config.max_seq_len <= T:
             raise ValueError(f"Input sequence length {T} exceeds max_seq_len {model.config.max_seq_len}")
 
         if max_new_tokens:
@@ -449,10 +451,16 @@ class FishAudioTextDecoderConfig_Foreign:
         return fish_model
 
     def load_model(
-        self, path_to_model: str | Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16
+        self,
+        path_to_model: str | Path,
+        device: str = "cpu",
+        precision: torch.dtype = torch.bfloat16,
     ) -> "FishAudioTextDecoder_Foreign":
         fish_model = FishAudioTextDecoderConfig_Foreign._load_fish_model(
-            path_to_model=path_to_model, fish_config=self.fish_config, device=device, precision=precision
+            path_to_model=path_to_model,
+            fish_config=self.fish_config,
+            device=device,
+            precision=precision,
         )
         return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
 
@@ -495,13 +503,18 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
 
         if sampling_params is None:
             sampling_params = FishAudioSamplingParams(
-                temperature=0.8008, top_p=0.8008, repetition_penalty=1.1016, argmax_decoding=True
+                temperature=0.8008,
+                top_p=0.8008,
+                repetition_penalty=1.1016,
+                argmax_decoding=True,
             )
 
         temperature = torch.tensor(sampling_params.temperature, device=values.device, dtype=torch.bfloat16)
         top_p = torch.tensor(sampling_params.top_p, device=values.device, dtype=torch.bfloat16)
         repetition_penalty = torch.tensor(
-            sampling_params.repetition_penalty, device=values.device, dtype=torch.bfloat16
+            sampling_params.repetition_penalty,
+            device=values.device,
+            dtype=torch.bfloat16,
         )
 
         if input_pos is not None:
@@ -548,7 +561,9 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
         temperature_tensor = torch.tensor(sampling_params.temperature, device=values.device, dtype=torch.bfloat16)
         top_p_tensor = torch.tensor(sampling_params.top_p, device=values.device, dtype=torch.bfloat16)
         repetition_penalty_tensor = torch.tensor(
-            sampling_params.repetition_penalty, device=values.device, dtype=torch.bfloat16
+            sampling_params.repetition_penalty,
+            device=values.device,
+            dtype=torch.bfloat16,
         )
 
         y = FromFishAudioRepo.generate(
@@ -562,6 +577,6 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
         )
 
         codes = y[1:, prompt_length:-1].clone()
-        assert (codes >= 0).all(), f"Negative code found"
+        assert (codes >= 0).all(), "Negative code found"
 
         return torch_to_jax(codes)
