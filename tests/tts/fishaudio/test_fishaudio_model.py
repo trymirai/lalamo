@@ -3,8 +3,9 @@ from pathlib import Path
 
 import huggingface_hub
 import jax
-import pytest
 import torch
+from fish_speech.models.dac import inference as fish_dac_inference
+from fish_speech.models.dac.modded_dac import DAC
 from fish_speech.tokenizer import FishTokenizer
 from huggingface_hub import HfApi
 from jax import numpy as jnp
@@ -47,10 +48,6 @@ from tests.tts.fishaudio.fishaudio_torch_stuff import FishAudioFromTorch
 _testlog = logging.getLogger("tts_test_logger")
 
 
-from fish_speech.models.dac import inference as fish_dac_inference
-from fish_speech.models.dac.modded_dac import DAC as FishDAC
-
-
 @fixture
 def fish_audio_local_model_path() -> Path:
     fish_audio_repo_id = "fishaudio/s1-mini"
@@ -69,7 +66,7 @@ def fish_audio_local_model_path() -> Path:
         if path.exists():
             return path
 
-    pytest.skip("The cached fishaudio repository is in an invalid state")
+    raise RuntimeError("The cached fishaudio repository is in an invalid state")
 
 
 def get_tts_message() -> TTSMessage:
@@ -875,7 +872,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     device = "cpu"
 
     model = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
-    assert isinstance(model, FishDAC)
+    assert isinstance(model, DAC)
 
     config = get_default_fishaudio_dac_config()
     input_dim = config["quantizer"]["input_dim"]
@@ -989,7 +986,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     device = "cpu"
 
     model = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
-    assert isinstance(model, FishDAC)
+    assert isinstance(model, DAC)
 
     config = get_default_fishaudio_dac_config()
     input_dim = config["quantizer"]["input_dim"]
@@ -1590,7 +1587,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     device = "cpu"
 
     fish_dac = fish_dac_inference.load_model(config_name, audio_chkpt_path, device=device)
-    assert isinstance(fish_dac, FishDAC)
+    assert isinstance(fish_dac, DAC)
     fish_dac.eval()
 
     # Load Lalamo DAC using fishaudio_loaders directly

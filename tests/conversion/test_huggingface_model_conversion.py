@@ -20,9 +20,6 @@ from lalamo.safetensors import safe_write
 from tests.helpers import limit_memory, unsi
 from tests.tracer.tracer import DType, ModelTestSpec
 
-IS_MACOS = platform.system() == "Darwin"
-
-
 MODEL_LIST: list[ModelTestSpec] = [
     ModelTestSpec("trymirai/chat-moderation-router", convert_memory_limit=unsi("400 M")),
     ModelTestSpec("Qwen/Qwen3-0.6B", convert_memory_limit=unsi("1.3 G")),
@@ -76,11 +73,11 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
     NOTE: Using tmp_path fixture provided by pytest runtime environment.
     """
 
-    # The IS_MACOS condition is required since the memory consumed per model is extremely hard
-    # to estimate consistently; the current method estimates more than limit on linux cpu, while
-    # estimating _far_ beyond the memory limit for linux cuda, which makes no sense. Instead of
-    # wrestling with this, we just want to verify that macos memory consumption is adequate.
-    if IS_MACOS and test_spec.convert_memory_limit is not None:
+    # The macos condition is here because the memory consumed per model is hard to estimate consistently;
+    # the current method estimates more than limit on linux cpu, while estimating _far_ beyond the
+    # memory limit for linux cuda, which makes no sense. To avoid wrestling with this, we just want
+    # to verify that macos memory consumption is adequate for good enough development experience.
+    if platform.system() == "Darwin" and test_spec.convert_memory_limit is not None:
         memory_limit = limit_memory(test_spec.convert_memory_limit)
     else:
         memory_limit = nullcontext()
