@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+
+from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineConfig
 from rich.progress import (
     MofNCompleteColumn,
     Progress,
@@ -36,7 +38,7 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
     model_path: Path | None
     limit: int | None
     engine_type: str | None = None
-    engine_config_dict: dict[str, Any] | None = None
+    engine_config: CustomAPIEngineConfig | LalamoEngineConfig | None = None
 
     _stack: ExitStack = field(default_factory=ExitStack)
     _progress: Progress | None = None
@@ -49,9 +51,9 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
         if self.engine_type:
             console.print(f"  Engine: [cyan]{self.engine_type}[/cyan]")
 
-        if self.engine_config_dict:
+        if self.engine_config:
             console.print("  [dim]Engine config:[/dim]")
-            for key, value in self.engine_config_dict.items():
+            for key, value in vars(self.engine_config).items():
                 if key == "api_key":
                     display_value = "***" if value else None
                 else:

@@ -1,4 +1,3 @@
-from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated
 
@@ -210,7 +209,7 @@ def infer_command(
                 model_path=model_path,
                 limit=limit,
                 engine_type=engine,
-                engine_config_dict=asdict(engine_config),
+                engine_config=engine_config,
             ),
         )
     except (ValueError, FileNotFoundError) as e:
