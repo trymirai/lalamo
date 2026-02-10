@@ -1,8 +1,10 @@
 import json
+import os
 import pathlib
 import platform
 import shutil
 import tempfile
+import warnings
 from collections.abc import Generator
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
@@ -51,6 +53,16 @@ MODEL_LIST += (
 )
 
 
+def _warn_if_model_cache_missing(model_repo: str) -> None:
+    hf_home = Path(os.environ.get("HF_HOME", Path.home() / ".cache" / "huggingface"))
+    repo_cache_dir = hf_home / "hub" / f"models--{model_repo.replace('/', '--')}"
+    if not repo_cache_dir.exists():
+        warnings.warn(
+            f"{model_repo}: cache dir {repo_cache_dir} missing; we have to download.",
+            stacklevel=2,
+        )
+
+
 @contextmanager
 def temporary_directory() -> Generator[Path, Any, None]:
     """
@@ -87,6 +99,7 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
 
     with memory_limit:
         model_repo = test_spec.model_repo
+        _warn_if_model_cache_missing(model_repo)
         model_dtype = test_spec.dtype
         model_spec = REPO_TO_MODEL.get(model_repo)
         assert model_spec, f"Unknown model specified: {model_repo}"
