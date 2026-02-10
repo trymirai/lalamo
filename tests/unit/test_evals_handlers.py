@@ -5,7 +5,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from evals.types import DatasetLoadConfig, InferenceConfig, InferenceOutput, InternalEvalRecord
+from evals.types import DatasetLoadConfig, EvalPrompt, InferenceConfig, InferenceOutput, InternalEvalRecord, MessageRole, PromptMessage
 
 from lalamo.evals.benchmark.command import benchmark_command_handler
 from lalamo.evals.inference.command import infer_command_handler
@@ -219,10 +219,25 @@ class TestInferCommandHandlerMetadata:
         )
         mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
         mock_adapter.get_benchmark_split.return_value = "test"
-        mock_adapter.format_prompts.return_value = []
+        mock_adapter.format_prompts.return_value = [
+            EvalPrompt(
+                id="test_1",
+                messages=[PromptMessage(role=MessageRole.USER, content="What is 2+2?")],
+            )
+        ]
+
+        def mock_run_inference(input_path: Path, output_path: Path, callbacks) -> None:
+            # Create a mock output parquet with expected columns
+            output_df = pl.DataFrame({
+                "response": ["4"],
+                "chain_of_thought": [None],
+            })
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_df.write_parquet(output_path)
 
         mock_engine = Mock()
-        mock_engine.run_inference.return_value = tmp_path / "output.parquet"
+        mock_engine.get_conversation_column_name.return_value = "messages"
+        mock_engine.run_inference.side_effect = mock_run_inference
         mock_engine.parse_output.return_value = [
             InferenceOutput(
                 id="test_1",
@@ -247,7 +262,7 @@ class TestInferCommandHandlerMetadata:
                 dataset_dir=dataset_dir,
                 output_dir=output_dir,
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
             )
 
             predictions_path = output_dir / "predictions.parquet"
@@ -287,10 +302,29 @@ class TestInferCommandHandlerMetadata:
         mock_adapter.get_inference_config.return_value = InferenceConfig(max_output_length=2048)
         mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=None)]
         mock_adapter.get_benchmark_split.return_value = "test"
-        mock_adapter.format_prompts.return_value = []
+        mock_adapter.format_prompts.return_value = [
+            EvalPrompt(
+                id="test_1",
+                messages=[PromptMessage(role=MessageRole.USER, content="What is 2+2?")],
+            ),
+            EvalPrompt(
+                id="test_2",
+                messages=[PromptMessage(role=MessageRole.USER, content="What is 3+3?")],
+            ),
+        ]
+
+        def mock_run_inference(input_path: Path, output_path: Path, callbacks) -> None:
+            # Create a mock output parquet with expected columns
+            output_df = pl.DataFrame({
+                "response": ["4", "6"],
+                "chain_of_thought": [None, None],
+            })
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_df.write_parquet(output_path)
 
         mock_engine = Mock()
-        mock_engine.run_inference.return_value = tmp_path / "output.parquet"
+        mock_engine.get_conversation_column_name.return_value = "messages"
+        mock_engine.run_inference.side_effect = mock_run_inference
         mock_engine.parse_output.return_value = [
             InferenceOutput(
                 id="test_1",
@@ -323,7 +357,7 @@ class TestInferCommandHandlerMetadata:
                 dataset_dir=dataset_dir,
                 output_dir=output_dir,
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
             )
 
             predictions_path = output_dir / "predictions.parquet"
@@ -352,10 +386,26 @@ class TestInferCommandHandlerDatasetLoading:
         mock_adapter.get_inference_config.return_value = InferenceConfig(max_output_length=2048)
         mock_adapter.get_loading_config.return_value = [DatasetLoadConfig(split="test", limit=10)]
         mock_adapter.get_benchmark_split.return_value = "test"
-        mock_adapter.format_prompts.return_value = []
+        mock_adapter.format_prompts.return_value = [
+            EvalPrompt(
+                id=f"test_{i}",
+                messages=[PromptMessage(role=MessageRole.USER, content=f"Q{i}?")],
+            )
+            for i in range(10)
+        ]
+
+        def mock_run_inference(input_path: Path, output_path: Path, callbacks) -> None:
+            # Create a mock output parquet with expected columns (10 records for limit test)
+            output_df = pl.DataFrame({
+                "response": [f"A{i}" for i in range(10)],
+                "chain_of_thought": [None] * 10,
+            })
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_df.write_parquet(output_path)
 
         mock_engine = Mock()
-        mock_engine.run_inference.return_value = tmp_path / "output.parquet"
+        mock_engine.get_conversation_column_name.return_value = "messages"
+        mock_engine.run_inference.side_effect = mock_run_inference
         mock_engine.parse_output.return_value = []
 
         with (
@@ -373,7 +423,7 @@ class TestInferCommandHandlerDatasetLoading:
                 dataset_dir=dataset_dir,
                 output_dir=output_dir,
                 engine_config=engine_config,
-                inference_overrides=InferenceConfig(),
+                inference_overrides={},
                 limit=10,
             )
 
