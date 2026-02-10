@@ -31,10 +31,6 @@ class CustomAPIInferenceEngine(InferenceEngine):
             max_retries=config.max_retries,
         )
 
-    @property
-    def engine_type(self) -> InferenceEngineType:
-        return InferenceEngineType.CUSTOM_API
-
     def run_inference(
         self,
         input_path: Path,

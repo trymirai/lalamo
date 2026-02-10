@@ -212,7 +212,7 @@ def infer_command(
                 limit=limit,
                 batch_size=batch_size,
                 vram_gb=vram_gb,
-                engine_type=engine_config.engine_type.value,
+                engine_type=engine,
                 engine_config_dict=asdict(engine_config),
             ),
         )

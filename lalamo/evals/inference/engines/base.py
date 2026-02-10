@@ -3,17 +3,12 @@ from dataclasses import asdict
 from pathlib import Path
 
 import polars as pl
-from evals.types import EvalPrompt, InferenceConfig, InferenceEngineType, InferenceOutput, InternalEvalRecord
+from evals.types import EvalPrompt, InferenceConfig, InferenceOutput, InternalEvalRecord
 
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 
 
 class InferenceEngine(ABC):
-    @property
-    @abstractmethod
-    def engine_type(self) -> InferenceEngineType:
-        """Return the engine type for inference config selection."""
-        ...
 
     def _check_unsupported_params(
         self,

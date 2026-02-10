@@ -31,10 +31,6 @@ class LalamoInferenceEngine(InferenceEngine):
         else:
             self.max_vram = None
 
-    @property
-    def engine_type(self) -> InferenceEngineType:
-        return InferenceEngineType.LOCAL
-
     def _get_conversation_column_name(self) -> str:
         return "conversation"
 

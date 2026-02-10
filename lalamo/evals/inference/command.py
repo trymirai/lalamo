@@ -44,7 +44,15 @@ def infer_command_handler(
 
     eval_spec = REPO_TO_EVAL[eval_repo]
     eval_adapter = eval_spec.handler_type()
-    engine_type = engine_config.engine_type
+
+    if isinstance(engine_config, LalamoEngineConfig):
+        engine_type = InferenceEngineType.LOCAL
+        inference_engine = LalamoInferenceEngine
+    elif isinstance(engine_config, CustomAPIEngineConfig):
+        engine_type = InferenceEngineType.CUSTOM_API
+        inference_engine = CustomAPIInferenceEngine
+    else:
+        raise ValueError(f"Unsupported engine config type: {type(engine_config)}")
 
     adapter_config = eval_adapter.get_inference_config(engine_type)
     overrides = {k: v for k, v in asdict(inference_overrides).items() if v is not None}
@@ -53,14 +61,7 @@ def infer_command_handler(
     callbacks.started()
     callbacks.inference_config_loaded(asdict(adapter_config), overrides)
 
-    if engine_type == InferenceEngineType.LOCAL:
-        assert isinstance(engine_config, LalamoEngineConfig)
-        inference_engine = LalamoInferenceEngine(engine_config, inference_config)
-    elif engine_type == InferenceEngineType.CUSTOM_API:
-        assert isinstance(engine_config, CustomAPIEngineConfig)
-        inference_engine = CustomAPIInferenceEngine(engine_config, inference_config)
-    else:
-        raise ValueError(f"Unsupported engine type: {engine_type}")
+    inference_engine = inference_engine(engine_config, inference_config)
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
