@@ -122,9 +122,55 @@ jobs:
         run: |
           pytest --ci --maxfail=2 tests/tracer # not using xdist since will likely cause an oom
 
+  conversion:
+    name: Model Conversion Tests
+    runs-on: [self-hosted, linux, gpu, l40s]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+
+      - name: Run pytest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pytest tests/conversion
+
+  generation:
+    name: Generation Tests
+    runs-on: [self-hosted, linux, gpu, l40s]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          cuda: 'true'
+
+      - name: Run pytest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pytest tests/generation
+
+  tracer:
+    name: Tracer Tests
+    runs-on: [self-hosted, linux, gpu, l40s]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          cuda: 'true'
+
+      - name: Run pytest
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          pytest tests/tracer
+
   cli:
     name: CLI
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, gpu, l40s]
 
     env:
       MODEL: Qwen/Qwen2.5-0.5B-Instruct
@@ -132,6 +178,8 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
+        with:
+          cuda: 'true'
 
       - name: lalamo list-models
         run: |
