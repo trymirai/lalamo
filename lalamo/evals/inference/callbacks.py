@@ -4,8 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
-
-from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineConfig
 from rich.progress import (
     MofNCompleteColumn,
     Progress,
@@ -15,6 +13,7 @@ from rich.progress import (
     TimeElapsedColumn,
 )
 
+from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineConfig
 from lalamo.evals.inference.engines.callbacks import BaseEngineCallbacks
 
 console = Console()

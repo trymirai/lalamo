@@ -97,7 +97,7 @@ def infer_command_handler(
     outputs = parse_inference_outputs(output_df, input_df)
 
     predictions_df = pl.DataFrame(
-        [cattrs.unstructure(o) for o in outputs]
+        [cattrs.unstructure(o) for o in outputs],
     ).rename({"response": "model_output"})
 
     predictions_path = output_dir / "predictions.parquet"
