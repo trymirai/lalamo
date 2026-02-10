@@ -11,7 +11,7 @@ from lalamo.evals.datasets.specs import REPO_TO_EVAL
 
 def _validate_predictions_file(path: Path) -> None:
     if not path.exists():
-        raise FileNotFoundError(f"Predictions file not found: {path}")
+        raise ValueError(f"Predictions file not found: {path}")
     if not path.is_file():
         raise ValueError(f"Predictions path is not a file: {path}")
 

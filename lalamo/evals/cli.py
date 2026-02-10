@@ -235,7 +235,4 @@ def benchmark_command(
     except ValueError as e:
         console.print(f"[red]✗[/red] {e}")
         raise Exit(1) from None
-    except FileNotFoundError as e:
-        console.print(f"[red]✗[/red] {e}")
-        raise Exit(1) from None
 
