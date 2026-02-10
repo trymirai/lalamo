@@ -35,8 +35,6 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
     eval_repo: str
     model_path: Path | None
     limit: int | None
-    batch_size: int | None
-    vram_gb: float | None
     engine_type: str | None = None
     engine_config_dict: dict[str, Any] | None = None
 
@@ -62,8 +60,7 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
 
         if self.model_path:
             console.print(f"  Model: {self.model_path}")
-        console.print(f"  Batch size: {self.batch_size or 'auto'}")
-        console.print(f"  VRAM limit: {f'{self.vram_gb} GB' if self.vram_gb else 'auto-detect'}")
+
         console.print(f"  Limit: {self.limit or 'all'}")
 
     def inference_config_loaded(self, adapter_config: dict[str, Any], overrides: dict[str, Any]) -> None:

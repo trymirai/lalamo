@@ -209,8 +209,6 @@ def infer_command(
                 eval_repo=eval_repo,
                 model_path=model_path,
                 limit=limit,
-                batch_size=batch_size,
-                vram_gb=vram_gb,
                 engine_type=engine,
                 engine_config_dict=asdict(engine_config),
             ),
