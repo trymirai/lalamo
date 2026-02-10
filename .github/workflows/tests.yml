@@ -22,8 +22,9 @@ defaults:
     shell: bash
 
 env:
-  PYTEST_FLAGS: "--ci --dist=worksteal -x"
+  PYTEST_FLAGS: "--ci --dist=worksteal -x -s"
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  HF_HOME: /data/huggingface
 
 jobs:
   linters:
@@ -80,7 +81,6 @@ jobs:
   conversion:
     name: Model Conversion Tests
     runs-on: [self-hosted, linux, cpu]
-    needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
     steps:
@@ -120,7 +120,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest --ci --maxfail=2 tests/tracer # not using xdist since will likely cause an oom
+          pytest --ci -x tests/tracer # not using xdist since will likely cause an oom
 
   cli:
     name: CLI
