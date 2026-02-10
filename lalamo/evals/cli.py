@@ -223,12 +223,24 @@ def infer_command(
     help="Run benchmark evaluation on model predictions.",
 )
 def benchmark_command(
-    eval_name: Annotated[str, Argument(help="Eval name (e.g., MMLU-Pro)")],
+    eval_repo: Annotated[
+        str,
+        Argument(
+            help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
+            autocompletion=lambda: list(REPO_TO_EVAL.keys()),
+        ),
+    ],
     predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
 ) -> None:
+    eval_spec = REPO_TO_EVAL.get(eval_repo)
+    if eval_spec is None:
+        available = ", ".join(REPO_TO_EVAL.keys())
+        err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
+        raise Exit(1)
+
     try:
         benchmark_command_handler(
-            eval_name=eval_name,
+            eval_repo=eval_repo,
             predictions_path=predictions_path,
             callbacks=BenchmarkConsoleCallbacks(),
         )

@@ -49,15 +49,11 @@ def _extract_metadata(path: Path) -> tuple[str, str]:
 
 
 def benchmark_command_handler(
-    eval_name: str,
+    eval_repo: str,
     predictions_path: Path,
     callbacks: BaseBenchmarkCallbacks,
 ) -> None:
-    if eval_name not in REPO_TO_EVAL:
-        available = ", ".join(REPO_TO_EVAL.keys())
-        raise ValueError(f"Unknown eval: {eval_name}. Available evals: {available}")
-
-    eval_spec = REPO_TO_EVAL[eval_name]
+    eval_spec = REPO_TO_EVAL[eval_repo]
     eval_adapter = eval_spec.handler_type()
     benchmark_split = eval_adapter.get_benchmark_split()
 

@@ -45,10 +45,6 @@ def infer_command_handler(
     if callbacks is None:
         callbacks = BaseRunInferenceCallbacks()
 
-    if eval_repo not in REPO_TO_EVAL:
-        available = ", ".join(REPO_TO_EVAL.keys())
-        raise ValueError(f"Unknown eval repository '{eval_repo}'. Available: {available}")
-
     eval_spec = REPO_TO_EVAL[eval_repo]
     eval_adapter = eval_spec.handler_type()
 

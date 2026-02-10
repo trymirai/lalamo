@@ -168,7 +168,7 @@ class TestFullPipelineIntegration:
 
         with patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": eval_spec}):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
@@ -315,7 +315,7 @@ class TestFullPipelineIntegration:
 
         with patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": eval_spec}):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )

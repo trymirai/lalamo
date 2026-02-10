@@ -54,7 +54,7 @@ class TestBenchmarkMetadataValidation:
 
         with patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
@@ -87,7 +87,7 @@ class TestBenchmarkMetadataValidation:
             pytest.raises(ValueError, match="missing required metadata: model_name"),
         ):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
@@ -115,7 +115,7 @@ class TestBenchmarkMetadataValidation:
             pytest.raises(ValueError, match="missing required metadata: inference_engine"),
         ):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
@@ -133,7 +133,7 @@ class TestBenchmarkErrorHandling:
             pytest.raises(ValueError, match="Predictions file not found"),
         ):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
@@ -154,7 +154,7 @@ class TestBenchmarkErrorHandling:
             pytest.raises(ValueError, match="Predictions file is empty"),
         ):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
@@ -176,23 +176,11 @@ class TestBenchmarkErrorHandling:
             pytest.raises(ValueError, match="Missing required columns"),
         ):
             benchmark_command_handler(
-                eval_name="test/repo",
+                eval_repo="test/repo",
                 predictions_path=predictions_path,
                 callbacks=Mock(),
             )
 
-    def test_fails_on_unknown_eval_name(self, tmp_path: Path) -> None:
-        predictions_path = tmp_path / "predictions.parquet"
-
-        with (
-            patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {}),
-            pytest.raises(ValueError, match="Unknown eval.*Available evals"),
-        ):
-            benchmark_command_handler(
-                eval_name="unknown/repo",
-                predictions_path=predictions_path,
-                callbacks=Mock(),
-            )
 
 
 class TestInferCommandHandlerMetadata:
