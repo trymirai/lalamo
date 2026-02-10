@@ -15,23 +15,17 @@ class BaseConversionCallbacks:
     eval_repo: str
     output_dir: Path
 
-    def output_dir_exists(self) -> None:
-        pass
+    def output_dir_exists(self) -> None: ...
 
-    def started(self) -> None:
-        pass
+    def started(self) -> None: ...
 
-    def downloading_file(self, filename: str) -> None:
-        pass
+    def downloading_file(self, filename: str) -> None: ...
 
-    def finished_downloading_file(self, filename: str) -> None:
-        pass
+    def finished_downloading_file(self, filename: str) -> None: ...
 
-    def saving_dataset(self) -> None:
-        pass
+    def saving_dataset(self) -> None: ...
 
-    def finished(self) -> None:
-        pass
+    def finished(self) -> None: ...
 
 
 @dataclass

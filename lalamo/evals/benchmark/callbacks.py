@@ -30,20 +30,15 @@ def _format_metrics(metrics: dict[str, Any]) -> None:
 
 @dataclass
 class BaseBenchmarkCallbacks:
-    def started(self, eval_name: str, split: str, predictions_path: Path) -> None:
-        pass
+    def started(self, eval_name: str, split: str, predictions_path: Path) -> None: ...
 
-    def loading_predictions(self) -> None:
-        pass
+    def loading_predictions(self) -> None: ...
 
-    def preparing_benchmark(self) -> None:
-        pass
+    def preparing_benchmark(self) -> None: ...
 
-    def running_benchmark(self) -> None:
-        pass
+    def running_benchmark(self) -> None: ...
 
-    def completed(self, metrics: BenchmarkMetrics) -> None:
-        pass
+    def completed(self, metrics: BenchmarkMetrics) -> None: ...
 
 
 @dataclass

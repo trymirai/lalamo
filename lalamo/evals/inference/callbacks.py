@@ -21,14 +21,11 @@ console = Console()
 
 @dataclass
 class BaseRunInferenceCallbacks(BaseEngineCallbacks):
-    def started(self) -> None:
-        pass
+    def started(self) -> None: ...
 
-    def inference_config_loaded(self, adapter_config: dict[str, Any], overrides: dict[str, Any]) -> None:
-        pass
+    def inference_config_loaded(self, adapter_config: dict[str, Any], overrides: dict[str, Any]) -> None: ...
 
-    def completed(self, predictions_path: Path, count: int) -> None:
-        pass
+    def completed(self, predictions_path: Path, count: int) -> None: ...
 
 
 @dataclass
