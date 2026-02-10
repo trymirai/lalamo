@@ -130,7 +130,7 @@ class TestBenchmarkErrorHandling:
 
         with (
             patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
-            pytest.raises(FileNotFoundError, match="Predictions file not found"),
+            pytest.raises(ValueError, match="Predictions file not found"),
         ):
             benchmark_command_handler(
                 eval_name="test/repo",
