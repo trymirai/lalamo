@@ -4,6 +4,11 @@ These tests validate that data formats and metadata flow correctly through
 all three stages of the evaluation workflow using real parquet I/O operations.
 """
 
+import pytest
+
+pytest.importorskip("evals")
+pytest.importorskip("openai")
+
 from pathlib import Path
 from unittest.mock import Mock, patch
 

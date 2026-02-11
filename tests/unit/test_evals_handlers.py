@@ -5,6 +5,10 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+
+pytest.importorskip("evals")
+pytest.importorskip("openai")
+
 from evals.types import DatasetLoadConfig, EvalPrompt, InferenceConfig, InferenceOutput, InternalEvalRecord, MessageRole, PromptMessage
 
 from lalamo.evals.benchmark.command import benchmark_command_handler

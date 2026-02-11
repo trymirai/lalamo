@@ -4,6 +4,10 @@ from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
+
+pytest.importorskip("evals")
+pytest.importorskip("openai")
+
 from evals.types import (
     DatasetLoadConfig,
     EvalPrompt,

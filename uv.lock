@@ -2058,14 +2058,12 @@ dependencies = [
     { name = "click" },
     { name = "einops" },
     { name = "equinox" },
-    { name = "evals" },
     { name = "huggingface-hub", extra = ["hf-transfer"] },
     { name = "jax" },
     { name = "jaxtyping" },
     { name = "jinja2" },
     { name = "ml-dtypes" },
     { name = "omegaconf" },
-    { name = "openai" },
     { name = "optax" },
     { name = "polars" },
     { name = "requests" },
@@ -2083,6 +2081,10 @@ cpu = [
 ]
 cuda = [
     { name = "jax", extra = ["cuda"] },
+]
+evals = [
+    { name = "evals" },
+    { name = "openai" },
 ]
 fishaudio = [
     { name = "bidict" },
@@ -2141,7 +2143,7 @@ requires-dist = [
     { name = "click", specifier = ">=8.1.8" },
     { name = "einops", specifier = ">=0.8.0" },
     { name = "equinox", specifier = ">=0.11.11" },
-    { name = "evals", git = "https://github.com/trymirai/evals.git?rev=c2d2e32" },
+    { name = "evals", marker = "extra == 'evals'", git = "https://github.com/trymirai/evals.git?rev=c2d2e32" },
     { name = "huggingface-hub", extras = ["hf-transfer"], specifier = ">=0.27.1" },
     { name = "jax", specifier = ">=0.8.1" },
     { name = "jax", extras = ["cpu"], marker = "extra == 'cpu'", specifier = ">=0.8.1" },
@@ -2151,7 +2153,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "ml-dtypes", specifier = ">=0.5.1" },
     { name = "omegaconf", specifier = ">=2.3.0" },
-    { name = "openai", specifier = ">=1.0.0" },
+    { name = "openai", marker = "extra == 'evals'", specifier = ">=1.0.0" },
     { name = "optax", specifier = ">=0.2.4" },
     { name = "polars", specifier = ">=1.33.1" },
     { name = "pyaudio", marker = "extra == 'pyaudio'", specifier = ">=0.2.0" },
@@ -2167,7 +2169,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.1" },
     { name = "xxhash", specifier = ">=3.5.0" },
 ]
-provides-extras = ["cpu", "cuda", "tpu", "pyaudio", "fishaudio"]
+provides-extras = ["cpu", "cuda", "tpu", "evals", "pyaudio", "fishaudio"]
 
 [package.metadata.requires-dev]
 dev = [

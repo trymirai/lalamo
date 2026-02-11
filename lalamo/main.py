@@ -58,7 +58,6 @@ from lalamo.common import (
     get_vram_limit_bytes,
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.evals import eval_app
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import REPO_TO_MODEL, ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -819,7 +818,20 @@ def generate_replies(
     )
 
 
-app.add_typer(eval_app, name="eval", help="Evaluation commands for running benchmarks.")
+try:
+    from lalamo.evals import eval_app
+
+    app.add_typer(eval_app, name="eval", help="Evaluation commands for running benchmarks.")
+except ImportError:
+    # Register stub command with helpful error message
+    warn_msg = "⚠️  Eval commands require optional dependencies. Install with: uv sync --extra evals"
+    @app.command(
+        name="eval",
+        help=warn_msg,
+    )
+    def eval_stub() -> None:
+        err_console.print(warn_msg)
+        raise Exit(1)
 
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
