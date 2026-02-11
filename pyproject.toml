@@ -156,6 +156,7 @@ ignore = [
     "PLR0917",
     "PLR2004",
     "PLR6301",
+    "PLW0108",
     "PT",
     "PTH123",
     "RET503",
@@ -166,5 +167,9 @@ ignore = [
     "T20",
     "TD003",
     "TRY003",
-    "CPY001"
+    "CPY001",
+    "COM812",
 ]
+
+[tool.typos.default.extend-words]
+ba = "ba"

@@ -12,6 +12,7 @@ MODEL_LIST = [
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
     # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
+    ModelTestSpec("Qwen/Qwen3.5-9B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("30 G")),
     ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),
 ]
 

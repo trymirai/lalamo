@@ -13,12 +13,13 @@ from .huggingface import (
     HFQwen2Config,
     HFQwen3Config,
     HFQwen3NextConfig,
+    HFQwen35Config,
+    HFQwen35TextConfig,
 )
 
 __all__ = [
     "ForeignClassifierConfig",
     "ForeignConfig",
-    # "ETLlamaConfig",
     "ForeignLMConfig",
     "ForeignTTSConfig",
     "HFGPTOssConfig",
@@ -32,4 +33,6 @@ __all__ = [
     "HFQwen2Config",
     "HFQwen3Config",
     "HFQwen3NextConfig",
+    "HFQwen35Config",
+    "HFQwen35TextConfig",
 ]

@@ -843,55 +843,112 @@ def load_delta_net_attention(
     if in_proj_weight_path in weights_dict:
         in_proj = load_linear(module.in_proj, weights_dict, in_proj_path)
     else:
-        qkvz_path = path / "in_proj_qkvz"
-        ba_path = path / "in_proj_ba"
-        qkvz_weight_path = qkvz_path / "weight"
-        ba_weight_path = ba_path / "weight"
-        if not (qkvz_weight_path in weights_dict and ba_weight_path in weights_dict):
-            raise ValueError("Expected in_proj or in_proj_qkvz/in_proj_ba weights for DeltaNetAttention.")
 
-        qkvz_perm = _delta_net_qkvz_perm()
-        ba_perm = _delta_net_ba_perm()
-
-        def _reorder(array: Array, perm: Array, axis: int) -> Array:
+        def _reorder(array: Array, perm: Array | None, axis: int) -> Array:
+            if perm is None:
+                return array
             return jnp.take(array, perm, axis=axis)
 
+        def _fuse_delta_net_full_precision(
+            branches: list[tuple[ParameterPath, Array | None]],
+        ) -> Array:
+            return jnp.concatenate(
+                [
+                    _reorder(_fuse_full_precision_weights(weights_dict, branch_path, None), perm, axis=0)
+                    for branch_path, perm in branches
+                ],
+                axis=0,
+            )
+
+        def _fuse_delta_net_quantized(
+            branches: list[tuple[ParameterPath, Array | None]],
+            quantized_param_layout: QuantizedParamLayout,
+        ) -> tuple[Array, Array, Array]:
+            axis = int(quantized_param_layout.transposed)
+            quantized_by_branch = [
+                _fuse_quantized_weights(
+                    weights_dict,
+                    branch_path,
+                    None,
+                    quantized_param_layout,
+                )
+                for branch_path, _perm in branches
+            ]
+            qweights = jnp.concatenate(
+                [
+                    _reorder(weights, perm, axis=axis)
+                    for (weights, _zeros, _scales), (_branch_path, perm) in zip(
+                        quantized_by_branch,
+                        branches,
+                        strict=True,
+                    )
+                ],
+                axis=axis,
+            )
+            qzeros = jnp.concatenate(
+                [
+                    _reorder(zeros, perm, axis=axis)
+                    for (_weights, zeros, _scales), (_branch_path, perm) in zip(
+                        quantized_by_branch,
+                        branches,
+                        strict=True,
+                    )
+                ],
+                axis=axis,
+            )
+            qscales = jnp.concatenate(
+                [
+                    _reorder(scales, perm, axis=axis)
+                    for (_weights, _zeros, scales), (_branch_path, perm) in zip(
+                        quantized_by_branch,
+                        branches,
+                        strict=True,
+                    )
+                ],
+                axis=axis,
+            )
+            return qweights, qzeros, qscales
+
+        qkv_path = path / "in_proj_qkv"
+        z_path = path / "in_proj_z"
+        b_path = path / "in_proj_b"
+        a_path = path / "in_proj_a"
+        has_qwen35_split_projections = all(
+            projection_path / "weight" in weights_dict for projection_path in (qkv_path, z_path, b_path, a_path)
+        )
+        if has_qwen35_split_projections:
+            projection_branches: list[tuple[ParameterPath, Array | None]] = [
+                (qkv_path, None),
+                (z_path, None),
+                (b_path, None),
+                (a_path, None),
+            ]
+        else:
+            qkvz_path = path / "in_proj_qkvz"
+            ba_path = path / "in_proj_ba"
+            qkvz_weight_path = qkvz_path / "weight"
+            ba_weight_path = ba_path / "weight"
+            if not (qkvz_weight_path in weights_dict and ba_weight_path in weights_dict):
+                raise ValueError(
+                    "Expected in_proj, in_proj_qkvz/in_proj_ba, or "
+                    "in_proj_qkv/in_proj_z/in_proj_b/in_proj_a weights for DeltaNetAttention.",
+                )
+            projection_branches = [
+                (qkvz_path, _delta_net_qkvz_perm()),
+                (ba_path, _delta_net_ba_perm()),
+            ]
+
         if isinstance(module.in_proj, FullPrecisionLinear):
-            qkvz_weight = _fuse_full_precision_weights(weights_dict, qkvz_path, None)
-            ba_weight = _fuse_full_precision_weights(weights_dict, ba_path, None)
-            qkvz_weight = _reorder(qkvz_weight, qkvz_perm, axis=0)
-            ba_weight = _reorder(ba_weight, ba_perm, axis=0)
-            merged = jnp.concatenate([qkvz_weight, ba_weight], axis=0)
+            merged = _fuse_delta_net_full_precision(projection_branches)
             in_proj = load_parameters(lambda m: (m.weights, m.biases), module.in_proj, (merged, None))
         elif isinstance(module.in_proj, GroupQuantizedLinear):
-            qweights, qzeros, qscales = _fuse_quantized_weights(
-                weights_dict,
-                qkvz_path,
-                None,
+            fused_qweights, fused_qzeros, fused_scales = _fuse_delta_net_quantized(
+                projection_branches,
                 AWQ_QUANTIZED_WEIGHT_LAYOUT,
             )
-            bweights, bzeros, bscales = _fuse_quantized_weights(
-                weights_dict,
-                ba_path,
-                None,
-                AWQ_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            axis = int(AWQ_QUANTIZED_WEIGHT_LAYOUT.transposed)
-            qweights = _reorder(qweights, qkvz_perm, axis=axis)
-            qzeros = _reorder(qzeros, qkvz_perm, axis=axis)
-            qscales = _reorder(qscales, qkvz_perm, axis=axis)
-            bweights = _reorder(bweights, ba_perm, axis=axis)
-            bzeros = _reorder(bzeros, ba_perm, axis=axis)
-            bscales = _reorder(bscales, ba_perm, axis=axis)
-
-            fused_qweights = jnp.concatenate([qweights, bweights], axis=axis)
-            fused_qzeros = jnp.concatenate([qzeros, bzeros], axis=axis)
-            fused_scales = jnp.concatenate([qscales, bscales], axis=axis)
-
             weight_quantization = module.in_proj.config.weight_quantization_mode
             activation_precision = module.in_proj.activation_precision
             reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
-
             weights = _process_quantized_tensor(
                 fused_qweights,
                 weight_quantization,
@@ -905,40 +962,18 @@ def load_delta_net_attention(
                 reverse_order,
             )
             scales = fused_scales.astype(activation_precision)
-
             in_proj = load_parameters(
                 lambda m: (m.weights, m.scales, m.zero_points, m.biases),
                 module.in_proj,
                 (weights.T, scales.T, zeros.T, None),
             )
         elif isinstance(module.in_proj, MLXQuantizedLinear):
-            qweights, qdeq_biases, qscales = _fuse_quantized_weights(
-                weights_dict,
-                qkvz_path,
-                None,
+            fused_qweights, fused_deq_biases, fused_scales = _fuse_delta_net_quantized(
+                projection_branches,
                 MLX_QUANTIZED_WEIGHT_LAYOUT,
             )
-            bweights, bdeq_biases, bscales = _fuse_quantized_weights(
-                weights_dict,
-                ba_path,
-                None,
-                MLX_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            axis = int(MLX_QUANTIZED_WEIGHT_LAYOUT.transposed)
-            qweights = _reorder(qweights, qkvz_perm, axis=axis)
-            qdeq_biases = _reorder(qdeq_biases, qkvz_perm, axis=axis)
-            qscales = _reorder(qscales, qkvz_perm, axis=axis)
-            bweights = _reorder(bweights, ba_perm, axis=axis)
-            bdeq_biases = _reorder(bdeq_biases, ba_perm, axis=axis)
-            bscales = _reorder(bscales, ba_perm, axis=axis)
-
-            fused_qweights = jnp.concatenate([qweights, bweights], axis=axis)
-            fused_deq_biases = jnp.concatenate([qdeq_biases, bdeq_biases], axis=axis)
-            fused_scales = jnp.concatenate([qscales, bscales], axis=axis)
-
             weight_quantization = module.in_proj.config.weight_quantization_mode
             activation_precision = module.in_proj.activation_precision
-
             weights = _process_quantized_tensor(
                 fused_qweights,
                 weight_quantization,
@@ -947,7 +982,6 @@ def load_delta_net_attention(
             )
             scales = fused_scales.astype(activation_precision)
             deq_biases = fused_deq_biases.astype(activation_precision)
-
             in_proj = load_parameters(
                 lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
                 module.in_proj,

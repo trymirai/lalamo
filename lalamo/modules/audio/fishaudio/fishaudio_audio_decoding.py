@@ -27,7 +27,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
     decoder_config: DACDecoderConfig
     samplerate: int
 
-    # NOTE: these fields are retireved from DAC audio-codec config which is
+    # NOTE: these fields are retrieved from DAC audio-codec config which is
     # currently baked into code of fish-speech package as a separate file
     encoder_dim: int
     encoder_rates: tuple[int, ...]

@@ -31,6 +31,7 @@ __all__ = [
 
 Mamba2Result = TokenMixerResult[SSMStateLayer]
 
+
 def exp_segsum(x: Float[Array, "... T"]) -> Float[Array, "... T T"]:
     """Compute exp(segsum(x)) as lower-triangular matrix using cumsum difference."""
     seq_len = x.shape[-1]

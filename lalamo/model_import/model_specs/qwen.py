@@ -1,4 +1,4 @@
-from lalamo.model_import.model_configs import HFQwen2Config, HFQwen3Config, HFQwen3NextConfig
+from lalamo.model_import.model_configs import HFQwen2Config, HFQwen3Config, HFQwen3NextConfig, HFQwen35TextConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType
@@ -301,4 +301,16 @@ QWEN3_NEXT = [
     # ),
 ]
 
-QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT
+QWEN35 = [
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.5",
+        name="Qwen3.5-9B-Instruct",
+        size="9B",
+        quantization=None,
+        repo="Qwen/Qwen3.5-9B-Instruct",
+        config_type=HFQwen35TextConfig,
+    ),
+]
+
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN35 + QWEN3_NEXT
