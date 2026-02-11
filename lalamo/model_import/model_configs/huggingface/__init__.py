@@ -9,6 +9,7 @@ from .mistral import HFMistralConfig
 from .modern_bert import ModernBERTConfig
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
+from .qwen3_5 import HFQwen35Config, HFQwen35TextConfig
 from .qwen3_next import HFQwen3NextConfig
 
 __all__ = [
@@ -23,6 +24,8 @@ __all__ = [
     "HFQwen2Config",
     "HFQwen3Config",
     "HFQwen3NextConfig",
+    "HFQwen35Config",
+    "HFQwen35TextConfig",
     "HuggingFaceLMConfig",
     "ModernBERTConfig",
 ]
