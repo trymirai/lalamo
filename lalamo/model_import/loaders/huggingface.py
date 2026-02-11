@@ -843,6 +843,7 @@ def load_delta_net_attention(
     if in_proj_weight_path in weights_dict:
         in_proj = load_linear(module.in_proj, weights_dict, in_proj_path)
     else:
+
         def _reorder(array: Array, perm: Array | None, axis: int) -> Array:
             if perm is None:
                 return array

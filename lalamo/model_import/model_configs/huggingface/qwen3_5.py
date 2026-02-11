@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, cast
+from typing import Literal
 
 from jaxtyping import DTypeLike
 
@@ -29,25 +29,6 @@ from lalamo.quantization import QuantizationMode
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFQwen35Config", "HFQwen35TextConfig"]
-
-
-def _resolve_quantization(
-    quantization_raw: QuantizationConfigType | Mapping[str, object] | None,
-) -> QuantizationConfigType | None:
-    if isinstance(quantization_raw, Mapping):
-        quantization_mapping = cast("Mapping[str, object]", quantization_raw)
-        group_size_value = quantization_mapping.get("group_size")
-        bits_value = quantization_mapping.get("bits")
-        if isinstance(group_size_value, (int, str, bytes, bytearray)) and isinstance(
-            bits_value,
-            (int, str, bytes, bytearray),
-        ):
-            return MLXQuantizationConfig(
-                group_size=int(group_size_value),
-                bits=int(bits_value),
-            )
-        return None
-    return quantization_raw
 
 
 def _rope_theta_from_fields(
@@ -140,12 +121,11 @@ class HFQwen35TextConfigRaw:
         fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
         if self.quantization is not None:
-            quantization_raw = self.quantization
+            quantization = self.quantization
         elif self.quantization_config is not None:
-            quantization_raw = self.quantization_config
+            quantization = self.quantization_config
         else:
-            quantization_raw = fallback_quantization
-        quantization = _resolve_quantization(quantization_raw)
+            quantization = fallback_quantization
 
         if isinstance(quantization, MLXQuantizationConfig):
             if self.tie_word_embeddings:
