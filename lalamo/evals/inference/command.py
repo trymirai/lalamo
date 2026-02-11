@@ -26,7 +26,7 @@ def _load_internal_dataset(
     split_file = dataset_dir / f"{split}.parquet"
     df = pl.read_parquet(split_file)
 
-    if limit:
+    if limit is not None:
         df = df.head(limit)
 
     records = [InternalEvalRecord(**row) for row in df.iter_rows(named=True)]
@@ -96,9 +96,9 @@ def infer_command_handler(
     input_df = pl.read_parquet(input_path)
     outputs = parse_inference_outputs(output_df, input_df)
 
-    predictions_df = pl.DataFrame(
-        [cattrs.unstructure(o) for o in outputs],
-    ).rename({"response": "model_output"})
+    predictions_df = pl.DataFrame([cattrs.unstructure(o) for o in outputs])
+    if len(outputs) > 0:
+        predictions_df = predictions_df.rename({"response": "model_output"})
 
     predictions_path = output_dir / "predictions.parquet"
     predictions_path.parent.mkdir(parents=True, exist_ok=True)
