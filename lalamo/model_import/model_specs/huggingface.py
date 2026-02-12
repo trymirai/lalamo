@@ -1,6 +1,6 @@
 from lalamo.model_import.model_configs import HFLlamaConfig, HFSmolLM3Config
 
-from .common import ModelSpec
+from .common import ConfigMap, FileSpec, ModelSpec
 
 __all__ = ["HUGGINGFACE_MODELS"]
 
@@ -23,6 +23,7 @@ HUGGINGFACE_MODELS = [
         quantization=None,
         repo="HuggingFaceTB/SmolLM3-3B",
         config_type=HFSmolLM3Config,
+        configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
         use_cases=tuple(),
     ),
 ]

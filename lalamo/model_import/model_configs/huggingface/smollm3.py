@@ -35,7 +35,6 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
     architectures: list[Literal["SmolLM3ForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
-    attention_scale: float | None
     bos_token_id: int | list[int]
     eos_token_id: int | list[int]
     hidden_act: Literal["silu_glu", "silu"]
@@ -50,7 +49,6 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
     num_hidden_layers: int
     num_key_value_heads: int
     pretraining_tp: int
-    qk_layernorm: bool
     rms_norm_eps: float
     rope_theta: float
     tie_word_embeddings: bool
@@ -58,6 +56,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
     use_cache: bool
     vocab_size: int
     head_dim: int | None = None
+    attention_scale: float | None = None
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
@@ -138,14 +137,21 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
             )
 
         layer_head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
-        no_rope_layers = frozenset(self.no_rope_layers)
+        if len(self.no_rope_layers) < self.num_hidden_layers:
+            raise ValueError(
+                "SmolLM3 requires no_rope_layers to be a per-layer mask with at least num_hidden_layers entries, "
+                f"got {len(self.no_rope_layers)} entries for {self.num_hidden_layers} layers.",
+            )
+
         layer_configs = []
         for layer_idx in range(self.num_hidden_layers):
+            use_rope = bool(self.no_rope_layers[layer_idx])
+
             attention_config = AttentionConfig(
                 qkv_projection_config=linear_config,
                 out_projection_config=linear_config,
-                query_norm_config=rmsnorm_config if self.qk_layernorm else None,
-                key_norm_config=rmsnorm_config if self.qk_layernorm else None,
+                query_norm_config=None,
+                key_norm_config=None,
                 logit_soft_cap=None,
                 has_sinks=False,
                 has_qkv_biases=self.attention_bias,
@@ -156,7 +162,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
                 is_causal=True,
                 scale=self.attention_scale,
                 sliding_window_size=None,
-                use_rope=layer_idx not in no_rope_layers,
+                use_rope=use_rope,
             )
             mlp_config = DenseMLPConfig(
                 linear_config=linear_config,

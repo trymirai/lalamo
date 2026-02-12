@@ -422,8 +422,10 @@ class HFDecoderTracer(
         embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
         input_ids = input_ids.to(embed_device)
         position_ids = position_ids.to(embed_device)
+        attention_mask = torch.ones_like(input_ids, dtype=torch.bool, device=embed_device)
         hf_outputs = self.hf_model.forward(
             input_ids=input_ids,
+            attention_mask=attention_mask,
             position_ids=position_ids,
             output_hidden_states=True,
         )
