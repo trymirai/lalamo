@@ -44,6 +44,7 @@ def parse_inference_outputs(
             f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs",
         )
 
+    # TODO(mullakhmetov): Expr.map_elements is significantly slower than the native expressions API.
     input_df = input_df.with_columns(
         pl.col("metadata").map_elements(json.loads, return_dtype=pl.Object)
     )
