@@ -7,8 +7,6 @@ from typer import Argument, Exit, Option, Typer
 
 from lalamo.evals.benchmark.callbacks import ConsoleCallbacks as BenchmarkConsoleCallbacks
 from lalamo.evals.benchmark.command import benchmark_command_handler
-from lalamo.evals.datasets.callbacks import ConsoleCallbacks as DatasetConsoleCallbacks
-from lalamo.evals.datasets.command import convert_dataset_handler
 from lalamo.evals.datasets.specs import REPO_TO_EVAL
 from lalamo.evals.inference.callbacks import ConsoleRunInferenceCallbacks
 from lalamo.evals.inference.command import infer_command_handler
@@ -16,52 +14,6 @@ from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineCo
 
 err_console = Console(stderr=True)
 eval_app = Typer()
-
-
-@eval_app.command(
-    name="convert-dataset",
-    help="Download and convert evaluation dataset.",
-)
-def convert_dataset_command(
-    eval_repo: Annotated[
-        str,
-        Argument(
-            help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
-            autocompletion=lambda: list(REPO_TO_EVAL.keys()),
-        ),
-    ],
-    output_dir: Annotated[
-        Path | None,
-        Option(
-            help="Directory to save the dataset to.",
-            show_default="Saves the dataset in the `data/evals/datasets/<name>` directory (using eval's short name)",
-        ),
-    ] = None,
-    overwrite: Annotated[
-        bool,
-        Option(
-            help="Overwrite existing dataset files.",
-        ),
-    ] = False,
-) -> None:
-    eval_spec = REPO_TO_EVAL.get(eval_repo)
-    if eval_spec is None:
-        available = ", ".join(REPO_TO_EVAL.keys())
-        err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
-        raise Exit(1)
-
-    if output_dir is None:
-        output_dir = Path("data/evals/datasets") / eval_spec.name
-
-    try:
-        convert_dataset_handler(
-            eval_repo=eval_repo,
-            output_dir=output_dir,
-            callbacks=DatasetConsoleCallbacks(eval_repo=eval_repo, output_dir=output_dir, overwrite=overwrite),
-        )
-    except ValueError as e:
-        err_console.print(f"[red]✗[/red] {e}")
-        raise Exit(1) from None
 
 
 @eval_app.command(
