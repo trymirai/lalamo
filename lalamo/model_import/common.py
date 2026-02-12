@@ -259,7 +259,7 @@ def _download_weights_and_config_files(
         weights_paths = download_weights(model_spec, progress_callback=progress_callback)
         assert len(weights_paths) == 1
         tmpdir = tempfile.mkdtemp()
-        atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)
+        atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)  # type: ignore error[invalid-argument-type]
         with tarfile.open(weights_paths[0], "r") as tar:
             tar.extractall(path=tmpdir)
         weights_paths = []
@@ -426,6 +426,9 @@ def _import_tts_model(
         model_spec,
         progress_callback=progress_callback,
     )
+    foreign_tts_config = model_spec.config_type.from_json(config_path)
+    if precision is None:
+        precision = foreign_tts_config.default_precision
     if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
         # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
         # so we load the Tokenizer and update config using data from it
@@ -442,7 +445,6 @@ def _import_tts_model(
             tokenizer_path,
             tokenizer_special_tokens_path,
         )
-        foreign_tts_config = model_spec.config_type.from_json(config_path)
         assert isinstance(foreign_tts_config, FishAudioConfig)
         foreign_tts_config = replace(
             foreign_tts_config,
@@ -450,31 +452,18 @@ def _import_tts_model(
             semantic_token_end_id=special_inference_tokens.semantic_end_id,
             im_end_token_id=special_inference_tokens.im_end_token_id,
         )
-        if precision is None:
-            precision = foreign_tts_config.default_precision
-        tts_model = _load_main_processing_module(
-            model_spec,
-            model_weights_paths,
-            precision,
-            foreign_tts_config,
-            progress_callback,
-            context_length,
-            accumulation_precision,
-        )
     else:
         tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, None, progress_callback)
-        foreign_tts_config = model_spec.config_type.from_json(config_path)
-        if precision is None:
-            precision = foreign_tts_config.default_precision
-        tts_model = _load_main_processing_module(
-            model_spec,
-            model_weights_paths,
-            precision,
-            foreign_tts_config,
-            progress_callback,
-            context_length,
-            accumulation_precision,
-        )
+
+    tts_model = _load_main_processing_module(
+        model_spec,
+        model_weights_paths,
+        precision,
+        foreign_tts_config,
+        progress_callback,
+        context_length,
+        accumulation_precision,
+    )
 
     assert isinstance(tts_model, TTSModel)
     if progress_callback is not None:

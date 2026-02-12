@@ -31,7 +31,7 @@ from lalamo.modules import (
     UpcastMode,
     VocoderConfig,
 )
-from lalamo.modules.audio.conv1d_modules import (
+from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
 from lalamo.modules.audio.fishaudio import (

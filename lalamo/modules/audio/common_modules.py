@@ -163,7 +163,7 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
             result["biases"] = self.biases
         return result
 
-    def import_weights(self, weights: ParameterTree[Array]) -> "CausalConv1d":
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
         assert isinstance(weights, Mapping)
         assert isinstance(weights["weights"], Array)
         if self.biases is not None:
@@ -361,3 +361,53 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
             weights=weights["weights"],
             biases=biases,
         )
+
+
+@dataclass(frozen=True)
+class Snake1dConfig:
+    precision: DTypeLike
+
+    def empty(self, channels: int) -> "Snake1d":
+        alpha = dummy_array((channels,), dtype=self.precision)
+        return Snake1d(config=self, alpha=alpha)
+
+    def random_init(self, channels: int) -> "Snake1d":
+        alpha = jnp.ones((channels,), dtype=self.precision)
+        return Snake1d(config=self, alpha=alpha)
+
+
+class Snake1d(LalamoModule[Snake1dConfig]):
+    """Snake1d activation module.
+
+    Implements the Snake activation function: x + (1/alpha) * sin^2(alpha * x)
+
+    Input format: (batch, sequence, channels) - NSC format (JAX convention)
+    Output format: (batch, sequence, channels) - NSC format (JAX convention)
+    """
+
+    alpha: Float[Array, " channels"]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    @property
+    def channels(self) -> int:
+        return self.alpha.shape[0]
+
+    def __call__(
+        self,
+        x: Float[Array, "batch sequence channels"],
+    ) -> Float[Array, "batch sequence channels"]:
+        # alpha is (channels,), broadcast to (1, 1, channels) for (batch, seq, channels) input
+        alpha = self.alpha[None, None, :]
+        # Snake activation: x + (1/alpha) * sin^2(alpha * x)
+        return x + jnp.reciprocal(alpha + 1e-9) * jnp.square(jnp.sin(alpha * x))
+
+    def export_weights(self) -> ParameterTree[Array]:
+        return {"alpha": self.alpha}
+
+    def import_weights(self, weights: ParameterTree[Array]) -> "Snake1d":
+        assert isinstance(weights, Mapping)
+        assert isinstance(weights["alpha"], Array)
+        return replace(self, alpha=weights["alpha"])

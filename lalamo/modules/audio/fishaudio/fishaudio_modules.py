@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.audio.conv1d_modules import CausalConv1d, CausalConv1dConfig
+from lalamo.modules.audio.common_modules import CausalConv1d, CausalConv1dConfig, Snake1d, Snake1dConfig
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -928,61 +928,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             post_module=self.post_module.import_weights(post_module_weights),
             upsampler=self.upsampler.import_weights(upsampler_weights),
         )
-
-
-@dataclass(frozen=True)
-class Snake1dConfig:
-    precision: DTypeLike
-
-    def empty(self, channels: int) -> "Snake1d":
-        alpha = dummy_array((channels,), dtype=self.precision)
-        return Snake1d(config=self, alpha=alpha)
-
-    def random_init(self, channels: int) -> "Snake1d":
-        alpha = jnp.ones((channels,), dtype=self.precision)
-        return Snake1d(config=self, alpha=alpha)
-
-
-class Snake1d(LalamoModule[Snake1dConfig]):
-    """Snake1d activation module.
-
-    Implements the Snake activation function: x + (1/alpha) * sin^2(alpha * x)
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-    """
-
-    alpha: Float[Array, " channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def channels(self) -> int:
-        return self.alpha.shape[0]
-
-    def __call__(
-        self,
-        x: Float[Array, "batch sequence channels"],
-    ) -> Float[Array, "batch sequence channels"]:
-        # alpha is (channels,), broadcast to (1, 1, channels) for (batch, seq, channels) input
-        alpha = self.alpha[None, None, :]
-        # Snake activation: x + (1/alpha) * sin^2(alpha * x)
-        return x + jnp.reciprocal(alpha + 1e-9) * jnp.square(jnp.sin(alpha * x))
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {"alpha": self.alpha}
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "Snake1d":
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["alpha"], Array)
-        return replace(self, alpha=weights["alpha"])
-
-
-# =============================================================================
-# ResidualUnit Module
-# =============================================================================
 
 
 @dataclass(frozen=True)

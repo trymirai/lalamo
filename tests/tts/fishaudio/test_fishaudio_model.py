@@ -14,7 +14,7 @@ from pytest import fixture
 
 from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
 from lalamo.modules import GELU
-from lalamo.modules.audio.conv1d_modules import (
+from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config

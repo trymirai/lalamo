@@ -19,7 +19,7 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
     load_hifigan_res_layer,
     load_residual_block,
 )
-from lalamo.modules.audio.conv1d_modules import CausalConv1dConfig
+from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,

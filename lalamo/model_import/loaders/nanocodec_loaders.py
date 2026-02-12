@@ -15,7 +15,8 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.common import ParameterPath
-from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d, Snake1d
+from lalamo.modules.audio.common_modules import Snake1d
+from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoder,

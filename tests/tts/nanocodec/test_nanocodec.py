@@ -1,4 +1,3 @@
-import logging
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -10,7 +9,7 @@ from omegaconf import DictConfig
 
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.models import TTSGenerator
-from lalamo.modules.audio.conv1d_modules import (
+from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
     CausalTransposeConv1dConfig,
 )

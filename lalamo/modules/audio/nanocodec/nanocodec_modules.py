@@ -17,13 +17,11 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
-from lalamo.modules.audio.conv1d_modules import (
+from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
     CausalTransposeConv1d,
     CausalTransposeConv1dConfig,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     Snake1d,
     Snake1dConfig,
 )
@@ -669,17 +667,12 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
         input_conv_weights = weights["input_conv"]
         skip_conv_weights = weights["skip_conv"]
 
-        assert isinstance(input_act_weights, Mapping)
-        assert isinstance(skip_act_weights, Mapping)
-        assert isinstance(input_conv_weights, Mapping)
-        assert isinstance(skip_conv_weights, Mapping)
-
         return replace(
             self,
-            input_activation=self.input_activation.import_weights(input_act_weights),
-            skip_activation=self.skip_activation.import_weights(skip_act_weights),
-            input_conv=self.input_conv.import_weights(input_conv_weights),
-            skip_conv=self.skip_conv.import_weights(skip_conv_weights),
+            input_activation=self.input_activation.import_weights(require_tree(input_act_weights)),
+            skip_activation=self.skip_activation.import_weights(require_tree(skip_act_weights)),
+            input_conv=self.input_conv.import_weights(require_tree(input_conv_weights)),
+            skip_conv=self.skip_conv.import_weights(require_tree(skip_conv_weights)),
         )
 
 

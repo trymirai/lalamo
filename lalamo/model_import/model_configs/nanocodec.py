@@ -14,7 +14,7 @@ from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import LalamoModule, TTSConfig, TTSModel, VocoderConfig
-from lalamo.modules.audio.conv1d_modules import CausalConv1dConfig
+from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import (
