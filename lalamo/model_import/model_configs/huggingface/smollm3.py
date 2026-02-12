@@ -55,8 +55,6 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
     transformers_version: str
     use_cache: bool
     vocab_size: int
-    head_dim: int | None = None
-    attention_scale: float | None = None
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
@@ -136,7 +134,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
                 activation_precision=activation_precision,
             )
 
-        layer_head_dim = self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads
+        layer_head_dim = self.hidden_size // self.num_attention_heads
         if len(self.no_rope_layers) < self.num_hidden_layers:
             raise ValueError(
                 "SmolLM3 requires no_rope_layers to be a per-layer mask with at least num_hidden_layers entries, "
@@ -160,7 +158,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
                 num_groups=self.num_key_value_heads,
                 head_dim=layer_head_dim,
                 is_causal=True,
-                scale=self.attention_scale,
+                scale=None,
                 sliding_window_size=None,
                 use_rope=use_rope,
             )
