@@ -99,7 +99,7 @@ publish-url = "https://test.pypi.org/legacy/"
 explicit = true
 
 [tool.uv.sources]
-evals = { git = "https://github.com/trymirai/evals.git", rev = "c2d2e32" }
+evals = { git = "https://github.com/trymirai/evals.git", branch = "lm-eval" }
 torch = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
