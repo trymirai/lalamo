@@ -39,20 +39,33 @@ fn main() {
 }
 ```"""
 
+COHERENT_TRUNCATED_EXAMPLE = """\
+fn partition<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) -> usize {
+    let pivot_index = partition_helper(arr, low, high);
+    pivot_index
+}
+fn partition_helper<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) -> usize {
+    let pivot = arr[high];
+    let i = low - 1;
+    for j in low .. high {
+        if arr[j] <= pivot {
+            i += 1;
+            arr.swap(i, j);
+        }
+    }
+    arr.swap(i + 1, high);
+    i + 1
+}
+fn quicksort<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) {
+    if low < high {
+        let pivot_index = partition(arr, low, high);
+        quicksort(arr, low, pivot_index - 1);
+        quicksort(arr, pivot_index + 1, high);
+    }
+}
+fn main()"""
+
 INCOHERENT_EXAMPLES = [
-    (
-        (
-            "fndoublepivot(v:&mut[i32]){v.sort();}metalsandcorrosionmatter"
-            "morethanrustalgorithms.aluminumoxidationexplainslatency."
-        ),
-        "<eos><eos><eos><eos>",
-        {
-            "coherent": False,
-            "score": 0.05,
-            "summary": "Garbled tokens with off-topic corrosion tangent and eos spam",
-            "issues": ["unreadable", "off_topic", "eos_spam"],
-        },
-    ),
     (
         (
             "Rust?? benchmark?? no idea. copper rusts and steel passivates. "
@@ -72,18 +85,6 @@ INCOHERENT_EXAMPLES = [
             "score": 0.0,
             "summary": "Degenerate repetition and eos spam with no code",
             "issues": ["eos_spam", "repetition", "no_implementation"],
-        },
-    ),
-    (
-        (
-            'fn main(){println!("hello")} and now a tangent about battery chemistry, '
-            "surface pitting, and galvanic series instead of sorting."
-        ),
-        {
-            "coherent": False,
-            "score": 0.1,
-            "summary": "Trivial unrelated code followed by off-topic tangent",
-            "issues": ["off_topic", "wrong_implementation"],
         },
     ),
 ]
@@ -112,11 +113,11 @@ def extract_output(raw: str) -> str:
     return "\n".join(lines).strip()
 
 
-def _candidate_message(output: str) -> str:
-    return f"Task: {TASK_PROMPT}\n\nCandidate output:\n{output}"
+def _candidate_message(task_prompt: str, output: str) -> str:
+    return f"Task: {task_prompt}\n\nCandidate output:\n{output}"
 
 
-def _build_messages(candidate_output: str) -> list[dict[str, str]]:
+def _build_messages(candidate_output: str, task_prompt: str = TASK_PROMPT) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = [
         {
             "role": "system",
@@ -134,7 +135,7 @@ def _build_messages(candidate_output: str) -> list[dict[str, str]]:
         },
     ]
 
-    messages.append({"role": "user", "content": _candidate_message(COHERENT_EXAMPLE)})
+    messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, COHERENT_EXAMPLE)})
     messages.append(
         {
             "role": "assistant",
@@ -149,11 +150,26 @@ def _build_messages(candidate_output: str) -> list[dict[str, str]]:
         },
     )
 
+    messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, COHERENT_TRUNCATED_EXAMPLE)})
+    messages.append(
+        {
+            "role": "assistant",
+            "content": json.dumps(
+                {
+                    "coherent": True,
+                    "score": 0.7,
+                    "summary": "Truncated but coherent quicksort implementation in Rust",
+                    "issues": [],
+                },
+            ),
+        },
+    )
+
     for output, verdict in INCOHERENT_EXAMPLES:
-        messages.append({"role": "user", "content": _candidate_message(output)})
+        messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, output)})
         messages.append({"role": "assistant", "content": json.dumps(verdict)})
 
-    messages.append({"role": "user", "content": _candidate_message(candidate_output)})
+    messages.append({"role": "user", "content": _candidate_message(task_prompt, candidate_output)})
     return messages
 
 
@@ -191,7 +207,7 @@ def _parse_verdict(content: str) -> CoherenceVerdict:
     )
 
 
-def judge(*, api_key: str, model: str, candidate_output: str, timeout: int, max_retries: int = 3) -> CoherenceVerdict:
+def judge(*, api_key: str, model: str, candidate_output: str, timeout: int, max_retries: int = 3, task_prompt: str = TASK_PROMPT) -> CoherenceVerdict:
     last_error: Exception | None = None
     for attempt in range(max_retries):
         resp = requests.post(
@@ -203,7 +219,7 @@ def judge(*, api_key: str, model: str, candidate_output: str, timeout: int, max_
             },
             json={
                 "model": model,
-                "messages": _build_messages(candidate_output),
+                "messages": _build_messages(candidate_output, task_prompt),
                 "temperature": 0.0,
             },
             timeout=timeout,

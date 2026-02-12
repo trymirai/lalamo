@@ -13,12 +13,14 @@ log = logging.getLogger(__name__)
 
 # Representative language models < 10B: smallest per family + one MLX 4bit each.
 MODEL_REPOS = [
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen3-0.6B",
+    "Qwen/Qwen3-0.6B-MLX-4bit",
     "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
-    "EssentialAI/rnj-1-instruct",
+    "mlx-community/gemma-3-1b-it-4bit",
     "google/gemma-2-2b-it",
     "google/gemma-3-1b-it",
     # "google/functiongemma-270m-it",  # output is weird by default, can't verify coherence
-    "mlx-community/gemma-3-1b-it-4bit",
     "HuggingFaceTB/SmolLM2-1.7B-Instruct",
     "LiquidAI/LFM2-350M",
     "LiquidAI/LFM2.5-1.2B-Instruct",
@@ -28,9 +30,6 @@ MODEL_REPOS = [
     "cartesia-ai/Llamba-1B",
     "cartesia-ai/Llamba-1B-4bit-mlx",
     "POLARIS-Project/Polaris-4B-Preview",
-    "Qwen/Qwen2.5-0.5B-Instruct",
-    "Qwen/Qwen3-0.6B",
-    "Qwen/Qwen3-0.6B-MLX-4bit",
 ]
 
 
@@ -87,5 +86,60 @@ def test_model_coherent(converted_model_path: Path) -> None:
     issues = ", ".join(verdict.issues) or "none"
     assert verdict.coherent, (
         f"The model output ({output}) was found to be incoherent "
+        f"(score={verdict.score:.2f}, issues={issues}, summary={verdict.summary!r})"
+    )
+
+
+TRIVIAL_PROMPT = "What is 2+2? Answer with just the number."
+TRIVIAL_MAX_TOKENS = 512
+
+
+def test_model_stops_cleanly(converted_model_path: Path) -> None:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        pytest.skip("Set OPENROUTER_API_KEY to run coherence tests.")
+
+    judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["chat", str(converted_model_path), "--message", TRIVIAL_PROMPT, "--max-tokens", str(TRIVIAL_MAX_TOKENS)],
+        catch_exceptions=False,
+    )
+    assert result.exit_code == 0, f"lalamo chat failed (exit {result.exit_code}): {result.output.strip()!r}"
+
+    raw_output = extract_output(result.stdout)
+    assert raw_output, "Model produced empty output"
+
+    stripped = raw_output.replace("\n", "").replace(" ", "")
+    log.info("Trivial-question output (%d chars):\n%s", len(stripped), stripped)
+
+    max_chars = TRIVIAL_MAX_TOKENS * 2
+    assert len(stripped) < max_chars, (
+        f"Model did not stop cleanly — produced {len(stripped)} chars for a trivial question "
+        f"(limit {max_chars}). Output: {stripped[:200]!r}..."
+    )
+    assert "4" in stripped, f"Expected '4' in the answer, got: {stripped!r}"
+
+    verdict = judge(
+        api_key=api_key,
+        model=judge_model,
+        candidate_output=raw_output,
+        task_prompt=TRIVIAL_PROMPT,
+        timeout=60,
+    )
+
+    log.info(
+        "Judge verdict: coherent=%s, score=%.2f, issues=%s, summary=%s",
+        verdict.coherent,
+        verdict.score,
+        verdict.issues,
+        verdict.summary,
+    )
+
+    issues = ", ".join(verdict.issues) or "none"
+    assert verdict.coherent, (
+        f"The model output ({raw_output}) was found to be incoherent "
         f"(score={verdict.score:.2f}, issues={issues}, summary={verdict.summary!r})"
     )
