@@ -7,7 +7,7 @@ from typer import Argument, Exit, Option, Typer
 
 from lalamo.evals.benchmark.callbacks import ConsoleCallbacks as BenchmarkConsoleCallbacks
 from lalamo.evals.benchmark.command import benchmark_command_handler
-from lalamo.evals.datasets.specs import REPO_TO_EVAL
+from lalamo.evals.datasets.specs import EVAL_ADAPTERS
 from lalamo.evals.inference.callbacks import ConsoleRunInferenceCallbacks
 from lalamo.evals.inference.command import infer_command_handler
 from lalamo.evals.inference.engines import CustomAPIEngineConfig, LalamoEngineConfig
@@ -25,7 +25,7 @@ def infer_command(
         str,
         Argument(
             help="Eval name. Example: [cyan]'ifeval'[/cyan], [cyan]'mmlu-pro'[/cyan].",
-            autocompletion=lambda: list(REPO_TO_EVAL.keys()),
+            autocompletion=lambda: list(EVAL_ADAPTERS.keys()),
         ),
     ],
     output_dir: Annotated[Path, Argument(help="Output directory for results")],
@@ -95,9 +95,9 @@ def infer_command(
         Option(help="Stop token strings (uses adapter default if not set)"),
     ] = None,
 ) -> None:
-    eval_spec = REPO_TO_EVAL.get(eval_name)
+    eval_spec = EVAL_ADAPTERS.get(eval_name)
     if eval_spec is None:
-        available = ", ".join(REPO_TO_EVAL.keys())
+        available = ", ".join(EVAL_ADAPTERS.keys())
         err_console.print(f"[red]✗[/red] Unknown eval: {eval_name}. Available: {available}")
         raise Exit(1)
 
@@ -177,14 +177,14 @@ def benchmark_command(
         str,
         Argument(
             help="Eval name. Example: [cyan]'ifeval'[/cyan], [cyan]'mmlu-pro'[/cyan].",
-            autocompletion=lambda: list(REPO_TO_EVAL.keys()),
+            autocompletion=lambda: list(EVAL_ADAPTERS.keys()),
         ),
     ],
     predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
 ) -> None:
-    eval_spec = REPO_TO_EVAL.get(eval_name)
+    eval_spec = EVAL_ADAPTERS.get(eval_name)
     if eval_spec is None:
-        available = ", ".join(REPO_TO_EVAL.keys())
+        available = ", ".join(EVAL_ADAPTERS.keys())
         err_console.print(f"[red]✗[/red] Unknown eval: {eval_name}. Available: {available}")
         raise Exit(1)
 

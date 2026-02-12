@@ -1,6 +1,5 @@
-from lalamo.evals.datasets.specs import REPO_TO_EVAL, EvalSpec
+from lalamo.evals.datasets.specs import EVAL_ADAPTERS
 
 __all__ = [
-    "REPO_TO_EVAL",
-    "EvalSpec",
+    "EVAL_ADAPTERS",
 ]

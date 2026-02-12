@@ -6,7 +6,7 @@ import cattrs
 import polars as pl
 import pyarrow.parquet as pq
 
-from lalamo.evals.datasets.specs import REPO_TO_EVAL
+from lalamo.evals.datasets.specs import EVAL_ADAPTERS
 from lalamo.evals.inference.callbacks import BaseRunInferenceCallbacks
 from lalamo.evals.inference.engines import (
     CustomAPIEngineConfig,
@@ -28,8 +28,8 @@ def infer_command_handler(
     if callbacks is None:
         callbacks = BaseRunInferenceCallbacks()
 
-    eval_spec = REPO_TO_EVAL[eval_name]
-    eval_adapter = eval_spec.handler_type()
+    adapter_class = EVAL_ADAPTERS[eval_name]
+    eval_adapter = adapter_class()
 
     if isinstance(engine_config, LalamoEngineConfig):
         inference_engine_cls = LalamoInferenceEngine

@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 from evals.types import InferenceOutput
 
 from lalamo.evals.benchmark.callbacks import BaseBenchmarkCallbacks
-from lalamo.evals.datasets.specs import REPO_TO_EVAL
+from lalamo.evals.datasets.specs import EVAL_ADAPTERS
 
 
 def _validate_predictions_file(path: Path) -> None:
@@ -53,10 +53,10 @@ def benchmark_command_handler(
     predictions_path: Path,
     callbacks: BaseBenchmarkCallbacks,
 ) -> None:
-    eval_spec = REPO_TO_EVAL[eval_name]
-    eval_adapter = eval_spec.handler_type()
+    adapter_class = EVAL_ADAPTERS[eval_name]
+    eval_adapter = adapter_class()
 
-    callbacks.started(eval_spec.name, predictions_path)
+    callbacks.started(eval_name, predictions_path)
 
     callbacks.loading_predictions()
     _validate_predictions_file(predictions_path)
@@ -66,7 +66,7 @@ def benchmark_command_handler(
     callbacks.running_benchmark()
     metrics = eval_adapter.run_benchmark(
         predictions=predictions,
-        eval_name=eval_spec.name,
+        eval_name=eval_name,
         model_name=model_name,
         inference_engine=inference_engine,
     )

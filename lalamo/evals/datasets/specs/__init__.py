@@ -1,10 +1,8 @@
-from lalamo.evals.datasets.specs.base import EvalSpec
-from lalamo.evals.datasets.specs.ifeval import IFEVAL
-from lalamo.evals.datasets.specs.mmlu import MMLU_EVALS, MMLU_PRO
+from evals import IFEvalAdapter, MMLUProAdapter
 
-REPO_TO_EVAL = {
-    MMLU_PRO.name: MMLU_PRO,
-    IFEVAL.name: IFEVAL,
+EVAL_ADAPTERS = {
+    "ifeval": IFEvalAdapter,
+    "mmlu-pro": MMLUProAdapter,
 }
 
-__all__ = ["REPO_TO_EVAL", "EvalSpec"]
+__all__ = ["EVAL_ADAPTERS"]

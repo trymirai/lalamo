@@ -1,10 +1,9 @@
 from lalamo.evals.cli import eval_app
-from lalamo.evals.datasets import REPO_TO_EVAL, EvalSpec
+from lalamo.evals.datasets import EVAL_ADAPTERS
 from lalamo.evals.inference import InferenceEngine, LalamoInferenceEngine
 
 __all__ = [
-    "REPO_TO_EVAL",
-    "EvalSpec",
+    "EVAL_ADAPTERS",
     "InferenceEngine",
     "LalamoInferenceEngine",
     "eval_app",

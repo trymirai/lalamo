@@ -56,7 +56,7 @@ class TestBenchmarkMetadataValidation:
         mock_adapter.prepare_for_benchmark.return_value = tmp_path / "prepared.parquet"
         mock_adapter.run_benchmark.return_value = {"accuracy": 0.95}
 
-        with patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}):
+        with patch("lalamo.evals.benchmark.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}):
             benchmark_command_handler(
                 eval_repo="test/repo",
                 predictions_path=predictions_path,
@@ -87,7 +87,7 @@ class TestBenchmarkMetadataValidation:
         mock_adapter.get_benchmark_split.return_value = "test"
 
         with (
-            patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.benchmark.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             pytest.raises(ValueError, match="missing required metadata: model_name"),
         ):
             benchmark_command_handler(
@@ -115,7 +115,7 @@ class TestBenchmarkMetadataValidation:
         mock_adapter.get_benchmark_split.return_value = "test"
 
         with (
-            patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.benchmark.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             pytest.raises(ValueError, match="missing required metadata: inference_engine"),
         ):
             benchmark_command_handler(
@@ -133,7 +133,7 @@ class TestBenchmarkErrorHandling:
         mock_adapter.get_benchmark_split.return_value = "test"
 
         with (
-            patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.benchmark.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             pytest.raises(ValueError, match="Predictions file not found"),
         ):
             benchmark_command_handler(
@@ -154,7 +154,7 @@ class TestBenchmarkErrorHandling:
         mock_adapter.get_benchmark_split.return_value = "test"
 
         with (
-            patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.benchmark.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             pytest.raises(ValueError, match="Predictions file is empty"),
         ):
             benchmark_command_handler(
@@ -176,7 +176,7 @@ class TestBenchmarkErrorHandling:
         mock_adapter.get_benchmark_split.return_value = "test"
 
         with (
-            patch("lalamo.evals.benchmark.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.benchmark.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             pytest.raises(ValueError, match="Missing required columns"),
         ):
             benchmark_command_handler(
@@ -240,7 +240,7 @@ class TestInferCommandHandlerMetadata:
         ]
 
         with (
-            patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.inference.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
         ):
             engine_config = LalamoEngineConfig(
@@ -335,7 +335,7 @@ class TestInferCommandHandlerMetadata:
         ]
 
         with (
-            patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.inference.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
         ):
             engine_config = LalamoEngineConfig(
@@ -401,7 +401,7 @@ class TestInferCommandHandlerDatasetLoading:
         mock_engine.parse_output.return_value = []
 
         with (
-            patch("lalamo.evals.inference.command.REPO_TO_EVAL", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
+            patch("lalamo.evals.inference.command.EVAL_ADAPTERS", {"test/repo": Mock(handler_type=lambda: mock_adapter)}),
             patch("lalamo.evals.inference.command.LalamoInferenceEngine", return_value=mock_engine),
         ):
             engine_config = LalamoEngineConfig(

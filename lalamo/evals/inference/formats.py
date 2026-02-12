@@ -46,7 +46,7 @@ def parse_inference_outputs(
 
     # TODO(mullakhmetov): Expr.map_elements is significantly slower than the native expressions API.
     input_df = input_df.with_columns(
-        pl.col("metadata").map_elements(json.loads, return_dtype=pl.Object)
+        pl.col("metadata").map_elements(json.loads, return_dtype=pl.Object),
     )
 
     combined_df = pl.concat(
