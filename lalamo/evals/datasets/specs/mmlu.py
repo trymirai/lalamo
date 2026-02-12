@@ -3,9 +3,8 @@ from evals import MMLUProAdapter
 from lalamo.evals.datasets.specs.base import EvalSpec
 
 MMLU_PRO = EvalSpec(
-    name="MMLU-Pro",
+    name="mmlu-pro",
     repo="TIGER-Lab/MMLU-Pro",
-    splits=["test", "validation"],
     handler_type=MMLUProAdapter,
 )
 

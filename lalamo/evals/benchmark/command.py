@@ -49,34 +49,25 @@ def _extract_metadata(path: Path) -> tuple[str, str]:
 
 
 def benchmark_command_handler(
-    eval_repo: str,
+    eval_name: str,
     predictions_path: Path,
     callbacks: BaseBenchmarkCallbacks,
 ) -> None:
-    eval_spec = REPO_TO_EVAL[eval_repo]
+    eval_spec = REPO_TO_EVAL[eval_name]
     eval_adapter = eval_spec.handler_type()
-    benchmark_split = eval_adapter.get_benchmark_split()
 
-    callbacks.started(eval_spec.name, benchmark_split, predictions_path)
+    callbacks.started(eval_spec.name, predictions_path)
 
     callbacks.loading_predictions()
     _validate_predictions_file(predictions_path)
     model_name, inference_engine = _extract_metadata(predictions_path)
     predictions = _load_predictions(predictions_path)
 
-    callbacks.preparing_benchmark()
-    output_dir = predictions_path.parent / "benchmark_data"
-    prepared_path = eval_adapter.prepare_for_benchmark(
-        predictions=predictions,
-        output_dir=output_dir,
-    )
-
     callbacks.running_benchmark()
     metrics = eval_adapter.run_benchmark(
-        prepared_data_path=prepared_path,
+        predictions=predictions,
         eval_name=eval_spec.name,
         model_name=model_name,
-        split=benchmark_split,
         inference_engine=inference_engine,
     )
 

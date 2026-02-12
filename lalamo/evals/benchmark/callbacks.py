@@ -30,7 +30,7 @@ def _format_metrics(metrics: dict[str, Any]) -> None:
 
 @dataclass
 class BaseBenchmarkCallbacks:
-    def started(self, eval_name: str, split: str, predictions_path: Path) -> None: ...
+    def started(self, eval_name: str, predictions_path: Path) -> None: ...
 
     def loading_predictions(self) -> None: ...
 
@@ -43,10 +43,9 @@ class BaseBenchmarkCallbacks:
 
 @dataclass
 class ConsoleCallbacks(BaseBenchmarkCallbacks):
-    def started(self, eval_name: str, split: str, predictions_path: Path) -> None:
+    def started(self, eval_name: str, predictions_path: Path) -> None:
         console.print("[bold]Benchmark Configuration:[/bold]")
         console.print(f"  Eval: {eval_name}")
-        console.print(f"  Split: {split}")
         console.print(f"  Predictions: {predictions_path}")
         console.print()
 

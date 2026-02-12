@@ -32,6 +32,9 @@ class LalamoInferenceEngine(InferenceEngine):
         else:
             self.max_vram = None
 
+    def get_engine_name(self) -> str:
+        return "lalamo"
+
     def get_conversation_column_name(self) -> str:
         return "conversation"
 

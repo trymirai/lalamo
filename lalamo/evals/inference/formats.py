@@ -1,37 +1,29 @@
+import json
+
 import cattrs
 import polars as pl
-from evals.types import EvalPrompt, InferenceOutput, InternalEvalRecord
+from evals.types import EvalPrompt, InferenceOutput
 
 
 def build_inference_dataframe(
     prompts: list[EvalPrompt],
-    records: list[InternalEvalRecord],
     conversation_column: str = "messages",
 ) -> pl.DataFrame:
-    if len(prompts) != len(records):
-        raise ValueError(
-            f"Prompts/records length mismatch: {len(prompts)} prompts != {len(records)} records",
-        )
-
     conversations = []
     ids = []
     questions = []
     answers = []
     metadatas = []
 
-    for prompt, record in zip(prompts, records, strict=True):
-        if prompt.id != record.id:
-            raise ValueError(
-                f"Order mismatch: prompt.id={prompt.id!r} != record.id={record.id!r}",
-            )
-
+    for prompt in prompts:
         messages = [{"role": msg.role, "content": msg.content} for msg in prompt.messages]
 
         conversations.append(messages)
         ids.append(prompt.id)
-        questions.append(record.question)
-        answers.append(record.answer)
-        metadatas.append(record.metadata)
+        questions.append(prompt.question)
+        answers.append(prompt.answer)
+        # metadata is a nested object, so we serialize it as JSON string for storage in DataFrame
+        metadatas.append(json.dumps(prompt.metadata or {}))
 
     return pl.DataFrame({
         conversation_column: conversations,
@@ -52,6 +44,10 @@ def parse_inference_outputs(
             f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs",
         )
 
+    input_df = input_df.with_columns(
+        pl.col("metadata").map_elements(json.loads, return_dtype=pl.Object)
+    )
+
     combined_df = pl.concat(
         [
             input_df.select(["id", "question", "answer", "metadata"]),
@@ -59,4 +55,5 @@ def parse_inference_outputs(
         ],
         how="horizontal",
     )
+
     return cattrs.structure(combined_df.to_dicts(), list[InferenceOutput])

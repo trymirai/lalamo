@@ -30,7 +30,7 @@ class BaseRunInferenceCallbacks(BaseEngineCallbacks):
 
 @dataclass
 class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
-    eval_repo: str
+    eval_name: str
     model_path: Path | None
     limit: int | None
     engine_type: str | None = None
@@ -42,7 +42,7 @@ class ConsoleRunInferenceCallbacks(BaseRunInferenceCallbacks):
 
     def started(self) -> None:
         console.print("[bold]Configuration:[/bold]")
-        console.print(f"  Eval: {self.eval_repo}")
+        console.print(f"  Eval: {self.eval_name}")
 
         if self.engine_type:
             console.print(f"  Engine: [cyan]{self.engine_type}[/cyan]")

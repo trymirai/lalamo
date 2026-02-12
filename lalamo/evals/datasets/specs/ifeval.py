@@ -3,8 +3,7 @@ from evals import IFEvalAdapter
 from lalamo.evals.datasets.specs.base import EvalSpec
 
 IFEVAL = EvalSpec(
-    name="IFEval",
+    name="ifeval",
     repo="google/IFEval",
-    splits=["train"],
     handler_type=IFEvalAdapter,
 )

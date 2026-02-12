@@ -31,6 +31,9 @@ class CustomAPIInferenceEngine(InferenceEngine):
             max_retries=config.max_retries,
         )
 
+    def get_engine_name(self) -> str:
+        return "custom_api"
+
     def get_conversation_column_name(self) -> str:
         return "messages"
 

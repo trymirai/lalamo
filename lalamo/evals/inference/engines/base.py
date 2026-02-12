@@ -22,6 +22,11 @@ class InferenceEngine(ABC):
         ]
 
     @abstractmethod
+    def get_engine_name(self) -> str:
+        """Return the engine name for metadata."""
+        ...
+
+    @abstractmethod
     def get_conversation_column_name(self) -> str:
         """Return the column name this engine expects for conversation data."""
         ...

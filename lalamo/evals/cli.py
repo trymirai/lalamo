@@ -21,14 +21,13 @@ eval_app = Typer()
     help="Run model inference on evaluation dataset.",
 )
 def infer_command(
-    eval_repo: Annotated[
+    eval_name: Annotated[
         str,
         Argument(
-            help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
+            help="Eval name. Example: [cyan]'ifeval'[/cyan], [cyan]'mmlu-pro'[/cyan].",
             autocompletion=lambda: list(REPO_TO_EVAL.keys()),
         ),
     ],
-    dataset_dir: Annotated[Path, Argument(help="Path to converted dataset directory")],
     output_dir: Annotated[Path, Argument(help="Output directory for results")],
     # Engine selection
     engine: Annotated[
@@ -96,10 +95,10 @@ def infer_command(
         Option(help="Stop token strings (uses adapter default if not set)"),
     ] = None,
 ) -> None:
-    eval_spec = REPO_TO_EVAL.get(eval_repo)
+    eval_spec = REPO_TO_EVAL.get(eval_name)
     if eval_spec is None:
         available = ", ".join(REPO_TO_EVAL.keys())
-        err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
+        err_console.print(f"[red]✗[/red] Unknown eval: {eval_name}. Available: {available}")
         raise Exit(1)
 
     if engine == "lalamo":
@@ -150,14 +149,13 @@ def infer_command(
 
     try:
         _predictions_path = infer_command_handler(
-            eval_repo=eval_repo,
-            dataset_dir=dataset_dir,
+            eval_name=eval_name,
             output_dir=output_dir,
             engine_config=engine_config,
             inference_overrides=inference_overrides,
             limit=limit,
             callbacks=ConsoleRunInferenceCallbacks(
-                eval_repo=eval_repo,
+                eval_name=eval_name,
                 model_path=model_path,
                 limit=limit,
                 engine_type=engine,
@@ -175,24 +173,24 @@ def infer_command(
     help="Run benchmark evaluation on model predictions.",
 )
 def benchmark_command(
-    eval_repo: Annotated[
+    eval_name: Annotated[
         str,
         Argument(
-            help="Eval repository. Example: [cyan]'TIGER-Lab/MMLU-Pro'[/cyan].",
+            help="Eval name. Example: [cyan]'ifeval'[/cyan], [cyan]'mmlu-pro'[/cyan].",
             autocompletion=lambda: list(REPO_TO_EVAL.keys()),
         ),
     ],
     predictions_path: Annotated[Path, Argument(help="Path to predictions parquet file")],
 ) -> None:
-    eval_spec = REPO_TO_EVAL.get(eval_repo)
+    eval_spec = REPO_TO_EVAL.get(eval_name)
     if eval_spec is None:
         available = ", ".join(REPO_TO_EVAL.keys())
-        err_console.print(f"[red]✗[/red] Unknown eval repository: {eval_repo}. Available evals: {available}")
+        err_console.print(f"[red]✗[/red] Unknown eval: {eval_name}. Available: {available}")
         raise Exit(1)
 
     try:
         benchmark_command_handler(
-            eval_repo=eval_repo,
+            eval_name=eval_name,
             predictions_path=predictions_path,
             callbacks=BenchmarkConsoleCallbacks(),
         )
