@@ -54,7 +54,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
     transformers_version: str
     use_cache: bool
     vocab_size: int
-    tie_word_embeddings: bool = True
+    tie_word_embeddings: bool = True  # quantized model don't have this field
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
