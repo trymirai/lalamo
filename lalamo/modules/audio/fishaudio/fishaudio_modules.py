@@ -11,166 +11,19 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.audio.common_modules import CausalConv1d, CausalConv1dConfig, Snake1d, Snake1dConfig
+from lalamo.modules.audio.common_modules import (
+    CausalConv1d,
+    CausalConv1dConfig,
+    CausalTransposeConv1d,
+    CausalTransposeConv1dConfig,
+    Snake1d,
+    Snake1dConfig,
+)
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
-
-
-@dataclass(frozen=True)
-class CausalTransposeConv1dConfig:
-    """
-    Configuration for CausalTransposeConv1d module.
-    This is a causal transposed 1D convolution (deconvolution) that removes
-    padding from the output to maintain causality.
-    """
-
-    precision: DTypeLike
-    has_biases: bool
-
-    def random_init(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        dilation: int = 1,
-        *,
-        key: PRNGKeyArray,
-    ) -> "CausalTransposeConv1d":
-        # For transposed conv, weight shape is (in_channels, out_channels, kernel_size)
-        weights = jax.random.normal(
-            key,
-            (in_channels, out_channels, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return CausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            stride=stride,
-            dilation=dilation,
-        )
-
-    def empty(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        dilation: int = 1,
-    ) -> "CausalTransposeConv1d":
-        weights = dummy_array(
-            (in_channels, out_channels, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = dummy_array((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return CausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            stride=stride,
-            dilation=dilation,
-        )
-
-
-class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
-    """
-    Causal transposed 1D convolution (deconvolution) module.
-    Implements causal transposed convolution by removing appropriate padding
-    from the output.
-    """
-
-    weights: Float[Array, "in_channels out_channels kernel_size"]
-    biases: Float[Array, " out_channels"] | None
-
-    stride: int = eqx.field(static=True)
-    dilation: int = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def in_channels(self) -> int:
-        in_channels, _, _ = self.weights.shape
-        return in_channels
-
-    @property
-    def out_channels(self) -> int:
-        _, out_channels, _ = self.weights.shape
-        return out_channels
-
-    @property
-    def kernel_size(self) -> int:
-        _, _, kernel_size = self.weights.shape
-        return kernel_size
-
-    def __call__(
-        self,
-        x: Float[Array, "batch sequence in_channels"],
-    ) -> Float[Array, "batch sequence_out out_channels"]:
-        # Input: (N, S, C) - NSC format
-        # Kernel: (I, O, K) - IOH format
-        # Output: (N, S, C) - NSC format
-        output = lax.conv_transpose(
-            x,
-            self.weights,
-            strides=(self.stride,),
-            padding="VALID",
-            rhs_dilation=(self.dilation,),
-            dimension_numbers=("NHC", "OIH", "NHC"),
-            transpose_kernel=True,
-        )
-
-        if self.biases is not None:
-            output = output + self.biases[None, None, :]
-
-        # Remove padding to maintain causality
-        pad = self.kernel_size - self.stride
-        padding_right = math.ceil(pad)
-        padding_left = pad - padding_right
-
-        # Unpad: remove padding_left from start and padding_right from end
-        # Sequence dimension is now axis 1
-        if padding_left > 0 or padding_right > 0:
-            end = output.shape[1] - padding_right if padding_right > 0 else output.shape[1]
-            output = output[:, padding_left:end, :]
-
-        return output
-
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "CausalTransposeConv1d":
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=weights["weights"],
-            biases=biases,
-        )
 
 
 @dataclass(frozen=True)
@@ -361,7 +214,6 @@ class UpsamplingBlockConfig:
             out_channels=trans_conv_params.out_channels,
             kernel_size=trans_conv_params.upsample_kernel_size,
             stride=trans_conv_params.upsample_stride,
-            dilation=1,
             key=key1,
         )
 
@@ -387,7 +239,6 @@ class UpsamplingBlockConfig:
             out_channels=trans_conv_params.out_channels,
             kernel_size=trans_conv_params.upsample_kernel_size,
             stride=trans_conv_params.upsample_stride,
-            dilation=1,
         )
 
         convnext = self.convnext_config.empty(
@@ -1138,7 +989,6 @@ class DACDecoderBlockConfig:
             out_channels=output_dim,
             kernel_size=2 * stride,
             stride=stride,
-            dilation=1,
         )
 
         res_unit1 = self.res_unit_config.empty(output_dim, ResidualUnitSpatialParams(dilation=1))
@@ -1173,7 +1023,6 @@ class DACDecoderBlockConfig:
             out_channels=output_dim,
             kernel_size=2 * stride,
             stride=stride,
-            dilation=1,
             key=key1,
         )
 

@@ -11,6 +11,7 @@ Weight format conventions:
 
 from collections.abc import Mapping
 
+from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
 
@@ -115,8 +116,8 @@ def load_snake1d(
         Snake1d module with loaded weights.
     """
     alpha = weights_dict[path / "alpha"]
-    # Handle PyTorch format (1, channels, 1) -> squeeze to (channels,)
-    alpha = jnp.squeeze(alpha)
+    # PyTorch shape: (1, channels, 1) -> (channels,)
+    alpha = rearrange(alpha, "1 channels 1 -> channels")
 
     return load_parameters(
         lambda m: (m.alpha,),

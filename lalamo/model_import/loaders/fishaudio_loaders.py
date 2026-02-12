@@ -34,8 +34,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
     IM_END_TOKEN,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalConv1d,
-    CausalTransposeConv1d,
     ConvNeXtBlock,
     DACDecoder,
     DACDecoderBlock,
@@ -49,7 +47,12 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 
 from .common import load_parameters
 from .huggingface import load_rmsnorm, load_tied_embedding
-from .torch_utils import _fuse_parametrized_weight_norm_conv1d, _fuse_weight_norm_conv1d
+from .nanocodec_loaders import (
+    load_causal_conv1d,
+    load_causal_transpose_conv1d,
+    load_snake1d,
+)
+from .torch_utils import _fuse_weight_norm_conv1d
 
 
 def _permute_for_rope_rotate_half(
@@ -590,13 +593,7 @@ def load_upsampling_block(
         UpsamplingBlock module with loaded weights.
     """
     # Load transpose conv (at index 0)
-    trans_conv_weight = weights_dict[path / "0" / "conv" / "weight"]
-    trans_conv_bias = weights_dict[path / "0" / "conv" / "bias"]
-    trans_conv = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.trans_conv,
-        (trans_conv_weight, trans_conv_bias),
-    )
+    trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "0" / "conv")
 
     # Load ConvNeXt block (at index 1)
     convnext = load_convnext_block(module.convnext, weights_dict, path / "1")
@@ -730,75 +727,6 @@ def load_downsample_rvq(
     )
 
 
-def load_snake1d(
-    module: Snake1d,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> Snake1d:
-    """Loads a Snake1d module from weights.
-
-    Expected weight structure at path:
-        - alpha (shape: [1, channels, 1] in PyTorch)
-
-    The PyTorch Snake1d stores alpha as (1, channels, 1) but our module
-    stores it as (channels,), so we squeeze the extra dimensions.
-
-    Args:
-        module: The Snake1d module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        Snake1d module with loaded weights.
-    """
-    alpha = weights_dict[path / "alpha"]
-    # PyTorch shape: (1, channels, 1) -> (channels,)
-    alpha = rearrange(alpha, "1 channels 1 -> channels")
-
-    return load_parameters(
-        lambda m: (m.alpha,),
-        module,
-        (alpha,),
-    )
-
-
-def load_weight_norm_conv1d(
-    module: CausalConv1d | CausalTransposeConv1d,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> CausalConv1d | CausalTransposeConv1d:
-    """Loads a Conv1d or TransposeConv1d module from weight-normalized PyTorch weights.
-
-    Weight normalization fusion is mathematically identical for both Conv1d and
-    ConvTranspose1d: weight = weight_g * weight_v / ||weight_v||
-
-    Expected weight structure at path (parametrized format):
-        - conv.parametrizations.weight.original0 (weight_g)
-        - conv.parametrizations.weight.original1 (weight_v)
-        - conv.bias
-
-    Args:
-        module: The CausalConv1d or CausalTransposeConv1d module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        Module with loaded weights.
-    """
-    is_transposed = isinstance(module, CausalTransposeConv1d)
-    fused_weight, fused_bias = _fuse_parametrized_weight_norm_conv1d(
-        weights_dict,
-        path / "conv",
-        is_transposed=is_transposed,
-    )
-
-    return load_parameters(
-        lambda m: (m.weights, m.biases),
-        module,
-        (fused_weight, fused_bias),
-    )
-
-
 def load_residual_unit(
     module: ResidualUnit,
     weights_dict: Mapping[str, Array],
@@ -821,9 +749,9 @@ def load_residual_unit(
         ResidualUnit module with loaded weights.
     """
     snake1 = load_snake1d(module.snake1, weights_dict, path / "block" / "0")
-    conv1 = load_weight_norm_conv1d(module.conv1, weights_dict, path / "block" / "1")
+    conv1 = load_causal_conv1d(module.conv1, weights_dict, path / "block" / "1" / "conv")
     snake2 = load_snake1d(module.snake2, weights_dict, path / "block" / "2")
-    conv2 = load_weight_norm_conv1d(module.conv2, weights_dict, path / "block" / "3")
+    conv2 = load_causal_conv1d(module.conv2, weights_dict, path / "block" / "3" / "conv")
 
     return load_parameters(
         lambda m: (m.snake1, m.conv1, m.snake2, m.conv2),
@@ -855,7 +783,7 @@ def load_audio_decoder_block(
         AudioDecoderBlock module with loaded weights.
     """
     snake = load_snake1d(module.snake, weights_dict, path / "block" / "0")
-    trans_conv = load_weight_norm_conv1d(module.trans_conv, weights_dict, path / "block" / "1")
+    trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "block" / "1" / "conv")
     res_unit1 = load_residual_unit(module.res_unit1, weights_dict, path / "block" / "2")
     res_unit2 = load_residual_unit(module.res_unit2, weights_dict, path / "block" / "3")
     res_unit3 = load_residual_unit(module.res_unit3, weights_dict, path / "block" / "4")
@@ -908,7 +836,7 @@ def load_audio_decoder(
         path = ParameterPath()
 
     # model.0 is the first conv
-    first_conv = load_weight_norm_conv1d(module.first_conv, weights_dict, path / "model" / "0")
+    first_conv = load_causal_conv1d(module.first_conv, weights_dict, path / "model" / "0" / "conv")
 
     # model.1 to model.N are decoder blocks
     num_blocks = len(module.decoder_blocks)
@@ -923,7 +851,7 @@ def load_audio_decoder(
 
     # model.N+2 is final conv
     final_conv_idx = num_blocks + 2
-    final_conv = load_weight_norm_conv1d(module.final_conv, weights_dict, path / "model" / final_conv_idx)
+    final_conv = load_causal_conv1d(module.final_conv, weights_dict, path / "model" / final_conv_idx / "conv")
 
     return load_parameters(
         lambda m: (m.first_conv, m.decoder_blocks, m.final_snake, m.final_conv),
