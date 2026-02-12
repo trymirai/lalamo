@@ -13,11 +13,11 @@ dependencies = [
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
+    "polars>=1.33.1",
     "rich>=14.0.0",
     "thefuzz>=0.22.1",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
-    "polars>=1.33.1",
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "requests>=2.32.5",
@@ -31,6 +31,7 @@ dynamic = ["version"]
 cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
 tpu = ["jax[tpu]>=0.8.1"]
+evals = ["evals", "openai>=1.0.0"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=4.56.0", "tiktoken>=0.12.0", "blobfile>=3.1.0", "bidict>=0.23.1"]
 
@@ -98,6 +99,7 @@ publish-url = "https://test.pypi.org/legacy/"
 explicit = true
 
 [tool.uv.sources]
+evals = { git = "https://github.com/trymirai/evals.git", branch = "lm-eval" }
 torch = [
     { index = "torch-cpu", marker = "platform_system != 'Linux' or platform_machine != 'x86_64'" },
     { index = "torch-gpu", marker = "platform_system == 'Linux' and platform_machine == 'x86_64'" },
@@ -135,6 +137,7 @@ line-length = 119
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
+    "ANN101",
     "C408",
     "C901",
     "D",

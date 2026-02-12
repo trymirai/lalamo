@@ -1,0 +1,9 @@
+class BaseEngineCallbacks:
+    def unsupported_inference_params(self, params: list[str]) -> None:
+        """Called when inference config contains unsupported parameters."""
+
+    def generation_started(self, total_rows: int) -> None: ...
+
+    def generation_progress(self, rows_processed: int) -> None: ...
+
+    def finished_generation(self) -> None: ...

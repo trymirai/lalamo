@@ -54,8 +54,8 @@ from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
 from lalamo.common import (
-    get_default_device_bytes,
     get_usable_memory_from_bytes,
+    get_vram_limit_bytes,
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
@@ -803,14 +803,9 @@ def generate_replies(
         raise Exit(1)
 
     max_vram: int | None = None
-    if batch_size is None:
-        if vram_gb is not None:
-            mem_bytes = vram_gb * 1000 * 1000 * 1000
-        elif (mem_bytes := get_default_device_bytes()) is None:
-            err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
-            raise Exit(1)
-
-        max_vram = mem_bytes
+    if batch_size is None and (max_vram := get_vram_limit_bytes(vram_gb)) is None:
+        err_console.print("Cannot get the default device's memory stats, use --vram-gb or --batch-size")
+        raise Exit(1)
 
     _generate_replies(
         model_path=model_path,
@@ -822,6 +817,21 @@ def generate_replies(
         callbacks_type=CliGenerateRepliesCallbacks,
     )
 
+
+try:
+    from lalamo.evals import eval_app
+
+    app.add_typer(eval_app, name="eval", help="Evaluation commands for running benchmarks.")
+except ImportError:
+    # Register stub command with helpful error message
+    warn_msg = "⚠️  Eval commands require optional dependencies. Install with: uv sync --extra evals"
+    @app.command(
+        name="eval",
+        help=warn_msg,
+    )
+    def eval_stub() -> None:
+        err_console.print(warn_msg)
+        raise Exit(1)
 
 speculator_app = Typer()
 app.add_typer(speculator_app, name="speculator", help="Train a speculator for a model.")
@@ -891,10 +901,7 @@ def estimate_batchsize(
         ),
     ] = None,
 ) -> None:
-    if vram_gb is not None:
-        # note that in practice GPUs use GiB in their docs, e.g. H100 actually has 85GB of memory
-        mem_bytes = vram_gb * 1000 * 1000 * 1000
-    elif (mem_bytes := get_default_device_bytes()) is None:
+    if (mem_bytes := get_vram_limit_bytes(vram_gb)) is None:
         err_console.print("Cannot get the default device's memory stats, use --vram-gb")
         raise Exit(1)
 
