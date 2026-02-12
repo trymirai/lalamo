@@ -24,7 +24,6 @@ from lalamo.modules import (
     Transformer,
     TransformerLayer,
 )
-from lalamo.modules.audio.common_modules import Snake1d
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishAudioSpecialInferenceTokens,

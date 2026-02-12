@@ -1,15 +1,13 @@
-import math
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
-import equinox as eqx
 import jax
-from jax import lax, vmap
 from jax import numpy as jnp
+from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_tree
+from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
