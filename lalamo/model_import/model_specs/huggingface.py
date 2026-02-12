@@ -1,4 +1,5 @@
 from lalamo.model_import.model_configs import HFLlamaConfig, HFSmolLM3Config
+from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec
 
@@ -24,6 +25,34 @@ HUGGINGFACE_MODELS = [
         repo="HuggingFaceTB/SmolLM3-3B",
         config_type=HFSmolLM3Config,
         configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
+        use_cases=tuple(),
+    ),
+    ModelSpec(
+        vendor="HuggingFace",
+        family="SmolLM3",
+        name="SmolLM3-3B-4bit",
+        size="3B",
+        quantization=QuantizationMode.UINT4,
+        repo="mlx-community/SmolLM3-3B-4bit",
+        config_type=HFSmolLM3Config,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "HuggingFaceTB/SmolLM3-3B"),
+            chat_template=FileSpec("chat_template.jinja", "HuggingFaceTB/SmolLM3-3B"),
+        ),
+        use_cases=tuple(),
+    ),
+    ModelSpec(
+        vendor="HuggingFace",
+        family="SmolLM3",
+        name="SmolLM3-3B-8bit",
+        size="3B",
+        quantization=QuantizationMode.UINT8,
+        repo="mlx-community/SmolLM3-3B-8bit",
+        config_type=HFSmolLM3Config,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "HuggingFaceTB/SmolLM3-3B"),
+            chat_template=FileSpec("chat_template.jinja", "HuggingFaceTB/SmolLM3-3B"),
+        ),
         use_cases=tuple(),
     ),
 ]

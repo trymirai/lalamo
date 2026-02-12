@@ -10,6 +10,7 @@ from collections.abc import (
     ValuesView,
 )
 from dataclasses import dataclass
+import re
 from typing import overload
 
 import einops
@@ -22,6 +23,9 @@ __all__ = [
     "jax_uint4_to_packed_uint8",
     "process_chat_template",
 ]
+
+
+_GENERATION_BLOCK_TAG_PATTERN = re.compile(r"{%-?\s*(?:generation|endgeneration)\s*-?%}")
 
 
 @dataclass(frozen=True)
@@ -150,6 +154,4 @@ def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
 
 
 def process_chat_template(template: str) -> str:
-    template = template.replace("{% generation %}", "")
-    template = template.replace("{%- endgeneration -%}", "")
-    return template
+    return _GENERATION_BLOCK_TAG_PATTERN.sub("", template)

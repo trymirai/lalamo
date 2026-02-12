@@ -51,10 +51,10 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
     pretraining_tp: int
     rms_norm_eps: float
     rope_theta: float
-    tie_word_embeddings: bool
     transformers_version: str
     use_cache: bool
     vocab_size: int
+    tie_word_embeddings: bool = True
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
