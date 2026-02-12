@@ -1,4 +1,3 @@
-from lalamo.models.tts_model import TTSGenerationResult
 import logging
 from collections.abc import Mapping
 from pathlib import Path
@@ -11,8 +10,11 @@ from omegaconf import DictConfig
 
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.models import TTSGenerator
-from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+from lalamo.modules.audio.conv1d_modules import (
     CausalConv1dConfig,
+    CausalTransposeConv1dConfig,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     Snake1dConfig,
 )
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodecConfig
@@ -24,7 +26,6 @@ from lalamo.modules.audio.nanocodec.nanocodec_consts import (
 )
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
-    CausalTransposeConv1dConfig,
     FiniteScalarQuantizerConfig,
     GroupFiniteScalarQuantizerConfig,
     HalfSnakeConfig,
@@ -446,7 +447,7 @@ def test_nanocodec_model_spec_loading() -> None:
     assert isinstance(generator.tts_model.text_decoder, StubTextDecoder)
     assert isinstance(generator.tts_model.audio_decoder, NanoCodec)
 
-    generation_result: TTSGenerationResult = generator.generate_speech([message_to_generate])
+    generation_result = generator.generate_speech([message_to_generate])
     audio = generation_result.audio
 
     assert float(jnp.min(audio)) >= -1.0

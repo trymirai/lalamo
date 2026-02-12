@@ -4,7 +4,7 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 import numpy as np
 from jax import numpy as jnp
@@ -14,7 +14,8 @@ from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import LalamoModule, TTSConfig, TTSModel, VocoderConfig
-from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1dConfig, Snake1dConfig
+from lalamo.modules.audio.conv1d_modules import CausalConv1dConfig
+from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
@@ -38,7 +39,7 @@ from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, St
 __all__ = ["NanoCodecForeignConfig"]
 
 
-def _require_key(config: Mapping, key: str, context: str) -> object:
+def _require_key(config: Mapping, key: str, context: str) -> Any:  # noqa: ANN401
     """Get a required key from config or raise a clear error."""
     if key not in config:
         raise ValueError(f"Required key '{key}' not found in {context} config")
@@ -161,7 +162,7 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         json_path = Path(json_path)
         with open(json_path) as f:
             config = json.load(f)
-        return cls._converter.structure(config, cls)
+        return cls.from_nemo_config(config)
 
     @classmethod
     def from_nemo_config(cls, nemo_config: Mapping) -> Self:
@@ -180,10 +181,12 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             in_kernel_size=int(audio_decoder_config.get("in_kernel_size", DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE)),
             out_kernel_size=int(audio_decoder_config.get("out_kernel_size", DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE)),
             resblock_kernel_sizes=audio_decoder_config.get(
-                "resblock_kernel_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
+                "resblock_kernel_sizes",
+                DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
             ),
             resblock_dilation_sizes=audio_decoder_config.get(
-                "resblock_dilation_sizes", DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
+                "resblock_dilation_sizes",
+                DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
             ),
         )
 

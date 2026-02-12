@@ -54,40 +54,9 @@ class WeightsType(Enum):
             with Path(filename).open("rb") as fd:
                 (metadata_dict, weights_dict) = safe_read(fd)
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
-        elif self == WeightsType.NEMO:
-            import io
-            import json
-            import tarfile
-
-            import torch
-            import yaml
-
-            from lalamo.modules.torch_interop import torch_to_jax
-
-            with tarfile.open(filename, "r") as tar:
-                state_dict = None
-                config_yaml = None
-                for member in tar.getmembers():
-                    if member.name.endswith(".ckpt"):
-                        f = tar.extractfile(member)
-                        if f is None:
-                            raise ValueError(f"Failed to extract checkpoint from {filename}")
-                        state_dict = torch.load(io.BytesIO(f.read()), map_location="cpu", weights_only=True)
-                    elif member.name.endswith(".yaml"):
-                        f = tar.extractfile(member)
-                        if f is None:
-                            raise ValueError(f"Failed to extract config from {filename}")
-                        config_yaml = yaml.safe_load(f)
-
-                if state_dict is None:
-                    raise ValueError(f"No .ckpt file found in {filename}")
-
-                metadata: dict[str, str] = {}
-                if config_yaml is not None:
-                    metadata["nemo_config"] = json.dumps(config_yaml)
-
-                yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), state_dict), metadata
         else:
+            # NOTE: this path also includes Nemo models, because we expect the model to be downloaded and
+            # extracted. After that toch checkpoint contained in the model will later be processed here.
             import torch
 
             from lalamo.modules.torch_interop import torch_to_jax
@@ -115,7 +84,7 @@ class JSONFieldSpec:
 @dataclass(frozen=True)
 class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
-    tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
+    tokenizer: FileSpec | str = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None
@@ -178,6 +147,16 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
     raise ValueError(f"Invalid chat_template value: {value}")
 
 
+def _structure_tokenizer(value: object, _type: object) -> FileSpec | str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        value = cast("dict[Any, Any]", value)
+        if "filename" in value:
+            return FileSpec(**value)
+    raise ValueError(f"Invalid tokenizer value: {value}")
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
@@ -186,6 +165,7 @@ class ModelSpec:
     _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
     _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
     _converter.register_structure_hook(FileSpec | str | None, _structure_system_prompt)
+    _converter.register_structure_hook(FileSpec | str, _structure_tokenizer)
 
     vendor: str
     family: str

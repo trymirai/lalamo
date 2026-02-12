@@ -31,6 +31,9 @@ from lalamo.modules import (
     UpcastMode,
     VocoderConfig,
 )
+from lalamo.modules.audio.conv1d_modules import (
+    CausalConv1dConfig,
+)
 from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
     DescriptAudioCodecConfig,
@@ -39,7 +42,6 @@ from lalamo.modules.audio.fishaudio import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalConv1dConfig,
     CausalTransposeConv1dConfig,
     ConvNeXtBlockConfig,
     DACDecoderBlockConfig,

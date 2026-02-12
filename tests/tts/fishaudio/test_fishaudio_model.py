@@ -14,10 +14,12 @@ from pytest import fixture
 
 from lalamo.model_import.model_configs.huggingface.fishaudio import instantiate_dac_config_from_fishaudio_config
 from lalamo.modules import GELU
+from lalamo.modules.audio.conv1d_modules import (
+    CausalConv1dConfig,
+)
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     AudioDecoderBlockSpatialParams,
-    CausalConv1dConfig,
     CausalTransposeConv1dConfig,
     ConvNeXtBlockConfig,
     ConvNeXtSpatialParams,
@@ -123,12 +125,16 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
 
     # Run PyTorch model
     output_pytorch = pytorch_tts_generator.tts_model.text_decoder(
-        tokenized_text, sampling_params=sampling_params_from_policy(sampling_policy),
+        tokenized_text,
+        sampling_params=sampling_params_from_policy(sampling_policy),
     )
 
     # Run Lalamo model
     decode_result = lalamo_text_decoder(
-        text_tokens=tokenized_text, input_pos=input_pos, sampling_policy=sampling_policy, key=key,
+        text_tokens=tokenized_text,
+        input_pos=input_pos,
+        sampling_policy=sampling_policy,
+        key=key,
     )
     output_lalamo = decode_result.token_codes
 

@@ -7,7 +7,6 @@ Reference: https://github.com/NVIDIA-NeMo/NeMo/blob/v2.3.0/nemo/collections/tts/
 Reference: Mentzer et al., Finite Scalar Quantization: VQ-VAE Made Simple (https://arxiv.org/abs/2309.15505v1)
 """
 
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Self
@@ -15,13 +14,16 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import lax
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_tree
-from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+from lalamo.common import ParameterTree, require_array, require_tree
+from lalamo.modules.audio.conv1d_modules import (
     CausalConv1d,
     CausalConv1dConfig,
+    CausalTransposeConv1d,
+    CausalTransposeConv1dConfig,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     Snake1d,
     Snake1dConfig,
 )
@@ -50,9 +52,8 @@ __all__ = [
 # =============================================================================
 # Finite Scalar Quantization (FSQ)
 # =============================================================================
-
-
-@dataclass(frozen=True)
+# @dataclass(frozen=True)
+@dataclass
 class FiniteScalarQuantizerConfig:
     """Configuration for Finite Scalar Quantizer.
 
@@ -414,8 +415,6 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 # =============================================================================
 # Activation Functions
 # =============================================================================
-
-
 @dataclass(frozen=True)
 class HalfSnakeConfig:
     """Configuration for HalfSnake activation.
@@ -521,198 +520,8 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
 
 # =============================================================================
-# Convolutions
-# =============================================================================
-@dataclass(frozen=True)
-class CausalTransposeConv1dConfig:
-    # TODO(peter.glushkov):  Once FishAudio is merged, add groups support to
-    # fishaudio's CausalTransposeConv1d and reuse it here instead of this variant.
-
-    """Configuration for CausalTransposeConv1d with groups support.
-
-    This is a causal transposed 1D convolution (deconvolution) that removes
-    padding from the output to maintain causality. Supports grouped convolutions.
-
-    Weight format: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
-    with kernel already flipped for transposed convolution.
-
-    When importing from PyTorch, weights must be transformed from PyTorch format
-    (in_channels, out_channels // groups, kernel_size) to JAX format using
-    `transform_pytorch_transpose_conv_weights()`.
-
-    Args:
-        precision: Data type for computations.
-        has_biases: Whether to include bias terms.
-    """
-
-    precision: DTypeLike
-    has_biases: bool
-
-    def random_init(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        groups: int = 1,
-        *,
-        key: PRNGKeyArray,
-    ) -> "CausalTransposeConv1d":
-        # Weight shape: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
-        in_per_group = in_channels // groups
-        weights = jax.random.normal(
-            key,
-            (out_channels, in_per_group, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return CausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            in_channels=in_channels,
-            stride=stride,
-            groups=groups,
-        )
-
-    def empty(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        groups: int = 1,
-    ) -> "CausalTransposeConv1d":
-        # Weight shape: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
-        in_per_group = in_channels // groups
-        weights = dummy_array(
-            (out_channels, in_per_group, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = dummy_array((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return CausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            in_channels=in_channels,
-            stride=stride,
-            groups=groups,
-        )
-
-
-class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
-    """Causal transposed 1D convolution (deconvolution) with groups support.
-
-    Implements causal transposed convolution by removing appropriate padding
-    from the output. Supports grouped convolutions for efficient upsampling.
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence_out, channels) - NSC format (JAX convention)
-
-    Weight format: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
-    with kernel already flipped for transposed convolution.
-
-    Reference: NVIDIA NeMo CausalConvTranspose1dNorm
-    """
-
-    weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
-    biases: Float[Array, " out_channels"] | None
-
-    in_channels: int = eqx.field(static=True)
-    stride: int = eqx.field(static=True)
-    groups: int = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def out_channels(self) -> int:
-        out_channels, _, _ = self.weights.shape
-        return out_channels
-
-    @property
-    def kernel_size(self) -> int:
-        _, _, kernel_size = self.weights.shape
-        return kernel_size
-
-    def __call__(
-        self,
-        x: Float[Array, "batch sequence in_channels"],
-    ) -> Float[Array, "batch sequence_out out_channels"]:
-        # Input: (N, S, C) - NSC format
-        # Kernel: (O, I/g, K) - JAX OIK format, already transformed and flipped
-        # Output: (N, S, C) - NSC format
-
-        # Calculate padding for transposed convolution
-        # Output length = (input_length - 1) * stride + kernel_size
-        # We want VALID-like behavior then trim
-        padding_needed = self.kernel_size - 1
-        padding = ((padding_needed, padding_needed),)
-
-        output = lax.conv_general_dilated(
-            x,
-            self.weights,
-            window_strides=(1,),
-            padding=padding,
-            lhs_dilation=(self.stride,),
-            rhs_dilation=(1,),
-            dimension_numbers=("NHC", "OIH", "NHC"),
-            feature_group_count=self.groups,
-        )
-
-        if self.biases is not None:
-            output = output + self.biases[None, None, :]
-
-        # Remove padding to maintain causality
-        # NanoCodec uses trim_right_ratio=1, meaning all padding trimmed from right
-        pad = self.kernel_size - self.stride
-        padding_right = math.ceil(pad)
-        padding_left = pad - padding_right
-
-        # Unpad: remove padding_left from start and padding_right from end
-        if padding_left > 0 or padding_right > 0:
-            end = output.shape[1] - padding_right if padding_right > 0 else output.shape[1]
-            output = output[:, padding_left:end, :]
-
-        return output
-
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=weights["weights"],
-            biases=biases,
-        )
-
-
-# =============================================================================
 # Residual Blocks
 # =============================================================================
-
-
 @dataclass(frozen=True)
 class ResidualBlockConfig:
     """Configuration for ResidualBlock.
