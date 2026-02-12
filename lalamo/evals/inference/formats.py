@@ -1,8 +1,12 @@
 import json
+import warnings
 
 import cattrs
 import polars as pl
 from evals.types import EvalPrompt, InferenceOutput
+
+# Suppress warning for map_elements - necessary for dynamic JSON structures
+warnings.filterwarnings("ignore", category=pl.exceptions.PolarsInefficientMapWarning)
 
 
 def build_inference_dataframe(
@@ -44,7 +48,10 @@ def parse_inference_outputs(
             f"Input/output length mismatch: {len(input_df)} inputs, {len(output_df)} outputs",
         )
 
-    # TODO(mullakhmetov): Expr.map_elements is significantly slower than the native expressions API.
+    # Use map_elements for truly dynamic JSON metadata
+    # Cannot use str.json_decode() because:
+    # 1. lm_eval_doc fields vary by benchmark (MMLU-Pro vs IFEval have different schemas)
+    # 2. Polars doesn't support pl.Object inside Struct types in json_decode
     input_df = input_df.with_columns(
         pl.col("metadata").map_elements(json.loads, return_dtype=pl.Object),
     )

@@ -2,7 +2,6 @@ from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
-import cattrs
 import polars as pl
 import pyarrow.parquet as pq
 
@@ -14,7 +13,7 @@ from lalamo.evals.inference.engines import (
     LalamoEngineConfig,
     LalamoInferenceEngine,
 )
-from lalamo.evals.inference.formats import build_inference_dataframe, parse_inference_outputs
+from lalamo.evals.inference.formats import build_inference_dataframe
 
 
 def infer_command_handler(
@@ -64,10 +63,17 @@ def infer_command_handler(
 
     output_df = pl.read_parquet(raw_output_path)
     input_df = pl.read_parquet(input_path)
-    outputs = parse_inference_outputs(output_df, input_df)
 
-    predictions_df = pl.DataFrame([cattrs.unstructure(o) for o in outputs])
-    if len(outputs) > 0:
+    # Keep metadata as JSON string - avoid slow row-by-row parsing
+    # It will be parsed only when needed during benchmarking
+    predictions_df = pl.concat(
+        [
+            input_df.select(["id", "question", "answer", "metadata"]),
+            output_df.select(["response", "chain_of_thought"]),
+        ],
+        how="horizontal",
+    )
+    if len(predictions_df) > 0:
         predictions_df = predictions_df.rename({"response": "model_output"})
 
     predictions_path = output_dir / "predictions.parquet"
@@ -82,6 +88,6 @@ def infer_command_handler(
     table = table.replace_schema_metadata(file_metadata)
     pq.write_table(table, predictions_path)
 
-    callbacks.completed(predictions_path, len(outputs))
+    callbacks.completed(predictions_path, len(predictions_df))
 
     return predictions_path
