@@ -1,0 +1,28 @@
+name: setup_non_dev
+description: Install the package without dev dependencies (simulates end-user install)
+
+runs:
+  using: composite
+  steps:
+    # Install the Python version specified in the repo's .python-version file
+    - uses: actions/setup-python@v6
+      with:
+        python-version-file: ".python-version"
+
+    # Install the uv package manager (same tool the dev setup uses)
+    - uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: true
+
+    # Create a fresh venv and install only production dependencies (no dev deps)
+    - run: |
+        uv venv .venv
+        VIRTUAL_ENV=.venv uv pip install .
+      shell: bash
+
+    # Make the venv available to all subsequent job steps
+    - run: |
+        echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
+        echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
+        echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+      shell: bash

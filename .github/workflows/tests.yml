@@ -148,3 +148,16 @@ jobs:
       - name: lalamo chat
         run: |
           lalamo chat models/* --message "What is 2 + 2? Reply with a single number, nothing else." | grep -x "4<|im_end|>"
+
+  user_install_check:
+    name: Checking Non-dev Installation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup_non_dev
+
+      - name: Run installed lalamo
+        run: |
+          lalamo --help
+          lalamo list-models
