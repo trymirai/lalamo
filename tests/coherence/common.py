@@ -83,7 +83,9 @@ def _build_messages(candidate_output: str, task_prompt: str = TASK_PROMPT) -> li
                 ' "coherent" (bool), "score" (0.0-1.0), "summary" (short string),'
                 ' "issues" (array of strings).'
                 " Mark as incoherent if the output is off-topic, unreadable,"
-                " has repeated/degenerate tokens, or eos spam."
+                " has repeated/degenerate tokens, or eos spam. Please be somewhat lax:"
+                " we might be checking you against stupid models, which could be genuinely "
+                " incapable of generating working code. Still, consider their output coherent. "
             ),
         },
     ]

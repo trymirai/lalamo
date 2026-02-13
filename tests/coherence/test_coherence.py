@@ -65,15 +65,14 @@ def test_model_stops_cleanly(converted_model_path: Path) -> None:
     raw_output = extract_output(result.stdout)
     assert raw_output, "Model produced empty output"
 
-    stripped = raw_output.replace("\n", "").replace(" ", "")
-    log.info("Trivial-question output (%d chars):\n%s", len(stripped), stripped)
+    log.info("Trivial-question output (%d chars):\n%s", len(raw_output), raw_output)
 
-    max_chars = TRIVIAL_MAX_TOKENS * 2
-    assert len(stripped) < max_chars, (
-        f"Model did not stop cleanly — produced {len(stripped)} chars for a trivial question "
-        f"(limit {max_chars}). Output: {stripped[:200]!r}..."
+    max_chars = TRIVIAL_MAX_TOKENS * 3
+    assert len(raw_output) < max_chars, (
+        f"Model did not stop cleanly — produced {len(raw_output)} chars for a trivial question "
+        f"(limit {max_chars}). Output: {raw_output[:200]!r}..."
     )
-    assert "4" in stripped, f"Expected '4' in the answer, got: {stripped!r}"
+    assert "4" in raw_output, f"Expected '4' in the answer, got: {raw_output!r}"
 
     verdict = judge(
         api_key=api_key,

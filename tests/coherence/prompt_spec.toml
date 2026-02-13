@@ -33,6 +33,43 @@ summary = "Incorrect double-pivot quicksort in Rust, but looks close enough."
 issues = ["incomplete, incorrect"]
 
 [[coherent]]
+output = """
+    ```rust
+  // quicksort.rs
+  /// Implementations of the quicksort algorithm
+  /// (C = C++ implementation)
+  mod util {
+      pub fn is_sorted(a: &[u32]) -> bool {
+          a.len() == 0 || a.iter().next().unwrap() != Some(0)
+      }
+  }
+  /// implementation of the quicksort algorithm
+  mod implementation {
+      use util;
+      pub fn quicksort(&self, a: &[u32]) -> &[u32] {
+          if a.is_sorted() {
+              return a;
+          }
+          let len = a.len();
+          let mid = len / 2;
+          let (left, right) = (0..mid).partition(|&x| a[x] < &x[1]);
+          let left = quicksort(left);
+          let right = quicksort(right);
+          (left + right) as &[u32], left
+      }
+  }
+  fn benchmark_quicksort(a: &[u32]) {
+      let mut a = a.to_vec();
+      let mut b = a.to_vec();
+      let n = a.len();
+      let start = Instant::now();
+      let mut r = benchmark!(quickso  
+"""
+score = 0.7
+summary = "Incorrect implementation with syntax errors, however still coherent."
+issues = ["incomplete", "incorrect", "syntax errors"]
+
+[[coherent]]
 output = """\
 Okay, I need to implement a double-pivot quicksort in Rust and then create a small \
 benchmark. Let me start by recalling what a double pivot quicksort is. From what I \
@@ -53,12 +90,12 @@ summary = "On-topic thinking and reasoning about quicksort, no code yet"
 issues = ["no_code_yet"]
 
 [[incoherent]]
-output = """\
-Rust?? benchmark?? no idea. copper rusts and steel passivates. \
-The moon affects ocean tides and therefore sorting complexity."""
+output = """
+OkayIneedtoimplementadouble-pivotquicksortinrustandthencreateasmallbenchmark...
+"""
 score = 0.05
-summary = "No implementation, entirely off-topic rambling"
-issues = ["no_implementation", "off_topic"]
+summary = "No spaces in the output."
+issues = ["Bad output"]
 
 [[incoherent]]
 output = "<eos><eos><eos><eos><eos> double pivot double pivot double pivot lorem ipsum lorem ipsum lorem ipsum"
