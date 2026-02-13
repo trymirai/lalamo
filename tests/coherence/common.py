@@ -1,93 +1,14 @@
 import json
 import logging
 import re
-from dataclasses import dataclass
+import tomllib
+from dataclasses import asdict, dataclass
+from pathlib import Path
 from typing import Any
 
 import requests
 
 DEFAULT_JUDGE_MODEL = "meta-llama/llama-3.3-70b-instruct"
-
-TASK_PROMPT = "Implement a double-pivot quicksort in Rust and a small benchmark. Minimalistic implementation."
-
-COHERENT_EXAMPLE = """\
-```rust
-use std::time::Instant;
-
-fn double_pivot_quicksort(a: &mut [i32]) {
-    if a.len() <= 1 { return; }
-    if a[0] > a[a.len() - 1] { a.swap(0, a.len() - 1); }
-    let (lp, rp) = (a[0], a[a.len() - 1]);
-    let (mut lt, mut i, mut gt) = (1, 1, a.len() - 2);
-    while i <= gt {
-        if a[i] < lp { a.swap(i, lt); lt += 1; i += 1; }
-        else if a[i] > rp { a.swap(i, gt); if gt == 0 { break; } gt -= 1; }
-        else { i += 1; }
-    }
-    lt -= 1; gt += 1;
-    a.swap(0, lt); a.swap(a.len() - 1, gt);
-    if lt > 0 { double_pivot_quicksort(&mut a[..lt]); }
-    if gt > lt + 1 { double_pivot_quicksort(&mut a[lt + 1..gt]); }
-    double_pivot_quicksort(&mut a[gt + 1..]);
-}
-
-fn main() {
-    let mut v = (0..20_000).rev().collect::<Vec<_>>();
-    let t0 = Instant::now();
-    double_pivot_quicksort(&mut v);
-    println!("double-pivot quicksort: {:?}", t0.elapsed());
-}
-```"""
-
-COHERENT_TRUNCATED_EXAMPLE = """\
-fn partition<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) -> usize {
-    let pivot_index = partition_helper(arr, low, high);
-    pivot_index
-}
-fn partition_helper<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) -> usize {
-    let pivot = arr[high];
-    let i = low - 1;
-    for j in low .. high {
-        if arr[j] <= pivot {
-            i += 1;
-            arr.swap(i, j);
-        }
-    }
-    arr.swap(i + 1, high);
-    i + 1
-}
-fn quicksort<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) {
-    if low < high {
-        let pivot_index = partition(arr, low, high);
-        quicksort(arr, low, pivot_index - 1);
-        quicksort(arr, pivot_index + 1, high);
-    }
-}
-fn main()"""
-
-INCOHERENT_EXAMPLES = [
-    (
-        (
-            "Rust?? benchmark?? no idea. copper rusts and steel passivates. "
-            "The moon affects ocean tides and therefore sorting complexity."
-        ),
-        {
-            "coherent": False,
-            "score": 0.05,
-            "summary": "No implementation, entirely off-topic rambling",
-            "issues": ["no_implementation", "off_topic"],
-        },
-    ),
-    (
-        "<eos><eos><eos><eos><eos> double pivot double pivot double pivot lorem ipsum lorem ipsum lorem ipsum",
-        {
-            "coherent": False,
-            "score": 0.0,
-            "summary": "Degenerate repetition and eos spam with no code",
-            "issues": ["eos_spam", "repetition", "no_implementation"],
-        },
-    ),
-]
 
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
@@ -100,6 +21,38 @@ class CoherenceVerdict:
     score: float
     summary: str
     issues: list[str]
+
+
+@dataclass(frozen=True)
+class FewShotExample:
+    output: str
+    verdict: CoherenceVerdict
+
+
+def _load_examples(path: Path | str = Path(__file__).parent / "prompt_spec.toml") -> tuple[str, list[FewShotExample]]:
+    with open(path, "rb") as f:
+        data = tomllib.load(f)
+
+    task_prompt: str = data["task_prompt"]
+
+    examples = [
+        FewShotExample(
+            output=e["output"],
+            verdict=CoherenceVerdict(coherent=True, score=e["score"], summary=e["summary"], issues=e["issues"]),
+        )
+        for e in data.get("coherent", [])
+    ] + [
+        FewShotExample(
+            output=e["output"],
+            verdict=CoherenceVerdict(coherent=False, score=e["score"], summary=e["summary"], issues=e["issues"]),
+        )
+        for e in data.get("incoherent", [])
+    ]
+
+    return task_prompt, examples
+
+
+TASK_PROMPT, _EXAMPLES = _load_examples()
 
 
 def strip_ansi(text: str) -> str:
@@ -135,39 +88,9 @@ def _build_messages(candidate_output: str, task_prompt: str = TASK_PROMPT) -> li
         },
     ]
 
-    messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, COHERENT_EXAMPLE)})
-    messages.append(
-        {
-            "role": "assistant",
-            "content": json.dumps(
-                {
-                    "coherent": True,
-                    "score": 0.95,
-                    "summary": "Correct double-pivot quicksort in Rust with benchmark",
-                    "issues": [],
-                },
-            ),
-        },
-    )
-
-    messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, COHERENT_TRUNCATED_EXAMPLE)})
-    messages.append(
-        {
-            "role": "assistant",
-            "content": json.dumps(
-                {
-                    "coherent": True,
-                    "score": 0.7,
-                    "summary": "Truncated but coherent quicksort implementation in Rust",
-                    "issues": [],
-                },
-            ),
-        },
-    )
-
-    for output, verdict in INCOHERENT_EXAMPLES:
-        messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, output)})
-        messages.append({"role": "assistant", "content": json.dumps(verdict)})
+    for example in _EXAMPLES:
+        messages.append({"role": "user", "content": _candidate_message(TASK_PROMPT, example.output)})
+        messages.append({"role": "assistant", "content": json.dumps(asdict(example.verdict))})
 
     messages.append({"role": "user", "content": _candidate_message(task_prompt, candidate_output)})
     return messages
@@ -207,7 +130,15 @@ def _parse_verdict(content: str) -> CoherenceVerdict:
     )
 
 
-def judge(*, api_key: str, model: str, candidate_output: str, timeout: int, max_retries: int = 3, task_prompt: str = TASK_PROMPT) -> CoherenceVerdict:
+def judge(
+    *,
+    api_key: str,
+    model: str,
+    candidate_output: str,
+    timeout: int,
+    max_retries: int = 3,
+    task_prompt: str = TASK_PROMPT,
+) -> CoherenceVerdict:
     last_error: Exception | None = None
     for attempt in range(max_retries):
         resp = requests.post(

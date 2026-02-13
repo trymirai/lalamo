@@ -1,0 +1,67 @@
+task_prompt = "Implement a quicksort in Rust and a small benchmark. Minimalistic implementation."
+
+[[coherent]]
+output = """
+<think>Let me think about the implementation... Should be easy. </think>
+
+fn partition<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) -> usize {
+    let pivot_index = partition_helper(arr, low, high);
+    pivot_index
+}
+fn partition_helper<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) -> usize {
+    let pivot = arr[high];
+    let i = low - 1;
+    for j in low .. high {
+        if arr[j] <= pivot {
+            i += 1;
+            arr.swap(i, j);
+        }
+    }
+    arr.swap(i + 1, high);
+    i + 1
+}
+fn quicksort<T: Ord + Copy>(arr: &mut [T], low: usize, high: usize) {
+    if low < high {
+        let pivot_index = partition(arr, low, high);
+        quicksort(arr, low, pivot_index - 1);
+        quicksort(arr, pivot_index + 1, high);
+    }
+}
+fn main()"""
+score = 0.8
+summary = "Incorrect double-pivot quicksort in Rust, but looks close enough."
+issues = ["incomplete, incorrect"]
+
+[[coherent]]
+output = """\
+Okay, I need to implement a double-pivot quicksort in Rust and then create a small \
+benchmark. Let me start by recalling what a double pivot quicksort is. From what I \
+remember, the basic idea is to have two pivots, and each time you choose a pivot, you \
+split the array into three parts: less than the pivot, equal to the pivot, and greater \
+than. But wait, maybe the double pivot is when there are two pivots, but the elements \
+are chosen differently. Oh right, the standard quicksort is a single pivot. But maybe \
+the double pivot is when you have two pivots, and the elements are split into three \
+parts. Wait, no, maybe the double pivot refers to the fact that each time you split, \
+you choose a pivot, and then the same pivot is used again. Or perhaps it's a variation \
+where the first pivot is chosen, and then the second pivot is chosen, and so on. Hmm, \
+maybe I should check the exact definition. Alternatively, maybe the term "double \
+pivot" refers to the fact that you have two pivots, but each time you split, you use \
+one pivot. Or perhaps it's a variation where you have two separate pivots, each time \
+choosing one. Alternatively,"""
+score = 0.85
+summary = "On-topic thinking and reasoning about quicksort, no code yet"
+issues = ["no_code_yet"]
+
+[[incoherent]]
+output = """\
+Rust?? benchmark?? no idea. copper rusts and steel passivates. \
+The moon affects ocean tides and therefore sorting complexity."""
+score = 0.05
+summary = "No implementation, entirely off-topic rambling"
+issues = ["no_implementation", "off_topic"]
+
+[[incoherent]]
+output = "<eos><eos><eos><eos><eos> double pivot double pivot double pivot lorem ipsum lorem ipsum lorem ipsum"
+score = 0.0
+summary = "Degenerate repetition and eos spam with no code"
+issues = ["eos_spam", "repetition", "no_implementation"]
