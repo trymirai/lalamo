@@ -31,6 +31,9 @@ from lalamo.modules import (
     UpcastMode,
     VocoderConfig,
 )
+from lalamo.modules.audio.common_modules import (
+    CausalConv1dConfig,
+)
 from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
     DescriptAudioCodecConfig,
@@ -39,7 +42,6 @@ from lalamo.modules.audio.fishaudio import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalConv1dConfig,
     CausalTransposeConv1dConfig,
     ConvNeXtBlockConfig,
     DACDecoderBlockConfig,
@@ -309,7 +311,9 @@ class FishAudioConfig(ForeignTTSConfig):
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
         global_rope_config = UnscaledRoPEConfig(
-            precision=precision, base=self.rope_base, max_sequence_length=self.max_seq_len,
+            precision=precision,
+            base=self.rope_base,
+            max_sequence_length=self.max_seq_len,
         )
         local_rope_config = None
 

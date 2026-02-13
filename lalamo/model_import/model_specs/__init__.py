@@ -10,6 +10,7 @@ from .llama import LLAMA_MODELS
 from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
+from .nanocodec import NANOCODEC_TTS_MODELS
 
 # from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
@@ -25,6 +26,7 @@ __all__ = [
     "UseCase",
 ]
 
+TTS_MODELS = FISHAUDIO_TTS_MODELS + NANOCODEC_TTS_MODELS
 
 ALL_MODEL_LISTS = [
     LFM2_MODELS,
@@ -41,7 +43,7 @@ ALL_MODEL_LISTS = [
     REKA_MODELS,
     MIRAI_CLASSIFIER_MODELS,
     RNJ_MODELS,
-    FISHAUDIO_TTS_MODELS,
+    TTS_MODELS,
 ]
 
 ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]

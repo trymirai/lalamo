@@ -1,6 +1,10 @@
-import numpy as np
+import string
 
-__all__ = ["play_mono_audio"]
+import numpy as np
+from tokenizers import Tokenizer, pre_tokenizers
+from tokenizers.models import WordLevel
+
+__all__ = ["dummy_char_level_tokenizer_config", "play_mono_audio"]
 
 DEFAULT_SAMPLERATE: int = 44100
 
@@ -32,3 +36,15 @@ def play_mono_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 
 
     for chunk in chunks:
         output_stream.write(chunk.tobytes())
+
+
+def dummy_char_level_tokenizer_config() -> str:
+    chars = list(string.ascii_lowercase + string.ascii_uppercase + string.digits + string.punctuation + " ")
+    vocab = {char: idx for idx, char in enumerate(chars)}
+    vocab["[UNK]"] = len(vocab)
+    vocab["[PAD]"] = len(vocab)
+
+    tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="[UNK]"))
+    tokenizer.pre_tokenizer = pre_tokenizers.Split("", behavior="isolated")  # type: ignore[assignment]
+
+    return tokenizer.to_str()

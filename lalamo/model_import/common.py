@@ -1,5 +1,10 @@
+import atexit
 import importlib.metadata
 import json
+import os
+import shutil
+import tarfile
+import tempfile
 from collections import ChainMap
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -9,6 +14,7 @@ from typing import NamedTuple
 
 import huggingface_hub
 import jax.numpy as jnp
+import yaml
 from jax import Array
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
@@ -113,6 +119,8 @@ def list_weight_files(model_repo: str, weights_type: WeightsType) -> list[FileSp
             return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
         case WeightsType.TORCH:
             return [FileSpec(filename) for filename in all_files if filename.endswith(".pth")]
+        case WeightsType.NEMO:
+            return [FileSpec(filename) for filename in all_files if filename.endswith(".nemo")]
 
 
 def download_weights(
@@ -150,12 +158,24 @@ def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -
     return decoded
 
 
+def _instantiate_tokenizer_from_model_spec(
+    model_spec: ModelSpec,
+    output_dir: Path | str | None = None,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> Tokenizer:
+    if isinstance(model_spec.configs.tokenizer, FileSpec):
+        tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback)
+        tokenizer = Tokenizer.from_file(str(tokenizer_file))
+    else:
+        tokenizer = Tokenizer.from_str(model_spec.configs.tokenizer)
+    return tokenizer
+
+
 def import_message_processor(
     model_spec: ModelSpec,
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> MessageProcessor:
-    tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback)
     tokenizer_config_file = download_file(
         model_spec.configs.tokenizer_config,
         model_spec.repo,
@@ -184,7 +204,7 @@ def import_message_processor(
         prompt_template = tokenizer_config.chat_template
 
     prompt_template = process_chat_template(prompt_template)
-    tokenizer = Tokenizer.from_file(str(tokenizer_file))
+    tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, output_dir, progress_callback)
 
     added_tokens = tokenizer_config.added_tokens()
     added_special_tokens = [token for token in added_tokens if token.special]
@@ -231,15 +251,46 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
+def _download_weights_and_config_files(
+    model_spec: ModelSpec,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[list[Path], Path]:
+    if model_spec.weights_type == WeightsType.NEMO:
+        weights_paths = download_weights(model_spec, progress_callback=progress_callback)
+        assert len(weights_paths) == 1
+        tmpdir = tempfile.mkdtemp()
+        atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)  # type: ignore error[invalid-argument-type]
+        with tarfile.open(weights_paths[0], "r") as tar:
+            tar.extractall(path=tmpdir)
+        weights_paths = []
+        foreign_config_file_path = Path()
+        for root, _, files in os.walk(tmpdir):
+            for file in files:
+                filepath = Path(root) / file
+                if file.endswith((".ckpt", ".pth")):
+                    weights_paths.append(filepath)
+                elif file.endswith(".yaml"):
+                    with open(filepath) as f:
+                        config_yaml = yaml.safe_load(f)
+                    with open(filepath.with_suffix(".json"), "w") as f:
+                        json.dump(config_yaml, f)
+                    foreign_config_file_path = filepath.with_suffix(".json")
+    else:
+        weights_paths = download_weights(model_spec, progress_callback=progress_callback)
+        foreign_config_file_path = download_config_file(model_spec)
+
+    return (weights_paths, foreign_config_file_path)
+
+
 def _load_main_processing_module(
     model_spec: ModelSpec,
+    weights_paths: list[Path],
     precision: DTypeLike,
     foreign_config: ForeignConfig,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     context_length: int | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
 ) -> LalamoModule:
-    weights_paths = download_weights(model_spec, progress_callback=progress_callback)
     with ExitStack() as stack:
         weights_shards = []
         metadata_shards = []
@@ -272,14 +323,18 @@ def _import_language_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
-    foreign_decoder_config_file = download_config_file(model_spec)
-    foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
+    model_weights_paths, config_path = _download_weights_and_config_files(
+        model_spec,
+        progress_callback=progress_callback,
+    )
+    foreign_decoder_config = model_spec.config_type.from_json(config_path)
     assert isinstance(foreign_decoder_config, ForeignLMConfig)
 
     if precision is None:
         precision = foreign_decoder_config.default_precision
     decoder = _load_main_processing_module(
         model_spec,
+        model_weights_paths,
         precision,
         foreign_decoder_config,
         progress_callback,
@@ -325,8 +380,11 @@ def _import_classifier(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[ClassifierModel, ClassifierModelConfig]:
-    foreign_classifier_config_file = download_config_file(model_spec)
-    foreign_classifier_config = model_spec.config_type.from_json(foreign_classifier_config_file)
+    model_weights_paths, config_path = _download_weights_and_config_files(
+        model_spec,
+        progress_callback=progress_callback,
+    )
+    foreign_classifier_config = model_spec.config_type.from_json(config_path)
     assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
 
     if precision is None:
@@ -334,6 +392,7 @@ def _import_classifier(
 
     classifier = _load_main_processing_module(
         model_spec,
+        model_weights_paths,
         precision,
         foreign_classifier_config,
         progress_callback,
@@ -363,13 +422,20 @@ def _import_tts_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[TTSGenerator, TTSGeneratorConfig]:
-    foreign_tts_config_file = download_config_file(model_spec)
-    tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
-
+    model_weights_paths, config_path = _download_weights_and_config_files(
+        model_spec,
+        progress_callback=progress_callback,
+    )
+    foreign_tts_config = model_spec.config_type.from_json(config_path)
+    if precision is None:
+        precision = foreign_tts_config.default_precision
     if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
         # NOTE: for FishAudio model we need certain info from Tokenizer even during inference stage
         # so we load the Tokenizer and update config using data from it
         from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
+
+        assert isinstance(model_spec.configs.tokenizer, FileSpec)
+        tokenizer_path = download_file(model_spec.configs.tokenizer, model_repo=model_spec.repo)
 
         tokenizer_special_tokens_path = download_file(
             FileSpec(filename="special_tokens.json"),
@@ -379,7 +445,6 @@ def _import_tts_model(
             tokenizer_path,
             tokenizer_special_tokens_path,
         )
-        foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
         assert isinstance(foreign_tts_config, FishAudioConfig)
         foreign_tts_config = replace(
             foreign_tts_config,
@@ -388,21 +453,19 @@ def _import_tts_model(
             im_end_token_id=special_inference_tokens.im_end_token_id,
         )
     else:
-        tokenizer = Tokenizer.from_file(str(tokenizer_path))
-        foreign_tts_config = model_spec.config_type.from_json(foreign_tts_config_file)
-    if precision is None:
-        precision = foreign_tts_config.default_precision
+        tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, None, progress_callback)
 
     tts_model = _load_main_processing_module(
         model_spec,
+        model_weights_paths,
         precision,
         foreign_tts_config,
         progress_callback,
         context_length,
         accumulation_precision,
     )
-    assert isinstance(tts_model, TTSModel)
 
+    assert isinstance(tts_model, TTSModel)
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
 

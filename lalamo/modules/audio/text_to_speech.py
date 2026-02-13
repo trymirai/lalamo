@@ -15,6 +15,8 @@ from lalamo.sampling import SamplingPolicy, make_policy
 from .audio_decoder import TTSAudioDecoder
 from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
+from .nanocodec.audio_decoding import NanoCodecConfig
+from .nanocodec.stub_text_decoder import StubTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
@@ -90,10 +92,10 @@ class TTSMessageProcessor:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | DummyUnionMember
+TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | DummyUnionMember
 register_config_union(TTSAudioDecoderConfig)
 
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | DummyUnionMember
+TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig | DummyUnionMember
 register_config_union(TTSTextDecoderConfig)
 
 
