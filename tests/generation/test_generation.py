@@ -2,7 +2,8 @@ import jax.numpy as jnp
 import pytest
 
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import REPO_TO_MODEL, import_model
+from lalamo.model_import import import_model
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import LanguageModel
 from lalamo.models.language_model import GenerationConfig
 
@@ -14,8 +15,8 @@ MODEL_LIST = [
 
 
 @pytest.fixture(params=MODEL_LIST)
-def language_model(request: pytest.FixtureRequest) -> LanguageModel:
-    model = import_model(REPO_TO_MODEL[request.param]).model
+def language_model(request: pytest.FixtureRequest, model_registry: ModelRegistry) -> LanguageModel:
+    model = import_model(model_registry.repo_to_model[request.param]).model
     assert isinstance(model, LanguageModel)
     return model
 
