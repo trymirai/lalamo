@@ -16,25 +16,25 @@ __all__ = [
 
 
 def load_third_party_specs(group: str) -> tuple[ModelSpec, ...]:
-    entries = {entry.name: entry.load for entry in entry_points().select(group=group)}
-
     specs: list[ModelSpec] = []
     failed_plugins: set[str] = set()
-    for entries_name, entries_load_func in entries.items():
+
+    for entry_point in entry_points().select(group=group):
         try:
-            entries = entries_load_func()
-            for entry in entries:
-                if not isinstance(entry, ModelSpec):
-                    raise TypeError(f"Expected entry to be ModelSpec, got {entry}.")  # noqa: TRY301
-                specs.append(entry)
+            plugin_specs = entry_point.load()()
+            if not all(isinstance(s, ModelSpec) for s in plugin_specs):
+                failed_plugins.add(entry_point.name)
+                continue
+            specs.extend(plugin_specs)
         except Exception:  # noqa: BLE001
-            failed_plugins.add(entries_name)
+            failed_plugins.add(entry_point.name)
             if os.getenv("LALAMO_VERBOSE"):
                 warnings.warn(
-                    f"\033[31m{entries_name} failed\033[0m with: {tb.format_exc()}\n",
+                    f"\033[31m{entry_point.name} failed\033[0m with: {tb.format_exc()}\n",
                     LalamoWarning,
                     stacklevel=2,
                 )
+
     if failed_plugins:
         warnings.warn(
             f"The following lalamo plugins have failed to import: {failed_plugins}. "
