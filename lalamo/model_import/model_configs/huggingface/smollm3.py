@@ -143,6 +143,8 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
 
         layer_configs = []
         for layer_idx in range(self.num_hidden_layers):
+            # Despite the name, no_rope_layers is a per-layer flag where 1 = use RoPE,
+            # matching HF's own SmolLM3Attention: self.use_rope = config.no_rope_layers[layer_idx]
             use_rope = bool(self.no_rope_layers[layer_idx])
 
             attention_config = AttentionConfig(
