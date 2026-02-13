@@ -45,7 +45,7 @@ class ShortConvConfig(TokenMixerConfigBase):
     ) -> "ShortConv":
         in_projection = self.in_projection_config.random_init(
             input_dim=model_dim,
-            output_dims=(model_dim,)*3,
+            output_dims=(model_dim,) * 3,
             has_biases=False,
             key=key,
         )
@@ -72,7 +72,7 @@ class ShortConvConfig(TokenMixerConfigBase):
     ) -> "ShortConv":
         in_projection = self.in_projection_config.empty(
             input_dim=model_dim,
-            output_dims=(model_dim,)*3,
+            output_dims=(model_dim,) * 3,
             has_biases=False,
         )
 
@@ -137,7 +137,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int) -> ShortConvStateLayer: # noqa: ARG002
+    def init_static_state(self, capacity: int) -> ShortConvStateLayer:  # noqa: ARG002
         return ShortConvStateLayer.init(
             self.config.kernel_size,
             self.in_projection.input_dim,
