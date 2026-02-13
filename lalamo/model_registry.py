@@ -50,8 +50,8 @@ class ModelRegistry:
     models: tuple[ModelSpec, ...]
     repo_to_model: Mapping[str, ModelSpec]
 
-    @functools.cache
     @classmethod
+    @functools.cache
     def build(cls, allow_third_party_plugins: bool = True) -> "ModelRegistry":
         base_models = [model for model_list in ALL_MODEL_LISTS for model in model_list]
         quantized_models = build_quantized_models(base_models)
