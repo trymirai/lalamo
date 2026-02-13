@@ -1,6 +1,7 @@
 import functools
 import gc
 import importlib.util
+import os
 from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -9,11 +10,13 @@ from typing import Self
 
 import jax
 import jax.numpy as jnp
+import pytest
 import torch
 from jaxtyping import Array
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 
 from lalamo import ClassifierModel, LanguageModel, import_model
+from lalamo.common import get_default_device_bytes
 from lalamo.model_import.common import ModelType
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
@@ -21,6 +24,7 @@ from lalamo.modules.decoder import (
     DecoderResult,
 )
 from tests.common import assert_close, checkify_forward
+from tests.helpers import si, unsi
 
 MLX_AVAILABLE = importlib.util.find_spec("mlx")
 if MLX_AVAILABLE:
@@ -54,6 +58,7 @@ class ModelTestSpec:
     num_tokens: int = 512
     token_stride: int = 64
     convert_memory_limit: int | None = None
+    minimum_memory_for_trace: int | None = None
 
     @property
     def test_id(self) -> str:
@@ -448,6 +453,18 @@ def configure_precision_for_tests() -> None:
 
 
 def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> None:
+    if test_spec.minimum_memory_for_trace is not None:
+        if "LALAMO_MEMORY_FOR_TRACE" in os.environ:
+            default_device_bytes = unsi(os.environ["LALAMO_MEMORY_FOR_TRACE"])
+        else:
+            default_device_bytes = get_default_device_bytes()
+
+        if default_device_bytes is not None and test_spec.minimum_memory_for_trace > default_device_bytes:
+            pytest.skip(
+                f"test requires {si(test_spec.minimum_memory_for_trace)}"
+                f" but default device has only {si(default_device_bytes)} of memory",
+            )
+
     configure_precision_for_tests()
 
     token_ids = jnp.arange(0, test_spec.num_tokens, dtype=jnp.int32)[None, :]

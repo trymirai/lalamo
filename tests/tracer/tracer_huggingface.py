@@ -7,7 +7,7 @@ from typing import Any, Protocol, Self
 import jax
 import torch
 from jaxtyping import Array
-from torch import LongTensor, Tensor, nn
+from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
@@ -552,10 +552,10 @@ class ModernBertTracer(
         cosines = activation_trace.positional_embeddings.cosines
         sines = activation_trace.positional_embeddings.sines
         assert cosines.ndim == 3
-        torch_pos_ids = jax_to_torch(position_ids)
         # NOTE: first argument to 'rotary_emb' should be qkv tensor but it is only used
         # for its dtype and device, actual values are irrelevant.
         fake_qkv = torch.ones(1, dtype=torch.float32, device=self.device)
+        torch_pos_ids = jax_to_torch(position_ids).to(device=fake_qkv.device, dtype=torch.long)
         ref_cosines, ref_sines = ref_layer.attn.rotary_emb(fake_qkv, torch_pos_ids)
         assert_close(
             result=sines,
@@ -576,11 +576,11 @@ class ModernBertTracer(
         # NOTE: ugly, but this mimics the internal logic of ModernBERT
         if not use_global_attention:
             ref_layer.attn.local_attention = (1, 1)
-        position_ids_long = LongTensor(jax_to_torch(position_ids).type(torch.long))
+        position_ids_long = jax_to_torch(position_ids).to(device=ref_inputs.device, dtype=torch.long)
         torch_outputs, *_ = ref_layer.forward(
             hidden_states=ref_inputs,
             position_ids=position_ids_long,
-            sliding_window_mask=sliding_window,
+            sliding_window_mask=sliding_window.to(ref_inputs.device),
         )
 
         ref_outputs = torch_to_jax(torch_outputs)
@@ -605,11 +605,12 @@ class ModernBertTracer(
         name: str,
     ) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
+        ref_position_ids = jax_to_torch(position_ids).to(device=ref_inputs.device, dtype=torch.long)
         (torch_outputs,) = ref_attention.forward(
             hidden_states=ref_inputs,
-            attention_mask=attention_mask,
-            sliding_window_mask=sliding_window_mask,
-            position_ids=torch.Tensor(position_ids.tolist()),
+            attention_mask=attention_mask.to(ref_inputs.device),
+            sliding_window_mask=sliding_window_mask.to(ref_inputs.device),
+            position_ids=ref_position_ids,
         )
         ref_outputs = torch_to_jax(torch_outputs)
         assert_close(

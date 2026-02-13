@@ -1,14 +1,16 @@
+import base64
+import json
+import re
+import shutil
+import tempfile
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any
 
-import torch
 from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
-from torch import nn
-from torch.nn.utils import remove_weight_norm, weight_norm
-from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
-from torch.nn.utils.parametrize import remove_parametrizations
+from tokenizers import Tokenizer
 
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -23,6 +25,13 @@ from lalamo.modules import (
     TransformerLayer,
 )
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
+from lalamo.modules.audio.fishaudio.fishaudio_common import (
+    FishAudioSpecialInferenceTokens,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_consts import (
+    FISH_TIKTOKEN_PATTERN,
+    IM_END_TOKEN,
+)
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     CausalConv1d,
     CausalTransposeConv1d,
@@ -37,7 +46,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlock,
     VectorQuantize,
 )
-from lalamo.modules.torch_interop import jax_to_torch
 
 from .common import load_parameters
 from .huggingface import load_rmsnorm, load_tied_embedding
@@ -129,6 +137,12 @@ def _fuse_weight_norm_conv1d(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> tuple[Array, Array | None]:
+    import torch
+    from torch import nn
+    from torch.nn.utils import remove_weight_norm, weight_norm
+
+    from lalamo.modules.torch_interop import jax_to_torch
+
     """Fuse weight normalization for a Conv1d layer using PyTorch's remove_weight_norm.
 
     Creates a temporary PyTorch Conv1d module, applies weight_norm, loads the weight_g
@@ -175,6 +189,13 @@ def _fuse_parametrized_weight_norm_conv1d(
     path: ParameterPath,
     is_transposed: bool = False,
 ) -> tuple[Array, Array | None]:
+    import torch
+    from torch import nn
+    from torch.nn.utils.parametrizations import weight_norm as param_weight_norm
+    from torch.nn.utils.parametrize import remove_parametrizations
+
+    from lalamo.modules.torch_interop import jax_to_torch
+
     """Fuse weight normalization for a Conv1d layer using PyTorch's remove_parametrizations.
 
     This handles the newer parametrization format where weights are stored as:
@@ -1111,3 +1132,78 @@ def load_fishaudio_audio_decoder(
     loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
 
     return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))
+
+
+def load_tokenizer_from_fishaudio_tiktoken(
+    path_to_tokenizer: Path,
+    path_to_special_tokens: Path,
+) -> tuple[Tokenizer, FishAudioSpecialInferenceTokens]:
+    from tiktoken.core import Encoding as TiktokenEncoding
+    from transformers.integrations.tiktoken import convert_tiktoken_to_fast
+
+    def _load_fishaudio_tiktoken_data(
+        tiktoken_path: Path,
+        special_tokens: dict[str, int],
+    ) -> tuple[TiktokenEncoding, FishAudioSpecialInferenceTokens]:
+        def load_tiktoken_bpe(tiktoken_bpe_file: Path) -> dict[bytes, int]:
+            data = {}
+            with open(tiktoken_bpe_file) as token_file:
+                for line in token_file.read().splitlines():
+                    if not line:
+                        continue
+                    token, rank = line.split()
+                    if token == "=":
+                        continue
+                    data[base64.b64decode(token)] = int(rank)
+            return data
+
+        mergeable_ranks = load_tiktoken_bpe(tiktoken_path)
+        special_token_begin = len(mergeable_ranks)
+        all_special_tokens_with_ids = {token: special_token_begin + i for i, token in enumerate(special_tokens)}
+
+        semantic_id_to_token_id = {}
+        end_idx = 0
+        for token in special_tokens:
+            if token.startswith("<|semantic:"):
+                match_results = re.match(r"<\|semantic:(\d+)\|>", token)
+                assert match_results is not None
+                idx = int(match_results.group(1))
+                semantic_id_to_token_id[idx] = all_special_tokens_with_ids[token]
+                end_idx = max(end_idx, idx)
+
+        semantic_begin_id = semantic_id_to_token_id[0]
+        semantic_end_id = semantic_id_to_token_id[end_idx]
+
+        tkt_model = TiktokenEncoding(
+            name=Path(tiktoken_path).stem,
+            pat_str=FISH_TIKTOKEN_PATTERN,
+            mergeable_ranks=mergeable_ranks,
+            special_tokens=all_special_tokens_with_ids,
+        )
+
+        inference_special_tokens = FishAudioSpecialInferenceTokens(
+            semantic_begin_id=semantic_begin_id,
+            semantic_end_id=semantic_end_id,
+            im_end_token_id=all_special_tokens_with_ids[IM_END_TOKEN],
+        )
+
+        return tkt_model, inference_special_tokens
+
+    output_temp_dir = tempfile.mkdtemp()
+    try:
+        if path_to_special_tokens.exists():
+            with open(path_to_special_tokens) as f:
+                all_special_tokens_with_ids = json.load(f)
+        else:
+            all_special_tokens_with_ids = {}
+
+        tkt_model, special_inference_tokens = _load_fishaudio_tiktoken_data(
+            path_to_tokenizer,
+            all_special_tokens_with_ids,
+        )
+
+        convert_tiktoken_to_fast(tkt_model, output_temp_dir)
+        tokenizer = Tokenizer.from_file(output_temp_dir + "/tokenizer.json")
+        return tokenizer, special_inference_tokens
+    finally:
+        shutil.rmtree(output_temp_dir)

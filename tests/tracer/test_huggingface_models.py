@@ -1,6 +1,7 @@
 import pytest
 import torch
 
+from tests.helpers import unsi
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
@@ -12,13 +13,13 @@ MODEL_LIST = [
     ModelTestSpec("HuggingFaceTB/SmolLM3-3B", DType.FLOAT32),
     # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
-    ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32),
+    ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),
 ]
 
 MODEL_LIST += (
     [
-        ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16),
-        ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16),
+        # ModelTestSpec("Qwen/Qwen3-4B-AWQ", DType.FLOAT16), # tracer broken with the newest torch version
+        ModelTestSpec("openai/gpt-oss-20b", DType.FLOAT16, minimum_memory_for_trace=unsi("64 G")),
     ]
     if torch.cuda.is_available()
     else []
