@@ -1,8 +1,8 @@
 import pytest
 
-from lalamo.model_registry import ModelRegistry, get_model_registry
+from lalamo.model_registry import ModelRegistry
 
 
 @pytest.fixture(scope="session")
 def model_registry() -> ModelRegistry:
-    return get_model_registry()
+    return ModelRegistry.build(allow_third_party_plugins=False)

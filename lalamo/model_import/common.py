@@ -15,7 +15,7 @@ from tokenizers import Tokenizer
 
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
-from lalamo.model_registry import get_model_registry
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
@@ -436,7 +436,7 @@ def import_model(
 ) -> ImportResults:
     if isinstance(model_spec, str):
         try:
-            model_spec = get_model_registry().repo_to_model[model_spec]
+            model_spec = ModelRegistry.build().repo_to_model[model_spec]
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 

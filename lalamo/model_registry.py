@@ -12,7 +12,6 @@ from lalamo.model_import.model_specs.common import ModelSpec, build_quantized_mo
 
 __all__ = [
     "ModelRegistry",
-    "get_model_registry",
 ]
 
 
@@ -51,7 +50,9 @@ class ModelRegistry:
     models: tuple[ModelSpec, ...]
     repo_to_model: Mapping[str, ModelSpec]
 
-    def __init__(self, allow_third_party_plugins: bool = True) -> None:
+    @functools.cache
+    @classmethod
+    def build(cls, allow_third_party_plugins: bool = True) -> "ModelRegistry":
         base_models = [model for model_list in ALL_MODEL_LISTS for model in model_list]
         quantized_models = build_quantized_models(base_models)
         models = tuple(base_models + quantized_models)
@@ -59,10 +60,4 @@ class ModelRegistry:
         if allow_third_party_plugins:
             models += load_third_party_specs("lalamo_plugins.specs.v1")
 
-        object.__setattr__(self, "models", models)
-        object.__setattr__(self, "repo_to_model", {model.repo: model for model in models})
-
-
-@functools.cache
-def get_model_registry(allow_third_party_plugins: bool = True) -> ModelRegistry:
-    return ModelRegistry(allow_third_party_plugins=allow_third_party_plugins)
+        return ModelRegistry(models, {model.repo: model for model in models})

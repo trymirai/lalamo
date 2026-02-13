@@ -62,7 +62,7 @@ from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
-from lalamo.model_registry import get_model_registry
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
@@ -87,7 +87,7 @@ class ModelParser(ParamType):
     name: str = "Huggingface Model Repo"
 
     def convert(self, value: str, param: ClickParameter | None, ctx: ClickContext | None) -> ModelSpec:
-        repo_to_model = get_model_registry().repo_to_model
+        repo_to_model = ModelRegistry.build().repo_to_model
         result = repo_to_model.get(value)
         if result is None:
             closest_repo = _closest_repo(value, list(repo_to_model))
@@ -427,7 +427,7 @@ def convert(
             click_type=ModelParser(),
             show_default=False,
             metavar="MODEL_REPO",
-            autocompletion=lambda: list(get_model_registry().repo_to_model),
+            autocompletion=lambda: list(ModelRegistry.build().repo_to_model),
         ),
     ],
     precision: Annotated[
@@ -643,7 +643,7 @@ def list_models(
         ),
     ] = False,
 ) -> None:
-    registry = get_model_registry()
+    registry = ModelRegistry.build()
     sorted_specs = sorted(
         registry.repo_to_model.values(),
         key=lambda spec: (
