@@ -309,7 +309,9 @@ class FishAudioConfig(ForeignTTSConfig):
         attention_qk_norm = self.fast_attention_qk_norm if fast_module else self.attention_qk_norm
 
         global_rope_config = UnscaledRoPEConfig(
-            precision=precision, base=self.rope_base, max_sequence_length=self.max_seq_len,
+            precision=precision,
+            base=self.rope_base,
+            max_sequence_length=self.max_seq_len,
         )
         local_rope_config = None
 
@@ -473,7 +475,7 @@ class FishAudioConfig(ForeignTTSConfig):
     @property
     def default_precision(self) -> DTypeLike:
         # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
-        # Currently lalamo weight manipulation pipeline does not suport such
+        # Currently lalamo weight manipulation pipeline does not support such
         # mixed-model-mixed-weight configuration so we upcast everything to fp32
         # as temporary solution
         return jnp.dtype(getattr(self, "torch_dtype", "float32"))
