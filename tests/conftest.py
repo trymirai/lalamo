@@ -8,6 +8,9 @@ from typer.testing import CliRunner
 
 from lalamo.main import app
 
+from lalamo.commands import convert
+from lalamo.model_import import REPO_TO_MODEL
+
 RunLalamo = Callable[..., str]
 ConvertModel = Callable[[str], Path]
 
@@ -32,9 +35,6 @@ def run_lalamo() -> RunLalamo:
 def convert_model(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> ConvertModel:
-    from lalamo.commands import convert
-    from lalamo.model_import import REPO_TO_MODEL
-
     def _convert(repo: str) -> Path:
         output_dir = tmp_path_factory.getbasetemp() / "converted_models" / repo.replace("/", "__")
         if not (output_dir / "config.json").exists():

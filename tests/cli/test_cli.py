@@ -14,23 +14,8 @@ MODELS = [
     "mlx-community/LFM2-350M-4bit",
 ]
 
-B_TREE_PROMPT = "Implement a B-tree data structure in Rust concisely"
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
 APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
-
-
-QA_CONVERSATIONS = [
-    [{"role": "user", "content": CAPITAL_PROMPT}],
-    [{"role": "user", "content": APPLES_PROMPT}],
-]
-
-
-def _write_qa_dataset(path: Path) -> None:
-    pl.DataFrame({"conversation": QA_CONVERSATIONS}).write_parquet(path)
-
-
-def _read_responses(path: Path) -> list[str]:
-    return pl.read_parquet(path).get_column("response").to_list()
 
 
 def _assert_has_london_and_yes(texts: list[str]) -> None:
@@ -39,19 +24,30 @@ def _assert_has_london_and_yes(texts: list[str]) -> None:
     assert "yes" in joined, f"Expected 'yes' in {texts!r}"
 
 
+ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def strip_ansi_escape(s: str) -> str:
-    escape_regex = re.compile(r"\x1b\[[0-9;]*m")
-    return escape_regex.sub("", s)
-
-
-def _read_traces(trace_path: Path) -> list[LalamoCompletion]:
-    with open(trace_path, "rb") as trace_fd:
-        return list(LalamoCompletion.deserialize_many(trace_fd))
+    return ANSI_ESCAPE_REGEX.sub("", s)
 
 
 @pytest.fixture(scope="module", params=MODELS, ids=str)
 def converted_model_dir(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
     return convert_model(request.param)
+
+
+@pytest.fixture
+def qa_dataset_path(tmp_path: Path) -> Path:
+    dataset_path = tmp_path / "dataset.parquet"
+    pl.DataFrame(
+        {
+            "conversation": [
+                [{"role": "user", "content": CAPITAL_PROMPT}],
+                [{"role": "user", "content": APPLES_PROMPT}],
+            ],
+        },
+    ).write_parquet(dataset_path)
+    return dataset_path
 
 
 def test_convert(converted_model_dir: Path) -> None:
@@ -78,18 +74,19 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo) -> None:
 
 def test_collect_traces_max_output_length_does_not_change_logits(
     converted_model_dir: Path,
-    tmp_path_factory: pytest.TempPathFactory,
+    tmp_path: Path,
     run_lalamo: RunLalamo,
 ) -> None:
-    work_dir = tmp_path_factory.mktemp("max_output_length_consistency")
+    dataset_path = tmp_path / "dataset.parquet"
+    pl.DataFrame(
+        {
+            "conversation": [
+                [{"role": "user", "content": "Implement a B-tree data structure in Rust."}],
+            ],
+        },
+    ).write_parquet(dataset_path)
 
-    dataset_path = work_dir / "dataset.parquet"
-    prompts = [B_TREE_PROMPT]
-    pl.DataFrame({"conversation": [[{"role": "user", "content": prompt}] for prompt in prompts]}).write_parquet(
-        dataset_path,
-    )
-
-    short_trace_path = work_dir / "short.bin"
+    short_trace_path = tmp_path / "short.bin"
     run_lalamo(
         "speculator",
         "collect-traces",
@@ -107,7 +104,7 @@ def test_collect_traces_max_output_length_does_not_change_logits(
         "32",
     )
 
-    long_trace_path = work_dir / "long.bin"
+    long_trace_path = tmp_path / "long.bin"
     run_lalamo(
         "speculator",
         "collect-traces",
@@ -125,8 +122,10 @@ def test_collect_traces_max_output_length_does_not_change_logits(
         "139",
     )
 
-    short_traces = _read_traces(short_trace_path)
-    long_traces = _read_traces(long_trace_path)
+    with short_trace_path.open("rb") as short_trace_fd:
+        short_traces = list(LalamoCompletion.deserialize_many(short_trace_fd))
+    with long_trace_path.open("rb") as long_trace_fd:
+        long_traces = list(LalamoCompletion.deserialize_many(long_trace_fd))
 
     assert len(short_traces) == len(long_traces)
     for short_trace, long_trace in zip(short_traces, long_traces, strict=True):
@@ -149,50 +148,32 @@ def test_collect_traces_max_output_length_does_not_change_logits(
             assert short_values == pytest.approx(long_values, abs=1e-7, rel=1e-7)
 
 
-def test_generate_replies_batch_size(
+@pytest.mark.parametrize(
+    "extra_args",
+    [
+        pytest.param(["--batch-size", "2"], id="batch-size"),
+        pytest.param(["--vram-gb", "3"], id="vram"),
+    ],
+)
+def test_generate_replies(
     converted_model_dir: Path,
-    tmp_path_factory: pytest.TempPathFactory,
+    qa_dataset_path: Path,
+    tmp_path: Path,
     run_lalamo: RunLalamo,
+    extra_args: list[str],
 ) -> None:
-    work_dir = tmp_path_factory.mktemp("generate_replies_batch_size")
-    dataset_path = work_dir / "dataset.parquet"
-    output_path = work_dir / "replies.parquet"
-    _write_qa_dataset(dataset_path)
+    output_path = tmp_path / "replies.parquet"
 
     run_lalamo(
         "generate-replies",
         str(converted_model_dir),
-        str(dataset_path),
+        str(qa_dataset_path),
         "--output-path",
         str(output_path),
-        "--batch-size",
-        "2",
+        *extra_args,
     )
 
-    _assert_has_london_and_yes(_read_responses(output_path))
-
-
-def test_generate_replies_vram(
-    converted_model_dir: Path,
-    tmp_path_factory: pytest.TempPathFactory,
-    run_lalamo: RunLalamo,
-) -> None:
-    work_dir = tmp_path_factory.mktemp("generate_replies_vram")
-    dataset_path = work_dir / "dataset.parquet"
-    output_path = work_dir / "replies.parquet"
-    _write_qa_dataset(dataset_path)
-
-    run_lalamo(
-        "generate-replies",
-        str(converted_model_dir),
-        str(dataset_path),
-        "--output-path",
-        str(output_path),
-        "--vram-gb",
-        "3",
-    )
-
-    _assert_has_london_and_yes(_read_responses(output_path))
+    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
 
 
 def test_chat(
@@ -208,19 +189,17 @@ def test_chat(
 
 def test_collect_traces_answers(
     converted_model_dir: Path,
-    tmp_path_factory: pytest.TempPathFactory,
+    qa_dataset_path: Path,
+    tmp_path: Path,
     run_lalamo: RunLalamo,
 ) -> None:
-    work_dir = tmp_path_factory.mktemp("collect_traces_answers")
-    dataset_path = work_dir / "dataset.parquet"
-    trace_path = work_dir / "traces.bin"
-    _write_qa_dataset(dataset_path)
+    trace_path = tmp_path / "traces.bin"
 
     run_lalamo(
         "speculator",
         "collect-traces",
         str(converted_model_dir),
-        str(dataset_path),
+        str(qa_dataset_path),
         "--output-path",
         str(trace_path),
         "--batch-size",

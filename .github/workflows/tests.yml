@@ -174,6 +174,7 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           dev: 'true'
+          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Run pytest
         run: |
