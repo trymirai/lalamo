@@ -14,10 +14,6 @@ inputs:
     description: "Only set environment variables, skip installing dependencies"
     required: false
     default: 'false'
-  openrouter-api-key:
-    description: "Optional OPENROUTER_API_KEY value to export for later steps"
-    required: false
-    default: ''
 
 runs:
   using: composite
@@ -25,26 +21,19 @@ runs:
     - run: |
         echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
         echo "HF_XET_HIGH_PERFORMANCE=1" >> "$GITHUB_ENV"
-        if [[ -n "${{ inputs.openrouter-api-key }}" ]]; then
-          {
-            echo "OPENROUTER_API_KEY<<EOF"
-            echo "${{ inputs.openrouter-api-key }}"
-            echo "EOF"
-          } >> "$GITHUB_ENV"
-        fi
         echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
         echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
       shell: bash
 
     - uses: actions/setup-python@v6
-      if: ${{ inputs.only-env != 'true' }}
+      if: ${{ inputs.only-vars != 'true' }}
       with:
         python-version-file: ".python-version"
 
     - uses: astral-sh/setup-uv@v7
       with:
-        enable-cache: ${{ inputs.only-env != 'true' }}
+        enable-cache: ${{ inputs.only-vars != 'true' }}
 
     - run: uv sync --frozen ${{ inputs.dev == 'true' && '--dev' || '--no-dev' }} ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
-      if: ${{ inputs.only-env != 'true' }}
+      if: ${{ inputs.only-vars != 'true' }}
       shell: bash

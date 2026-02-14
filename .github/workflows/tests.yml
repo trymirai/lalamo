@@ -23,6 +23,7 @@ defaults:
 
 env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
 jobs:
   linters:
@@ -174,7 +175,6 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           dev: 'true'
-          openrouter-api-key: ${{ secrets.OPENROUTER_API_KEY }}
 
       - name: Run pytest
         run: |
