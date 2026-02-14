@@ -10,7 +10,7 @@ inputs:
     description: "Install with development dependencies"
     required: false
     default: 'false'
-  only-env:
+  only-vars:
     description: "Only set environment variables, skip installing dependencies"
     required: false
     default: 'false'
