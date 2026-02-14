@@ -142,11 +142,11 @@ def estimate_batchsize_from_bytes(
     target_mem_bytes: int,
     progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
 ) -> int:
-    lo = 0
-    hi = 0
+    lo = 1
+    hi = 1
     for candidate_exp in itertools.count():
         lo = hi
-        hi = 4**candidate_exp
+        hi = 4 ** (candidate_exp + 1)
 
         if progress is not None:
             progress(BatchSizeEstimatingEvent(lo, None))
@@ -163,7 +163,7 @@ def estimate_batchsize_from_bytes(
         else:
             lo = mid
 
-    return lo
+    return max(lo, 1)
 
 
 def decrease_batchsize_on_oom[T](
