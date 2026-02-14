@@ -178,8 +178,8 @@ def _fuse_weight_norm_conv1d(
     temp_conv = remove_weight_norm(temp_conv, name="weight")
 
     # Extract fused weight and convert back to JAX array
-    fused_weight = jnp.array(temp_conv.weight.detach().numpy())
-    fused_bias = jnp.array(temp_conv.bias.detach().numpy()) if temp_conv.bias is not None else None
+    fused_weight = jnp.array(temp_conv.weight.detach().cpu().numpy())
+    fused_bias = jnp.array(temp_conv.bias.detach().cpu().numpy()) if temp_conv.bias is not None else None
 
     return fused_weight, fused_bias
 
@@ -238,8 +238,8 @@ def _fuse_parametrized_weight_norm_conv1d(
     remove_parametrizations(temp_conv, "weight")
 
     # Extract fused weight and convert back to JAX array
-    fused_weight = jnp.array(temp_conv.weight.detach().numpy())
-    fused_bias = jnp.array(temp_conv.bias.detach().numpy()) if temp_conv.bias is not None else None
+    fused_weight = jnp.array(temp_conv.weight.detach().cpu().numpy())
+    fused_bias = jnp.array(temp_conv.bias.detach().cpu().numpy()) if temp_conv.bias is not None else None
 
     return fused_weight, fused_bias
 

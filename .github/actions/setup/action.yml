@@ -6,24 +6,34 @@ inputs:
     description: "Install with CUDA extras"
     required: false
     default: 'false'
+  dev:
+    description: "Install with development dependencies"
+    required: false
+    default: 'false'
+  only-env:
+    description: "Only set environment variables, skip installing dependencies"
+    required: false
+    default: 'false'
 
 runs:
   using: composite
   steps:
-    - uses: actions/setup-python@v6
-      with:
-        python-version-file: ".python-version"
-
-    - uses: astral-sh/setup-uv@v7
-      with:
-        enable-cache: true
-
-    - run: uv sync --frozen --dev ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
-      shell: bash
-
     - run: |
         echo "UV_NO_SYNC=1" >> "$GITHUB_ENV"
         echo "HF_XET_HIGH_PERFORMANCE=1" >> "$GITHUB_ENV"
         echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
         echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+      shell: bash
+
+    - uses: actions/setup-python@v6
+      if: ${{ inputs.only-env != 'true' }}
+      with:
+        python-version-file: ".python-version"
+
+    - uses: astral-sh/setup-uv@v7
+      with:
+        enable-cache: ${{ inputs.only-env != 'true' }}
+
+    - run: uv sync --frozen ${{ inputs.dev == 'true' && '--dev' || '--no-dev' }} ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
+      if: ${{ inputs.only-env != 'true' }}
       shell: bash

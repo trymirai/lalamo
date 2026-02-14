@@ -1,4 +1,4 @@
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from functools import cached_property
 from typing import Self, TypedDict
@@ -8,7 +8,7 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 from jinja2 import Template
 from tokenizers import Tokenizer
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.common import DummyUnionMember, LalamoModule, register_config_union
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -135,7 +135,7 @@ class TTSModel(LalamoModule[TTSConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),

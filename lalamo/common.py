@@ -20,6 +20,7 @@ __all__ = [
     "dummy_array",
     "flatten_parameters",
     "require_array",
+    "require_mapping",
     "require_tree",
     "unflatten_parameters",
 ]
@@ -47,6 +48,13 @@ def require_array[ArrayType: ArrayLike](value: ArrayType | ParameterTree[ArrayTy
 def require_tree[ArrayType: ArrayLike](value: ArrayType | ParameterTree[ArrayType]) -> ParameterTree[ArrayType]:
     assert not isinstance(value, (Array, ShapeDtypeStruct))
     return value
+
+
+def require_mapping[ArrayType: ArrayLike](
+    value: ParameterTree[ArrayType],
+) -> Mapping[str, ArrayType | ParameterTree[ArrayType]]:
+    assert isinstance(value, Mapping)
+    return cast("Mapping[str, ArrayType | ParameterTree[ArrayType]]", value)
 
 
 def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:

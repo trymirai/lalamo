@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -6,7 +5,7 @@ import equinox as eqx
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -45,7 +44,7 @@ class ShortConvConfig(TokenMixerConfigBase):
     ) -> "ShortConv":
         in_projection = self.in_projection_config.random_init(
             input_dim=model_dim,
-            output_dims=(model_dim,)*3,
+            output_dims=(model_dim,) * 3,
             has_biases=False,
             key=key,
         )
@@ -72,7 +71,7 @@ class ShortConvConfig(TokenMixerConfigBase):
     ) -> "ShortConv":
         in_projection = self.in_projection_config.empty(
             input_dim=model_dim,
-            output_dims=(model_dim,)*3,
+            output_dims=(model_dim,) * 3,
             has_biases=False,
         )
 
@@ -137,7 +136,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
 
         return TokenMixerResult(outputs, updated_state)
 
-    def init_static_state(self, capacity: int) -> ShortConvStateLayer: # noqa: ARG002
+    def init_static_state(self, capacity: int) -> ShortConvStateLayer:  # noqa: ARG002
         return ShortConvStateLayer.init(
             self.config.kernel_size,
             self.in_projection.input_dim,
@@ -152,7 +151,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             in_projection=self.in_projection.import_weights(require_tree(weights["in_projection"])),

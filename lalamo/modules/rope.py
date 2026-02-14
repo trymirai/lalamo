@@ -16,14 +16,13 @@
 # limitations under the License.
 
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 
 import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree
+from lalamo.common import ParameterTree, require_mapping
 
 from .common import LalamoModule, register_config_union
 
@@ -162,7 +161,7 @@ class RoPE(LalamoModule[RoPEConfigBase]):
         self,
         weights: ParameterTree[Array],
     ) -> "RoPE":
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(self, cosines=weights["cosines"], sines=weights["sines"])
 
 

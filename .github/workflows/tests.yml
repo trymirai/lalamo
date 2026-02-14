@@ -33,6 +33,8 @@ jobs:
       - uses: actions/checkout@v6
       - id: setup
         uses: ./.github/actions/setup
+        with:
+          dev: 'true'
 
       - name: Run ty
         if: ${{ always() && steps.setup.outcome == 'success' }}
@@ -57,27 +59,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
 
       - name: Run pytest
         run: |
           pytest -n=auto tests/unit
 
-  conversion:
-    name: Model Conversion Tests
-    runs-on: [self-hosted, linux, cpu]
-    needs: [unit]
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-
-      - name: Run pytest
-        run: |
-          pytest tests/conversion
-
   generation:
-    name: Generation Tests
+    name: Generation
     runs-on: [self-hosted, linux, gpu, l40s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -86,14 +76,15 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
         with:
+          dev: 'true'
           cuda: 'true'
 
       - name: Run pytest
         run: |
-          pytest tests/generation
+          pytest -n=2 tests/generation
 
   audio:
-    name: Audio Model Tests
+    name: Audio Models
     runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -101,13 +92,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
 
       - name: Run pytest
         run: |
           pytest tests/tts
 
   tracer:
-    name: Tracer Tests
+    name: Tracer
     runs-on: [self-hosted, linux, gpu, l40s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
@@ -116,6 +109,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
         with:
+          dev: 'true'
           cuda: 'true'
 
       - name: Run pytest
@@ -125,26 +119,90 @@ jobs:
           pytest tests/tracer
 
   cli:
-    name: CLI
-    runs-on: ubuntu-latest
+    name: "CLI: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    needs: [unit]
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
-    env:
-      MODEL: Qwen/Qwen2.5-0.5B-Instruct
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [py313, py314]
+        device: [cpu, gpu]
+        include:
+          - device: cpu
+            runner: '["self-hosted", "linux", "cpu"]'
+          - device: gpu
+            runner: '["self-hosted", "linux", "gpu", "l40s"]'
 
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
+        with:
+          only-env: 'true'
 
-      - name: lalamo list-models
+      - name: Run tox
         run: |
-          lalamo list-models | grep " ${MODEL} "
-          lalamo list-models --plain | grep -x "${MODEL}"
-          lalamo list-models --no-plain | grep " ${MODEL} "
+          uvx tox -e cli-${{ matrix.device }}-${{ matrix.python }}
 
-      - name: lalamo convert
-        run: |
-          lalamo convert "${MODEL}"
+  # Tests that only run during prerelease PR:
 
-      - name: lalamo chat
+  conversion:
+    name: Model Conversion
+    runs-on: [self-hosted, linux, cpu]
+    needs: [unit]
+    if: contains(github.event.pull_request.labels.*.name, 'prerelease')
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
         run: |
-          lalamo chat models/* --message "What is 2 + 2? Reply with a single number, nothing else." | grep -x "4<|im_end|>"
+          pytest tests/conversion
+
+  coherence:
+    name: Coherence
+    runs-on: [self-hosted, linux, gpu, l40s]
+    needs: [unit]
+    if: contains(github.event.pull_request.labels.*.name, 'prerelease')
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest tests/coherence
+
+
+  latest-deps:
+    name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    needs: [unit]
+    if: contains(github.event.pull_request.labels.*.name, 'prerelease')
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [py313, py314]
+        device: [cpu, gpu]
+        include:
+          - device: cpu
+            runner: '["self-hosted", "linux", "cpu"]'
+          - device: gpu
+            runner: '["self-hosted", "linux", "gpu", "l40s"]'
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          only-env: 'true'
+
+      - name: Run tox
+        run: |
+          uvx tox -e latest-deps-${{ matrix.device }}-${{ matrix.python }}

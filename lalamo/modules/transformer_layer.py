@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Self
@@ -9,7 +8,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
@@ -300,7 +299,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         if self.post_mixer_norm is not None:
             post_mixer_norm = self.post_mixer_norm.import_weights(require_tree(weights["post_mixer_norm"]))
         else:

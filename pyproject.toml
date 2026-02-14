@@ -120,6 +120,7 @@ JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
 XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
+XLA_PYTHON_CLIENT_PREALLOCATE = "False"
 TORCH_COMPILE_DISABLE = "1"
 
 [tool.pyright]
@@ -149,6 +150,7 @@ ignore = [
     "PD008",
     "PGH003",
     "PLC0415",
+    "PLW0108",
     "PLR0904",
     "PLR0912",
     "PLR0913",
@@ -166,5 +168,6 @@ ignore = [
     "T20",
     "TD003",
     "TRY003",
-    "CPY001"
+    "CPY001",
+    "TC003"
 ]
