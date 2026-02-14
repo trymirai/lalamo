@@ -152,7 +152,7 @@ def test_collect_traces_max_output_length_does_not_change_logits(
     "extra_args",
     [
         pytest.param(["--batch-size", "2"], id="batch-size"),
-        pytest.param(["--vram-gb", "3"], id="vram"),
+        pytest.param(["--vram-gb", "6"], id="vram"),
     ],
 )
 def test_generate_replies(
