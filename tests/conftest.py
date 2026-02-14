@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -13,6 +14,12 @@ from lalamo.model_import import REPO_TO_MODEL
 
 RunLalamo = Callable[..., str]
 ConvertModel = Callable[[str], Path]
+
+ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def strip_ansi_escape(text: str) -> str:
+    return ANSI_ESCAPE_REGEX.sub("", text)
 
 
 @pytest.fixture(scope="session")

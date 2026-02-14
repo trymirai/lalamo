@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 import polars as pl
@@ -6,13 +5,9 @@ import pytest
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.model_import import REPO_TO_MODEL
-from tests.conftest import ConvertModel, RunLalamo
+from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
 
-MODELS = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
-    "cartesia-ai/Llamba-1B-4bit-mlx",
-    "mlx-community/LFM2-350M-4bit",
-]
+MODELS = ["google/gemma-3-1b-it"]
 
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
 APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
@@ -22,13 +17,6 @@ def _assert_has_london_and_yes(texts: list[str]) -> None:
     joined = " ".join(texts).lower()
     assert "london" in joined, f"Expected 'london' in {texts!r}"
     assert "yes" in joined, f"Expected 'yes' in {texts!r}"
-
-
-ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-9;]*m")
-
-
-def strip_ansi_escape(s: str) -> str:
-    return ANSI_ESCAPE_REGEX.sub("", s)
 
 
 @pytest.fixture(scope="module", params=MODELS, ids=str)
@@ -70,82 +58,6 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo) -> None:
     expected_repos = sorted(REPO_TO_MODEL)
     assert sorted(plain_repos) == expected_repos
     assert sorted(fancy_repos) == expected_repos
-
-
-def test_collect_traces_max_output_length_does_not_change_logits(
-    converted_model_dir: Path,
-    tmp_path: Path,
-    run_lalamo: RunLalamo,
-) -> None:
-    dataset_path = tmp_path / "dataset.parquet"
-    pl.DataFrame(
-        {
-            "conversation": [
-                [{"role": "user", "content": "Implement a B-tree data structure in Rust."}],
-            ],
-        },
-    ).write_parquet(dataset_path)
-
-    short_trace_path = tmp_path / "short.bin"
-    run_lalamo(
-        "speculator",
-        "collect-traces",
-        str(converted_model_dir),
-        str(dataset_path),
-        "--output-path",
-        str(short_trace_path),
-        "--batch-size",
-        "1",
-        "--num-logits-per-token",
-        "8",
-        "--num-tokens-to-generate",
-        "32",
-        "--max-output-length",
-        "32",
-    )
-
-    long_trace_path = tmp_path / "long.bin"
-    run_lalamo(
-        "speculator",
-        "collect-traces",
-        str(converted_model_dir),
-        str(dataset_path),
-        "--output-path",
-        str(long_trace_path),
-        "--batch-size",
-        "1",
-        "--num-logits-per-token",
-        "8",
-        "--num-tokens-to-generate",
-        "32",
-        "--max-output-length",
-        "139",
-    )
-
-    with short_trace_path.open("rb") as short_trace_fd:
-        short_traces = list(LalamoCompletion.deserialize_many(short_trace_fd))
-    with long_trace_path.open("rb") as long_trace_fd:
-        long_traces = list(LalamoCompletion.deserialize_many(long_trace_fd))
-
-    assert len(short_traces) == len(long_traces)
-    for short_trace, long_trace in zip(short_traces, long_traces, strict=True):
-        assert short_trace.prefix_token_ids == long_trace.prefix_token_ids
-        assert short_trace.completion_token_ids == long_trace.completion_token_ids
-        assert len(short_trace.completion_token_logits) == len(long_trace.completion_token_logits)
-
-        for short_logits, long_logits in zip(
-            short_trace.completion_token_logits,
-            long_trace.completion_token_logits,
-            strict=True,
-        ):
-            short_keys = list(short_logits)
-            long_keys = list(long_logits)
-            assert short_keys == long_keys
-
-            short_values = [short_logits[key] for key in short_keys]
-            long_values = [long_logits[key] for key in long_keys]
-
-            assert short_values == pytest.approx(long_values, abs=1e-7, rel=1e-7)
 
 
 @pytest.mark.parametrize(

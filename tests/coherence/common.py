@@ -1,12 +1,12 @@
 import json
 import logging
-import re
 import tomllib
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 import requests
+from tests.conftest import strip_ansi_escape
 
 DEFAULT_JUDGE_MODEL = "meta-llama/llama-3.3-70b-instruct"
 
@@ -55,13 +55,8 @@ def _load_examples(path: Path | str = Path(__file__).parent / "prompt_spec.toml"
 TASK_PROMPT, _EXAMPLES = _load_examples()
 
 
-def strip_ansi(text: str) -> str:
-    ansi_regex = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-    return ansi_regex.sub("", text)
-
-
 def extract_output(raw: str) -> str:
-    cleaned = strip_ansi(raw)
+    cleaned = strip_ansi_escape(raw)
     lines = [line.rstrip() for line in cleaned.splitlines() if line.strip()]
     return "\n".join(lines).strip()
 
