@@ -81,7 +81,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest -n=2 tests/generation
+          pytest -n=auto tests/generation
 
   audio:
     name: Audio Models
