@@ -80,6 +80,9 @@ version = { attr = "lalamo.__version__" }
 
 [tool.uv]
 package = true
+override-dependencies = [
+    "numba>=0.60",
+]
 
 [[tool.uv.index]]
 name = "torch-cpu"
