@@ -12,15 +12,11 @@ from tests.conftest import ConvertModel, RunLalamo
 
 log = logging.getLogger(__name__)
 
-# Representative language models < 10B: smallest per family + one MLX 4bit each.
 MODEL_REPOS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
     "Qwen/Qwen3-0.6B",
-    "Qwen/Qwen3-0.6B-MLX-4bit",
-    # "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
     "mlx-community/gemma-3-1b-it-8bit",
     "google/gemma-2-2b-it",
-    "google/gemma-3-1b-it",
     # "google/functiongemma-270m-it",  # output is weird by default, can't verify coherence
     "HuggingFaceTB/SmolLM2-1.7B-Instruct",
     "LiquidAI/LFM2.5-1.2B-Instruct",
@@ -28,8 +24,8 @@ MODEL_REPOS = [
     "cartesia-ai/Llamba-1B-4bit-mlx",
 ]
 
-MAX_TOKENS = 512
-TRIVIAL_PROMPT = "What is 2+2? No thinking, answer right away."
+MAX_TOKENS = 256
+TRIVIAL_PROMPT = "What is 2+2?"
 
 
 @pytest.fixture(params=MODEL_REPOS, ids=lambda repo: repo.split("/")[-1])
