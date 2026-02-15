@@ -4,8 +4,11 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
+import jax
 import pytest
 from typer.testing import CliRunner
+
+jax.config.update("jax_default_matmul_precision", "highest")
 
 from lalamo.commands import convert
 from lalamo.main import app

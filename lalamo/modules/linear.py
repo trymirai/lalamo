@@ -8,7 +8,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jax import lax
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
@@ -257,7 +256,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
                 "Mixtures of linear layers cannot be called directly."
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
-        result = jnp.dot(self.weights, inputs, precision=lax.Precision.HIGHEST)
+        result = jnp.dot(self.weights, inputs)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
