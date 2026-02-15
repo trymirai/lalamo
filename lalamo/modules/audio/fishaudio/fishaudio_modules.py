@@ -155,6 +155,7 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
             rhs_dilation=(self.dilation,),
             feature_group_count=self.groups,
             dimension_numbers=("NHC", "OIH", "NHC"),
+            precision=lax.Precision.HIGHEST,
         )
 
         if self.biases is not None:
@@ -298,6 +299,7 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
             rhs_dilation=(self.dilation,),
             dimension_numbers=("NHC", "OIH", "NHC"),
             transpose_kernel=True,
+            precision=lax.Precision.HIGHEST,
         )
 
         if self.biases is not None:

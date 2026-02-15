@@ -6,9 +6,9 @@ import polars as pl
 import pytest
 from tokenizers import Tokenizer
 
-from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
-
 from tests.conftest import ConvertModel, RunLalamo
+
+from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
 
 log = logging.getLogger(__name__)
 

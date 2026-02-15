@@ -3,7 +3,6 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.model_import import REPO_TO_MODEL
 from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
 

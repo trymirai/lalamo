@@ -7,9 +7,8 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
-from lalamo.main import app
-
 from lalamo.commands import convert
+from lalamo.main import app
 from lalamo.model_import import REPO_TO_MODEL
 
 RunLalamo = Callable[..., str]

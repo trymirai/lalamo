@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 import requests
+
 from tests.conftest import strip_ansi_escape
 
 DEFAULT_JUDGE_MODEL = "meta-llama/llama-3.3-70b-instruct"
