@@ -94,7 +94,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
                     activation_quantization_mode=None,
                     activation_precision=activation_precision,
                 )
-        else: # noqa: PLR5501
+        else:  # noqa: PLR5501
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
                     input_scale=None,

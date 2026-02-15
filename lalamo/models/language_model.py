@@ -47,6 +47,20 @@ _COMPILED_PROMPT_LENGTHS = [256 * 2**i for i in range(12)]
 type ForwardPassConfig = DecoderForwardPassConfig
 
 
+def split_into_rolling_keys(key: PRNGKeyArray, num: int = 2) -> PRNGKeyArray:
+    if not isinstance(num, int):
+        raise TypeError(f"Expected integer 'num', got {type(num).__name__}")
+    if num < 0:
+        raise ValueError(f"Expected non-negative 'num', got {num}")
+
+    def split_once(carry: PRNGKeyArray, _: None) -> tuple[PRNGKeyArray, PRNGKeyArray]:
+        next_carry, sample_key = jax.random.split(carry)
+        return next_carry, sample_key
+
+    _, keys = jax.lax.scan(split_once, key, xs=None, length=num)
+    return keys
+
+
 class PrefillResults(NamedTuple):
     last_token_logits: Float[Array, "batch vocabulary"]
     last_token_indices: Int[Array, " batch"]
@@ -322,7 +336,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        per_step_keys: Key[Array, "batch max_len"] = jax.vmap(lambda k: jax.random.split(k, max_output_length))(keys)
+        per_step_keys: Key[Array, "batch max_len"] = jax.vmap(
+            lambda k: split_into_rolling_keys(k, max_output_length),
+        )(keys)
         per_step_keys: Key[Array, "max_len batch"] = jnp.swapaxes(per_step_keys, 0, 1)
         _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_keys)
 
@@ -600,8 +616,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         )
 
         if key is None:
-            key = jax.random.PRNGKey(0)
-        keys = jax.random.split(key, num=max_output_length)
+            key = jax.random.split(jax.random.key(0), num=1)[0]  # matching generate_replies with bs=1
+        keys = split_into_rolling_keys(key, num=max_output_length)
 
         state = DecodingState(
             prefill_results.last_token_logits,

@@ -17,7 +17,7 @@ repos:
     rev: v0.15.0
     hooks:
       - id: ruff-check
-        args: [--fix, lalamo]
+        args: [lalamo]
         pass_filenames: false
       - id: ruff-format
         args: [lalamo]
@@ -27,7 +27,7 @@ repos:
     rev: v1.43.3
     hooks:
       - id: typos
-        exclude: '^(uv\.lock|.*\.parquet|.*\.safetensors)$'
+        exclude: '^(tests.*|uv\.lock|.*\.parquet|.*\.safetensors)$'
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     rev: 0.10.0
@@ -41,4 +41,3 @@ repos:
         language: system
         entry: ty check lalamo
         pass_filenames: false
-

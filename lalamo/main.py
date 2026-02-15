@@ -162,6 +162,12 @@ def chat(
             show_default="None, run interactively",
         ),
     ] = None,
+    max_tokens: Annotated[
+        int,
+        Option(
+            help="Maximum number of tokens to generate per reply.",
+        ),
+    ] = 8192,
 ) -> None:
     with Progress(
         SpinnerColumn(),
@@ -187,14 +193,14 @@ def chat(
 
             console.print("[red]assistant> [/red]", end="")
             model_response_tokens = []
-            for token in model.stream_reply_text(messages):
+            for token in model.stream_reply_text(messages, max_output_length=max_tokens):
                 console.print(token, end="")
                 model_response_tokens.append(token)
             console.print()
             model_response_text = "".join(model_response_tokens)
             messages.append(model.message_processor.parse_response(model_response_text))
     else:
-        for token in model.stream_reply_text([UserMessage(message)]):
+        for token in model.stream_reply_text([UserMessage(message)], max_output_length=max_tokens):
             console.print(token, end="")
         console.print()
 

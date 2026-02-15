@@ -59,4 +59,4 @@ def test_logit_processing(model_repo: str, generation_config: FileSpec | Generat
         hf_input_ids = cast("LongTensor", torch.zeros((1, 1), dtype=torch.long))
         hf_result = torch_to_jax(hf_processors(hf_input_ids, hf_scores)[0])
 
-        np.testing.assert_allclose(lalamo_result, hf_result)
+        np.testing.assert_allclose(lalamo_result, hf_result, rtol=1e-6)

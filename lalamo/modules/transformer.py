@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -7,7 +7,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
@@ -253,7 +253,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         assert isinstance(weights["layers"], Sequence)
         if self.global_rope:
             global_rope = self.global_rope.import_weights(require_tree(weights["global_rope"]))

@@ -35,4 +35,5 @@ def load_hf_parquet(path: Path | str) -> pl.LazyFrame:
 
 
 def shuffle_dataset(frame: pl.LazyFrame, seed: int = 1337) -> pl.DataFrame:
-    return frame.collect().sample(fraction=1.0, shuffle=True, seed=seed)
+    df: pl.DataFrame = frame.collect()  # type: ignore[possibly-missing-attribute]
+    return df.sample(fraction=1.0, shuffle=True, seed=seed)

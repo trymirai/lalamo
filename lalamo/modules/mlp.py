@@ -12,7 +12,7 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
@@ -260,7 +260,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             up_projection=self.up_projection.import_weights(require_tree(weights["up_projection"])),
@@ -606,7 +606,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         mapping_weights = cast("Mapping[str, Array | ParameterTree[Array]]", weights)
 
         gate = None

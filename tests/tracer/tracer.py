@@ -448,8 +448,9 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 def configure_precision_for_tests() -> None:
     jax.config.update("jax_default_matmul_precision", "highest")
     torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    if torch.backends.cuda.is_built():
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
 def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> None:

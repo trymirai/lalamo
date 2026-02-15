@@ -1,13 +1,30 @@
+import importlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
 
 import cattrs
+from packaging.version import Version
 
 from lalamo.models import GenerationConfig
 
-__all__ = ["HFGenerationConfig", "merge_token_ids"]
+__all__ = ["HFGenerationConfig", "default_hf_top_k", "merge_token_ids"]
+
+
+def default_hf_top_k() -> int | None:
+    """
+    None by default, unless the user has a transformers version below 5 installed,
+    then we match on it and use top_k=50. HF changed their default top_k in the following
+    PR: https://github.com/huggingface/transformers/pull/42702
+    """
+    try:
+        transformers = importlib.import_module("transformers")
+    except Exception:  # noqa: BLE001
+        return None
+
+    version = Version(str(getattr(transformers, "__version__", "")))
+    return None if version >= Version("5.0.0rc1") else 50
 
 
 @dataclass(frozen=True)
@@ -33,7 +50,7 @@ class HFGenerationConfig:
     temperature: float | None = None
     min_p: float | None = None
     top_p: float | None = None
-    top_k: int | None = 50
+    top_k: int | None = field(default_factory=default_hf_top_k)
     repetition_penalty: float | None = None
 
     # -------- length limits -----------------

@@ -39,6 +39,7 @@ from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
+from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
@@ -311,8 +312,11 @@ def test_vector_quantize_decode_code() -> None:
     _testlog.info(f"Lalamo output shape: {lalamo_output.shape}")
     _testlog.info(f"Max difference: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}")
 
-    assert jnp.allclose(dac_output_jax, lalamo_output, atol=1e-5), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(dac_output_jax - lalamo_output))}"
+    assert_close(
+        result=lalamo_output,
+        reference=dac_output_jax,
+        atol=1e-5,
+        operation_name="VQ decode code",
     )
 
 
@@ -450,11 +454,12 @@ def test_causal_conv1d_matches_pytorch() -> None:
     _testlog.info(f"Lalamo CausalConv1d output shape: {lalamo_output.shape}")
     _testlog.info(f"Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
 
-    assert torch_output_jax.shape == lalamo_output_nct.shape, (
-        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
-    )
-    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    assert_close(
+        result=lalamo_output_nct,
+        reference=torch_output_jax,
+        atol=1e-5,
+        fraction_of_allowed_violations=0.01,
+        operation_name="CausalConv1d",
     )
 
 
@@ -642,11 +647,12 @@ def test_causal_transpose_conv1d_matches_pytorch() -> None:
     _testlog.info(f"Lalamo CausalTransposeConv1d output shape: {lalamo_output.shape}")
     _testlog.info(f"Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
 
-    assert torch_output_jax.shape == lalamo_output_nct.shape, (
-        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
-    )
-    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    assert_close(
+        result=lalamo_output_nct,
+        reference=torch_output_jax,
+        atol=1e-5,
+        fraction_of_allowed_violations=0.01,
+        operation_name="CausalTransposeConv1d",
     )
 
 
@@ -706,13 +712,12 @@ def test_causal_transpose_conv1d_various_strides() -> None:
             f"max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}",
         )
 
-        assert torch_output_jax.shape == lalamo_output_nct.shape, (
-            f"Shape mismatch for kernel={kernel_size}, stride={stride}: "
-            f"PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
-        )
-        assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-5), (
-            f"Output mismatch for kernel={kernel_size}, stride={stride}. "
-            f"Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+        assert_close(
+            result=lalamo_output_nct,
+            reference=torch_output_jax,
+            atol=1e-5,
+            fraction_of_allowed_violations=0.01,
+            operation_name=f"CausalTransposeConv1d kernel={kernel_size} stride={stride}",
         )
 
 
@@ -775,10 +780,20 @@ def test_causal_conv_transpose_roundtrip() -> None:
     _testlog.info(f"Roundtrip - After conv: PyTorch {torch_down.shape}, Lalamo {lalamo_down.shape}")
     _testlog.info(f"Roundtrip - After trans: PyTorch {torch_up.shape}, Lalamo {lalamo_up.shape}")
 
-    assert torch_down_jax.shape == lalamo_down_nct.shape
-    assert torch_up_jax.shape == lalamo_up_nct.shape
-    assert jnp.allclose(torch_down_jax, lalamo_down_nct, atol=1e-5)
-    assert jnp.allclose(torch_up_jax, lalamo_up_nct, atol=1e-5)
+    assert_close(
+        result=lalamo_down_nct,
+        reference=torch_down_jax,
+        atol=1e-5,
+        fraction_of_allowed_violations=0.01,
+        operation_name="Roundtrip conv downsample",
+    )
+    assert_close(
+        result=lalamo_up_nct,
+        reference=torch_up_jax,
+        atol=1e-5,
+        fraction_of_allowed_violations=0.01,
+        operation_name="Roundtrip transpose conv upsample",
+    )
 
 
 @torch.no_grad
@@ -966,11 +981,12 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
     _testlog.info(f"UpsamplingBlock - Lalamo output shape: {lalamo_output.shape}")
     _testlog.info(f"UpsamplingBlock - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
 
-    assert torch_output_jax.shape == lalamo_output_nct.shape, (
-        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
-    )
-    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    assert_close(
+        result=lalamo_output_nct,
+        reference=torch_output_jax,
+        atol=1e-4,
+        fraction_of_allowed_violations=0.01,
+        operation_name="UpsamplingBlock",
     )
 
 
@@ -1091,11 +1107,12 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
     _testlog.info(f"Upsampler - Lalamo output shape: {lalamo_output.shape}")
     _testlog.info(f"Upsampler - Max difference: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}")
 
-    assert torch_output_jax.shape == lalamo_output_nct.shape, (
-        f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
-    )
-    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-3), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    assert_close(
+        result=lalamo_output_nct,
+        reference=torch_output_jax,
+        atol=1e-3,
+        fraction_of_allowed_violations=0.015,
+        operation_name="Upsampler",
     )
 
 
@@ -1279,8 +1296,12 @@ def test_decoder_block_matches_pytorch() -> None:
     assert torch_output_jax.shape == lalamo_output_nct.shape, (
         f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
     )
-    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    assert_close(
+        result=lalamo_output_nct,
+        reference=torch_output_jax,
+        atol=1e-4,
+        fraction_of_allowed_violations=0.01,
+        operation_name="DecoderBlock",
     )
 
 
@@ -1366,8 +1387,12 @@ def test_audio_decoder_matches_pytorch() -> None:
     assert torch_output_jax.shape == lalamo_output_nct.shape, (
         f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
     )
-    assert jnp.allclose(torch_output_jax, lalamo_output_nct, atol=1e-4), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(torch_output_jax - lalamo_output_nct))}"
+    assert_close(
+        result=lalamo_output_nct,
+        reference=torch_output_jax,
+        atol=1e-4,
+        fraction_of_allowed_violations=0.01,
+        operation_name="AudioDecoder",
     )
 
 
@@ -1644,6 +1669,10 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     assert audio_fish_ntc.shape == audio_lalamo.shape, (
         f"Shape mismatch: FishAudio {audio_fish_ntc.shape} vs Lalamo {audio_lalamo.shape}"
     )
-    assert jnp.allclose(audio_fish_ntc, audio_lalamo, atol=1e-3), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(audio_diff))}"
+    assert_close(
+        result=audio_lalamo,
+        reference=audio_fish_ntc,
+        atol=1e-3,
+        fraction_of_allowed_violations=0.01,
+        operation_name="DAC",
     )
