@@ -8,7 +8,13 @@ import jax
 import pytest
 from typer.testing import CliRunner
 
-jax.config.update("jax_default_matmul_precision", "highest")
+# Keep this explicit. "default" is not the same as leaving the setting unset:
+# unset lets JAX pick backend-specific behavior ("auto"), which can route to
+# different kernels.
+# We also observed that `high`/`highest` can trigger different GPU compile/fusion
+# paths and produce much larger chunked-vs-unchunked numerical deltas in tests.
+# Be careful when raising this precision for correctness baselines.
+jax.config.update("jax_default_matmul_precision", "default")
 
 from lalamo.commands import convert
 from lalamo.main import app
