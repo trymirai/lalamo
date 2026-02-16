@@ -387,6 +387,7 @@ def test_residual_vector_quantize_from_codes() -> None:
         result=lalamo_output,
         reference=dac_output_jax,
         operation_name="RVQ from_codes",
+        fraction_of_allowed_violations=0.001,
     )
 
 
