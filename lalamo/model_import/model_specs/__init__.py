@@ -10,6 +10,7 @@ from .llama import LLAMA_MODELS
 from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
+from .nanbeige import NANBEIGE_MODELS
 
 # from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
@@ -40,6 +41,7 @@ ALL_MODEL_LISTS = [
     QWEN_MODELS,
     REKA_MODELS,
     MIRAI_CLASSIFIER_MODELS,
+    NANBEIGE_MODELS,
     RNJ_MODELS,
     FISHAUDIO_TTS_MODELS,
 ]
