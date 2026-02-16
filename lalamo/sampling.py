@@ -12,6 +12,7 @@ __all__ = [
     "CompositePolicy",
     "GreedyPolicy",
     "MinPPolicy",
+    "NoTieGreedyPolicy",
     "SamplingPolicy",
     "TemperaturePolicy",
     "TopKPolicy",
@@ -31,6 +32,12 @@ class GreedyPolicy(SamplingPolicy):
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         max_logit_value = jnp.max(logits)
         return jnp.where(logits == max_logit_value, 1.0, -jnp.inf)
+
+
+class NoTieGreedyPolicy(SamplingPolicy):
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        best = jnp.argmax(logits)
+        return jnp.where(jnp.arange(logits.shape[0]) == best, 1.0, -jnp.inf)
 
 
 class TemperaturePolicy(SamplingPolicy):
