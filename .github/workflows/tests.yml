@@ -128,7 +128,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: [py313, py314]
+        python: ${{ fromJSON((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'prerelease')) && '["py313", "py314"]' || '["py314"]') }}
         device: [cpu, gpu]
         include:
           - device: cpu
