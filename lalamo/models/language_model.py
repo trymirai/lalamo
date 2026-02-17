@@ -23,7 +23,14 @@ from lalamo.modules import (
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
-from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, LikelihoodEvent, TextModel, TextModelConfig
+from .common import (
+    BatchSizeInfo,
+    BatchSizesComputedEvent,
+    InferenceConfig,
+    LikelihoodEvent,
+    TextModel,
+    TextModelConfig,
+)
 from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
     decrease_batchsize_on_oom,
@@ -385,7 +392,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
                 processed_logits = vmap(sampling_policy.process_logits)(upcasted_logits)
-                next_token_ids = jax.vmap(lambda k, logits: jax.random.categorical(k, logits))(keys, processed_logits)
+                next_token_ids = jax.vmap(lambda k, logits: jax.random.categorical(k, logits))(keys, processed_logits)  # noqa: PLW0108
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
                 if num_top_logits_to_return is not None:
                     next_top_k_token_logits, next_top_k_token_ids = jax.lax.top_k(

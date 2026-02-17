@@ -767,9 +767,11 @@ def likelihood(
     )
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame({
-        "logits": [r.logits for r in results],
-        "tokens": [r.tokens for r in results],
-    }).write_parquet(output_path)
+    pl.DataFrame(
+        {
+            "logits": [r.logits for r in results],
+            "tokens": [r.tokens for r in results],
+        },
+    ).write_parquet(output_path)
 
     callbacks.finished_inference()
