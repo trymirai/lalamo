@@ -1,8 +1,7 @@
-name: "Prerelease Pull Smoke"
+name: "Backwards Compatibility Tests"
 
 on:
   pull_request:
-    # Include label changes so smoke runs when prerelease label is added/removed.
     types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
   workflow_dispatch:
 
@@ -59,7 +58,7 @@ jobs:
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           gh --version
 
-      - name: Run pull smoke (non-blocking)
+      - name: Run pull tests
         id: pull_smoke
         continue-on-error: true
         run: |
@@ -74,7 +73,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          gh pr comment "$PR_NUMBER" --body "[CI NOTICE] ✅ Pull smoke tests passed. All is good."
+          gh pr comment "$PR_NUMBER" --body "[CI NOTICE] Pull tests passed. Bumping the minor version is appropriate."
 
       - name: Comment on PR if pull smoke failed
         if: ${{ steps.pull_smoke.outcome == 'failure' }}
@@ -85,7 +84,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "[CI NOTICE] ⚠️ Pull smoke tests failed."
+            echo "[CI NOTICE] Pull tests failed."
             echo
             echo "This usually indicates a compatibility break for pulled models."
             echo "Please consider bumping the major version for this release."

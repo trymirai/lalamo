@@ -24,22 +24,13 @@ def inference_collect_traces(
     tokens_to_generate: int | None = None,
     progress_callback: Callable[[CollectTracesEvent], None] | None = None,
 ) -> Iterable[LalamoCompletion]:
-    if tokens_to_generate is not None and tokens_to_generate <= 0:
-        return
-
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
     filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
     filtered_prefixes = list(filtered_prefixes)  # eagerly materialize the prompts into RAM
 
-    effective_max_output_length = max_output_length
-    if tokens_to_generate is not None:
-        # We truncate traces to this global budget, so decoding beyond it only adds
-        # numerical variability without affecting emitted traces.
-        effective_max_output_length = min(max_output_length, tokens_to_generate)
-
     config = InferenceConfig(
-        max_output_length=effective_max_output_length,
+        max_output_length=max_output_length,
         num_top_logits_to_return=num_top_logits_to_collect,
         padded_length=max_input_length,
         batch_size=batch_size,
