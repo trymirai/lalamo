@@ -21,14 +21,12 @@ defaults:
 env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
-  is_active: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
-  is_prerelease: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
 
 jobs:
   conversion:
     name: Model Conversion
     runs-on: [self-hosted, linux, cpu]
-    if: ${{ env.is_active == 'true' && env.is_prerelease == 'true' }}
+    if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -43,7 +41,7 @@ jobs:
   coherence:
     name: Coherence
     runs-on: [self-hosted, linux, gpu, l40s]
-    if: ${{ env.is_active == 'true' && env.is_prerelease == 'true' }}
+    if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -58,7 +56,7 @@ jobs:
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
     runs-on: ${{ fromJSON(matrix.runner) }}
-    if: ${{ env.is_active == 'true' && env.is_prerelease == 'true' }}
+    if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     strategy:
       fail-fast: false
