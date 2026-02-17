@@ -464,6 +464,13 @@ class HFDecoderTracer(
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
         hf_model, device = _load_hf_model(AutoModelForCausalLM, model_repo, dtype)
 
+        # Correct the bug in the HF Gemma implementation
+        # See https://github.com/huggingface/transformers/issues/38702
+        if hasattr(hf_model.model.embed_tokens, "embed_scale"):
+            wrong_scale = hf_model.model.embed_tokens.embed_scale
+            correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
+            hf_model.model.embed_tokens.embed_scale = correct_scale
+
         return cls(hf_model, device)
 
 
@@ -550,8 +557,11 @@ class ModernBertTracer(
         layer_type = ref_layer.attention_type
         rotary_emb = self.hf_model.model.rotary_emb  # type: ignore[attr-defined]
         rotary_device = _module_device(rotary_emb, self.device)  # type: ignore[arg-type]
-        torch_pos_ids = jax_to_torch(position_ids).to(device=rotary_device, dtype=torch.long)
-        ref_cosines, ref_sines = rotary_emb(layer_hidden_states.to(rotary_device), torch_pos_ids, layer_type)
+        # NOTE: first argument to 'rotary_emb' should be qkv tensor but it is only used
+        # for its dtype and device, actual values are irrelevant.
+        fake_qkv = torch.ones(1, dtype=torch.float32, device=rotary_device)
+        torch_pos_ids = jax_to_torch(position_ids).to(device=fake_qkv.device, dtype=torch.long)
+        ref_cosines, ref_sines = rotary_emb(fake_qkv, torch_pos_ids, layer_type)
         assert_close(
             result=sines,
             reference=torch_to_jax(ref_sines),
@@ -597,7 +607,7 @@ class ModernBertTracer(
             position_embeddings=(ref_cosines.to(ref_inputs.device), ref_sines.to(ref_inputs.device)),
         )
         if isinstance(forward_outputs, tuple):
-            torch_outputs = forward_outputs[0]
+            torch_outputs, *_ = forward_outputs
         else:
             torch_outputs = forward_outputs
 
@@ -631,7 +641,7 @@ class ModernBertTracer(
             ),
         )
         if isinstance(forward_outputs, tuple):
-            torch_outputs = forward_outputs[0]
+            torch_outputs, *_ = forward_outputs
         else:
             torch_outputs = forward_outputs
         ref_outputs = torch_to_jax(torch_outputs)
