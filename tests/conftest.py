@@ -8,6 +8,8 @@ import jax
 import pytest
 from typer.testing import CliRunner
 
+from lalamo.model_registry import ModelRegistry
+
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
 # different kernels.
@@ -18,7 +20,6 @@ jax.config.update("jax_default_matmul_precision", "default")
 
 from lalamo.commands import convert
 from lalamo.main import app
-from lalamo.model_import import REPO_TO_MODEL
 
 RunLalamo = Callable[..., str]
 ConvertModel = Callable[[str], Path]
@@ -47,13 +48,19 @@ def run_lalamo() -> RunLalamo:
 
 
 @pytest.fixture(scope="session")
+def model_registry() -> ModelRegistry:
+    return ModelRegistry.build(allow_third_party_plugins=False)
+
+
+@pytest.fixture(scope="session")
 def convert_model(
+    model_registry: ModelRegistry,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> ConvertModel:
     def _convert(repo: str) -> Path:
         output_dir = tmp_path_factory.getbasetemp() / "converted_models" / repo.replace("/", "__")
         if not (output_dir / "config.json").exists():
-            convert(REPO_TO_MODEL[repo], output_dir)
+            convert(model_registry.repo_to_model[repo], output_dir)
         return output_dir
 
     return _convert
