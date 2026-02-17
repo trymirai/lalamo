@@ -1,3 +1,5 @@
+import re
+
 import jax.numpy as jnp
 import pytest
 
@@ -36,10 +38,11 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     eos_idx = next(i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids)
     response_text = language_model.message_processor.tokenizer.decode(token_ids[:eos_idx])
 
-    assert (
-        "1 2 3 4 5 6 7 8 9 10" in response_text  # normal models
-        or "One  Two  Three  Four  Five  Six  Seven  Eight  Nine  Ten".lower() in response_text.lower()  # llambda
-    ), response_text
+    digits_pattern = r"1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\s+10"
+    words_pattern = r"one\s+two\s+three\s+four\s+five\s+six\s+seven\s+eight\s+nine\s+ten"
+    assert re.search(digits_pattern, response_text) or re.search(words_pattern, response_text, re.IGNORECASE), (
+        response_text
+    )
 
     if num_top_logits_to_return is not None:
         assert result.top_k_token_ids is not None

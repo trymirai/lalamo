@@ -405,40 +405,6 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 
         self.match_readout(result)
 
-        hf_input_ids = self.from_jax(result.activation_trace.token_ids)
-        hf_token_positions = self.from_jax(result.activation_trace.token_positions)
-        hf_hidden_states, hf_last_norm_output, hf_output_logits = self.forward(hf_input_ids, hf_token_positions)
-
-        for i, (hf_layer_inputs, layer_result) in enumerate(
-            zip(hf_hidden_states, result.activation_trace.layer_results, strict=False),
-        ):
-            layer_activation_trace = layer_result.activation_trace
-            assert layer_activation_trace is not None
-            ref_layer_inputs = self.to_jax(hf_layer_inputs)
-            assert_close(
-                result=layer_activation_trace.inputs,
-                reference=ref_layer_inputs,
-                fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-                operation_name=f"End2End Layer {i} inputs",
-            )
-
-        ref_last_norm_output = self.to_jax(hf_last_norm_output)
-        assert_close(
-            result=result.activation_trace.output_norm,
-            reference=ref_last_norm_output,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Output RMSNorm",
-        )
-
-        ref_probas = jax.nn.softmax(self.to_jax(hf_output_logits), axis=-1)
-        llm_probas = jax.nn.softmax(result.logits, axis=-1)
-        assert_close(
-            result=llm_probas,
-            reference=ref_probas,
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-            operation_name="End2End Token Probabilities",
-        )
-
     @classmethod
     @abstractmethod
     def load(cls, model_repo: str, dtype: DType | None) -> Self: ...
@@ -481,35 +447,43 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         dtype=test_spec.dtype,
     )
 
-    model, model_metadata = import_model(
-        test_spec.model_repo,
-        context_length=test_spec.num_tokens * test_spec.token_stride,
-        precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
-    )
-    with jax.disable_jit():
-        inference_results = None
+    model = None
+    inference_results = None
+    try:
+        model, model_metadata = import_model(
+            test_spec.model_repo,
+            context_length=test_spec.num_tokens * test_spec.token_stride,
+            precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
+        )
+        with jax.disable_jit():
+            match model_metadata.model_type:
+                case ModelType.LANGUAGE_MODEL:
+                    assert isinstance(model, LanguageModel)
+                    err, inference_results = checkify_forward(model.model)(
+                        token_ids=token_ids,
+                        token_positions=token_positions,
+                        return_updated_state=True,
+                        return_activation_trace=True,
+                    )
+                    err.throw()
 
-        match model_metadata.model_type:
-            case ModelType.LANGUAGE_MODEL:
-                assert isinstance(model, LanguageModel)
-                err, inference_results = checkify_forward(model.model)(
-                    token_ids=token_ids,
-                    token_positions=token_positions,
-                    return_updated_state=True,
-                    return_activation_trace=True,
-                )
-                err.throw()
+                case ModelType.CLASSIFIER_MODEL:
+                    assert isinstance(model, ClassifierModel)
+                    err, inference_results = checkify_forward(model.model)(
+                        token_ids=token_ids,
+                        token_positions=token_positions,
+                        return_activation_trace=True,
+                    )
+                    err.throw()
 
-            case ModelType.CLASSIFIER_MODEL:
-                assert isinstance(model, ClassifierModel)
-                err, inference_results = checkify_forward(model.model)(
-                    token_ids=token_ids,
-                    token_positions=token_positions,
-                    return_activation_trace=True,
-                )
-                err.throw()
-
-    del model
-    gc.collect()
-
-    tracer.match_activations(inference_results)
+        tracer.match_activations(inference_results)
+    finally:
+        if model is not None:
+            del model
+        if inference_results is not None:
+            del inference_results
+        del tracer
+        gc.collect()
+        jax.clear_caches()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

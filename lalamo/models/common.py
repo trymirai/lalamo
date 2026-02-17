@@ -6,8 +6,10 @@ from pathlib import Path
 from typing import Self
 
 import equinox as eqx
+import jax
 from jax import Array
 from jax import numpy as jnp
+from jaxtyping import PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
@@ -22,7 +24,24 @@ __all__ = [
     "BatchSizesComputedEvent",
     "TextModel",
     "TextModelConfig",
+    "split_into_rolling_keys",
 ]
+
+
+def split_into_rolling_keys(key: PRNGKeyArray, num: int = 2) -> PRNGKeyArray:
+    """Equivalent to jax.random.split(), but uses lax.scan to produce keys
+    sequentially (rolling), so that keys share consistent prefixes."""
+    if not isinstance(num, int):
+        raise TypeError(f"Expected integer 'num', got {type(num).__name__}")
+    if num < 0:
+        raise ValueError(f"Expected non-negative 'num', got {num}")
+
+    def split_once(carry: PRNGKeyArray, _: None) -> tuple[PRNGKeyArray, PRNGKeyArray]:
+        next_carry, sample_key = jax.random.split(carry)
+        return next_carry, sample_key
+
+    _, keys = jax.lax.scan(split_once, key, xs=None, length=num)
+    return keys
 
 
 @dataclass(frozen=True)

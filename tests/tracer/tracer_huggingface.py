@@ -10,6 +10,7 @@ from jaxtyping import Array
 from torch import Tensor, nn
 from transformers import AutoModelForCausalLM, AutoModelForSequenceClassification
 from transformers.cache_utils import Cache
+from transformers.masking_utils import create_bidirectional_mask, create_bidirectional_sliding_window_mask
 from transformers.modeling_flash_attention_utils import FlashAttentionKwargs
 from transformers.modeling_outputs import (
     BaseModelOutputWithPast,
@@ -128,8 +129,7 @@ class HFClassificationModel(Protocol):
     layers: Sequence[ModernBertEncoderLayer]
     final_norm: nn.LayerNorm
     head: HFPredictionHead
-
-    def _update_attention_mask(self, mask: Tensor, output_attentions: bool) -> tuple[Tensor, Tensor]: ...
+    config: Any
 
 
 class HFModelForCausalLM(Protocol):
@@ -295,14 +295,35 @@ class HFDecoderTracer(
         embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
         return self.hf_model.model.embed_tokens.forward(token_ids.to(embed_device))
 
+    def _rope_forward(
+        self,
+        rope: HFRotaryEmbedding,
+        x: torch.Tensor,
+        position_ids: torch.Tensor,
+        layer_type: str,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        rope_device = _module_device(rope, self.device)  # type: ignore[arg-type]
+        rope_kwargs: dict[str, Any] = {}
+        if "layer_type" in signature(rope.forward).parameters:
+            rope_kwargs["layer_type"] = layer_type
+        return rope.forward(x.to(rope_device), position_ids.to(rope_device), **rope_kwargs)  # type: ignore[misc]
+
     def global_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        rope_device = _module_device(self.hf_model.model.rotary_emb, self.device)
-        return self.hf_model.model.rotary_emb.forward(x.to(rope_device), position_ids.to(rope_device))
+        return self._rope_forward(
+            self.hf_model.model.rotary_emb,
+            x,
+            position_ids,
+            "full_attention",
+        )
 
     def local_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
-        rope_device = _module_device(hf_rope, self.device)
-        return hf_rope.forward(x.to(rope_device), position_ids.to(rope_device))
+        return self._rope_forward(
+            hf_rope,
+            x,
+            position_ids,
+            "sliding_attention",
+        )
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
         rmsnorm_device = _module_device(rmsnorm, self.device)  # type: ignore[arg-type]
@@ -359,17 +380,10 @@ class HFDecoderTracer(
                 position_embeddings[0].to(layer_device),
                 position_embeddings[1].to(layer_device),
             )
-        if isinstance(layer, Gemma3DecoderLayer):
-            torch_outputs, *_ = layer.forward(
-                hidden_states=hidden_states,
-                position_embeddings_global=position_embeddings,  # type: ignore
-                position_embeddings_local=position_embeddings,  # type: ignore
-            )
-        else:
-            torch_outputs, *_ = layer.forward(
-                hidden_states=hidden_states,
-                position_embeddings=position_embeddings,
-            )
+        torch_outputs, *_ = layer.forward(
+            hidden_states=hidden_states,
+            position_embeddings=position_embeddings,
+        )
 
         return torch_outputs
 
@@ -450,13 +464,6 @@ class HFDecoderTracer(
     def load(cls, model_repo: str, dtype: DType | None) -> Self:
         hf_model, device = _load_hf_model(AutoModelForCausalLM, model_repo, dtype)
 
-        # Correct the bug in the HF Gemma implementation
-        # See https://github.com/huggingface/transformers/issues/38702
-        if hasattr(hf_model.model.embed_tokens, "embed_scale"):
-            wrong_scale = hf_model.model.embed_tokens.embed_scale
-            correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
-            hf_model.model.embed_tokens.embed_scale = correct_scale
-
         return cls(hf_model, device)
 
 
@@ -493,6 +500,20 @@ class ModernBertTracer(
         assert isinstance(result, ClassifierResult)
         return self.from_jax(result.activation_trace.output_pooling[None, ...])
 
+    def _update_attention_mask(self, hidden_states: torch.Tensor) -> tuple[torch.Tensor | None, torch.Tensor | None]:
+        attention_mask = torch.ones(hidden_states.shape[0:2], dtype=torch.bool, device=hidden_states.device)
+        full_attention_mask = create_bidirectional_mask(
+            config=self.hf_model.model.config,
+            inputs_embeds=hidden_states,
+            attention_mask=attention_mask,
+        )
+        sliding_window_mask = create_bidirectional_sliding_window_mask(
+            config=self.hf_model.model.config,
+            inputs_embeds=hidden_states,
+            attention_mask=attention_mask,
+        )
+        return full_attention_mask, sliding_window_mask
+
     def match_layer(
         self,
         ref_layer: ModernBertEncoderLayer,
@@ -509,11 +530,9 @@ class ModernBertTracer(
         hf_pre_attention_norm = ref_layer.attn_norm
         hf_pre_mlp_norm = ref_layer.mlp_norm
 
-        attention_mask = torch.ones(activation_trace.pre_mixer_norm.shape[0:2], dtype=torch.bool)
-        attention_mask, sliding_window = self.hf_model.model._update_attention_mask(  # noqa: SLF001
-            attention_mask,
-            output_attentions=False,
-        )
+        layer_hidden_states = jax_to_torch(activation_trace.pre_mixer_norm).to(self.device)
+        attention_mask, sliding_window = self._update_attention_mask(layer_hidden_states)
+        layer_attention_mask = attention_mask if use_global_attention else sliding_window
 
         if layer_index > 0:
             assert isinstance(hf_pre_attention_norm, nn.LayerNorm)
@@ -524,13 +543,28 @@ class ModernBertTracer(
                 f"Layer {layer_index} Pre Attention RMSNorm",
             )
 
+        assert activation_trace.positional_embeddings is not None
+        cosines = activation_trace.positional_embeddings.cosines
+        sines = activation_trace.positional_embeddings.sines
+        assert cosines.ndim == 3
+        layer_type = ref_layer.attention_type
+        rotary_emb = self.hf_model.model.rotary_emb  # type: ignore[attr-defined]
+        rotary_device = _module_device(rotary_emb, self.device)  # type: ignore[arg-type]
+        torch_pos_ids = jax_to_torch(position_ids).to(device=rotary_device, dtype=torch.long)
+        ref_cosines, ref_sines = rotary_emb(layer_hidden_states.to(rotary_device), torch_pos_ids, layer_type)
+        assert_close(
+            result=sines,
+            reference=torch_to_jax(ref_sines),
+            operation_name=f"Rottary Embedding Cosines (global={use_global_attention})",
+            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
+        )
+
         self.match_attention_custom(
             activation_trace.pre_mixer_norm,
             activation_trace.mixer,
             ref_layer.attn,  # type: ignore
-            position_ids,
-            attention_mask,
-            sliding_window,
+            layer_attention_mask,
+            (ref_cosines, ref_sines),
             f"Layer {layer_index} Attention",
         )
 
@@ -547,22 +581,6 @@ class ModernBertTracer(
             ref_layer.mlp,  # type: ignore
             f"Layer {layer_index} MLP",
         )
-
-        assert activation_trace.positional_embeddings is not None
-        cosines = activation_trace.positional_embeddings.cosines
-        sines = activation_trace.positional_embeddings.sines
-        assert cosines.ndim == 3
-        # NOTE: first argument to 'rotary_emb' should be qkv tensor but it is only used
-        # for its dtype and device, actual values are irrelevant.
-        fake_qkv = torch.ones(1, dtype=torch.float32, device=self.device)
-        torch_pos_ids = jax_to_torch(position_ids).to(device=fake_qkv.device, dtype=torch.long)
-        ref_cosines, ref_sines = ref_layer.attn.rotary_emb(fake_qkv, torch_pos_ids)
-        assert_close(
-            result=sines,
-            reference=torch_to_jax(ref_sines),
-            operation_name=f"Rottary Embedding Cosines (global={use_global_attention})",
-            fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
-        )
         assert_close(
             result=cosines,
             reference=torch_to_jax(ref_cosines),
@@ -573,15 +591,15 @@ class ModernBertTracer(
         ref_inputs = jax_to_torch(activation_trace.inputs).to(self.device)
         assert ref_inputs.ndim == 3
 
-        # NOTE: ugly, but this mimics the internal logic of ModernBERT
-        if not use_global_attention:
-            ref_layer.attn.local_attention = (1, 1)
-        position_ids_long = jax_to_torch(position_ids).to(device=ref_inputs.device, dtype=torch.long)
-        torch_outputs, *_ = ref_layer.forward(
+        forward_outputs = ref_layer.forward(
             hidden_states=ref_inputs,
-            position_ids=position_ids_long,
-            sliding_window_mask=sliding_window.to(ref_inputs.device),
+            attention_mask=layer_attention_mask.to(ref_inputs.device) if layer_attention_mask is not None else None,
+            position_embeddings=(ref_cosines.to(ref_inputs.device), ref_sines.to(ref_inputs.device)),
         )
+        if isinstance(forward_outputs, tuple):
+            torch_outputs = forward_outputs[0]
+        else:
+            torch_outputs = forward_outputs
 
         ref_outputs = torch_to_jax(torch_outputs)
         if ref_outputs.ndim != 3:
@@ -599,19 +617,23 @@ class ModernBertTracer(
         llm_inputs: Array,
         llm_outputs: Array,
         ref_attention: ModernBertAttention,
-        position_ids: Array,
-        attention_mask: torch.Tensor,
-        sliding_window_mask: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        position_embeddings: tuple[torch.Tensor, torch.Tensor],
         name: str,
     ) -> None:
         ref_inputs = jax_to_torch(llm_inputs).to(self.device)
-        ref_position_ids = jax_to_torch(position_ids).to(device=ref_inputs.device, dtype=torch.long)
-        (torch_outputs,) = ref_attention.forward(
+        forward_outputs = ref_attention.forward(
             hidden_states=ref_inputs,
-            attention_mask=attention_mask.to(ref_inputs.device),
-            sliding_window_mask=sliding_window_mask.to(ref_inputs.device),
-            position_ids=ref_position_ids,
+            attention_mask=attention_mask.to(ref_inputs.device) if attention_mask is not None else None,
+            position_embeddings=(
+                position_embeddings[0].to(ref_inputs.device),
+                position_embeddings[1].to(ref_inputs.device),
+            ),
         )
+        if isinstance(forward_outputs, tuple):
+            torch_outputs = forward_outputs[0]
+        else:
+            torch_outputs = forward_outputs
         ref_outputs = torch_to_jax(torch_outputs)
         assert_close(
             result=llm_outputs,
@@ -646,12 +668,7 @@ class ModernBertTracer(
         )
         assert hf_outputs.hidden_states is not None
 
-        *hf_hidden_states, hf_last_non_norm_output = hf_outputs.hidden_states
-
-        # NOTE: Because of how layers outputs are saved in ModernBert we will only see
-        # non-normalized per-layer outputs in the 'hidden_states' and need to apply
-        # normalization manually
-        hf_last_norm_output = self.hf_model.model.final_norm.forward(hf_last_non_norm_output)
+        *hf_hidden_states, hf_last_norm_output = hf_outputs.hidden_states
         assert hf_outputs.logits is not None
         return (tuple(hf_hidden_states), hf_last_norm_output, hf_outputs.logits)
 

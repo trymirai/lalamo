@@ -23,7 +23,14 @@ from lalamo.modules import (
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
-from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, TextModel, TextModelConfig
+from .common import (
+    BatchSizeInfo,
+    BatchSizesComputedEvent,
+    InferenceConfig,
+    TextModel,
+    TextModelConfig,
+    split_into_rolling_keys,
+)
 from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
     decrease_batchsize_on_oom,
@@ -45,20 +52,6 @@ _COMPILED_PROMPT_LENGTHS = [256 * 2**i for i in range(12)]
 
 
 type ForwardPassConfig = DecoderForwardPassConfig
-
-
-def split_into_rolling_keys(key: PRNGKeyArray, num: int = 2) -> PRNGKeyArray:
-    if not isinstance(num, int):
-        raise TypeError(f"Expected integer 'num', got {type(num).__name__}")
-    if num < 0:
-        raise ValueError(f"Expected non-negative 'num', got {num}")
-
-    def split_once(carry: PRNGKeyArray, _: None) -> tuple[PRNGKeyArray, PRNGKeyArray]:
-        next_carry, sample_key = jax.random.split(carry)
-        return next_carry, sample_key
-
-    _, keys = jax.lax.scan(split_once, key, xs=None, length=num)
-    return keys
 
 
 class PrefillResults(NamedTuple):
