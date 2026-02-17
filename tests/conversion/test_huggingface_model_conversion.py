@@ -12,8 +12,9 @@ import pytest
 import torch
 
 from lalamo.common import flatten_parameters
-from lalamo.model_import import REPO_TO_MODEL, ModelMetadata, import_model
+from lalamo.model_import import ModelMetadata, import_model
 from lalamo.model_import.model_specs import ModelType
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig, TTSGenerator
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -67,7 +68,7 @@ def temporary_directory() -> Generator[Path, Any, None]:
 
 
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.test_id for m in MODEL_LIST])
-def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> None:
+def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path, model_registry: ModelRegistry) -> None:
     """
     Test the conversion -> export -> import flow for a given model.
     NOTE: Using tmp_path fixture provided by pytest runtime environment.
@@ -85,7 +86,7 @@ def test_model_conversion(test_spec: ModelTestSpec, tmp_path: pathlib.Path) -> N
     with memory_limit:
         model_repo = test_spec.model_repo
         model_dtype = test_spec.dtype
-        model_spec = REPO_TO_MODEL.get(model_repo)
+        model_spec = model_registry.repo_to_model.get(model_repo)
         assert model_spec, f"Unknown model specified: {model_repo}"
 
         # Step 1: Import model from HF format

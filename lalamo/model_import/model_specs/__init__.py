@@ -1,4 +1,4 @@
-from .common import FileSpec, ModelSpec, ModelType, UseCase, build_quantized_models
+from .common import FileSpec, ModelSpec, ModelType, UseCase
 from .deepseek import DEEPSEEK_MODELS
 from .essential_ai import RNJ_MODELS
 from .fishaudio import FISHAUDIO_TTS_MODELS
@@ -18,8 +18,7 @@ from .qwen import QWEN_MODELS
 from .reka import REKA_MODELS
 
 __all__ = [
-    "ALL_MODELS",
-    "REPO_TO_MODEL",
+    "ALL_MODEL_LISTS",
     "FileSpec",
     "ModelSpec",
     "ModelType",
@@ -45,10 +44,3 @@ ALL_MODEL_LISTS = [
     RNJ_MODELS,
     FISHAUDIO_TTS_MODELS,
 ]
-
-ALL_MODELS = [model for model_list in ALL_MODEL_LISTS for model in model_list]
-
-
-QUANTIZED_MODELS = build_quantized_models(ALL_MODELS)
-ALL_MODELS = ALL_MODELS + QUANTIZED_MODELS
-REPO_TO_MODEL = {model.repo: model for model in ALL_MODELS}
