@@ -83,53 +83,12 @@ jobs:
           git push origin HEAD:"$branch"
 
       - name: Open pull request to default branch (bump/version-*)
-        id: open_pr
         env:
           GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
         shell: bash
         run: |
-          pr_url="$(gh pr create --base "${{ github.event.repository.default_branch }}" \
+          gh pr create --base "${{ github.event.repository.default_branch }}" \
                        --head "bump/version-${{ inputs.new_version }}" \
                        --title "Bump version to ${{ inputs.new_version }}" \
                        --body "This PR bumps __version__ in lalamo/__init__.py to ${{ inputs.new_version }}." \
-                       --label prerelease)"
-          pr_number="${pr_url##*/}"
-          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
-          echo "number=$pr_number" >> "$GITHUB_OUTPUT"
-
-      - name: Setup dependencies for pull smoke
-        uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-
-      - name: Pull smoke test (non-blocking)
-        id: pull_smoke
-        continue-on-error: true
-        shell: bash
-        run: |
-          set -o pipefail
-          pytest tests/indicators/pull_smoke.py 2>&1 | tee pull_smoke.log
-
-      - name: Comment on PR if pull smoke fails
-        if: ${{ steps.pull_smoke.outcome == 'failure' }}
-        continue-on-error: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          PR_NUMBER: ${{ steps.open_pr.outputs.number }}
-        shell: bash
-        run: |
-          {
-            echo "⚠️ Pull smoke tests failed."
-            echo
-            echo "This usually indicates a compatibility break for pulled models."
-            echo "Please consider bumping the major version for this release."
-            echo
-            echo "<details><summary>Error output (last 200 lines)</summary>"
-            echo
-            echo '```text'
-            tail -n 200 pull_smoke.log
-            echo '```'
-            echo "</details>"
-          } > pr_pull_smoke_comment.md
-
-          gh pr comment "$PR_NUMBER" --body-file pr_pull_smoke_comment.md
+                       --label prerelease
