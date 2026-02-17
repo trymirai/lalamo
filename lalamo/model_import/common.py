@@ -251,30 +251,45 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
+def _unpack_nemo_model(nemo_model_path: Path) -> tuple[list[Path], Path]:
+    # Create temporary directory and extract contents of Nemo model into it
+    tmpdir = tempfile.mkdtemp()
+    atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)  # type: ignore error[invalid-argument-type]
+    with tarfile.open(nemo_model_path, "r") as tar:
+        tar.extractall(path=tmpdir)
+
+    # go through files in extracted model and locate Torch model file and model YAML config file
+    weights_paths = []
+    yaml_config_path = None
+    for root, _, files in os.walk(tmpdir):
+        for file in files:
+            filepath = Path(root) / file
+            if file.endswith((".ckpt", ".pth")):
+                weights_paths.append(filepath)
+            elif file.endswith(".yaml"):
+                yaml_config_path = filepath
+    assert weights_paths, "Failed to find Nemo model weights"
+    assert yaml_config_path, "Failed to find Nemo model config"
+
+    # load YAML config and re-save it in JSON format
+    with open(yaml_config_path) as f:
+        config_yaml = yaml.safe_load(f)
+    config_path = yaml_config_path.with_suffix(".json")
+    with open(config_path, "w") as f:
+        json.dump(config_yaml, f)
+
+    return weights_paths, config_path
+
+
 def _download_weights_and_config_files(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[list[Path], Path]:
     if model_spec.weights_type == WeightsType.NEMO:
-        weights_paths = download_weights(model_spec, progress_callback=progress_callback)
-        assert len(weights_paths) == 1
-        tmpdir = tempfile.mkdtemp()
-        atexit.register(shutil.rmtree, tmpdir, ignore_errors=True)  # type: ignore error[invalid-argument-type]
-        with tarfile.open(weights_paths[0], "r") as tar:
-            tar.extractall(path=tmpdir)
-        weights_paths = []
-        foreign_config_file_path = Path()
-        for root, _, files in os.walk(tmpdir):
-            for file in files:
-                filepath = Path(root) / file
-                if file.endswith((".ckpt", ".pth")):
-                    weights_paths.append(filepath)
-                elif file.endswith(".yaml"):
-                    with open(filepath) as f:
-                        config_yaml = yaml.safe_load(f)
-                    with open(filepath.with_suffix(".json"), "w") as f:
-                        json.dump(config_yaml, f)
-                    foreign_config_file_path = filepath.with_suffix(".json")
+        nemo_model_file = download_weights(model_spec, progress_callback=progress_callback)
+        assert len(nemo_model_file) == 1
+        weights_paths, foreign_config_file_path = _unpack_nemo_model(nemo_model_file[0])
+
     else:
         weights_paths = download_weights(model_spec, progress_callback=progress_callback)
         foreign_config_file_path = download_config_file(model_spec)

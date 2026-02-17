@@ -18,24 +18,6 @@ from .nanocodec_modules import (
 
 @dataclass(frozen=True)
 class NanoCodecConfig(TTSAudioDecoderConfigBase):
-    """Configuration for NanoCodec audio decoder.
-
-    This combines GroupFiniteScalarQuantizer and CausalHiFiGANDecoder
-    to decode discrete tokens into audio waveforms.
-
-    Args:
-        precision: Data type for computations.
-        quantizer_config: Configuration for the group FSQ.
-        decoder_config: Configuration for the HiFiGAN decoder.
-        samplerate: Audio sample rate in Hz.
-        base_channels: Initial number of channels after pre_conv in decoder.
-        up_sample_rates: Upsample rate for each decoder stage.
-        in_kernel_size: Kernel size for decoder pre_conv.
-        out_kernel_size: Kernel size for decoder post_conv.
-        resblock_kernel_sizes: Kernel sizes for HiFiGAN residual blocks.
-        resblock_dilations: Dilations for HiFiGAN residual blocks.
-    """
-
     precision: DTypeLike
     quantizer_config: GroupFiniteScalarQuantizerConfig
     decoder_config: CausalHiFiGANDecoderConfig
@@ -101,9 +83,6 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     The decoding pipeline:
     1. GroupFiniteScalarQuantizer decodes integer codes to continuous latent representations
     2. CausalHiFiGANDecoder upsamples and converts latents to audio waveform
-
-    Input format: indices [batch, num_codebooks, tokens] - matches PyTorch AudioCodecModel
-    Output format: audio [batch, audio_samples]
     """
 
     quantizer: GroupFiniteScalarQuantizer
@@ -125,15 +104,7 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         self,
         indices: Int[Array, "batch n_codebooks tokens"],
     ) -> Float[Array, "batch audio_samples"]:
-        """Decode discrete tokens to audio waveform.
-
-        Args:
-            indices: Token indices of shape [batch, num_codebooks, tokens].
-                     Each codebook corresponds to one FSQ group.
-
-        Returns:
-            Audio waveform of shape [batch, audio_samples] in range [-1, 1].
-        """
+        """Decode discrete tokens to audio waveform."""
         # Transpose from [B, C, T] to [B, T, C] for Lalamo quantizer (NSC format)
         indices_nsc = indices.transpose((0, 2, 1))
 
