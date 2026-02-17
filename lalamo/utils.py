@@ -1,3 +1,4 @@
+import re
 from collections.abc import (
     Callable,
     Collection,
@@ -150,6 +151,5 @@ def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
 
 
 def process_chat_template(template: str) -> str:
-    template = template.replace("{% generation %}", "")
-    template = template.replace("{%- endgeneration -%}", "")
-    return template
+    generation_block_tag_regex = re.compile(r"{%-?\s*(?:generation|endgeneration)\s*-?%}")
+    return generation_block_tag_regex.sub("", template)

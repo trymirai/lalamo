@@ -576,6 +576,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     ) -> Iterable[str]:
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)
+        all_token_ids: list[int] = []
+        previous_text = ""
         for token_id in self.stream_tokens(
             token_ids,
             generation_config,
@@ -583,7 +585,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
             key=key,
         ):
-            yield self.message_processor.detokenize([token_id.item()])
+            all_token_ids.append(token_id.item())
+            current_text = self.message_processor.detokenize(all_token_ids)
+            yield current_text[len(previous_text) :]
+            previous_text = current_text
 
     def stream_tokens(
         self,
