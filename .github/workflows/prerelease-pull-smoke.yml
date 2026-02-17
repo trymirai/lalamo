@@ -28,10 +28,36 @@ jobs:
       - uses: actions/checkout@v6
 
       - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
 
-      - name: Install pytest only
+      - name: Ensure GitHub CLI is available
+        shell: bash
         run: |
-          uv pip install pytest
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+            exit 0
+          fi
+
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) gh_arch="amd64" ;;
+            aarch64|arm64) gh_arch="arm64" ;;
+            *)
+              echo "Unsupported architecture for gh install: $arch"
+              exit 1
+              ;;
+          esac
+
+          gh_version="2.77.0"
+          gh_tgz="gh_${gh_version}_linux_${gh_arch}.tar.gz"
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${gh_version}/${gh_tgz}" -o "${gh_tgz}"
+          tar -xzf "${gh_tgz}"
+          mkdir -p "$HOME/.local/bin"
+          cp "gh_${gh_version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh"
+          chmod +x "$HOME/.local/bin/gh"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          gh --version
 
       - name: Run pull smoke (non-blocking)
         id: pull_smoke
@@ -44,7 +70,7 @@ jobs:
         if: ${{ steps.pull_smoke.outcome == 'success' }}
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
@@ -54,7 +80,7 @@ jobs:
         if: ${{ steps.pull_smoke.outcome == 'failure' }}
         continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
