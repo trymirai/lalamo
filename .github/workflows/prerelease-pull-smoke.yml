@@ -1,0 +1,76 @@
+name: "Prerelease Pull Smoke"
+
+on:
+  pull_request:
+    # Include label changes so smoke runs when prerelease label is added/removed.
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: prerelease-pull-smoke-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pull-smoke:
+    name: Pull Smoke (CPU)
+    runs-on: [self-hosted, linux, cpu]
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup
+
+      - name: Install pytest only
+        run: |
+          uv pip install pytest
+
+      - name: Run pull smoke (non-blocking)
+        id: pull_smoke
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pytest tests/indicators/pull_smoke.py 2>&1 | tee pull_smoke.log
+
+      - name: Comment on PR if pull smoke passed
+        if: ${{ steps.pull_smoke.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "[AUTOMATIC COMMENT] ✅ Pull smoke tests passed. All is good."
+
+      - name: Comment on PR if pull smoke failed
+        if: ${{ steps.pull_smoke.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          {
+            echo "[AUTOMATIC COMMENT] ⚠️ Pull smoke tests failed."
+            echo
+            echo "This usually indicates a compatibility break for pulled models."
+            echo "Please consider bumping the major version for this release."
+            echo
+            echo "<details><summary>Error output (last 200 lines)</summary>"
+            echo
+            echo '```text'
+            tail -n 200 pull_smoke.log
+            echo '```'
+            echo
+            echo "</details>"
+          } > pr_pull_smoke_comment.md
+
+          gh pr comment "$PR_NUMBER" --body-file pr_pull_smoke_comment.md
