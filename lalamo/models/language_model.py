@@ -23,7 +23,7 @@ from lalamo.modules import (
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
-from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, TextModel, TextModelConfig
+from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, LikelihoodEvent, TextModel, TextModelConfig
 from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
     decrease_batchsize_on_oom,
@@ -38,6 +38,8 @@ __all__ = [
     "GenerationConfig",
     "LanguageModel",
     "LanguageModelConfig",
+    "LikelihoodResult",
+    "LoglikelihoodResult",
 ]
 
 
@@ -70,6 +72,23 @@ class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+
+
+class LoglikelihoodResult(NamedTuple):
+    top_k_token_ids: Int[Array, "batch seq_len top_k"]
+    top_k_token_logits: Float[Array, "batch seq_len top_k"]
+
+
+@dataclass(frozen=True)
+class LikelihoodResult:
+    logits: list[list[float]]
+    tokens: list[list[int]]
+
+    def __post_init__(self) -> None:
+        if len(self.logits) != len(self.tokens):
+            raise ValueError(
+                f"logits and tokens must have the same length, got {len(self.logits)} and {len(self.tokens)}",
+            )
 
 
 @dataclass(frozen=True)
@@ -223,6 +242,99 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             last_token_indices=jnp.maximum(lengths_without_padding - 1, 0),
             state=final_state,
         )
+
+    @eqx.filter_jit
+    def compute_loglikelihood(
+        self,
+        token_ids: Int[Array, "batch seq_len"],
+        lengths_without_padding: Int[Array, " batch"],
+        top_k: int,
+    ) -> LoglikelihoodResult:
+        batch_size, seq_len = token_ids.shape
+        state = self.model.init_static_state(batch_size, seq_len)
+        token_positions = jnp.broadcast_to(
+            jnp.arange(seq_len, dtype=jnp.int32)[None, :],
+            (batch_size, seq_len),
+        )
+
+        result = self.model(
+            token_ids,
+            token_positions,
+            state,
+            lengths_without_padding=lengths_without_padding,
+            forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+        )
+
+        all_logits = result.logits.astype(jnp.float32)
+        top_k_logits, top_k_ids = jax.lax.top_k(all_logits, top_k)
+
+        return LoglikelihoodResult(
+            top_k_token_ids=top_k_ids,
+            top_k_token_logits=top_k_logits,
+        )
+
+    def loglikelihood(
+        self,
+        inputs: list[list[int]],
+        outputs: list[list[int]],
+        top_k: int,
+        batch_size: int,
+        progress_callback: Callable[[LikelihoodEvent], None] | None = None,
+    ) -> list[LikelihoodResult]:
+        if not isinstance(inputs, list) or not all(isinstance(x, list) for x in inputs):
+            raise TypeError("inputs must be a list of lists of token IDs")
+        if not isinstance(outputs, list) or not all(isinstance(x, list) for x in outputs):
+            raise TypeError("outputs must be a list of lists of token IDs")
+        if len(inputs) != len(outputs):
+            raise ValueError(
+                f"inputs and outputs must have the same length, got {len(inputs)} and {len(outputs)}",
+            )
+        if any(len(inp) == 0 for inp in inputs):
+            raise ValueError("all inputs must be non-empty")
+
+        sequences = [inp + out for inp, out in zip(inputs, outputs, strict=True)]
+        input_lengths = [len(inp) for inp in inputs]
+        output_lengths = [len(out) for out in outputs]
+
+        results: list[LikelihoodResult | None] = [None] * len(sequences)
+        processed = 0
+
+        for batch_items in batched(enumerate(sequences), batch_size):
+            batch_indices, batch_seqs = zip(*batch_items, strict=True)
+            actual_batch_size = len(batch_seqs)
+            max_len = max(len(s) for s in batch_seqs)
+
+            padded = np.zeros((batch_size, max_len), dtype=np.int32)
+            lengths = np.zeros(batch_size, dtype=np.int32)
+            for i, seq in enumerate(batch_seqs):
+                padded[i, : len(seq)] = seq
+                lengths[i] = len(seq)
+
+            result = self.compute_loglikelihood(
+                jnp.array(padded),
+                jnp.array(lengths),
+                top_k,
+            )
+
+            top_k_logits_np = np.asarray(result.top_k_token_logits)
+            top_k_ids_np = np.asarray(result.top_k_token_ids)
+
+            for i, idx in enumerate(batch_indices):
+                inp_len = input_lengths[idx]
+                out_len = output_lengths[idx]
+                start = inp_len - 1
+                end = inp_len + out_len - 1
+                results[idx] = LikelihoodResult(
+                    logits=top_k_logits_np[i, start:end].tolist(),
+                    tokens=top_k_ids_np[i, start:end].tolist(),
+                )
+
+            processed += actual_batch_size
+            if progress_callback is not None:
+                progress_callback(LikelihoodEvent(processed))
+
+        assert all(r is not None for r in results)
+        return results  # type: ignore[return-value]
 
     def generate_tokens(
         self,

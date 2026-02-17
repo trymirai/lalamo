@@ -29,7 +29,7 @@ from lalamo.model_import.common import (
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, LanguageModelConfig
-from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
+from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig, LikelihoodEvent
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
@@ -604,8 +604,10 @@ def generate_replies(
     memory consumption and therefore the batch sizes that fit in VRAM.
 
     If ``generation_config_override`` is provided it replaces the model's default generation config entirely
-    (temperature, top-k, etc.).  Do not set ``stop_token_ids`` on it: the model's own stop tokens are always
-    injected automatically, and providing them will throw a ValueError.
+    (temperature, top-k, etc.). Setting stop_token_ids on the generation_config_override won't override the default
+    models stopping tokens, but will rather be _merged_ with them: for instance, if you want the output to stop at "."
+    you might need to figure out ids of all the tokens that contain "." by yourself, and then set all of them as
+    stop_token_ids.
 
     ``callbacks_type`` is used internally (cli) for progress visualisation.
     """
@@ -655,15 +657,13 @@ def generate_replies(
 
     generation_config = None
     if generation_config_override is not None:
-        if generation_config_override.stop_token_ids:
-            raise ValueError(
-                "Do not set generation_config.stop_token_ids for this command; "
-                "the model's configured stop tokens are always used instead.",
-            )
+        model_stop_ids = model.config.generation_config.stop_token_ids
+        extra_stop_ids = generation_config_override.stop_token_ids
+        merged_stop_ids = tuple(dict.fromkeys(model_stop_ids + extra_stop_ids))
 
         generation_config = dataclasses.replace(
             generation_config_override,
-            stop_token_ids=model.config.generation_config.stop_token_ids,
+            stop_token_ids=merged_stop_ids,
         )
 
     replies: list[tuple[int, AssistantMessage]] = []
@@ -693,3 +693,83 @@ def generate_replies(
     df.write_parquet(output_path)
 
     callbacks.finished_generation()
+
+
+@dataclass
+class LikelihoodCallbacks:
+    model_path: Path
+    dataset_path: Path
+    output_path: Path
+    top_k: int
+    batch_size: int
+    total_rows: int
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self) -> None:
+        pass
+
+    def inference_progress(self, sequences_processed: int) -> None:
+        pass
+
+    def finished_inference(self) -> None:
+        pass
+
+
+def likelihood(
+    model_path: Path,
+    dataset_path: Path,
+    output_path: Path,
+    top_k: int = 8,
+    batch_size: int = 1,
+    callbacks_type: Callable[
+        [
+            Path,
+            Path,
+            Path,
+            int,
+            int,
+            int,
+        ],
+        LikelihoodCallbacks,
+    ] = LikelihoodCallbacks,
+) -> None:
+    total_rows = pl.scan_parquet(dataset_path).select(pl.len()).collect().item()
+
+    callbacks = callbacks_type(model_path, dataset_path, output_path, top_k, batch_size, total_rows)
+
+    callbacks.loading_model()
+    model = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
+
+    callbacks.loading_dataset()
+    dataframe = pl.read_parquet(dataset_path)
+    inputs_col = dataframe.get_column("inputs").to_list()
+    outputs_col = dataframe.get_column("outputs").to_list()
+    callbacks.finished_loading_dataset()
+
+    def progress_callback(event: LikelihoodEvent) -> None:
+        callbacks.inference_progress(event.sequences_processed)
+
+    results = model.loglikelihood(
+        inputs_col,
+        outputs_col,
+        top_k,
+        batch_size,
+        progress_callback,
+    )
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame({
+        "logits": [r.logits for r in results],
+        "tokens": [r.tokens for r in results],
+    }).write_parquet(output_path)
+
+    callbacks.finished_inference()
