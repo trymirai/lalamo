@@ -48,7 +48,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         shell: bash
         run: |
-          gh pr comment "$PR_NUMBER" --body "[AUTOMATIC COMMENT] ✅ Pull smoke tests passed. All is good."
+          gh pr comment "$PR_NUMBER" --body "[CI NOTICE] ✅ Pull smoke tests passed. All is good."
 
       - name: Comment on PR if pull smoke failed
         if: ${{ steps.pull_smoke.outcome == 'failure' }}
@@ -59,7 +59,7 @@ jobs:
         shell: bash
         run: |
           {
-            echo "[AUTOMATIC COMMENT] ⚠️ Pull smoke tests failed."
+            echo "[CI NOTICE] ⚠️ Pull smoke tests failed."
             echo
             echo "This usually indicates a compatibility break for pulled models."
             echo "Please consider bumping the major version for this release."
