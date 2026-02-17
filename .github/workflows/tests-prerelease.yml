@@ -1,0 +1,82 @@
+name: "Tests (Prerelease)"
+
+on:
+  pull_request:
+    # Include label changes so prerelease jobs start as soon as label is added.
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-prerelease-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # For pipefail - https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-syntax#exit-codes-and-error-action-preference
+    shell: bash
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+  is_active: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
+  is_prerelease: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
+
+jobs:
+  conversion:
+    name: Model Conversion
+    runs-on: [self-hosted, linux, cpu]
+    if: ${{ env.is_active == 'true' && env.is_prerelease == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest tests/conversion
+
+  coherence:
+    name: Coherence
+    runs-on: [self-hosted, linux, gpu, l40s]
+    if: ${{ env.is_active == 'true' && env.is_prerelease == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest tests/coherence
+
+  latest-deps:
+    name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    if: ${{ env.is_active == 'true' && env.is_prerelease == 'true' }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python: [py313, py314]
+        device: [cpu, gpu]
+        include:
+          - device: cpu
+            runner: '["self-hosted", "linux", "cpu"]'
+          - device: gpu
+            runner: '["self-hosted", "linux", "gpu", "l40s"]'
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          only-vars: 'true'
+
+      - name: Run tox
+        run: |
+          uvx tox -e latest-deps-${{ matrix.device }}-${{ matrix.python }}
