@@ -22,6 +22,8 @@ from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
     DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
     DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
+    DEFAULT_FSQ_EPS,
+    DEFAULT_NANOCODEC_PRECISION,
 )
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
@@ -315,8 +317,8 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     # FSQ config for each group
     fsq_config = FiniteScalarQuantizerConfig(
         num_levels=tuple(nemo_quantizer_config["num_levels_per_group"]),
-        eps=1e-3,
-        precision=jnp.float32,
+        eps=DEFAULT_FSQ_EPS,
+        precision=DEFAULT_NANOCODEC_PRECISION,
     )
 
     # Group FSQ config

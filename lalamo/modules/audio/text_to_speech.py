@@ -9,7 +9,7 @@ from jinja2 import Template
 from tokenizers import Tokenizer
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.common import DummyUnionMember, LalamoModule, register_config_union
+from lalamo.modules.common import LalamoModule, register_config_union
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .audio_decoder import TTSAudioDecoder
@@ -92,10 +92,10 @@ class TTSMessageProcessor:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | DummyUnionMember
+TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig
 register_config_union(TTSAudioDecoderConfig)
 
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig | DummyUnionMember
+TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig
 register_config_union(TTSTextDecoderConfig)
 
 

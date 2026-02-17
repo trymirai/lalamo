@@ -22,6 +22,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
     DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
     DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
+    DEFAULT_FSQ_EPS,
     DEFAULT_LEAKY_RELU_NEGATIVE_SLOPE,
 )
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
@@ -79,7 +80,7 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     ) -> TTSConfig:
         fsq_config = FiniteScalarQuantizerConfig(
             num_levels=self.num_levels_per_group,
-            eps=1e-3,
+            eps=DEFAULT_FSQ_EPS,
             precision=activation_precision,
         )
 

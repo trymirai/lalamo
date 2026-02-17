@@ -1,8 +1,5 @@
 """Lalamo implementation of NanoCodec modules from NVIDIA NeMo.
 
-This module implements the Finite Scalar Quantization (FSQ) components
-and activation functions from NVIDIA's NanoCodec.
-
 Reference: https://github.com/NVIDIA-NeMo/NeMo/blob/v2.3.0/nemo/collections/tts/modules/audio_codec_modules.py
 Reference: Mentzer et al., Finite Scalar Quantization: VQ-VAE Made Simple (https://arxiv.org/abs/2309.15505v1)
 """
@@ -47,27 +44,11 @@ __all__ = [
 ]
 
 
-# =============================================================================
-# Finite Scalar Quantization (FSQ)
-# =============================================================================
-# @dataclass(frozen=True)
-@dataclass
+@dataclass(frozen=True)
 class FiniteScalarQuantizerConfig:
-    """Configuration for Finite Scalar Quantizer.
-
-    FSQ quantizes each element of the input vector independently into discrete levels.
-    Unlike traditional VQ-VAE which learns a codebook, FSQ uses implicit quantization
-    based on the number of levels per dimension.
-
-    Args:
-        num_levels: Number of quantization levels for each dimension.
-        eps: Small regularization constant for scaling to avoid boundary issues.
-        precision: Data type for computations.
-    """
-
     num_levels: tuple[int, ...]
-    eps: float = 1e-3
-    precision: DTypeLike = jnp.float32
+    eps: float
+    precision: DTypeLike
 
     @property
     def dim(self) -> int:
@@ -102,7 +83,6 @@ class FiniteScalarQuantizerConfig:
         *,
         key: PRNGKeyArray,  # noqa: ARG002 (unused - FSQ has no learnable weights)
     ) -> "FiniteScalarQuantizer":
-        """Create quantizer (FSQ has no learnable weights)."""
         return self.empty()
 
 
@@ -110,10 +90,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     """Finite Scalar Quantizer.
 
     Quantizes each element of the input vector independently into a number of levels.
-    Uses tanh compression and rounding with straight-through estimator for gradients.
-
-    Input shape: [batch, dim, seq] (NCT format like PyTorch)
-    Output indices shape: [1, batch, seq] (codebook dimension added for RVQ compatibility)
+    Uses tanh compression and rounding with straight-through estimator.
 
     Reference: Mentzer et al., Finite Scalar Quantization: VQ-VAE Made Simple
     """
@@ -160,12 +137,8 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         return output
 
     def _round_ste(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
-        """Round to nearest integer with straight-through estimator.
-
-        The gradient flows through as if no rounding occurred.
-        """
+        """Round to nearest integer with straight-through estimator."""
         rounded = jnp.round(inputs)
-        # Straight-through: gradient of rounded w.r.t inputs = 1
         return inputs + jax.lax.stop_gradient(rounded - inputs)
 
     def _inputs_to_codes(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
@@ -217,14 +190,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         self,
         inputs: Float[Array, "batch dim seq"],
     ) -> Int[Array, "batch seq"]:
-        """Encode continuous inputs to discrete indices.
-
-        Args:
-            inputs: Input tensor of shape [batch, dim, seq]
-
-        Returns:
-            Indices tensor of shape [1, batch, seq] (1 codebook for RVQ compatibility)
-        """
+        """Encode continuous inputs to discrete indices."""
         codes = self._inputs_to_codes(inputs)
         indices = self._codes_to_indices(codes)
         # Add codebook dimension for compatibility with RVQ API
@@ -234,14 +200,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         self,
         indices: Int[Array, " seq"],
     ) -> Float[Array, "seq dim"]:
-        """Decode discrete indices back to continuous code vectors.
-
-        Args:
-            indices: Indices tensor of shape [1, batch, seq] (1 codebook)
-
-        Returns:
-            Decoded codes tensor of shape [batch, dim, seq] in range [-1, 1]
-        """
+        """Decode discrete indices back to continuous code vectors."""
         return jax.vmap(self._indices_to_codes)(indices)
 
     def __call__(
@@ -270,19 +229,6 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
 
 @dataclass(frozen=True)
 class GroupFiniteScalarQuantizerConfig:
-    """Configuration for Group Finite Scalar Quantizer.
-
-    Splits the input vector into groups and applies FSQ on each group separately.
-    This allows for hierarchical quantization where different groups can be
-    decoded independently.
-
-    Args:
-        num_groups: Number of groups to split the input into.
-        quantizer_config: Configuration for the FSQ applied to each group.
-
-    Reference: Yang et al, HiFi-Codec: Group-residual Vector quantization for High Fidelity Audio Codec
-    """
-
     num_groups: int
     quantizer_config: FiniteScalarQuantizerConfig
 
@@ -306,7 +252,6 @@ class GroupFiniteScalarQuantizerConfig:
         return self.quantizer_config.codebook_size
 
     def empty(self) -> "GroupFiniteScalarQuantizer":
-        """Create group quantizer with FSQ for each group."""
         quantizers = tuple(self.quantizer_config.empty() for _ in range(self.num_groups))
         return GroupFiniteScalarQuantizer(config=self, quantizers=quantizers)
 
@@ -315,7 +260,6 @@ class GroupFiniteScalarQuantizerConfig:
         *,
         key: PRNGKeyArray,  # noqa: ARG002 (unused - FSQ has no learnable weights)
     ) -> "GroupFiniteScalarQuantizer":
-        """Create group quantizer (FSQ has no learnable weights)."""
         return self.empty()
 
 
@@ -325,11 +269,6 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
     Splits the input vector into groups and applies FSQ on each group separately.
     This enables hierarchical/group-wise quantization where each group produces
     independent indices.
-
-    Input shape: [batch, channels, seq] where channels = num_groups * codebook_dim_per_group
-    Output indices shape: [num_groups, batch, seq]
-
-    Reference: Yang et al, HiFi-Codec: Group-residual Vector quantization for High Fidelity Audio Codec
     """
 
     quantizers: tuple[FiniteScalarQuantizer, ...]
@@ -354,14 +293,7 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
         self,
         inputs: Float[Array, "batch channels seq"],
     ) -> Int[Array, "num_groups batch seq"]:
-        """Encode inputs to indices for each group.
-
-        Args:
-            inputs: Input tensor of shape [batch, channels, seq]
-
-        Returns:
-            Indices tensor of shape [num_groups, batch, seq]
-        """
+        """Encode inputs to indices for each group."""
         # Split input along channel dimension into groups
         inputs_grouped = jnp.split(inputs, self.num_groups, axis=1)
 
@@ -410,22 +342,8 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
         return replace(self, quantizers=new_quantizers)
 
 
-# =============================================================================
-# Activation Functions
-# =============================================================================
 @dataclass(frozen=True)
 class HalfSnakeConfig:
-    """Configuration for HalfSnake activation.
-
-    HalfSnake applies Snake activation to the first half of channels
-    and LeakyReLU to the second half. This is used in NanoCodec's
-    CausalHiFiGAN decoder.
-
-    Args:
-        snake_config: Configuration for the Snake1d applied to first half.
-        leaky_relu_negative_slope: Negative slope for LeakyReLU.
-    """
-
     snake_config: Snake1dConfig
     leaky_relu_negative_slope: float
 
@@ -434,12 +352,6 @@ class HalfSnakeConfig:
         return self.snake_config.precision
 
     def empty(self, channels: int) -> "HalfSnake":
-        """Create HalfSnake with placeholder weights.
-
-        Args:
-            channels: Total number of input channels. Snake gets floor(channels/2),
-                      LeakyReLU gets the rest.
-        """
         snake_channels = channels // 2
         snake = self.snake_config.empty(snake_channels)
         return HalfSnake(config=self, snake=snake, total_channels=channels)
@@ -450,13 +362,6 @@ class HalfSnakeConfig:
         *,
         key: PRNGKeyArray,  # noqa: ARG002 (unused - Snake uses ones initialization)
     ) -> "HalfSnake":
-        """Create HalfSnake with initialized weights.
-
-        Args:
-            channels: Total number of input channels. Snake gets floor(channels/2),
-                      LeakyReLU gets the rest.
-            key: PRNG key (unused, Snake uses ones initialization).
-        """
         snake_channels = channels // 2
         snake = self.snake_config.random_init(snake_channels)
         return HalfSnake(config=self, snake=snake, total_channels=channels)
@@ -467,15 +372,10 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
     Applies Snake activation to the first half of channels and
     LeakyReLU to the second half.
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-
-    Reference: NVIDIA NeMo audio_codec_modules.py
     """
 
     snake: Snake1d
-    total_channels: int
+    total_channels: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -517,19 +417,12 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
         return replace(self, snake=new_snake)
 
 
-# =============================================================================
-# Residual Blocks
-# =============================================================================
 @dataclass(frozen=True)
 class ResidualBlockConfig:
     """Configuration for ResidualBlock.
 
-    A residual block applies: activation → conv → activation → conv + residual.
+    A residual block that applies activation → conv → activation → conv + residual.
     Used in HiFi-GAN decoder architecture.
-
-    Args:
-        activation_config: Config for HalfSnake activations (used for both activations).
-        conv_config: Config for CausalConv1d layers (used for both convolutions).
     """
 
     activation_config: HalfSnakeConfig
@@ -545,13 +438,6 @@ class ResidualBlockConfig:
         kernel_size: int,
         dilation: int,
     ) -> "ResidualBlock":
-        """Create ResidualBlock with placeholder weights.
-
-        Args:
-            channels: Number of input/output channels (also used as intermediate channels).
-            kernel_size: Kernel size for both convolutions.
-            dilation: Dilation for the first convolution (second conv uses dilation=1).
-        """
         input_activation = self.activation_config.empty(channels)
         skip_activation = self.activation_config.empty(channels)
 
@@ -584,7 +470,6 @@ class ResidualBlockConfig:
         *,
         key: PRNGKeyArray,
     ) -> "ResidualBlock":
-        """Create ResidualBlock with randomly initialized weights."""
         input_act_key, skip_act_key, input_conv_key, skip_conv_key = jax.random.split(key, 4)
 
         input_activation = self.activation_config.random_init(channels, key=input_act_key)
@@ -616,13 +501,7 @@ class ResidualBlockConfig:
 
 class ResidualBlock(LalamoModule[ResidualBlockConfig]):
     """Residual block for HiFi-GAN decoder.
-
-    Applies: activation → conv → activation → conv + residual
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-
-    Reference: NVIDIA NeMo ResidualBlock
+    Applies activation → conv → activation → conv + residual
     """
 
     input_activation: HalfSnake
@@ -682,9 +561,6 @@ class HiFiGANResBlockConfig:
 
     Wraps multiple ResidualBlocks with different dilations, applied sequentially.
     Used in HiFi-GAN decoder architecture.
-
-    Args:
-        residual_block_config: Config for ResidualBlock layers (shared by all blocks).
     """
 
     residual_block_config: ResidualBlockConfig
@@ -699,13 +575,6 @@ class HiFiGANResBlockConfig:
         kernel_size: int,
         dilations: tuple[int, ...],
     ) -> "HiFiGANResBlock":
-        """Create HiFiGANResBlock with placeholder weights.
-
-        Args:
-            channels: Number of input/output channels.
-            kernel_size: Kernel size for convolutions.
-            dilations: Tuple of dilation values, one ResidualBlock per dilation.
-        """
         res_blocks = tuple(
             self.residual_block_config.empty(
                 channels=channels,
@@ -724,7 +593,6 @@ class HiFiGANResBlockConfig:
         *,
         key: PRNGKeyArray,
     ) -> "HiFiGANResBlock":
-        """Create HiFiGANResBlock with randomly initialized weights."""
         keys = jax.random.split(key, len(dilations))
         res_blocks = tuple(
             self.residual_block_config.random_init(
@@ -740,13 +608,7 @@ class HiFiGANResBlockConfig:
 
 class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
     """HiFiGAN residual block wrapper.
-
     Creates multiple ResidualBlocks with different dilations and applies them sequentially.
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-
-    Reference: NVIDIA NeMo HiFiGANResBlock
     """
 
     res_blocks: tuple[ResidualBlock, ...]
@@ -790,9 +652,6 @@ class HiFiGANResLayerConfig:
 
     Creates multiple HiFiGANResBlocks with different kernel sizes.
     The outputs of all blocks are averaged.
-
-    Args:
-        hifigan_res_block_config: Config for HiFiGANResBlock layers (shared by all blocks).
     """
 
     hifigan_res_block_config: HiFiGANResBlockConfig
@@ -807,13 +666,6 @@ class HiFiGANResLayerConfig:
         kernel_sizes: tuple[int, ...],
         dilations: tuple[int, ...],
     ) -> "HiFiGANResLayer":
-        """Create HiFiGANResLayer with placeholder weights.
-
-        Args:
-            channels: Number of input/output channels.
-            kernel_sizes: Tuple of kernel sizes, one HiFiGANResBlock per kernel size.
-            dilations: Tuple of dilations shared by all HiFiGANResBlocks.
-        """
         res_blocks = tuple(
             self.hifigan_res_block_config.empty(
                 channels=channels,
@@ -832,7 +684,6 @@ class HiFiGANResLayerConfig:
         *,
         key: PRNGKeyArray,
     ) -> "HiFiGANResLayer":
-        """Create HiFiGANResLayer with randomly initialized weights."""
         keys = jax.random.split(key, len(kernel_sizes))
         res_blocks = tuple(
             self.hifigan_res_block_config.random_init(
@@ -851,11 +702,6 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
 
     Creates multiple HiFiGANResBlocks with different kernel sizes.
     Each block processes the same input, and their outputs are averaged.
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-
-    Reference: NVIDIA NeMo HiFiGANResLayer
     """
 
     res_blocks: tuple[HiFiGANResBlock, ...]
@@ -893,18 +739,6 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
 
 @dataclass(frozen=True)
 class CausalHiFiGANDecoderConfig:
-    """Configuration for CausalHiFiGANDecoder.
-
-    HiFi-GAN decoder with causal convolutions for audio generation.
-
-    Args:
-        activation_config: Config for HalfSnake activations (shared by all).
-        pre_conv_config: Config for input convolution.
-        transpose_conv_config: Config for upsampling transposed convolutions.
-        res_layer_config: Config for HiFiGANResLayer blocks.
-        post_conv_config: Config for output convolution.
-    """
-
     activation_config: HalfSnakeConfig
     pre_conv_config: CausalConv1dConfig
     transpose_conv_config: CausalTransposeConv1dConfig
@@ -925,17 +759,6 @@ class CausalHiFiGANDecoderConfig:
         resblock_kernel_sizes: tuple[int, ...],
         resblock_dilations: tuple[int, ...],
     ) -> "CausalHiFiGANDecoder":
-        """Create CausalHiFiGANDecoder with placeholder weights.
-
-        Args:
-            input_dim: Input dimension (from quantizer).
-            base_channels: Initial number of channels after pre_conv.
-            up_sample_rates: Upsample rate for each stage. Channels halve at each stage.
-            in_kernel_size: Kernel size for pre_conv.
-            out_kernel_size: Kernel size for post_conv.
-            resblock_kernel_sizes: Kernel sizes for HiFiGANResLayer.
-            resblock_dilations: Dilations for HiFiGANResLayer.
-        """
         # Pre-conv: input_dim -> base_channels
         pre_conv = self.pre_conv_config.empty(
             in_channels=input_dim,
@@ -1008,8 +831,6 @@ class CausalHiFiGANDecoderConfig:
         *,
         key: PRNGKeyArray,
     ) -> "CausalHiFiGANDecoder":
-        """Create CausalHiFiGANDecoder with randomly initialized weights."""
-        # Split keys for all components
         num_stages = len(up_sample_rates)
         # pre_conv, post_activation, post_conv + 3 per stage (activation, upsample, res_layer)
         num_keys = 3 + 3 * num_stages
@@ -1087,12 +908,9 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
     1. Pre-conv to expand to base_channels
     2. Multiple stages of: activation -> upsample -> res_layer
     3. Post-conv to produce single-channel audio
-    4. Tanh output activation
+    4. Tanh over result as substitute for clipping
 
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, audio_length) - audio waveform
-
-    Reference: NVIDIA NeMo CausalHiFiGANDecoder
+    Returns audio waveform in (batch, audio_length) format
     """
 
     pre_conv: CausalConv1d
@@ -1125,11 +943,9 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
             out = upsample_conv(out)
             out = res_layer(out)
 
-        # Post processing
         out = self.post_activation(out)
         out = self.post_conv(out)  # [B, T_audio, 1]
 
-        # Tanh and squeeze channel dimension
         audio = jnp.tanh(out)
         audio = audio[:, :, 0]  # [B, T_audio]
 
