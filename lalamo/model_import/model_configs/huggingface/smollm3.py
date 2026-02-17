@@ -10,7 +10,6 @@ from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    LlamaRoPEConfig,
     MLXQuantizedLinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
@@ -22,61 +21,40 @@ from lalamo.modules import (
     UnscaledRoPEConfig,
     UntiedEmbeddingConfig,
     UpcastMode,
-    YARNRoPEConfig,
 )
 from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
-__all__ = ["HFLlamaConfig"]
+__all__ = ["HFSmolLM3Config"]
 
 
 @dataclass(frozen=True)
-class LlamaRopeScalingConfig:
-    factor: float
-    high_freq_factor: float
-    low_freq_factor: float
-    original_max_position_embeddings: int
-    rope_type: Literal["llama3"]
-
-
-@dataclass(frozen=True)
-class YarnRopeScalingConfig:
-    factor: float
-    beta_fast: float
-    beta_slow: float
-    original_max_position_embeddings: int
-    rope_type: Literal["yarn"]
-    truncate: bool
-
-
-@dataclass(frozen=True)
-class HFLlamaConfig(HuggingFaceLMConfig):
+class HFSmolLM3Config(HuggingFaceLMConfig):
     torch_dtype: Literal["bfloat16", "float16", "float32"]
-    architectures: list[Literal["LlamaForCausalLM"]]
+    architectures: list[Literal["SmolLM3ForCausalLM"]]
     attention_bias: bool
     attention_dropout: float
     bos_token_id: int | list[int]
     eos_token_id: int | list[int]
-    hidden_act: Literal["silu"]
+    hidden_act: Literal["silu_glu", "silu"]
     hidden_size: int
     initializer_range: float
     intermediate_size: int
     max_position_embeddings: int
     mlp_bias: bool
-    model_type: Literal["llama"]
+    model_type: Literal["smollm3"]
+    no_rope_layers: list[int]
     num_attention_heads: int
     num_hidden_layers: int
     num_key_value_heads: int
     pretraining_tp: int
     rms_norm_eps: float
-    rope_scaling: LlamaRopeScalingConfig | YarnRopeScalingConfig | None
     rope_theta: float
-    tie_word_embeddings: bool
     transformers_version: str
     use_cache: bool
     vocab_size: int
-    head_dim: int | None = None
+    tie_word_embeddings: bool = True  # quantized model don't have this field
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
@@ -121,35 +99,13 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                     logit_soft_cap=None,
                     precision=activation_precision,
                 )
-        if self.rope_scaling is None:
-            rope_config = UnscaledRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
-            )
-        elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
-            rope_config = YARNRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
-                scaling_factor=self.rope_scaling.factor,
-                original_context_length=self.rope_scaling.original_max_position_embeddings,
-                beta_fast=self.rope_scaling.beta_fast,
-                beta_slow=self.rope_scaling.beta_slow,
-                truncate=self.rope_scaling.truncate,
-            )
-        elif isinstance(self.rope_scaling, LlamaRopeScalingConfig):
-            rope_config = LlamaRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
-                scaling_factor=self.rope_scaling.factor,
-                original_context_length=self.rope_scaling.original_max_position_embeddings,
-                low_frequency_factor=self.rope_scaling.low_freq_factor,
-                high_frequency_factor=self.rope_scaling.high_freq_factor,
-            )
-        else:
-            raise ValueError("Unsupported rope_scaling configuration")
+
+        rope_config = UnscaledRoPEConfig(
+            precision=activation_precision,
+            base=self.rope_theta,
+            max_sequence_length=context_length or self.max_position_embeddings,
+        )
+
         rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
@@ -158,6 +114,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
+
         if quantization is None:
             linear_config = FullPrecisionLinearConfig(
                 precision=activation_precision,
@@ -176,42 +133,60 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
-        attention_config = AttentionConfig(
-            qkv_projection_config=linear_config,
-            out_projection_config=linear_config,
-            query_norm_config=None,
-            key_norm_config=None,
-            logit_soft_cap=None,
-            has_sinks=False,
-            has_qkv_biases=self.attention_bias,
-            has_out_biases=False,
-            num_heads=self.num_attention_heads,
-            num_groups=self.num_key_value_heads,
-            head_dim=(self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads),
-            is_causal=True,
-            scale=None,
-            sliding_window_size=None,
-        )
-        mlp_config = DenseMLPConfig(
-            linear_config=linear_config,
-            activation=SiLU(),
-            has_up_biases=False,
-            has_down_biases=False,
-            up_clipping=None,
-            gate_clipping=None,
-        )
-        transformer_layer_config = TransformerLayerConfig(
-            pre_mixer_norm_config=rmsnorm_config,
-            mixer_config=attention_config,
-            post_mixer_norm_config=None,
-            pre_mlp_norm_config=rmsnorm_config,
-            mlp_config=mlp_config,
-            post_mlp_norm_config=None,
-        )
+
+        layer_head_dim = self.hidden_size // self.num_attention_heads
+        if len(self.no_rope_layers) < self.num_hidden_layers:
+            raise ValueError(
+                "SmolLM3 requires no_rope_layers to be a per-layer mask with at least num_hidden_layers entries, "
+                f"got {len(self.no_rope_layers)} entries for {self.num_hidden_layers} layers.",
+            )
+
+        layer_configs = []
+        for layer_idx in range(self.num_hidden_layers):
+            # Despite the name, no_rope_layers is a per-layer flag where 1 = use RoPE,
+            # matching HF's own SmolLM3Attention: self.use_rope = config.no_rope_layers[layer_idx]
+            use_rope = bool(self.no_rope_layers[layer_idx])
+
+            attention_config = AttentionConfig(
+                qkv_projection_config=linear_config,
+                out_projection_config=linear_config,
+                query_norm_config=None,
+                key_norm_config=None,
+                logit_soft_cap=None,
+                has_sinks=False,
+                has_qkv_biases=self.attention_bias,
+                has_out_biases=self.attention_bias,
+                num_heads=self.num_attention_heads,
+                num_groups=self.num_key_value_heads,
+                head_dim=layer_head_dim,
+                is_causal=True,
+                scale=None,
+                sliding_window_size=None,
+                use_rope=use_rope,
+            )
+            mlp_config = DenseMLPConfig(
+                linear_config=linear_config,
+                activation=SiLU(),
+                has_up_biases=self.mlp_bias,
+                has_down_biases=self.mlp_bias,
+                up_clipping=None,
+                gate_clipping=None,
+            )
+            layer_configs.append(
+                TransformerLayerConfig(
+                    pre_mixer_norm_config=rmsnorm_config,
+                    mixer_config=attention_config,
+                    post_mixer_norm_config=None,
+                    pre_mlp_norm_config=rmsnorm_config,
+                    mlp_config=mlp_config,
+                    post_mlp_norm_config=None,
+                ),
+            )
+
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
+            layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,

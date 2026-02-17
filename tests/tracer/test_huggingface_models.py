@@ -10,6 +10,7 @@ MODEL_LIST = [
     ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
+    ModelTestSpec("HuggingFaceTB/SmolLM3-3B", DType.FLOAT32),
     # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),

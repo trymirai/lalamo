@@ -477,7 +477,7 @@ class FishAudioConfig(ForeignTTSConfig):
     @property
     def default_precision(self) -> DTypeLike:
         # NOTE: in reality FishAudio text-decoder is bf16 while audio-decoder if fp32.
-        # Currently lalamo weight manipulation pipeline does not suport such
+        # Currently lalamo weight manipulation pipeline does not support such
         # mixed-model-mixed-weight configuration so we upcast everything to fp32
         # as temporary solution
         return jnp.dtype(getattr(self, "torch_dtype", "float32"))
