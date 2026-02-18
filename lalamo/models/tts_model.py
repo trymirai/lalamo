@@ -12,7 +12,6 @@ from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
-from lalamo.audio.utils import DEFAULT_SAMPLERATE
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,

@@ -460,7 +460,7 @@ def decode_next_token(
 
     def loop_iteration(
         iteration_state: tuple[State | None, Array, Any],
-        index: Int,
+        index: jnp.int32,
     ) -> tuple[tuple[State | None, Array, Any], None]:
         transformer_state, logits, codebooks = iteration_state
         logits = logits.reshape(logits.shape[0], 1, -1)
@@ -489,7 +489,7 @@ def decode_next_token(
     scan_result, _ = jax.lax.scan(
         loop_iteration,
         (state_fast, embedded_logits, codebooks),
-        jnp.arange(2, n_codes),
+        jnp.arange(2, n_codes, dtype=jnp.int32),
     )
     _, _, codebooks = scan_result
 
