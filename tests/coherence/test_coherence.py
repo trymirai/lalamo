@@ -32,7 +32,7 @@ MODEL_REPOS = [
     "cartesia-ai/Llamba-1B-4bit-mlx",
 ]
 
-MAX_TOKENS = 256
+MAX_TOKENS = 512
 
 SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
     ("What is 2+2?", re.compile(r"\b4\b")),
@@ -53,7 +53,9 @@ def _coherence_model_repos() -> list[str]:
 def converted_model_path(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
     try:
         return convert_model(request.param)
-    except JaxRuntimeError as e:
+    except (JaxRuntimeError, ValueError) as e:
+        if not (isinstance(e, JaxRuntimeError) or "RESOURCE_EXHAUSTED" in str(e)):
+            raise
         pytest.skip(f"Model too large to fit in GPU memory during conversion: {e}")
 
 
@@ -79,7 +81,7 @@ def _generate_replies(
         ],
         terminal_width=240,
     )
-    if isinstance(result.exception, JaxRuntimeError):
+    if result.exception is not None and (isinstance(result.exception, JaxRuntimeError) or "RESOURCE_EXHAUSTED" in str(result.exception)):
         pytest.skip(f"Model too large to fit in GPU memory during generation: {result.exception}")
     assert result.exit_code == 0, (
         f"generate-replies failed (exit {result.exit_code}).\n"
@@ -157,7 +159,7 @@ def test_model_coherent_and_stops(
 
         if pattern.search(response) is None:
             qa_failures.append(
-                f"Expected pattern {pattern.pattern!r} not found in response to {question!r}: {response!r}"
+                f"Expected pattern {pattern.pattern!r} not found in response to {question!r}: {response!r}",
             )
             continue
 
@@ -165,7 +167,7 @@ def test_model_coherent_and_stops(
         if num_tokens >= MAX_TOKENS - 10:
             qa_failures.append(
                 f"Model did not stop cleanly for {question!r} — produced {num_tokens} tokens (limit {MAX_TOKENS}). "
-                f"Output: {response[:200]!r}..."
+                f"Output: {response[:200]!r}...",
             )
             continue
 

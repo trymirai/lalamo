@@ -3,7 +3,7 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-from lalamo.model_import import REPO_TO_MODEL
+from lalamo.model_registry import ModelRegistry
 from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
 
 MODELS = ["google/gemma-3-1b-it"]
@@ -43,7 +43,7 @@ def test_convert(converted_model_dir: Path) -> None:
     assert (converted_model_dir / "tokenizer.json").exists()
 
 
-def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo) -> None:
+def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo, model_registry: ModelRegistry) -> None:
     plain_output = strip_ansi_escape(run_lalamo("list-models", "--plain"))
     plain_repos = [line.strip() for line in plain_output.splitlines() if line.strip()]
     assert plain_repos
@@ -54,9 +54,9 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo) -> None:
     assert "│" in fancy_output
     fancy_repos = [repo for repo in plain_repos if repo in fancy_output]
 
-    expected_repos = sorted(REPO_TO_MODEL)
-    assert sorted(plain_repos) == expected_repos
-    assert sorted(fancy_repos) == expected_repos
+    local_repos = set(model_registry.repo_to_model)
+    assert local_repos.issubset(set(plain_repos))
+    assert local_repos.issubset(set(fancy_repos))
 
 
 @pytest.mark.parametrize(

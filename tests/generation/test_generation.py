@@ -4,8 +4,6 @@ import jax.numpy as jnp
 import pytest
 
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import import_model
-from lalamo.model_registry import ModelRegistry
 from lalamo.models import LanguageModel
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
