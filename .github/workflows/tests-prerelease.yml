@@ -48,8 +48,11 @@ jobs:
       - uses: ./.github/actions/setup
         with:
           dev: 'true'
+          cuda: 'true'
 
       - name: Run pytest
+        env:
+          LALAMO_COHERENCE_FULL_COVERAGE: "1"
         run: |
           pytest tests/coherence
 

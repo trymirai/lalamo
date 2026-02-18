@@ -145,22 +145,3 @@ jobs:
       - name: Run tox
         run: |
           uvx tox -e cli-${{ matrix.device }}-${{ matrix.python }}
-
-  coherence:
-    name: Coherence (Full Coverage)
-    runs-on: [self-hosted, linux, gpu, l40s]
-    needs: [unit]
-    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-          cuda: 'true'
-
-      - name: Run coherence tests (full model coverage)
-        env:
-          LALAMO_COHERENCE_FULL_COVERAGE: "1"
-        run: |
-          pytest tests/coherence
