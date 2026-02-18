@@ -10,6 +10,8 @@ from tokenizers import Tokenizer
 from typer.testing import CliRunner
 
 from lalamo.main import app
+from lalamo.model_import.model_specs.common import ModelType
+from lalamo.model_registry import ModelRegistry
 from tests.conftest import ConvertModel
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
@@ -44,10 +46,7 @@ def _coherence_model_repos() -> list[str]:
     # When LALAMO_COHERENCE_FULL_COVERAGE=1, uses all registry LMs; GPU OOM → skip at runtime.
     if not os.getenv("LALAMO_COHERENCE_FULL_COVERAGE"):
         return MODEL_REPOS
-    from lalamo.model_import.model_specs.common import ModelType
-    from lalamo.model_registry import get_model_registry
-
-    registry = get_model_registry()
+    registry = ModelRegistry.build()
     return [spec.repo for spec in registry.models if spec.model_type == ModelType.LANGUAGE_MODEL]
 
 

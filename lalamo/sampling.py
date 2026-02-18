@@ -35,6 +35,8 @@ class GreedyPolicy(SamplingPolicy):
 
 
 class NoTieGreedyPolicy(SamplingPolicy):
+    """Like GreedyPolicy, but breaks ties deterministically by picking the first argmax."""
+
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         best = jnp.argmax(logits)
         return jnp.where(jnp.arange(logits.shape[0]) == best, 1.0, -jnp.inf)

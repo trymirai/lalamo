@@ -18,7 +18,7 @@ def _assert_has_london_and_yes(texts: list[str]) -> None:
     assert "yes" in joined, f"Expected 'yes' in {texts!r}"
 
 
-@pytest.fixture(scope="module", params=MODELS, ids=str)
+@pytest.fixture(scope="session", params=MODELS, ids=str)
 def converted_model_dir(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
     return convert_model(request.param)
 

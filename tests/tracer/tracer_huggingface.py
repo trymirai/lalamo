@@ -272,6 +272,20 @@ def _module_device(module: nn.Module, fallback_device: torch.device) -> torch.de
     return fallback_device
 
 
+def _rope_forward(
+    rope: HFRotaryEmbedding,
+    x: torch.Tensor,
+    position_ids: torch.Tensor,
+    layer_type: str,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    rope_device = _module_device(rope, device)  # type: ignore[arg-type]
+    rope_kwargs: dict[str, Any] = {}
+    if "layer_type" in signature(rope.forward).parameters:
+        rope_kwargs["layer_type"] = layer_type
+    return rope.forward(x.to(rope_device), position_ids.to(rope_device), **rope_kwargs)  # type: ignore[misc]
+
+
 @dataclass(frozen=True)
 class HFDecoderTracer(
     ModelTracer[
@@ -295,35 +309,12 @@ class HFDecoderTracer(
         embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
         return self.hf_model.model.embed_tokens.forward(token_ids.to(embed_device))
 
-    def _rope_forward(
-        self,
-        rope: HFRotaryEmbedding,
-        x: torch.Tensor,
-        position_ids: torch.Tensor,
-        layer_type: str,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        rope_device = _module_device(rope, self.device)  # type: ignore[arg-type]
-        rope_kwargs: dict[str, Any] = {}
-        if "layer_type" in signature(rope.forward).parameters:
-            rope_kwargs["layer_type"] = layer_type
-        return rope.forward(x.to(rope_device), position_ids.to(rope_device), **rope_kwargs)  # type: ignore[misc]
-
     def global_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return self._rope_forward(
-            self.hf_model.model.rotary_emb,
-            x,
-            position_ids,
-            "full_attention",
-        )
+        return _rope_forward(self.hf_model.model.rotary_emb, x, position_ids, "full_attention", self.device)
 
     def local_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
-        return self._rope_forward(
-            hf_rope,
-            x,
-            position_ids,
-            "sliding_attention",
-        )
+        return _rope_forward(hf_rope, x, position_ids, "sliding_attention", self.device)
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
         rmsnorm_device = _module_device(rmsnorm, self.device)  # type: ignore[arg-type]
@@ -556,12 +547,11 @@ class ModernBertTracer(
         assert cosines.ndim == 3
         layer_type = ref_layer.attention_type
         rotary_emb = self.hf_model.model.rotary_emb  # type: ignore[attr-defined]
-        rotary_device = _module_device(rotary_emb, self.device)  # type: ignore[arg-type]
         # NOTE: first argument to 'rotary_emb' should be qkv tensor but it is only used
         # for its dtype and device, actual values are irrelevant.
-        fake_qkv = torch.ones(1, dtype=torch.float32, device=rotary_device)
-        torch_pos_ids = jax_to_torch(position_ids).to(device=fake_qkv.device, dtype=torch.long)
-        ref_cosines, ref_sines = rotary_emb(fake_qkv, torch_pos_ids, layer_type)
+        fake_qkv = torch.ones(1, dtype=torch.float32)
+        torch_pos_ids = jax_to_torch(position_ids)
+        ref_cosines, ref_sines = _rope_forward(rotary_emb, fake_qkv, torch_pos_ids, layer_type, self.device)
         assert_close(
             result=sines,
             reference=torch_to_jax(ref_sines),

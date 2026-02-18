@@ -21,7 +21,7 @@ class CoherenceVerdict:
     coherent: bool
     score: float
     summary: str
-    issues: list[str]
+    issues: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -39,13 +39,13 @@ def _load_examples(path: Path | str = Path(__file__).parent / "prompt_spec.toml"
     examples = [
         FewShotExample(
             output=e["output"],
-            verdict=CoherenceVerdict(coherent=True, score=e["score"], summary=e["summary"], issues=e["issues"]),
+            verdict=CoherenceVerdict(coherent=True, score=e["score"], summary=e["summary"], issues=tuple(e["issues"])),
         )
         for e in data.get("coherent", [])
     ] + [
         FewShotExample(
             output=e["output"],
-            verdict=CoherenceVerdict(coherent=False, score=e["score"], summary=e["summary"], issues=e["issues"]),
+            verdict=CoherenceVerdict(coherent=False, score=e["score"], summary=e["summary"], issues=tuple(e["issues"])),
         )
         for e in data.get("incoherent", [])
     ]
@@ -115,11 +115,11 @@ def _parse_verdict(content: str) -> CoherenceVerdict:
 
     raw_issues = parsed.get("issues")
     if isinstance(raw_issues, list):
-        issues = [str(i) for i in raw_issues]
+        issues = tuple(str(i) for i in raw_issues)
     elif raw_issues is None:
-        issues = []
+        issues = ()
     else:
-        issues = [str(raw_issues)]
+        issues = (str(raw_issues),)
 
     try:
         score = float(parsed.get("score", 0.0))
@@ -143,6 +143,8 @@ def judge(
     max_retries: int = 3,
     task_prompt: str = TASK_PROMPT,
 ) -> CoherenceVerdict:
+    if max_retries < 1:
+        raise ValueError(f"max_retries must be >= 1, got {max_retries}")
     last_error: Exception | None = None
     for attempt in range(max_retries):
         resp = requests.post(
@@ -166,4 +168,4 @@ def judge(
         except json.JSONDecodeError as e:
             last_error = e
             log.warning("Judge returned invalid JSON (attempt %d/%d): %s", attempt + 1, max_retries, content[:200])
-    raise last_error  # type: ignore[misc]
+    raise last_error

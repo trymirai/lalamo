@@ -1,15 +1,11 @@
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 import polars as pl
 import pytest
 from tokenizers import Tokenizer
-from typer.testing import CliRunner
 
-from lalamo.main import app
-
-RunLalamo = Callable[..., str]
+from tests.conftest import RunLalamo
 
 PULL_MODEL_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
 MATH_PROMPT = "What is 2 + 2? Reply with a single number, nothing else."
@@ -21,23 +17,7 @@ def _has_model_weights(model_dir: Path) -> bool:
     return (model_dir / "model.safetensors").exists() or any(model_dir.glob("model*.safetensors"))
 
 
-@pytest.fixture(scope="module")
-def run_lalamo() -> RunLalamo:
-    runner = CliRunner()
-
-    def _run(*args: str) -> str:
-        result = runner.invoke(app, list(args), terminal_width=240)
-        assert result.exit_code == 0, (
-            f"lalamo {' '.join(args)} failed (exit {result.exit_code}).\n"
-            f"--- output ---\n{result.output}\n"
-            f"--- exception ---\n{result.exception!r}"
-        )
-        return result.output
-
-    return _run
-
-
-@pytest.fixture(scope="module")
+@pytest.fixture(scope="session")
 def pulled_model_dir(
     tmp_path_factory: pytest.TempPathFactory,
     run_lalamo: RunLalamo,

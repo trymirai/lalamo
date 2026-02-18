@@ -120,6 +120,16 @@ def test_batch_generation(language_model: LanguageModel) -> None:
     assert "apple" in response_b.lower() and "london" not in response_b.lower(), response_b
 
 
+def test_streaming_generation(language_model: LanguageModel) -> None:
+    prompt = [UserMessage("What's the capital of UK?")]
+    token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
+
+    token_stream = language_model.stream_tokens(token_ids, max_output_length=32)
+    response_token_ids = jnp.array(list(token_stream))
+    response_text = language_model.message_processor.tokenizer.decode(response_token_ids)
+    assert "london" in response_text.lower(), response_text
+
+
 def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
     token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
