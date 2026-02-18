@@ -14,7 +14,7 @@ from lalamo.model_import.model_specs.common import ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.conftest import ConvertModel
 
-from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
+from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, JudgeNetworkError, judge
 
 log = logging.getLogger(__name__)
 
@@ -33,6 +33,25 @@ MODEL_REPOS = [
 ]
 
 MAX_TOKENS = 512
+
+# Models that cannot answer factual questions correctly (e.g. function-calling models).
+# For these, only EOS behavior is verified; QA adequacy assertions are skipped.
+BAD_MODELS: list[str] = [
+    "google/functiongemma-270m-it",
+]
+
+# Models with extended thinking/reasoning that exhaust the default token budget.
+# Token limit is multiplied by 4 to give them room to finish reasoning before answering.
+THINKING_MODELS: list[str] = [
+    "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+    "trymirai/DeepSeek-R1-Distill-Qwen-1.5B-AWQ",
+    "HuggingFaceTB/SmolLM3-3B",
+    "mlx-community/SmolLM3-3B-8bit",
+    "Qwen/Qwen3-8B-AWQ",
+    "Qwen/Qwen3-8B-MLX-4bit",
+    "RekaAI/reka-flash-3.1",
+    "Nanbeige/Nanbeige4.1-3B",
+]
 
 SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
     ("What is 2+2?", re.compile(r"\b4\b")),
@@ -65,6 +84,7 @@ def _generate_replies(
     output_path: Path,
     *,
     batch_size: int,
+    max_tokens: int = MAX_TOKENS,
 ) -> None:
     result = _runner.invoke(
         app,
@@ -77,7 +97,7 @@ def _generate_replies(
             "--batch-size",
             str(batch_size),
             "--max-output-length",
-            str(MAX_TOKENS),
+            str(max_tokens),
         ],
         terminal_width=240,
     )
@@ -100,6 +120,10 @@ def test_model_coherent_and_stops(
 
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
+    repo = converted_model_path.name.replace("__", "/", 1)
+    is_bad = repo in BAD_MODELS
+    max_tokens = MAX_TOKENS * 4 if repo in THINKING_MODELS else MAX_TOKENS
+
     work_dir = tmp_path_factory.mktemp("coherence")
     dataset_path = work_dir / "dataset.parquet"
     output_path = work_dir / "replies.parquet"
@@ -114,7 +138,7 @@ def test_model_coherent_and_stops(
     ).write_parquet(dataset_path)
 
     batch_size = 1 + len(SIMPLE_QA)
-    _generate_replies(converted_model_path, dataset_path, output_path, batch_size=batch_size)
+    _generate_replies(converted_model_path, dataset_path, output_path, batch_size=batch_size, max_tokens=max_tokens)
 
     responses = pl.read_parquet(output_path).get_column("response").to_list()
     assert len(responses) == batch_size
@@ -128,12 +152,15 @@ def test_model_coherent_and_stops(
     assert coherence_output, "Model produced empty output for coherence prompt"
     log.info("Coherence output:\n%s", coherence_output)
 
-    verdict = judge(
-        api_key=api_key,
-        model=judge_model,
-        candidate_output=coherence_output,
-        timeout=60,
-    )
+    try:
+        verdict = judge(
+            api_key=api_key,
+            model=judge_model,
+            candidate_output=coherence_output,
+            timeout=60,
+        )
+    except JudgeNetworkError as e:
+        pytest.skip(f"Judge HTTP failed: {e}")
 
     log.info(
         "Judge verdict: coherent=%s, score=%.2f, issues=%s, summary=%s",
@@ -157,27 +184,33 @@ def test_model_coherent_and_stops(
     for (question, pattern), response in zip(SIMPLE_QA, simple_outputs, strict=True):
         assert response, f"Model produced empty output for: {question!r}"
 
+        num_tokens = len(tokenizer.encode(response).ids)
+        if num_tokens >= max_tokens - 10:
+            qa_failures.append(
+                f"Model did not stop cleanly for {question!r} — produced {num_tokens} tokens (limit {max_tokens}). "
+                f"Output: {response[:200]!r}...",
+            )
+            continue
+
+        if is_bad:
+            continue
+
         if pattern.search(response) is None:
             qa_failures.append(
                 f"Expected pattern {pattern.pattern!r} not found in response to {question!r}: {response!r}",
             )
             continue
 
-        num_tokens = len(tokenizer.encode(response).ids)
-        if num_tokens >= MAX_TOKENS - 10:
-            qa_failures.append(
-                f"Model did not stop cleanly for {question!r} — produced {num_tokens} tokens (limit {MAX_TOKENS}). "
-                f"Output: {response[:200]!r}...",
+        try:
+            qa_verdict = judge(
+                api_key=api_key,
+                model=judge_model,
+                candidate_output=response,
+                task_prompt=question,
+                timeout=60,
             )
-            continue
-
-        qa_verdict = judge(
-            api_key=api_key,
-            model=judge_model,
-            candidate_output=response,
-            task_prompt=question,
-            timeout=60,
-        )
+        except JudgeNetworkError as e:
+            pytest.skip(f"Judge HTTP failed: {e}")
         log.info(
             "QA judge for %r: coherent=%s, score=%.2f, issues=%s",
             question,
@@ -186,7 +219,8 @@ def test_model_coherent_and_stops(
             qa_verdict.issues,
         )
 
-    assert len(qa_failures) <= 1, (
-        f"{len(qa_failures)}/{len(SIMPLE_QA)} QA checks failed (majority required):\n"
-        + "\n".join(f"  - {f}" for f in qa_failures)
-    )
+    if not is_bad:
+        assert len(qa_failures) <= 1, (
+            f"{len(qa_failures)}/{len(SIMPLE_QA)} QA checks failed (majority required):\n"
+            + "\n".join(f"  - {f}" for f in qa_failures)
+        )

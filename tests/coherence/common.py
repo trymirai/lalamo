@@ -11,6 +11,10 @@ from tests.conftest import strip_ansi_escape
 
 DEFAULT_JUDGE_MODEL = "meta-llama/llama-3.3-70b-instruct"
 
+
+class JudgeNetworkError(Exception):
+    """Raised when all judge HTTP requests fail after retries."""
+
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 
 log = logging.getLogger(__name__)
@@ -147,25 +151,33 @@ def judge(
         raise ValueError(f"max_retries must be >= 1, got {max_retries}")
     last_error: Exception | None = None
     for attempt in range(max_retries):
-        resp = requests.post(
-            OPENROUTER_ENDPOINT,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-                "X-Title": "lalamo-coherence-tests",
-            },
-            json={
-                "model": model,
-                "messages": _build_messages(candidate_output, task_prompt),
-                "temperature": 0.0,
-            },
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        content = resp.json()["choices"][0]["message"]["content"]
+        temperature = 0.0 if attempt == 0 else 0.5
+        try:
+            resp = requests.post(
+                OPENROUTER_ENDPOINT,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "X-Title": "lalamo-coherence-tests",
+                },
+                json={
+                    "model": model,
+                    "messages": _build_messages(candidate_output, task_prompt),
+                    "temperature": temperature,
+                },
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            content = resp.json()["choices"][0]["message"]["content"]
+        except requests.exceptions.RequestException as e:
+            last_error = e
+            log.warning("Judge HTTP error (attempt %d/%d): %s", attempt + 1, max_retries, e)
+            continue
         try:
             return _parse_verdict(content)
         except json.JSONDecodeError as e:
             last_error = e
             log.warning("Judge returned invalid JSON (attempt %d/%d): %s", attempt + 1, max_retries, content[:200])
+    if isinstance(last_error, requests.exceptions.RequestException):
+        raise JudgeNetworkError(f"All {max_retries} judge attempts failed with HTTP errors") from last_error
     raise last_error
