@@ -1,16 +1,22 @@
 import logging
 import os
+import re
 from pathlib import Path
 
 import polars as pl
 import pytest
+from jax.errors import JaxRuntimeError
 from tokenizers import Tokenizer
+from typer.testing import CliRunner
 
-from tests.conftest import ConvertModel, RunLalamo
+from lalamo.main import app
+from tests.conftest import ConvertModel
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
 
 log = logging.getLogger(__name__)
+
+_runner = CliRunner()
 
 MODEL_REPOS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
@@ -25,17 +31,67 @@ MODEL_REPOS = [
 ]
 
 MAX_TOKENS = 256
-TRIVIAL_PROMPT = "What is 2+2?"
+
+SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
+    ("What is 2+2?", re.compile(r"\b4\b")),
+    ("What is the capital of France?", re.compile(r"\bparis\b", re.IGNORECASE)),
+    ("What is H2O?", re.compile(r"\bwater\b", re.IGNORECASE)),
+    ("Is Python a programming language?", re.compile(r"\byes\b", re.IGNORECASE)),
+]
 
 
-@pytest.fixture(params=MODEL_REPOS, ids=lambda repo: repo.split("/")[-1])
+def _coherence_model_repos() -> list[str]:
+    # When LALAMO_COHERENCE_FULL_COVERAGE=1, uses all registry LMs; GPU OOM → skip at runtime.
+    if not os.getenv("LALAMO_COHERENCE_FULL_COVERAGE"):
+        return MODEL_REPOS
+    from lalamo.model_import.model_specs.common import ModelType
+    from lalamo.model_registry import get_model_registry
+
+    registry = get_model_registry()
+    return [spec.repo for spec in registry.models if spec.model_type == ModelType.LANGUAGE_MODEL]
+
+
+@pytest.fixture(params=_coherence_model_repos(), ids=lambda repo: repo.split("/")[-1])
 def converted_model_path(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
-    return convert_model(request.param)
+    try:
+        return convert_model(request.param)
+    except JaxRuntimeError as e:
+        pytest.skip(f"Model too large to fit in GPU memory during conversion: {e}")
+
+
+def _generate_replies(
+    converted_model_path: Path,
+    dataset_path: Path,
+    output_path: Path,
+    *,
+    batch_size: int,
+) -> None:
+    result = _runner.invoke(
+        app,
+        [
+            "generate-replies",
+            str(converted_model_path),
+            str(dataset_path),
+            "--output-path",
+            str(output_path),
+            "--batch-size",
+            str(batch_size),
+            "--max-output-length",
+            str(MAX_TOKENS),
+        ],
+        terminal_width=240,
+    )
+    if isinstance(result.exception, JaxRuntimeError):
+        pytest.skip(f"Model too large to fit in GPU memory during generation: {result.exception}")
+    assert result.exit_code == 0, (
+        f"generate-replies failed (exit {result.exit_code}).\n"
+        f"--- output ---\n{result.output}\n"
+        f"--- exception ---\n{result.exception!r}"
+    )
 
 
 def test_model_coherent_and_stops(
     converted_model_path: Path,
-    run_lalamo: RunLalamo,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     api_key = os.getenv("OPENROUTER_API_KEY")
@@ -52,28 +108,21 @@ def test_model_coherent_and_stops(
         {
             "conversation": [
                 [{"role": "user", "content": TASK_PROMPT}],
-                [{"role": "user", "content": TRIVIAL_PROMPT}],
+                *[[{"role": "user", "content": q}] for q, _ in SIMPLE_QA],
             ],
         },
     ).write_parquet(dataset_path)
 
-    run_lalamo(
-        "generate-replies",
-        str(converted_model_path),
-        str(dataset_path),
-        "--output-path",
-        str(output_path),
-        "--batch-size",
-        "2",
-        "--max-output-length",
-        str(MAX_TOKENS),
-    )
+    batch_size = 1 + len(SIMPLE_QA)
+    _generate_replies(converted_model_path, dataset_path, output_path, batch_size=batch_size)
 
     responses = pl.read_parquet(output_path).get_column("response").to_list()
-    assert len(responses) == 2
+    assert len(responses) == batch_size
 
     coherence_output = responses[0]
-    trivial_output = responses[1]
+    simple_outputs = responses[1:]
+
+    tokenizer = Tokenizer.from_file(str(converted_model_path / "tokenizer.json"))
 
     # --- coherence check on hash table prompt ---
     assert coherence_output, "Model produced empty output for coherence prompt"
@@ -100,12 +149,36 @@ def test_model_coherent_and_stops(
         f"(score={verdict.score:.2f}, issues={issues}, summary={verdict.summary!r})"
     )
 
-    # --- EOS check on trivial prompt ---
-    assert trivial_output, "Model produced empty output for trivial prompt"
+    # --- checks on simple factual QA prompts ---
+    for (question, pattern), response in zip(SIMPLE_QA, simple_outputs, strict=True):
+        assert response, f"Model produced empty output for: {question!r}"
 
-    tokenizer = Tokenizer.from_file(str(converted_model_path / "tokenizer.json"))
-    num_tokens = len(tokenizer.encode(trivial_output).ids)
-    assert num_tokens < MAX_TOKENS - 10, (
-        f"Model did not stop cleanly — produced {num_tokens} tokens (limit {MAX_TOKENS}). "
-        f"Output: {trivial_output[:200]!r}..."
-    )
+        assert pattern.search(response) is not None, (
+            f"Expected pattern {pattern.pattern!r} not found in response to {question!r}: {response!r}"
+        )
+
+        num_tokens = len(tokenizer.encode(response).ids)
+        assert num_tokens < MAX_TOKENS - 10, (
+            f"Model did not stop cleanly for {question!r} — produced {num_tokens} tokens (limit {MAX_TOKENS}). "
+            f"Output: {response[:200]!r}..."
+        )
+
+        qa_verdict = judge(
+            api_key=api_key,
+            model=judge_model,
+            candidate_output=response,
+            task_prompt=question,
+            timeout=60,
+        )
+        log.info(
+            "QA judge for %r: coherent=%s, score=%.2f, issues=%s",
+            question,
+            qa_verdict.coherent,
+            qa_verdict.score,
+            qa_verdict.issues,
+        )
+        qa_issues = ", ".join(qa_verdict.issues) or "none"
+        assert qa_verdict.coherent, (
+            f"Response to {question!r} was incoherent "
+            f"(score={qa_verdict.score:.2f}, issues={qa_issues}, summary={qa_verdict.summary!r}): {response!r}"
+        )
