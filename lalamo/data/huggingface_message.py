@@ -5,7 +5,7 @@ from typing import ClassVar, Self
 import cattrs
 import polars as pl
 
-from lalamo.message_processor import AssistantMessage, Message, UserMessage
+from lalamo.message_processor import AssistantMessage, Message, SystemMessage, UserMessage
 
 
 @dataclass(frozen=True)
@@ -21,8 +21,10 @@ class HFMessage:
 
     def as_message(self) -> Message:
         match self.role:
-            case "user":
+            case "user" | "human":
                 return UserMessage(self.content)
+            case "system" | "developer":
+                return SystemMessage(self.content)
             case "assistant":
                 return AssistantMessage(None, self.content)
             case other:
