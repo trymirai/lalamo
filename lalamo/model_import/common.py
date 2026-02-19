@@ -24,9 +24,11 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioCon
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
+    FishAudioTTSGenerator,
     GenerationConfig,
     LanguageModel,
     LanguageModelConfig,
+    Qwen3TTSTTSGenerator,
     TTSGenerator,
     TTSGeneratorConfig,
 )
@@ -484,7 +486,18 @@ def _import_tts_model(
         ),
         message_processor_config=message_processor.config,
     )
-    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+    if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
+        tts_generator = FishAudioTTSGenerator(tts_generator_config, tts_model, message_processor)
+    else:
+        try:
+            from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
+
+            if isinstance(tts_model.text_decoder, Qwen3TTSTextDecoder):
+                tts_generator = Qwen3TTSTTSGenerator(tts_generator_config, tts_model, message_processor)
+            else:
+                tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+        except ImportError:
+            tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
 
     return (tts_generator, tts_generator_config)
 

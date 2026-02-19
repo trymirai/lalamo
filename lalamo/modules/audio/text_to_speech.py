@@ -17,6 +17,8 @@ from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .nanocodec.audio_decoding import NanoCodecConfig
 from .nanocodec.stub_text_decoder import StubTextDecoderConfig
+from .qwen3_tts.qwen3_tts_audio_decoding import Qwen3TTSAudioDecoderConfig
+from .qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
@@ -92,10 +94,12 @@ class TTSMessageProcessor:
         return self.tokenizer.decode(tokens, skip_special_tokens=False)
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | DummyUnionMember
+TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | Qwen3TTSAudioDecoderConfig | DummyUnionMember
 register_config_union(TTSAudioDecoderConfig)
 
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig | DummyUnionMember
+TTSTextDecoderConfig = (
+    FishAudioTextDecoderConfig | Qwen3TTSTextDecoderConfig | StubTextDecoderConfig | DummyUnionMember
+)
 register_config_union(TTSTextDecoderConfig)
 
 

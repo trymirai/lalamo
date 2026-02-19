@@ -24,6 +24,10 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
 )
+from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import (
+    Qwen3TTSTextDecoder,
+    default_qwen3_tts_text_sampling_policy,
+)
 from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
     DEFAULT_TTS_SAMPLING_POLICY,
@@ -94,9 +98,13 @@ class TTSGenerator(eqx.Module):
         return self.tts_model.vocoder(audio_features)
 
     def get_generated_audio_params(self) -> AudioRenderingSettings:
-        # NOTE: think if this could be moved to config level or made mandatory via abstract
+        # Prefer decoder-native sample rate when available.
+        samplerate = DEFAULT_SAMPLERATE
+        if hasattr(self.tts_model.audio_decoder, "samplerate"):
+            samplerate = int(self.tts_model.audio_decoder.samplerate)
+
         return AudioRenderingSettings(
-            samplerate=DEFAULT_SAMPLERATE,
+            samplerate=samplerate,
             output_channels=1,
             bitwidth=16,
             encoding=AudioEncoding.PCM,
@@ -141,11 +149,13 @@ class TTSGenerator(eqx.Module):
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
-        return TTSGenerator(
-            config=config,
-            tts_model=model,
-            message_processor=message_processor,
-        )
+        generator_class: type[TTSGenerator] = TTSGenerator
+        if isinstance(model.text_decoder, FishAudioTextDecoder):
+            generator_class = FishAudioTTSGenerator
+        elif isinstance(model.text_decoder, Qwen3TTSTextDecoder):
+            generator_class = Qwen3TTSTTSGenerator
+
+        return generator_class(config=config, tts_model=model, message_processor=message_processor)
 
 
 class FishAudioTTSGenerator(TTSGenerator):
@@ -175,6 +185,35 @@ class FishAudioTTSGenerator(TTSGenerator):
 
     def generate_waveform(self, audio_features: Array) -> Array:
         return super().generate_waveform(audio_features)
+
+    def get_generated_audio_params(self) -> AudioRenderingSettings:
+        return AudioRenderingSettings(
+            samplerate=self.tts_model.audio_decoder.samplerate,
+            output_channels=1,
+            bitwidth=16,
+            encoding=AudioEncoding.PCM,
+        )
+
+
+class Qwen3TTSTTSGenerator(TTSGenerator):
+    def decode_text(
+        self,
+        text_tokens: Int[Array, "batch sequence"],
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
+        random_key: PRNGKeyArray | None = None,
+    ) -> Int[Array, "num_codebooks sequence"]:
+        assert isinstance(self.tts_model.text_decoder, Qwen3TTSTextDecoder)
+
+        if sampling_policy is None:
+            sampling_policy = default_qwen3_tts_text_sampling_policy()
+
+        random_key = jax.random.PRNGKey(123) if random_key is None else random_key
+        return self.tts_model.text_decoder.decode_utterance(
+            text_tokens,
+            sampling_policy=sampling_policy,
+            key=random_key,
+        )
 
     def get_generated_audio_params(self) -> AudioRenderingSettings:
         return AudioRenderingSettings(
