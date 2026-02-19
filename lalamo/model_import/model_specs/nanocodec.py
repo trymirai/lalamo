@@ -1,4 +1,3 @@
-from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
 
 from .common import ConfigMap, FileSpec, ModelSpec, ModelType, WeightsType
@@ -26,7 +25,7 @@ NANOCODEC_TTS_MODELS = [
             model_config=FileSpec(f"{NEMO_NANOCODEC_MODEL_ID}.nemo"),
             chat_template=NANOCODEC_CHAT_TEMPLATE,
             generation_config=None,
-            tokenizer=dummy_char_level_tokenizer_config(),
+            tokenizer=None,
         ),
         model_type=ModelType.TTS_MODEL,
     ),

@@ -7,6 +7,8 @@ import pytest
 import torch
 from omegaconf import DictConfig
 
+from lalamo.audio.tts_message_processor import TTSMessage
+from lalamo.model_import.common import import_model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.models import TTSGenerator
 from lalamo.modules.audio.common_modules import (
@@ -16,7 +18,7 @@ from lalamo.modules.audio.common_modules import (
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     Snake1dConfig,
 )
-from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodecConfig
+from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
     DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
@@ -34,6 +36,8 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayerConfig,
     ResidualBlockConfig,
 )
+from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
+from lalamo.modules.audio.text_to_speech import TTSModel
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
     CausalHiFiGANDecoder,
@@ -434,10 +438,6 @@ def test_nanocodec_model_spec_loading() -> None:
     Exercises the full pipeline: NanoCodecForeignConfig -> TTSConfig -> TTSModel
     with StubTextDecoder + NanoCodec audio decoder, then runs generate_speech.
     """
-    from lalamo.model_import.common import import_model
-    from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
-    from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
-    from lalamo.modules.audio.text_to_speech import TTSMessage, TTSModel
 
     message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
 
