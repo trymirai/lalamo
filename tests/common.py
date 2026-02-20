@@ -8,23 +8,12 @@ __all__ = ["assert_close", "checkify_forward"]
 
 ATOL = 1e-3
 RTOL = 0.03
-CPU_ATOL = 1e-5
-CPU_RTOL = 1e-3
-
-
-def _get_default_device() -> jax.Device | None:
-    configured_default_device = jax.config.jax_default_device
-    if configured_default_device is not None:
-        return configured_default_device
-
-    devices = jax.devices()
-    if not devices:
-        return None
-    return devices[0]
+CPU_ATOL = 1e-6
+CPU_RTOL = 1e-4
 
 
 def _precision_config() -> tuple[str, float, float]:
-    default_device = _get_default_device()
+    default_device = jax.config.jax_default_device or jax.local_devices()[0]  # type: ignore
     if default_device is not None and default_device.platform == "cpu":
         return "high", CPU_ATOL, CPU_RTOL
     return "low", ATOL, RTOL
