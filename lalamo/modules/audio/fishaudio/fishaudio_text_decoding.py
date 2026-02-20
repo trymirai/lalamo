@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Any, Self
 
 import jax
 from jax import numpy as jnp
@@ -248,6 +248,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
         embeddings = self.embed(text_and_codebooks)
+
         codes, updated_state = decode_next_token(
             model=self,
             x=embeddings,
@@ -257,6 +258,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens=None,
             key=key,
         )
+
         return FishAudioTextDecoderResult(token_codes=codes, hidden_states=None, state=updated_state)
 
     def embed(
@@ -408,6 +410,9 @@ def decode_next_token(
     key: PRNGKeyArray,
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
 ) -> tuple[Int[Array, "batch codes"], State | None]:
+    batch_size = x.shape[0]
+    assert batch_size == 1, "Batching not supported yet"
+
     slow_model_result = model.transformer_slow(
         inner_features=x,
         token_positions=input_pos,
@@ -426,14 +431,21 @@ def decode_next_token(
 
     (logits,) = vmap_twice(model.readout_slow)(slow_model_result.outputs)
 
-    codebooks = [vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])]
+    n_codes = model.num_codebooks + 1
 
-    batch_size, *_ = x.shape
+    codebooks = jnp.zeros((batch_size, n_codes), dtype=jnp.int32)
+    codebooks = codebooks.at[0, 0].set(vmap(lambda x: sampling_policy(x, key=key))(logits[:, -1, :])[0])
+    first_fast_code = jnp.array([codebooks[0, 0] - model.semantic_begin_id])
+    first_fast_code = first_fast_code.at[first_fast_code < 0].set(0)
+    codebooks = codebooks.at[0, 1].set(first_fast_code[0])
+
+    state_fast = model.transformer_fast.init_static_state(batch_size, n_codes)
+
     input_pos_fast = jnp.zeros((batch_size, 1), dtype=jnp.int32)
     fast_first_result = model.transformer_fast(
         inner_features=hidden_states,
         token_positions=input_pos_fast,
-        state=None,
+        state=state_fast,
         return_updated_state=True,
         return_layer_results=False,
         return_positional_embeddings=False,
@@ -442,19 +454,20 @@ def decode_next_token(
         forward_pass_config=None,
     )
     state_fast = fast_first_result.updated_state
-    first_code = codebooks[0] - model.semantic_begin_id
-    first_code = first_code.at[first_code < 0].set(0)
-    codebooks.append(first_code)
 
-    hidden_states = model.embeddings_fast.embed(first_code)
+    embedded_logits = model.embeddings_fast.embed(first_fast_code)
 
-    for codebook_idx in range(1, model.num_codebooks):
-        hidden_states = hidden_states.reshape(hidden_states.shape[0], 1, -1)
-        input_pos_fast = jnp.array([codebook_idx])[None, :]
+    def loop_iteration(
+        iteration_state: tuple[State | None, Array, Any],
+        index: jnp.int32,
+    ) -> tuple[tuple[State | None, Array, Any], None]:
+        transformer_state, logits, codebooks = iteration_state
+        logits = logits.reshape(logits.shape[0], 1, -1)
+        input_pos_fast = jnp.array([index - 1])[None, :]
         fast_result = model.transformer_fast(
-            inner_features=hidden_states,
+            inner_features=logits,
             token_positions=input_pos_fast,
-            state=state_fast,
+            state=transformer_state,
             return_updated_state=True,
             return_layer_results=False,
             return_positional_embeddings=False,
@@ -463,15 +476,20 @@ def decode_next_token(
             forward_pass_config=None,
         )
         (fast_logits,) = vmap_twice(model.readout_fast)(fast_result.outputs)
-        state_fast = fast_result.updated_state
+        new_state = fast_result.updated_state
 
         short_logits = fast_logits[:, :, : model.config.short_logits_size]
-
         code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])
 
-        hidden_states = model.embeddings_fast.embed(code)
-        codebooks.append(code)
+        new_logits = model.embeddings_fast.embed(code)
+        codebooks = codebooks.at[0, index].set(code[0])
+        return (new_state, new_logits, codebooks), None
 
-    codebooks = jnp.stack(codebooks, axis=1)
+    scan_result, _ = jax.lax.scan(
+        loop_iteration,
+        (state_fast, embedded_logits, codebooks),
+        jnp.arange(2, n_codes, dtype=jnp.int32),
+    )
+    _, _, codebooks = scan_result
 
     return codebooks, slow_model_result.updated_state

@@ -21,7 +21,6 @@ dependencies = [
     "xxhash>=3.5.0",
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "requests>=2.32.5",
-    "omegaconf>=2.3.0",
     "soundfile>=0.13.1",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
@@ -32,7 +31,8 @@ cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
 tpu = ["jax[tpu]>=0.8.1"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
-fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0", "bidict>=0.23.1"]
+fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
+nanocodec = ["torch>=2.8.0"]
 
 [dependency-groups]
 dev = [
@@ -60,7 +60,8 @@ dev = [
     "fish-speech",
     "bidict>=0.23.1",
     "tiktoken>=0.12.0",
-    "blobfile>=3.1.0"
+    "omegaconf>=2.3.0",
+    "blobfile>=3.1.0",
 ]
 
 [project.scripts]
@@ -108,7 +109,7 @@ torchaudio = [
 ]
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-mlx" }
-fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
+fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="cb3f003"}
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
@@ -120,7 +121,6 @@ JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
 XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
-XLA_PYTHON_CLIENT_PREALLOCATE = "False"
 TORCH_COMPILE_DISABLE = "1"
 
 [tool.pyright]
@@ -150,7 +150,6 @@ ignore = [
     "PD008",
     "PGH003",
     "PLC0415",
-    "PLW0108",
     "PLR0904",
     "PLR0912",
     "PLR0913",
@@ -169,5 +168,6 @@ ignore = [
     "TD003",
     "TRY003",
     "CPY001",
-    "TC003"
+    "TC003",
+    "PLW0108"
 ]
