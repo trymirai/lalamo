@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
+from tarfile import TarInfo
 from typing import NamedTuple
 
 import huggingface_hub
@@ -253,9 +254,18 @@ def import_message_processor(
 
 @contextmanager
 def _unpack_nemo_model(nemo_model_path: Path) -> Iterator[tuple[list[Path], Path]]:
+    def _is_safe_to_extract(tar_item_info: TarInfo) -> bool:
+        return not (
+            tar_item_info.name.startswith("..") or Path(tar_item_info.name).is_absolute() or tar_item_info.size == 0
+        )
+
     with tempfile.TemporaryDirectory() as tmpdir:
+        # NOTE: checking each member of tar archive to avoid potential
+        # attack by extracting file to arbitrary location
         with tarfile.open(nemo_model_path, "r") as tar:
-            tar.extractall(path=tmpdir)
+            for tar_member in tar.getmembers():
+                if _is_safe_to_extract(tar_member):
+                    tar.extract(tar_member.name, path=tmpdir)
 
         # go through files in extracted model and locate Torch model file and model YAML config file
         weights_paths = list(Path(tmpdir).glob("*.ckpt"))
