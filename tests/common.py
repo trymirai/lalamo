@@ -36,10 +36,8 @@ def assert_close(
     operation_name: str | None = None,
 ) -> None:
     precision_mode, default_atol, default_rtol = _precision_config()
-    if atol is None:
-        atol = default_atol
-    if rtol is None:
-        rtol = default_rtol
+    atol = atol or default_atol
+    rtol = rtol or default_rtol
     precision_prefix = f"[{precision_mode} precision]"
     operation_label = operation_name if operation_name is not None else "assert_close"
 
