@@ -10,27 +10,13 @@ from tokenizers import Tokenizer
 from typer.testing import CliRunner
 
 from lalamo.main import app
-from lalamo.model_import.model_specs.common import ModelType
-from lalamo.model_registry import ModelRegistry
-from tests.conftest import ConvertModel
+from tests.conftest import ConvertModel, HF_LANGUAGE_MODEL_REPOS
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, JudgeNetworkError, judge
 
 log = logging.getLogger(__name__)
 
 _runner = CliRunner()
-
-MODEL_REPOS = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
-    "Qwen/Qwen3-0.6B",
-    "mlx-community/gemma-3-1b-it-8bit",
-    "google/gemma-2-2b-it",
-    # "google/functiongemma-270m-it",  # output is weird by default, can't verify coherence
-    "HuggingFaceTB/SmolLM2-1.7B-Instruct",
-    "LiquidAI/LFM2.5-1.2B-Instruct",
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "cartesia-ai/Llamba-1B-4bit-mlx",
-]
 
 MAX_TOKENS = 512
 
@@ -60,15 +46,7 @@ SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-def _coherence_model_repos() -> list[str]:
-    # When LALAMO_COHERENCE_FULL_COVERAGE=1, uses all registry LMs; GPU OOM → skip at runtime.
-    if not os.getenv("LALAMO_COHERENCE_FULL_COVERAGE"):
-        return MODEL_REPOS
-    registry = ModelRegistry.build()
-    return [spec.repo for spec in registry.models if spec.model_type == ModelType.LANGUAGE_MODEL]
-
-
-@pytest.fixture(params=_coherence_model_repos(), ids=lambda repo: repo.split("/")[-1])
+@pytest.fixture(params=HF_LANGUAGE_MODEL_REPOS)
 def converted_model_path(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
     try:
         return convert_model(request.param)
