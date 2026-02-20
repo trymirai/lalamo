@@ -1,5 +1,6 @@
 import math
 
+import jax
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
 
@@ -7,6 +8,26 @@ __all__ = ["assert_close", "checkify_forward"]
 
 ATOL = 1e-3
 RTOL = 0.03
+CPU_ATOL = 1e-5
+CPU_RTOL = 1e-3
+
+
+def _get_default_device() -> jax.Device | None:
+    configured_default_device = jax.config.jax_default_device
+    if configured_default_device is not None:
+        return configured_default_device
+
+    devices = jax.devices()
+    if not devices:
+        return None
+    return devices[0]
+
+
+def _precision_config() -> tuple[str, float, float]:
+    default_device = _get_default_device()
+    if default_device is not None and default_device.platform == "cpu":
+        return "high", CPU_ATOL, CPU_RTOL
+    return "low", ATOL, RTOL
 
 
 def checkify_forward(module):  # noqa: ANN001, ANN201
@@ -20,16 +41,24 @@ def assert_close(
     *,
     result: jnp.ndarray,
     reference: jnp.ndarray,
-    atol: float = ATOL,
-    rtol: float = RTOL,
+    atol: float | None = None,
+    rtol: float | None = None,
     fraction_of_allowed_violations: float = 0.0,
     operation_name: str | None = None,
 ) -> None:
+    precision_mode, default_atol, default_rtol = _precision_config()
+    if atol is None:
+        atol = default_atol
+    if rtol is None:
+        rtol = default_rtol
+    precision_prefix = f"[{precision_mode} precision]"
+    operation_label = operation_name if operation_name is not None else "assert_close"
+
     assert result.shape == reference.shape, (
-        f"{operation_name} shapes do not match: {result.shape} != {reference.shape}"
+        f"{precision_prefix} {operation_label} shapes do not match: {result.shape} != {reference.shape}"
     )
     assert result.dtype == reference.dtype, (
-        f"{operation_name} data types do not match: {result.dtype} != {reference.dtype}"
+        f"{precision_prefix} {operation_label} data types do not match: {result.dtype} != {reference.dtype}"
     )
 
     result = result.astype(jnp.float32)
@@ -64,7 +93,7 @@ def assert_close(
         allowed_violation_explainer = ""
 
     message = (
-        f"{num_violations} violations > {atol:.1e} + {rtol:.2%} out of total {reference.size} elements"
+        f"{precision_prefix} {num_violations} violations > {atol:.1e} + {rtol:.2%} out of total {reference.size} elements"
         f"{allowed_violation_explainer}{operation_description}."
         f" Worst violation: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx}"
         f" (reference value: {max_err_reference_value:.3g})."
