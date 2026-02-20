@@ -189,10 +189,12 @@ class TestPrefillChunkingConsistency:
             operation_name=f"boundary test offset={length_offset}",
         )
 
+    @pytest.mark.parametrize("chunk_size", [32, 64, 128])
     @pytest.mark.parametrize("seed", [0, 1, 2])
     def test_state_capacity_with_chunking(
         self,
         language_model: LanguageModel,
+        chunk_size: int,
         seed: int,
     ) -> None:
         random_generator = np.random.default_rng(seed)
@@ -202,27 +204,25 @@ class TestPrefillChunkingConsistency:
         token_ids = jnp.arange(sequence_length, dtype=jnp.int32) % 1000
         token_ids = token_ids[None, :]
 
-        reference_result = language_model._prefill(
+        reference_logits = language_model._prefill(
             token_ids,
             state_capacity,
             chunk_size=NO_CHUNK_SIZE,
-        )
-        reference_logits = reference_result.last_token_logits
+        ).last_token_logits
 
-        for chunk_size in [32, 64, 128]:
-            result = language_model._prefill(
-                token_ids,
-                state_capacity,
-                chunk_size=chunk_size,
-            )
-            assert_close(
-                result=result.last_token_logits,
-                reference=reference_logits,
-                atol=PREFILL_ATOL,
-                rtol=PREFILL_RTOL,
-                fraction_of_allowed_violations=0.05,
-                operation_name=f"state_capacity test chunk_size={chunk_size} vs no_chunk (seq_len={sequence_length})",
-            )
+        result = language_model._prefill(
+            token_ids,
+            state_capacity,
+            chunk_size=chunk_size,
+        )
+        assert_close(
+            result=result.last_token_logits,
+            reference=reference_logits,
+            atol=PREFILL_ATOL,
+            rtol=PREFILL_RTOL,
+            fraction_of_allowed_violations=0.05,
+            operation_name=f"state_capacity test chunk_size={chunk_size} vs no_chunk (seq_len={sequence_length})",
+        )
 
 
 pytestmark = pytest.mark.xdist_group("heavy")

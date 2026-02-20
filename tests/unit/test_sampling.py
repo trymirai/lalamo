@@ -5,34 +5,21 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 import torch
-from torch import FloatTensor, LongTensor
 from transformers import GenerationConfig as TransformersGenerationConfig
 from transformers.generation.utils import GenerationMixin
 
 from lalamo.model_import.common import FileSpec, download_file
 from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
-from lalamo.model_import.model_configs.huggingface import HuggingFaceLMConfig
 from lalamo.model_import.model_specs.common import ModelSpec
-from lalamo.model_registry import ModelRegistry
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
 
 
-def test_logit_processing(model_registry: ModelRegistry) -> None:
-    model_specs: list[ModelSpec] = [
-        model_spec
-        for model_spec in model_registry.models
-        if issubclass(model_spec.config_type, HuggingFaceLMConfig)
-    ]
-
-    for model_spec in model_specs:
-        _test_logit_processing_for_spec(model_spec.repo, model_spec.configs.generation_config)
-
-
-def _test_logit_processing_for_spec(model_repo: str, generation_config: FileSpec | GenerationConfig | None) -> None:
+def test_logit_processing(hf_model_spec: ModelSpec) -> None:
     # TODO: lalamo should do greedy for do_sample=False
+    generation_config = hf_model_spec.configs.generation_config
+
     if isinstance(generation_config, GenerationConfig):
         generation_config_dict = asdict(generation_config)
         generation_config_dict.pop("stop_token_ids")
@@ -42,7 +29,7 @@ def _test_logit_processing_for_spec(model_repo: str, generation_config: FileSpec
             {**asdict(lalamo_hf_generation_config), "do_sample": True},
         )
     elif isinstance(generation_config, FileSpec):
-        hf_generation_config_file = download_file(generation_config, model_repo)
+        hf_generation_config_file = download_file(generation_config, hf_model_spec.repo)
         hf_generation_config_dict = json.loads(hf_generation_config_file.read_text())
         hf_generation_config = TransformersGenerationConfig.from_dict({**hf_generation_config_dict, "do_sample": True})
         lalamo_hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
