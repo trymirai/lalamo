@@ -32,6 +32,7 @@ from lalamo.models import (
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules.common import MeshConfig, Sharding, use_mesh
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -308,6 +309,7 @@ def _load_main_processing_module(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     context_length: int | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
+    mesh: MeshConfig | None = None,
 ) -> LalamoModule:
     with ExitStack() as stack:
         weights_shards = []
@@ -328,6 +330,7 @@ def _load_main_processing_module(
             accumulation_precision,
             weights_dict,
             metadata_dict,
+            mesh=mesh,
         )
 
     return processing_module
@@ -340,6 +343,7 @@ def _import_language_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    mesh: MeshConfig | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
     with _download_weights_and_config_files(
         model_spec,
@@ -358,6 +362,7 @@ def _import_language_model(
             progress_callback,
             context_length,
             accumulation_precision,
+            mesh=mesh,
         )
         assert isinstance(decoder, Decoder)
 
@@ -514,38 +519,43 @@ def import_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    sharding: Sharding | None = None,
 ) -> ImportResults:
+    mesh = sharding.resolve() if sharding is not None else None
+
     if isinstance(model_spec, str):
         try:
             model_spec = ModelRegistry.build().repo_to_model[model_spec]
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    match model_spec.model_type:
-        case ModelType.LANGUAGE_MODEL:
-            model, config = _import_language_model(
-                model_spec,
-                context_length=context_length,
-                precision=precision,
-                accumulation_precision=accumulation_precision,
-                progress_callback=progress_callback,
-            )
-        case ModelType.CLASSIFIER_MODEL:
-            model, config = _import_classifier(
-                model_spec,
-                context_length=context_length,
-                precision=precision,
-                accumulation_precision=accumulation_precision,
-                progress_callback=progress_callback,
-            )
-        case ModelType.TTS_MODEL:
-            model, config = _import_tts_model(
-                model_spec,
-                context_length=context_length,
-                precision=precision,
-                accumulation_precision=accumulation_precision,
-                progress_callback=progress_callback,
-            )
+    with use_mesh(mesh):
+        match model_spec.model_type:
+            case ModelType.LANGUAGE_MODEL:
+                model, config = _import_language_model(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                    mesh=mesh,
+                )
+            case ModelType.CLASSIFIER_MODEL:
+                model, config = _import_classifier(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                )
+            case ModelType.TTS_MODEL:
+                model, config = _import_tts_model(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                )
 
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,

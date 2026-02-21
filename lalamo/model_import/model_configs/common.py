@@ -9,7 +9,7 @@ import cattrs
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
-from lalamo.modules.common import LalamoModule
+from lalamo.modules.common import LalamoModule, MeshConfig
 from lalamo.registry_abc import RegistryABC
 
 __all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
@@ -56,9 +56,13 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
         metadata_dict: Mapping[str, str],
+        mesh: MeshConfig | None = None,
     ) -> LalamoModule[ConfigT]:
         config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
-        model = config.empty()  # type: ignore
+        if isinstance(config, DecoderConfig):
+            model = config.empty(mesh=mesh)
+        else:
+            model = config.empty()
         return self._load_weights(model, weights_dict)
 
 

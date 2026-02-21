@@ -16,7 +16,11 @@ from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
+    ShardingOrder,
+    TensorSharding,
+    apply_tensor_sharding,
     register_config_union,
+    sharded_field,
 )
 
 __all__ = [
@@ -33,6 +37,8 @@ __all__ = [
 
 class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
+    # sharding order specifies in which order do we attempt to shard
+    sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
     @property
     @abstractmethod
@@ -135,12 +141,13 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         else:
             biases = None
 
-        return FullPrecisionLinear(
+        layer = FullPrecisionLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
             biases=biases,
         )
+        return apply_tensor_sharding(layer)
 
     def random_init_mixture(
         self,
@@ -196,7 +203,12 @@ class FullPrecisionLinearConfig(LinearConfigBase):
 
 
 class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
-    weights: Float[Array, "*components total_out_channels in_channels"]
+    weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
+        tensor_sharding=TensorSharding(
+            axes=(-2, -1),
+            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
+        ),
+    )
     biases: Float[Array, "*components total_out_channels"] | None
 
     @property
@@ -272,11 +284,12 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         assert isinstance(weights, Mapping)
-        return replace(
+        result = replace(
             self,
             weights=weights["weights"],
             biases=weights["biases"] if self.has_biases else None,
         )
+        return apply_tensor_sharding(result)
 
 
 @dataclass(frozen=True)
@@ -341,7 +354,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         zero_point = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
         zero_points = zero_point * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
-        return GroupQuantizedLinear(
+        layer = GroupQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
@@ -349,6 +362,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
             zero_points=zero_points,
             biases=biases,
         )
+        return apply_tensor_sharding(layer)
 
     def random_init_mixture(
         self,
@@ -410,7 +424,12 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
 
 
 class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
-    weights: Float[Array, "*components total_out_channels in_channels"]
+    weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
+        tensor_sharding=TensorSharding(
+            axes=(-2, -1),
+            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
+        ),
+    )
     scales: Float[Array, "*components total_out_channels groups"]
     zero_points: Float[Array, "*components total_out_channels groups"]
     biases: Float[Array, "*components total_out_channels"] | None
@@ -579,13 +598,14 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
             unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
-        return replace(
+        result = replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
             scales=require_array(weights["scales"]),
             zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
             biases=require_array(weights["biases"]) if self.has_biases else None,
         )
+        return apply_tensor_sharding(result)
 
 
 class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
@@ -622,7 +642,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         deq_bias = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
         deq_biases = deq_bias * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
-        return MLXQuantizedLinear(
+        layer = MLXQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
@@ -630,6 +650,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
             deq_biases=deq_biases,
             biases=biases,
         )
+        return apply_tensor_sharding(layer)
 
     def random_init_mixture(
         self,
@@ -691,7 +712,12 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
 
 
 class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
-    weights: Float[Array, "*components total_out_channels in_channels"]
+    weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
+        tensor_sharding=TensorSharding(
+            axes=(-2, -1),
+            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
+        ),
+    )
     scales: Float[Array, "*components total_out_channels groups"]
     deq_biases: Float[Array, "*components total_out_channels groups"]
     biases: Float[Array, "*components total_out_channels"] | None
@@ -845,13 +871,14 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         unpacked_weights = require_array(weights["weights"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-        return replace(
+        result = replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
             scales=require_array(weights["scales"]),
             deq_biases=require_array(weights["deq_biases"]),
             biases=require_array(weights["biases"]) if self.has_biases else None,
         )
+        return apply_tensor_sharding(result)
 
 
 class MLXQuantizedLinear(MLXQuantizedLinearBase[MLXQuantizedLinearConfig]):
@@ -900,7 +927,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             for up_key, output_dim in zip(up_keys, output_dims, strict=True)
         )
 
-        return QLoRALinear(
+        layer = QLoRALinear(
             config=self,
             output_dims=output_dims,
             weights=group_quantized_linear.weights,
@@ -910,6 +937,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
         )
+        return apply_tensor_sharding(layer)
 
     def random_init_mixture(
         self,
@@ -1000,7 +1028,12 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
 
 
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
-    lora_down_weights: Float[Array, "*components in_channels total_lora_channels"]
+    lora_down_weights: Float[Array, "*components in_channels total_lora_channels"] = sharded_field(
+        tensor_sharding=TensorSharding(
+            axes=(-2, -1),
+            axes_names=(ShardingOrder.INPUT, ShardingOrder.OUTPUT),
+        ),
+    )
     lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...]
 
     def _split_biases(self) -> tuple[Float[Array, "*components out_channels"] | None, ...]:
@@ -1102,11 +1135,12 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         base = super().import_weights(weights)
         assert isinstance(weights, Mapping)
         assert isinstance(weights["up_weights"], Sequence)
-        return replace(
+        result = replace(
             base,
             lora_down_weights=weights["down_weights"],
             lora_up_weights=tuple(up_weights for up_weights in weights["up_weights"]),
         )
+        return apply_tensor_sharding(result)
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig

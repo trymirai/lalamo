@@ -9,7 +9,13 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 
-from .common import ForwardPassMode, LalamoModule
+from .common import (
+    ForwardPassMode,
+    LalamoModule,
+    MeshConfig,
+    apply_data_sharding,
+    get_default_mesh,
+)
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
 from .token_mixers import State
@@ -103,7 +109,7 @@ class DecoderConfig:
             transformer=transformer,
         )
 
-    def empty(self) -> "Decoder":
+    def empty(self, mesh: MeshConfig | None = None) -> "Decoder":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
@@ -114,12 +120,14 @@ class DecoderConfig:
             config=self,
             embedding=embedding,
             transformer=transformer,
+            mesh=mesh,
         )
 
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
+    mesh: MeshConfig | None = eqx.field(static=True, default=None)
 
     @property
     def vocab_size(self) -> int:
@@ -150,6 +158,11 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
+        mesh = self.mesh or get_default_mesh()
+        token_ids = apply_data_sharding(token_ids, mesh)
+        token_positions = apply_data_sharding(token_positions, mesh)
+        state = apply_data_sharding(state, mesh)
+        lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh)
 
         inner_features = vmap(self.embedding.embed)(token_ids)
 
@@ -189,7 +202,8 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return self.transformer.init_static_state(batch_size, capacity)
+        state = self.transformer.init_static_state(batch_size, capacity)
+        return apply_data_sharding(state, self.mesh or get_default_mesh())
 
     def export_weights(self) -> ParameterTree:
         return dict(

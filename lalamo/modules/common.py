@@ -1,10 +1,16 @@
+import contextlib
+import contextvars
+import dataclasses
 from abc import abstractmethod
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
 from typing import Any, Generic, Self, TypeVar
 
 import equinox as eqx
+import jax
+import jax.sharding as shd
 from cattrs import Converter
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
@@ -15,12 +21,21 @@ __all__ = [
     "DummyUnionMember",
     "ForwardPassMode",
     "LalamoModule",
+    "MeshConfig",
     "ParameterTree",
     "PositionalEmbeddingSelector",
+    "Sharding",
+    "ShardingOrder",
+    "TensorSharding",
+    "apply_data_sharding",
+    "apply_tensor_sharding",
     "config_converter",
+    "get_default_mesh",
     "register_config_union",
     "require_array",
     "require_tree",
+    "shard_array",
+    "sharded_field",
 ]
 
 
@@ -131,6 +146,226 @@ def register_config_union(union_type: UnionType) -> None:
         union_type | None,
         structure,
     )
+
+
+@dataclass(frozen=True)
+class Sharding:
+    tensor_parallelism: int | None = None
+    data_parallelism: int | None = None
+    data_axis_name: str = "data"
+    tensor_axis_name: str = "tensor"
+
+    def resolve(self) -> "MeshConfig":
+        device_count = jax.device_count()
+        tp = self.tensor_parallelism
+        dp = self.data_parallelism
+
+        if (tp is not None and tp <= 0) or (dp is not None and dp <= 0):
+            raise ValueError("tensor_parallelism and data_parallelism must be positive integers.")
+
+        resolved_tp: int
+        resolved_dp: int
+        if tp is None and dp is None:
+            resolved_tp = 1
+            resolved_dp = device_count
+        elif tp is None:
+            assert dp is not None
+            resolved_dp = dp
+            resolved_tp = device_count // resolved_dp
+        elif dp is None:
+            resolved_tp = tp
+            resolved_dp = device_count // resolved_tp
+        else:
+            resolved_tp = tp
+            resolved_dp = dp
+
+        if resolved_tp * resolved_dp != device_count:
+            raise ValueError(
+                f"data_parallelism * tensor_parallelism must equal the number of devices ({device_count}).",
+            )
+
+        mesh = jax.make_mesh(
+            (resolved_dp, resolved_tp),
+            (self.data_axis_name, self.tensor_axis_name),
+            axis_types=(jax.sharding.AxisType.Auto, jax.sharding.AxisType.Auto),
+        )
+        return MeshConfig(
+            data_axis_name=self.data_axis_name,
+            tensor_axis_name=self.tensor_axis_name,
+            mesh=mesh,
+        )
+
+
+@dataclass(frozen=True)
+class MeshConfig:
+    data_axis_name: str = "data"
+    tensor_axis_name: str = "tensor"
+    mesh: shd.Mesh | None = None
+
+    @property
+    def data_axis_size(self) -> int:
+        if self.mesh is not None:
+            return self.mesh.shape[self.data_axis_name]
+        abstract_mesh = jax.sharding.get_abstract_mesh()
+        if abstract_mesh.empty:
+            raise RuntimeError("No mesh provided to MeshConfig and no global mesh set via jax.set_mesh().")
+        return abstract_mesh.shape[self.data_axis_name]
+
+    @property
+    def tensor_axis_size(self) -> int:
+        if self.mesh is not None:
+            return self.mesh.shape[self.tensor_axis_name]
+        abstract_mesh = jax.sharding.get_abstract_mesh()
+        if abstract_mesh.empty:
+            raise RuntimeError("No mesh provided to MeshConfig and no global mesh set via jax.set_mesh().")
+        return abstract_mesh.shape[self.tensor_axis_name]
+
+    def make_sharding(self, pspec: shd.PartitionSpec) -> shd.NamedSharding | shd.PartitionSpec:
+        if self.mesh is not None:
+            return shd.NamedSharding(self.mesh, pspec)
+        return pspec
+
+
+_CURRENT_MESH: contextvars.ContextVar[MeshConfig | None] = contextvars.ContextVar(
+    "lalamo_current_mesh",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def use_mesh(mesh: MeshConfig | None) -> Generator[None, None, None]:
+    token = _CURRENT_MESH.set(mesh)
+    try:
+        yield
+    finally:
+        _CURRENT_MESH.reset(token)
+
+
+def get_default_mesh() -> MeshConfig | None:
+    return _CURRENT_MESH.get()
+
+
+class ShardingOrder(Enum):
+    INPUT = "input"
+    OUTPUT = "output"
+
+
+@dataclass(frozen=True)
+class TensorSharding:
+    axes: tuple[int, ...]
+    axes_names: tuple[ShardingOrder, ...] | None = None
+
+    def __init__(
+        self,
+        axes: int | tuple[int, ...],
+        axes_names: tuple[ShardingOrder, ...] | None = None,
+    ) -> None:
+        normalized_axes = (axes,) if isinstance(axes, int) else axes
+        if not normalized_axes:
+            raise ValueError("TensorSharding.axes must contain at least one axis.")
+        if axes_names is not None:
+            if len(axes_names) != len(normalized_axes):
+                raise ValueError("TensorSharding.axes_names length must match axes length.")
+            if len(set(axes_names)) != len(axes_names):
+                raise ValueError("TensorSharding.axes_names must not contain duplicates.")
+        object.__setattr__(self, "axes", normalized_axes)
+        object.__setattr__(self, "axes_names", axes_names)
+
+    def dims_to_try(self, sharding_order: ShardingOrder | None = None) -> tuple[int, ...]:
+        if (
+            sharding_order is None
+            or self.axes_names is None
+            or sharding_order not in self.axes_names
+            or len(self.axes) == 1
+        ):
+            return self.axes
+        pivot = self.axes_names.index(sharding_order)
+        return (self.axes[pivot], *self.axes[:pivot], *self.axes[pivot + 1 :])
+
+
+def sharded_field(
+    tensor_sharding: TensorSharding | None = None,
+    min_size_to_shard: int = 10_000,
+    *,
+    converter: Callable[[Any], Any] | None = None,
+    static: bool = False,
+    metadata: Mapping[str, Any] | None = None,
+    **kwargs: Any,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
+    merged_metadata = dict(metadata or {})
+    merged_metadata["tensor_sharding"] = tensor_sharding
+    merged_metadata["min_size_to_shard"] = min_size_to_shard
+    return eqx.field(
+        converter=converter,
+        static=static,
+        metadata=merged_metadata,
+        **kwargs,
+    )
+
+
+def shard_array(
+    array: Array,
+    tensor_sharding: TensorSharding,
+    mesh: MeshConfig,
+    sharding_order: ShardingOrder | None = None,
+    min_size_to_shard: int = 10_000,
+) -> Array:
+    if array.size < min_size_to_shard:
+        return array
+    axis_size = mesh.tensor_axis_size
+    parts: list[str | None] = [None] * array.ndim
+    for dim in tensor_sharding.dims_to_try(sharding_order):
+        if dim < array.ndim and array.shape[dim] % axis_size == 0:
+            parts[dim] = mesh.tensor_axis_name
+            break
+    pspec = shd.PartitionSpec(*parts)
+    return jax.device_put(array, mesh.make_sharding(pspec))
+
+
+def shard_batch_axis(array: Array, mesh: MeshConfig) -> Array:
+    if array.ndim == 0:
+        return array
+    parts: list[str | None] = [None] * array.ndim
+    parts[0] = mesh.data_axis_name
+    pspec = shd.PartitionSpec(*parts)
+    return jax.lax.with_sharding_constraint(array, mesh.make_sharding(pspec))
+
+
+def apply_data_sharding[T](value: T, mesh: MeshConfig | None) -> T:
+    if mesh is None:
+        return value
+    return jax.tree_util.tree_map(
+        lambda leaf: shard_batch_axis(leaf, mesh) if eqx.is_array(leaf) else leaf,
+        value,
+    )
+
+
+def apply_tensor_sharding[T: eqx.Module](
+    module: T,
+) -> T:
+    fields = dataclasses.fields(module)
+    mesh = get_default_mesh()
+    if mesh is None:
+        return module
+    sharding_order = getattr(module, "sharding_order", None)
+    updates: dict[str, Any] = {}
+    for field in fields:
+        tensor_sharding = field.metadata.get("tensor_sharding")
+        if tensor_sharding is None:
+            continue
+
+        value = getattr(module, field.name)
+        if not eqx.is_array(value):
+            continue
+
+        updates[field.name] = shard_array(
+            value,
+            tensor_sharding,
+            mesh,
+            sharding_order,
+            field.metadata.get("min_size_to_shard", 10_000),
+        )
+    return dataclasses.replace(module, **updates) if updates else module
 
 
 @dataclass
