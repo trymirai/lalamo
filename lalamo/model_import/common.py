@@ -3,7 +3,7 @@ import json
 import tarfile
 import tempfile
 from collections import ChainMap
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
