@@ -342,25 +342,28 @@ def apply_data_sharding[T](value: T, mesh: MeshConfig | None) -> T:
 
 def apply_tensor_sharding[T: eqx.Module](
     module: T,
-    mesh: MeshConfig | None = None,
-    sharding_order: ShardingOrder | None = None,
 ) -> T:
-    mesh = mesh or getattr(module, "mesh", None) or get_default_mesh()
+    mesh = getattr(module, "mesh", None) or get_default_mesh()
     if mesh is None:
         return module
-    sharding_order = sharding_order or getattr(module, "sharding_order", None)
-    updates = {
-        field.name: shard_array(
+    sharding_order = getattr(module, "sharding_order", None)
+    updates: dict[str, Any] = {}
+    for field in dataclasses.fields(module):
+        tensor_sharding = field.metadata.get("tensor_sharding")
+        if tensor_sharding is None:
+            continue
+
+        value = getattr(module, field.name)
+        if not eqx.is_array(value):
+            continue
+
+        updates[field.name] = shard_array(
             value,
             tensor_sharding,
             mesh,
             sharding_order,
             field.metadata.get("min_size_to_shard", 10_000),
         )
-        for field in dataclasses.fields(module)
-        if (tensor_sharding := field.metadata.get("tensor_sharding")) is not None
-        and eqx.is_array(value := getattr(module, field.name))
-    }
     return dataclasses.replace(module, **updates) if updates else module
 
 
