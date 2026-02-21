@@ -23,7 +23,14 @@ from lalamo.modules import (
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
-from .common import BatchSizeInfo, BatchSizesComputedEvent, InferenceConfig, TextModel, TextModelConfig
+from .common import (
+    BatchSizeInfo,
+    BatchSizesComputedEvent,
+    InferenceConfig,
+    TextModel,
+    TextModelConfig,
+    split_into_rolling_keys,
+)
 from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
     decrease_batchsize_on_oom,
@@ -322,7 +329,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
-        per_step_keys: Key[Array, "batch max_len"] = jax.vmap(lambda k: jax.random.split(k, max_output_length))(keys)
+        per_step_keys: Key[Array, "batch max_len"] = jax.vmap(
+            lambda k: split_into_rolling_keys(k, max_output_length),
+        )(keys)
         per_step_keys: Key[Array, "max_len batch"] = jnp.swapaxes(per_step_keys, 0, 1)
         _, generated = jax.lax.scan(loop_iteration, initial_state, per_step_keys)
 
@@ -605,8 +614,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         )
 
         if key is None:
-            key = jax.random.PRNGKey(0)
-        keys = jax.random.split(key, num=max_output_length)
+            key = jax.random.split(jax.random.key(0), num=1)[0]  # matching generate_replies with bs=1
+        keys = split_into_rolling_keys(key, num=max_output_length)
 
         state = DecodingState(
             prefill_results.last_token_logits,

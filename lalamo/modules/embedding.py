@@ -1,5 +1,4 @@
 from abc import abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -9,7 +8,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
@@ -148,7 +147,7 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(self, weights=weights["weights"])
 
 
@@ -242,7 +241,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             input_weights=weights["input_weights"],
@@ -356,7 +355,7 @@ class QuantizedTiedEmbedding(EmbeddingBase[QuantizedTiedEmbeddingConfig]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         stored_weights = require_array(weights["weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             stored_weights = jax_uint8_to_unpacked_uint4(stored_weights)
@@ -467,7 +466,7 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
@@ -616,7 +615,7 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         unpacked_input_weights = require_array(weights["input_weights"])
         unpacked_output_weights = require_array(weights["output_weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
@@ -739,7 +738,7 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         unpacked_output_weights = require_array(weights["output_weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)

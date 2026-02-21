@@ -5,8 +5,8 @@ on:
     branches:
       - main
   pull_request:
-    # Run only when PR is open & ready (not draft). Job-level `if:` gates drafts.
-    types: [opened, reopened, ready_for_review, synchronize]
+    # Run on key PR events; heavyweight jobs are gated by job-level `if:`.
+    types: [opened, reopened, ready_for_review, synchronize, closed]
   workflow_dispatch:
 
 permissions:
@@ -23,6 +23,7 @@ defaults:
 
 env:
   HF_TOKEN: ${{ secrets.HF_TOKEN }}
+  OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
 jobs:
   linters:
@@ -66,27 +67,11 @@ jobs:
         run: |
           pytest -n=auto tests/unit
 
-  conversion:
-    name: Model Conversion Tests
-    runs-on: [self-hosted, linux, cpu]
-    needs: [unit]
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-
-      - name: Run pytest
-        run: |
-          pytest tests/conversion
-
   generation:
-    name: Generation Tests
+    name: Generation
     runs-on: [self-hosted, linux, gpu, l40s]
     needs: [unit]
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -97,13 +82,13 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/generation
+          pytest -n=auto tests/generation
 
   audio:
-    name: Audio Model Tests
+    name: Audio Models
     runs-on: [self-hosted, linux, cpu]
     needs: [unit]
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -116,10 +101,10 @@ jobs:
           pytest tests/tts
 
   tracer:
-    name: Tracer Tests
+    name: Tracer
     runs-on: [self-hosted, linux, gpu, l40s]
     needs: [unit]
-    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
     steps:
       - uses: actions/checkout@v6
@@ -135,32 +120,28 @@ jobs:
           pytest tests/tracer
 
   cli:
-    name: CLI${{ matrix.cuda && ' (CUDA)' || ''}}
-    runs-on: ${{ matrix.cuda && fromJSON('["self-hosted", "linux", "gpu", "l40s"]') || 'ubuntu-latest'}}
+    name: "CLI: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
+    runs-on: ${{ fromJSON(matrix.runner) }}
+    needs: [unit]
+    if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
     strategy:
+      fail-fast: false
       matrix:
-        cuda: [false, true]
-
-    env:
-      MODEL: Qwen/Qwen2.5-0.5B-Instruct
+        python: ${{ fromJSON((github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'prerelease')) && '["py313", "py314"]' || '["py314"]') }}
+        device: [cpu, gpu]
+        include:
+          - device: cpu
+            runner: '["self-hosted", "linux", "cpu"]'
+          - device: gpu
+            runner: '["self-hosted", "linux", "gpu", "l40s"]'
 
     steps:
       - uses: actions/checkout@v6
       - uses: ./.github/actions/setup
         with:
-          cuda: ${{ matrix.cuda }}
+          only-vars: 'true'
 
-      - name: lalamo list-models
+      - name: Run tox
         run: |
-          lalamo list-models | grep " ${MODEL} "
-          lalamo list-models --plain | grep -x "${MODEL}"
-          lalamo list-models --no-plain | grep " ${MODEL} "
-
-      - name: lalamo convert
-        run: |
-          lalamo convert "${MODEL}"
-
-      - name: lalamo chat
-        run: |
-          lalamo chat models/* --message "What is 2 + 2? Reply with a single number, nothing else." | grep -x "4<|im_end|>"
+          uvx tox -e cli-${{ matrix.device }}-${{ matrix.python }}

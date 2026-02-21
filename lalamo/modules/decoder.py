@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -7,7 +6,7 @@ import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
@@ -198,7 +197,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             embedding=self.embedding.import_weights(require_tree(weights["embedding"])),

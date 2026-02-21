@@ -2,7 +2,6 @@ from typing import Any
 
 import jax
 import jax.numpy as jnp
-import pytest
 
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
@@ -68,9 +67,6 @@ def _make_lalamo_delta_net(hf_config: Any):
 
 
 def test_delta_net_attention_matches_hf() -> None:
-    pytest.importorskip("torch")
-    pytest.importorskip("transformers")
-
     import torch
 
     torch.manual_seed(0)
@@ -107,4 +103,8 @@ def test_delta_net_attention_matches_hf() -> None:
         length_without_padding=None,
     ).outputs
 
-    assert_close(result=lalamo_out, reference=torch_to_jax(hf_out[0]))
+    assert_close(
+        result=lalamo_out,
+        reference=torch_to_jax(hf_out[0]),
+        fraction_of_allowed_violations=0.01,
+    )

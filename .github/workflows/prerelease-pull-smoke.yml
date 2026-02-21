@@ -1,0 +1,101 @@
+name: "Backwards Compatibility Tests"
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled, closed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: prerelease-pull-smoke-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  pull-smoke:
+    name: Pull Smoke (CPU)
+    runs-on: [self-hosted, linux, cpu]
+    if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Ensure GitHub CLI is available
+        shell: bash
+        run: |
+          if command -v gh >/dev/null 2>&1; then
+            gh --version
+            exit 0
+          fi
+
+          arch="$(uname -m)"
+          case "$arch" in
+            x86_64) gh_arch="amd64" ;;
+            aarch64|arm64) gh_arch="arm64" ;;
+            *)
+              echo "Unsupported architecture for gh install: $arch"
+              exit 1
+              ;;
+          esac
+
+          gh_version="2.77.0"
+          gh_tgz="gh_${gh_version}_linux_${gh_arch}.tar.gz"
+          curl -fsSL "https://github.com/cli/cli/releases/download/v${gh_version}/${gh_tgz}" -o "${gh_tgz}"
+          tar -xzf "${gh_tgz}"
+          mkdir -p "$HOME/.local/bin"
+          cp "gh_${gh_version}_linux_${gh_arch}/bin/gh" "$HOME/.local/bin/gh"
+          chmod +x "$HOME/.local/bin/gh"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          gh --version
+
+      - name: Run pull tests
+        id: pull_smoke
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          pytest tests/indicators/pull_smoke.py 2>&1 | tee pull_smoke.log
+
+      - name: Comment on PR if pull smoke passed
+        if: ${{ steps.pull_smoke.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          gh pr comment "$PR_NUMBER" --body "[CI NOTICE] Pull tests passed. Bumping the minor version is appropriate."
+
+      - name: Comment on PR if pull smoke failed
+        if: ${{ steps.pull_smoke.outcome == 'failure' }}
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          {
+            echo "[CI NOTICE] Pull tests failed."
+            echo
+            echo "This usually indicates a compatibility break for pulled models."
+            echo "Please consider bumping the major version for this release."
+            echo
+            echo "<details><summary>Error output (last 200 lines)</summary>"
+            echo
+            echo '```text'
+            tail -n 200 pull_smoke.log
+            echo '```'
+            echo
+            echo "</details>"
+          } > pr_pull_smoke_comment.md
+
+          gh pr comment "$PR_NUMBER" --body-file pr_pull_smoke_comment.md

@@ -32,6 +32,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayerConfig,
     ResidualBlockConfig,
 )
+from tests.common import assert_close
 from tests.tts.nanocodec import nanocodec_torch_stuff as nanocodec_torch
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
 
@@ -100,7 +101,6 @@ def test_fsq_decode_matches_torch() -> None:
         np.array(decoded_lalamo),
         decoded_torch.numpy().transpose((2, 0, 1)),
         rtol=1e-5,
-        atol=1e-5,
     )
 
 
@@ -171,7 +171,6 @@ def test_group_fsq_decode_matches_torch() -> None:
         np.array(decoded_lalamo),
         decoded_torch.numpy().transpose((0, 2, 1)),
         rtol=1e-5,
-        atol=1e-5,
     )
 
 
@@ -219,7 +218,11 @@ def test_half_snake_forward_matches_torch() -> None:
     # PyTorch forward
     output_torch_nct = torch_half_snake(torch.from_numpy(inputs_nct))
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_half_snake_forward_matches_torch",
+    )
 
 
 # =============================================================================
@@ -274,7 +277,11 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     input_len = torch.tensor([seq_len, seq_len])
     output_torch_nct = torch_conv(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_causal_conv1d_forward_matches_torch",
+    )
 
 
 def test_causal_conv1d_with_dilation_matches_torch() -> None:
@@ -318,7 +325,11 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
     input_len = torch.tensor([seq_len, seq_len])
     output_torch_nct = torch_conv(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_causal_conv1d_with_dilation_matches_torch",
+    )
 
 
 def test_causal_transpose_conv1d_forward_matches_torch() -> None:
@@ -371,7 +382,11 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
         end = hidden_states.shape[-1] - torch_conv.padding_right
         output_torch_nct = hidden_states[..., torch_conv.padding_left : end]
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_causal_transpose_conv1d_forward_matches_torch",
+    )
 
 
 # =============================================================================
@@ -429,7 +444,11 @@ def test_residual_block_forward_matches_torch() -> None:
         input_len = torch.tensor([seq_len, seq_len])
         output_torch_nct = torch_block(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_residual_block_forward_matches_torch",
+    )
 
 
 def test_hifigan_res_block_forward_matches_torch() -> None:
@@ -482,7 +501,11 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
         input_len = torch.tensor([seq_len, seq_len])
         output_torch_nct = torch_block(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_hifigan_res_block_forward_matches_torch",
+    )
 
 
 def test_hifigan_res_layer_forward_matches_torch() -> None:
@@ -536,7 +559,11 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
         input_len = torch.tensor([seq_len, seq_len])
         output_torch_nct = torch_layer(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo_nct),
+        reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        operation_name="test_hifigan_res_layer_forward_matches_torch",
+    )
 
 
 def test_causal_hifigan_decoder_forward_matches_torch() -> None:
@@ -611,4 +638,8 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
         input_len = torch.tensor([seq_len, seq_len])
         output_torch, _ = torch_decoder(torch.from_numpy(inputs_nct), input_len)
 
-    np.testing.assert_allclose(np.array(output_lalamo), output_torch.detach().numpy(), rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.asarray(output_lalamo),
+        reference=jnp.asarray(output_torch.detach().numpy()),
+        operation_name="test_causal_hifigan_decoder_forward_matches_torch",
+    )

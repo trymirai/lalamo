@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -9,7 +8,7 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import dummy_array
+from lalamo.common import dummy_array, require_mapping
 from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -474,7 +473,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             qkv_projection=self.qkv_projection.import_weights(require_tree(weights["qkv_projection"])),

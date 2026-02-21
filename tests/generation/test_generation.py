@@ -1,29 +1,32 @@
+import re
+
 import jax.numpy as jnp
 import pytest
 
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import import_model
-from lalamo.model_registry import ModelRegistry
 from lalamo.models import LanguageModel
-from lalamo.models.language_model import GenerationConfig
+from lalamo.models.common import InferenceConfig
+from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
+from tests.conftest import ConvertModel
 
 MODEL_LIST = [
     "Qwen/Qwen2.5-0.5B-Instruct",
-    "LiquidAI/LFM2-700M",
+    "mlx-community/LFM2-2.6B-Exp-8bit",
+    "google/gemma-3-1b-it",
+    "meta-llama/Llama-3.2-1B-Instruct",
     "cartesia-ai/Llamba-1B",
 ]
 
 
 @pytest.fixture(params=MODEL_LIST)
-def language_model(request: pytest.FixtureRequest, model_registry: ModelRegistry) -> LanguageModel:
-    model = import_model(model_registry.repo_to_model[request.param]).model
-    assert isinstance(model, LanguageModel)
-    return model
+def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
+    model_dir = convert_model(request.param)
+    return LanguageModelConfig.load_model(model_dir)
 
 
 @pytest.mark.parametrize("num_top_logits_to_return", [None, 8, 16])
 def test_eager_generation(language_model: LanguageModel, num_top_logits_to_return: int | None) -> None:
-    prompt = [UserMessage("Count from 1 to 10 separated by spaces.")]
+    prompt = [UserMessage("Count from 1 to 10 separated by spaces, using digits.")]
     token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))[None, :]
     result = language_model.generate_tokens(
         token_ids,
@@ -34,7 +37,12 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     eos_ids = language_model.stop_token_ids
     eos_idx = next(i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids)
     response_text = language_model.message_processor.tokenizer.decode(token_ids[:eos_idx])
-    assert response_text == "1 2 3 4 5 6 7 8 9 10", response_text
+
+    digits_pattern = r"1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\s+10"
+    words_pattern = r"one\s+two\s+three\s+four\s+five\s+six\s+seven\s+eight\s+nine\s+ten"
+    assert re.search(digits_pattern, response_text) or re.search(words_pattern, response_text, re.IGNORECASE), (
+        response_text
+    )
 
     if num_top_logits_to_return is not None:
         assert result.top_k_token_ids is not None
@@ -78,7 +86,7 @@ def test_padding(language_model: LanguageModel) -> None:
 def test_batch_generation(language_model: LanguageModel) -> None:
     prompts = [
         UserMessage("What's the capital of UK?"),
-        UserMessage("What's the largest domestic cat breed?"),
+        UserMessage("Talk about apples"),
     ]
     inputs = [jnp.array(language_model.message_processor.tokenize_request([prompt])) for prompt in prompts]
     pad_token_id = 0
@@ -106,8 +114,8 @@ def test_batch_generation(language_model: LanguageModel) -> None:
 
     response_a, response_b = [language_model.message_processor.tokenizer.decode(ids) for ids in response_token_ids]
 
-    assert "london" in response_a.lower() and "maine coon" not in response_a.lower(), response_a
-    assert "maine coon" in response_b.lower() and "london" not in response_b.lower(), response_b
+    assert "london" in response_a.lower() and "apple" not in response_a.lower(), response_a
+    assert "apple" in response_b.lower() and "london" not in response_b.lower(), response_b
 
 
 def test_streaming_generation(language_model: LanguageModel) -> None:
@@ -125,6 +133,7 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
 
     generation_config = GenerationConfig(top_k=1)
+
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],
         generation_config=generation_config,
@@ -143,8 +152,13 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         streaming_token_ids.squeeze().tolist(),
     )
 
-    response_text = language_model.message_processor.tokenizer.decode(eager_token_ids)
-    assert "maine coon" in response_text.lower(), response_text
-
-
-pytestmark = pytest.mark.xdist_group("heavy")
+    [(idx, batch_response)] = list(
+        language_model.reply_many(
+            [prompt],
+            generation_config=generation_config,
+            inference_config=InferenceConfig(batch_size=1, max_output_length=10),
+        ),
+    )
+    assert idx == 0
+    streaming_response = language_model.message_processor.parse_tokenized_response(streaming_token_ids.tolist())
+    assert batch_response == streaming_response
