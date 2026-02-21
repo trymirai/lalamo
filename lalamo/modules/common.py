@@ -2,7 +2,7 @@ import contextlib
 import contextvars
 import dataclasses
 from abc import abstractmethod
-from collections.abc import Generator
+from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
@@ -163,23 +163,29 @@ class Sharding:
         if (tp is not None and tp <= 0) or (dp is not None and dp <= 0):
             raise ValueError("tensor_parallelism and data_parallelism must be positive integers.")
 
-        match tp, dp:
-            case None, None:
-                tp, dp = 1, device_count
-            case None, int() as resolved_dp:
-                tp, dp = device_count // resolved_dp, resolved_dp
-            case int() as resolved_tp, None:
-                tp, dp = resolved_tp, device_count // resolved_tp
-            case int() as resolved_tp, int() as resolved_dp:
-                tp, dp = resolved_tp, resolved_dp
+        resolved_tp: int
+        resolved_dp: int
+        if tp is None and dp is None:
+            resolved_tp = 1
+            resolved_dp = device_count
+        elif tp is None:
+            assert dp is not None
+            resolved_dp = dp
+            resolved_tp = device_count // resolved_dp
+        elif dp is None:
+            resolved_tp = tp
+            resolved_dp = device_count // resolved_tp
+        else:
+            resolved_tp = tp
+            resolved_dp = dp
 
-        if tp * dp != device_count:
+        if resolved_tp * resolved_dp != device_count:
             raise ValueError(
                 f"data_parallelism * tensor_parallelism must equal the number of devices ({device_count}).",
             )
 
         mesh = jax.make_mesh(
-            (dp, tp),
+            (resolved_dp, resolved_tp),
             (self.data_axis_name, self.tensor_axis_name),
             axis_types=(jax.sharding.AxisType.Auto, jax.sharding.AxisType.Auto),
         )
@@ -283,12 +289,21 @@ class TensorSharding:
 def sharded_field(
     tensor_sharding: TensorSharding | None = None,
     min_size_to_shard: int = 10_000,
-    **kwargs: object,
+    *,
+    converter: Callable[[Any], Any] | None = None,
+    static: bool = False,
+    metadata: Mapping[str, Any] | None = None,
+    **kwargs: Any,  # noqa: ANN401
 ) -> Any:  # noqa: ANN401
-    metadata = dict(kwargs.pop("metadata", {}))
-    metadata["tensor_sharding"] = tensor_sharding
-    metadata["min_size_to_shard"] = min_size_to_shard
-    return eqx.field(metadata=metadata, **kwargs)
+    merged_metadata = dict(metadata or {})
+    merged_metadata["tensor_sharding"] = tensor_sharding
+    merged_metadata["min_size_to_shard"] = min_size_to_shard
+    return eqx.field(
+        converter=converter,
+        static=static,
+        metadata=merged_metadata,
+        **kwargs,
+    )
 
 
 def shard_array(
@@ -323,7 +338,7 @@ def apply_data_sharding[T](value: T, mesh: MeshConfig | None) -> T:
     if mesh is None:
         return value
     return jax.tree_util.tree_map(
-        lambda leaf: shard_batch_axis(leaf, mesh) if isinstance(leaf, jax.Array) else leaf,
+        lambda leaf: shard_batch_axis(leaf, mesh) if eqx.is_array(leaf) else leaf,
         value,
     )
 
@@ -347,7 +362,7 @@ def apply_tensor_sharding[T: eqx.Module](
         )
         for field in dataclasses.fields(module)
         if (tensor_sharding := field.metadata.get("tensor_sharding")) is not None
-        and isinstance((value := getattr(module, field.name)), jax.Array)
+        and eqx.is_array(value := getattr(module, field.name))
     }
     return dataclasses.replace(module, **updates) if updates else module
 
