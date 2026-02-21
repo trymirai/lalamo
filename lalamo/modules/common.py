@@ -1,10 +1,16 @@
+import contextlib
+import contextvars
+import dataclasses
 from abc import abstractmethod
+from collections.abc import Generator
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
 from typing import Any, Generic, Self, TypeVar
 
 import equinox as eqx
+import jax
+import jax.sharding as shd
 from cattrs import Converter
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
@@ -17,10 +23,19 @@ __all__ = [
     "LalamoModule",
     "ParameterTree",
     "PositionalEmbeddingSelector",
+    "Sharding",
+    "ShardingConfig",
+    "apply_data_sharding",
+    "apply_sharding",
     "config_converter",
+    "get_default_sharding_config",
+    "host_creation",
+    "init_parallelism",
     "register_config_union",
     "require_array",
     "require_tree",
+    "shard_array",
+    "sharded_field",
 ]
 
 
@@ -131,6 +146,179 @@ def register_config_union(union_type: UnionType) -> None:
         union_type | None,
         structure,
     )
+
+
+@dataclass(frozen=True)
+class Sharding:
+    tensor_parallelism: int | None = None
+    data_parallelism: int | None = None
+    data_axis_name: str = "data"
+    tensor_axis_name: str = "tensor"
+
+    def resolve(self) -> "ShardingConfig":
+        device_count = jax.device_count()
+        tensor_parallelism = self.tensor_parallelism
+        data_parallelism = self.data_parallelism
+        if tensor_parallelism is None and data_parallelism is None:
+            data_parallelism = device_count
+            tensor_parallelism = 1
+        elif tensor_parallelism is None:
+            tensor_parallelism = device_count // data_parallelism
+        elif data_parallelism is None:
+            data_parallelism = device_count // tensor_parallelism
+        elif data_parallelism * tensor_parallelism != device_count:
+            raise ValueError(
+                "Expected data_parallelism * tensor_parallelism to be equal to the number of devices, got "
+                f"{data_parallelism} * {tensor_parallelism} != {device_count}.",
+            )
+        mesh = jax.make_mesh(
+            (data_parallelism, tensor_parallelism),
+            (self.data_axis_name, self.tensor_axis_name),
+            axis_types=(jax.sharding.AxisType.Auto, jax.sharding.AxisType.Auto),
+        )
+        return ShardingConfig(
+            data_axis_name=self.data_axis_name,
+            tensor_axis_name=self.tensor_axis_name,
+            mesh=mesh,
+        )
+
+
+@dataclass(frozen=True)
+class ShardingConfig:
+    data_axis_name: str = "data"
+    tensor_axis_name: str = "tensor"
+    mesh: shd.Mesh | None = None
+
+    @property
+    def data_axis_size(self) -> int:
+        if self.mesh is not None:
+            return self.mesh.shape[self.data_axis_name]
+        abstract_mesh = jax.sharding.get_abstract_mesh()
+        if abstract_mesh.empty:
+            raise RuntimeError("No mesh provided to ShardingConfig and no global mesh set via jax.set_mesh().")
+        return abstract_mesh.shape[self.data_axis_name]
+
+    @property
+    def tensor_axis_size(self) -> int:
+        if self.mesh is not None:
+            return self.mesh.shape[self.tensor_axis_name]
+        abstract_mesh = jax.sharding.get_abstract_mesh()
+        if abstract_mesh.empty:
+            raise RuntimeError("No mesh provided to ShardingConfig and no global mesh set via jax.set_mesh().")
+        return abstract_mesh.shape[self.tensor_axis_name]
+
+    def _make_sharding(self, pspec: shd.PartitionSpec) -> shd.NamedSharding | shd.PartitionSpec:
+        if self.mesh is not None:
+            return shd.NamedSharding(self.mesh, pspec)
+        return pspec
+
+
+_CURRENT_SHARDING_CONFIG: contextvars.ContextVar[ShardingConfig | None] = contextvars.ContextVar(
+    "lalamo_current_sharding_config",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def use_sharding_config(sharding_config: ShardingConfig | None) -> Generator[None, None, None]:
+    token = _CURRENT_SHARDING_CONFIG.set(sharding_config)
+    try:
+        yield
+    finally:
+        _CURRENT_SHARDING_CONFIG.reset(token)
+
+
+def get_default_sharding_config() -> ShardingConfig | None:
+    sharding_config = _CURRENT_SHARDING_CONFIG.get()
+    if sharding_config is not None:
+        return sharding_config
+    abstract_mesh = jax.sharding.get_abstract_mesh()
+    if abstract_mesh.empty or "data" not in abstract_mesh.axis_names or "tensor" not in abstract_mesh.axis_names:
+        return None
+    return ShardingConfig()
+
+
+def init_parallelism(
+    *,
+    tensor_parallelism: int | None = None,
+    data_parallelism: int | None = None,
+    data_axis_name: str = "data",
+    tensor_axis_name: str = "tensor",
+) -> None:
+    sharding = Sharding(
+        tensor_parallelism=tensor_parallelism,
+        data_parallelism=data_parallelism,
+        data_axis_name=data_axis_name,
+        tensor_axis_name=tensor_axis_name,
+    )
+    resolved = sharding.resolve()
+    assert resolved.mesh is not None
+    jax.set_mesh(resolved.mesh)
+
+
+@contextlib.contextmanager
+def host_creation() -> Generator[None, None, None]:
+    cpu_devices = jax.devices("cpu")
+    if cpu_devices:
+        with jax.default_device(cpu_devices[0]):
+            yield
+    else:
+        yield
+
+
+def sharded_field(tensor_dim_order: tuple[int, ...] | None = None, **kwargs: Any) -> Any:  # noqa: ANN401
+    metadata = dict(kwargs.pop("metadata", {}))
+    metadata["tensor_dim_order"] = tensor_dim_order
+    return eqx.field(metadata=metadata, **kwargs)
+
+
+def shard_array(
+    array: Array,
+    tensor_dim_order: tuple[int, ...],
+    sharding_config: ShardingConfig,
+) -> Array:
+    axis_size = sharding_config.tensor_axis_size
+    parts: list[str | None] = [None] * array.ndim
+    for dim in tensor_dim_order:
+        if dim < array.ndim and array.shape[dim] % axis_size == 0:
+            parts[dim] = sharding_config.tensor_axis_name
+            break
+    pspec = shd.PartitionSpec(*parts)
+    return jax.device_put(array, sharding_config._make_sharding(pspec))
+
+
+def shard_batch_axis(array: Array, sharding_config: ShardingConfig) -> Array:
+    if array.ndim == 0:
+        return array
+    parts: list[str | None] = [None] * array.ndim
+    parts[0] = sharding_config.data_axis_name
+    pspec = shd.PartitionSpec(*parts)
+    return jax.lax.with_sharding_constraint(array, sharding_config._make_sharding(pspec))
+
+
+def apply_data_sharding[T](value: T, sharding_config: ShardingConfig | None) -> T:
+    if sharding_config is None:
+        return value
+    return jax.tree_util.tree_map(
+        lambda leaf: shard_batch_axis(leaf, sharding_config) if isinstance(leaf, jax.Array) else leaf,
+        value,
+    )
+
+
+def apply_sharding[T: eqx.Module](module: T, sharding_config: ShardingConfig | None) -> T:
+    if sharding_config is None:
+        return module
+    updates: dict[str, Array] = {}
+    for field in dataclasses.fields(module):
+        tensor_dim_order = field.metadata.get("tensor_dim_order")
+        if tensor_dim_order is None:
+            continue
+        value = getattr(module, field.name)
+        if isinstance(value, jax.Array):
+            updates[field.name] = shard_array(value, tensor_dim_order, sharding_config)
+    if updates:
+        return dataclasses.replace(module, **updates)
+    return module
 
 
 @dataclass

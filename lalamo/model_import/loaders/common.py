@@ -6,6 +6,8 @@ from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
+from lalamo.modules.common import apply_sharding, get_default_sharding_config
+
 __all__ = [
     "load_parameters",
 ]
@@ -40,11 +42,16 @@ def load_parameters[M: eqx.Module](
 ) -> M:
     old_values = list(selector(module))
     new_values = list(new_values)
+
     casted_new_values = []
     for old_value, new_value in zip(old_values, new_values, strict=True):
         _check_compatible(old_value, new_value, module)
-        if isinstance(old_value, Array) and isinstance(new_value, Array):
-            casted_new_values.append(new_value.astype(old_value.dtype))
+        if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
+            casted_array = new_value
+            if isinstance(old_value, Array):
+                casted_array = casted_array.astype(old_value.dtype)
+            casted_new_values.append(casted_array)
         else:
             casted_new_values.append(new_value)
-    return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
+    updated = eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
+    return apply_sharding(updated, get_default_sharding_config())

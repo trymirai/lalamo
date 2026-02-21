@@ -27,6 +27,7 @@ from lalamo.models import (
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
+from lalamo.modules.common import Sharding, ShardingConfig, use_sharding_config
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -271,6 +272,7 @@ def _import_language_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    sharding_config: ShardingConfig | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
     foreign_decoder_config_file = download_config_file(model_spec)
     foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
@@ -287,6 +289,7 @@ def _import_language_model(
         accumulation_precision,
     )
     assert isinstance(decoder, Decoder)
+    decoder = replace(decoder, sharding_config=sharding_config)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
@@ -433,38 +436,43 @@ def import_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    sharding: Sharding | None = None,
 ) -> ImportResults:
+    sharding_config = sharding.resolve() if sharding is not None else None
+
     if isinstance(model_spec, str):
         try:
             model_spec = ModelRegistry.build().repo_to_model[model_spec]
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    match model_spec.model_type:
-        case ModelType.LANGUAGE_MODEL:
-            model, config = _import_language_model(
-                model_spec,
-                context_length=context_length,
-                precision=precision,
-                accumulation_precision=accumulation_precision,
-                progress_callback=progress_callback,
-            )
-        case ModelType.CLASSIFIER_MODEL:
-            model, config = _import_classifier(
-                model_spec,
-                context_length=context_length,
-                precision=precision,
-                accumulation_precision=accumulation_precision,
-                progress_callback=progress_callback,
-            )
-        case ModelType.TTS_MODEL:
-            model, config = _import_tts_model(
-                model_spec,
-                context_length=context_length,
-                precision=precision,
-                accumulation_precision=accumulation_precision,
-                progress_callback=progress_callback,
-            )
+    with use_sharding_config(sharding_config):
+        match model_spec.model_type:
+            case ModelType.LANGUAGE_MODEL:
+                model, config = _import_language_model(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                    sharding_config=sharding_config,
+                )
+            case ModelType.CLASSIFIER_MODEL:
+                model, config = _import_classifier(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                )
+            case ModelType.TTS_MODEL:
+                model, config = _import_tts_model(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                )
 
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,
