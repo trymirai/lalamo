@@ -343,12 +343,13 @@ def apply_data_sharding[T](value: T, mesh: MeshConfig | None) -> T:
 def apply_tensor_sharding[T: eqx.Module](
     module: T,
 ) -> T:
-    mesh = getattr(module, "mesh", None) or get_default_mesh()
+    fields = dataclasses.fields(module)
+    mesh = get_default_mesh()
     if mesh is None:
         return module
     sharding_order = getattr(module, "sharding_order", None)
     updates: dict[str, Any] = {}
-    for field in dataclasses.fields(module):
+    for field in fields:
         tensor_sharding = field.metadata.get("tensor_sharding")
         if tensor_sharding is None:
             continue
