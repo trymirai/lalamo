@@ -163,29 +163,20 @@ class Sharding:
         if (tp is not None and tp <= 0) or (dp is not None and dp <= 0):
             raise ValueError("tensor_parallelism and data_parallelism must be positive integers.")
 
-        if tp is None and dp is None:
-            tp, dp = 1, device_count
-        elif tp is None:
-            assert dp is not None
-            if device_count % dp != 0:
-                raise ValueError(
-                    f"data_parallelism * tensor_parallelism must equal the number of devices ({device_count}).",
-                )
-            tp = device_count // dp
-        elif dp is None:
-            if device_count % tp != 0:
-                raise ValueError(
-                    f"data_parallelism * tensor_parallelism must equal the number of devices ({device_count}).",
-                )
-            dp = device_count // tp
-        elif tp * dp != device_count:
+        match tp, dp:
+            case None, None:
+                tp, dp = 1, device_count
+            case None, int() as resolved_dp:
+                tp, dp = device_count // resolved_dp, resolved_dp
+            case int() as resolved_tp, None:
+                tp, dp = resolved_tp, device_count // resolved_tp
+            case int() as resolved_tp, int() as resolved_dp:
+                tp, dp = resolved_tp, resolved_dp
+
+        if tp * dp != device_count:
             raise ValueError(
                 f"data_parallelism * tensor_parallelism must equal the number of devices ({device_count}).",
             )
-
-        assert tp is not None
-        assert dp is not None
-        assert tp * dp == device_count
 
         mesh = jax.make_mesh(
             (dp, tp),

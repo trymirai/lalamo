@@ -46,11 +46,8 @@ def load_parameters[M: eqx.Module](
     casted_new_values = []
     for old_value, new_value in zip(old_values, new_values, strict=True):
         _check_compatible(old_value, new_value, module)
-        if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
-            casted_array = new_value
-            if isinstance(old_value, Array):
-                casted_array = casted_array.astype(old_value.dtype)
-            casted_new_values.append(casted_array)
+        if isinstance(old_value, Array) and isinstance(new_value, Array):
+            casted_new_values.append(new_value.astype(old_value.dtype))
         else:
             casted_new_values.append(new_value)
     updated = eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
