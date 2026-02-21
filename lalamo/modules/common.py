@@ -242,10 +242,7 @@ def use_mesh(mesh: MeshConfig | None) -> Generator[None, None, None]:
 
 
 def get_default_mesh() -> MeshConfig | None:
-    mesh = _CURRENT_MESH.get()
-    if mesh is not None:
-        return mesh
-    return None
+    return _CURRENT_MESH.get()
 
 
 class ShardingOrder(Enum):
