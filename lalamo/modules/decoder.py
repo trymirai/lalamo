@@ -110,7 +110,7 @@ class DecoderConfig:
             transformer=transformer,
         )
 
-    def empty(self) -> "Decoder":
+    def empty(self, mesh: MeshConfig | None = None) -> "Decoder":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
@@ -121,6 +121,7 @@ class DecoderConfig:
             config=self,
             embedding=embedding,
             transformer=transformer,
+            mesh=mesh,
         )
 
 
@@ -165,7 +166,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh)
 
         inner_features = vmap(self.embedding.embed)(token_ids)
-        assert is_sharded_along(inner_features, data=True)
+        assert is_sharded_along(inner_features, data=True, mesh=mesh)
 
         transformer_result = self.transformer(
             inner_features=inner_features,
@@ -180,7 +181,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
-        assert is_sharded_along(logits, data=True)
+        assert is_sharded_along(logits, data=True, mesh=mesh)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None

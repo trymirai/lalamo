@@ -19,7 +19,6 @@ from .common import (
     ShardingOrder,
     TensorSharding,
     apply_tensor_sharding,
-    host_creation,
     register_config_union,
     sharded_field,
 )
@@ -129,26 +128,25 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         *,
         key: PRNGKeyArray,
     ) -> "FullPrecisionLinear":
-        with host_creation():
-            scale = 1 / math.sqrt(input_dim)
-            weights = jax.random.uniform(
-                key,
-                (sum(output_dims), input_dim),
-                minval=-scale,
-                maxval=scale,
-                dtype=self.precision,
-            )
-            if has_biases:
-                biases = jnp.zeros((sum(output_dims),), dtype=self.precision)
-            else:
-                biases = None
+        scale = 1 / math.sqrt(input_dim)
+        weights = jax.random.uniform(
+            key,
+            (sum(output_dims), input_dim),
+            minval=-scale,
+            maxval=scale,
+            dtype=self.precision,
+        )
+        if has_biases:
+            biases = jnp.zeros((sum(output_dims),), dtype=self.precision)
+        else:
+            biases = None
 
-            layer = FullPrecisionLinear(
-                config=self,
-                output_dims=output_dims,
-                weights=weights,
-                biases=biases,
-            )
+        layer = FullPrecisionLinear(
+            config=self,
+            output_dims=output_dims,
+            weights=weights,
+            biases=biases,
+        )
         return apply_tensor_sharding(layer)
 
     def random_init_mixture(

@@ -333,7 +333,7 @@ class FromFishAudioRepo:
 
 
 def default_fish_audio_audio_decoder_config() -> "FishAudioAudioDecoderConfig_Foreign":
-    return FishAudioAudioDecoderConfig_Foreign(dac_config=get_default_fishaudio_dac_config())
+    return FishAudioAudioDecoderConfig_Foreign(dac_config=DictConfig(get_default_fishaudio_dac_config()))
 
 
 def load_fish_audio_audio_decoder(chkpt_path: Path, device: str = "cpu") -> "FishAudioAudioDecoder_Foreign":

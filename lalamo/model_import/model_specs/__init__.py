@@ -11,6 +11,7 @@ from .llamba import LLAMBA_MODELS
 from .mirai import MIRAI_CLASSIFIER_MODELS
 from .mistral import MISTRAL_MODELS
 from .nanbeige import NANBEIGE_MODELS
+from .nanocodec import NANOCODEC_TTS_MODELS
 
 # from .pleias import PLEIAS_MODELS
 from .polaris import POLARIS_MODELS
@@ -25,6 +26,7 @@ __all__ = [
     "UseCase",
 ]
 
+TTS_MODELS = FISHAUDIO_TTS_MODELS + NANOCODEC_TTS_MODELS
 
 ALL_MODEL_LISTS = [
     LFM2_MODELS,
@@ -42,5 +44,5 @@ ALL_MODEL_LISTS = [
     MIRAI_CLASSIFIER_MODELS,
     NANBEIGE_MODELS,
     RNJ_MODELS,
-    FISHAUDIO_TTS_MODELS,
+    TTS_MODELS,
 ]

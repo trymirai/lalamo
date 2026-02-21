@@ -31,7 +31,6 @@ __all__ = [
     "apply_tensor_sharding",
     "config_converter",
     "get_default_mesh",
-    "host_creation",
     "is_sharded_along",
     "register_config_union",
     "require_array",
@@ -253,16 +252,6 @@ def get_default_mesh() -> MeshConfig | None:
     return None
 
 
-@contextlib.contextmanager
-def host_creation() -> Generator[None, None, None]:
-    cpu_devices = jax.devices("cpu")
-    if cpu_devices:
-        with jax.default_device(cpu_devices[0]):
-            yield
-    else:
-        yield
-
-
 class ShardingOrder(Enum):
     INPUT = "input"
     OUTPUT = "output"
@@ -301,17 +290,15 @@ class TensorSharding:
         return (self.axes[pivot], *self.axes[:pivot], *self.axes[pivot + 1 :])
 
 
-MIN_SHARD_SIZE: int = 10_000
-
-
 def sharded_field(
     tensor_sharding: TensorSharding | None = None,
-    min_size_to_shard: int = MIN_SHARD_SIZE,
+    min_size_to_shard: int = 10_000,
+    **kwargs: object,
 ) -> Any:  # noqa: ANN401
-    metadata: dict[str, object] = {}
+    metadata = dict(kwargs.pop("metadata", {}))
     metadata["tensor_sharding"] = tensor_sharding
     metadata["min_size_to_shard"] = min_size_to_shard
-    return eqx.field(metadata=metadata)
+    return eqx.field(metadata=metadata, **kwargs)
 
 
 def shard_array(
@@ -319,7 +306,7 @@ def shard_array(
     tensor_sharding: TensorSharding,
     mesh: MeshConfig,
     sharding_order: ShardingOrder | None = None,
-    min_size_to_shard: int = MIN_SHARD_SIZE,
+    min_size_to_shard: int = 10_000,
 ) -> Array:
     if array.size < min_size_to_shard:
         return array
@@ -342,22 +329,6 @@ def shard_batch_axis(array: Array, mesh: MeshConfig) -> Array:
     return jax.lax.with_sharding_constraint(array, mesh.make_sharding(pspec))
 
 
-def _get_partition_spec(s: shd.Sharding | shd.PartitionSpec) -> shd.PartitionSpec | None:
-    if isinstance(s, shd.NamedSharding):
-        return s.spec
-    if isinstance(s, shd.PartitionSpec):
-        return s
-    return None
-
-
-def _spec_entry_contains(entry: str | tuple[str, ...] | None, axis_name: str) -> bool:
-    if entry is None:
-        return False
-    if isinstance(entry, str):
-        return entry == axis_name
-    return axis_name in entry
-
-
 def is_sharded_along(
     array: Array,
     *,
@@ -370,17 +341,28 @@ def is_sharded_along(
     if mesh is None:
         return True
 
-    spec = _get_partition_spec(array.sharding)
-    if spec is None:
-        return True
+    sharding = array.sharding
+    if isinstance(sharding, shd.NamedSharding):
+        spec = sharding.spec
+    elif isinstance(sharding, shd.PartitionSpec):
+        spec = sharding
+    else:
+        return data is not True and tensor is not True
+
+    def has_axis(entry: str | tuple[str, ...] | None, axis_name: str) -> bool:
+        if entry is None:
+            return False
+        if isinstance(entry, str):
+            return entry == axis_name
+        return axis_name in entry
 
     if data is not None:
-        has_data = len(spec) > 0 and _spec_entry_contains(spec[0], mesh.data_axis_name)
+        has_data = len(spec) > 0 and has_axis(spec[0], mesh.data_axis_name)
         if data != has_data:
             return False
 
     if tensor is not None:
-        has_tensor = any(_spec_entry_contains(entry, mesh.tensor_axis_name) for entry in spec)
+        has_tensor = any(has_axis(entry, mesh.tensor_axis_name) for entry in spec)
         if tensor != has_tensor:
             return False
 
@@ -401,32 +383,23 @@ def apply_tensor_sharding[T: eqx.Module](
     mesh: MeshConfig | None = None,
     sharding_order: ShardingOrder | None = None,
 ) -> T:
-    if mesh is None:
-        mesh = getattr(module, "mesh", None)
-    if mesh is None:
-        mesh = get_default_mesh()
+    mesh = mesh or getattr(module, "mesh", None) or get_default_mesh()
     if mesh is None:
         return module
-    if sharding_order is None:
-        sharding_order = getattr(module, "sharding_order", None)
-    updates: dict[str, Array] = {}
-    for field in dataclasses.fields(module):
-        tensor_sharding = field.metadata.get("tensor_sharding")
-        if tensor_sharding is None:
-            continue
-        value = getattr(module, field.name)
-        if isinstance(value, jax.Array):
-            min_size = field.metadata.get("min_size_to_shard", MIN_SHARD_SIZE)
-            updates[field.name] = shard_array(
-                value,
-                tensor_sharding,
-                mesh,
-                sharding_order,
-                min_size,
-            )
-    if updates:
-        return dataclasses.replace(module, **updates)
-    return module
+    sharding_order = sharding_order or getattr(module, "sharding_order", None)
+    updates = {
+        field.name: shard_array(
+            value,
+            tensor_sharding,
+            mesh,
+            sharding_order,
+            field.metadata.get("min_size_to_shard", 10_000),
+        )
+        for field in dataclasses.fields(module)
+        if (tensor_sharding := field.metadata.get("tensor_sharding")) is not None
+        and isinstance((value := getattr(module, field.name)), jax.Array)
+    }
+    return dataclasses.replace(module, **updates) if updates else module
 
 
 @dataclass

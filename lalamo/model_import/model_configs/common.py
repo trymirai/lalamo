@@ -56,9 +56,12 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         accumulation_precision: DTypeLike,
         weights_dict: Mapping[str, Array],
         metadata_dict: Mapping[str, str],
+        model_builder_kwargs: Mapping[str, object] | None = None,
     ) -> LalamoModule[ConfigT]:
         config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
-        model = config.empty()  # type: ignore
+        if model_builder_kwargs is None:
+            model_builder_kwargs = {}
+        model = config.empty(**model_builder_kwargs)  # type: ignore
         return self._load_weights(model, weights_dict)
 
 
