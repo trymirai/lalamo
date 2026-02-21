@@ -37,7 +37,7 @@ __all__ = [
 
 class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
-    # sharding order specifies in which order do we attempt to tensor-shard specified
+    # sharding order specifies in which order do we attempt to shard
     sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
     @property
@@ -431,13 +431,13 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         ),
     )
     scales: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=TensorSharding(-2),
+        tensor_sharding=None,
     )
     zero_points: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=TensorSharding(-2),
+        tensor_sharding=None,
     )
     biases: Float[Array, "*components total_out_channels"] | None = sharded_field(
-        tensor_sharding=TensorSharding(-1),
+        tensor_sharding=None,
     )
 
     @property
@@ -725,13 +725,13 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         ),
     )
     scales: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=TensorSharding(-2),
+        tensor_sharding=None,
     )
     deq_biases: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=TensorSharding(-2),
+        tensor_sharding=None,
     )
     biases: Float[Array, "*components total_out_channels"] | None = sharded_field(
-        tensor_sharding=TensorSharding(-1),
+        tensor_sharding=None,
     )
 
     @property
@@ -1041,7 +1041,10 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
 
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     lora_down_weights: Float[Array, "*components in_channels total_lora_channels"] = sharded_field(
-        tensor_sharding=TensorSharding(-2),
+        tensor_sharding=TensorSharding(
+            axes=(-2, -1),
+            axes_names=(ShardingOrder.INPUT, ShardingOrder.OUTPUT),
+        ),
     )
     lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...]
 
