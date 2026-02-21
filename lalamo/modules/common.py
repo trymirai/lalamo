@@ -1,6 +1,7 @@
 import contextlib
 import contextvars
 import dataclasses
+import warnings
 from abc import abstractmethod
 from collections.abc import Generator
 from dataclasses import dataclass
@@ -246,11 +247,10 @@ def get_default_sharding_config() -> ShardingConfig | None:
     abstract_mesh = jax.sharding.get_abstract_mesh()
     if abstract_mesh.empty:
         return None
-    axis_names = tuple(str(name) for name in abstract_mesh.axis_names)
-    if "data" in axis_names and "tensor" in axis_names:
-        return ShardingConfig()
-    if len(axis_names) == 2:
-        return ShardingConfig(data_axis_name=axis_names[0], tensor_axis_name=axis_names[1])
+    warnings.warn(
+        "Global JAX mesh is set but no active sharding context; skipping default sharding.",
+        stacklevel=2,
+    )
     return None
 
 
