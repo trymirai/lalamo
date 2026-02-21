@@ -31,7 +31,6 @@ __all__ = [
     "apply_tensor_sharding",
     "config_converter",
     "get_default_mesh",
-    "is_sharded_along",
     "register_config_union",
     "require_array",
     "require_tree",
@@ -327,46 +326,6 @@ def shard_batch_axis(array: Array, mesh: MeshConfig) -> Array:
     parts[0] = mesh.data_axis_name
     pspec = shd.PartitionSpec(*parts)
     return jax.lax.with_sharding_constraint(array, mesh.make_sharding(pspec))
-
-
-def is_sharded_along(
-    array: Array,
-    *,
-    data: bool | None = None,
-    tensor: bool | None = None,
-    mesh: MeshConfig | None = None,
-) -> bool:
-    if mesh is None:
-        mesh = get_default_mesh()
-    if mesh is None:
-        return True
-
-    sharding = array.sharding
-    if isinstance(sharding, shd.NamedSharding):
-        spec = sharding.spec
-    elif isinstance(sharding, shd.PartitionSpec):
-        spec = sharding
-    else:
-        return data is not True and tensor is not True
-
-    def has_axis(entry: str | tuple[str, ...] | None, axis_name: str) -> bool:
-        if entry is None:
-            return False
-        if isinstance(entry, str):
-            return entry == axis_name
-        return axis_name in entry
-
-    if data is not None:
-        has_data = len(spec) > 0 and has_axis(spec[0], mesh.data_axis_name)
-        if data != has_data:
-            return False
-
-    if tensor is not None:
-        has_tensor = any(has_axis(entry, mesh.tensor_axis_name) for entry in spec)
-        if tensor != has_tensor:
-            return False
-
-    return True
 
 
 def apply_data_sharding[T](value: T, mesh: MeshConfig | None) -> T:

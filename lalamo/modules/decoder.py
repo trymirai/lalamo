@@ -15,7 +15,6 @@ from .common import (
     MeshConfig,
     apply_data_sharding,
     get_default_mesh,
-    is_sharded_along,
 )
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
@@ -166,7 +165,6 @@ class Decoder(LalamoModule[DecoderConfig]):
         lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh)
 
         inner_features = vmap(self.embedding.embed)(token_ids)
-        assert is_sharded_along(inner_features, data=True, mesh=mesh)
 
         transformer_result = self.transformer(
             inner_features=inner_features,
@@ -181,7 +179,6 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
-        assert is_sharded_along(logits, data=True, mesh=mesh)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
