@@ -156,21 +156,32 @@ class Sharding:
     tensor_axis_name: str = "tensor"
 
     def resolve(self) -> "ShardingConfig":
+        error_message = (
+            "Wrong sharding axes: use positive data/tensor parallelism with "
+            "data_parallelism * tensor_parallelism == number of devices."
+        )
         device_count = jax.device_count()
         tensor_parallelism = self.tensor_parallelism
         data_parallelism = self.data_parallelism
+        if tensor_parallelism is not None and tensor_parallelism <= 0:
+            raise ValueError(error_message)
+        if data_parallelism is not None and data_parallelism <= 0:
+            raise ValueError(error_message)
         if tensor_parallelism is None and data_parallelism is None:
             data_parallelism = device_count
             tensor_parallelism = 1
         elif tensor_parallelism is None:
+            if data_parallelism is None:
+                raise ValueError(error_message)
+            if device_count % data_parallelism != 0:
+                raise ValueError(error_message)
             tensor_parallelism = device_count // data_parallelism
         elif data_parallelism is None:
+            if device_count % tensor_parallelism != 0:
+                raise ValueError(error_message)
             data_parallelism = device_count // tensor_parallelism
         elif data_parallelism * tensor_parallelism != device_count:
-            raise ValueError(
-                "Expected data_parallelism * tensor_parallelism to be equal to the number of devices, got "
-                f"{data_parallelism} * {tensor_parallelism} != {device_count}.",
-            )
+            raise ValueError(error_message)
         mesh = jax.make_mesh(
             (data_parallelism, tensor_parallelism),
             (self.data_axis_name, self.tensor_axis_name),
@@ -233,9 +244,14 @@ def get_default_sharding_config() -> ShardingConfig | None:
     if sharding_config is not None:
         return sharding_config
     abstract_mesh = jax.sharding.get_abstract_mesh()
-    if abstract_mesh.empty or "data" not in abstract_mesh.axis_names or "tensor" not in abstract_mesh.axis_names:
+    if abstract_mesh.empty:
         return None
-    return ShardingConfig()
+    axis_names = tuple(str(name) for name in abstract_mesh.axis_names)
+    if "data" in axis_names and "tensor" in axis_names:
+        return ShardingConfig()
+    if len(axis_names) == 2:
+        return ShardingConfig(data_axis_name=axis_names[0], tensor_axis_name=axis_names[1])
+    return None
 
 
 def init_parallelism(

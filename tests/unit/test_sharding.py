@@ -20,8 +20,10 @@ from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,
     NormalizationConfig,
+    Sharding,
     TransformerLayerConfig,
     UpcastMode,
+    get_default_sharding_config,
     init_parallelism,
 )
 
@@ -123,9 +125,41 @@ def test_import_preserves_sharding():
     print("PASS: test_import_preserves_sharding")
 
 
+def test_invalid_parallelism_raises_concise_value_error():
+    expected = (
+        "Wrong sharding axes: use positive data/tensor parallelism with "
+        "data_parallelism * tensor_parallelism == number of devices."
+    )
+    invalid_configs = [
+        dict(tensor_parallelism=0),
+        dict(tensor_parallelism=3),
+        dict(data_parallelism=3),
+        dict(data_parallelism=2, tensor_parallelism=3),
+    ]
+    for kwargs in invalid_configs:
+        try:
+            Sharding(**kwargs).resolve()
+        except ValueError as exc:
+            assert str(exc) == expected
+        else:
+            raise AssertionError(f"Expected ValueError for {kwargs}")
+    print("PASS: test_invalid_parallelism_raises_concise_value_error")
+
+
+def test_custom_axis_names_are_detected():
+    init_parallelism(tensor_parallelism=2, data_parallelism=4, data_axis_name="dp", tensor_axis_name="tp")
+    sharding_config = get_default_sharding_config()
+    assert sharding_config is not None
+    assert sharding_config.data_axis_name == "dp"
+    assert sharding_config.tensor_axis_name == "tp"
+    print("PASS: test_custom_axis_names_are_detected")
+
+
 test_weights_are_sharded()
 test_forward_pass()
 test_import_preserves_sharding()
+test_invalid_parallelism_raises_concise_value_error()
+test_custom_axis_names_are_detected()
 print("ALL TESTS PASSED")
 """)
 
