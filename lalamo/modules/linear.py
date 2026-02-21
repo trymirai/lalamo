@@ -209,7 +209,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    biases: Float[Array, "*components total_out_channels"] | None = sharded_field(tensor_sharding=None)
+    biases: Float[Array, "*components total_out_channels"] | None
 
     @property
     def mixture_size(self) -> int | None:
@@ -430,15 +430,9 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    scales: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=None,
-    )
-    zero_points: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=None,
-    )
-    biases: Float[Array, "*components total_out_channels"] | None = sharded_field(
-        tensor_sharding=None,
-    )
+    scales: Float[Array, "*components total_out_channels groups"]
+    zero_points: Float[Array, "*components total_out_channels groups"]
+    biases: Float[Array, "*components total_out_channels"] | None
 
     @property
     def mixture_size(self) -> int | None:
@@ -724,15 +718,9 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    scales: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=None,
-    )
-    deq_biases: Float[Array, "*components total_out_channels groups"] = sharded_field(
-        tensor_sharding=None,
-    )
-    biases: Float[Array, "*components total_out_channels"] | None = sharded_field(
-        tensor_sharding=None,
-    )
+    scales: Float[Array, "*components total_out_channels groups"]
+    deq_biases: Float[Array, "*components total_out_channels groups"]
+    biases: Float[Array, "*components total_out_channels"] | None
 
     @property
     def mixture_size(self) -> int | None:
