@@ -309,7 +309,7 @@ def _load_main_processing_module(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     context_length: int | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
-    model_builder_kwargs: Mapping[str, object] | None = None,
+    mesh: MeshConfig | None = None,
 ) -> LalamoModule:
     with ExitStack() as stack:
         weights_shards = []
@@ -330,7 +330,7 @@ def _load_main_processing_module(
             accumulation_precision,
             weights_dict,
             metadata_dict,
-            model_builder_kwargs=model_builder_kwargs,
+            mesh=mesh,
         )
 
     return processing_module
@@ -362,7 +362,7 @@ def _import_language_model(
             progress_callback,
             context_length,
             accumulation_precision,
-            model_builder_kwargs={"mesh": mesh},
+            mesh=mesh,
         )
         assert isinstance(decoder, Decoder)
 
