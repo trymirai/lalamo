@@ -18,6 +18,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
+from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
@@ -120,10 +121,12 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     # Convert for comparison (both to NTC format)
     audio_fish_ntc = torch_to_jax(audio_fish).transpose(0, 2, 1)  # NCT -> NTC
 
-    audio_diff = audio_lalamo - audio_fish_ntc
     assert audio_fish_ntc.shape == audio_lalamo.shape, (
         f"Shape mismatch: FishAudio {audio_fish_ntc.shape} vs Lalamo {audio_lalamo.shape}"
     )
-    assert jnp.allclose(audio_fish_ntc, audio_lalamo, atol=1e-3), (
-        f"Outputs don't match. Max diff: {jnp.max(jnp.abs(audio_diff))}"
+    assert_close(
+        result=audio_lalamo,
+        reference=audio_fish_ntc,
+        atol=1e-3,
+        operation_name="test_dac_matches_pytorch",
     )
