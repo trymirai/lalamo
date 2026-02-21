@@ -2,6 +2,7 @@ import logging
 from pathlib import Path
 
 import jax
+import pytest
 import torch
 from fish_speech.models.dac import inference as fish_dac_inference
 from fish_speech.models.dac.modded_dac import DAC
@@ -30,8 +31,16 @@ from .fishaudio_torch_stuff import from_fish_audio_config, prepare_state_dict_fo
 _testlog = logging.getLogger("tts_test_logger")
 
 
+def _skip_on_cpu() -> None:
+    devices = jax.devices()
+    if not devices or devices[0].platform == "cpu":
+        pytest.skip("Skipping on CPU due to reduced numerical precision")
+
+
 @torch.no_grad
 def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
+    _skip_on_cpu()
+
     test_text = "this is a test message with speaker 0"
     tts_message = TTSMessage(content=test_text, speaker_id="speaker:0", style="interleave")
 
