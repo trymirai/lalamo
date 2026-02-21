@@ -27,7 +27,7 @@ from lalamo.models import (
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
 from lalamo.modules.audio.text_to_speech import TTSMessageProcessor, TTSMessageProcessorConfig
-from lalamo.modules.common import Sharding, ShardingConfig, use_sharding_config
+from lalamo.modules.common import MeshConfig, Sharding, use_mesh
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -272,7 +272,7 @@ def _import_language_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-    sharding_config: ShardingConfig | None = None,
+    mesh: MeshConfig | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
     foreign_decoder_config_file = download_config_file(model_spec)
     foreign_decoder_config = model_spec.config_type.from_json(foreign_decoder_config_file)
@@ -289,7 +289,7 @@ def _import_language_model(
         accumulation_precision,
     )
     assert isinstance(decoder, Decoder)
-    decoder = replace(decoder, sharding_config=sharding_config)
+    decoder = replace(decoder, mesh=mesh)
 
     if progress_callback is not None:
         progress_callback(FinishedInitializingModelEvent())
@@ -438,7 +438,7 @@ def import_model(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     sharding: Sharding | None = None,
 ) -> ImportResults:
-    sharding_config = sharding.resolve() if sharding is not None else None
+    mesh = sharding.resolve() if sharding is not None else None
 
     if isinstance(model_spec, str):
         try:
@@ -446,7 +446,7 @@ def import_model(
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    with use_sharding_config(sharding_config):
+    with use_mesh(mesh):
         match model_spec.model_type:
             case ModelType.LANGUAGE_MODEL:
                 model, config = _import_language_model(
@@ -455,7 +455,7 @@ def import_model(
                     precision=precision,
                     accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
-                    sharding_config=sharding_config,
+                    mesh=mesh,
                 )
             case ModelType.CLASSIFIER_MODEL:
                 model, config = _import_classifier(

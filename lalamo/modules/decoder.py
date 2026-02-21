@@ -9,7 +9,14 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 
-from .common import ForwardPassMode, LalamoModule, ShardingConfig, apply_data_sharding, get_default_sharding_config
+from .common import (
+    ForwardPassMode,
+    LalamoModule,
+    MeshConfig,
+    apply_data_sharding,
+    get_default_mesh,
+    is_sharded_along,
+)
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
 from .token_mixers import State
@@ -120,7 +127,7 @@ class DecoderConfig:
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
-    sharding_config: ShardingConfig | None = eqx.field(static=True, default=None)
+    mesh: MeshConfig | None = eqx.field(static=True, default=None)
 
     @property
     def vocab_size(self) -> int:
@@ -129,12 +136,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
-
-    @property
-    def resolved_sharding_config(self) -> ShardingConfig | None:
-        if self.sharding_config is not None:
-            return self.sharding_config
-        return get_default_sharding_config()
 
     @eqx.filter_jit
     def __call__(
@@ -157,14 +158,14 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        sharding_config = self.resolved_sharding_config
-        token_ids = apply_data_sharding(token_ids, sharding_config)
-        token_positions = apply_data_sharding(token_positions, sharding_config)
-        state = apply_data_sharding(state, sharding_config)
-        lengths_without_padding = apply_data_sharding(lengths_without_padding, sharding_config)
+        mesh = self.mesh or get_default_mesh()
+        token_ids = apply_data_sharding(token_ids, mesh)
+        token_positions = apply_data_sharding(token_positions, mesh)
+        state = apply_data_sharding(state, mesh)
+        lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh)
 
         inner_features = vmap(self.embedding.embed)(token_ids)
-        inner_features = apply_data_sharding(inner_features, sharding_config)
+        assert is_sharded_along(inner_features, data=True)
 
         transformer_result = self.transformer(
             inner_features=inner_features,
@@ -179,7 +180,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
-        logits = apply_data_sharding(logits, sharding_config)
+        assert is_sharded_along(logits, data=True)
 
         if return_activation_trace:
             assert transformer_result.layer_results is not None
@@ -204,7 +205,7 @@ class Decoder(LalamoModule[DecoderConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         state = self.transformer.init_static_state(batch_size, capacity)
-        return apply_data_sharding(state, self.resolved_sharding_config)
+        return apply_data_sharding(state, self.mesh or get_default_mesh())
 
     def export_weights(self) -> ParameterTree:
         return dict(
