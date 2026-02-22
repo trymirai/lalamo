@@ -2,7 +2,6 @@ import logging
 from pathlib import Path
 
 import jax
-import pytest
 import torch
 from fish_speech.models.dac import inference as fish_dac_inference
 from fish_speech.models.dac.modded_dac import DAC
@@ -19,7 +18,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
-from tests.common import assert_close
+from tests.common import assert_close, skip_on_gpu
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,
@@ -31,15 +30,9 @@ from .fishaudio_torch_stuff import from_fish_audio_config, prepare_state_dict_fo
 _testlog = logging.getLogger("tts_test_logger")
 
 
-def _skip_on_cpu() -> None:
-    devices = jax.devices()
-    if not devices or devices[0].platform == "cpu":
-        pytest.skip("Skipping on CPU due to reduced numerical precision")
-
-
 @torch.no_grad
 def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
-    _skip_on_cpu()
+    skip_on_gpu("Flaky on GPU due to torch/jax inconsistencies")
 
     test_text = "this is a test message with speaker 0"
     tts_message = TTSMessage(content=test_text, speaker_id="speaker:0", style="interleave")

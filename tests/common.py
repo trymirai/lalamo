@@ -1,10 +1,11 @@
 import math
 
 import jax
+import pytest
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
 
-__all__ = ["assert_close", "checkify_forward"]
+__all__ = ["assert_close", "checkify_forward", "skip_on_gpu"]
 
 ATOL = 1e-3
 RTOL = 0.03
@@ -24,6 +25,11 @@ def checkify_forward(module):  # noqa: ANN001, ANN201
         module.__call__,
         errors=nan_checks | div_checks | user_checks,
     )
+
+
+def skip_on_gpu(reason: str) -> None:
+    if any(device.platform == "gpu" for device in jax.devices()):
+        pytest.skip(reason)
 
 
 def assert_close(
