@@ -40,6 +40,7 @@ from lalamo.commands import (
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
     GenerateRepliesCallbacks,
+    LikelihoodCallbacks,
     Precision,
     PullCallbacks,
     TraceCallbacks,
@@ -50,6 +51,7 @@ from lalamo.commands import collect_traces as _collect_traces
 from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import generate_replies as _generate_replies
+from lalamo.commands import likelihood as _likelihood
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
 from lalamo.commands import train as _train
@@ -823,6 +825,97 @@ def generate_replies(
         max_output_length=max_output_length,
         batch_size=batch_size,
         callbacks_type=CliGenerateRepliesCallbacks,
+    )
+
+
+@dataclass
+class CliLikelihoodCallbacks(LikelihoodCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    inference_task: TaskID | None = None
+
+    def loading_model(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                transient=True,
+            ),
+        )
+        self.loading_task = self.progress.add_task("Loading model...", total=None)
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_task = self.progress.add_task("Loading dataset...", total=None)
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+        self.inference_task = self.progress.add_task(
+            "Computing likelihood...",
+            total=self.total_rows,
+        )
+
+    def inference_progress(self, sequences_processed: int) -> None:
+        assert self.progress is not None
+        assert self.inference_task is not None
+        self.progress.update(self.inference_task, completed=sequences_processed)
+
+    def finished_inference(self) -> None:
+        assert self.progress is not None
+        assert self.inference_task is not None
+        self.progress.update(self.inference_task, description="Completed")
+        self.stack.close()
+        console.print(f"Likelihood results saved to [cyan]{self.output_path}[/cyan]")
+
+
+@app.command(help="Compute token-level log-likelihood for input/output pairs in a parquet file.")
+def likelihood(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the model directory.",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the input parquet file with 'inputs' and 'outputs' columns (lists of token IDs).",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_path: Annotated[
+        Path,
+        Option(
+            help="Path to save the output parquet file.",
+        ),
+    ],
+    top_k: Annotated[
+        int,
+        Option(help="Number of top logits to return per token position."),
+    ] = 8,
+    batch_size: Annotated[
+        int,
+        Option(help="Number of sequences per batch."),
+    ] = 1,
+) -> None:
+    _likelihood(
+        model_path=model_path,
+        dataset_path=dataset_path,
+        output_path=output_path,
+        top_k=top_k,
+        batch_size=batch_size,
+        callbacks_type=CliLikelihoodCallbacks,
     )
 
 

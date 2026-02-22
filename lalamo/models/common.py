@@ -20,6 +20,7 @@ from lalamo.safetensors import safe_read
 __all__ = [
     "BatchSizeInfo",
     "BatchSizesComputedEvent",
+    "LikelihoodEvent",
     "TextModel",
     "TextModelConfig",
 ]
@@ -43,6 +44,11 @@ class BatchSizeInfo:
 @dataclass(frozen=True)
 class BatchSizesComputedEvent:
     batch_sizes: tuple[BatchSizeInfo, ...]
+
+
+@dataclass(frozen=True)
+class LikelihoodEvent:
+    sequences_processed: int
 
 
 @dataclass(frozen=True)
