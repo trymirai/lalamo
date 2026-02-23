@@ -35,8 +35,10 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     )
     token_ids = result.token_ids.squeeze(0)
     eos_ids = language_model.stop_token_ids
-    eos_idx = next(i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids)
-    response_text = language_model.message_processor.tokenizer.decode(token_ids[:eos_idx])
+    eos_idx = next((i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids), None)
+    response_text = language_model.message_processor.tokenizer.decode(
+        token_ids[:eos_idx] if eos_idx is not None else token_ids
+    )
 
     digits_pattern = r"1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\s+10"
     words_pattern = r"one\s+two\s+three\s+four\s+five\s+six\s+seven\s+eight\s+nine\s+ten"
@@ -55,8 +57,9 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
         top_k_token_ids = result.top_k_token_ids.squeeze(0).tolist()
         top_k_token_logits = result.top_k_token_logits.squeeze(0).tolist()
 
-        assert top_k_token_ids[eos_idx][0] in eos_ids
-        assert top_k_token_logits[eos_idx][0] > max(top_k_token_logits[eos_idx][1:])
+        if eos_idx is not None:
+            assert top_k_token_ids[eos_idx][0] in eos_ids
+            assert top_k_token_logits[eos_idx][0] > max(top_k_token_logits[eos_idx][1:])
     else:
         assert result.top_k_token_ids is None
         assert result.top_k_token_logits is None

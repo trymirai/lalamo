@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 
 _runner = CliRunner()
 
-MAX_TOKENS = 512
+MAX_TOKENS = 1024
 
 # Models that cannot answer factual questions correctly (e.g. function-calling models).
 # For these, only EOS behavior is verified; QA adequacy assertions are skipped.
@@ -33,8 +33,13 @@ THINKING_MODELS: list[str] = [
     "trymirai/DeepSeek-R1-Distill-Qwen-1.5B-AWQ",
     "HuggingFaceTB/SmolLM3-3B",
     "mlx-community/SmolLM3-3B-8bit",
+    "mlx-community/SmolLM3-3B-4bit",
+    "Qwen/Qwen3-8B",
     "Qwen/Qwen3-8B-AWQ",
     "Qwen/Qwen3-8B-MLX-4bit",
+    "Qwen/Qwen3-0.6B-MLX-4bit",
+    "Qwen/Qwen3-0.6B-MLX-8bit",
+    "Qwen/Qwen3-0.6B",
     "RekaAI/reka-flash-3.1",
     "Nanbeige/Nanbeige4.1-3B",
 ]
@@ -79,7 +84,9 @@ def _generate_replies(
         ],
         terminal_width=240,
     )
-    if result.exception is not None and (isinstance(result.exception, JaxRuntimeError) or "RESOURCE_EXHAUSTED" in str(result.exception)):
+    if result.exception is not None and (
+        isinstance(result.exception, JaxRuntimeError) or "RESOURCE_EXHAUSTED" in str(result.exception)
+    ):
         pytest.skip(f"Model too large to fit in GPU memory during generation: {result.exception}")
     assert result.exit_code == 0, (
         f"generate-replies failed (exit {result.exit_code}).\n"
@@ -106,16 +113,17 @@ def test_model_coherent_and_stops(
     dataset_path = work_dir / "dataset.parquet"
     output_path = work_dir / "replies.parquet"
 
+    n_repeats = 2
     pl.DataFrame(
         {
             "conversation": [
                 [{"role": "user", "content": TASK_PROMPT}],
-                *[[{"role": "user", "content": q}] for q, _ in SIMPLE_QA],
+                *[[{"role": "user", "content": q}] for q, _ in SIMPLE_QA for _ in range(n_repeats)],
             ],
         },
     ).write_parquet(dataset_path)
 
-    batch_size = 1 + len(SIMPLE_QA)
+    batch_size = 1 + len(SIMPLE_QA) * n_repeats
     _generate_replies(converted_model_path, dataset_path, output_path, batch_size=batch_size, max_tokens=max_tokens)
 
     responses = pl.read_parquet(output_path).get_column("response").to_list()
@@ -155,11 +163,13 @@ def test_model_coherent_and_stops(
     )
 
     # --- checks on simple factual QA prompts ---
-    # Allow at most one failure across all QA items to tolerate occasional
+    # Each question is repeated n_repeats times to get diverse completions.
+    # Allow at most 2 failures across all QA items to tolerate occasional
     # flakiness (e.g. thinking models spending their whole token budget on
     # reasoning before outputting an answer).
     qa_failures: list[str] = []
-    for (question, pattern), response in zip(SIMPLE_QA, simple_outputs, strict=True):
+    qa_items = [(q, p) for q, p in SIMPLE_QA for _ in range(n_repeats)]
+    for (question, pattern), response in zip(qa_items, simple_outputs, strict=True):
         assert response, f"Model produced empty output for: {question!r}"
 
         num_tokens = len(tokenizer.encode(response).ids)
@@ -198,7 +208,8 @@ def test_model_coherent_and_stops(
         )
 
     if not is_bad:
-        assert len(qa_failures) <= 1, (
-            f"{len(qa_failures)}/{len(SIMPLE_QA)} QA checks failed (majority required):\n"
+        total_qa = len(SIMPLE_QA) * n_repeats
+        assert len(qa_failures) <= 2, (
+            f"{len(qa_failures)}/{total_qa} QA checks failed (at most 2 allowed):\n"
             + "\n".join(f"  - {f}" for f in qa_failures)
         )
