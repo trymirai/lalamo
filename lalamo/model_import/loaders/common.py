@@ -6,8 +6,6 @@ from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
-from lalamo.modules.common import apply_tensor_sharding
-
 __all__ = [
     "load_parameters",
 ]
@@ -50,5 +48,4 @@ def load_parameters[M: eqx.Module](
             casted_new_values.append(new_value.astype(old_value.dtype))
         else:
             casted_new_values.append(new_value)
-    updated = eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
-    return apply_tensor_sharding(updated)
+    return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)

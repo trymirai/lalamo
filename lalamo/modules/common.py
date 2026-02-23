@@ -29,6 +29,7 @@ __all__ = [
     "TensorSharding",
     "apply_data_sharding",
     "apply_tensor_sharding",
+    "apply_tensor_sharding_recursive",
     "config_converter",
     "get_default_mesh",
     "register_config_union",
@@ -152,6 +153,7 @@ def register_config_union(union_type: UnionType) -> None:
 class Sharding:
     tensor_parallelism: int | None = None
     data_parallelism: int | None = None
+    fsdp: bool = False
     data_axis_name: str = "data"
     tensor_axis_name: str = "tensor"
 
@@ -163,29 +165,19 @@ class Sharding:
         if (tp is not None and tp <= 0) or (dp is not None and dp <= 0):
             raise ValueError("tensor_parallelism and data_parallelism must be positive integers.")
 
-        resolved_tp: int
-        resolved_dp: int
-        if tp is None and dp is None:
-            resolved_tp = 1
-            resolved_dp = device_count
-        elif tp is None:
-            assert dp is not None
-            resolved_dp = dp
-            resolved_tp = device_count // resolved_dp
-        elif dp is None:
-            resolved_tp = tp
-            resolved_dp = device_count // resolved_tp
-        else:
-            resolved_tp = tp
-            resolved_dp = dp
+        match (tp, dp):
+            case (tp, None):
+                dp = device_count // tp
+            case (None, dp):
+                tp = device_count // dp
 
-        if resolved_tp * resolved_dp != device_count:
+        if tp * dp != device_count:  # type: ignore
             raise ValueError(
                 f"data_parallelism * tensor_parallelism must equal the number of devices ({device_count}).",
             )
 
         mesh = jax.make_mesh(
-            (resolved_dp, resolved_tp),
+            (dp, tp),  # type: ignore
             (self.data_axis_name, self.tensor_axis_name),
             axis_types=(jax.sharding.AxisType.Auto, jax.sharding.AxisType.Auto),
         )
@@ -193,6 +185,7 @@ class Sharding:
             data_axis_name=self.data_axis_name,
             tensor_axis_name=self.tensor_axis_name,
             mesh=mesh,
+            fsdp=self.fsdp,
         )
 
 
@@ -201,6 +194,7 @@ class MeshConfig:
     data_axis_name: str = "data"
     tensor_axis_name: str = "tensor"
     mesh: shd.Mesh | None = None
+    fsdp: bool = False
 
     @property
     def data_axis_size(self) -> int:
@@ -255,21 +249,24 @@ class TensorSharding:
     axes: tuple[int, ...]
     axes_names: tuple[ShardingOrder, ...] | None = None
 
-    def __init__(
-        self,
+    @classmethod
+    def build(
+        cls,
         axes: int | tuple[int, ...],
         axes_names: tuple[ShardingOrder, ...] | None = None,
-    ) -> None:
+    ) -> "TensorSharding":
         normalized_axes = (axes,) if isinstance(axes, int) else axes
-        if not normalized_axes:
+        return TensorSharding(normalized_axes, axes_names)
+
+    def __post_init__(self) -> None:
+        if not self.axes:
             raise ValueError("TensorSharding.axes must contain at least one axis.")
-        if axes_names is not None:
-            if len(axes_names) != len(normalized_axes):
+
+        if self.axes_names is not None:
+            if len(self.axes_names) != len(self.axes):
                 raise ValueError("TensorSharding.axes_names length must match axes length.")
-            if len(set(axes_names)) != len(axes_names):
+            if len(set(self.axes_names)) != len(self.axes_names):
                 raise ValueError("TensorSharding.axes_names must not contain duplicates.")
-        object.__setattr__(self, "axes", normalized_axes)
-        object.__setattr__(self, "axes_names", axes_names)
 
     def dims_to_try(self, sharding_order: ShardingOrder | None = None) -> tuple[int, ...]:
         if (
@@ -285,7 +282,7 @@ class TensorSharding:
 
 def sharded_field(
     tensor_sharding: TensorSharding | None = None,
-    min_size_to_shard: int = 10_000,
+    min_size_to_shard: int = 2**18,
     *,
     converter: Callable[[Any], Any] | None = None,
     static: bool = False,
@@ -308,64 +305,85 @@ def shard_array(
     tensor_sharding: TensorSharding,
     mesh: MeshConfig,
     sharding_order: ShardingOrder | None = None,
-    min_size_to_shard: int = 10_000,
+    min_size_to_shard: int = 2**18,
 ) -> Array:
     if array.size < min_size_to_shard:
         return array
-    axis_size = mesh.tensor_axis_size
     parts: list[str | None] = [None] * array.ndim
+
+    tp_dim: int | None = None
+    tp_axis_size = mesh.tensor_axis_size
     for dim in tensor_sharding.dims_to_try(sharding_order):
-        if dim < array.ndim and array.shape[dim] % axis_size == 0:
+        if dim < array.ndim and array.shape[dim] % tp_axis_size == 0:
             parts[dim] = mesh.tensor_axis_name
+            tp_dim = dim
             break
+
+    if mesh.fsdp:
+        dp_axis_size = mesh.data_axis_size
+        for dim in tensor_sharding.axes:
+            if dim != tp_dim and dim < array.ndim and array.shape[dim] % dp_axis_size == 0:
+                parts[dim] = mesh.data_axis_name
+                break
+
     pspec = shd.PartitionSpec(*parts)
     return jax.device_put(array, mesh.make_sharding(pspec))
 
 
-def shard_batch_axis(array: Array, mesh: MeshConfig) -> Array:
+def shard_batch_axis(array: Array, mesh: MeshConfig, *, batch_axis: int) -> Array:
     if array.ndim == 0:
         return array
     parts: list[str | None] = [None] * array.ndim
-    parts[0] = mesh.data_axis_name
+    parts[batch_axis] = mesh.data_axis_name
     pspec = shd.PartitionSpec(*parts)
     return jax.lax.with_sharding_constraint(array, mesh.make_sharding(pspec))
 
 
-def apply_data_sharding[T](value: T, mesh: MeshConfig | None) -> T:
+def apply_data_sharding[T](value: T, mesh: MeshConfig | None, *, batch_axis: int) -> T:
     if mesh is None:
         return value
     return jax.tree_util.tree_map(
-        lambda leaf: shard_batch_axis(leaf, mesh) if eqx.is_array(leaf) else leaf,
+        lambda leaf: shard_batch_axis(leaf, mesh, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf,
         value,
     )
 
 
-def apply_tensor_sharding[T: eqx.Module](
-    module: T,
-) -> T:
-    fields = dataclasses.fields(module)
+def apply_tensor_sharding[T: eqx.Module](module: T) -> T:
     mesh = get_default_mesh()
     if mesh is None:
         return module
-    sharding_order = getattr(module, "sharding_order", None)
-    updates: dict[str, Any] = {}
-    for field in fields:
-        tensor_sharding = field.metadata.get("tensor_sharding")
-        if tensor_sharding is None:
-            continue
+    return apply_tensor_sharding_recursive(module, mesh)
 
-        value = getattr(module, field.name)
-        if not eqx.is_array(value):
-            continue
 
-        updates[field.name] = shard_array(
-            value,
-            tensor_sharding,
-            mesh,
-            sharding_order,
-            field.metadata.get("min_size_to_shard", 10_000),
-        )
-    return dataclasses.replace(module, **updates) if updates else module
+def apply_tensor_sharding_recursive[T: eqx.Module](module: T, mesh: MeshConfig) -> T:
+    from .linear import LinearBase
+
+    replacements: dict[int, Array] = {}
+
+    def collect(mod: eqx.Module) -> None:
+        sharding_order = mod.sharding_order if isinstance(mod, LinearBase) else None
+        for field in dataclasses.fields(mod):
+            value = getattr(mod, field.name)
+            tensor_sharding = field.metadata.get("tensor_sharding")
+            if tensor_sharding is not None and eqx.is_array(value):
+                replacements[id(value)] = shard_array(
+                    value,
+                    tensor_sharding,
+                    mesh,
+                    sharding_order,
+                    field.metadata.get("min_size_to_shard", 0),
+                )
+            elif isinstance(value, eqx.Module):
+                collect(value)
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    if isinstance(item, eqx.Module):
+                        collect(item)
+
+    collect(module)
+    if not replacements:
+        return module
+    return jax.tree.map(lambda leaf: replacements.get(id(leaf), leaf), module)
 
 
 @dataclass

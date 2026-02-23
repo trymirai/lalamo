@@ -18,7 +18,6 @@ from .common import (
     LalamoModule,
     ShardingOrder,
     TensorSharding,
-    apply_tensor_sharding,
     register_config_union,
     sharded_field,
 )
@@ -147,7 +146,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
             weights=weights,
             biases=biases,
         )
-        return apply_tensor_sharding(layer)
+        return layer
 
     def random_init_mixture(
         self,
@@ -289,7 +288,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             weights=weights["weights"],
             biases=weights["biases"] if self.has_biases else None,
         )
-        return apply_tensor_sharding(result)
+        return result
 
 
 @dataclass(frozen=True)
@@ -362,7 +361,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
             zero_points=zero_points,
             biases=biases,
         )
-        return apply_tensor_sharding(layer)
+        return layer
 
     def random_init_mixture(
         self,
@@ -605,7 +604,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
             zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
             biases=require_array(weights["biases"]) if self.has_biases else None,
         )
-        return apply_tensor_sharding(result)
+        return result
 
 
 class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
@@ -650,7 +649,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
             deq_biases=deq_biases,
             biases=biases,
         )
-        return apply_tensor_sharding(layer)
+        return layer
 
     def random_init_mixture(
         self,
@@ -878,7 +877,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             deq_biases=require_array(weights["deq_biases"]),
             biases=require_array(weights["biases"]) if self.has_biases else None,
         )
-        return apply_tensor_sharding(result)
+        return result
 
 
 class MLXQuantizedLinear(MLXQuantizedLinearBase[MLXQuantizedLinearConfig]):
@@ -937,7 +936,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
         )
-        return apply_tensor_sharding(layer)
+        return layer
 
     def random_init_mixture(
         self,
@@ -1140,7 +1139,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
             lora_down_weights=weights["down_weights"],
             lora_up_weights=tuple(up_weights for up_weights in weights["up_weights"]),
         )
-        return apply_tensor_sharding(result)
+        return result
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig

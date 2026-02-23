@@ -32,7 +32,7 @@ from lalamo.models import (
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
-from lalamo.modules.common import MeshConfig, Sharding, use_mesh
+from lalamo.modules.common import MeshConfig, Sharding, apply_tensor_sharding, use_mesh
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -556,6 +556,8 @@ def import_model(
                     accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
                 )
+
+        model = apply_tensor_sharding(model)
 
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,

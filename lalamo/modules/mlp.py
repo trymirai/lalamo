@@ -21,7 +21,6 @@ from .common import (
     ForwardPassMode,
     LalamoModule,
     ShardingOrder,
-    apply_tensor_sharding,
     register_config_union,
 )
 from .linear import LinearBase, LinearConfig
@@ -90,8 +89,7 @@ class DenseMLPConfig(MLPConfigBase):
 
     @staticmethod
     def _with_sharding_order(projection: LinearBase, order: ShardingOrder) -> LinearBase:
-        projection = replace(projection, sharding_order=order)
-        return apply_tensor_sharding(projection)
+        return replace(projection, sharding_order=order)
 
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
         up_key, down_key = jax.random.split(key)

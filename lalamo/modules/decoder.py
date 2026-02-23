@@ -159,10 +159,10 @@ class Decoder(LalamoModule[DecoderConfig]):
                 f" got {token_positions.shape}",
             )
         mesh = self.mesh or get_default_mesh()
-        token_ids = apply_data_sharding(token_ids, mesh)
-        token_positions = apply_data_sharding(token_positions, mesh)
-        state = apply_data_sharding(state, mesh)
-        lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh)
+        token_ids = apply_data_sharding(token_ids, mesh, batch_axis=0)
+        token_positions = apply_data_sharding(token_positions, mesh, batch_axis=0)
+        state = apply_data_sharding(state, mesh, batch_axis=0)
+        lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh, batch_axis=0)
 
         inner_features = vmap(self.embedding.embed)(token_ids)
 
@@ -203,7 +203,7 @@ class Decoder(LalamoModule[DecoderConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         state = self.transformer.init_static_state(batch_size, capacity)
-        return apply_data_sharding(state, self.mesh or get_default_mesh())
+        return apply_data_sharding(state, self.mesh or get_default_mesh(), batch_axis=0)
 
     def export_weights(self) -> ParameterTree:
         return dict(
