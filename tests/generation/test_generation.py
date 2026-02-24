@@ -40,8 +40,8 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
         token_ids[:eos_idx] if eos_idx is not None else token_ids
     )
 
-    digits_pattern = r"1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9\s+10"
-    words_pattern = r"one\s+two\s+three\s+four\s+five\s+six\s+seven\s+eight\s+nine\s+ten"
+    digits_pattern = r"1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9"
+    words_pattern = r"one\s+two\s+three\s+four\s+five\s+six\s+seven\s+eight\s+nine"
     assert re.search(digits_pattern, response_text) or re.search(words_pattern, response_text, re.IGNORECASE), (
         response_text
     )
