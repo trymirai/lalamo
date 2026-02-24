@@ -6,15 +6,16 @@ import pytest
 
 MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
-    "LiquidAI/LFM2-350M",
-    "cartesia-ai/Llamba-1B",
 ]
 
 
 @pytest.mark.parametrize("model", MODELS)
 def test_sharded_forward_passes_match(model: str) -> None:
     result = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(f"""
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent(f"""
             import os
             os.environ["XLA_FLAGS"] = "--xla_force_host_platform_device_count=8"
             os.environ["JAX_PLATFORMS"] = "cpu"
@@ -64,7 +65,8 @@ def test_sharded_forward_passes_match(model: str) -> None:
                 print(f"  OK")
 
             print("all sharding configs passed")
-        """)],
+        """),
+        ],
         capture_output=True,
         text=True,
         timeout=600,

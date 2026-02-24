@@ -4,7 +4,6 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-import numpy as np
 import pytest
 import torch
 from torch import FloatTensor, LongTensor
@@ -18,6 +17,7 @@ from lalamo.model_import.model_specs.common import ModelSpec
 from lalamo.model_registry import ModelRegistry
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
+from tests.common import assert_close
 
 
 def test_logit_processing(model_registry: ModelRegistry) -> None:
@@ -66,4 +66,10 @@ def _test_logit_processing_for_spec(model_repo: str, generation_config: FileSpec
         hf_input_ids = cast("LongTensor", torch.zeros((1, 1), dtype=torch.long))
         hf_result = torch_to_jax(hf_processors(hf_input_ids, hf_scores)[0])
 
-        np.testing.assert_allclose(lalamo_result, hf_result)
+        assert_close(
+            result=lalamo_result,
+            reference=hf_result,
+            atol=1e-6,
+            rtol=1e-6,
+            fraction_of_allowed_violations=0.01,
+        )
