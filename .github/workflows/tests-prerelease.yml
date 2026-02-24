@@ -80,4 +80,6 @@ jobs:
 
       - name: Run tox
         run: |
+          uv python install 3.13
+          uv python install 3.14
           uvx tox -e latest-deps-${{ matrix.device }}-${{ matrix.python }}
