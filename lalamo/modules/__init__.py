@@ -7,17 +7,13 @@ from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
     LalamoModule,
-    MeshConfig,
     PositionalEmbeddingSelector,
     Sharding,
     ShardingOrder,
     TensorSharding,
     apply_data_sharding,
-    apply_tensor_sharding,
-    apply_tensor_sharding_recursive,
     config_converter,
     get_default_mesh,
-    shard_array,
     sharded_field,
 )
 from .decoder import (
@@ -146,7 +142,6 @@ __all__ = [
     "MLXSemiQuantizedUntiedEmbeddingConfig",
     "Mamba2",
     "Mamba2Config",
-    "MeshConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "NoopVocoder",
@@ -194,10 +189,7 @@ __all__ = [
     "VocoderConfig",
     "YARNRoPEConfig",
     "apply_data_sharding",
-    "apply_tensor_sharding",
-    "apply_tensor_sharding_recursive",
     "config_converter",
     "get_default_mesh",
-    "shard_array",
     "sharded_field",
 ]

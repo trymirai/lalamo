@@ -32,7 +32,7 @@ from lalamo.models import (
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
-from lalamo.modules.common import MeshConfig, Sharding, apply_tensor_sharding, use_mesh
+from lalamo.modules.common import Sharding, use_mesh
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 
@@ -309,7 +309,7 @@ def _load_main_processing_module(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     context_length: int | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
-    mesh: MeshConfig | None = None,
+    sharding: Sharding | None = None,
 ) -> LalamoModule:
     with ExitStack() as stack:
         weights_shards = []
@@ -330,7 +330,7 @@ def _load_main_processing_module(
             accumulation_precision,
             weights_dict,
             metadata_dict,
-            mesh=mesh,
+            sharding=sharding,
         )
 
     return processing_module
@@ -343,7 +343,7 @@ def _import_language_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-    mesh: MeshConfig | None = None,
+    sharding: Sharding | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
     with _download_weights_and_config_files(
         model_spec,
@@ -362,7 +362,7 @@ def _import_language_model(
             progress_callback,
             context_length,
             accumulation_precision,
-            mesh=mesh,
+            sharding=sharding,
         )
         assert isinstance(decoder, Decoder)
 
@@ -521,15 +521,13 @@ def import_model(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     sharding: Sharding | None = None,
 ) -> ImportResults:
-    mesh = sharding.resolve() if sharding is not None else None
-
     if isinstance(model_spec, str):
         try:
             model_spec = ModelRegistry.build().repo_to_model[model_spec]
         except KeyError as e:
             raise ValueError(f"Unknown model: {model_spec}") from e
 
-    with use_mesh(mesh):
+    with use_mesh(sharding):
         match model_spec.model_type:
             case ModelType.LANGUAGE_MODEL:
                 model, config = _import_language_model(
@@ -538,7 +536,7 @@ def import_model(
                     precision=precision,
                     accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
-                    mesh=mesh,
+                    sharding=sharding,
                 )
             case ModelType.CLASSIFIER_MODEL:
                 model, config = _import_classifier(
@@ -556,8 +554,6 @@ def import_model(
                     accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
                 )
-
-        model = apply_tensor_sharding(model)
 
     metadata = ModelMetadata(
         toolchain_version=LALAMO_VERSION,

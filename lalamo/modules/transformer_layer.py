@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 
-from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
+from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector, Sharding, apply_data_sharding
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
@@ -214,6 +214,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+        sharding: Sharding | None = None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -234,6 +235,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             state=state,
             length_without_padding=lengths_without_padding,
         )
+        if updated_state is not None:
+            (updated_state,) = apply_data_sharding(updated_state, sharding=sharding, batch_axis=0)
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs

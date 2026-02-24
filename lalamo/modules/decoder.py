@@ -12,9 +12,7 @@ from lalamo.common import ParameterTree, require_tree
 from .common import (
     ForwardPassMode,
     LalamoModule,
-    MeshConfig,
-    apply_data_sharding,
-    get_default_mesh,
+    Sharding,
 )
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
@@ -109,7 +107,7 @@ class DecoderConfig:
             transformer=transformer,
         )
 
-    def empty(self, mesh: MeshConfig | None = None) -> "Decoder":
+    def empty(self, sharding: Sharding | None = None) -> "Decoder":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
@@ -120,14 +118,14 @@ class DecoderConfig:
             config=self,
             embedding=embedding,
             transformer=transformer,
-            mesh=mesh,
+            sharding=sharding,
         )
 
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
-    mesh: MeshConfig | None = eqx.field(static=True, default=None)
+    sharding: Sharding | None = eqx.field(static=True, default=None)
 
     @property
     def vocab_size(self) -> int:
@@ -158,12 +156,6 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-        mesh = self.mesh or get_default_mesh()
-        token_ids = apply_data_sharding(token_ids, mesh, batch_axis=0)
-        token_positions = apply_data_sharding(token_positions, mesh, batch_axis=0)
-        state = apply_data_sharding(state, mesh, batch_axis=0)
-        lengths_without_padding = apply_data_sharding(lengths_without_padding, mesh, batch_axis=0)
-
         inner_features = vmap(self.embedding.embed)(token_ids)
 
         transformer_result = self.transformer(
@@ -176,6 +168,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
+            sharding=self.sharding,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
@@ -202,8 +195,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        state = self.transformer.init_static_state(batch_size, capacity)
-        return apply_data_sharding(state, self.mesh or get_default_mesh(), batch_axis=0)
+        return self.transformer.init_static_state(batch_size, capacity)
 
     def export_weights(self) -> ParameterTree:
         return dict(

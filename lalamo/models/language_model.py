@@ -20,6 +20,7 @@ from lalamo.modules import (
     ForwardPassMode,
     LalamoModule,
     State,
+    apply_data_sharding,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -189,6 +190,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
 
         if lengths_without_padding is None:
             lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
+
+        token_ids, lengths_without_padding = apply_data_sharding(
+            token_ids,
+            lengths_without_padding,
+            sharding=self.model.sharding,
+            batch_axis=0,
+        )
 
         chunks = self._make_chunks(token_ids, lengths_without_padding, chunk_size)
 

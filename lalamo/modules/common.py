@@ -1,6 +1,5 @@
 import contextlib
 import contextvars
-import dataclasses
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
@@ -21,21 +20,17 @@ __all__ = [
     "DummyUnionMember",
     "ForwardPassMode",
     "LalamoModule",
-    "MeshConfig",
     "ParameterTree",
     "PositionalEmbeddingSelector",
     "Sharding",
     "ShardingOrder",
     "TensorSharding",
     "apply_data_sharding",
-    "apply_tensor_sharding",
-    "apply_tensor_sharding_recursive",
     "config_converter",
     "get_default_mesh",
     "register_config_union",
     "require_array",
     "require_tree",
-    "shard_array",
     "sharded_field",
 ]
 
@@ -151,16 +146,24 @@ def register_config_union(union_type: UnionType) -> None:
 
 @dataclass(frozen=True)
 class Sharding:
-    tensor_parallelism: int | None = None
-    data_parallelism: int | None = None
-    fsdp: bool = False
+    mesh: shd.Mesh
     data_axis_name: str = "data"
     tensor_axis_name: str = "tensor"
+    fsdp: bool = False
 
-    def resolve(self) -> "MeshConfig":
+    @classmethod
+    def build(
+        cls,
+        *,
+        tensor_parallelism: int | None = None,
+        data_parallelism: int | None = None,
+        fsdp: bool = False,
+        data_axis_name: str = "data",
+        tensor_axis_name: str = "tensor",
+    ) -> "Sharding":
         device_count = jax.device_count()
-        tp = self.tensor_parallelism
-        dp = self.data_parallelism
+        tp = tensor_parallelism
+        dp = data_parallelism
 
         if (tp is not None and tp <= 0) or (dp is not None and dp <= 0):
             raise ValueError("tensor_parallelism and data_parallelism must be positive integers.")
@@ -178,65 +181,45 @@ class Sharding:
 
         mesh = jax.make_mesh(
             (dp, tp),  # type: ignore
-            (self.data_axis_name, self.tensor_axis_name),
+            (data_axis_name, tensor_axis_name),
             axis_types=(jax.sharding.AxisType.Auto, jax.sharding.AxisType.Auto),
         )
-        return MeshConfig(
-            data_axis_name=self.data_axis_name,
-            tensor_axis_name=self.tensor_axis_name,
+        return cls(
             mesh=mesh,
-            fsdp=self.fsdp,
+            data_axis_name=data_axis_name,
+            tensor_axis_name=tensor_axis_name,
+            fsdp=fsdp,
         )
-
-
-@dataclass(frozen=True)
-class MeshConfig:
-    data_axis_name: str = "data"
-    tensor_axis_name: str = "tensor"
-    mesh: shd.Mesh | None = None
-    fsdp: bool = False
 
     @property
     def data_axis_size(self) -> int:
-        if self.mesh is not None:
-            return self.mesh.shape[self.data_axis_name]
-        abstract_mesh = jax.sharding.get_abstract_mesh()
-        if abstract_mesh.empty:
-            raise RuntimeError("No mesh provided to MeshConfig and no global mesh set via jax.set_mesh().")
-        return abstract_mesh.shape[self.data_axis_name]
+        return self.mesh.shape[self.data_axis_name]
 
     @property
     def tensor_axis_size(self) -> int:
-        if self.mesh is not None:
-            return self.mesh.shape[self.tensor_axis_name]
-        abstract_mesh = jax.sharding.get_abstract_mesh()
-        if abstract_mesh.empty:
-            raise RuntimeError("No mesh provided to MeshConfig and no global mesh set via jax.set_mesh().")
-        return abstract_mesh.shape[self.tensor_axis_name]
+        return self.mesh.shape[self.tensor_axis_name]
 
-    def make_sharding(self, pspec: shd.PartitionSpec) -> shd.NamedSharding | shd.PartitionSpec:
-        if self.mesh is not None:
-            return shd.NamedSharding(self.mesh, pspec)
-        return pspec
+    def make_sharding(self, pspec: shd.PartitionSpec) -> shd.NamedSharding:
+        return shd.NamedSharding(self.mesh, pspec)
 
 
-_CURRENT_MESH: contextvars.ContextVar[MeshConfig | None] = contextvars.ContextVar(
-    "lalamo_current_mesh",
+_CURRENT_SHARDING: contextvars.ContextVar[Sharding | None] = contextvars.ContextVar(
+    "lalamo_current_sharding",
     default=None,
 )
 
 
 @contextlib.contextmanager
-def use_mesh(mesh: MeshConfig | None) -> Generator[None, None, None]:
-    token = _CURRENT_MESH.set(mesh)
+def use_mesh(sharding: Sharding | None) -> Generator[None, None, None]:
+    token = _CURRENT_SHARDING.set(sharding)
     try:
         yield
     finally:
-        _CURRENT_MESH.reset(token)
+        _CURRENT_SHARDING.reset(token)
 
 
-def get_default_mesh() -> MeshConfig | None:
-    return _CURRENT_MESH.get()
+def get_default_mesh() -> Sharding | None:
+    return _CURRENT_SHARDING.get()
 
 
 class ShardingOrder(Enum):
@@ -300,90 +283,26 @@ def sharded_field(
     )
 
 
-def shard_array(
-    array: Array,
-    tensor_sharding: TensorSharding,
-    mesh: MeshConfig,
-    sharding_order: ShardingOrder | None = None,
-    min_size_to_shard: int = 2**18,
-) -> Array:
-    if array.size < min_size_to_shard:
-        return array
-    parts: list[str | None] = [None] * array.ndim
-
-    tp_dim: int | None = None
-    tp_axis_size = mesh.tensor_axis_size
-    for dim in tensor_sharding.dims_to_try(sharding_order):
-        if dim < array.ndim and array.shape[dim] % tp_axis_size == 0:
-            parts[dim] = mesh.tensor_axis_name
-            tp_dim = dim
-            break
-
-    if mesh.fsdp:
-        dp_axis_size = mesh.data_axis_size
-        for dim in tensor_sharding.axes:
-            if dim != tp_dim and dim < array.ndim and array.shape[dim] % dp_axis_size == 0:
-                parts[dim] = mesh.data_axis_name
-                break
-
-    pspec = shd.PartitionSpec(*parts)
-    return jax.device_put(array, mesh.make_sharding(pspec))
-
-
-def shard_batch_axis(array: Array, mesh: MeshConfig, *, batch_axis: int) -> Array:
+def shard_batch_axis(array: Array, sharding: Sharding, *, batch_axis: int) -> Array:
     if array.ndim == 0:
         return array
     parts: list[str | None] = [None] * array.ndim
-    parts[batch_axis] = mesh.data_axis_name
+    parts[batch_axis] = sharding.data_axis_name
     pspec = shd.PartitionSpec(*parts)
-    return jax.lax.with_sharding_constraint(array, mesh.make_sharding(pspec))
+    return jax.lax.with_sharding_constraint(array, sharding.make_sharding(pspec))
 
 
-def apply_data_sharding[T](value: T, mesh: MeshConfig | None, *, batch_axis: int) -> T:
-    if mesh is None:
-        return value
-    return jax.tree_util.tree_map(
-        lambda leaf: shard_batch_axis(leaf, mesh, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf,
-        value,
-    )
+def apply_data_sharding[*Ts](*values: *Ts, sharding: Sharding | None, batch_axis: int) -> tuple[*Ts]:
+    if sharding is None:
+        return values  # type: ignore[return-value]
 
+    def _shard(value: object) -> object:
+        return jax.tree_util.tree_map(
+            lambda leaf: shard_batch_axis(leaf, sharding, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf,
+            value,
+        )
 
-def apply_tensor_sharding[T: eqx.Module](module: T) -> T:
-    mesh = get_default_mesh()
-    if mesh is None:
-        return module
-    return apply_tensor_sharding_recursive(module, mesh)
-
-
-def apply_tensor_sharding_recursive[T: eqx.Module](module: T, mesh: MeshConfig) -> T:
-    from .linear import LinearBase
-
-    replacements: dict[int, Array] = {}
-
-    def collect(mod: eqx.Module) -> None:
-        sharding_order = mod.sharding_order if isinstance(mod, LinearBase) else None
-        for field in dataclasses.fields(mod):
-            value = getattr(mod, field.name)
-            tensor_sharding = field.metadata.get("tensor_sharding")
-            if tensor_sharding is not None and eqx.is_array(value):
-                replacements[id(value)] = shard_array(
-                    value,
-                    tensor_sharding,
-                    mesh,
-                    sharding_order,
-                    field.metadata.get("min_size_to_shard", 0),
-                )
-            elif isinstance(value, eqx.Module):
-                collect(value)
-            elif isinstance(value, (list, tuple)):
-                for item in value:
-                    if isinstance(item, eqx.Module):
-                        collect(item)
-
-    collect(module)
-    if not replacements:
-        return module
-    return jax.tree.map(lambda leaf: replacements.get(id(leaf), leaf), module)
+    return tuple(_shard(v) for v in values)  # type: ignore[return-value]
 
 
 @dataclass
