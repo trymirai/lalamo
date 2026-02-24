@@ -51,9 +51,11 @@ def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo 
                 cur = cur[key.idx]  # type: ignore[index]
             elif isinstance(key, jtu.DictKey):
                 cur = cur[key.key]  # type: ignore[index]
+            else:
+                raise TypeError(f"Unexpected key type: at {path}, key {key}")
 
         if owner_field is None:
-            raise ValueError(f"Attempting to shard root eqx.Module: {module}")
+            raise ValueError(f"Attempting to shard root module ({module}), or field on {path} not found")
 
         tensor_sharding = owner_field.metadata.get("tensor_sharding")
         if tensor_sharding is None:
@@ -93,28 +95,6 @@ def apply_sharding(array: Array, info: FieldShardingInfo, sharding: Sharding) ->
     return jax.device_put(array, sharding.make_sharding(pspec))
 
 
-def load_parameters[M: eqx.Module](
-    selector: Callable[[M], Iterable[PyTree]],
-    module: M,
-    new_values: Iterable[PyTree],
-) -> M:
-    old_values = list(selector(module))
-    new_values = list(new_values)
-    sharding = get_default_mesh()
-
-    casted_new_values = []
-    for old_value, new_value in zip(old_values, new_values, strict=True):
-        _check_compatible(old_value, new_value, module)
-        if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
-            new_value = new_value.astype(old_value.dtype)  # noqa: PLW2901
-            if sharding is not None:
-                sharding_info = find_field_sharding(module, old_value)
-                if sharding_info is not None:
-                    new_value = apply_sharding(new_value, sharding_info, sharding)  # noqa: PLW2901
-        casted_new_values.append(new_value)
-    return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
-
-
 def _get_name(leaf: PyTree, tree: PyTree) -> str:
     for path, value in leaves_with_path(tree):
         if value is leaf:
@@ -135,3 +115,25 @@ def _check_compatible(old_value: PyTree, new_value: PyTree, module: eqx.Module) 
             )
     elif type(old_value) is not type(new_value):
         raise TypeError(f"Expected parameter of type {type(old_value)}, got {type(new_value)}")
+
+
+def load_parameters[M: eqx.Module](
+    selector: Callable[[M], Iterable[PyTree]],
+    module: M,
+    new_values: Iterable[PyTree],
+) -> M:
+    old_values = list(selector(module))
+    new_values = list(new_values)
+    sharding = get_default_mesh()
+
+    casted_new_values = []
+    for old_value, new_value in zip(old_values, new_values, strict=True):
+        _check_compatible(old_value, new_value, module)
+        if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
+            new_value = new_value.astype(old_value.dtype)  # noqa: PLW2901
+            if sharding is not None:
+                sharding_info = find_field_sharding(module, old_value)
+                if sharding_info is not None:
+                    new_value = apply_sharding(new_value, sharding_info, sharding)  # noqa: PLW2901
+        casted_new_values.append(new_value)
+    return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
