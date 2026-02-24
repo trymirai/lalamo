@@ -64,7 +64,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest -n=auto tests/unit
+          pytest tests/unit
 
   conversion:
     name: Model Conversion Tests
