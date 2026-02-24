@@ -84,7 +84,7 @@ jobs:
 
   generation:
     name: Generation Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -117,7 +117,7 @@ jobs:
 
   tracer:
     name: Tracer Tests
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -130,7 +130,7 @@ jobs:
 
       - name: Run pytest
         env:
-          LALAMO_MEMORY_FOR_TRACE: "48 G"
+          LALAMO_MEMORY_FOR_TRACE: "100 G"
         run: |
           pytest tests/tracer
 
