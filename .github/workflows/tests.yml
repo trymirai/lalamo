@@ -68,7 +68,7 @@ jobs:
 
   conversion:
     name: Model Conversion Tests
-    runs-on: [self-hosted, linux, flows]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -84,7 +84,7 @@ jobs:
 
   generation:
     name: Generation Tests
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [self-hosted, linux]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -101,7 +101,7 @@ jobs:
 
   audio:
     name: Audio Model Tests
-    runs-on: [self-hosted, linux]
+    runs-on: [self-hosted, linux, cpu]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
