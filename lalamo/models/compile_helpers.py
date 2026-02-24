@@ -11,10 +11,12 @@ from .common import InferenceConfig
 if TYPE_CHECKING:
     from jax._src.stages import Compiled
 
+    from lalamo.modules import ShardingConfig
+
     from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 
 _compile_cache: dict[
-    tuple[int, GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None],
+    tuple[int, GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None, ShardingConfig | None],
     Compiled,
 ] = {}
 
@@ -25,10 +27,11 @@ def compile_generate_tokens(
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
     forward_pass_config: ForwardPassConfig | None = None,
+    sharding_config: ShardingConfig | None = None,
 ) -> Compiled:
     from .language_model import LanguageModel
 
-    key = (id(model), generation_config, inference_config, forward_pass_config)
+    key = (id(model), generation_config, inference_config, forward_pass_config, sharding_config)
     if key not in _compile_cache:
         generate_tokens_fn = functools.partial(
             LanguageModel.generate_tokens,
@@ -36,6 +39,7 @@ def compile_generate_tokens(
             max_output_length=inference_config.max_output_length,
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             forward_pass_config=forward_pass_config,
+            sharding_config=sharding_config,
         )
         _compile_cache[key] = (
             jax.jit(generate_tokens_fn)

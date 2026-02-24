@@ -19,9 +19,9 @@ from lalamo.modules import (
     DecoderForwardPassConfig,
     ForwardPassMode,
     LalamoModule,
+    ShardingConfig,
     State,
     apply_data_sharding,
-    get_current_sharding_config,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -186,6 +186,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         chunk_size: int = 512,  # vllm default
+        sharding_config: ShardingConfig | None = None,
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
 
@@ -195,7 +196,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         token_ids, lengths_without_padding = apply_data_sharding(
             token_ids,
             lengths_without_padding,
-            sharding_config=get_current_sharding_config(),
+            sharding_config=sharding_config,
             batch_axis=0,
         )
 
@@ -243,6 +244,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         forward_pass_config: ForwardPassConfig | None = None,
         num_top_logits_to_return: int | None = None,
         *,
+        sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " batch"] | None = None,
     ) -> GenerationResults:
         batch_size, sequence_length = prompt_token_ids.shape
@@ -266,6 +268,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sequence_length + max_output_length,
             prompt_lengths_without_padding,
             forward_pass_config=forward_pass_config,
+            sharding_config=sharding_config,
         )
 
         initial_state = DecodingState(
@@ -354,6 +357,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None,
         inference_config: InferenceConfig,
         forward_pass_config: ForwardPassConfig | None,
+        sharding_config: ShardingConfig | None,
     ) -> Iterator[GenerationResults]:
         assert inference_config.batch_size is not None
         batch_size = inference_config.batch_size
@@ -370,6 +374,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             inference_config,
             forward_pass_config=forward_pass_config,
+            sharding_config=sharding_config,
         )
         results = generate_tokens_fn(
             self,
@@ -391,6 +396,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
         tokenized = list(tokenized)  # load eagerly to RAM
@@ -414,6 +420,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     generation_config=generation_config,
                     inference_config=new_inference_config,
                     forward_pass_config=forward_pass_config,
+                    sharding_config=sharding_config,
                 )
 
         assert inference_config.batch_size is not None
@@ -428,12 +435,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        sharding_config: ShardingConfig | None = None,
     ) -> int:
         memory_analysis = compile_generate_tokens(
             self,
             generation_config=generation_config,
             inference_config=inference_config,
             forward_pass_config=forward_pass_config,
+            sharding_config=sharding_config,
         ).memory_analysis()
 
         assert hasattr(memory_analysis, "argument_size_in_bytes")
@@ -459,6 +468,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
         formatted_messages = self.message_processor.render_request(messages)
@@ -468,6 +478,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             forward_pass_config=forward_pass_config,
             keys=key[None, ...] if key is not None else None,
+            sharding_config=sharding_config,
         ).token_ids.squeeze(0)
         trimmed_ids = self._trim_at_eos(response_ids.tolist())
         response_text = self.message_processor.detokenize(trimmed_ids)
@@ -480,6 +491,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         vram_bytes: int | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
@@ -517,7 +529,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
         else:
             batch_size_per_bucket = estimate_batchsizes_from_vram(
-                lambda config: self.estimate_memory_consumption(inference_config=config),
+                lambda config: self.estimate_memory_consumption(
+                    inference_config=config,
+                    sharding_config=sharding_config,
+                ),
                 sorted_lengths,
                 vram_bytes,  # type: ignore
                 inference_config,
@@ -551,6 +566,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 inference_config=bucket_inference_config,
                 forward_pass_config=forward_pass_config,
                 keys=keys[np.array(sequence_ids)],
+                sharding_config=sharding_config,
             )
 
             for idx, result in zip(sequence_ids, all_results, strict=True):
@@ -565,6 +581,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         max_output_length: int = 8192,
         forward_pass_config: ForwardPassConfig | None = None,
         *,
+        sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[str]:
         formatted_messages = self.message_processor.render_request(messages)
@@ -577,6 +594,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             max_output_length,
             forward_pass_config=forward_pass_config,
             key=key,
+            sharding_config=sharding_config,
         ):
             all_token_ids.append(token_id.item())
             current_text = self.message_processor.detokenize(all_token_ids)
@@ -591,6 +609,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         *,
+        sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
         sampling_policy = self.default_sampling_policy()
@@ -611,6 +630,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             padded_input_length + max_output_length,
             lengths_without_padding=jnp.array([input_length], dtype=jnp.int32),
             forward_pass_config=forward_pass_config,
+            sharding_config=sharding_config,
         )
 
         if key is None:
