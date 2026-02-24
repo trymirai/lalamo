@@ -40,7 +40,7 @@ jobs:
 
   coherence:
     name: Coherence
-    runs-on: [self-hosted, linux, gpu, l40s]
+    runs-on: [self-hosted, linux, cpu]
     if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     steps:
