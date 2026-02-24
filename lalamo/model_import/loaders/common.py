@@ -70,7 +70,7 @@ def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo 
     return None
 
 
-def apply_sharding(array: Array, info: FieldShardingInfo, sharding: Sharding) -> Array:
+def _apply_parameter_sharding(array: Array, info: FieldShardingInfo, sharding: Sharding) -> Array:
     if array.size < info.min_size_to_shard:
         return array
 
@@ -134,6 +134,6 @@ def load_parameters[M: eqx.Module](
             if sharding is not None:
                 sharding_info = find_field_sharding(module, old_value)
                 if sharding_info is not None:
-                    new_value = apply_sharding(new_value, sharding_info, sharding)  # noqa: PLW2901
+                    new_value = _apply_parameter_sharding(new_value, sharding_info, sharding)  # noqa: PLW2901
         casted_new_values.append(new_value)
     return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
