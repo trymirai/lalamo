@@ -169,10 +169,13 @@ class ShardingConfig:
             raise ValueError("tensor_parallelism and data_parallelism must be positive integers.")
 
         match (tp, dp):
-            case (tp, None):
-                dp = device_count // tp
-            case (None, dp):
-                tp = device_count // dp
+            case (None, None):
+                dp = device_count
+                tp = 1
+            case (int(), None):
+                dp = device_count // tp  # type: ignore
+            case (None, int()):
+                tp = device_count // dp  # type: ignore
 
         if tp * dp != device_count:  # type: ignore
             raise ValueError(
