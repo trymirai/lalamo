@@ -27,7 +27,7 @@ __all__ = [
     "TensorSharding",
     "apply_data_sharding",
     "config_converter",
-    "get_default_mesh",
+    "get_current_mesh",
     "register_config_union",
     "require_array",
     "require_tree",
@@ -218,7 +218,7 @@ def use_mesh(sharding: Sharding | None) -> Generator[None, None, None]:
         _CURRENT_SHARDING.reset(token)
 
 
-def get_default_mesh() -> Sharding | None:
+def get_current_mesh() -> Sharding | None:
     return _CURRENT_SHARDING.get()
 
 

@@ -15,7 +15,7 @@ from lalamo.modules.common import (
     Sharding,
     ShardingOrder,
     TensorSharding,
-    get_default_mesh,
+    get_current_mesh,
 )
 
 __all__ = [
@@ -124,7 +124,7 @@ def load_parameters[M: eqx.Module](
 ) -> M:
     old_values = list(selector(module))
     new_values = list(new_values)
-    sharding = get_default_mesh()
+    sharding = get_current_mesh()
 
     casted_new_values = []
     for old_value, new_value in zip(old_values, new_values, strict=True):
