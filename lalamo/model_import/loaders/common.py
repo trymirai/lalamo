@@ -12,10 +12,10 @@ from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
 from lalamo.modules.common import (
-    Sharding,
+    ShardingConfig,
     ShardingOrder,
     TensorSharding,
-    get_current_mesh,
+    get_current_sharding_config,
 )
 
 __all__ = [
@@ -70,29 +70,33 @@ def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo 
     return None
 
 
-def _apply_parameter_sharding(array: Array, info: FieldShardingInfo, sharding: Sharding) -> Array:
-    if array.size < info.min_size_to_shard:
+def _apply_parameter_sharding(
+    array: Array,
+    info: FieldShardingInfo | None,
+    sharding_config: ShardingConfig | None,
+) -> Array:
+    if sharding_config is None or info is None or array.size < info.min_size_to_shard:
         return array
 
     parts: list[str | None] = [None] * array.ndim
 
     tp_dim: int | None = None
-    tp_axis_size = sharding.tensor_axis_size
+    tp_axis_size = sharding_config.tensor_axis_size
     for dim in info.tensor_sharding.dims_to_try(info.sharding_order):
         if dim < array.ndim and array.shape[dim] % tp_axis_size == 0:
-            parts[dim] = sharding.tensor_axis_name
+            parts[dim] = sharding_config.tensor_axis_name
             tp_dim = dim
             break
 
-    if sharding.fsdp:
-        dp_axis_size = sharding.data_axis_size
+    if sharding_config.fsdp:
+        dp_axis_size = sharding_config.data_axis_size
         for dim in info.tensor_sharding.axes:
             if dim != tp_dim and dim < array.ndim and array.shape[dim] % dp_axis_size == 0:
-                parts[dim] = sharding.data_axis_name
+                parts[dim] = sharding_config.data_axis_name
                 break
 
     pspec = shd.PartitionSpec(*parts)
-    return jax.device_put(array, sharding.make_sharding(pspec))
+    return jax.device_put(array, sharding_config.make_sharding(pspec))
 
 
 def _get_name(leaf: PyTree, tree: PyTree) -> str:
@@ -124,16 +128,18 @@ def load_parameters[M: eqx.Module](
 ) -> M:
     old_values = list(selector(module))
     new_values = list(new_values)
-    sharding = get_current_mesh()
+    sharding_config = get_current_sharding_config()
 
     casted_new_values = []
+
     for old_value, new_value in zip(old_values, new_values, strict=True):
         _check_compatible(old_value, new_value, module)
         if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
             new_value = new_value.astype(old_value.dtype)  # noqa: PLW2901
-            if sharding is not None:
-                sharding_info = find_field_sharding(module, old_value)
-                if sharding_info is not None:
-                    new_value = _apply_parameter_sharding(new_value, sharding_info, sharding)  # noqa: PLW2901
+            new_value = _apply_parameter_sharding(  # noqa: PLW2901
+                new_value,
+                find_field_sharding(module, old_value),
+                sharding_config,
+            )
         casted_new_values.append(new_value)
     return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)

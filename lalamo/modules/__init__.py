@@ -8,12 +8,12 @@ from .common import (
     ForwardPassMode,
     LalamoModule,
     PositionalEmbeddingSelector,
-    Sharding,
+    ShardingConfig,
     ShardingOrder,
     TensorSharding,
     apply_data_sharding,
     config_converter,
-    get_current_mesh,
+    get_current_sharding_config,
     sharded_field,
 )
 from .decoder import (
@@ -158,7 +158,7 @@ __all__ = [
     "RoutingFunction",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",
-    "Sharding",
+    "ShardingConfig",
     "ShardingOrder",
     "ShortConv",
     "ShortConvConfig",
@@ -190,6 +190,6 @@ __all__ = [
     "YARNRoPEConfig",
     "apply_data_sharding",
     "config_converter",
-    "get_current_mesh",
+    "get_current_sharding_config",
     "sharded_field",
 ]

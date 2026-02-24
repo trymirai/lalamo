@@ -11,7 +11,7 @@ from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
-from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector, Sharding
+from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
@@ -179,7 +179,6 @@ class Transformer(LalamoModule[TransformerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig | None,
-        sharding: Sharding | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -224,7 +223,6 @@ class Transformer(LalamoModule[TransformerConfig]):
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config,
-                sharding=sharding,
             )
             inner_features = layer_result.outputs
             layer_results.append(layer_result)

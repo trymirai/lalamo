@@ -12,7 +12,6 @@ from lalamo.common import ParameterTree, require_tree
 from .common import (
     ForwardPassMode,
     LalamoModule,
-    Sharding,
 )
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
@@ -107,7 +106,7 @@ class DecoderConfig:
             transformer=transformer,
         )
 
-    def empty(self, sharding: Sharding | None = None) -> "Decoder":
+    def empty(self) -> "Decoder":
         embedding = self.embedding_config.empty(
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
@@ -118,14 +117,12 @@ class DecoderConfig:
             config=self,
             embedding=embedding,
             transformer=transformer,
-            sharding=sharding,
         )
 
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
-    sharding: Sharding | None = eqx.field(static=True, default=None)
 
     @property
     def vocab_size(self) -> int:
@@ -168,7 +165,6 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
-            sharding=self.sharding,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)

@@ -21,6 +21,7 @@ from lalamo.modules import (
     LalamoModule,
     State,
     apply_data_sharding,
+    get_current_sharding_config,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -194,7 +195,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         token_ids, lengths_without_padding = apply_data_sharding(
             token_ids,
             lengths_without_padding,
-            sharding=self.model.sharding,
+            sharding_config=get_current_sharding_config(),
             batch_axis=0,
         )
 

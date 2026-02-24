@@ -24,16 +24,17 @@ def test_sharded_forward_passes_match(model: str) -> None:
 
             assert jax.device_count() == 8, f"expected 8 devices, got {{jax.device_count()}}"
 
-            from lalamo import Sharding, import_model
+            from lalamo import ShardingConfig, import_model
+            from lalamo.modules import apply_data_sharding
             from tests.common import assert_close
 
             SHARDING_CONFIGS = [
-                Sharding.build(data_parallelism=8, tensor_parallelism=1),
-                Sharding.build(data_parallelism=4, tensor_parallelism=2),
-                Sharding.build(data_parallelism=2, tensor_parallelism=4),
-                Sharding.build(data_parallelism=1, tensor_parallelism=8),
-                Sharding.build(data_parallelism=4, tensor_parallelism=2, fsdp=True),
-                Sharding.build(data_parallelism=2, tensor_parallelism=4, fsdp=True),
+                ShardingConfig.build(data_parallelism=8, tensor_parallelism=1),
+                ShardingConfig.build(data_parallelism=4, tensor_parallelism=2),
+                ShardingConfig.build(data_parallelism=2, tensor_parallelism=4),
+                ShardingConfig.build(data_parallelism=1, tensor_parallelism=8),
+                ShardingConfig.build(data_parallelism=4, tensor_parallelism=2, fsdp=True),
+                ShardingConfig.build(data_parallelism=2, tensor_parallelism=4, fsdp=True),
             ]
 
             MODEL = "{model}"
@@ -44,16 +45,21 @@ def test_sharded_forward_passes_match(model: str) -> None:
             token_positions = jnp.broadcast_to(jnp.arange(SEQ_LEN), (BATCH_SIZE, SEQ_LEN))
 
             reference_decoder = import_model(MODEL, precision=jnp.float32).model.model
-            reference_logits = reference_decoder(token_ids, token_positions).logits
+            reference_logits = reference_decoder(
+                token_ids, token_positions, return_updated_state=True,
+            ).logits
 
-            for sharding in SHARDING_CONFIGS:
-                print(f"testing {{sharding}}...")
-                decoder = import_model(MODEL, sharding=sharding, precision=jnp.float32).model.model
-                logits = decoder(token_ids, token_positions).logits
+            for sharding_config in SHARDING_CONFIGS:
+                print(f"testing {{sharding_config}}...")
+                decoder = import_model(MODEL, sharding_config=sharding_config, precision=jnp.float32).model.model
+                sharded_token_ids, sharded_token_positions = apply_data_sharding(
+                    token_ids, token_positions, sharding_config=sharding_config, batch_axis=0,
+                )
+                decoder_result = decoder(sharded_token_ids, sharded_token_positions, return_updated_state=True)
                 assert_close(
-                    result=logits,
+                    result=decoder_result.logits,
                     reference=reference_logits,
-                    operation_name=f"sharding {{sharding}}",
+                    operation_name=f"sharding {{sharding_config}}",
                 )
                 print(f"  OK")
 

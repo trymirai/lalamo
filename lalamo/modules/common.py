@@ -22,12 +22,12 @@ __all__ = [
     "LalamoModule",
     "ParameterTree",
     "PositionalEmbeddingSelector",
-    "Sharding",
+    "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
     "apply_data_sharding",
     "config_converter",
-    "get_current_mesh",
+    "get_current_sharding_config",
     "register_config_union",
     "require_array",
     "require_tree",
@@ -145,7 +145,7 @@ def register_config_union(union_type: UnionType) -> None:
 
 
 @dataclass(frozen=True)
-class Sharding:
+class ShardingConfig:
     mesh: shd.Mesh
     data_axis_name: str = "data"
     tensor_axis_name: str = "tensor"
@@ -160,7 +160,7 @@ class Sharding:
         fsdp: bool = False,
         data_axis_name: str = "data",
         tensor_axis_name: str = "tensor",
-    ) -> "Sharding":
+    ) -> "ShardingConfig":
         device_count = jax.device_count()
         tp = tensor_parallelism
         dp = data_parallelism
@@ -203,22 +203,22 @@ class Sharding:
         return shd.NamedSharding(self.mesh, pspec)
 
 
-_CURRENT_SHARDING: contextvars.ContextVar[Sharding | None] = contextvars.ContextVar(
+_CURRENT_SHARDING: contextvars.ContextVar[ShardingConfig | None] = contextvars.ContextVar(
     "lalamo_current_sharding",
     default=None,
 )
 
 
 @contextlib.contextmanager
-def use_mesh(sharding: Sharding | None) -> Generator[None, None, None]:
-    token = _CURRENT_SHARDING.set(sharding)
+def use_sharding(sharding_config: ShardingConfig | None) -> Generator[None, None, None]:
+    token = _CURRENT_SHARDING.set(sharding_config)
     try:
         yield
     finally:
         _CURRENT_SHARDING.reset(token)
 
 
-def get_current_mesh() -> Sharding | None:
+def get_current_sharding_config() -> ShardingConfig | None:
     return _CURRENT_SHARDING.get()
 
 
@@ -283,22 +283,24 @@ def sharded_field(
     )
 
 
-def shard_batch_axis(array: Array, sharding: Sharding, *, batch_axis: int) -> Array:
+def shard_batch_axis(array: Array, sharding_config: ShardingConfig, *, batch_axis: int) -> Array:
     if array.ndim == 0:
         return array
     parts: list[str | None] = [None] * array.ndim
-    parts[batch_axis] = sharding.data_axis_name
+    parts[batch_axis] = sharding_config.data_axis_name
     pspec = shd.PartitionSpec(*parts)
-    return jax.lax.with_sharding_constraint(array, sharding.make_sharding(pspec))
+    return jax.lax.with_sharding_constraint(array, sharding_config.make_sharding(pspec))
 
 
-def apply_data_sharding[*Ts](*values: *Ts, sharding: Sharding | None, batch_axis: int) -> tuple[*Ts]:
-    if sharding is None:
+def apply_data_sharding[*Ts](*values: *Ts, sharding_config: ShardingConfig | None, batch_axis: int) -> tuple[*Ts]:
+    if sharding_config is None:
         return values  # type: ignore[return-value]
 
     def _shard(value: object) -> object:
         return jax.tree_util.tree_map(
-            lambda leaf: shard_batch_axis(leaf, sharding, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf,
+            lambda leaf: (
+                shard_batch_axis(leaf, sharding_config, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf
+            ),
             value,
         )
 
