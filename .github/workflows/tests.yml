@@ -68,7 +68,7 @@ jobs:
 
   conversion:
     name: Model Conversion Tests
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [self-hosted, linux, flows]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -101,7 +101,7 @@ jobs:
 
   audio:
     name: Audio Model Tests
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [self-hosted, linux]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -117,7 +117,7 @@ jobs:
 
   tracer:
     name: Tracer Tests
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [self-hosted, linux]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || github.event.pull_request.draft == false }}
 
@@ -130,13 +130,13 @@ jobs:
 
       - name: Run pytest
         env:
-          LALAMO_MEMORY_FOR_TRACE: "100 G"
+          LALAMO_MEMORY_FOR_TRACE: "40 G"
         run: |
           pytest tests/tracer
 
   cli:
     name: CLI${{ matrix.cuda && ' (CUDA)' || ''}}
-    runs-on: ${{ matrix.cuda && fromJSON('["self-hosted", "linux", "gpu", "l40s"]') || 'ubuntu-latest'}}
+    runs-on: ${{ matrix.cuda && fromJSON('["self-hosted", "linux", "gpu"]') || 'ubuntu-latest'}}
 
     strategy:
       matrix:
