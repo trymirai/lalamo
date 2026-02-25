@@ -61,7 +61,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
     embedding_dropout: float
     eos_token_id: int | list[int]
     global_attn_every_n_layers: int
-    global_rope_theta: float
     gradient_checkpointing: bool
     hidden_activation: Literal["gelu"]
     hidden_size: int
@@ -70,7 +69,6 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
     intermediate_size: int
     layer_norm_eps: float
     local_attention: int
-    local_rope_theta: float
     max_position_embeddings: int
     mlp_bias: bool
     mlp_dropout: float
@@ -88,10 +86,33 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
     label2id: dict[str, int]
 
     quantization_config: AWQQuantizationConfig | GPTQQuantizationConfig | None = None
+    # transformers < 5.0 uses flat fields; >= 5.0 nests them under rope_parameters
+    global_rope_theta: float | None = None
+    local_rope_theta: float | None = None
+    rope_parameters: dict[str, Any] | None = None
+    # transformers < 5.0 uses torch_dtype; >= 5.0 uses dtype
+    torch_dtype: str | None = None
+    dtype: str | None = None
 
     def __post_init__(self) -> None:
         if len(self.label2id) != len(self.id2label):
             raise ValueError("Legnth of label2id and id2label is expected to be the same")
+
+    @property
+    def resolved_global_rope_theta(self) -> float:
+        if self.global_rope_theta is not None:
+            return self.global_rope_theta
+        if self.rope_parameters is not None:
+            return float(self.rope_parameters["full_attention"]["rope_theta"])
+        raise ValueError("Neither global_rope_theta nor rope_parameters.full_attention.rope_theta is set")
+
+    @property
+    def resolved_local_rope_theta(self) -> float:
+        if self.local_rope_theta is not None:
+            return self.local_rope_theta
+        if self.rope_parameters is not None:
+            return float(self.rope_parameters["sliding_attention"]["rope_theta"])
+        raise ValueError("Neither local_rope_theta nor rope_parameters.sliding_attention.rope_theta is set")
 
     def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[None, ...]:
         result: list[Any] = [None] * num_layers
@@ -124,12 +145,12 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
         global_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=self.global_rope_theta,
+            base=self.resolved_global_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=self.local_rope_theta,
+            base=self.resolved_local_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 

@@ -124,7 +124,13 @@ class HuggingFaceLMConfig(ForeignLMConfig):
 class HuggingFaceClassifierConfig(ForeignClassifierConfig):
     @property
     def default_precision(self) -> DTypeLike:
-        return jnp.dtype(getattr(self, "torch_dtype", "bfloat16"))
+        torch_dtype = getattr(self, "torch_dtype", None)
+        if torch_dtype is not None:
+            return jnp.dtype(torch_dtype)
+        dtype = getattr(self, "dtype", None)
+        if dtype is not None:
+            return jnp.dtype(dtype)
+        return jnp.dtype("bfloat16")
 
     def _load_weights(
         self,

@@ -27,6 +27,7 @@ MODEL_LIST += (
 
 CLASSIFIER_MODEL_LIST = [
     ModelTestSpec("trymirai/chat-moderation-router", DType.FLOAT32),
+    ModelTestSpec("darkolorin/vibe-router-modernbert-v3", DType.FLOAT32),
 ]
 
 
