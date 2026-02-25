@@ -54,7 +54,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
                 print(f"testing {{sharding_config}}...")
                 decoder = import_model(MODEL, sharding_config=sharding_config, precision=jnp.float32).model.model
                 sharded_token_ids, sharded_token_positions = apply_data_sharding(
-                    token_ids, token_positions, sharding_config=sharding_config, batch_axis=0,
+                    (token_ids, token_positions), sharding_config=sharding_config, batch_axis=0,
                 )
                 decoder_result = decoder(sharded_token_ids, sharded_token_positions, return_updated_state=True)
                 assert_close(

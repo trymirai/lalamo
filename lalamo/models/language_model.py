@@ -194,8 +194,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
         token_ids, lengths_without_padding = apply_data_sharding(
-            token_ids,
-            lengths_without_padding,
+            (token_ids, lengths_without_padding),
             sharding_config=sharding_config,
             batch_axis=0,
         )

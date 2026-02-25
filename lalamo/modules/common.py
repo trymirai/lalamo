@@ -295,19 +295,13 @@ def shard_batch_axis(array: Array, sharding_config: ShardingConfig, *, batch_axi
     return jax.lax.with_sharding_constraint(array, sharding_config.make_sharding(pspec))
 
 
-def apply_data_sharding[*Ts](*values: *Ts, sharding_config: ShardingConfig | None, batch_axis: int) -> tuple[*Ts]:
+def apply_data_sharding[T](value: T, *, sharding_config: ShardingConfig | None, batch_axis: int) -> T:
     if sharding_config is None:
-        return values  # type: ignore[return-value]
-
-    def _shard(value: object) -> object:
-        return jax.tree_util.tree_map(
-            lambda leaf: (
-                shard_batch_axis(leaf, sharding_config, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf
-            ),
-            value,
-        )
-
-    return tuple(_shard(v) for v in values)  # type: ignore[return-value]
+        return value
+    return jax.tree.map(
+        lambda leaf: shard_batch_axis(leaf, sharding_config, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf,
+        value,
+    )
 
 
 @dataclass

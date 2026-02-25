@@ -26,7 +26,7 @@ from lalamo.message_processor import (
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
 from lalamo.models import ClassifierModel, LanguageModel
-from lalamo.modules.common import ShardingConfig
+from lalamo.modules.common import ShardingConfig, apply_data_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.speculator import (
     CollectTracesEvent,
@@ -61,6 +61,7 @@ __all__ = [
     "UseCase",
     "UserMessage",
     "WeightsType",
+    "apply_data_sharding",
     "collect_traces",
     "convert",
     "estimate_batchsize",
