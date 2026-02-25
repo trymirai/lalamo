@@ -69,7 +69,7 @@ jobs:
 
   generation:
     name: Generation
-    runs-on: [self-hosted, linux]
+    runs-on: [lalamo-k8s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
@@ -86,7 +86,7 @@ jobs:
 
   audio:
     name: Audio Models
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [lalamo-k8s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
@@ -102,7 +102,7 @@ jobs:
 
   tracer:
     name: Tracer
-    runs-on: [self-hosted, linux]
+    runs-on: [lalamo-k8s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 
@@ -132,7 +132,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["self-hosted", "linux"]'
+            runner: '["self-hosted", "linux", "cpu"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]' # gpu only :(
 
