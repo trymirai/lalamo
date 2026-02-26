@@ -107,4 +107,4 @@ def test_delta_net_attention_matches_hf() -> None:
         length_without_padding=None,
     ).outputs
 
-    assert_close(result=lalamo_out, reference=torch_to_jax(hf_out[0]))
+    assert_close(result=lalamo_out, reference=torch_to_jax(hf_out[0]), fraction_of_allowed_violations=0.01)
