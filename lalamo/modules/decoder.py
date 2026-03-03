@@ -8,7 +8,10 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 
-from .common import ForwardPassMode, LalamoModule
+from .common import (
+    ForwardPassMode,
+    LalamoModule,
+)
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .rope import PositionalEmbeddings
 from .token_mixers import State
@@ -149,7 +152,6 @@ class Decoder(LalamoModule[DecoderConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-
         inner_features = vmap(self.embedding.embed)(token_ids)
 
         transformer_result = self.transformer(

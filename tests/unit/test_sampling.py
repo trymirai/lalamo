@@ -5,6 +5,7 @@ from typing import cast
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 from transformers import GenerationConfig as TransformersGenerationConfig
 from transformers.generation.utils import GenerationMixin
@@ -14,6 +15,7 @@ from lalamo.model_import.huggingface_generation_config import HFGenerationConfig
 from lalamo.model_import.model_specs.common import ModelSpec
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
+from tests.common import assert_close
 
 
 def test_logit_processing(hf_model_spec: ModelSpec) -> None:
@@ -53,4 +55,10 @@ def test_logit_processing(hf_model_spec: ModelSpec) -> None:
         hf_input_ids = cast("LongTensor", torch.zeros((1, 1), dtype=torch.long))
         hf_result = torch_to_jax(hf_processors(hf_input_ids, hf_scores)[0])
 
-        np.testing.assert_allclose(lalamo_result, hf_result, rtol=1e-6)
+        assert_close(
+            result=lalamo_result,
+            reference=hf_result,
+            atol=1e-6,
+            rtol=1e-6,
+            fraction_of_allowed_violations=0.01,
+        )

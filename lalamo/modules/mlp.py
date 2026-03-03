@@ -20,6 +20,7 @@ from .common import (
     DummyUnionMember,
     ForwardPassMode,
     LalamoModule,
+    ShardingOrder,
     register_config_union,
 )
 from .linear import LinearBase, LinearConfig
@@ -86,36 +87,52 @@ class DenseMLPConfig(MLPConfigBase):
     gate_clipping: tuple[float | None, float | None] | None
     up_clipping: tuple[float | None, float | None] | None
 
+    @staticmethod
+    def _with_sharding_order(projection: LinearBase, order: ShardingOrder) -> LinearBase:
+        return replace(projection, sharding_order=order)
+
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
         up_key, down_key = jax.random.split(key)
         return DenseMLP(
             self,
-            up_projection=self.linear_config.random_init(
-                model_dim,
-                (hidden_dim, hidden_dim),
-                has_biases=self.has_up_biases,
-                key=up_key,
+            up_projection=self._with_sharding_order(
+                self.linear_config.random_init(
+                    model_dim,
+                    (hidden_dim, hidden_dim),
+                    has_biases=self.has_up_biases,
+                    key=up_key,
+                ),
+                ShardingOrder.OUTPUT,
             ),
-            down_projection=self.linear_config.random_init(
-                hidden_dim,
-                (model_dim,),
-                has_biases=self.has_down_biases,
-                key=down_key,
+            down_projection=self._with_sharding_order(
+                self.linear_config.random_init(
+                    hidden_dim,
+                    (model_dim,),
+                    has_biases=self.has_down_biases,
+                    key=down_key,
+                ),
+                ShardingOrder.INPUT,
             ),
         )
 
     def empty(self, model_dim: int, hidden_dim: int) -> "DenseMLP":
         return DenseMLP(
             self,
-            up_projection=self.linear_config.empty(
-                model_dim,
-                (hidden_dim, hidden_dim),
-                has_biases=self.has_up_biases,
+            up_projection=self._with_sharding_order(
+                self.linear_config.empty(
+                    model_dim,
+                    (hidden_dim, hidden_dim),
+                    has_biases=self.has_up_biases,
+                ),
+                ShardingOrder.OUTPUT,
             ),
-            down_projection=self.linear_config.empty(
-                hidden_dim,
-                (model_dim,),
-                has_biases=self.has_down_biases,
+            down_projection=self._with_sharding_order(
+                self.linear_config.empty(
+                    hidden_dim,
+                    (model_dim,),
+                    has_biases=self.has_down_biases,
+                ),
+                ShardingOrder.INPUT,
             ),
         )
 
@@ -130,19 +147,25 @@ class DenseMLPConfig(MLPConfigBase):
         up_key, down_key = jax.random.split(key)
         return DenseMLP(
             self,
-            up_projection=self.linear_config.random_init_mixture(
-                mixture_size,
-                model_dim,
-                (hidden_dim, hidden_dim),
-                has_biases=self.has_up_biases,
-                key=up_key,
+            up_projection=self._with_sharding_order(
+                self.linear_config.random_init_mixture(
+                    mixture_size,
+                    model_dim,
+                    (hidden_dim, hidden_dim),
+                    has_biases=self.has_up_biases,
+                    key=up_key,
+                ),
+                ShardingOrder.OUTPUT,
             ),
-            down_projection=self.linear_config.random_init_mixture(
-                mixture_size,
-                hidden_dim,
-                (model_dim,),
-                has_biases=self.has_down_biases,
-                key=down_key,
+            down_projection=self._with_sharding_order(
+                self.linear_config.random_init_mixture(
+                    mixture_size,
+                    hidden_dim,
+                    (model_dim,),
+                    has_biases=self.has_down_biases,
+                    key=down_key,
+                ),
+                ShardingOrder.INPUT,
             ),
         )
 
@@ -154,17 +177,23 @@ class DenseMLPConfig(MLPConfigBase):
     ) -> "DenseMLP":
         return DenseMLP(
             self,
-            up_projection=self.linear_config.empty_mixture(
-                mixture_size,
-                model_dim,
-                (hidden_dim, hidden_dim),
-                has_biases=self.has_up_biases,
+            up_projection=self._with_sharding_order(
+                self.linear_config.empty_mixture(
+                    mixture_size,
+                    model_dim,
+                    (hidden_dim, hidden_dim),
+                    has_biases=self.has_up_biases,
+                ),
+                ShardingOrder.OUTPUT,
             ),
-            down_projection=self.linear_config.empty_mixture(
-                mixture_size,
-                hidden_dim,
-                (model_dim,),
-                has_biases=self.has_down_biases,
+            down_projection=self._with_sharding_order(
+                self.linear_config.empty_mixture(
+                    mixture_size,
+                    hidden_dim,
+                    (model_dim,),
+                    has_biases=self.has_down_biases,
+                ),
+                ShardingOrder.INPUT,
             ),
         )
 

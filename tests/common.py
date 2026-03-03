@@ -57,7 +57,10 @@ def assert_close(
     result = result.astype(jnp.float32)
     reference = reference.astype(jnp.float32)
 
-    absdiff = jnp.abs(result - reference)
+    exact_match = result == reference
+    safe_result = jnp.where(exact_match, 0.0, result)
+    safe_reference = jnp.where(exact_match, 0.0, reference)
+    absdiff = jnp.abs(safe_result - safe_reference)
 
     allowed_diff = atol + rtol * jnp.abs(reference)
     violations = jnp.maximum(absdiff - allowed_diff, 0)
