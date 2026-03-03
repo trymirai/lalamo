@@ -86,7 +86,7 @@ jobs:
 
   audio:
     name: Audio Models
-    runs-on: [ubuntu-latest]
+    runs-on: [lalamo-k8s]
     needs: [unit]
     if: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
 

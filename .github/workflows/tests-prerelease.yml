@@ -25,7 +25,7 @@ env:
 jobs:
   conversion:
     name: Model Conversion
-    runs-on: [lalamo-k8s]
+    runs-on: [cpu]
     if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     steps:
@@ -40,7 +40,7 @@ jobs:
 
   coherence:
     name: Coherence
-    runs-on: [lalamo-k8s]
+    runs-on: [cpu]
     if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     steps:

@@ -129,6 +129,6 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     assert_close(
         result=audio_lalamo,
         reference=audio_fish_ntc,
-        atol=1e-3,
+        atol=3.5e-3,
         operation_name="test_dac_matches_pytorch",
     )

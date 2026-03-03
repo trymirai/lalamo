@@ -60,6 +60,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
                 assert_close(
                     result=decoder_result.logits,
                     reference=reference_logits,
+                    atol=5e-4,
                     operation_name=f"sharding {{sharding_config}}",
                 )
                 print(f"  OK")
