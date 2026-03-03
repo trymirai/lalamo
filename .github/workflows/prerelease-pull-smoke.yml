@@ -20,7 +20,7 @@ defaults:
 jobs:
   pull-smoke:
     name: Pull Smoke (CPU)
-    runs-on: [self-hosted, linux, cpu]
+    runs-on: [cpu]
     if: ${{ github.event_name == 'pull_request' && github.event.action != 'closed' && github.event.pull_request.draft == false && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
 
     steps:
