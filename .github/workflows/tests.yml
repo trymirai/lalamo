@@ -132,7 +132,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["self-hosted", "linux", "cpu"]'
+            runner: '["lalamo-k8s"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]' # gpu only :(
 

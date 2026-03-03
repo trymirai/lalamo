@@ -25,7 +25,7 @@ env:
 jobs:
   conversion:
     name: Model Conversion
-    runs-on: [cpu]
+    runs-on: [lalamo-k8s]
     if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
 
     steps:
@@ -68,7 +68,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["self-hosted", "linux", "cpu"]'
+            runner: '["lalamo-k8s"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]'
 
