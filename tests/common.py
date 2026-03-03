@@ -14,10 +14,9 @@ CPU_RTOL = 1e-4
 
 
 def _precision_config() -> tuple[str, float, float]:
-    default_device = jax.config.jax_default_device or jax.local_devices()[0]  # type: ignore
-    if default_device is not None and default_device.platform == "cpu":
-        return "high", CPU_ATOL, CPU_RTOL
-    return "low", ATOL, RTOL
+    if any(device.platform == "gpu" for device in jax.devices()):
+        return "low", ATOL, RTOL
+    return "high", CPU_ATOL, CPU_RTOL
 
 
 def checkify_forward(module):  # noqa: ANN001, ANN201
