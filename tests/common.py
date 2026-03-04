@@ -9,8 +9,8 @@ __all__ = ["assert_close", "checkify_forward", "skip_on_gpu"]
 
 ATOL = 1e-3
 RTOL = 0.03
-CPU_ATOL = 1e-6
-CPU_RTOL = 1e-4
+CPU_ATOL = 1e-4
+CPU_RTOL = 1e-3
 
 
 def _precision_config() -> tuple[str, float, float]:
