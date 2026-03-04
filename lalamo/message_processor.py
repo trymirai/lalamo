@@ -1,7 +1,10 @@
+import codecs
+import itertools
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import Enum
 from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
@@ -12,6 +15,7 @@ from tokenizers import Tokenizer
 __all__ = [
     "AssistantMessage",
     "ContentBlock",
+    "DecodingErrors",
     "Image",
     "Message",
     "MessageProcessor",
@@ -20,6 +24,11 @@ __all__ = [
     "ToolSchema",
     "UserMessage",
 ]
+
+
+class DecodingErrors(Enum):
+    REPLACE = "replace"
+    IGNORE = "ignore"
 
 type ToolSchema = None  # WIP
 type Image = None  # WIP
@@ -91,6 +100,16 @@ class MessageProcessorConfig:
 class MessageProcessor:
     config: MessageProcessorConfig
     tokenizer: Tokenizer
+
+    @cached_property
+    def _byte_token_ids(self) -> dict[int, int]:
+        """Map from token id to byte value for byte-fallback tokens like <0xF0>."""
+        result = {}
+        for byte_value in range(256):
+            tid = self.tokenizer.token_to_id(f"<0x{byte_value:02X}>")
+            if tid is not None:
+                result[tid] = byte_value
+        return result
 
     @cached_property
     def prompt_template(self) -> Template:
@@ -184,8 +203,16 @@ class MessageProcessor:
     def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
         return [self.tokenize_request(messages) for messages in dataset]
 
-    def detokenize(self, tokens: list[int]) -> str:
-        return self.tokenizer.decode(tokens, skip_special_tokens=False)
+    def detokenize(self, tokens: list[int], *, errors: DecodingErrors = DecodingErrors.REPLACE) -> str:
+        return "".join(codecs.iterdecode(self._tokens_to_bytes(tokens), "utf-8", errors=errors.value))
+
+    def _tokens_to_bytes(self, tokens: list[int]) -> Iterable[bytes]:
+        byte_token_ids = self._byte_token_ids
+        for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):
+            if is_byte:
+                yield bytes(byte_token_ids[tid] for tid in group)
+            else:
+                yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
     def parse_tokenized_response(self, tokens: list[int]) -> AssistantMessage:
         detokenized = self.detokenize(tokens)

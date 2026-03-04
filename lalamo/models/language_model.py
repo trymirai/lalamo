@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
-from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
+from lalamo.message_processor import AssistantMessage, DecodingErrors, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
@@ -592,7 +592,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             key=key,
         ):
             all_token_ids.append(token_id.item())
-            current_text = self.message_processor.detokenize(all_token_ids)
+            current_text = self.message_processor.detokenize(all_token_ids, errors=DecodingErrors.IGNORE)
             yield current_text[len(previous_text) :]
             previous_text = current_text
 
