@@ -204,9 +204,9 @@ class MessageProcessor:
         return [self.tokenize_request(messages) for messages in dataset]
 
     def detokenize(self, tokens: list[int], *, errors: DecodingErrors = DecodingErrors.REPLACE) -> str:
-        return "".join(codecs.iterdecode(self._tokens_to_bytes(tokens), "utf-8", errors=errors.value))
+        return "".join(codecs.iterdecode(self.token_groups(tokens), "utf-8", errors=errors.value))
 
-    def _tokens_to_bytes(self, tokens: list[int]) -> Iterable[bytes]:
+    def token_groups(self, tokens: list[int]) -> Iterable[bytes]:
         byte_token_ids = self._byte_token_ids
         for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):
             if is_byte:
