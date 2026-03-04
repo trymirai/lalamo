@@ -128,21 +128,6 @@ def model_registry() -> list[ModelTestSpec]:
 ```
 
 ```python
-# Bad: The comment is unnecessary and refers to internals of the function
-def new(self, key: jax.Array | None = None) -> "BraxAntProblem":
-    """Create a new problem instance with a different data key."""
-    if key is None:
-        key, _ = jr.split(self.data_key)
-    return eqx.tree_at(lambda p: p.data_key, self, key)
-
-# Good: No comment, correct type annotation
-def new(self, key: Key[Array, ""] | None = None) -> Self:
-    if key is None:
-        key, _ = jr.split(self.data_key)
-    return eqx.tree_at(lambda tree: tree.data_key, self, key)
-```
-
-```python
 # Bad: Using an unnecessary global constant
 NUMBER_OF_SOLVER_STEPS = 5
 def solve(self, problem: Problem, num_steps: int = NUMBER_OF_SOLVER_STEPS):
@@ -154,7 +139,7 @@ def solve(self, problem: Problem, num_steps: int = 5):
 ```
 
 ```python
-# Bad: __init__ method heavily changes dataclass fields
+# Bad: custom __init__ method on a dataclass
 @dataclass
 class Banana:
     color: Color
@@ -187,14 +172,14 @@ class Banana:
 # Bad: Mixing semantic and operational arguments together in one structure
 @dataclass
 class Config:
-    vram_limit: int # semantic
+    vram_limit: str # semantic
     use_flash_attention: bool # operational
     ...
 
 # Good: Split them up
 @dataclass
 class ParallelizationConfig:
-    vram_limit: int
+    vram_limit: str
     ...
 
 @dataclass
