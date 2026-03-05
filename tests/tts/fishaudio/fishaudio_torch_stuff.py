@@ -13,6 +13,7 @@ from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
+from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.models.tts_model import FishAudioTTSGenerator, TTSGenerator, TTSGeneratorConfig
 from lalamo.modules import (
     AttentionConfig,
@@ -26,11 +27,11 @@ from lalamo.modules import (
 from lalamo.modules.activations import SiLU
 from lalamo.modules.audio.fishaudio.fishaudio_consts import IM_END_TOKEN
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
-from lalamo.modules.audio.text_to_speech import TTSConfig, TTSMessageProcessor, TTSMessageProcessorConfig, TTSModel
+from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinearConfig
-from lalamo.modules.torch_interop import DTypeConvert, torch_to_jax
+from lalamo.modules.torch_interop import torch_to_jax
 
 from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 
@@ -41,11 +42,13 @@ def from_fish_audio_config(
     precision: DTypeLike,
 ) -> "FishAudioTextDecoderConfig":
     slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        fish_audio_cfg, precision,
+        fish_audio_cfg,
+        precision,
     )
     fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
     fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        fast_fish_cfg, precision,
+        fast_fish_cfg,
+        precision,
     )
 
     slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
@@ -107,7 +110,8 @@ class ConfigMapping:
 
     @staticmethod
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
-        config: BaseModelArgs, precision: DTypeLike,
+        config: BaseModelArgs,
+        precision: DTypeLike,
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
         global_rope_config = UnscaledRoPEConfig(
             precision=precision,
@@ -202,13 +206,17 @@ class FishAudioFromTorch:
 
     @staticmethod
     def build_foreign_fish_audio_tts_generator(
-        path_to_checkpoints: Path, device: str = "cpu", precision: torch.dtype = torch.bfloat16,
+        path_to_checkpoints: Path,
+        device: str = "cpu",
+        precision: torch.dtype = torch.bfloat16,
     ) -> "TTSGenerator":
         from .fishaudio_thin_wrapper import FishAudioTextDecoder_Foreign, load_fish_audio_audio_decoder
 
         text_decoder_config = FishAudioTextDecoderConfig_Foreign.from_config_file(path_to_checkpoints / "config.json")
         text_decoder: FishAudioTextDecoder_Foreign = text_decoder_config.load_model(
-            path_to_checkpoints, device=device, precision=precision,
+            path_to_checkpoints,
+            device=device,
+            precision=precision,
         )
         audio_decoder = load_fish_audio_audio_decoder(path_to_checkpoints)
 
@@ -228,7 +236,7 @@ class FishAudioFromTorch:
             text_decoder.config,
             audio_decoder.config,
             VocoderConfig(),
-            activation_precision=DTypeConvert.to_jax(precision),
+            activation_precision=torch_to_jax(precision),
         )
 
         tts_model = TTSModel(

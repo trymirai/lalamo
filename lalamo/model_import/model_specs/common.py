@@ -42,6 +42,7 @@ class ModelType(StrEnum):
 class WeightsType(Enum):
     SAFETENSORS = "safetensors"
     TORCH = "torch"
+    NEMO = "nemo"
 
     @contextmanager
     def load(
@@ -54,6 +55,8 @@ class WeightsType(Enum):
                 (metadata_dict, weights_dict) = safe_read(fd)
                 yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
         else:
+            # NOTE: this path also includes Nemo models, because we expect the model to be downloaded and
+            # extracted. After that toch checkpoint contained in the model will later be processed here.
             import torch
 
             from lalamo.modules.torch_interop import torch_to_jax
@@ -81,7 +84,7 @@ class JSONFieldSpec:
 @dataclass(frozen=True)
 class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
-    tokenizer: FileSpec = field(default=FileSpec("tokenizer.json"))
+    tokenizer: FileSpec | None = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None

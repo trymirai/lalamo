@@ -1,3 +1,5 @@
+import codecs
+import itertools
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -20,6 +22,7 @@ __all__ = [
     "ToolSchema",
     "UserMessage",
 ]
+
 
 type ToolSchema = None  # WIP
 type Image = None  # WIP
@@ -93,6 +96,16 @@ class MessageProcessor:
     tokenizer: Tokenizer
 
     @cached_property
+    def _byte_token_ids(self) -> dict[int, int]:
+        """Map from token id to byte value for byte-fallback tokens like <0xF0>."""
+        result = {}
+        for byte_value in range(256):
+            tid = self.tokenizer.token_to_id(f"<0x{byte_value:02X}>")
+            if tid is not None:
+                result[tid] = byte_value
+        return result
+
+    @cached_property
     def prompt_template(self) -> Template:
         return Template(self.config.prompt_template)
 
@@ -124,12 +137,12 @@ class MessageProcessor:
 
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         match message:
-            case UserMessage(content=content):
-                assert isinstance(content, str)
-                return HuggingFaceMessage(role=self.user_role_name, content=content)
             case SystemMessage(content=content):
                 assert isinstance(content, str)
                 return HuggingFaceMessage(role=self.system_role_name, content=content)
+            case UserMessage(content=content):
+                assert isinstance(content, str)
+                return HuggingFaceMessage(role=self.user_role_name, content=content)
             case AssistantMessage(chain_of_thought=chain_of_thought, response=response):
                 result = HuggingFaceMessage(role=self.assistant_role_name, content=response)
                 if chain_of_thought:
@@ -184,8 +197,17 @@ class MessageProcessor:
     def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
         return [self.tokenize_request(messages) for messages in dataset]
 
-    def detokenize(self, tokens: list[int]) -> str:
-        return self.tokenizer.decode(tokens, skip_special_tokens=False)
+    def detokenize(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
+        errors = "ignore" if hide_invalid_utf_chars else "replace"
+        return "".join(codecs.iterdecode(self.token_groups(tokens), "utf-8", errors=errors))
+
+    def token_groups(self, tokens: list[int]) -> Iterable[bytes]:
+        byte_token_ids = self._byte_token_ids
+        for is_byte, group in itertools.groupby(tokens, key=lambda tid: tid in byte_token_ids):
+            if is_byte:
+                yield bytes(byte_token_ids[tid] for tid in group)
+            else:
+                yield self.tokenizer.decode(list(group), skip_special_tokens=False).encode("utf-8")
 
     def parse_tokenized_response(self, tokens: list[int]) -> AssistantMessage:
         detokenized = self.detokenize(tokens)

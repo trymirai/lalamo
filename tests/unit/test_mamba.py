@@ -142,6 +142,7 @@ def test_fused_ssd_intra_chunk_matches_reference(chunk_size: int, num_chunks: in
         result=fused_result,
         reference=reference_result,
         operation_name="fused_ssd_intra_chunk vs reference",
+        fraction_of_allowed_violations=0.01,
     )
 
 

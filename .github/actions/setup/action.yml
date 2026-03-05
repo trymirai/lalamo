@@ -6,6 +6,10 @@ inputs:
     description: "Install with CUDA extras"
     required: false
     default: 'false'
+  dev:
+    description: "Install with development dependencies"
+    required: false
+    default: 'false'
 
 runs:
   using: composite
@@ -18,7 +22,7 @@ runs:
       with:
         enable-cache: true
 
-    - run: uv sync --frozen --dev ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
+    - run: uv sync --frozen ${{ inputs.dev == 'true' && '--dev' || '--no-dev' }} ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
       shell: bash
 
     - run: |

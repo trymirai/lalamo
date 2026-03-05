@@ -1,6 +1,5 @@
+from dataclasses import dataclass
 from enum import StrEnum
-
-from attr import dataclass
 
 
 class AudioEncoding(StrEnum):
@@ -9,7 +8,7 @@ class AudioEncoding(StrEnum):
     ALAW = "aLAW"
 
 
-@dataclass
+@dataclass(frozen=True)
 class AudioRenderingSettings:
     samplerate: int
     output_channels: int
