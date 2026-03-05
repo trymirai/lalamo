@@ -1,8 +1,10 @@
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal
+from pathlib import Path
+from typing import Literal, Self
 
-from jaxtyping import DTypeLike
+from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import (
     AttentionConfig,
@@ -26,37 +28,46 @@ from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
+from lalamo.model_import.loaders import load_huggingface_decoder
+from lalamo.modules.common import LalamoModule
+from lalamo.modules.decoder import Decoder
+
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFQwen35Config", "HFQwen35TextConfig"]
 
 
+@dataclass(frozen=True)
+class Qwen35RopeParametersConfig:
+    rope_theta: float
+    partial_rotary_factor: float = 1.0
+    rope_type: Literal["default"] = "default"
+    mrope_interleaved: bool = False
+    mrope_section: list[int] = field(default_factory=list)
+
+
 def _rope_theta_from_fields(
     rope_theta: float | None,
-    rope_parameters: Mapping[str, object] | None,
+    rope_parameters: Qwen35RopeParametersConfig | None,
 ) -> float:
     if rope_theta is not None:
         return rope_theta
 
     if rope_parameters is not None:
-        rope_theta_raw = rope_parameters.get("rope_theta")
-        if isinstance(rope_theta_raw, int | float):
-            return float(rope_theta_raw)
+        return rope_parameters.rope_theta
 
     raise ValueError("Qwen3.5 config requires `rope_theta` or `rope_parameters.rope_theta`.")
 
 
 def _partial_rotary_factor_from_fields(
     partial_rotary_factor: float | None,
-    rope_parameters: Mapping[str, object] | None,
+    rope_parameters: Qwen35RopeParametersConfig | None,
 ) -> float:
     if partial_rotary_factor is not None:
         return partial_rotary_factor
 
     if rope_parameters is not None:
-        factor_raw = rope_parameters.get("partial_rotary_factor")
-        if isinstance(factor_raw, int | float):
-            return float(factor_raw)
+        return rope_parameters.partial_rotary_factor
 
     return 1.0
 
@@ -98,7 +109,7 @@ class HFQwen35TextConfigRaw:
     head_dim: int = 256
     attention_bias: bool = False
     rope_theta: float | None = None
-    rope_parameters: Mapping[str, object] | None = None
+    rope_parameters: Qwen35RopeParametersConfig | None = None
     partial_rotary_factor: float | None = None
     layer_types: list[Literal["linear_attention", "full_attention"]] | None = None
     full_attention_interval: int | None = None
@@ -295,11 +306,35 @@ class HFQwen35TextConfig(HFQwen35TextConfigRaw, HuggingFaceLMConfig):
 @dataclass(frozen=True)
 class HFQwen35Config(HuggingFaceLMConfig):
     model_type: Literal["qwen3_5"]
+    tie_word_embeddings: bool
     text_config: HFQwen35TextConfigRaw
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
     quantization_config: QuantizationConfigType | None = None
+
+    @classmethod
+    def from_json(cls, json_path: Path | str) -> Self:
+        json_path = Path(json_path)
+        with open(json_path) as f:
+            config = json.load(f)
+        # tie_word_embeddings lives at the top level but text_config needs it
+        if "tie_word_embeddings" in config and "text_config" in config:
+            config["text_config"].setdefault("tie_word_embeddings", config["tie_word_embeddings"])
+        return cls._converter.structure(config, cls)
+
+    def _load_weights(
+        self,
+        model: LalamoModule,
+        weights_dict: Mapping[str, Array],
+    ) -> LalamoModule:
+        # Qwen3.5 is multimodal: text weights are under model.language_model.*, rename to model.*
+        weights_dict = {
+            k.replace("model.language_model.", "model.", 1): v
+            for k, v in weights_dict.items()
+        }
+        assert isinstance(model, Decoder)
+        return load_huggingface_decoder(model, weights_dict)
 
     def to_decoder_config(
         self,

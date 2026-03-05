@@ -23,6 +23,7 @@ dependencies = [
     "requests>=2.32.5",
     "omegaconf>=2.3.0",
     "soundfile>=0.13.1",
+    "transformers==5.3.0",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]

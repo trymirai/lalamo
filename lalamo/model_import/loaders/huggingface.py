@@ -637,18 +637,23 @@ def load_attention(
             weight_quantization = module.qkv_projection.config.weight_quantization_mode
             activation_precision = module.qkv_projection.activation_precision
 
+            # Detect actual quantization from shape (same as load_fused_linear).
+            expected_in_dim = module.qkv_projection.weights.shape[1]
+            packed_dim = fused_qweights.shape[1]
+            if packed_dim * 8 == expected_in_dim:
+                actual_quantization = QuantizationMode.UINT4
+            elif packed_dim * 4 == expected_in_dim:
+                actual_quantization = QuantizationMode.UINT8
+            else:
+                actual_quantization = weight_quantization
+
             weights = _process_quantized_tensor(
                 fused_qweights,
-                weight_quantization,
+                actual_quantization,
                 activation_precision,
                 None,
             )
-            deq_biases = _process_quantized_tensor(
-                fused_qzeros,
-                weight_quantization,
-                activation_precision,
-                None,
-            )
+            deq_biases = fused_qzeros.astype(activation_precision)
             scales = fused_scales.astype(activation_precision)
 
             qkv_projection = load_parameters(
