@@ -333,15 +333,17 @@ class HFQwen35Config(HuggingFaceLMConfig):
 
         new_weights: dict[str, Array] = {}
         for k, v in weights_dict.items():
-            k = k.replace("model.language_model.", "model.", 1)
+            key = k.replace("model.language_model.", "model.", 1)
             # MLX community converters bake the scale_offset (+1) into Qwen3_5RMSNorm weights.
             # Qwen3_5RMSNorm computes (1 + weight) * norm(x), but MLX stores weight+1.
             # Subtract the offset so lalamo's scale_offset=1.0 doesn't double-apply it.
             # This applies to all norms EXCEPT linear_attn.norm (Qwen3_5RMSNormGated, no offset).
-            if is_mlx and k.endswith(".weight") and "norm" in k and "linear_attn.norm" not in k:
-                v = v.astype(jnp.float32) - 1.0
-                v = v.astype(jnp.bfloat16)
-            new_weights[k] = v
+            if is_mlx and key.endswith(".weight") and "norm" in key and "linear_attn.norm" not in key:
+                value = v.astype(jnp.float32) - 1.0
+                value = value.astype(jnp.bfloat16)
+            else:
+                value = v
+            new_weights[key] = value
 
         assert isinstance(model, Decoder)
         return load_huggingface_decoder(model, new_weights)
