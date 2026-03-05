@@ -121,7 +121,7 @@ def generate_replies(
 
         inference_config = InferenceConfig(max_output_length=max_output_length, batch_size=batch_size)
 
-        replies: list[tuple[int, ...]] = []
+        replies = []
         for rows_processed, (idx, reply) in enumerate(
             model.reply_many(
                 dataset,

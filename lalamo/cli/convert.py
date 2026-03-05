@@ -136,7 +136,9 @@ def convert(
             raise Exit
         shutil.rmtree(output_dir)
 
-    precision_dtype = config_converter.structure(precision.value, DTypeLike) if precision is not None else None
+    precision_dtype: DTypeLike | None = (
+        config_converter.structure(precision.value, DTypeLike) if precision is not None else None  # type: ignore[arg-type]
+    )
 
     conversion_strs = [
         f"🚀 Converting [cyan]{model_repo.name}[/cyan] by [cyan]{model_repo.vendor}[/cyan]",

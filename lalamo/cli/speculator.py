@@ -24,7 +24,7 @@ from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.models import LanguageModelConfig
 from lalamo.models.common import InferenceConfig
-from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
+from lalamo.models.lm_helpers import BatchSizeEstimatingEvent, estimate_batchsize_from_bytes
 from lalamo.speculator.inference import inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator, train_speculator
@@ -85,7 +85,7 @@ def estimate_batchsize(
             )
             return model.estimate_memory_consumption(inference_config=inference_config)
 
-        def on_estimate_progress(event: object) -> None:
+        def on_estimate_progress(event: BatchSizeEstimatingEvent) -> None:
             hi_str = str(event.hi) if event.hi is not None else "?"
             desc = f"[cyan]Estimating batch size... ({event.lo}..{hi_str})[/cyan]"
             progress.update(estimating_task, description=desc)
