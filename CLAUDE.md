@@ -1,4 +1,4 @@
-The rules below are CRITICAL. Each rule should be respected. Rules can only be overriden by the user.
+The rules below are CRITICAL. Each rule should be respected. Rules can only be overridden by the user.
 
 # Workflow rules:
 - When given a coding task, AI Assistant carefully and deeply inspects the codebase to understand the context.
@@ -40,7 +40,7 @@ The rules below are CRITICAL. Each rule should be respected. Rules can only be o
 
 # Python coding rules:
 - Never use pip to manage dependencies. Instead use uv commands, such as `uv add`.
-- Assume Python 3.12. Use `T | None` instead of `Optional[T]` and `dict[K, V]` instead of `typing.Dict[K, V]`.
+- Assume Python 3.12+. Use `T | None` instead of `Optional[T]` and `dict[K, V]` instead of `typing.Dict[K, V]`.
 - Every function should have full type annotations.
 - Prefer comprehensions to map and filter expressions.
 - Prefer dataclasses over vanilla python classes.
@@ -55,7 +55,6 @@ The rules below are CRITICAL. Each rule should be respected. Rules can only be o
 
 # Code best practices in examples
 
-General coding:
 ```python
 # Bad: This expression does not communicate implicit assumptions about the list's shape, and variable names are not descriptive enough.
 x, y = my_list[0], my_list[-1]
@@ -90,7 +89,7 @@ permuted_x = einops.rearrange(x, "batch in_channels out_channels -> batch out_ch
 ```
 
 ```python
-# Bad: Dict is used instad of a struct.
+# Bad: Dict is used instead of a struct.
 def model_registry():
     """Registry of all available models"""
     return {
@@ -126,4 +125,100 @@ def model_registry() -> list[ModelTestSpec]:
             max_layers=24,
         ),
     ]
+```
+
+```python
+# Bad: Using an unnecessary global constant
+NUMBER_OF_SOLVER_STEPS = 5
+def solve(self, problem: Problem, num_steps: int = NUMBER_OF_SOLVER_STEPS):
+    ...
+
+# Good: In-place constant
+def solve(self, problem: Problem, num_steps: int = 5):
+    ...
+```
+
+```python
+# Bad: custom __init__ method on a dataclass
+@dataclass
+class Banana:
+    color: Color
+    length: float
+    width: float
+
+    def __init__(self, is_green: bool = False):
+        if is_green:
+            self.color = Color.Green
+            self.length = 5.0
+            self.width = 3.0
+        else:
+            self.color = Color.Yellow
+            self.length = 7.0
+            self.width = 1.0
+
+# Good: A special method to construct the dataclass, boolean argument keyword-only
+@dataclass
+class Banana:
+    color: Color
+    length: float
+    width: float
+
+    @staticmethod
+    def build(cls, *, is_green: bool):
+        ...
+```
+
+```python
+# Bad: Mixing semantic and operational arguments together in one structure
+@dataclass
+class Config:
+    vram_limit: str # semantic
+    use_flash_attention: bool # operational
+    ...
+
+# Good: Split them up
+@dataclass
+class ParallelizationConfig:
+    vram_limit: str
+    ...
+
+@dataclass
+class ForwardPassConfig:
+    use_flash_attention: bool
+    ...
+```
+
+```python
+# Bad: An unnecessary function and confusing logic
+def _apply_sharding_config(array: Float[Array, "*"], sharding: Sharding | None):
+    if sharding is None:
+        return array
+    return sharding.shard(array)
+
+def shard_module(module: ShardableModule):
+    for field in module.fields():
+        if eqx.is_array(field):
+            field = _apply_sharding_config(field, module.get_sharding())
+        ...
+
+# Good: No unnecessary functions, easy to read and understand
+def shard_module(module: ShardableModule):
+    sharding = module.get_sharding()
+
+    for field in module.fields():
+        if eqx.is_array(field) and sharding:
+            field = sharding.shard(field)
+        ...
+```
+
+```python
+# Bad: message is non informative and contains trivial details
+def test_decode_one_token():
+    skip_on_gpu("Skip on GPU due to token mismatch in test_decode_one_token.")
+    ...
+
+# Good: message describes the reasoning
+def test_decode_one_token():
+    skip_on_gpu("Flaky on GPU due to torch/jax precision inconsistencies.")
+    ...
 ```
