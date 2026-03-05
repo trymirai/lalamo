@@ -37,7 +37,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     eos_ids = language_model.stop_token_ids
     eos_idx = next((i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids), None)
     response_text = language_model.message_processor.tokenizer.decode(
-        token_ids[:eos_idx] if eos_idx is not None else token_ids
+        token_ids[:eos_idx] if eos_idx is not None else token_ids,
     )
 
     digits_pattern = r"1\s+2\s+3\s+4\s+5\s+6\s+7\s+8\s+9"

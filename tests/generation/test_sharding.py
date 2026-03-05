@@ -71,7 +71,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
             print("all sharding configs passed")
         """),
         ],
-        capture_output=True,
+        check=False, capture_output=True,
         text=True,
         timeout=600,
     )

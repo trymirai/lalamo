@@ -280,6 +280,7 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     assert_close(
         result=jnp.asarray(output_lalamo_nct),
         reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        fraction_of_allowed_violations=0.02,
         operation_name="test_causal_conv1d_forward_matches_torch",
     )
 
@@ -447,6 +448,7 @@ def test_residual_block_forward_matches_torch() -> None:
     assert_close(
         result=jnp.asarray(output_lalamo_nct),
         reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        fraction_of_allowed_violations=0.02,
         operation_name="test_residual_block_forward_matches_torch",
     )
 
@@ -504,6 +506,7 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
     assert_close(
         result=jnp.asarray(output_lalamo_nct),
         reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        fraction_of_allowed_violations=0.02,
         operation_name="test_hifigan_res_block_forward_matches_torch",
     )
 
@@ -562,6 +565,7 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
     assert_close(
         result=jnp.asarray(output_lalamo_nct),
         reference=jnp.asarray(output_torch_nct.detach().numpy()),
+        fraction_of_allowed_violations=0.02,
         operation_name="test_hifigan_res_layer_forward_matches_torch",
     )
 

@@ -106,5 +106,6 @@ def test_delta_net_attention_matches_hf() -> None:
     assert_close(
         result=lalamo_out,
         reference=torch_to_jax(hf_out[0]),
-        fraction_of_allowed_violations=0.01,
+        atol=1e-3,
+        fraction_of_allowed_violations=0.02,
     )

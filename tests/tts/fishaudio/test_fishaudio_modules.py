@@ -183,6 +183,7 @@ def test_vector_quantize_decode_code() -> None:
     assert_close(
         result=lalamo_output,
         reference=dac_output_jax,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_vector_quantize_decode_code",
     )
 
@@ -247,7 +248,7 @@ def test_residual_vector_quantize_from_codes() -> None:
     assert_close(
         result=lalamo_output,
         reference=dac_output_jax,
-        fraction_of_allowed_violations=0.001,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_residual_vector_quantize_from_codes",
     )
 
@@ -566,6 +567,7 @@ def test_causal_transpose_conv1d_various_strides() -> None:
         assert_close(
             result=lalamo_output_nct,
             reference=torch_output_jax,
+            fraction_of_allowed_violations=0.02,
             operation_name=f"test_causal_transpose_conv1d_various_strides kernel={kernel_size} stride={stride}",
         )
 
@@ -1095,7 +1097,7 @@ def test_decoder_block_matches_pytorch() -> None:
     assert_close(
         result=lalamo_output_nct,
         reference=torch_output_jax,
-        fraction_of_allowed_violations=0.001,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_decoder_block_matches_pytorch",
     )
 

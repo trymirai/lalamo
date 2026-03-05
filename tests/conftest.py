@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import jax
@@ -13,6 +13,7 @@ from lalamo.main import app
 from lalamo.model_import.model_configs.huggingface import HuggingFaceLMConfig
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
+from tests.common import tolerance
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
@@ -21,6 +22,18 @@ from lalamo.model_registry import ModelRegistry
 # paths and produce much larger chunked-vs-unchunked numerical deltas in tests.
 # Be careful when raising this precision for correctness baselines.
 jax.config.update("jax_default_matmul_precision", "default")
+
+GPU_ATOL = 1e-4
+GPU_RTOL = 0.03
+
+
+@pytest.fixture(autouse=True)
+def _gpu_tolerance() -> Generator[None]:
+    if any(device.platform == "gpu" for device in jax.devices()):
+        with tolerance(atol=GPU_ATOL, rtol=GPU_RTOL):
+            yield
+    else:
+        yield
 
 RunLalamo = Callable[..., str]
 ConvertModel = Callable[[str], Path]

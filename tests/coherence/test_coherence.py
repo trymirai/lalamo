@@ -10,7 +10,7 @@ from tokenizers import Tokenizer
 from typer.testing import CliRunner
 
 from lalamo.main import app
-from tests.conftest import ConvertModel, HF_LANGUAGE_MODEL_REPOS
+from tests.conftest import HF_LANGUAGE_MODEL_REPOS, ConvertModel
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
 

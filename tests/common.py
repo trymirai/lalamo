@@ -1,22 +1,31 @@
 import math
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import jax
 import pytest
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
 
-__all__ = ["assert_close", "checkify_forward", "skip_on_gpu"]
+__all__ = ["assert_close", "checkify_forward", "skip_on_gpu", "tolerance"]
 
-ATOL = 1e-3
-RTOL = 0.03
-CPU_ATOL = 1e-4
-CPU_RTOL = 1e-3
+DEFAULT_ATOL = 1e-5
+DEFAULT_RTOL = 1e-3
+
+_current_atol: ContextVar[float] = ContextVar("_current_atol", default=DEFAULT_ATOL)
+_current_rtol: ContextVar[float] = ContextVar("_current_rtol", default=DEFAULT_RTOL)
 
 
-def _precision_config() -> tuple[str, float, float]:
-    if any(device.platform == "gpu" for device in jax.devices()):
-        return "low", ATOL, RTOL
-    return "high", CPU_ATOL, CPU_RTOL
+@contextmanager
+def tolerance(*, atol: float, rtol: float) -> Generator[None, None, None]:
+    atol_token = _current_atol.set(atol)
+    rtol_token = _current_rtol.set(rtol)
+    try:
+        yield
+    finally:
+        _current_atol.reset(atol_token)
+        _current_rtol.reset(rtol_token)
 
 
 def checkify_forward(module):  # noqa: ANN001, ANN201
@@ -40,17 +49,15 @@ def assert_close(
     fraction_of_allowed_violations: float = 0.0,
     operation_name: str | None = None,
 ) -> None:
-    precision_mode, default_atol, default_rtol = _precision_config()
-    atol = atol or default_atol
-    rtol = rtol or default_rtol
-    precision_prefix = f"[{precision_mode} precision]"
+    atol = atol or _current_atol.get()
+    rtol = rtol or _current_rtol.get()
     operation_label = operation_name if operation_name is not None else "assert_close"
 
     assert result.shape == reference.shape, (
-        f"{precision_prefix} {operation_label} shapes do not match: {result.shape} != {reference.shape}"
+        f"{operation_label} shapes do not match: {result.shape} != {reference.shape}"
     )
     assert result.dtype == reference.dtype, (
-        f"{precision_prefix} {operation_label} data types do not match: {result.dtype} != {reference.dtype}"
+        f"{operation_label} data types do not match: {result.dtype} != {reference.dtype}"
     )
 
     result = result.astype(jnp.float32)
@@ -88,7 +95,7 @@ def assert_close(
         allowed_violation_explainer = ""
 
     message = (
-        f"{precision_prefix} {num_violations} violations > {atol:.1e} + {rtol:.2%} out of total {reference.size} elements"
+        f"{num_violations} violations > {atol:.1e} + {rtol:.2%} out of total {reference.size} elements"
         f"{allowed_violation_explainer}{operation_description}."
         f" Worst violation: {max_err:.3g} ({max_err_rel:.2%}) at index {max_err_idx}"
         f" (reference value: {max_err_reference_value:.3g})."
