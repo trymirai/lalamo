@@ -4,7 +4,6 @@ import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
 from functools import cached_property
 from re import Pattern
 from typing import NotRequired, TypedDict
@@ -15,7 +14,6 @@ from tokenizers import Tokenizer
 __all__ = [
     "AssistantMessage",
     "ContentBlock",
-    "DecodingErrors",
     "Image",
     "Message",
     "MessageProcessor",
@@ -25,10 +23,6 @@ __all__ = [
     "UserMessage",
 ]
 
-
-class DecodingErrors(Enum):
-    REPLACE = "replace"
-    IGNORE = "ignore"
 
 type ToolSchema = None  # WIP
 type Image = None  # WIP
@@ -203,8 +197,9 @@ class MessageProcessor:
     def tokenize_requests(self, dataset: Iterable[Iterable[Message]]) -> list[list[int]]:
         return [self.tokenize_request(messages) for messages in dataset]
 
-    def detokenize(self, tokens: list[int], *, errors: DecodingErrors = DecodingErrors.REPLACE) -> str:
-        return "".join(codecs.iterdecode(self.token_groups(tokens), "utf-8", errors=errors.value))
+    def detokenize(self, tokens: list[int], *, hide_invalid_utf_chars: bool = False) -> str:
+        errors = "ignore" if hide_invalid_utf_chars else "replace"
+        return "".join(codecs.iterdecode(self.token_groups(tokens), "utf-8", errors=errors))
 
     def token_groups(self, tokens: list[int]) -> Iterable[bytes]:
         byte_token_ids = self._byte_token_ids
