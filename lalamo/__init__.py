@@ -3,17 +3,6 @@ import os
 # Must run before importing jax / tensorflow, this hides the XLA optimization logs
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
-from lalamo.commands import (
-    CollectTracesCallbacks,
-    ConversionCallbacks,
-    EstimateBatchsizeCallbacks,
-    Precision,
-    TrainCallbacks,
-    collect_traces,
-    convert,
-    estimate_batchsize,
-    train,
-)
 from lalamo.message_processor import (
     AssistantMessage,
     ContentBlock,
@@ -38,12 +27,9 @@ __version__ = "0.6.9"
 __all__ = [
     "AssistantMessage",
     "ClassifierModel",
-    "CollectTracesCallbacks",
     "CollectTracesEvent",
     "ConfigMap",
     "ContentBlock",
-    "ConversionCallbacks",
-    "EstimateBatchsizeCallbacks",
     "FileSpec",
     "Image",
     "JSONFieldSpec",
@@ -51,20 +37,14 @@ __all__ = [
     "Message",
     "ModelSpec",
     "ModelType",
-    "Precision",
     "QuantizationMode",
     "ShardingConfig",
     "SpeculatorTrainingEvent",
     "SystemMessage",
     "ToolSchema",
-    "TrainCallbacks",
     "UseCase",
     "UserMessage",
     "WeightsType",
     "apply_data_sharding",
-    "collect_traces",
-    "convert",
-    "estimate_batchsize",
     "import_model",
-    "train",
 ]

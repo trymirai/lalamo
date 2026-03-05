@@ -4,12 +4,11 @@ from unittest.mock import Mock, patch
 import pytest
 import requests
 
-from lalamo.commands import PullCallbacks, pull
+from lalamo.cli.convert import pull
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 
 
 def _create_test_models() -> list[RegistryModel]:
-    """Create test models for matching tests."""
     return [
         RegistryModel(
             id="meta-llama-3.2-1b-instruct",
@@ -28,88 +27,29 @@ def _create_test_models() -> list[RegistryModel]:
                 ),
             ],
         ),
-        RegistryModel(
-            id="meta-llama-3.2-3b-instruct",
-            vendor="Meta",
-            name="Llama-3.2-3B-Instruct",
-            family="Llama-3.2",
-            size="3B",
-            repo_id="meta-llama/Llama-3.2-3B-Instruct",
-            quantization=None,
-            files=[
-                RegistryModelFile(
-                    name="model.safetensors",
-                    url="https://example.com/model.safetensors",
-                    size=3000,
-                    crc32c="def456",
-                ),
-            ],
-        ),
-        RegistryModel(
-            id="google-gemma-2-2b-instruct",
-            vendor="Google",
-            name="Gemma-2-2B-Instruct",
-            family="Gemma-2",
-            size="2B",
-            repo_id="google/gemma-2-2b-it",
-            quantization=None,
-            files=[
-                RegistryModelFile(
-                    name="model.safetensors",
-                    url="https://example.com/model.safetensors",
-                    size=2000,
-                    crc32c="ghi789",
-                ),
-            ],
-        ),
     ]
 
 
-@patch("lalamo.commands._download_file")
-@patch("lalamo.commands.shutil.move")
+def _fake_download(_url: str, dest_path: Path) -> None:
+    dest_path.write_bytes(b"fake")
+
+
+@patch("lalamo.cli.convert._download_file", side_effect=_fake_download)
+@patch("lalamo.cli.convert.shutil.move")
 def test_pull_success(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
-    # Setup
-    models = _create_test_models()
-    model_spec = models[0]  # Use first test model
+    model_spec = _create_test_models()[0]
     output_dir = tmp_path / "output"
 
-    # Create a mock callback to track calls
-    callback_calls = []
+    pull(model_spec, output_dir)
 
-    class TestCallbacks(PullCallbacks):
-        def started(self) -> None:
-            callback_calls.append("started")
-
-        def downloading(self, file_spec: RegistryModelFile) -> None:
-            callback_calls.append(f"downloading:{file_spec.name}")
-
-        def finished_downloading(self, file_spec: RegistryModelFile) -> None:
-            callback_calls.append(f"finished_downloading:{file_spec.name}")
-
-        def finished(self) -> None:
-            callback_calls.append("finished")
-
-    # Execute
-    pull(model_spec, output_dir, callbacks_type=TestCallbacks)
-
-    # Verify
-    assert mock_download.call_count == 1  # One file in test model
+    assert mock_download.call_count == 1
     assert output_dir.exists()
-
-    # Check callback sequence
-    assert "started" in callback_calls
-    assert "downloading:model.safetensors" in callback_calls
-    assert "finished_downloading:model.safetensors" in callback_calls
-    assert "finished" in callback_calls
-
-    # Verify files were moved
     assert mock_move.call_count == 1
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.cli.convert._download_file")
 def test_pull_download_error(mock_download: Mock, tmp_path: Path) -> None:
-    models = _create_test_models()
-    model_spec = models[0]
+    model_spec = _create_test_models()[0]
     mock_download.side_effect = requests.HTTPError("404 Not Found")
     output_dir = tmp_path / "output"
 
@@ -118,8 +58,7 @@ def test_pull_download_error(mock_download: Mock, tmp_path: Path) -> None:
 
 
 def test_pull_output_dir_exists_error(tmp_path: Path) -> None:
-    models = _create_test_models()
-    model_spec = models[0]
+    model_spec = _create_test_models()[0]
     output_dir = tmp_path / "output"
     output_dir.mkdir()
 
@@ -127,11 +66,10 @@ def test_pull_output_dir_exists_error(tmp_path: Path) -> None:
         pull(model_spec, output_dir)
 
 
-@patch("lalamo.commands._download_file")
-@patch("lalamo.commands.shutil.move")
+@patch("lalamo.cli.convert._download_file", side_effect=_fake_download)
+@patch("lalamo.cli.convert.shutil.move")
 def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
-    # Create model with multiple files
-    model_with_multiple_files = RegistryModel(
+    model_spec = RegistryModel(
         id="test-model",
         vendor="Test",
         name="Test-Model",
@@ -141,56 +79,22 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Pat
         quantization=None,
         files=[
             RegistryModelFile(
-                name="model.safetensors",
-                url="https://example.com/model.safetensors",
-                size=1000,
-                crc32c="abc",
+                name="model.safetensors", url="https://example.com/model.safetensors", size=1000, crc32c="abc",
             ),
-            RegistryModelFile(
-                name="tokenizer.json",
-                url="https://example.com/tokenizer.json",
-                size=100,
-                crc32c="def",
-            ),
-            RegistryModelFile(
-                name="config.json",
-                url="https://example.com/config.json",
-                size=50,
-                crc32c="ghi",
-            ),
+            RegistryModelFile(name="tokenizer.json", url="https://example.com/tokenizer.json", size=100, crc32c="def"),
+            RegistryModelFile(name="config.json", url="https://example.com/config.json", size=50, crc32c="ghi"),
         ],
     )
 
     output_dir = tmp_path / "output"
+    pull(model_spec, output_dir)
 
-    callback_calls = []
-
-    class TestCallbacks(PullCallbacks):
-        def downloading(self, file_spec: RegistryModelFile) -> None:
-            callback_calls.append(f"downloading:{file_spec.name}")
-
-        def finished_downloading(self, file_spec: RegistryModelFile) -> None:
-            callback_calls.append(f"finished_downloading:{file_spec.name}")
-
-    # Execute
-    pull(model_with_multiple_files, output_dir, callbacks_type=TestCallbacks)
-
-    # Verify all files were downloaded
     assert mock_download.call_count == 3
     assert mock_move.call_count == 3
 
-    # Verify all files had callbacks
-    assert "downloading:model.safetensors" in callback_calls
-    assert "downloading:tokenizer.json" in callback_calls
-    assert "downloading:config.json" in callback_calls
-    assert "finished_downloading:model.safetensors" in callback_calls
-    assert "finished_downloading:tokenizer.json" in callback_calls
-    assert "finished_downloading:config.json" in callback_calls
 
-
-@patch("lalamo.commands._download_file")
+@patch("lalamo.cli.convert._download_file")
 def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> None:
-    """Test that pull rejects filenames with path traversal attempts."""
     malicious_model = RegistryModel(
         id="malicious-model",
         vendor="Evil",
@@ -200,27 +104,18 @@ def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> Non
         repo_id="evil/malicious",
         quantization=None,
         files=[
-            RegistryModelFile(
-                name="../../../etc/passwd",
-                url="https://example.com/evil.txt",
-                size=100,
-                crc32c="evil",
-            ),
+            RegistryModelFile(name="../../../etc/passwd", url="https://example.com/evil.txt", size=100, crc32c="evil"),
         ],
     )
 
-    output_dir = tmp_path / "output"
-
     with pytest.raises(RuntimeError, match="Invalid filename from registry"):
-        pull(malicious_model, output_dir)
+        pull(malicious_model, tmp_path / "output")
 
-    # Verify download was never attempted
     assert mock_download.call_count == 0
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.cli.convert._download_file")
 def test_pull_rejects_subdirectory_paths(mock_download: Mock, tmp_path: Path) -> None:
-    """Test that pull rejects filenames containing subdirectories."""
     malicious_model = RegistryModel(
         id="malicious-model",
         vendor="Evil",
@@ -230,19 +125,11 @@ def test_pull_rejects_subdirectory_paths(mock_download: Mock, tmp_path: Path) ->
         repo_id="evil/malicious",
         quantization=None,
         files=[
-            RegistryModelFile(
-                name="subdir/evil.txt",
-                url="https://example.com/evil.txt",
-                size=100,
-                crc32c="evil",
-            ),
+            RegistryModelFile(name="subdir/evil.txt", url="https://example.com/evil.txt", size=100, crc32c="evil"),
         ],
     )
 
-    output_dir = tmp_path / "output"
-
     with pytest.raises(RuntimeError, match="Invalid filename from registry"):
-        pull(malicious_model, output_dir)
+        pull(malicious_model, tmp_path / "output")
 
-    # Verify download was never attempted
     assert mock_download.call_count == 0
