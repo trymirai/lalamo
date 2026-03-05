@@ -4,8 +4,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Self
 
+import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
+from lalamo.model_import.loaders import load_huggingface_decoder
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -24,13 +26,11 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
+from lalamo.modules.common import LalamoModule
+from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
-
-from lalamo.model_import.loaders import load_huggingface_decoder
-from lalamo.modules.common import LalamoModule
-from lalamo.modules.decoder import Decoder
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -328,13 +328,23 @@ class HFQwen35Config(HuggingFaceLMConfig):
         model: LalamoModule,
         weights_dict: Mapping[str, Array],
     ) -> LalamoModule:
-        # Qwen3.5 is multimodal: text weights are under model.language_model.*, rename to model.*
-        weights_dict = {
-            k.replace("model.language_model.", "model.", 1): v
-            for k, v in weights_dict.items()
-        }
+        quantization = self.quantization or self.quantization_config
+        is_mlx = isinstance(quantization, MLXQuantizationConfig)
+
+        new_weights: dict[str, Array] = {}
+        for k, v in weights_dict.items():
+            k = k.replace("model.language_model.", "model.", 1)
+            # MLX community converters bake the scale_offset (+1) into Qwen3_5RMSNorm weights.
+            # Qwen3_5RMSNorm computes (1 + weight) * norm(x), but MLX stores weight+1.
+            # Subtract the offset so lalamo's scale_offset=1.0 doesn't double-apply it.
+            # This applies to all norms EXCEPT linear_attn.norm (Qwen3_5RMSNormGated, no offset).
+            if is_mlx and k.endswith(".weight") and "norm" in k and "linear_attn.norm" not in k:
+                v = v.astype(jnp.float32) - 1.0
+                v = v.astype(jnp.bfloat16)
+            new_weights[k] = v
+
         assert isinstance(model, Decoder)
-        return load_huggingface_decoder(model, weights_dict)
+        return load_huggingface_decoder(model, new_weights)
 
     def to_decoder_config(
         self,

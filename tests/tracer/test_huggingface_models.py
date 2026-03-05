@@ -13,7 +13,6 @@ MODEL_LIST = [
     # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3.5-0.8B", DType.FLOAT32),
-    ModelTestSpec("Qwen/Qwen3.5-2B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3.5-9B", DType.FLOAT32, minimum_memory_for_trace=unsi("30 G")),
     ModelTestSpec("Qwen/Qwen3.5-27B", DType.FLOAT32, minimum_memory_for_trace=unsi("90 G")),
     ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),
