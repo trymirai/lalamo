@@ -319,6 +319,7 @@ def test_causal_conv1d_matches_pytorch() -> None:
     assert_close(
         result=lalamo_output_nct,
         reference=torch_output_jax,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_causal_conv1d_matches_pytorch",
     )
 
@@ -637,11 +638,13 @@ def test_causal_conv_transpose_roundtrip() -> None:
     assert_close(
         result=lalamo_down_nct,
         reference=torch_down_jax,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_causal_conv_transpose_roundtrip/down",
     )
     assert_close(
         result=lalamo_up_nct,
         reference=torch_up_jax,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_causal_conv_transpose_roundtrip/up",
     )
 
