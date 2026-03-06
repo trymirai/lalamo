@@ -36,27 +36,6 @@ from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConf
 __all__ = ["HFQwen35Config", "HFQwen35TextConfig"]
 
 
-def _layer_types_from_fields(
-    layer_types: list[Literal["linear_attention", "full_attention"]] | None,
-    full_attention_interval: int | None,
-    num_hidden_layers: int,
-) -> list[Literal["linear_attention", "full_attention"]]:
-    if layer_types is not None:
-        if len(layer_types) != num_hidden_layers:
-            raise ValueError(
-                f"Expected {num_hidden_layers} layer types, got {len(layer_types)}.",
-            )
-        return layer_types
-
-    if full_attention_interval is None or full_attention_interval <= 0:
-        raise ValueError("Qwen3.5 config requires `layer_types` or positive `full_attention_interval`.")
-
-    return [
-        ("full_attention" if (i + 1) % full_attention_interval == 0 else "linear_attention")
-        for i in range(num_hidden_layers)
-    ]
-
-
 @dataclass(frozen=True)
 class HFQwen35TextConfigRaw:
     model_type: Literal["qwen3_5_text"]
@@ -74,7 +53,6 @@ class HFQwen35TextConfigRaw:
     head_dim: int
     attention_bias: bool
     layer_types: list[Literal["linear_attention", "full_attention"]]
-    full_attention_interval: int
     linear_conv_kernel_dim: int
     linear_key_head_dim: int
     linear_value_head_dim: int
@@ -180,14 +158,9 @@ class HFQwen35TextConfigRaw:
             )
 
         partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
-        resolved_layer_types = _layer_types_from_fields(
-            self.layer_types,
-            self.full_attention_interval,
-            self.num_hidden_layers,
-        )
 
         layer_configs = []
-        for layer_type in resolved_layer_types:
+        for layer_type in self.layer_types:
             if layer_type == "linear_attention":
                 mixer_config = DeltaNetAttentionConfig(
                     in_proj_config=linear_config,
