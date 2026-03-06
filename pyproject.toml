@@ -31,7 +31,7 @@ cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
 tpu = ["jax[tpu]>=0.8.1"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
-fishaudio = ["torch>=2.8.0", "transformers>=4.56.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
+fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
 nanocodec = ["torch>=2.8.0"]
 
 [dependency-groups]
@@ -51,7 +51,7 @@ dev = [
     "torch>=2.8.0",
     "torchaudio>=2.8.0",
     "torchao>=0.7.0",
-    "transformers>=4.56.0",
+    "transformers>=5.2.0",
     "twine>=6.1.0",
     "ruff>=0.14.0",
     "ty>=0.0.4",
@@ -109,7 +109,7 @@ torchaudio = [
 ]
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-mlx" }
-fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="cb3f003"}
+fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
@@ -167,5 +167,7 @@ ignore = [
     "T20",
     "TD003",
     "TRY003",
-    "CPY001"
+    "CPY001",
+    "TC003",
+    "PLW0108"
 ]

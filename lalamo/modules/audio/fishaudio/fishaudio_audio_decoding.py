@@ -5,7 +5,7 @@ from typing import Self
 import jax
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 
 from .fishaudio_modules import (
@@ -27,7 +27,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
     decoder_config: DACDecoderConfig
     samplerate: int
 
-    # NOTE: these fields are retireved from DAC audio-codec config which is
+    # NOTE: these fields are retrieved from DAC audio-codec config which is
     # currently baked into code of fish-speech package as a separate file
     encoder_dim: int
     encoder_rates: tuple[int, ...]
@@ -227,7 +227,7 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
 
         quantizer_weights = weights["quantizer"]
         decoder_weights = weights["decoder"]

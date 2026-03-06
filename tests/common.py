@@ -1,12 +1,31 @@
 import math
+from collections.abc import Generator
+from contextlib import contextmanager
+from contextvars import ContextVar
 
+import jax
+import pytest
 from jax import numpy as jnp
 from jax.experimental.checkify import checkify, div_checks, nan_checks, user_checks
 
-__all__ = ["assert_close", "checkify_forward"]
+__all__ = ["assert_close", "checkify_forward", "skip_on_gpu", "tolerance"]
 
-ATOL = 1e-3
-RTOL = 0.03
+DEFAULT_ATOL = 1e-5
+DEFAULT_RTOL = 1e-3
+
+_current_atol: ContextVar[float] = ContextVar("_current_atol", default=DEFAULT_ATOL)
+_current_rtol: ContextVar[float] = ContextVar("_current_rtol", default=DEFAULT_RTOL)
+
+
+@contextmanager
+def tolerance(*, atol: float, rtol: float) -> Generator[None, None, None]:
+    atol_token = _current_atol.set(atol)
+    rtol_token = _current_rtol.set(rtol)
+    try:
+        yield
+    finally:
+        _current_atol.reset(atol_token)
+        _current_rtol.reset(rtol_token)
 
 
 def checkify_forward(module):  # noqa: ANN001, ANN201
@@ -16,20 +35,29 @@ def checkify_forward(module):  # noqa: ANN001, ANN201
     )
 
 
+def skip_on_gpu(reason: str) -> None:
+    if any(device.platform == "gpu" for device in jax.devices()):
+        pytest.skip(reason)
+
+
 def assert_close(
     *,
     result: jnp.ndarray,
     reference: jnp.ndarray,
-    atol: float = ATOL,
-    rtol: float = RTOL,
+    atol: float | None = None,
+    rtol: float | None = None,
     fraction_of_allowed_violations: float = 0.0,
     operation_name: str | None = None,
 ) -> None:
+    atol = atol or _current_atol.get()
+    rtol = rtol or _current_rtol.get()
+    operation_label = operation_name if operation_name is not None else "assert_close"
+
     assert result.shape == reference.shape, (
-        f"{operation_name} shapes do not match: {result.shape} != {reference.shape}"
+        f"{operation_label} shapes do not match: {result.shape} != {reference.shape}"
     )
     assert result.dtype == reference.dtype, (
-        f"{operation_name} data types do not match: {result.dtype} != {reference.dtype}"
+        f"{operation_label} data types do not match: {result.dtype} != {reference.dtype}"
     )
 
     result = result.astype(jnp.float32)
