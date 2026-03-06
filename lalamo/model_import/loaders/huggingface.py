@@ -947,31 +947,7 @@ def load_delta_net_attention(
             merged = _fuse_delta_net_full_precision(projection_branches)
             in_proj = load_parameters(lambda m: (m.weights, m.biases), module.in_proj, (merged, None))
         elif isinstance(module.in_proj, GroupQuantizedLinear):
-            fused_qweights, fused_qzeros, fused_scales = _fuse_delta_net_quantized(
-                projection_branches,
-                AWQ_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            weight_quantization = module.in_proj.config.weight_quantization_mode
-            activation_precision = module.in_proj.activation_precision
-            reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
-            weights = _process_quantized_tensor(
-                fused_qweights,
-                weight_quantization,
-                activation_precision,
-                reverse_order,
-            )
-            zeros = _process_quantized_tensor(
-                fused_qzeros,
-                weight_quantization,
-                activation_precision,
-                reverse_order,
-            )
-            scales = fused_scales.astype(activation_precision)
-            in_proj = load_parameters(
-                lambda m: (m.weights, m.scales, m.zero_points, m.biases),
-                module.in_proj,
-                (weights.T, scales.T, zeros.T, None),
-            )
+            raise ValueError("DeltaNetAttention does not support AWQ quantization.")
         elif isinstance(module.in_proj, MLXQuantizedLinear):
             fused_qweights, fused_deq_biases, fused_scales = _fuse_delta_net_quantized(
                 projection_branches,

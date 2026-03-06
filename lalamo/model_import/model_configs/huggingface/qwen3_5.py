@@ -2,9 +2,8 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal, Self
+from typing import Any, Literal, Self
 
-import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.model_import.loaders import load_huggingface_decoder
@@ -35,41 +34,6 @@ from lalamo.quantization import QuantizationMode
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
 __all__ = ["HFQwen35Config", "HFQwen35TextConfig"]
-
-
-@dataclass(frozen=True)
-class Qwen35RopeParametersConfig:
-    rope_theta: float
-    partial_rotary_factor: float = 1.0
-    rope_type: Literal["default"] = "default"
-    mrope_interleaved: bool = False
-    mrope_section: list[int] = field(default_factory=list)
-
-
-def _rope_theta_from_fields(
-    rope_theta: float | None,
-    rope_parameters: Qwen35RopeParametersConfig | None,
-) -> float:
-    if rope_theta is not None:
-        return rope_theta
-
-    if rope_parameters is not None:
-        return rope_parameters.rope_theta
-
-    raise ValueError("Qwen3.5 config requires `rope_theta` or `rope_parameters.rope_theta`.")
-
-
-def _partial_rotary_factor_from_fields(
-    partial_rotary_factor: float | None,
-    rope_parameters: Qwen35RopeParametersConfig | None,
-) -> float:
-    if partial_rotary_factor is not None:
-        return partial_rotary_factor
-
-    if rope_parameters is not None:
-        return rope_parameters.partial_rotary_factor
-
-    return 1.0
 
 
 def _layer_types_from_fields(
@@ -105,20 +69,17 @@ class HFQwen35TextConfigRaw:
     rms_norm_eps: float
     tie_word_embeddings: bool
     vocab_size: int
+    rope_parameters: dict[str, Any]
 
-    head_dim: int = 256
-    attention_bias: bool = False
-    rope_theta: float | None = None
-    rope_parameters: Qwen35RopeParametersConfig | None = None
-    partial_rotary_factor: float | None = None
-    layer_types: list[Literal["linear_attention", "full_attention"]] | None = None
-    full_attention_interval: int | None = None
-
-    linear_conv_kernel_dim: int = 4
-    linear_key_head_dim: int = 128
-    linear_value_head_dim: int = 128
-    linear_num_key_heads: int = 16
-    linear_num_value_heads: int = 32
+    head_dim: int
+    attention_bias: bool
+    layer_types: list[Literal["linear_attention", "full_attention"]]
+    full_attention_interval: int
+    linear_conv_kernel_dim: int
+    linear_key_head_dim: int
+    linear_value_head_dim: int
+    linear_num_key_heads: int
+    linear_num_value_heads: int
 
     quantization: QuantizationConfigType | None = None
     quantization_config: QuantizationConfigType | None = None
@@ -138,7 +99,9 @@ class HFQwen35TextConfigRaw:
         else:
             quantization = fallback_quantization
 
-        if isinstance(quantization, MLXQuantizationConfig):
+        is_mlx = isinstance(quantization, MLXQuantizationConfig)
+
+        if is_mlx:
             if self.tie_word_embeddings:
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
                     input_scale=None,
@@ -171,18 +134,19 @@ class HFQwen35TextConfigRaw:
                     precision=activation_precision,
                 )
 
-        rope_theta = _rope_theta_from_fields(self.rope_theta, self.rope_parameters)
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=rope_theta,
+            base=self.rope_parameters["rope_theta"],
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
+        # Qwen3.5 RMSNorm computes (1 + weight) * norm(x). HF stores raw weights,
+        # but MLX community converters bake the +1 into the weights, so no offset needed.
         rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
             accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
-            scale_offset=1.0,
+            scale_offset=None if is_mlx else 1.0,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
@@ -215,10 +179,7 @@ class HFQwen35TextConfigRaw:
                 activation_precision=activation_precision,
             )
 
-        partial_rotary_factor = _partial_rotary_factor_from_fields(
-            self.partial_rotary_factor,
-            self.rope_parameters,
-        )
+        partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
         resolved_layer_types = _layer_types_from_fields(
             self.layer_types,
             self.full_attention_interval,
@@ -328,22 +289,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
         model: LalamoModule,
         weights_dict: Mapping[str, Array],
     ) -> LalamoModule:
-        quantization = self.quantization or self.quantization_config
-        is_mlx = isinstance(quantization, MLXQuantizationConfig)
-
-        new_weights: dict[str, Array] = {}
-        for k, v in weights_dict.items():
-            key = k.replace("model.language_model.", "model.", 1)
-            # MLX community converters bake the scale_offset (+1) into Qwen3_5RMSNorm weights.
-            # Qwen3_5RMSNorm computes (1 + weight) * norm(x), but MLX stores weight+1.
-            # Subtract the offset so lalamo's scale_offset=1.0 doesn't double-apply it.
-            # This applies to all norms EXCEPT linear_attn.norm (Qwen3_5RMSNormGated, no offset).
-            if is_mlx and key.endswith(".weight") and "norm" in key and "linear_attn.norm" not in key:
-                value = v.astype(jnp.float32) - 1.0
-                value = value.astype(jnp.bfloat16)
-            else:
-                value = v
-            new_weights[key] = value
+        new_weights = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
 
         assert isinstance(model, Decoder)
         return load_huggingface_decoder(model, new_weights)
