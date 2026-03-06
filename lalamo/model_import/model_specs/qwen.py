@@ -301,10 +301,6 @@ QWEN3_NEXT = [
     # ),
 ]
 
-_QWEN35_GEN_CONFIG = ConfigMap(
-    generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
-)
-
 QWEN35 = [
     ModelSpec(
         vendor="Alibaba",
@@ -314,7 +310,9 @@ QWEN35 = [
         quantization=None,
         repo="Qwen/Qwen3.5-0.8B",
         config_type=HFQwen35Config,
-        configs=_QWEN35_GEN_CONFIG,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+        ),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -352,7 +350,9 @@ QWEN35 = [
         quantization=None,
         repo="Qwen/Qwen3.5-2B",
         config_type=HFQwen35Config,
-        configs=_QWEN35_GEN_CONFIG,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+        ),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -390,7 +390,9 @@ QWEN35 = [
         quantization=None,
         repo="Qwen/Qwen3.5-4B",
         config_type=HFQwen35Config,
-        configs=_QWEN35_GEN_CONFIG,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+        ),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -428,7 +430,9 @@ QWEN35 = [
         quantization=None,
         repo="Qwen/Qwen3.5-9B",
         config_type=HFQwen35Config,
-        configs=_QWEN35_GEN_CONFIG,
+        configs=ConfigMap(
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+        ),
     ),
     ModelSpec(
         vendor="Alibaba",
@@ -466,6 +470,34 @@ QWEN35 = [
         quantization=None,
         repo="Qwen/Qwen3.5-27B",
         config_type=HFQwen35Config,
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.5",
+        name="Qwen3.5-27B-MLX-4bit",
+        size="27B",
+        quantization=QuantizationMode.UINT4,
+        repo="mlx-community/Qwen3.5-27B-MLX-4bit",
+        config_type=HFQwen35Config,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
+            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+        ),
+    ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.5",
+        name="Qwen3.5-27B-MLX-8bit",
+        size="27B",
+        quantization=QuantizationMode.UINT8,
+        repo="mlx-community/Qwen3.5-27B-MLX-8bit",
+        config_type=HFQwen35Config,
+        configs=ConfigMap(
+            tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
+            tokenizer_config=FileSpec("tokenizer_config.json", "Qwen/Qwen3.5-27B"),
+            generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
+        ),
     ),
 ]
 
