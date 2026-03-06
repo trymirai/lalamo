@@ -1,8 +1,6 @@
-import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Literal, Self
+from typing import Any, Literal
 
 from jaxtyping import Array, DTypeLike
 
@@ -246,16 +244,6 @@ class HFQwen35Config(HuggingFaceLMConfig):
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
     quantization_config: QuantizationConfigType | None = None
-
-    @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            config = json.load(f)
-        # tie_word_embeddings lives at the top level but text_config needs it
-        if "tie_word_embeddings" in config and "text_config" in config:
-            config["text_config"].setdefault("tie_word_embeddings", config["tie_word_embeddings"])
-        return cls._converter.structure(config, cls)
 
     def _load_weights(
         self,
