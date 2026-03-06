@@ -160,7 +160,7 @@ class ETLlamaConfig(ExecutorchConfig):
             up_clipping=None,
             gate_clipping=None,
         )
-        tranformer_layer_config = TransformerLayerConfig(
+        transformer_layer_config = TransformerLayerConfig(
             pre_mixer_norm_config=rmsnorm_config,
             mixer_config=attention_config,
             post_mixer_norm_config=None,
@@ -171,7 +171,7 @@ class ETLlamaConfig(ExecutorchConfig):
         transformer_config = TransformerConfig(
             global_rope_config=rope_config,
             local_rope_config=None,
-            layer_configs=(tranformer_layer_config,) * self.n_layers,
+            layer_configs=(transformer_layer_config,) * self.n_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.dim,
             hidden_dim=self._find_hidden_size(),

@@ -51,7 +51,7 @@ dev = [
     "torch>=2.8.0",
     "torchaudio>=2.8.0",
     "torchao>=0.7.0",
-    "transformers>=4.56.0",
+    "transformers>=5.3.0",
     "twine>=6.1.0",
     "ruff>=0.14.0",
     "ty>=0.0.4",
@@ -157,6 +157,7 @@ ignore = [
     "PLR0917",
     "PLR2004",
     "PLR6301",
+    "PLW0108",
     "PT",
     "PTH123",
     "RET503",
@@ -167,5 +168,9 @@ ignore = [
     "T20",
     "TD003",
     "TRY003",
-    "CPY001"
+    "CPY001",
+    "COM812",
 ]
+
+[tool.typos.default.extend-words]
+ba = "ba"
