@@ -113,7 +113,7 @@ class MessageProcessor:
     def output_parser_regex(self) -> Pattern | None:
         if self.config.output_parser_regex is None:
             return None
-        return re.compile(self.config.output_parser_regex)
+        return re.compile(self.config.output_parser_regex, re.DOTALL)
 
     @property
     def system_role_name(self) -> str:
