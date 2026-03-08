@@ -358,10 +358,10 @@ class Qwen3TTSConvNeXtBlock(LalamoModule[Qwen3TTSConvNeXtBlockConfig]):
             depthwise_conv=self.depthwise_conv.import_weights(require_tree(weights["depthwise_conv"])),
             norm=self.norm.import_weights(require_tree(weights["norm"])),
             pointwise_conv_step1=self.pointwise_conv_step1.import_weights(
-                require_tree(weights["pointwise_conv_step1"])
+                require_tree(weights["pointwise_conv_step1"]),
             ),
             pointwise_conv_step2=self.pointwise_conv_step2.import_weights(
-                require_tree(weights["pointwise_conv_step2"])
+                require_tree(weights["pointwise_conv_step2"]),
             ),
             gamma=require_array(weights["gamma"]),
         )
@@ -502,7 +502,12 @@ class Qwen3TTSDecoderBlockConfig:
         )
 
     def random_init(
-        self, in_dim: int, out_dim: int, upsample_rate: int, *, key: PRNGKeyArray
+        self,
+        in_dim: int,
+        out_dim: int,
+        upsample_rate: int,
+        *,
+        key: PRNGKeyArray,
     ) -> "Qwen3TTSDecoderBlock":
         key_transposed, key_r1, key_r2, key_r3 = jax.random.split(key, 4)
         return Qwen3TTSDecoderBlock(

@@ -8,6 +8,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
@@ -33,16 +34,7 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
 
 
 class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
-    """Stub text decoder that generates random codebook indices.
-
-    Instead of converting text tokens to semantic codes via a transformer,
-    this stub generates random integer indices suitable for NanoCodec decoding.
-    The output length is derived from the input text_tokens sequence length.
-
-    Output shape: [batch, num_codebooks, sequence_length]
-    """
-
-    seed: int
+    seed: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -54,17 +46,7 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "batch num_codebooks tokens"]:
-        """Generate random codebook indices with length derived from input tokens.
-
-        Args:
-            text_tokens: Input token array of shape [batch, sequence].
-                         The sequence length determines the output length.
-            sampling_policy: Ignored. Present for interface compatibility.
-            key: PRNG key for random generation. Uses default seed if None.
-
-        Returns:
-            Random integer indices of shape [batch, num_codebooks, sequence_length].
-        """
+        """Generate random codebook indices with length derived from input tokens."""
         if key is None:
             key = jax.random.PRNGKey(self.seed)
 

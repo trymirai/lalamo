@@ -21,6 +21,7 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
 )
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
+from lalamo.modules.audio.nanocodec.nanocodec_consts import DEFAULT_FSQ_EPS, DEFAULT_NANOCODEC_PRECISION
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
     CausalTransposeConv1dConfig,
@@ -50,7 +51,11 @@ def test_fsq_encode_matches_torch() -> None:
     """Test FSQ forward pass produces same codes and indices as PyTorch."""
     num_levels = [8, 7, 6, 6]
 
-    lalamo_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels), eps=1e-3)
+    lalamo_config = FiniteScalarQuantizerConfig(
+        num_levels=tuple(num_levels),
+        eps=DEFAULT_FSQ_EPS,
+        precision=DEFAULT_NANOCODEC_PRECISION,
+    )
     lalamo_quantizer = lalamo_config.empty()
     torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
@@ -72,7 +77,11 @@ def test_fsq_decode_matches_torch() -> None:
     """Test FSQ decode produces same outputs as PyTorch for all codebook entries."""
     num_levels = [8, 7, 6, 6]
 
-    lalamo_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels), eps=1e-3)
+    lalamo_config = FiniteScalarQuantizerConfig(
+        num_levels=tuple(num_levels),
+        eps=DEFAULT_FSQ_EPS,
+        precision=DEFAULT_NANOCODEC_PRECISION,
+    )
     lalamo_quantizer = lalamo_config.empty()
     torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
@@ -100,7 +109,11 @@ def test_group_fsq_encode_matches_torch() -> None:
     num_groups = 13
     num_levels_per_group = [8, 7, 6, 6]
 
-    fsq_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels_per_group), eps=1e-3)
+    fsq_config = FiniteScalarQuantizerConfig(
+        num_levels=tuple(num_levels_per_group),
+        eps=DEFAULT_FSQ_EPS,
+        precision=DEFAULT_NANOCODEC_PRECISION,
+    )
     lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
     lalamo_quantizer = lalamo_config.empty()
     torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(
@@ -129,7 +142,11 @@ def test_group_fsq_decode_matches_torch() -> None:
     num_groups = 13
     num_levels_per_group = [8, 7, 6, 6]
 
-    fsq_config = FiniteScalarQuantizerConfig(num_levels=tuple(num_levels_per_group), eps=1e-3)
+    fsq_config = FiniteScalarQuantizerConfig(
+        num_levels=tuple(num_levels_per_group),
+        eps=DEFAULT_FSQ_EPS,
+        precision=DEFAULT_NANOCODEC_PRECISION,
+    )
     lalamo_config = GroupFiniteScalarQuantizerConfig(num_groups=num_groups, quantizer_config=fsq_config)
     lalamo_quantizer = lalamo_config.empty()
     torch_quantizer = nanocodec_torch.GroupFiniteScalarQuantizer(

@@ -507,7 +507,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
                     self.config.codec_think_eos_id,
                     self.config.codec_pad_id,
                     self.config.codec_bos_id,
-                ]
+                ],
             ],
             dtype=jnp.int32,
         )
@@ -699,7 +699,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             talker_transformer=self.talker_transformer.import_weights(require_tree(weights["talker_transformer"])),
             codec_head=self.codec_head.import_weights(require_tree(weights["codec_head"])),
             predictor_transformer=self.predictor_transformer.import_weights(
-                require_tree(weights["predictor_transformer"])
+                require_tree(weights["predictor_transformer"]),
             ),
             predictor_embeddings=tuple(
                 embedding.import_weights(require_tree(embedding_weights))

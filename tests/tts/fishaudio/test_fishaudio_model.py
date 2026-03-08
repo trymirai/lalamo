@@ -7,6 +7,7 @@ from fish_speech.models.dac import inference as fish_dac_inference
 from fish_speech.models.dac.modded_dac import DAC
 from jax import numpy as jnp
 
+from lalamo.audio.tts_message_processor import TTSMessage
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_descript_audio_codec,
 )
@@ -15,7 +16,6 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     load_fishaudio_text_decoder,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.audio.text_to_speech import TTSMessage
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy

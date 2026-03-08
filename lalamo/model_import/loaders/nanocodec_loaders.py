@@ -29,7 +29,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
 )
 
 from .common import load_parameters
-from .torch_utils import _fuse_parametrized_weight_norm_conv1d
+from .torch_utils import fuse_parametrized_weight_norm_conv1d
 
 __all__ = [
     "load_causal_conv1d",
@@ -193,7 +193,7 @@ def load_causal_conv1d(
     weight_norm_path = path / "parametrizations" / "weight" / "original0"
     if weight_norm_path in weights_dict:
         # Fuse weight_norm parameters
-        weight, bias = _fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=False)
+        weight, bias = fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=False)
     else:
         # Weights are already fused
         weight = weights_dict[path / "weight"]
@@ -238,7 +238,7 @@ def load_causal_transpose_conv1d(
     weight_norm_path = path / "parametrizations" / "weight" / "original0"
     if weight_norm_path in weights_dict:
         # Fuse weight_norm parameters
-        weight_pytorch, bias = _fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=True)
+        weight_pytorch, bias = fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=True)
     else:
         # Weights are already fused
         weight_pytorch = weights_dict[path / "weight"]

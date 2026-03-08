@@ -1,6 +1,7 @@
+from collections.abc import Mapping
+from copy import deepcopy
 from dataclasses import dataclass
-
-from omegaconf import DictConfig
+from typing import Any
 
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -25,5 +26,5 @@ class FishAudioSpecialInferenceTokens:
     im_end_token_id: int
 
 
-def get_default_fishaudio_dac_config() -> DictConfig:
-    return DictConfig(_default_audio_codec_config)
+def get_default_fishaudio_dac_config() -> Mapping[Any, Any]:
+    return deepcopy(_default_audio_codec_config)

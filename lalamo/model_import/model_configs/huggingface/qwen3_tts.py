@@ -330,7 +330,8 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         else:
             speaker_encoder_config = raw_config.get("speaker_encoder_config")
             if isinstance(speaker_encoder_config, Mapping) and isinstance(
-                speaker_encoder_config.get("sample_rate"), int
+                speaker_encoder_config.get("sample_rate"),
+                int,
             ):
                 output_sample_rate = int(speaker_encoder_config["sample_rate"])
             else:

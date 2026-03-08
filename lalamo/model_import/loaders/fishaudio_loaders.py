@@ -51,7 +51,7 @@ from .nanocodec_loaders import (
     load_causal_transpose_conv1d,
     load_snake1d,
 )
-from .torch_utils import _fuse_weight_norm_conv1d
+from .torch_utils import fuse_weight_norm_conv1d_as_linear
 
 
 def _permute_for_rope_rotate_half(
@@ -437,7 +437,7 @@ def load_vector_quantize(
     # Load out_proj with weight norm fusion
     # The original is a Conv1d with kernel_size=1, so weight shape is (out, in, 1)
     # Our FullPrecisionLinear expects (out, in), so we remove the kernel dimension
-    out_proj_weight, out_proj_bias = _fuse_weight_norm_conv1d(weights_dict, path / "out_proj")
+    out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
     # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
     out_proj = load_parameters(

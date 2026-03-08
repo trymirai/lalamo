@@ -180,26 +180,6 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
 
 @dataclass(frozen=True)
 class CausalTransposeConv1dConfig:
-    # TODO(peter.glushkov):  Once FishAudio is merged, add groups support to
-    # fishaudio's CausalTransposeConv1d and reuse it here instead of this variant.
-
-    """Configuration for CausalTransposeConv1d with groups support.
-
-    This is a causal transposed 1D convolution (deconvolution) that removes
-    padding from the output to maintain causality. Supports grouped convolutions.
-
-    Weight format: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
-    with kernel already flipped for transposed convolution.
-
-    When importing from PyTorch, weights must be transformed from PyTorch format
-    (in_channels, out_channels // groups, kernel_size) to JAX format using
-    `transform_pytorch_transpose_conv_weights()`.
-
-    Args:
-        precision: Data type for computations.
-        has_biases: Whether to include bias terms.
-    """
-
     precision: DTypeLike
     has_biases: bool
 
@@ -271,13 +251,8 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
     Implements causal transposed convolution by removing appropriate padding
     from the output. Supports grouped convolutions for efficient upsampling.
 
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence_out, channels) - NSC format (JAX convention)
-
     Weight format: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
     with kernel already flipped for transposed convolution.
-
-    Reference: NVIDIA NeMo CausalConvTranspose1dNorm
     """
 
     weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
@@ -378,11 +353,7 @@ class Snake1dConfig:
 
 class Snake1d(LalamoModule[Snake1dConfig]):
     """Snake1d activation module.
-
     Implements the Snake activation function: x + (1/alpha) * sin^2(alpha * x)
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
     """
 
     alpha: Float[Array, " channels"]

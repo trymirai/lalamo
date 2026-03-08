@@ -12,7 +12,11 @@ from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
-from lalamo.audio.utils import DEFAULT_SAMPLERATE
+from lalamo.audio.tts_message_processor import (
+    TTSMessage,
+    TTSMessageProcessor,
+    TTSMessageProcessorConfig,
+)
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -32,9 +36,6 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
-    TTSMessage,
-    TTSMessageProcessor,
-    TTSMessageProcessorConfig,
 )
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
@@ -98,13 +99,8 @@ class TTSGenerator(eqx.Module):
         return self.tts_model.vocoder(audio_features)
 
     def get_generated_audio_params(self) -> AudioRenderingSettings:
-        # Prefer decoder-native sample rate when available.
-        samplerate = DEFAULT_SAMPLERATE
-        if hasattr(self.tts_model.audio_decoder, "samplerate"):
-            samplerate = int(self.tts_model.audio_decoder.samplerate)
-
         return AudioRenderingSettings(
-            samplerate=samplerate,
+            samplerate=self.tts_model.audio_decoder.samplerate,
             output_channels=1,
             bitwidth=16,
             encoding=AudioEncoding.PCM,

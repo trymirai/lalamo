@@ -11,6 +11,7 @@ from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_next import HFQwen3NextConfig
 from .qwen3_tts import Qwen3TTSTokenizer12HzConfig
+from .smollm3 import HFSmolLM3Config
 
 __all__ = [
     "HFGPTOssConfig",
@@ -24,6 +25,7 @@ __all__ = [
     "HFQwen2Config",
     "HFQwen3Config",
     "HFQwen3NextConfig",
+    "HFSmolLM3Config",
     "HuggingFaceLMConfig",
     "ModernBERTConfig",
     "Qwen3TTSTokenizer12HzConfig",
