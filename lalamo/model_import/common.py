@@ -291,17 +291,21 @@ def _unpack_nemo_model(nemo_model_path: Path) -> Iterator[tuple[list[Path], Path
 def _download_weights_and_config_files(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> Iterator[tuple[list[Path], Path]]:
+) -> Iterator[tuple[list[Path], Path, list[Path]]]:
     if model_spec.weights_type == WeightsType.NEMO:
         (nemo_model_file,) = download_weights(model_spec, progress_callback=progress_callback)
         with _unpack_nemo_model(nemo_model_file) as nemo_file_contents:
             weights_paths, foreign_config_file_path = nemo_file_contents
-            yield (weights_paths, foreign_config_file_path)
+            yield (weights_paths, foreign_config_file_path, [])
     else:
         weights_paths = download_weights(model_spec, progress_callback=progress_callback)
         foreign_config_file_path = download_config_file(model_spec)
 
-        yield (weights_paths, foreign_config_file_path)
+        extra_config_paths = [
+            download_file(extra_config, model_spec.repo) for extra_config in model_spec.configs.extra_configs
+        ]
+
+        yield (weights_paths, foreign_config_file_path, extra_config_paths)
 
 
 def _load_main_processing_module(
@@ -348,8 +352,8 @@ def _import_language_model(
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
-    ) as (model_weights_paths, config_path):
-        foreign_decoder_config = model_spec.config_type.from_json(config_path)
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_decoder_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         assert isinstance(foreign_decoder_config, ForeignLMConfig)
 
         if precision is None:
@@ -405,8 +409,8 @@ def _import_classifier(
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
-    ) as (model_weights_paths, config_path):
-        foreign_classifier_config = model_spec.config_type.from_json(config_path)
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_classifier_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
 
         if precision is None:
@@ -447,8 +451,8 @@ def _import_tts_model(
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
-    ) as (model_weights_paths, config_path):
-        foreign_tts_config = model_spec.config_type.from_json(config_path)
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_tts_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         if precision is None:
             precision = foreign_tts_config.default_precision
         if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":

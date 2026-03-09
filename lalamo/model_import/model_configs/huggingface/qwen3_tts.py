@@ -1,4 +1,3 @@
-import json
 import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, fields
@@ -306,12 +305,8 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         )
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            raw_config = json.load(f)
-        assert isinstance(raw_config, Mapping)
-        raw_config = _merge_with_speech_tokenizer_config(raw_config, json_path)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        raw_config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
 
         decoder_raw = _extract_decoder_config(raw_config)
         decoder_config = _structure_decoder_config(decoder_raw)
@@ -374,23 +369,6 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         return jnp.dtype(self.torch_dtype)
 
 
-def _merge_with_speech_tokenizer_config(raw_config: Mapping[str, Any], config_path: Path) -> dict[str, Any]:
-    speech_tokenizer_config_path = config_path.parent / "speech_tokenizer" / "config.json"
-    if not speech_tokenizer_config_path.exists():
-        return dict(raw_config)
-
-    with open(speech_tokenizer_config_path) as speech_tokenizer_file:
-        speech_tokenizer_config = json.load(speech_tokenizer_file)
-
-    if not isinstance(speech_tokenizer_config, Mapping):
-        return dict(raw_config)
-
-    # The main config may contain talker/text fields while decoder fields are in speech_tokenizer/config.json.
-    merged_config: dict[str, Any] = dict(speech_tokenizer_config)
-    merged_config.update(raw_config)
-    return merged_config
-
-
 def _extract_decoder_config(raw_config: Mapping[str, Any]) -> Mapping[str, Any] | None:
     decoder_config = raw_config.get("decoder_config")
     if isinstance(decoder_config, Mapping):
@@ -414,7 +392,10 @@ def _extract_decoder_config(raw_config: Mapping[str, Any]) -> Mapping[str, Any] 
 
 def _structure_decoder_config(raw_decoder_config: Mapping[str, Any] | None) -> Qwen3TTSTokenizer12HzDecoderConfig:
     if raw_decoder_config is None:
-        return _default_decoder_config()
+        raise ValueError(
+            "Qwen3-TTS config is missing `decoder_config`."
+            " Ensure the speech_tokenizer/config.json is listed in extra_configs.",
+        )
 
     field_names = {field.name for field in fields(Qwen3TTSTokenizer12HzDecoderConfig)}
     filtered: dict[str, Any] = {key: value for key, value in raw_decoder_config.items() if key in field_names}

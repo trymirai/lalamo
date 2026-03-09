@@ -63,6 +63,12 @@ class TTSGenerator(eqx.Module):
 
     message_processor: TTSMessageProcessor = eqx.field(static=True)
 
+    def default_speaker_id(self) -> str:
+        raise NotImplementedError
+
+    def default_style(self) -> str:
+        raise NotImplementedError
+
     @property
     def activation_precision(self) -> DTypeLike:
         return self.tts_model.text_decoder.activation_precision
@@ -153,6 +159,12 @@ class TTSGenerator(eqx.Module):
 
 
 class FishAudioTTSGenerator(TTSGenerator):
+    def default_speaker_id(self) -> str:
+        return "speaker:0"
+
+    def default_style(self) -> str:
+        return "interleave"
+
     def decode_text(
         self,
         text_tokens: Int[Array, "batch sequence"],
@@ -173,14 +185,26 @@ class FishAudioTTSGenerator(TTSGenerator):
 
 
 class Qwen3TTSTTSGenerator(TTSGenerator):
+    def default_style(self) -> str:
+        return ""
+
+    def default_speaker_id(self) -> str:
+        text_decoder = self.tts_model.text_decoder
+        if not isinstance(text_decoder, Qwen3TTSTextDecoder):
+            raise NotImplementedError
+        first_speaker, *_ = text_decoder.config.spk_id
+        return first_speaker
+
     def decode_text(
         self,
         text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str,
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,
-        speaker: str | None = None,
-        language: str | None = None,
+        language: str = "auto",
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, Qwen3TTSTextDecoder)
 
@@ -194,12 +218,20 @@ class Qwen3TTSTTSGenerator(TTSGenerator):
             key=random_key,
             speaker=speaker,
             language=language,
+            instruction_tokens=instruction_tokens,
         )
+
+    def _tokenize_instruction(self, style: str) -> Int[Array, "batch tokens"] | None:
+        if not style:
+            return None
+        instruction_text = f"<|im_start|>user\n{style}<|im_end|>\n"
+        token_ids = self.message_processor.tokenize_text(instruction_text)
+        return jnp.asarray(token_ids)[None, :]
 
     def generate_speech(
         self,
         messages: Iterable[TTSMessage],
-        sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
+        sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
@@ -207,14 +239,16 @@ class Qwen3TTSTTSGenerator(TTSGenerator):
         first_message = messages_list[0]
 
         text_tokens = self.tokenize_text(messages_list)
+        instruction_tokens = self._tokenize_instruction(first_message.style)
 
         semantic_tokens = self.decode_text(
             text_tokens,
+            speaker=first_message.speaker_id,
             sampling_policy=sampling_policy,
             repetition_penalty=repetition_penalty,
             random_key=random_key,
-            speaker=first_message.speaker_id,
-            language=first_message.language,
+            language=first_message.language or "auto",
+            instruction_tokens=instruction_tokens,
         )
 
         audio_features = self.decode_audio(semantic_tokens)

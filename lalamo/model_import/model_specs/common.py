@@ -89,6 +89,7 @@ class ConfigMap:
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
+    extra_configs: tuple[FileSpec, ...] = ()
 
 
 def _is_foreign_config_type(t: object) -> bool:

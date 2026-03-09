@@ -1,7 +1,6 @@
 """Foreign config for NanoCodec TTS models from NVIDIA NeMo."""
 
-import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -159,10 +158,8 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         )
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            config = json.load(f)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls.from_nemo_config(config)
 
     @classmethod

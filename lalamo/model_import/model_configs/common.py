@@ -1,6 +1,6 @@
 import json
 from abc import abstractmethod
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
@@ -26,11 +26,32 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
     @abstractmethod
     def default_precision(self) -> DTypeLike: ...
 
-    @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
+    @staticmethod
+    def _read_and_merge_configs(
+        json_path: Path,
+        extra_config_paths: Sequence[Path],
+    ) -> dict:
         with open(json_path) as f:
             config = json.load(f)
+        if not isinstance(config, dict):
+            raise TypeError(f"Config at {json_path} must be a JSON object, got {type(config).__name__}")
+
+        for extra_path in extra_config_paths:
+            with open(extra_path) as f:
+                extra = json.load(f)
+            if not isinstance(extra, dict):
+                raise TypeError(
+                    f"Extra config at {extra_path} must be a JSON object, got {type(extra).__name__}",
+                )
+            merged = dict(extra)
+            merged.update(config)
+            config = merged
+
+        return config
+
+    @classmethod
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls._converter.structure(config, cls)
 
     @abstractmethod

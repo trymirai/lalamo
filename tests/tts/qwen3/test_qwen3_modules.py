@@ -595,6 +595,7 @@ def test_text_decoder_decode_utterance_matches_reference_algorithm() -> None:
     greedy = GreedyPolicy()
     lalamo_codes = lalamo_text_decoder.decode_utterance(
         torch_to_jax(text_tokens).astype(jnp.int32),
+        speaker="",
         sampling_policy=greedy,
         key=jax.random.key(0),
     )
