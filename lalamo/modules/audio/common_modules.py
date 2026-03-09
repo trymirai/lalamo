@@ -6,11 +6,14 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import lax
+from jax import lax, vmap
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import ParameterTree, dummy_array, require_array, require_tree
+from lalamo.modules.activations import Activation
 from lalamo.modules.common import LalamoModule
+from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 
 
 def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, padding_total: int = 0) -> int:
@@ -382,3 +385,125 @@ class Snake1d(LalamoModule[Snake1dConfig]):
         assert isinstance(weights, Mapping)
         assert isinstance(weights["alpha"], Array)
         return replace(self, alpha=weights["alpha"])
+
+
+@dataclass(frozen=True)
+class ConvNeXtBlockConfig:
+    precision: DTypeLike
+    activation: Activation
+    conv_config: CausalConv1dConfig
+    norm_config: NormalizationConfig
+    linear_config: FullPrecisionLinearConfig
+    gamma_init: float | None = None
+
+    def empty(
+        self,
+        dim: int,
+        *,
+        kernel_size: int = 7,
+        dilation: int = 1,
+        mlp_ratio: float = 4.0,
+    ) -> "ConvNeXtBlock":
+        depthwise_conv = self.conv_config.empty(
+            in_channels=dim,
+            out_channels=dim,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            stride=1,
+            groups=dim,
+        )
+        norm = self.norm_config.empty(dim)
+        hidden_dim = int(mlp_ratio * dim)
+        pointwise_conv1 = self.linear_config.empty(dim, (hidden_dim,), has_biases=True)
+        pointwise_conv2 = self.linear_config.empty(hidden_dim, (dim,), has_biases=True)
+        gamma = jnp.ones((dim,), dtype=self.precision) * self.gamma_init if self.gamma_init is not None else None
+        return ConvNeXtBlock(
+            config=self,
+            depthwise_conv=depthwise_conv,
+            norm=norm,
+            pointwise_conv1=pointwise_conv1,
+            pointwise_conv2=pointwise_conv2,
+            gamma=gamma,
+        )
+
+    def random_init(
+        self,
+        dim: int,
+        *,
+        kernel_size: int = 7,
+        dilation: int = 1,
+        mlp_ratio: float = 4.0,
+        key: PRNGKeyArray,
+    ) -> "ConvNeXtBlock":
+        key_dw, key_pw1, key_pw2 = jax.random.split(key, 3)
+        depthwise_conv = self.conv_config.random_init(
+            in_channels=dim,
+            out_channels=dim,
+            kernel_size=kernel_size,
+            dilation=dilation,
+            stride=1,
+            groups=dim,
+            key=key_dw,
+        )
+        norm = self.norm_config.init(dim)
+        hidden_dim = int(mlp_ratio * dim)
+        pointwise_conv1 = self.linear_config.random_init(dim, (hidden_dim,), has_biases=True, key=key_pw1)
+        pointwise_conv2 = self.linear_config.random_init(hidden_dim, (dim,), has_biases=True, key=key_pw2)
+        gamma = jnp.ones((dim,), dtype=self.precision) * self.gamma_init if self.gamma_init is not None else None
+        return ConvNeXtBlock(
+            config=self,
+            depthwise_conv=depthwise_conv,
+            norm=norm,
+            pointwise_conv1=pointwise_conv1,
+            pointwise_conv2=pointwise_conv2,
+            gamma=gamma,
+        )
+
+
+class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
+    depthwise_conv: CausalConv1d
+    norm: Normalization
+    pointwise_conv1: FullPrecisionLinear
+    pointwise_conv2: FullPrecisionLinear
+    gamma: Float[Array, " channels"] | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
+
+    def __call__(
+        self,
+        x: Float[Array, "batch tokens channels"],
+    ) -> Float[Array, "batch tokens channels"]:
+        residual = x
+        x = self.depthwise_conv(x)
+        x = vmap(vmap(self.norm))(x)
+        (x,) = vmap(vmap(self.pointwise_conv1))(x)
+        x = vmap(vmap(self.config.activation))(x)
+        (x,) = vmap(vmap(self.pointwise_conv2))(x)
+        if self.gamma is not None:
+            x = x * self.gamma[None, None, :]
+        return residual + x
+
+    def export_weights(self) -> ParameterTree[Array]:
+        result: dict[str, Array | ParameterTree[Array]] = {
+            "depthwise_conv": self.depthwise_conv.export_weights(),
+            "norm": self.norm.export_weights(),
+            "pointwise_conv1": self.pointwise_conv1.export_weights(),
+            "pointwise_conv2": self.pointwise_conv2.export_weights(),
+        }
+        if self.gamma is not None:
+            result["gamma"] = self.gamma
+        return result
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        assert isinstance(weights, Mapping)
+        gamma = require_array(weights["gamma"]) if self.gamma is not None else None
+        return replace(
+            self,
+            depthwise_conv=self.depthwise_conv.import_weights(require_tree(weights["depthwise_conv"])),
+            norm=self.norm.import_weights(require_tree(weights["norm"])),
+            pointwise_conv1=self.pointwise_conv1.import_weights(require_tree(weights["pointwise_conv1"])),
+            pointwise_conv2=self.pointwise_conv2.import_weights(require_tree(weights["pointwise_conv2"])),
+            gamma=gamma,
+        )

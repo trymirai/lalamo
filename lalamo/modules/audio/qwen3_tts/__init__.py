@@ -6,8 +6,6 @@ from .qwen3_tts_audio_decoding import (
     default_qwen3_tts_audio_decoder_config,
 )
 from .qwen3_tts_modules import (
-    Qwen3TTSConvNeXtBlock,
-    Qwen3TTSConvNeXtBlockConfig,
     Qwen3TTSDecoderBlock,
     Qwen3TTSDecoderBlockConfig,
     Qwen3TTSEuclideanCodebook,
@@ -38,8 +36,6 @@ __all__ = [
     "QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT",
     "Qwen3TTSAudioDecoder",
     "Qwen3TTSAudioDecoderConfig",
-    "Qwen3TTSConvNeXtBlock",
-    "Qwen3TTSConvNeXtBlockConfig",
     "Qwen3TTSDecoderBlock",
     "Qwen3TTSDecoderBlockConfig",
     "Qwen3TTSEuclideanCodebook",

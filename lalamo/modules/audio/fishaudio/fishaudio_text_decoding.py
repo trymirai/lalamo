@@ -244,7 +244,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             (batch_size, self.config.num_codebooks + 1, seq_length),
             dtype=text_tokens.dtype,
         )
-        # NOTE: the rest of codebook lines should be filled in case audio promt is used, but
+        # NOTE: the rest of codebook lines should be filled in case audio prompt is used, but
         # ignore it for now
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
@@ -268,7 +268,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         apply_codebook_embeddings: bool = False,
     ) -> Float[Array, "batch tokens embedding"]:
         """
-        apply_codebook_embeddings argumet should be set to 'True' if audio-prompt is used. In this
+        apply_codebook_embeddings argument should be set to 'True' if audio-prompt is used. In this
         case we expect codebook lines [1:-1] to be filled with something meaningful
         """
 
@@ -297,8 +297,12 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
+        *,
+        speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
+        language: str = "auto",  # noqa: ARG002
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive

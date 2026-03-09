@@ -32,6 +32,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
+    ConvNeXtBlockConfig,
 )
 from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
@@ -42,7 +43,6 @@ from lalamo.modules.audio.fishaudio import (
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     CausalTransposeConv1dConfig,
-    ConvNeXtBlockConfig,
     DACDecoderBlockConfig,
     DACDecoderConfig,
     DownsampleResidualVectorQuantizeConfig,
@@ -168,7 +168,7 @@ def instantiate_dac_config_from_fishaudio_config(
     convnext_config = ConvNeXtBlockConfig(
         precision=jnp.float32,
         activation=GELU(approximate=False),
-        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
             scale_precision=jnp.float32,
             accumulation_precision=jnp.float32,
@@ -178,7 +178,7 @@ def instantiate_dac_config_from_fishaudio_config(
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        linear_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
     upsampling_block_config = UpsamplingBlockConfig(
         precision=jnp.float32,

@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -17,7 +16,7 @@ import base64
 import io
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Union
 from urllib.parse import urlparse
 
 import librosa
@@ -31,10 +30,10 @@ from ..core.models import Qwen3TTSConfig, Qwen3TTSForConditionalGeneration, Qwen
 AudioLike = Union[
     str,                     # wav path, URL, base64
     np.ndarray,              # waveform (requires sr)
-    Tuple[np.ndarray, int],  # (waveform, sr)
+    tuple[np.ndarray, int],  # (waveform, sr)
 ]
 
-MaybeList = Union[Any, List[Any]]
+MaybeList = Union[Any, list[Any]]
 
 
 @dataclass
@@ -44,11 +43,11 @@ class VoiceClonePromptItem:
 
     Fields are aligned with `Qwen3TTSForConditionalGeneration.generate(..., voice_clone_prompt=...)`.
     """
-    ref_code: Optional[torch.Tensor]                 # (T, Q) or (T,) depending on tokenizer 25Hz/12Hz
+    ref_code: torch.Tensor | None                 # (T, Q) or (T,) depending on tokenizer 25Hz/12Hz
     ref_spk_embedding: torch.Tensor                  # (D,)
     x_vector_only_mode: bool
     icl_mode: bool
-    ref_text: Optional[str] = None
+    ref_text: str | None = None
 
 
 class Qwen3TTSModel:
@@ -67,7 +66,7 @@ class Qwen3TTSModel:
           model.get_supported_languages(), model.get_supported_speakers()
     """
 
-    def __init__(self, model: Qwen3TTSForConditionalGeneration, processor, generate_defaults: Optional[Dict[str, Any]] = None):
+    def __init__(self, model: Qwen3TTSForConditionalGeneration, processor, generate_defaults: dict[str, Any] | None = None):
         self.model = model
         self.processor = processor
         self.generate_defaults = generate_defaults or {}
@@ -112,15 +111,15 @@ class Qwen3TTSModel:
         model = AutoModel.from_pretrained(pretrained_model_name_or_path, **kwargs)
         if not isinstance(model, Qwen3TTSForConditionalGeneration):
             raise TypeError(
-                f"AutoModel returned {type(model)}, expected Qwen3TTSForConditionalGeneration. "
+                f"AutoModel returned {type(model)}, expected Qwen3TTSForConditionalGeneration. ",
             )
 
-        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, fix_mistral_regex=True,)
+        processor = AutoProcessor.from_pretrained(pretrained_model_name_or_path, fix_mistral_regex=True)
 
         generate_defaults = model.generate_config
         return cls(model=model, processor=processor, generate_defaults=generate_defaults)
 
-    def _supported_languages_set(self) -> Optional[set]:
+    def _supported_languages_set(self) -> set | None:
         langs = getattr(self.model, "get_supported_languages", None)
         if callable(langs):
             v = langs()
@@ -129,7 +128,7 @@ class Qwen3TTSModel:
             return set([str(x).lower() for x in v])
         return None
 
-    def _supported_speakers_set(self) -> Optional[set]:
+    def _supported_speakers_set(self) -> set | None:
         spks = getattr(self.model, "get_supported_speakers", None)
         if callable(spks):
             v = spks()
@@ -138,7 +137,7 @@ class Qwen3TTSModel:
             return set([str(x).lower() for x in v])
         return None
 
-    def _validate_languages(self, languages: List[str]) -> None:
+    def _validate_languages(self, languages: list[str]) -> None:
         """
         Validate that requested languages are supported by the model.
 
@@ -162,7 +161,7 @@ class Qwen3TTSModel:
         if bad:
             raise ValueError(f"Unsupported languages: {bad}. Supported: {sorted(supported)}")
 
-    def _validate_speakers(self, speakers: List[Optional[str]]) -> None:
+    def _validate_speakers(self, speakers: list[str | None]) -> None:
         """
         Validate that requested speakers are supported by the Instruct model.
 
@@ -204,7 +203,7 @@ class Qwen3TTSModel:
             b64 = b64.split(",", 1)[1]
         return base64.b64decode(b64)
 
-    def _load_audio_to_np(self, x: str) -> Tuple[np.ndarray, int]:
+    def _load_audio_to_np(self, x: str) -> tuple[np.ndarray, int]:
         if self._is_url(x):
             with urllib.request.urlopen(x) as resp:
                 audio_bytes = resp.read()
@@ -222,7 +221,7 @@ class Qwen3TTSModel:
 
         return audio.astype(np.float32), int(sr)
 
-    def _normalize_audio_inputs(self, audios: Union[AudioLike, List[AudioLike]]) -> List[Tuple[np.ndarray, int]]:
+    def _normalize_audio_inputs(self, audios: AudioLike | list[AudioLike]) -> list[tuple[np.ndarray, int]]:
         """
         Normalize audio inputs into a list of (waveform, sr).
 
@@ -247,7 +246,7 @@ class Qwen3TTSModel:
         else:
             items = [audios]
 
-        out: List[Tuple[np.ndarray, int]] = []
+        out: list[tuple[np.ndarray, int]] = []
         for a in items:
             if isinstance(a, str):
                 out.append(self._load_audio_to_np(a))
@@ -263,7 +262,7 @@ class Qwen3TTSModel:
                 out[i] = (a[0], a[1])
         return out
 
-    def _ensure_list(self, x: MaybeList) -> List[Any]:
+    def _ensure_list(self, x: MaybeList) -> list[Any]:
         return x if isinstance(x, list) else [x]
 
     def _build_assistant_text(self, text: str) -> str:
@@ -275,7 +274,7 @@ class Qwen3TTSModel:
     def _build_instruct_text(self, instruct: str) -> str:
         return f"<|im_start|>user\n{instruct}<|im_end|>\n"
 
-    def _tokenize_texts(self, texts: List[str]) -> List[torch.Tensor]:
+    def _tokenize_texts(self, texts: list[str]) -> list[torch.Tensor]:
         input_ids = []
         for text in texts:
             input = self.processor(text=text, return_tensors="pt", padding=True)
@@ -286,18 +285,18 @@ class Qwen3TTSModel:
 
     def _merge_generate_kwargs(
         self,
-        do_sample: Optional[bool] = None,
-        top_k: Optional[int] = None,
-        top_p: Optional[float] = None,
-        temperature: Optional[float] = None,
-        repetition_penalty: Optional[float] = None,
-        subtalker_dosample: Optional[bool] = None,
-        subtalker_top_k: Optional[int] = None,
-        subtalker_top_p: Optional[float] = None,
-        subtalker_temperature: Optional[float] = None,
-        max_new_tokens: Optional[int] = None,
+        do_sample: bool | None = None,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        temperature: float | None = None,
+        repetition_penalty: float | None = None,
+        subtalker_dosample: bool | None = None,
+        subtalker_top_k: int | None = None,
+        subtalker_top_p: float | None = None,
+        subtalker_temperature: float | None = None,
+        max_new_tokens: int | None = None,
         **kwargs,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Merge user-provided generation arguments with defaults from `generate_config.json`.
 
@@ -355,10 +354,10 @@ class Qwen3TTSModel:
     @torch.inference_mode()
     def create_voice_clone_prompt(
         self,
-        ref_audio: Union[AudioLike, List[AudioLike]],
-        ref_text: Optional[Union[str, List[Optional[str]]]] = None,
-        x_vector_only_mode: Union[bool, List[bool]] = False,
-    ) -> List[VoiceClonePromptItem]:
+        ref_audio: AudioLike | list[AudioLike],
+        ref_text: str | list[str | None] | None = None,
+        x_vector_only_mode: bool | list[bool] = False,
+    ) -> list[VoiceClonePromptItem]:
         """
         Build voice-clone prompt items from reference audio (and optionally reference text) using Base model.
 
@@ -403,7 +402,7 @@ class Qwen3TTSModel:
                 f"model with \ntokenizer_type: {self.model.tokenizer_type}\n"
                 f"tts_model_size: {self.model.tts_model_size}\n"
                 f"tts_model_type: {self.model.tts_model_type}\n"
-                "does not support create_voice_clone_prompt, Please check Model Card or Readme for more details."
+                "does not support create_voice_clone_prompt, Please check Model Card or Readme for more details.",
             )
 
         ref_audio_list = self._ensure_list(ref_audio)
@@ -412,13 +411,13 @@ class Qwen3TTSModel:
 
         if len(ref_text_list) != len(ref_audio_list) or len(xvec_list) != len(ref_audio_list):
             raise ValueError(
-                f"Batch size mismatch: ref_audio={len(ref_audio_list)}, ref_text={len(ref_text_list)}, x_vector_only_mode={len(xvec_list)}"
+                f"Batch size mismatch: ref_audio={len(ref_audio_list)}, ref_text={len(ref_text_list)}, x_vector_only_mode={len(xvec_list)}",
             )
 
         normalized = self._normalize_audio_inputs(ref_audio_list)
 
-        ref_wavs_for_code: List[np.ndarray] = []
-        ref_sr_for_code: List[int] = []
+        ref_wavs_for_code: list[np.ndarray] = []
+        ref_sr_for_code: list[int] = []
         for wav, sr in normalized:
             ref_wavs_for_code.append(wav)
             ref_sr_for_code.append(sr)
@@ -431,7 +430,7 @@ class Qwen3TTSModel:
             for wav, sr in normalized:
                 ref_codes.append(self.model.speech_tokenizer.encode(wav, sr=sr).audio_codes[0])
 
-        items: List[VoiceClonePromptItem] = []
+        items: list[VoiceClonePromptItem] = []
         for i, ((wav, sr), code, rtext, xvec_only) in enumerate(zip(normalized, ref_codes, ref_text_list, xvec_list)):
             if not xvec_only:
                 if rtext is None or rtext == "":
@@ -453,11 +452,11 @@ class Qwen3TTSModel:
                     x_vector_only_mode=bool(xvec_only),
                     icl_mode=bool(not xvec_only),
                     ref_text=rtext,
-                )
+                ),
             )
         return items
 
-    def _prompt_items_to_voice_clone_prompt(self, items: List[VoiceClonePromptItem]) -> Dict[str, Any]:
+    def _prompt_items_to_voice_clone_prompt(self, items: list[VoiceClonePromptItem]) -> dict[str, Any]:
         return dict(
             ref_code=[it.ref_code for it in items],
             ref_spk_embedding=[it.ref_spk_embedding for it in items],
@@ -469,15 +468,15 @@ class Qwen3TTSModel:
     @torch.no_grad()
     def generate_voice_clone(
         self,
-        text: Union[str, List[str]],
-        language: Union[str, List[str]] = None,
-        ref_audio: Optional[Union[AudioLike, List[AudioLike]]] = None,
-        ref_text: Optional[Union[str, List[Optional[str]]]] = None,
-        x_vector_only_mode: Union[bool, List[bool]] = False,
-        voice_clone_prompt: Optional[Union[Dict[str, Any], List[VoiceClonePromptItem]]] = None,
+        text: str | list[str],
+        language: str | list[str] = None,
+        ref_audio: AudioLike | list[AudioLike] | None = None,
+        ref_text: str | list[str | None] | None = None,
+        x_vector_only_mode: bool | list[bool] = False,
+        voice_clone_prompt: dict[str, Any] | list[VoiceClonePromptItem] | None = None,
         non_streaming_mode: bool = False,
         **kwargs,
-    ) -> Tuple[List[np.ndarray], int]:
+    ) -> tuple[list[np.ndarray], int]:
         """
         Voice clone speech using the Base model.
 
@@ -550,7 +549,7 @@ class Qwen3TTSModel:
                 f"model with \ntokenizer_type: {self.model.tokenizer_type}\n"
                 f"tts_model_size: {self.model.tts_model_size}\n"
                 f"tts_model_type: {self.model.tts_model_type}\n"
-                "does not support generate_voice_clone, Please check Model Card or Readme for more details."
+                "does not support generate_voice_clone, Please check Model Card or Readme for more details.",
             )
 
         texts = self._ensure_list(text)
@@ -572,18 +571,17 @@ class Qwen3TTSModel:
                 raise ValueError(f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}")
             voice_clone_prompt_dict = self._prompt_items_to_voice_clone_prompt(prompt_items)
             ref_texts_for_ids = [it.ref_text for it in prompt_items]
+        elif isinstance(voice_clone_prompt, list):
+            prompt_items = voice_clone_prompt
+            if len(prompt_items) == 1 and len(texts) > 1:
+                prompt_items = prompt_items * len(texts)
+            if len(prompt_items) != len(texts):
+                raise ValueError(f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}")
+            voice_clone_prompt_dict = self._prompt_items_to_voice_clone_prompt(prompt_items)
+            ref_texts_for_ids = [it.ref_text for it in prompt_items]
         else:
-            if isinstance(voice_clone_prompt, list):
-                prompt_items = voice_clone_prompt
-                if len(prompt_items) == 1 and len(texts) > 1:
-                    prompt_items = prompt_items * len(texts)
-                if len(prompt_items) != len(texts):
-                    raise ValueError(f"Batch size mismatch: prompt={len(prompt_items)}, text={len(texts)}")
-                voice_clone_prompt_dict = self._prompt_items_to_voice_clone_prompt(prompt_items)
-                ref_texts_for_ids = [it.ref_text for it in prompt_items]
-            else:
-                voice_clone_prompt_dict = voice_clone_prompt
-                ref_texts_for_ids = None
+            voice_clone_prompt_dict = voice_clone_prompt
+            ref_texts_for_ids = None
 
         input_texts = [self._build_assistant_text(t) for t in texts]
         input_ids = self._tokenize_texts(input_texts)
@@ -619,7 +617,7 @@ class Qwen3TTSModel:
 
         wavs_all, fs = self.model.speech_tokenizer.decode([{"audio_codes": c} for c in codes_for_decode])
 
-        wavs_out: List[np.ndarray] = []
+        wavs_out: list[np.ndarray] = []
         for i, wav in enumerate(wavs_all):
             ref_code_list = voice_clone_prompt_dict.get("ref_code", None)
             if ref_code_list is not None and ref_code_list[i] is not None:
@@ -636,12 +634,12 @@ class Qwen3TTSModel:
     @torch.no_grad()
     def generate_voice_design(
         self,
-        text: Union[str, List[str]],
-        instruct: Union[str, List[str]],
-        language: Union[str, List[str]] = None,
+        text: str | list[str],
+        instruct: str | list[str],
+        language: str | list[str] = None,
         non_streaming_mode: bool = True,
         **kwargs,
-    ) -> Tuple[List[np.ndarray], int]:
+    ) -> tuple[list[np.ndarray], int]:
         """
         Generate speech with the VoiceDesign model using natural-language style instructions.
 
@@ -688,7 +686,7 @@ class Qwen3TTSModel:
                 f"model with \ntokenizer_type: {self.model.tokenizer_type}\n"
                 f"tts_model_size: {self.model.tts_model_size}\n"
                 f"tts_model_type: {self.model.tts_model_type}\n"
-                "does not support generate_voice_design, Please check Model Card or Readme for more details."
+                "does not support generate_voice_design, Please check Model Card or Readme for more details.",
             )
 
         texts = self._ensure_list(text)
@@ -707,7 +705,7 @@ class Qwen3TTSModel:
 
         input_ids = self._tokenize_texts([self._build_assistant_text(t) for t in texts])
 
-        instruct_ids: List[Optional[torch.Tensor]] = []
+        instruct_ids: list[torch.Tensor | None] = []
         for ins in instructs:
             if ins is None or ins == "":
                 instruct_ids.append(None)
@@ -731,13 +729,13 @@ class Qwen3TTSModel:
     @torch.no_grad()
     def generate_custom_voice(
         self,
-        text: Union[str, List[str]],
-        speaker: Union[str, List[str]],
-        language: Union[str, List[str]] = None,
-        instruct: Optional[Union[str, List[str]]] = None,
+        text: str | list[str],
+        speaker: str | list[str],
+        language: str | list[str] = None,
+        instruct: str | list[str] | None = None,
         non_streaming_mode: bool = True,
         **kwargs,
-    ) -> Tuple[List[np.ndarray], int]:
+    ) -> tuple[list[np.ndarray], int]:
         """
         Generate speech with the CustomVoice model using a predefined speaker id, optionally controlled by instruction text.
 
@@ -790,7 +788,7 @@ class Qwen3TTSModel:
                 f"model with \ntokenizer_type: {self.model.tokenizer_type}\n"
                 f"tts_model_size: {self.model.tts_model_size}\n"
                 f"tts_model_type: {self.model.tts_model_type}\n"
-                "does not support generate_custom_voice, Please check Model Card or Readme for more details."
+                "does not support generate_custom_voice, Please check Model Card or Readme for more details.",
             )
 
         texts = self._ensure_list(text)
@@ -809,7 +807,7 @@ class Qwen3TTSModel:
 
         if not (len(texts) == len(languages) == len(speakers) == len(instructs)):
             raise ValueError(
-                f"Batch size mismatch: text={len(texts)}, language={len(languages)}, speaker={len(speakers)}, instruct={len(instructs)}"
+                f"Batch size mismatch: text={len(texts)}, language={len(languages)}, speaker={len(speakers)}, instruct={len(instructs)}",
             )
 
         self._validate_languages(languages)
@@ -817,7 +815,7 @@ class Qwen3TTSModel:
 
         input_ids = self._tokenize_texts([self._build_assistant_text(t) for t in texts])
 
-        instruct_ids: List[Optional[torch.Tensor]] = []
+        instruct_ids: list[torch.Tensor | None] = []
         for ins in instructs:
             if ins is None or ins == "":
                 instruct_ids.append(None)
@@ -839,7 +837,7 @@ class Qwen3TTSModel:
         return wavs, fs
 
 
-    def get_supported_speakers(self) -> Optional[List[str]]:
+    def get_supported_speakers(self) -> list[str] | None:
         """
         List supported speaker names for the current model.
 
@@ -858,7 +856,7 @@ class Qwen3TTSModel:
         return sorted(supported)
 
 
-    def get_supported_languages(self) -> Optional[List[str]]:
+    def get_supported_languages(self) -> list[str] | None:
         """
         List supported language names for the current model.
 

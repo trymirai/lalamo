@@ -86,16 +86,23 @@ class TTSGenerator(eqx.Module):
 
     def decode_text(
         self,
-        text_tokens: Array,
-        sampling_policy: SamplingPolicy,
-        repetition_penalty: float,  # noqa: ARG002, reserved for near future
+        text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str | None = None,
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,
-    ) -> Array:
+        language: str = "auto",
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,
+    ) -> Int[Array, "num_codebooks sequence"]:
         random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
+            speaker=speaker,
             sampling_policy=sampling_policy,
             key=random_key,
+            language=language,
+            instruction_tokens=instruction_tokens,
         )
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
@@ -168,10 +175,17 @@ class FishAudioTTSGenerator(TTSGenerator):
     def decode_text(
         self,
         text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
-        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,
+        language: str = "auto",
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks sequence"]:
+        if language != "auto":
+            raise ValueError(f"Fish Audio does not support language selection, got {language!r}.")
+
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
         sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
@@ -182,6 +196,33 @@ class FishAudioTTSGenerator(TTSGenerator):
             sampling_policy=sampling_policy,
             key=random_key,
         )
+
+    def generate_speech(
+        self,
+        messages: Iterable[TTSMessage],
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+        random_key: PRNGKeyArray | None = None,
+    ) -> TTSGenerationResult:
+        messages_list = list(messages)
+        first_message = messages_list[0]
+
+        text_tokens = self.tokenize_text(messages_list)
+
+        semantic_tokens = self.decode_text(
+            text_tokens,
+            speaker=first_message.speaker_id,
+            sampling_policy=sampling_policy,
+            repetition_penalty=repetition_penalty,
+            random_key=random_key,
+            language=first_message.language or "auto",
+        )
+
+        audio_features = self.decode_audio(semantic_tokens)
+        audio_waveform = self.tts_model.vocoder(audio_features)
+        audio_settings = self.get_generated_audio_params()
+
+        return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
 
 
 class Qwen3TTSTTSGenerator(TTSGenerator):
@@ -199,7 +240,7 @@ class Qwen3TTSTTSGenerator(TTSGenerator):
         self,
         text_tokens: Int[Array, "batch sequence"],
         *,
-        speaker: str,
+        speaker: str | None = None,
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,

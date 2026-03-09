@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,7 +20,7 @@ class Qwen3TTSProcessorKwargs(ProcessingKwargs, total=False):
         "text_kwargs": {
             "padding": False,
             "padding_side": "left",
-        }
+        },
     }
 
 class Qwen3TTSProcessor(ProcessorMixin):
@@ -39,7 +38,7 @@ class Qwen3TTSProcessor(ProcessorMixin):
     tokenizer_class = ("Qwen2Tokenizer", "Qwen2TokenizerFast")
 
     def __init__(
-        self, tokenizer=None, chat_template=None
+        self, tokenizer=None, chat_template=None,
     ):
         super().__init__(tokenizer, chat_template=chat_template)
 
@@ -98,8 +97,8 @@ class Qwen3TTSProcessor(ProcessorMixin):
         tokenizer_input_names = self.tokenizer.model_input_names
         return list(
             dict.fromkeys(
-                tokenizer_input_names
-            )
+                tokenizer_input_names,
+            ),
         )
 
 

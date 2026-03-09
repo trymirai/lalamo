@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,11 +13,9 @@
 # limitations under the License.
 """Qwen3TTSTokenizerV2 model configuration"""
 
+from transformers import MimiConfig
 from transformers.configuration_utils import PretrainedConfig
 from transformers.utils import logging
-
-from transformers import MimiConfig
-
 
 logger = logging.get_logger(__name__)
 

@@ -11,11 +11,13 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
-from lalamo.modules.activations import SiLU
+from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
+    ConvNeXtBlock,
+    ConvNeXtBlockConfig,
 )
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -27,8 +29,6 @@ from lalamo.modules.token_mixers import Attention, AttentionConfig
 from .qwen3_tts_modules import (
     Qwen3TTSCausalTransposeConv1d,
     Qwen3TTSCausalTransposeConv1dConfig,
-    Qwen3TTSConvNeXtBlock,
-    Qwen3TTSConvNeXtBlockConfig,
     Qwen3TTSDecoderBlock,
     Qwen3TTSDecoderBlockConfig,
     Qwen3TTSEuclideanCodebookConfig,
@@ -60,18 +60,6 @@ QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT = 300
 QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT = 25
 
 
-def _debug_tensor(name: str, value: Array, *, enabled: bool) -> None:
-    if not enabled:
-        return
-    jax.debug.print(
-        "[qwen3_tts] {name}: shape={shape} min={min_val:.5f} max={max_val:.5f}",
-        name=name,
-        shape=value.shape,
-        min_val=jnp.min(value),
-        max_val=jnp.max(value),
-    )
-
-
 @dataclass(frozen=True)
 class Qwen3TTSPreTransformerLayerConfig:
     precision: DTypeLike
@@ -79,7 +67,6 @@ class Qwen3TTSPreTransformerLayerConfig:
     mlp_config: DenseMLPConfig
     norm_config: NormalizationConfig
     layer_scale_initial_scale: float
-    enable_debug: bool = True
 
     def empty(self, hidden_size: int, intermediate_size: int) -> "Qwen3TTSPreTransformerLayer":
         return Qwen3TTSPreTransformerLayer(
@@ -128,8 +115,6 @@ class Qwen3TTSPreTransformerLayer(LalamoModule[Qwen3TTSPreTransformerLayerConfig
         hidden_states: Float[Array, "batch tokens channels"],
         position_embeddings: object,
     ) -> Float[Array, "batch tokens channels"]:
-        _debug_tensor("pre_transformer_layer.input", hidden_states, enabled=self.config.enable_debug)
-
         residual = hidden_states
         hidden_states = vmap(vmap(self.input_layernorm))(hidden_states)
         batched_attention_fn = vmap(partial(self.self_attn, return_updated_state=False))
@@ -151,7 +136,6 @@ class Qwen3TTSPreTransformerLayer(LalamoModule[Qwen3TTSPreTransformerLayerConfig
         )
         hidden_states = residual + hidden_states * self.mlp_layer_scale[None, None, :]
 
-        _debug_tensor("pre_transformer_layer.output", hidden_states, enabled=self.config.enable_debug)
         return hidden_states
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -193,7 +177,6 @@ class Qwen3TTSPreTransformerConfig:
     intermediate_size: int
     num_hidden_layers: int
     max_position_embeddings: int
-    enable_debug: bool = True
 
     def empty(self) -> "Qwen3TTSPreTransformer":
         input_projection = self.input_projection_config.empty(
@@ -207,8 +190,11 @@ class Qwen3TTSPreTransformerConfig:
             has_biases=True,
         )
         output_norm = self.output_norm_config.empty(self.hidden_size)
+        rope_dim = self.layer_config.attention_config.rope_dim
+        if rope_dim is None:
+            raise ValueError("Qwen3 TTS pre-transformer requires RoPE")
         rope = self.rope_config.init(
-            head_dim=self.layer_config.attention_config.rope_dim,
+            head_dim=rope_dim,
             num_timesteps=self.max_position_embeddings,
         )
         layers = tuple(
@@ -238,8 +224,11 @@ class Qwen3TTSPreTransformerConfig:
             key=key_output_projection,
         )
         output_norm = self.output_norm_config.init(self.hidden_size)
+        rope_dim = self.layer_config.attention_config.rope_dim
+        if rope_dim is None:
+            raise ValueError("Qwen3 TTS pre-transformer requires RoPE")
         rope = self.rope_config.init(
-            head_dim=self.layer_config.attention_config.rope_dim,
+            head_dim=rope_dim,
             num_timesteps=self.max_position_embeddings,
         )
         layer_keys = jax.random.split(key_hidden_layers, self.num_hidden_layers)
@@ -272,7 +261,6 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
         self,
         hidden_states: Float[Array, "batch tokens channels"],
     ) -> Float[Array, "batch tokens channels"]:
-        _debug_tensor("pre_transformer.input", hidden_states, enabled=self.config.enable_debug)
         (hidden_states,) = vmap(vmap(self.input_projection))(hidden_states)
 
         batch_size, seq_length, _ = hidden_states.shape
@@ -284,7 +272,6 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
 
         hidden_states = vmap(vmap(self.output_norm))(hidden_states)
         (hidden_states,) = vmap(vmap(self.output_projection))(hidden_states)
-        _debug_tensor("pre_transformer.output", hidden_states, enabled=self.config.enable_debug)
         return hidden_states
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -315,8 +302,7 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
 class Qwen3TTSUpsampleBlockConfig:
     precision: DTypeLike
     transposed_conv_config: Qwen3TTSCausalTransposeConv1dConfig
-    convnext_config: Qwen3TTSConvNeXtBlockConfig
-    enable_debug: bool = True
+    convnext_config: ConvNeXtBlockConfig
 
     def empty(self, latent_dim: int, factor: int) -> "Qwen3TTSUpsampleBlock":
         return Qwen3TTSUpsampleBlock(
@@ -349,7 +335,7 @@ class Qwen3TTSUpsampleBlockConfig:
 
 class Qwen3TTSUpsampleBlock(LalamoModule[Qwen3TTSUpsampleBlockConfig]):
     transposed_conv: Qwen3TTSCausalTransposeConv1d
-    convnext: Qwen3TTSConvNeXtBlock
+    convnext: ConvNeXtBlock
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -406,7 +392,6 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
 
     chunk_size: int
     left_context_size: int
-    enable_debug: bool = True
 
     def empty(self) -> "Qwen3TTSAudioDecoder":
         quantizer = self.quantizer_config.empty(
@@ -595,8 +580,6 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
                 f"Expected {self.config.num_quantizers} codebooks, got {num_codebooks}",
             )
 
-        _debug_tensor("audio_decoder.codes", codes, enabled=self.config.enable_debug)
-
         hidden = self.quantizer.decode(codes)
         hidden = rearrange(hidden, "batch channels tokens -> batch tokens channels")
         hidden = self.pre_conv(hidden)
@@ -612,7 +595,6 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
         hidden = self.final_conv(hidden)
 
         wav = jnp.clip(hidden, min=-1.0, max=1.0)
-        _debug_tensor("audio_decoder.wav", wav, enabled=self.config.enable_debug)
         return wav
 
     def chunked_decode(
@@ -641,7 +623,7 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
     def audio_from_codes(
         self,
         indices: Int[Array, "batch codebooks tokens"] | Int[Array, "codebooks tokens"],
-    ) -> Float[Array, "samples"]:
+    ) -> Float[Array, " samples"]:
         if indices.ndim == 2:
             indices = rearrange(indices, "codebooks tokens -> 1 codebooks tokens")
 
@@ -714,7 +696,6 @@ def default_qwen3_tts_audio_decoder_config(
     upsample_rates: tuple[int, ...] = (8, 5, 4, 3),
     upsampling_ratios: tuple[int, ...] = (2, 2),
     decoder_dim: int = 1536,
-    enable_debug: bool = True,
 ) -> Qwen3TTSAudioDecoderConfig:
     linear_config = FullPrecisionLinearConfig(precision=precision)
 
@@ -765,7 +746,6 @@ def default_qwen3_tts_audio_decoder_config(
         mlp_config=mlp_config,
         norm_config=norm_config,
         layer_scale_initial_scale=layer_scale_initial_scale,
-        enable_debug=enable_debug,
     )
 
     pre_transformer_config = Qwen3TTSPreTransformerConfig(
@@ -780,12 +760,12 @@ def default_qwen3_tts_audio_decoder_config(
         intermediate_size=intermediate_size,
         num_hidden_layers=num_hidden_layers,
         max_position_embeddings=max_position_embeddings,
-        enable_debug=enable_debug,
     )
 
-    snake_config = Qwen3TTSSnakeBetaConfig(precision=precision, enable_debug=enable_debug)
-    convnext_config = Qwen3TTSConvNeXtBlockConfig(
+    snake_config = Qwen3TTSSnakeBetaConfig(precision=precision)
+    convnext_config = ConvNeXtBlockConfig(
         precision=precision,
+        activation=GELU(approximate=False),
         conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
         norm_config=NormalizationConfig(
             scale_precision=precision,
@@ -798,7 +778,6 @@ def default_qwen3_tts_audio_decoder_config(
         ),
         linear_config=linear_config,
         gamma_init=1e-6,
-        enable_debug=enable_debug,
     )
 
     quantizer_config = Qwen3TTSSplitResidualVectorQuantizerConfig(
@@ -811,15 +790,11 @@ def default_qwen3_tts_audio_decoder_config(
                     precision=precision,
                     codebook_config=Qwen3TTSEuclideanCodebookConfig(precision=precision),
                     project_out_config=linear_config,
-                    enable_debug=enable_debug,
                 ),
-                enable_debug=enable_debug,
             ),
             output_projection_config=linear_config,
-            enable_debug=enable_debug,
         ),
         n_q_semantic=num_semantic_quantizers,
-        enable_debug=enable_debug,
     )
 
     return Qwen3TTSAudioDecoderConfig(
@@ -831,7 +806,6 @@ def default_qwen3_tts_audio_decoder_config(
             precision=precision,
             transposed_conv_config=Qwen3TTSCausalTransposeConv1dConfig(precision=precision, has_biases=True),
             convnext_config=convnext_config,
-            enable_debug=enable_debug,
         ),
         decoder_input_conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
         decoder_block_config=Qwen3TTSDecoderBlockConfig(
@@ -842,9 +816,7 @@ def default_qwen3_tts_audio_decoder_config(
                 precision=precision,
                 snake_config=snake_config,
                 conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-                enable_debug=enable_debug,
             ),
-            enable_debug=enable_debug,
         ),
         final_snake_config=snake_config,
         final_conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
@@ -859,5 +831,4 @@ def default_qwen3_tts_audio_decoder_config(
         decoder_dim=decoder_dim,
         chunk_size=QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
         left_context_size=QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
-        enable_debug=enable_debug,
     )

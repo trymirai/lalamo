@@ -165,7 +165,6 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
             upsample_rates=decoder_config.upsample_rates,
             upsampling_ratios=decoder_config.upsampling_ratios,
             decoder_dim=decoder_config.decoder_dim,
-            enable_debug=False,
         )
 
         if self.talker_config is None:

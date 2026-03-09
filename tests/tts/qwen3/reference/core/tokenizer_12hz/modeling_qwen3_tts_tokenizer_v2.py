@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +14,8 @@
 """PyTorch Qwen3TTSTokenizerV2 model."""
 
 import math
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable, Optional, Union, List
 
 import numpy as np
 import torch
@@ -57,7 +56,7 @@ class Qwen3TTSTokenizerV2EncoderOutput(ModelOutput):
         Discret code embeddings computed using `model.encode`, each tensor has shape (codes_length_i, num_quantizers).
     """
 
-    audio_codes: List[torch.LongTensor] = None
+    audio_codes: list[torch.LongTensor] = None
 
 
 @dataclass
@@ -69,7 +68,7 @@ class Qwen3TTSTokenizerV2DecoderOutput(ModelOutput):
         Each tensor has shape (segment_length_i).
     """
 
-    audio_values: List[torch.FloatTensor] = None
+    audio_values: list[torch.FloatTensor] = None
 
 
 def rotate_half(x):
@@ -123,7 +122,7 @@ def eager_attention_forward(
     query: torch.Tensor,
     key: torch.Tensor,
     value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
+    attention_mask: torch.Tensor | None,
     scaling: float,
     dropout: float = 0.0,
     **kwargs,
@@ -292,16 +291,16 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
         self.is_causal = True
 
         self.q_proj = nn.Linear(
-            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias
+            config.hidden_size, config.num_attention_heads * self.head_dim, bias=config.attention_bias,
         )
         self.k_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias,
         )
         self.v_proj = nn.Linear(
-            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias
+            config.hidden_size, config.num_key_value_heads * self.head_dim, bias=config.attention_bias,
         )
         self.o_proj = nn.Linear(
-            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
+            config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias,
         )
         self.q_norm = nn.Identity()
         self.k_norm = nn.Identity()
@@ -312,11 +311,11 @@ class Qwen3TTSTokenizerV2DecoderAttention(nn.Module):
         self,
         hidden_states: torch.Tensor,
         position_embeddings: tuple[torch.Tensor, torch.Tensor],
-        attention_mask: Optional[torch.Tensor],
-        past_key_values: Optional[Cache] = None,
-        cache_position: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None,
+        past_key_values: Cache | None = None,
+        cache_position: torch.LongTensor | None = None,
         **kwargs: Unpack[FlashAttentionKwargs],
-    ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
         input_shape = hidden_states.shape[:-1]
         hidden_shape = (*input_shape, -1, self.head_dim)
 
@@ -420,13 +419,13 @@ class Qwen3TTSTokenizerV2DecoderTransformerLayer(GradientCheckpointingLayer):
     def forward(
         self,
         hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        position_ids: Optional[torch.LongTensor] = None,
-        past_key_values: Optional[Cache] = None,
-        use_cache: Optional[bool] = False,
-        cache_position: Optional[torch.LongTensor] = None,
+        attention_mask: torch.Tensor | None = None,
+        position_ids: torch.LongTensor | None = None,
+        past_key_values: Cache | None = None,
+        use_cache: bool | None = False,
+        cache_position: torch.LongTensor | None = None,
         **kwargs,
-    ) -> tuple[torch.FloatTensor, Optional[tuple[torch.FloatTensor, torch.FloatTensor]]]:
+    ) -> tuple[torch.FloatTensor, tuple[torch.FloatTensor, torch.FloatTensor] | None]:
         """
         Args:
             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
@@ -481,7 +480,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(Qwen3TTSTokenizerV2DecoderPreTr
     def __init__(self, config: Qwen3TTSTokenizerV2DecoderConfig):
         super().__init__(config)
         self.layers = nn.ModuleList(
-            [Qwen3TTSTokenizerV2DecoderTransformerLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
+            [Qwen3TTSTokenizerV2DecoderTransformerLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)],
         )
         self.norm = Qwen3TTSTokenizerV2DecoderRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.rotary_emb = Qwen3TTSTokenizerV2DecoderRotatoryEmbedding(config=config)
@@ -524,7 +523,7 @@ class Qwen3TTSTokenizerV2DecoderTransformerModel(Qwen3TTSTokenizerV2DecoderPreTr
         if cache_position is None:
             past_seen_tokens = past_key_values.get_seq_length() if past_key_values is not None else 0
             cache_position = torch.arange(
-                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device
+                past_seen_tokens, past_seen_tokens + inputs_embeds.shape[1], device=inputs_embeds.device,
             )
 
         if position_ids is None:
@@ -609,7 +608,7 @@ class SnakeBeta(nn.Module):
         alpha = torch.exp(alpha)
         beta = torch.exp(beta)
         hidden_states = hidden_states + (1.0 / (beta + self.no_div_by_zero)) * torch.pow(
-            torch.sin(hidden_states * alpha), 2
+            torch.sin(hidden_states * alpha), 2,
         )
 
         return hidden_states
@@ -683,7 +682,7 @@ class VectorQuantization(nn.Module):
         self,
         dim: int,
         codebook_size: int,
-        codebook_dim: Optional[int] = None,
+        codebook_dim: int | None = None,
         epsilon: float = 1e-5,
     ):
         super().__init__()
@@ -699,7 +698,7 @@ class VectorQuantization(nn.Module):
         self._codebook = EuclideanCodebook(
             dim=codebook_dim,
             codebook_size=codebook_size,
-            epsilon=epsilon
+            epsilon=epsilon,
         )
         self.codebook_size = codebook_size
 
@@ -714,7 +713,7 @@ class ResidualVectorQuantization(nn.Module):
     def __init__(self, *, num_quantizers: int, **kwargs):
         super().__init__()
         self.layers = nn.ModuleList(
-            [VectorQuantization(**kwargs) for _ in range(num_quantizers)]
+            [VectorQuantization(**kwargs) for _ in range(num_quantizers)],
         )
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
@@ -730,8 +729,8 @@ class ResidualVectorQuantizer(nn.Module):
     def __init__(
         self,
         dimension: int = 128,
-        input_dimension: Optional[int] = None,
-        output_dimension: Optional[int] = None,
+        input_dimension: int | None = None,
+        output_dimension: int | None = None,
         n_q: int = 8,
         q_dropout: bool = False,
         no_quantization_rate: float = 0.0,
@@ -755,18 +754,18 @@ class ResidualVectorQuantizer(nn.Module):
             self.input_proj = torch.nn.Identity()
         else:
             self.input_proj = torch.nn.Conv1d(
-                self.input_dimension, self.dimension, 1, bias=False
+                self.input_dimension, self.dimension, 1, bias=False,
             )
         if self.output_dimension == self.dimension and not force_projection:
             self.output_proj = torch.nn.Identity()
         else:
             self.output_proj = torch.nn.Conv1d(
-                self.dimension, self.output_dimension, 1, bias=False
+                self.dimension, self.output_dimension, 1, bias=False,
             )
         self.vq = ResidualVectorQuantization(
             dim=self.dimension,
             codebook_size=self.bins,
-            num_quantizers=self.n_q
+            num_quantizers=self.n_q,
         )
 
     def decode(self, codes: torch.Tensor) -> torch.Tensor:
@@ -802,7 +801,7 @@ class SplitResidualVectorQuantizer(nn.Module):
         self.n_q_acoustic = n_q - n_q_semantic
         q_dropout = kwargs.pop("q_dropout", False)
         self.rvq_first = ResidualVectorQuantizer(
-            n_q=n_q_semantic, force_projection=True, q_dropout=False, **kwargs
+            n_q=n_q_semantic, force_projection=True, q_dropout=False, **kwargs,
         )
         self.rvq_rest = ResidualVectorQuantizer(
             n_q=n_q - n_q_semantic,
@@ -848,8 +847,8 @@ class Qwen3TTSTokenizerV2Decoder(Qwen3TTSTokenizerV2DecoderPreTrainedModel):
                     [
                         Qwen3TTSTokenizerV2CausalTransConvNet(config.latent_dim, config.latent_dim, factor, factor),
                         Qwen3TTSTokenizerV2ConvNeXtBlock(config.latent_dim),
-                    ]
-                )
+                    ],
+                ),
             )
         self.upsample = nn.ModuleList(upsample)
 
@@ -922,7 +921,7 @@ class Qwen3TTSTokenizerV2PreTrainedModel(PreTrainedModel):
 @auto_docstring(
     custom_intro="""
     The Qwen3TTSTokenizerV2 model.
-    """
+    """,
 )
 class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
     def __init__(self, config: Qwen3TTSTokenizerV2Config):
@@ -960,9 +959,9 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
     def encode(
         self,
         input_values: torch.Tensor,
-        padding_mask: Optional[torch.Tensor] = None,
-        return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.Tensor, Optional[torch.Tensor]], Qwen3TTSTokenizerV2EncoderOutput]:
+        padding_mask: torch.Tensor | None = None,
+        return_dict: bool | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None] | Qwen3TTSTokenizerV2EncoderOutput:
         """
         Encodes the input audio waveform into discrete codes.
 
@@ -992,8 +991,8 @@ class Qwen3TTSTokenizerV2Model(Qwen3TTSTokenizerV2PreTrainedModel):
     def decode(
         self,
         audio_codes: torch.Tensor,
-        return_dict: Optional[bool] = None,
-    ) -> Union[tuple[torch.Tensor, torch.Tensor], Qwen3TTSTokenizerV2DecoderOutput]:
+        return_dict: bool | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor] | Qwen3TTSTokenizerV2DecoderOutput:
         """
         Decodes the given frames into an output audio waveform.
 

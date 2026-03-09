@@ -4,7 +4,6 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-import pytest
 import torch
 from torch import FloatTensor, LongTensor
 from transformers import GenerationConfig as TransformersGenerationConfig

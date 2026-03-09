@@ -6,6 +6,7 @@ from jaxtyping import Array
 
 from lalamo.common import ParameterPath
 from lalamo.modules import Attention, DenseMLP, FullPrecisionLinear, Transformer
+from lalamo.modules.audio.common_modules import ConvNeXtBlock
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
     Qwen3TTSAudioDecoder,
     Qwen3TTSPreTransformer,
@@ -14,7 +15,6 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
     Qwen3TTSCausalTransposeConv1d,
-    Qwen3TTSConvNeXtBlock,
     Qwen3TTSDecoderBlock,
     Qwen3TTSEuclideanCodebook,
     Qwen3TTSResidualUnit,
@@ -87,10 +87,10 @@ def load_qwen3_tts_causal_transpose_conv1d(
 
 
 def load_qwen3_tts_convnext_block(
-    module: Qwen3TTSConvNeXtBlock,
+    module: ConvNeXtBlock,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> Qwen3TTSConvNeXtBlock:
+) -> ConvNeXtBlock:
     depthwise_conv = load_causal_conv1d(module.depthwise_conv, weights_dict, path / "dwconv" / "conv")
     norm = load_parameters(
         lambda m: (m.scales, m.biases),
@@ -100,17 +100,17 @@ def load_qwen3_tts_convnext_block(
             weights_dict[path / "norm" / "bias"],
         ),
     )
-    pointwise_conv_step1 = load_parameters(
+    pointwise_conv1 = load_parameters(
         lambda m: (m.weights, m.biases),
-        module.pointwise_conv_step1,
+        module.pointwise_conv1,
         (
             weights_dict[path / "pwconv1" / "weight"],
             weights_dict[path / "pwconv1" / "bias"],
         ),
     )
-    pointwise_conv_step2 = load_parameters(
+    pointwise_conv2 = load_parameters(
         lambda m: (m.weights, m.biases),
-        module.pointwise_conv_step2,
+        module.pointwise_conv2,
         (
             weights_dict[path / "pwconv2" / "weight"],
             weights_dict[path / "pwconv2" / "bias"],
@@ -119,9 +119,9 @@ def load_qwen3_tts_convnext_block(
     gamma = weights_dict[path / "gamma"]
 
     return load_parameters(
-        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2, m.gamma),
+        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv1, m.pointwise_conv2, m.gamma),
         module,
-        (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2, gamma),
+        (depthwise_conv, norm, pointwise_conv1, pointwise_conv2, gamma),
     )
 
 

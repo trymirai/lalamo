@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Qwen team, Alibaba Group and the HuggingFace Inc. team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -499,4 +498,4 @@ class Qwen3TTSConfig(PretrainedConfig):
         self.tts_eos_token_id = tts_eos_token_id
 
 
-__all__ = ["Qwen3TTSConfig", "Qwen3TTSTalkerConfig", "Qwen3TTSSpeakerEncoderConfig"]
+__all__ = ["Qwen3TTSConfig", "Qwen3TTSSpeakerEncoderConfig", "Qwen3TTSTalkerConfig"]

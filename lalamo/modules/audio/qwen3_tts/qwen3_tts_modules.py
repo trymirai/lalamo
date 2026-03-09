@@ -16,13 +16,10 @@ from lalamo.modules.audio.common_modules import (
 )
 from lalamo.modules.common import LalamoModule
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig
 
 __all__ = [
     "Qwen3TTSCausalTransposeConv1d",
     "Qwen3TTSCausalTransposeConv1dConfig",
-    "Qwen3TTSConvNeXtBlock",
-    "Qwen3TTSConvNeXtBlockConfig",
     "Qwen3TTSDecoderBlock",
     "Qwen3TTSDecoderBlockConfig",
     "Qwen3TTSEuclideanCodebook",
@@ -42,18 +39,6 @@ __all__ = [
     "apply_rotary_pos_emb",
     "rotate_half",
 ]
-
-
-def _debug_tensor(name: str, value: Array, *, enabled: bool) -> None:
-    if not enabled:
-        return
-    jax.debug.print(
-        "[qwen3_tts] {name}: shape={shape} min={min_val:.5f} max={max_val:.5f}",
-        name=name,
-        shape=value.shape,
-        min_val=jnp.min(value),
-        max_val=jnp.max(value),
-    )
 
 
 def rotate_half(x: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
@@ -209,7 +194,6 @@ class Qwen3TTSSnakeBetaConfig:
     precision: DTypeLike
     alpha_init: float = 1.0
     no_div_by_zero: float = 1e-9
-    enable_debug: bool = True
 
     def empty(self, channels: int) -> "Qwen3TTSSnakeBeta":
         alpha = jnp.zeros((channels,), dtype=self.precision) * self.alpha_init
@@ -237,11 +221,9 @@ class Qwen3TTSSnakeBeta(LalamoModule[Qwen3TTSSnakeBetaConfig]):
         self,
         x: Float[Array, "batch tokens channels"],
     ) -> Float[Array, "batch tokens channels"]:
-        _debug_tensor("snake_beta.input", x, enabled=self.config.enable_debug)
         alpha = jnp.exp(self.alpha)[None, None, :]
         beta = jnp.exp(self.beta)[None, None, :]
         result = x + (jnp.reciprocal(beta + self.config.no_div_by_zero) * jnp.square(jnp.sin(x * alpha)))
-        _debug_tensor("snake_beta.output", result, enabled=self.config.enable_debug)
         return result
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -260,119 +242,10 @@ class Qwen3TTSSnakeBeta(LalamoModule[Qwen3TTSSnakeBetaConfig]):
 
 
 @dataclass(frozen=True)
-class Qwen3TTSConvNeXtBlockConfig:
-    precision: DTypeLike
-    conv_config: CausalConv1dConfig
-    norm_config: NormalizationConfig
-    linear_config: FullPrecisionLinearConfig
-    gamma_init: float = 1e-6
-    enable_debug: bool = True
-
-    def empty(self, dim: int) -> "Qwen3TTSConvNeXtBlock":
-        depthwise_conv = self.conv_config.empty(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=7,
-            dilation=1,
-            stride=1,
-            groups=dim,
-        )
-        norm = self.norm_config.empty(dim)
-        pointwise_conv_step1 = self.linear_config.empty(dim, (4 * dim,), has_biases=True)
-        pointwise_conv_step2 = self.linear_config.empty(4 * dim, (dim,), has_biases=True)
-        gamma = jnp.ones((dim,), dtype=self.precision) * self.gamma_init
-        return Qwen3TTSConvNeXtBlock(
-            config=self,
-            depthwise_conv=depthwise_conv,
-            norm=norm,
-            pointwise_conv_step1=pointwise_conv_step1,
-            pointwise_conv_step2=pointwise_conv_step2,
-            gamma=gamma,
-        )
-
-    def random_init(self, dim: int, *, key: PRNGKeyArray) -> "Qwen3TTSConvNeXtBlock":
-        key_dw, key_pw1, key_pw2 = jax.random.split(key, 3)
-        depthwise_conv = self.conv_config.random_init(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=7,
-            dilation=1,
-            stride=1,
-            groups=dim,
-            key=key_dw,
-        )
-        norm = self.norm_config.init(dim)
-        pointwise_conv_step1 = self.linear_config.random_init(dim, (4 * dim,), has_biases=True, key=key_pw1)
-        pointwise_conv_step2 = self.linear_config.random_init(4 * dim, (dim,), has_biases=True, key=key_pw2)
-        gamma = jnp.ones((dim,), dtype=self.precision) * self.gamma_init
-        return Qwen3TTSConvNeXtBlock(
-            config=self,
-            depthwise_conv=depthwise_conv,
-            norm=norm,
-            pointwise_conv_step1=pointwise_conv_step1,
-            pointwise_conv_step2=pointwise_conv_step2,
-            gamma=gamma,
-        )
-
-
-class Qwen3TTSConvNeXtBlock(LalamoModule[Qwen3TTSConvNeXtBlockConfig]):
-    depthwise_conv: CausalConv1d
-    norm: Normalization
-    pointwise_conv_step1: FullPrecisionLinear
-    pointwise_conv_step2: FullPrecisionLinear
-    gamma: Float[Array, " channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    def __call__(
-        self,
-        x: Float[Array, "batch tokens channels"],
-    ) -> Float[Array, "batch tokens channels"]:
-        _debug_tensor("convnext.input", x, enabled=self.config.enable_debug)
-        residual = x
-        x = self.depthwise_conv(x)
-        x = vmap(vmap(self.norm))(x)
-        (x,) = vmap(vmap(self.pointwise_conv_step1))(x)
-        x = jax.nn.gelu(x, approximate=False)
-        (x,) = vmap(vmap(self.pointwise_conv_step2))(x)
-        x = x * self.gamma[None, None, :]
-        result = residual + x
-        _debug_tensor("convnext.output", result, enabled=self.config.enable_debug)
-        return result
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "depthwise_conv": self.depthwise_conv.export_weights(),
-            "norm": self.norm.export_weights(),
-            "pointwise_conv_step1": self.pointwise_conv_step1.export_weights(),
-            "pointwise_conv_step2": self.pointwise_conv_step2.export_weights(),
-            "gamma": self.gamma,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(
-            self,
-            depthwise_conv=self.depthwise_conv.import_weights(require_tree(weights["depthwise_conv"])),
-            norm=self.norm.import_weights(require_tree(weights["norm"])),
-            pointwise_conv_step1=self.pointwise_conv_step1.import_weights(
-                require_tree(weights["pointwise_conv_step1"]),
-            ),
-            pointwise_conv_step2=self.pointwise_conv_step2.import_weights(
-                require_tree(weights["pointwise_conv_step2"]),
-            ),
-            gamma=require_array(weights["gamma"]),
-        )
-
-
-@dataclass(frozen=True)
 class Qwen3TTSResidualUnitConfig:
     precision: DTypeLike
     snake_config: Qwen3TTSSnakeBetaConfig
     conv_config: CausalConv1dConfig
-    enable_debug: bool = True
 
     def empty(self, dim: int, dilation: int) -> "Qwen3TTSResidualUnit":
         return Qwen3TTSResidualUnit(
@@ -438,7 +311,6 @@ class Qwen3TTSResidualUnit(LalamoModule[Qwen3TTSResidualUnitConfig]):
         self,
         x: Float[Array, "batch tokens channels"],
     ) -> Float[Array, "batch tokens channels"]:
-        _debug_tensor("residual_unit.input", x, enabled=self.config.enable_debug)
         residual = x
         x = self.act1(x)
         x = self.conv1(x)
@@ -453,7 +325,6 @@ class Qwen3TTSResidualUnit(LalamoModule[Qwen3TTSResidualUnitConfig]):
             x = x[:, :aligned_tokens, :]
 
         result = residual + x
-        _debug_tensor("residual_unit.output", result, enabled=self.config.enable_debug)
         return result
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -481,7 +352,6 @@ class Qwen3TTSDecoderBlockConfig:
     snake_config: Qwen3TTSSnakeBetaConfig
     transposed_conv_config: Qwen3TTSCausalTransposeConv1dConfig
     residual_unit_config: Qwen3TTSResidualUnitConfig
-    enable_debug: bool = True
 
     def empty(self, in_dim: int, out_dim: int, upsample_rate: int) -> "Qwen3TTSDecoderBlock":
         return Qwen3TTSDecoderBlock(
@@ -542,12 +412,10 @@ class Qwen3TTSDecoderBlock(LalamoModule[Qwen3TTSDecoderBlockConfig]):
         self,
         x: Float[Array, "batch tokens channels"],
     ) -> Float[Array, "batch tokens channels"]:
-        _debug_tensor("decoder_block.input", x, enabled=self.config.enable_debug)
         x = self.snake(x)
         x = self.transposed_conv(x)
         for residual_unit in self.residual_units:
             x = residual_unit(x)
-        _debug_tensor("decoder_block.output", x, enabled=self.config.enable_debug)
         return x
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -585,7 +453,11 @@ class Qwen3TTSEuclideanCodebookConfig:
         )
 
     def random_init(self, dim: int, codebook_size: int, *, key: PRNGKeyArray) -> "Qwen3TTSEuclideanCodebook":
-        return self.empty(dim=dim, codebook_size=codebook_size)
+        return Qwen3TTSEuclideanCodebook(
+            config=self,
+            cluster_usage=jnp.ones((codebook_size,), dtype=self.precision),
+            embedding_sum=jax.random.normal(key, (codebook_size, dim), dtype=self.precision),
+        )
 
 
 class Qwen3TTSEuclideanCodebook(LalamoModule[Qwen3TTSEuclideanCodebookConfig]):
@@ -628,7 +500,6 @@ class Qwen3TTSVectorQuantizationConfig:
     precision: DTypeLike
     codebook_config: Qwen3TTSEuclideanCodebookConfig
     project_out_config: FullPrecisionLinearConfig
-    enable_debug: bool = True
 
     def empty(self, dim: int, codebook_size: int, codebook_dim: int | None = None) -> "Qwen3TTSVectorQuantization":
         codebook_dim = dim if codebook_dim is None else codebook_dim
@@ -693,7 +564,6 @@ class Qwen3TTSVectorQuantization(LalamoModule[Qwen3TTSVectorQuantizationConfig])
         if self.project_out is not None:
             (quantized,) = vmap(vmap(self.project_out))(quantized)
         quantized = rearrange(quantized, "batch tokens channels -> batch channels tokens")
-        _debug_tensor("vector_quantization.output", quantized, enabled=self.config.enable_debug)
         return quantized
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -724,7 +594,6 @@ class Qwen3TTSVectorQuantization(LalamoModule[Qwen3TTSVectorQuantizationConfig])
 class Qwen3TTSResidualVectorQuantizationConfig:
     precision: DTypeLike
     vector_quantization_config: Qwen3TTSVectorQuantizationConfig
-    enable_debug: bool = True
 
     def empty(
         self,
@@ -781,7 +650,6 @@ class Qwen3TTSResidualVectorQuantization(LalamoModule[Qwen3TTSResidualVectorQuan
         quantized = first_layer.decode(first_codes)
         for layer, layer_codes in layer_pairs:
             quantized = quantized + layer.decode(layer_codes)
-        _debug_tensor("residual_vector_quantization.output", quantized, enabled=self.config.enable_debug)
         return quantized
 
     def __call__(
@@ -813,7 +681,6 @@ class Qwen3TTSResidualVectorQuantizerConfig:
     precision: DTypeLike
     rvq_config: Qwen3TTSResidualVectorQuantizationConfig
     output_projection_config: FullPrecisionLinearConfig
-    enable_debug: bool = True
 
     def empty(
         self,
@@ -916,7 +783,6 @@ class Qwen3TTSResidualVectorQuantizer(LalamoModule[Qwen3TTSResidualVectorQuantiz
             quantized_nsc = rearrange(quantized, "batch channels tokens -> batch tokens channels")
             (quantized_nsc,) = vmap(vmap(self.output_projection))(quantized_nsc)
             quantized = rearrange(quantized_nsc, "batch tokens channels -> batch channels tokens")
-        _debug_tensor("residual_vector_quantizer.output", quantized, enabled=self.config.enable_debug)
         return quantized
 
     def export_weights(self) -> ParameterTree[Array]:
@@ -947,7 +813,6 @@ class Qwen3TTSSplitResidualVectorQuantizerConfig:
     precision: DTypeLike
     residual_vector_quantizer_config: Qwen3TTSResidualVectorQuantizerConfig
     n_q_semantic: int = 1
-    enable_debug: bool = True
 
     def empty(
         self,
@@ -1045,7 +910,6 @@ class Qwen3TTSSplitResidualVectorQuantizer(LalamoModule[Qwen3TTSSplitResidualVec
         _, num_quantizers, _ = codes.shape
         if num_quantizers > self.n_q_semantic:
             quantized = quantized + self.rvq_rest.decode(codes[:, self.n_q_semantic :, :])
-        _debug_tensor("split_residual_vector_quantizer.output", quantized, enabled=self.config.enable_debug)
         return quantized
 
     def export_weights(self) -> ParameterTree[Array]:

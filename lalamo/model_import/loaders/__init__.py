@@ -32,8 +32,8 @@ def load_audio_decoder(
 
 
 __all__ = [
+    "load_audio_decoder",
     "load_huggingface_classifier",
     # "load_executorch",
     "load_huggingface_decoder",
-    "load_audio_decoder",
 ]

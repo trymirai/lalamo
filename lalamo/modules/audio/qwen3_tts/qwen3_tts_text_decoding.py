@@ -634,12 +634,14 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         *,
-        speaker: str,
+        speaker: str | None = None,
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
         language: str = "auto",
         instruction_tokens: Int[Array, "batch tokens"] | None = None,
     ) -> Int[Array, "codebooks tokens"]:
+        if speaker is None:
+            raise ValueError("speaker is required for Qwen3TTSTextDecoder")
         if text_tokens.ndim != 2:
             raise ValueError(f"text_tokens must be rank 2, got {text_tokens.shape}")
         batch_size, _ = text_tokens.shape
@@ -652,6 +654,11 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             key = jax.random.key(123)
 
         speaker_codec_id = self.config.spk_id.get(speaker)
+        if speaker_codec_id is None:
+            available = ", ".join(sorted(self.config.spk_id.keys()))
+            raise ValueError(
+                f"Unknown speaker {speaker!r}. Available speakers: {available}",
+            )
         language_codec_id = self.config.codec_language_id.get(language) if language != "auto" else None
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(

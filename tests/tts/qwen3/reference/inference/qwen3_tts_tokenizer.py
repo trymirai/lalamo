@@ -1,4 +1,3 @@
-# coding=utf-8
 # Copyright 2026 The Alibaba Qwen team.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -16,7 +15,7 @@
 import base64
 import io
 import urllib.request
-from typing import List, Optional, Tuple, Union
+from typing import Union
 from urllib.parse import urlparse
 
 import librosa
@@ -36,8 +35,8 @@ from ..core import (
 AudioInput = Union[
     str,  # wav path, or base64 string
     np.ndarray,  # 1-D float array
-    List[str],
-    List[np.ndarray],
+    list[str],
+    list[np.ndarray],
 ]
 
 
@@ -160,8 +159,8 @@ class Qwen3TTSTokenizer:
     def _normalize_audio_inputs(
         self,
         audios: AudioInput,
-        sr: Optional[int],
-    ) -> List[np.ndarray]:
+        sr: int | None,
+    ) -> list[np.ndarray]:
         """
         Normalize all supported input types into a list of 1-D numpy float32 waveforms
         at `self.feature_extractor.sampling_rate`.
@@ -194,7 +193,7 @@ class Qwen3TTSTokenizer:
         if sr is None:
             raise ValueError("For numpy waveform input, you must provide `sr` (original sampling rate).")
 
-        out: List[np.ndarray] = []
+        out: list[np.ndarray] = []
         for a in audios:  # type: ignore[assignment]
             if not isinstance(a, np.ndarray):
                 raise TypeError("Mixed input types are not supported. Use all paths/base64 or all numpy arrays.")
@@ -208,7 +207,7 @@ class Qwen3TTSTokenizer:
     def encode(
         self,
         audios: AudioInput,
-        sr: Optional[int] = None,
+        sr: int | None = None,
         return_dict: bool = True,
     ):
         """
@@ -259,7 +258,7 @@ class Qwen3TTSTokenizer:
     def decode(
         self,
         encoded,
-    ) -> Tuple[List[np.ndarray], int]:
+    ) -> tuple[list[np.ndarray], int]:
         """
         Decode back to waveform.
 
