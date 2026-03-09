@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import DTypeLike, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -85,7 +85,7 @@ class TTSGenerator(eqx.Module):
         repetition_penalty: float,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
-        random_key = jax.random.PRNGKey(123) if random_key is None else random_key
+        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
@@ -123,9 +123,7 @@ class TTSGenerator(eqx.Module):
         )
 
         audio_features = self.decode_audio(semantic_tokens)
-
         audio_waveform = self.tts_model.vocoder(audio_features)
-
         audio_settings = self.get_generated_audio_params()
 
         return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
@@ -166,28 +164,11 @@ class FishAudioTTSGenerator(TTSGenerator):
 
         sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
 
-        random_key = jax.random.PRNGKey(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
+        random_key = jax.random.key(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
             key=random_key,
-        )
-
-    def decode_audio(
-        self,
-        semantic_tokens: Int[Array, "batch n_codebooks sequence"],
-    ) -> Float[Array, "batch audio_samples 1"]:
-        return super().decode_audio(semantic_tokens)
-
-    def generate_waveform(self, audio_features: Array) -> Array:
-        return super().generate_waveform(audio_features)
-
-    def get_generated_audio_params(self) -> AudioRenderingSettings:
-        return AudioRenderingSettings(
-            samplerate=self.tts_model.audio_decoder.samplerate,
-            output_channels=1,
-            bitwidth=16,
-            encoding=AudioEncoding.PCM,
         )
 
 
@@ -198,23 +179,46 @@ class Qwen3TTSTTSGenerator(TTSGenerator):
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,
+        speaker: str | None = None,
+        language: str | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, Qwen3TTSTextDecoder)
 
         if sampling_policy is None:
             sampling_policy = default_qwen3_tts_text_sampling_policy()
 
-        random_key = jax.random.PRNGKey(123) if random_key is None else random_key
+        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
             key=random_key,
+            speaker=speaker,
+            language=language,
         )
 
-    def get_generated_audio_params(self) -> AudioRenderingSettings:
-        return AudioRenderingSettings(
-            samplerate=self.tts_model.audio_decoder.samplerate,
-            output_channels=1,
-            bitwidth=16,
-            encoding=AudioEncoding.PCM,
+    def generate_speech(
+        self,
+        messages: Iterable[TTSMessage],
+        sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
+        random_key: PRNGKeyArray | None = None,
+    ) -> TTSGenerationResult:
+        messages_list = list(messages)
+        first_message = messages_list[0]
+
+        text_tokens = self.tokenize_text(messages_list)
+
+        semantic_tokens = self.decode_text(
+            text_tokens,
+            sampling_policy=sampling_policy,
+            repetition_penalty=repetition_penalty,
+            random_key=random_key,
+            speaker=first_message.speaker_id,
+            language=first_message.language,
         )
+
+        audio_features = self.decode_audio(semantic_tokens)
+        audio_waveform = self.tts_model.vocoder(audio_features)
+        audio_settings = self.get_generated_audio_params()
+
+        return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)

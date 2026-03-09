@@ -108,6 +108,8 @@ class Qwen3TTSTalkerConfig:
     use_sliding_window: bool
     vocab_size: int
     code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
+    spk_id: dict[str, int]
+    codec_language_id: dict[str, int]
     layer_types: tuple[str, ...] | None = None
 
 
@@ -264,6 +266,8 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
                 tts_bos_token_id=tts_bos_token_id,
                 tts_eos_token_id=tts_eos_token_id,
                 tts_pad_token_id=tts_pad_token_id,
+                spk_id=talker.spk_id,
+                codec_language_id=talker.codec_language_id,
                 im_start_token_id=self.im_start_token_id,
                 assistant_token_id=self.assistant_token_id,
                 im_end_token_id=self.im_end_token_id,
@@ -557,6 +561,8 @@ def _default_talker_config(
         use_sliding_window=False,
         vocab_size=3072,
         code_predictor_config=predictor_config,
+        spk_id={},
+        codec_language_id={},
         layer_types=None,
     )
 

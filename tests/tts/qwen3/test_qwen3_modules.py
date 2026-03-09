@@ -45,6 +45,11 @@ from tests.tts.qwen3.reference.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
 
 
+_TEST_TTS_BOS_TOKEN_ID = 90
+_TEST_TTS_EOS_TOKEN_ID = 91
+_TEST_TTS_PAD_TOKEN_ID = 92
+
+
 def _assert_very_close(result: jnp.ndarray, reference: jnp.ndarray, operation_name: str) -> None:
     assert_close(
         result=result.astype(jnp.float32),
@@ -548,9 +553,11 @@ def _build_lalamo_text_decoder(torch_talker) -> tuple[object, object]:
         codec_nothing_id=talker_cfg.codec_nothing_id,
         codec_think_bos_id=talker_cfg.codec_think_bos_id,
         codec_think_eos_id=talker_cfg.codec_think_eos_id,
-        tts_bos_token_id=90,
-        tts_eos_token_id=91,
-        tts_pad_token_id=92,
+        tts_bos_token_id=_TEST_TTS_BOS_TOKEN_ID,
+        tts_eos_token_id=_TEST_TTS_EOS_TOKEN_ID,
+        tts_pad_token_id=_TEST_TTS_PAD_TOKEN_ID,
+        spk_id={},
+        codec_language_id={},
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_talker.state_dict(), prefix="talker")
@@ -589,14 +596,14 @@ def test_text_decoder_decode_utterance_matches_reference_algorithm() -> None:
     lalamo_codes = lalamo_text_decoder.decode_utterance(
         torch_to_jax(text_tokens).astype(jnp.int32),
         sampling_policy=greedy,
-        key=jax.random.PRNGKey(0),
+        key=jax.random.key(0),
     )
 
     def project_text(x: torch.Tensor) -> torch.Tensor:
         return torch_talker.text_projection(torch_talker.get_text_embeddings()(x))
 
     text_hidden = project_text(text_tokens)
-    tts_special = project_text(torch.tensor([[90, 91, 92]], dtype=torch.int64))
+    tts_special = project_text(torch.tensor([[_TEST_TTS_BOS_TOKEN_ID, _TEST_TTS_EOS_TOKEN_ID, _TEST_TTS_PAD_TOKEN_ID]], dtype=torch.int64))
     tts_bos_embed = tts_special[:, 0:1]
     tts_eos_embed = tts_special[:, 1:2]
     tts_pad_embed = tts_special[:, 2:3]
@@ -676,9 +683,9 @@ def test_qwen3_config_uses_real_text_decoder_when_talker_present(tmp_path) -> No
         "encoder_valid_num_quantizers": decoder_cfg.num_quantizers,
         "input_sample_rate": 24000,
         "output_sample_rate": 24000,
-        "tts_pad_token_id": 92,
-        "tts_bos_token_id": 90,
-        "tts_eos_token_id": 91,
+        "tts_pad_token_id": _TEST_TTS_PAD_TOKEN_ID,
+        "tts_bos_token_id": _TEST_TTS_BOS_TOKEN_ID,
+        "tts_eos_token_id": _TEST_TTS_EOS_TOKEN_ID,
         "decoder_config": {
             "attention_dropout": decoder_cfg.attention_dropout,
             "attention_bias": decoder_cfg.attention_bias,

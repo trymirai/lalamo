@@ -20,6 +20,7 @@ class TTSMessage:
     content: str
     speaker_id: str
     style: str
+    language: str | None = None
 
 
 class TTSRequest(TypedDict):
