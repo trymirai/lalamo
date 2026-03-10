@@ -89,7 +89,7 @@ jobs:
 
   audio:
     name: Audio Models
-    runs-on: [cpu]
+    runs-on: [lalamo-k8s]
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -105,7 +105,7 @@ jobs:
 
   tracer:
     name: Tracer
-    runs-on: [lalamo-k8s]
+    runs-on: [cpu]
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
