@@ -1,5 +1,7 @@
 name: "Setup conditionals"
 
+permissions: {}
+
 on:
   workflow_call:
     outputs:
@@ -15,7 +17,6 @@ on:
 
 jobs:
   config:
-    name: Config
     runs-on: ubuntu-latest
     outputs:
       run-tests: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
