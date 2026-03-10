@@ -43,5 +43,4 @@ def test_hf_lm_models(test_spec: ModelTestSpec) -> None:
     ids=[m.model_repo for m in CLASSIFIER_MODEL_LIST],
 )
 def test_hf_classifier_models(test_spec: ModelTestSpec) -> None:
-    with tolerance(atol=1e-2, rtol=3.0):
-        _test_model(test_spec, ModernBertTracer)
+    _test_model(test_spec, ModernBertTracer)
