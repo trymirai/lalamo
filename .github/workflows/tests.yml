@@ -89,7 +89,7 @@ jobs:
 
   audio:
     name: Audio Models
-    runs-on: [lalamo-k8s]
+    runs-on: [cpu] # prefer cpu, lalamo-k8s does not have correct cache setup, gpu is flaky
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -105,7 +105,7 @@ jobs:
 
   tracer:
     name: Tracer
-    runs-on: [cpu]
+    runs-on: [gpu] # gpu is quite a bit faster than cpu, TODO: why does lalamo-k8s fail?
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
