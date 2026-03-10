@@ -23,10 +23,14 @@ env:
   OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
 
 jobs:
+  config:
+    uses: ./.github/workflows/config.yml
+
   conversion:
     name: Model Conversion
     runs-on: [lalamo-k8s]
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
+    needs: [config]
+    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -41,7 +45,8 @@ jobs:
   coherence:
     name: Coherence
     runs-on: [cpu]
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
+    needs: [config]
+    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
 
     steps:
       - uses: actions/checkout@v6
@@ -59,12 +64,13 @@ jobs:
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
     runs-on: ${{ fromJSON(matrix.runner) }}
-    if: ${{ (github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false)) && (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease')) }}
+    needs: [config]
+    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
 
     strategy:
       fail-fast: false
       matrix:
-        python: [py313, py314]
+        python: ${{ fromJSON(needs.config.outputs.latest-deps-python-versions) }}
         device: [cpu, gpu]
         include:
           - device: cpu

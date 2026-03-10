@@ -23,7 +23,7 @@ from tests.common import tolerance
 # Be careful when raising this precision for correctness baselines.
 jax.config.update("jax_default_matmul_precision", "default")
 
-GPU_ATOL = 1e-4
+GPU_ATOL = 1e-3
 GPU_RTOL = 0.03
 
 

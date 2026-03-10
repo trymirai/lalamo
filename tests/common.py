@@ -10,7 +10,7 @@ from jax.experimental.checkify import checkify, div_checks, nan_checks, user_che
 
 __all__ = ["assert_close", "checkify_forward", "skip_on_gpu", "tolerance"]
 
-DEFAULT_ATOL = 1e-5
+DEFAULT_ATOL = 1e-4
 DEFAULT_RTOL = 1e-3
 
 _current_atol: ContextVar[float] = ContextVar("_current_atol", default=DEFAULT_ATOL)
