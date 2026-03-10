@@ -3,7 +3,6 @@ from dataclasses import dataclass
 from lalamo.sampling import (
     CompositePolicy,
     GreedyPolicy,
-    NoTieGreedyPolicy,
     SamplingPolicy,
     TemperaturePolicy,
     TopPPolicy,
@@ -42,7 +41,7 @@ def sampling_params_from_policy(
         policies_to_check.append(policy)
 
     for p in policies_to_check:
-        if isinstance(p, (GreedyPolicy, NoTieGreedyPolicy)):
+        if isinstance(p, GreedyPolicy):
             argmax_decoding = True
         elif isinstance(p, TemperaturePolicy):
             temperature = p.temperature

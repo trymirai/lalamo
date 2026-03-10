@@ -30,7 +30,7 @@ MLX_AVAILABLE = importlib.util.find_spec("mlx")
 if MLX_AVAILABLE:
     import mlx.core as mx
 
-FRACTION_OF_ALLOWED_VIOLATIONS = 0.05
+FRACTION_OF_ALLOWED_VIOLATIONS = 0.03
 
 
 class DType(Enum):

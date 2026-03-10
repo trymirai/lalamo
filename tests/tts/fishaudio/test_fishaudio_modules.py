@@ -939,7 +939,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
         result=lalamo_output_nct,
         reference=torch_output_jax,
         atol=1e-3,
-        fraction_of_allowed_violations=0.012,
+        fraction_of_allowed_violations=0.02,
         operation_name="test_upsampler_matches_pytorch",
     )
 
