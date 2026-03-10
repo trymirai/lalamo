@@ -1,6 +1,4 @@
 from .common import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig, ForeignTTSConfig
-
-# from .executorch import ETLlamaConfig
 from .huggingface import (
     HFGemma2Config,
     HFGemma3Config,
@@ -19,7 +17,6 @@ from .huggingface import (
 __all__ = [
     "ForeignClassifierConfig",
     "ForeignConfig",
-    # "ETLlamaConfig",
     "ForeignLMConfig",
     "ForeignTTSConfig",
     "HFGPTOssConfig",
