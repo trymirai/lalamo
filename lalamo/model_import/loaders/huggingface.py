@@ -1230,6 +1230,9 @@ def load_huggingface_decoder(
     *,
     reorder_q_proj_gate: bool = True,
 ) -> Decoder:
+    if any(key.startswith("model.language_model.") for key in weights_dict):
+        weights_dict = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
+
     if any(key.startswith("language_model.") for key in weights_dict):
         base_path = ParameterPath("language_model")
     else:

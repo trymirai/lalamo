@@ -1,10 +1,11 @@
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any, Literal
+from pathlib import Path
+from typing import Any, Literal, Self
 
-from jaxtyping import Array, DTypeLike
+from jaxtyping import DTypeLike
 
-from lalamo.model_import.loaders import load_huggingface_decoder
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -23,20 +24,18 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.modules.common import LalamoModule
-from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
-__all__ = ["HFQwen35Config", "HFQwen35TextConfig"]
+__all__ = ["HFQwen35Config"]
 
 
 @dataclass(frozen=True)
-class HFQwen35TextConfigRaw:
-    model_type: Literal["qwen3_5_text"]
+class HFQwen35Config(HuggingFaceLMConfig):
+    model_type: Literal["qwen3_5"]
     hidden_size: int
     intermediate_size: int
     num_hidden_layers: int
@@ -57,8 +56,18 @@ class HFQwen35TextConfigRaw:
     linear_num_key_heads: int
     linear_num_value_heads: int
 
+    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
+    eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
     quantization_config: QuantizationConfigType | None = None
+
+    @classmethod
+    def from_json(cls, json_path: Path | str) -> Self:
+        json_path = Path(json_path)
+        with open(json_path) as f:
+            config = json.load(f)
+        text_config = config.pop("text_config", {})
+        return cls._converter.structure({**text_config, **config}, cls)
 
     def to_decoder_config(
         self,
@@ -66,14 +75,8 @@ class HFQwen35TextConfigRaw:
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
-        fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
-        if self.quantization is not None:
-            quantization = self.quantization
-        elif self.quantization_config is not None:
-            quantization = self.quantization_config
-        else:
-            quantization = fallback_quantization
+        quantization = self.quantization or self.quantization_config
 
         is_mlx = isinstance(quantization, MLXQuantizationConfig)
 
@@ -226,47 +229,4 @@ class HFQwen35TextConfigRaw:
             embedding_config=embedding_config,
             transformer_config=transformer_config,
             vocab_size=self.vocab_size,
-        )
-
-
-@dataclass(frozen=True)
-class HFQwen35TextConfig(HFQwen35TextConfigRaw, HuggingFaceLMConfig):
-    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
-    eos_token_id: int | list[int] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
-class HFQwen35Config(HuggingFaceLMConfig):
-    model_type: Literal["qwen3_5"]
-    tie_word_embeddings: bool
-    text_config: HFQwen35TextConfigRaw
-    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
-    eos_token_id: int | list[int] = field(default_factory=list)
-    quantization: QuantizationConfigType | None = None
-    quantization_config: QuantizationConfigType | None = None
-
-    def _load_weights(
-        self,
-        model: LalamoModule,
-        weights_dict: Mapping[str, Array],
-    ) -> LalamoModule:
-        new_weights = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
-
-        assert isinstance(model, Decoder)
-        return load_huggingface_decoder(model, new_weights)
-
-    def to_decoder_config(
-        self,
-        context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
-        metadata_dict: Mapping[str, str],
-    ) -> DecoderConfig:
-        quantization = self.quantization or self.quantization_config
-        return self.text_config.to_decoder_config(
-            context_length=context_length,
-            activation_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
-            metadata_dict=metadata_dict,
-            fallback_quantization=quantization,
         )
