@@ -285,6 +285,7 @@ QWEN3_NEXT = [
         repo="Qwen/Qwen3-Next-80B-A3B-Instruct",
         config_type=HFQwen3NextConfig,
     ),
+    # TODO(knyazer): uncomment and test when sharding is in
     # ModelSpec(
     #     vendor="Alibaba",
     #     family="Qwen3-Next",

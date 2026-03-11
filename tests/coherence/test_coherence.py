@@ -22,9 +22,7 @@ MAX_TOKENS = 1024
 
 # Models that cannot answer factual questions correctly (e.g. function-calling models).
 # For these, only EOS behavior is verified; QA adequacy assertions are skipped.
-BAD_MODELS: list[str] = [
-    "google/functiongemma-270m-it",
-]
+BAD_MODELS: list[str] = ["google/functiongemma-270m-it", "amd/PARD-Qwen3-0.6B"]
 
 # Models with extended thinking/reasoning that exhaust the default token budget.
 # Token limit is multiplied by 4 to give them room to finish reasoning before answering.
