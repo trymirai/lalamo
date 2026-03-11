@@ -138,16 +138,12 @@ jobs:
             runner: '["lalamo-k8s"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]' # gpu only :(
-          - python: py313
-            python-version: '3.13'
-          - python: py314
-            python-version: '3.14'
 
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-python@v6
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "${{ matrix.python == 'py313' && '3.13' || '3.14' }}"
       - uses: ./.github/actions/setup
         with:
           install-dependencies: 'false'
