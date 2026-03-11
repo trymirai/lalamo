@@ -160,7 +160,7 @@ class TTSGenerator(eqx.Module):
         if isinstance(model.text_decoder, FishAudioTextDecoder):
             generator_class = FishAudioTTSGenerator
         elif isinstance(model.text_decoder, Qwen3TTSTextDecoder):
-            generator_class = Qwen3TTSTTSGenerator
+            generator_class = Qwen3TTSGenerator
 
         return generator_class(config=config, tts_model=model, message_processor=message_processor)
 
@@ -225,7 +225,7 @@ class FishAudioTTSGenerator(TTSGenerator):
         return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
 
 
-class Qwen3TTSTTSGenerator(TTSGenerator):
+class Qwen3TTSGenerator(TTSGenerator):
     def default_style(self) -> str:
         return ""
 
@@ -262,9 +262,7 @@ class Qwen3TTSTTSGenerator(TTSGenerator):
             instruction_tokens=instruction_tokens,
         )
 
-    def _tokenize_instruction(self, style: str) -> Int[Array, "batch tokens"] | None:
-        if not style:
-            return None
+    def _tokenize_instruction(self, style: str) -> Int[Array, "batch tokens"]:
         instruction_text = f"<|im_start|>user\n{style}<|im_end|>\n"
         token_ids = self.message_processor.tokenize_text(instruction_text)
         return jnp.asarray(token_ids)[None, :]

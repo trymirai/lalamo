@@ -11,35 +11,29 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
-from lalamo.modules.activations import GELU, SiLU
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
+    CausalTransposeConv1d,
+    CausalTransposeConv1dConfig,
     ConvNeXtBlock,
     ConvNeXtBlockConfig,
 )
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
+from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import RoPE, UnscaledRoPEConfig
 from lalamo.modules.token_mixers import Attention, AttentionConfig
 
 from .qwen3_tts_modules import (
-    Qwen3TTSCausalTransposeConv1d,
-    Qwen3TTSCausalTransposeConv1dConfig,
     Qwen3TTSDecoderBlock,
     Qwen3TTSDecoderBlockConfig,
-    Qwen3TTSEuclideanCodebookConfig,
-    Qwen3TTSResidualUnitConfig,
-    Qwen3TTSResidualVectorQuantizationConfig,
-    Qwen3TTSResidualVectorQuantizerConfig,
     Qwen3TTSSnakeBeta,
     Qwen3TTSSnakeBetaConfig,
     Qwen3TTSSplitResidualVectorQuantizer,
     Qwen3TTSSplitResidualVectorQuantizerConfig,
-    Qwen3TTSVectorQuantizationConfig,
 )
 
 __all__ = [
@@ -53,7 +47,6 @@ __all__ = [
     "Qwen3TTSPreTransformerLayerConfig",
     "Qwen3TTSUpsampleBlock",
     "Qwen3TTSUpsampleBlockConfig",
-    "default_qwen3_tts_audio_decoder_config",
 ]
 
 QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT = 300
@@ -301,7 +294,7 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
 @dataclass(frozen=True)
 class Qwen3TTSUpsampleBlockConfig:
     precision: DTypeLike
-    transposed_conv_config: Qwen3TTSCausalTransposeConv1dConfig
+    transposed_conv_config: CausalTransposeConv1dConfig
     convnext_config: ConvNeXtBlockConfig
 
     def empty(self, latent_dim: int, factor: int) -> "Qwen3TTSUpsampleBlock":
@@ -334,7 +327,7 @@ class Qwen3TTSUpsampleBlockConfig:
 
 
 class Qwen3TTSUpsampleBlock(LalamoModule[Qwen3TTSUpsampleBlockConfig]):
-    transposed_conv: Qwen3TTSCausalTransposeConv1d
+    transposed_conv: CausalTransposeConv1d
     convnext: ConvNeXtBlock
 
     @property
@@ -669,166 +662,3 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
             final_snake=self.final_snake.import_weights(require_tree(weights["final_snake"])),
             final_conv=self.final_conv.import_weights(require_tree(weights["final_conv"])),
         )
-
-
-def default_qwen3_tts_audio_decoder_config(
-    *,
-    precision: DTypeLike = jnp.float32,
-    samplerate: int = 24000,
-    decode_upsample_rate: int = 1920,
-    codebook_size: int = 2048,
-    codebook_dim: int = 2048,
-    hidden_size: int = 1024,
-    latent_dim: int = 1024,
-    max_position_embeddings: int = 8000,
-    rope_theta: float = 10000,
-    num_attention_heads: int = 16,
-    num_key_value_heads: int = 16,
-    head_dim: int,
-    attention_bias: bool = False,
-    sliding_window: int = 72,
-    intermediate_size: int = 3072,
-    layer_scale_initial_scale: float = 0.01,
-    rms_norm_eps: float = 1e-5,
-    num_hidden_layers: int = 8,
-    num_quantizers: int = 16,
-    num_semantic_quantizers: int,
-    upsample_rates: tuple[int, ...] = (8, 5, 4, 3),
-    upsampling_ratios: tuple[int, ...] = (2, 2),
-    decoder_dim: int = 1536,
-) -> Qwen3TTSAudioDecoderConfig:
-    linear_config = FullPrecisionLinearConfig(precision=precision)
-
-    norm_config = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
-        epsilon=rms_norm_eps,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-    )
-
-    attention_config = AttentionConfig(
-        qkv_projection_config=linear_config,
-        out_projection_config=linear_config,
-        query_norm_config=None,
-        key_norm_config=None,
-        num_heads=num_attention_heads,
-        num_groups=num_key_value_heads,
-        head_dim=head_dim,
-        is_causal=True,
-        scale=None,
-        sliding_window_size=sliding_window,
-        logit_soft_cap=None,
-        has_sinks=False,
-        has_qkv_biases=attention_bias,
-        has_out_biases=attention_bias,
-    )
-
-    mlp_config = DenseMLPConfig(
-        linear_config=linear_config,
-        activation=SiLU(),
-        has_up_biases=False,
-        has_down_biases=False,
-        gate_clipping=None,
-        up_clipping=None,
-    )
-
-    rope_config = UnscaledRoPEConfig(
-        precision=precision,
-        base=rope_theta,
-        max_sequence_length=max_position_embeddings,
-    )
-
-    pre_transformer_layer_config = Qwen3TTSPreTransformerLayerConfig(
-        precision=precision,
-        attention_config=attention_config,
-        mlp_config=mlp_config,
-        norm_config=norm_config,
-        layer_scale_initial_scale=layer_scale_initial_scale,
-    )
-
-    pre_transformer_config = Qwen3TTSPreTransformerConfig(
-        precision=precision,
-        input_projection_config=linear_config,
-        output_projection_config=linear_config,
-        output_norm_config=norm_config,
-        rope_config=rope_config,
-        layer_config=pre_transformer_layer_config,
-        hidden_size=hidden_size,
-        latent_dim=latent_dim,
-        intermediate_size=intermediate_size,
-        num_hidden_layers=num_hidden_layers,
-        max_position_embeddings=max_position_embeddings,
-    )
-
-    snake_config = Qwen3TTSSnakeBetaConfig(precision=precision)
-    convnext_config = ConvNeXtBlockConfig(
-        precision=precision,
-        activation=GELU(approximate=False),
-        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-        norm_config=NormalizationConfig(
-            scale_precision=precision,
-            accumulation_precision=precision,
-            epsilon=1e-6,
-            scale_offset=None,
-            upcast_mode=UpcastMode.FULL_LAYER,
-            subtract_mean=True,
-            use_bias=True,
-        ),
-        linear_config=linear_config,
-        gamma_init=1e-6,
-    )
-
-    quantizer_config = Qwen3TTSSplitResidualVectorQuantizerConfig(
-        precision=precision,
-        residual_vector_quantizer_config=Qwen3TTSResidualVectorQuantizerConfig(
-            precision=precision,
-            rvq_config=Qwen3TTSResidualVectorQuantizationConfig(
-                precision=precision,
-                vector_quantization_config=Qwen3TTSVectorQuantizationConfig(
-                    precision=precision,
-                    codebook_config=Qwen3TTSEuclideanCodebookConfig(precision=precision),
-                    project_out_config=linear_config,
-                ),
-            ),
-            output_projection_config=linear_config,
-        ),
-        n_q_semantic=num_semantic_quantizers,
-    )
-
-    return Qwen3TTSAudioDecoderConfig(
-        precision=precision,
-        quantizer_config=quantizer_config,
-        pre_conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-        pre_transformer_config=pre_transformer_config,
-        upsample_block_config=Qwen3TTSUpsampleBlockConfig(
-            precision=precision,
-            transposed_conv_config=Qwen3TTSCausalTransposeConv1dConfig(precision=precision, has_biases=True),
-            convnext_config=convnext_config,
-        ),
-        decoder_input_conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-        decoder_block_config=Qwen3TTSDecoderBlockConfig(
-            precision=precision,
-            snake_config=snake_config,
-            transposed_conv_config=Qwen3TTSCausalTransposeConv1dConfig(precision=precision, has_biases=True),
-            residual_unit_config=Qwen3TTSResidualUnitConfig(
-                precision=precision,
-                snake_config=snake_config,
-                conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-            ),
-        ),
-        final_snake_config=snake_config,
-        final_conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
-        samplerate=samplerate,
-        decode_upsample_rate=decode_upsample_rate,
-        num_quantizers=num_quantizers,
-        codebook_size=codebook_size,
-        codebook_dim=codebook_dim,
-        latent_dim=latent_dim,
-        upsample_rates=upsample_rates,
-        upsampling_ratios=upsampling_ratios,
-        decoder_dim=decoder_dim,
-        chunk_size=QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
-        left_context_size=QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
-    )

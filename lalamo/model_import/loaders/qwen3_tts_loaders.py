@@ -14,7 +14,6 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
     Qwen3TTSUpsampleBlock,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
-    Qwen3TTSCausalTransposeConv1d,
     Qwen3TTSDecoderBlock,
     Qwen3TTSEuclideanCodebook,
     Qwen3TTSResidualUnit,
@@ -30,9 +29,8 @@ from .common import load_parameters
 from .huggingface import load_transformer_layer
 from .nanocodec_loaders import (
     load_causal_conv1d,
-    transform_pytorch_transpose_conv_weights,
+    load_causal_transpose_conv1d,
 )
-from .torch_utils import _fuse_parametrized_weight_norm_conv1d
 
 __all__ = [
     "load_qwen3_tts_audio_decoder",
@@ -60,30 +58,6 @@ def load_qwen3_tts_snake_beta(
         ),
     )
 
-
-def load_qwen3_tts_causal_transpose_conv1d(
-    module: Qwen3TTSCausalTransposeConv1d,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> Qwen3TTSCausalTransposeConv1d:
-    weight_norm_path = path / "parametrizations" / "weight" / "original0"
-    if weight_norm_path in weights_dict:
-        weight_pytorch, bias = _fuse_parametrized_weight_norm_conv1d(weights_dict, path, is_transposed=True)
-    else:
-        weight_pytorch = weights_dict[path / "weight"]
-        bias = weights_dict.get(path / "bias") if module.biases is not None else None
-
-    weight_jax = transform_pytorch_transpose_conv_weights(
-        weight_pytorch,
-        in_channels=module.in_channels,
-        out_channels=module.out_channels,
-        groups=module.groups,
-    )
-    return load_parameters(
-        lambda m: (m.weights, m.biases),
-        module,
-        (weight_jax, bias),
-    )
 
 
 def load_qwen3_tts_convnext_block(
@@ -147,7 +121,7 @@ def load_qwen3_tts_decoder_block(
     path: ParameterPath,
 ) -> Qwen3TTSDecoderBlock:
     snake = load_qwen3_tts_snake_beta(module.snake, weights_dict, path / "block" / "0")
-    transposed_conv = load_qwen3_tts_causal_transpose_conv1d(
+    transposed_conv = load_causal_transpose_conv1d(
         module.transposed_conv,
         weights_dict,
         path / "block" / "1" / "conv",
@@ -453,7 +427,7 @@ def load_qwen3_tts_upsample_block(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> Qwen3TTSUpsampleBlock:
-    transposed_conv = load_qwen3_tts_causal_transpose_conv1d(module.transposed_conv, weights_dict, path / "0" / "conv")
+    transposed_conv = load_causal_transpose_conv1d(module.transposed_conv, weights_dict, path / "0" / "conv")
     convnext = load_qwen3_tts_convnext_block(module.convnext, weights_dict, path / "1")
     return load_parameters(
         lambda m: (m.transposed_conv, m.convnext),

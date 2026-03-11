@@ -24,7 +24,6 @@ from lalamo.sampling import SamplingPolicy, make_policy
 __all__ = [
     "Qwen3TTSTextDecoder",
     "Qwen3TTSTextDecoderConfig",
-    "default_qwen3_tts_text_decoder_config",
 ]
 
 
@@ -58,7 +57,7 @@ def _sample_token_ids(
     return jax.vmap(lambda k, row: jax.random.categorical(k, row))(sample_keys, processed_logits).astype(jnp.int32)
 
 
-def _build_transformer_config(
+def build_transformer_config(
     *,
     precision: DTypeLike,
     hidden_size: int,
@@ -137,116 +136,6 @@ def _build_transformer_config(
         context_length=max_position_embeddings,
     )
 
-
-def default_qwen3_tts_text_decoder_config(
-    *,
-    precision: DTypeLike,
-    talker_vocab_size: int,
-    text_vocab_size: int,
-    talker_hidden_size: int,
-    text_hidden_size: int,
-    talker_intermediate_size: int,
-    talker_num_hidden_layers: int,
-    talker_num_attention_heads: int,
-    talker_num_key_value_heads: int,
-    talker_head_dim: int,
-    talker_max_position_embeddings: int,
-    talker_rope_theta: float,
-    talker_rms_norm_eps: float,
-    talker_attention_bias: bool,
-    talker_sliding_window_sizes: tuple[int | None, ...],
-    predictor_hidden_size: int,
-    predictor_intermediate_size: int,
-    predictor_num_hidden_layers: int,
-    predictor_num_attention_heads: int,
-    predictor_num_key_value_heads: int,
-    predictor_head_dim: int,
-    predictor_max_position_embeddings: int,
-    predictor_rope_theta: float,
-    predictor_rms_norm_eps: float,
-    predictor_attention_bias: bool,
-    predictor_sliding_window_sizes: tuple[int | None, ...],
-    predictor_vocab_size: int,
-    num_code_groups: int,
-    max_new_tokens: int,
-    codec_bos_id: int,
-    codec_eos_token_id: int,
-    codec_pad_id: int,
-    codec_think_id: int,
-    codec_nothing_id: int,
-    codec_think_bos_id: int,
-    codec_think_eos_id: int,
-    tts_bos_token_id: int,
-    tts_eos_token_id: int,
-    tts_pad_token_id: int,
-    spk_id: dict[str, int],
-    codec_language_id: dict[str, int],
-    im_start_token_id: int | None = None,
-    assistant_token_id: int | None = None,
-    im_end_token_id: int | None = None,
-) -> "Qwen3TTSTextDecoderConfig":
-    linear_config = FullPrecisionLinearConfig(precision=precision)
-    talker_transformer_config = _build_transformer_config(
-        precision=precision,
-        hidden_size=talker_hidden_size,
-        intermediate_size=talker_intermediate_size,
-        num_hidden_layers=talker_num_hidden_layers,
-        num_attention_heads=talker_num_attention_heads,
-        num_key_value_heads=talker_num_key_value_heads,
-        head_dim=talker_head_dim,
-        max_position_embeddings=talker_max_position_embeddings,
-        rope_theta=talker_rope_theta,
-        rms_norm_eps=talker_rms_norm_eps,
-        attention_bias=talker_attention_bias,
-        sliding_window_sizes=talker_sliding_window_sizes,
-    )
-    predictor_transformer_config = _build_transformer_config(
-        precision=precision,
-        hidden_size=predictor_hidden_size,
-        intermediate_size=predictor_intermediate_size,
-        num_hidden_layers=predictor_num_hidden_layers,
-        num_attention_heads=predictor_num_attention_heads,
-        num_key_value_heads=predictor_num_key_value_heads,
-        head_dim=predictor_head_dim,
-        max_position_embeddings=predictor_max_position_embeddings,
-        rope_theta=predictor_rope_theta,
-        rms_norm_eps=predictor_rms_norm_eps,
-        attention_bias=predictor_attention_bias,
-        sliding_window_sizes=predictor_sliding_window_sizes,
-    )
-
-    return Qwen3TTSTextDecoderConfig(
-        precision=precision,
-        codec_embedding_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision),
-        text_embedding_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision),
-        predictor_embedding_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision),
-        linear_config=linear_config,
-        talker_transformer_config=talker_transformer_config,
-        predictor_transformer_config=predictor_transformer_config,
-        talker_vocab_size=talker_vocab_size,
-        text_vocab_size=text_vocab_size,
-        talker_hidden_size=talker_hidden_size,
-        text_hidden_size=text_hidden_size,
-        predictor_hidden_size=predictor_hidden_size,
-        predictor_vocab_size=predictor_vocab_size,
-        num_code_groups=num_code_groups,
-        max_new_tokens=max_new_tokens,
-        codec_bos_id=codec_bos_id,
-        codec_eos_token_id=codec_eos_token_id,
-        codec_pad_id=codec_pad_id,
-        codec_think_id=codec_think_id,
-        codec_nothing_id=codec_nothing_id,
-        codec_think_bos_id=codec_think_bos_id,
-        codec_think_eos_id=codec_think_eos_id,
-        tts_bos_token_id=tts_bos_token_id,
-        tts_eos_token_id=tts_eos_token_id,
-        tts_pad_token_id=tts_pad_token_id,
-        spk_id=spk_id,
-        codec_language_id=codec_language_id,
-        im_start_token_id=im_start_token_id,
-        assistant_token_id=assistant_token_id,
-        im_end_token_id=im_end_token_id,
-    )
 
 
 @dataclass(frozen=True)

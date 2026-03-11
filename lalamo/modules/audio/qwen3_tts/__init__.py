@@ -3,7 +3,6 @@ from .qwen3_tts_audio_decoding import (
     QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
     Qwen3TTSAudioDecoder,
     Qwen3TTSAudioDecoderConfig,
-    default_qwen3_tts_audio_decoder_config,
 )
 from .qwen3_tts_modules import (
     Qwen3TTSDecoderBlock,
@@ -28,7 +27,6 @@ from .qwen3_tts_modules import (
 from .qwen3_tts_text_decoding import (
     Qwen3TTSTextDecoder,
     Qwen3TTSTextDecoderConfig,
-    default_qwen3_tts_text_decoder_config,
 )
 
 __all__ = [
@@ -55,7 +53,5 @@ __all__ = [
     "Qwen3TTSVectorQuantization",
     "Qwen3TTSVectorQuantizationConfig",
     "apply_rotary_pos_emb",
-    "default_qwen3_tts_audio_decoder_config",
-    "default_qwen3_tts_text_decoder_config",
     "rotate_half",
 ]

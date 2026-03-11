@@ -14,17 +14,47 @@ from lalamo.model_import.loaders.qwen3_tts_loaders import (
     load_qwen3_tts_text_decoder,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
-from lalamo.modules import LalamoModule, TTSConfig, TTSModel
+from lalamo.modules import (
+    AttentionConfig,
+    DenseMLPConfig,
+    FullPrecisionLinearConfig,
+    LalamoModule,
+    NormalizationConfig,
+    SiLU,
+    TiedEmbeddingConfig,
+    TTSConfig,
+    TTSModel,
+    UnscaledRoPEConfig,
+    UpcastMode,
+    VocoderConfig,
+)
+from lalamo.modules.activations import GELU
+from lalamo.modules.audio.common_modules import CausalConv1dConfig, CausalTransposeConv1dConfig, ConvNeXtBlockConfig
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
+    QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
+    QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
     Qwen3TTSAudioDecoder,
-    default_qwen3_tts_audio_decoder_config,
+    Qwen3TTSAudioDecoderConfig,
+    Qwen3TTSPreTransformerConfig,
+    Qwen3TTSPreTransformerLayerConfig,
+    Qwen3TTSUpsampleBlockConfig,
+)
+from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
+    Qwen3TTSDecoderBlockConfig,
+    Qwen3TTSEuclideanCodebookConfig,
+    Qwen3TTSResidualUnitConfig,
+    Qwen3TTSResidualVectorQuantizationConfig,
+    Qwen3TTSResidualVectorQuantizerConfig,
+    Qwen3TTSSnakeBetaConfig,
+    Qwen3TTSSplitResidualVectorQuantizerConfig,
+    Qwen3TTSVectorQuantizationConfig,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import (
     Qwen3TTSTextDecoder,
-    default_qwen3_tts_text_decoder_config,
+    Qwen3TTSTextDecoderConfig,
+    build_transformer_config,
 )
-from lalamo.modules.audio.text_to_speech import VocoderConfig
 
 __all__ = ["Qwen3TTSTokenizer12HzConfig"]
 
@@ -137,138 +167,21 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
-        decoder_config = self.decoder_config
-        _validate_decoder_config_assumptions(decoder_config)
-        _validate_top_level_config_assumptions(self, decoder_config)
+        dc = self.decoder_config
+        _validate_decoder_config_assumptions(dc)
+        _validate_top_level_config_assumptions(self, dc)
 
-        audio_decoder_config = default_qwen3_tts_audio_decoder_config(
-            precision=activation_precision,
-            samplerate=self.output_sample_rate,
-            decode_upsample_rate=self.decode_upsample_rate,
-            codebook_size=decoder_config.codebook_size,
-            codebook_dim=decoder_config.codebook_dim,
-            hidden_size=decoder_config.hidden_size,
-            latent_dim=decoder_config.latent_dim,
-            max_position_embeddings=decoder_config.max_position_embeddings,
-            rope_theta=decoder_config.rope_theta,
-            num_attention_heads=decoder_config.num_attention_heads,
-            num_key_value_heads=decoder_config.num_key_value_heads,
-            head_dim=decoder_config.head_dim,
-            attention_bias=decoder_config.attention_bias,
-            sliding_window=decoder_config.sliding_window,
-            intermediate_size=decoder_config.intermediate_size,
-            layer_scale_initial_scale=decoder_config.layer_scale_initial_scale,
-            rms_norm_eps=decoder_config.rms_norm_eps,
-            num_hidden_layers=decoder_config.num_hidden_layers,
-            num_quantizers=decoder_config.num_quantizers,
-            num_semantic_quantizers=decoder_config.num_semantic_quantizers,
-            upsample_rates=decoder_config.upsample_rates,
-            upsampling_ratios=decoder_config.upsampling_ratios,
-            decoder_dim=decoder_config.decoder_dim,
-        )
+        audio_decoder_config = _build_audio_decoder_config(activation_precision, dc, self)
 
         if self.talker_config is None:
             text_decoder_config = StubTextDecoderConfig(
                 num_codebooks=self.encoder_valid_num_quantizers,
-                codebook_size=decoder_config.codebook_size,
+                codebook_size=dc.codebook_size,
                 precision=activation_precision,
             )
         else:
-            talker = self.talker_config
-            predictor = talker.code_predictor_config
-
-            if talker.hidden_act != "silu":
-                raise ValueError(f"Only talker hidden_act=silu is supported, got {talker.hidden_act!r}.")
-            if predictor.hidden_act != "silu":
-                raise ValueError(f"Only predictor hidden_act=silu is supported, got {predictor.hidden_act!r}.")
-            if talker.attention_dropout != 0.0:
-                raise ValueError(
-                    "Talker attention dropout is not implemented in Lalamo;"
-                    f" expected 0.0, got {talker.attention_dropout}.",
-                )
-            if predictor.attention_dropout != 0.0:
-                raise ValueError(
-                    "Code predictor attention dropout is not implemented in Lalamo;"
-                    f" expected 0.0, got {predictor.attention_dropout}.",
-                )
-
-            tts_pad_token_id = self.tts_pad_token_id
-            tts_bos_token_id = self.tts_bos_token_id
-            tts_eos_token_id = self.tts_eos_token_id
-            if tts_pad_token_id is None or tts_bos_token_id is None or tts_eos_token_id is None:
-                raise ValueError(
-                    "Qwen3-TTS talker config requires top-level `tts_pad_token_id`,"
-                    " `tts_bos_token_id`, and `tts_eos_token_id`.",
-                )
-
-            text_decoder_config = default_qwen3_tts_text_decoder_config(
-                precision=activation_precision,
-                talker_vocab_size=talker.vocab_size,
-                text_vocab_size=talker.text_vocab_size,
-                talker_hidden_size=talker.hidden_size,
-                text_hidden_size=talker.text_hidden_size,
-                talker_intermediate_size=talker.intermediate_size,
-                talker_num_hidden_layers=talker.num_hidden_layers,
-                talker_num_attention_heads=talker.num_attention_heads,
-                talker_num_key_value_heads=talker.num_key_value_heads,
-                talker_head_dim=talker.head_dim,
-                talker_max_position_embeddings=(
-                    min(context_length, talker.max_position_embeddings)
-                    if context_length
-                    else talker.max_position_embeddings
-                ),
-                talker_rope_theta=talker.rope_theta,
-                talker_rms_norm_eps=talker.rms_norm_eps,
-                talker_attention_bias=talker.attention_bias,
-                talker_sliding_window_sizes=_build_sliding_window_sizes(
-                    num_hidden_layers=talker.num_hidden_layers,
-                    use_sliding_window=talker.use_sliding_window,
-                    sliding_window=talker.sliding_window,
-                    layer_types=talker.layer_types,
-                ),
-                predictor_hidden_size=predictor.hidden_size,
-                predictor_intermediate_size=predictor.intermediate_size,
-                predictor_num_hidden_layers=predictor.num_hidden_layers,
-                predictor_num_attention_heads=predictor.num_attention_heads,
-                predictor_num_key_value_heads=predictor.num_key_value_heads,
-                predictor_head_dim=predictor.head_dim,
-                predictor_max_position_embeddings=(
-                    min(context_length, predictor.max_position_embeddings)
-                    if context_length
-                    else predictor.max_position_embeddings
-                ),
-                predictor_rope_theta=predictor.rope_theta,
-                predictor_rms_norm_eps=predictor.rms_norm_eps,
-                predictor_attention_bias=predictor.attention_bias,
-                predictor_sliding_window_sizes=_build_sliding_window_sizes(
-                    num_hidden_layers=predictor.num_hidden_layers,
-                    use_sliding_window=predictor.use_sliding_window,
-                    sliding_window=predictor.sliding_window,
-                    max_window_layers=predictor.max_window_layers,
-                    layer_types=predictor.layer_types,
-                ),
-                predictor_vocab_size=predictor.vocab_size,
-                num_code_groups=talker.num_code_groups,
-                max_new_tokens=(
-                    min(context_length, talker.max_position_embeddings)
-                    if context_length
-                    else talker.max_position_embeddings
-                ),
-                codec_bos_id=talker.codec_bos_id,
-                codec_eos_token_id=talker.codec_eos_token_id,
-                codec_pad_id=talker.codec_pad_id,
-                codec_think_id=talker.codec_think_id,
-                codec_nothing_id=talker.codec_nothing_id,
-                codec_think_bos_id=talker.codec_think_bos_id,
-                codec_think_eos_id=talker.codec_think_eos_id,
-                tts_bos_token_id=tts_bos_token_id,
-                tts_eos_token_id=tts_eos_token_id,
-                tts_pad_token_id=tts_pad_token_id,
-                spk_id=talker.spk_id,
-                codec_language_id=talker.codec_language_id,
-                im_start_token_id=self.im_start_token_id,
-                assistant_token_id=self.assistant_token_id,
-                im_end_token_id=self.im_end_token_id,
+            text_decoder_config = _build_text_decoder_config(
+                activation_precision, self.talker_config, self, context_length,
             )
 
         return TTSConfig(
@@ -307,60 +220,35 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
         raw_config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
 
-        decoder_raw = _extract_decoder_config(raw_config)
+        decoder_raw = raw_config["decoder_config"]
+        assert isinstance(decoder_raw, Mapping), "decoder_config must be a mapping"
         decoder_config = _structure_decoder_config(decoder_raw)
 
-        decode_upsample_rate = int(
-            raw_config.get(
-                "decode_upsample_rate",
-                math.prod((*decoder_config.upsample_rates, *decoder_config.upsampling_ratios)),
-            ),
-        )
-        encode_downsample_rate = int(raw_config.get("encode_downsample_rate", decode_upsample_rate))
-        encoder_valid_num_quantizers = int(
-            raw_config.get("encoder_valid_num_quantizers", decoder_config.num_quantizers),
-        )
-        input_sample_rate = int(raw_config.get("input_sample_rate", 24000))
-        model_type = str(raw_config.get("model_type", "qwen3_tts"))
+        talker_raw = raw_config.get("talker_config")
+        talker_config: Qwen3TTSTalkerConfig | None = None
+        if talker_raw is not None:
+            assert isinstance(talker_raw, Mapping), "talker_config must be a mapping"
+            talker_config = _structure_talker_config(talker_raw)
 
-        if "output_sample_rate" in raw_config:
-            output_sample_rate = int(raw_config["output_sample_rate"])
-        else:
-            speaker_encoder_config = raw_config.get("speaker_encoder_config")
-            if isinstance(speaker_encoder_config, Mapping) and isinstance(
-                speaker_encoder_config.get("sample_rate"),
-                int,
-            ):
-                output_sample_rate = int(speaker_encoder_config["sample_rate"])
-            else:
-                output_sample_rate = 24000
-
-        torch_dtype = _resolve_torch_dtype(raw_config)
-        talker_config = _extract_talker_config(raw_config)
-
-        tts_pad_token_id_raw = raw_config.get("tts_pad_token_id")
-        tts_bos_token_id_raw = raw_config.get("tts_bos_token_id")
-        tts_eos_token_id_raw = raw_config.get("tts_eos_token_id")
-        assistant_token_id_raw = raw_config.get("assistant_token_id")
-        im_start_token_id_raw = raw_config.get("im_start_token_id")
-        im_end_token_id_raw = raw_config.get("im_end_token_id")
+        torch_dtype = raw_config["torch_dtype"]
+        assert isinstance(torch_dtype, str), f"torch_dtype must be a string, got {type(torch_dtype)}"
 
         return cls(
             decoder_config=decoder_config,
-            decode_upsample_rate=decode_upsample_rate,
-            encode_downsample_rate=encode_downsample_rate,
-            encoder_valid_num_quantizers=encoder_valid_num_quantizers,
-            input_sample_rate=input_sample_rate,
-            model_type=model_type,
-            output_sample_rate=output_sample_rate,
+            decode_upsample_rate=int(raw_config["decode_upsample_rate"]),
+            encode_downsample_rate=int(raw_config["encode_downsample_rate"]),
+            encoder_valid_num_quantizers=int(raw_config["encoder_valid_num_quantizers"]),
+            input_sample_rate=int(raw_config["input_sample_rate"]),
+            model_type=str(raw_config["model_type"]),
+            output_sample_rate=int(raw_config["output_sample_rate"]),
             torch_dtype=torch_dtype,
             talker_config=talker_config,
-            tts_pad_token_id=int(tts_pad_token_id_raw) if isinstance(tts_pad_token_id_raw, int) else None,
-            tts_bos_token_id=int(tts_bos_token_id_raw) if isinstance(tts_bos_token_id_raw, int) else None,
-            tts_eos_token_id=int(tts_eos_token_id_raw) if isinstance(tts_eos_token_id_raw, int) else None,
-            assistant_token_id=int(assistant_token_id_raw) if isinstance(assistant_token_id_raw, int) else None,
-            im_start_token_id=int(im_start_token_id_raw) if isinstance(im_start_token_id_raw, int) else None,
-            im_end_token_id=int(im_end_token_id_raw) if isinstance(im_end_token_id_raw, int) else None,
+            tts_pad_token_id=raw_config.get("tts_pad_token_id"),
+            tts_bos_token_id=raw_config.get("tts_bos_token_id"),
+            tts_eos_token_id=raw_config.get("tts_eos_token_id"),
+            assistant_token_id=raw_config.get("assistant_token_id"),
+            im_start_token_id=raw_config.get("im_start_token_id"),
+            im_end_token_id=raw_config.get("im_end_token_id"),
         )
 
     @property
@@ -368,183 +256,47 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         return jnp.dtype(self.torch_dtype)
 
 
-def _extract_decoder_config(raw_config: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    decoder_config = raw_config.get("decoder_config")
-    if isinstance(decoder_config, Mapping):
-        return decoder_config
-
-    minimal_keys = {
-        "codebook_size",
-        "hidden_size",
-        "latent_dim",
-        "num_attention_heads",
-        "num_key_value_heads",
-        "num_hidden_layers",
-        "num_quantizers",
-        "decoder_dim",
-    }
-    if minimal_keys.issubset(raw_config.keys()):
-        return raw_config
-
-    return None
-
-
-def _structure_decoder_config(raw_decoder_config: Mapping[str, Any] | None) -> Qwen3TTSTokenizer12HzDecoderConfig:
-    if raw_decoder_config is None:
-        raise ValueError(
-            "Qwen3-TTS config is missing `decoder_config`."
-            " Ensure the speech_tokenizer/config.json is listed in extra_configs.",
-        )
-
-    field_names = {field.name for field in fields(Qwen3TTSTokenizer12HzDecoderConfig)}
-    filtered: dict[str, Any] = {key: value for key, value in raw_decoder_config.items() if key in field_names}
+def _structure_decoder_config(raw: Mapping[str, Any]) -> Qwen3TTSTokenizer12HzDecoderConfig:
+    field_names = {f.name for f in fields(Qwen3TTSTokenizer12HzDecoderConfig)}
+    filtered: dict[str, Any] = {k: v for k, v in raw.items() if k in field_names}
 
     if "upsample_rates" in filtered:
-        filtered["upsample_rates"] = tuple(int(rate) for rate in filtered["upsample_rates"])
+        filtered["upsample_rates"] = tuple(int(r) for r in filtered["upsample_rates"])
     if "upsampling_ratios" in filtered:
-        filtered["upsampling_ratios"] = tuple(int(rate) for rate in filtered["upsampling_ratios"])
-
-    defaults = _default_decoder_config()
-    for field in fields(Qwen3TTSTokenizer12HzDecoderConfig):
-        filtered.setdefault(field.name, getattr(defaults, field.name))
+        filtered["upsampling_ratios"] = tuple(int(r) for r in filtered["upsampling_ratios"])
 
     return Qwen3TTSTokenizer12HzDecoderConfig(**filtered)
 
 
-def _default_decoder_config() -> Qwen3TTSTokenizer12HzDecoderConfig:
-    return Qwen3TTSTokenizer12HzDecoderConfig(
-        attention_dropout=0.0,
-        attention_bias=False,
-        codebook_dim=2048,
-        codebook_size=2048,
-        decoder_dim=1536,
-        head_dim=64,
-        hidden_act="silu",
-        hidden_size=1024,
-        intermediate_size=3072,
-        latent_dim=1024,
-        layer_scale_initial_scale=0.01,
-        max_position_embeddings=8000,
-        num_attention_heads=16,
-        num_hidden_layers=8,
-        num_key_value_heads=16,
-        num_quantizers=16,
-        num_semantic_quantizers=1,
-        rms_norm_eps=1e-5,
-        semantic_codebook_size=1024,
-        rope_theta=10000.0,
-        sliding_window=72,
-        upsample_rates=(8, 5, 4, 3),
-        upsampling_ratios=(2, 2),
-        vector_quantization_hidden_dimension=1024,
-    )
+def _structure_talker_config(raw: Mapping[str, Any]) -> Qwen3TTSTalkerConfig:
+    predictor_raw = raw["code_predictor_config"]
+    assert isinstance(predictor_raw, Mapping), "code_predictor_config must be a mapping"
+    predictor_config = _structure_predictor_config(predictor_raw)
 
-
-def _extract_talker_config(raw_config: Mapping[str, Any]) -> Qwen3TTSTalkerConfig | None:
-    talker_raw = raw_config.get("talker_config")
-    if not isinstance(talker_raw, Mapping):
-        return None
-    return _structure_talker_config(talker_raw)
-
-
-def _structure_talker_config(raw_talker_config: Mapping[str, Any]) -> Qwen3TTSTalkerConfig:
-    predictor_raw = raw_talker_config.get("code_predictor_config")
-    if isinstance(predictor_raw, Mapping):
-        predictor_config = _structure_predictor_config(predictor_raw)
-    else:
-        predictor_config = _default_predictor_config()
-
-    field_names = {field.name for field in fields(Qwen3TTSTalkerConfig)}
-    filtered = {key: value for key, value in raw_talker_config.items() if key in field_names}
+    field_names = {f.name for f in fields(Qwen3TTSTalkerConfig)}
+    filtered: dict[str, Any] = {k: v for k, v in raw.items() if k in field_names}
     filtered["code_predictor_config"] = predictor_config
 
-    defaults = _default_talker_config(predictor_config)
-    for field in fields(Qwen3TTSTalkerConfig):
-        filtered.setdefault(field.name, getattr(defaults, field.name))
-
     layer_types = filtered.get("layer_types")
-    if isinstance(layer_types, Sequence):
-        filtered["layer_types"] = tuple(str(value) for value in layer_types)
+    if isinstance(layer_types, Sequence) and not isinstance(layer_types, str):
+        filtered["layer_types"] = tuple(str(v) for v in layer_types)
     else:
         filtered["layer_types"] = None
 
     return Qwen3TTSTalkerConfig(**filtered)
 
 
-def _structure_predictor_config(raw_predictor_config: Mapping[str, Any]) -> Qwen3TTSTalkerCodePredictorConfig:
-    field_names = {field.name for field in fields(Qwen3TTSTalkerCodePredictorConfig)}
-    filtered = {key: value for key, value in raw_predictor_config.items() if key in field_names}
-
-    defaults = _default_predictor_config()
-    for field in fields(Qwen3TTSTalkerCodePredictorConfig):
-        filtered.setdefault(field.name, getattr(defaults, field.name))
+def _structure_predictor_config(raw: Mapping[str, Any]) -> Qwen3TTSTalkerCodePredictorConfig:
+    field_names = {f.name for f in fields(Qwen3TTSTalkerCodePredictorConfig)}
+    filtered: dict[str, Any] = {k: v for k, v in raw.items() if k in field_names}
 
     layer_types = filtered.get("layer_types")
-    if isinstance(layer_types, Sequence):
-        filtered["layer_types"] = tuple(str(value) for value in layer_types)
+    if isinstance(layer_types, Sequence) and not isinstance(layer_types, str):
+        filtered["layer_types"] = tuple(str(v) for v in layer_types)
     else:
         filtered["layer_types"] = None
 
     return Qwen3TTSTalkerCodePredictorConfig(**filtered)
-
-
-def _default_predictor_config() -> Qwen3TTSTalkerCodePredictorConfig:
-    return Qwen3TTSTalkerCodePredictorConfig(
-        attention_bias=False,
-        attention_dropout=0.0,
-        head_dim=128,
-        hidden_act="silu",
-        hidden_size=1024,
-        intermediate_size=3072,
-        max_position_embeddings=32768,
-        max_window_layers=28,
-        num_attention_heads=16,
-        num_code_groups=32,
-        num_hidden_layers=5,
-        num_key_value_heads=8,
-        rms_norm_eps=1e-6,
-        rope_theta=10000.0,
-        sliding_window=4096,
-        use_sliding_window=False,
-        vocab_size=2048,
-        layer_types=None,
-    )
-
-
-def _default_talker_config(
-    predictor_config: Qwen3TTSTalkerCodePredictorConfig,
-) -> Qwen3TTSTalkerConfig:
-    return Qwen3TTSTalkerConfig(
-        attention_bias=False,
-        attention_dropout=0.0,
-        codec_bos_id=4197,
-        codec_eos_token_id=4198,
-        codec_nothing_id=4203,
-        codec_pad_id=4196,
-        codec_think_bos_id=4204,
-        codec_think_eos_id=4205,
-        codec_think_id=4202,
-        head_dim=64,
-        hidden_act="silu",
-        hidden_size=1024,
-        intermediate_size=2048,
-        max_position_embeddings=32768,
-        num_attention_heads=16,
-        num_code_groups=32,
-        num_hidden_layers=20,
-        num_key_value_heads=2,
-        rms_norm_eps=1e-6,
-        rope_theta=10000.0,
-        sliding_window=4096,
-        text_hidden_size=2048,
-        text_vocab_size=151936,
-        use_sliding_window=False,
-        vocab_size=3072,
-        code_predictor_config=predictor_config,
-        spk_id={},
-        codec_language_id={},
-        layer_types=None,
-    )
 
 
 def _build_sliding_window_sizes(
@@ -572,54 +324,259 @@ def _build_sliding_window_sizes(
 
 
 def _detect_decoder_path(weights_dict: Mapping[str, Array]) -> ParameterPath:
-    path_candidates = (
-        ParameterPath("decoder"),
-        ParameterPath("speech_tokenizer.decoder"),
-        ParameterPath("tokenizer.decoder"),
-        ParameterPath("model.decoder"),
-        ParameterPath(""),
+    path = ParameterPath("decoder")
+    assert path / "pre_transformer" / "input_proj" / "weight" in weights_dict, (
+        f"Expected decoder weights under 'decoder.*' prefix. First keys: {sorted(weights_dict)[:8]}"
     )
-    for candidate in path_candidates:
-        required_key = candidate / "pre_transformer" / "input_proj" / "weight"
-        if required_key in weights_dict:
-            return candidate
-
-    available_keys = sorted(weights_dict)[:8]
-    raise ValueError(
-        f"Could not infer Qwen3-TTS decoder path from checkpoint. First keys: {available_keys}",
-    )
+    return path
 
 
 def _detect_talker_path(weights_dict: Mapping[str, Array]) -> ParameterPath:
-    path_candidates = (
-        ParameterPath(""),
-        ParameterPath("model"),
-        ParameterPath("tts_model"),
+    path = ParameterPath("")
+    assert path / "talker" / "model" / "codec_embedding" / "weight" in weights_dict, (
+        f"Expected talker weights under 'talker.*' prefix. First keys: {sorted(weights_dict)[:8]}"
     )
-    for candidate in path_candidates:
-        required_key = candidate / "talker" / "model" / "codec_embedding" / "weight"
-        if required_key in weights_dict:
-            return candidate
+    return path
 
-    available_keys = sorted(weights_dict)[:8]
-    raise ValueError(
-        f"Could not infer Qwen3-TTS talker path from checkpoint. First keys: {available_keys}",
+
+def _clamp_context(context_length: int | None, max_pos: int) -> int:
+    return min(context_length, max_pos) if context_length else max_pos
+
+
+def _build_audio_decoder_config(
+    precision: DTypeLike,
+    dc: Qwen3TTSTokenizer12HzDecoderConfig,
+    top: Qwen3TTSTokenizer12HzConfig,
+) -> Qwen3TTSAudioDecoderConfig:
+    linear_config = FullPrecisionLinearConfig(precision=precision)
+    norm_config = NormalizationConfig(
+        scale_precision=precision,
+        accumulation_precision=precision,
+        epsilon=dc.rms_norm_eps,
+        scale_offset=None,
+        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+        subtract_mean=False,
+    )
+    attention_config = AttentionConfig(
+        qkv_projection_config=linear_config,
+        out_projection_config=linear_config,
+        query_norm_config=None,
+        key_norm_config=None,
+        num_heads=dc.num_attention_heads,
+        num_groups=dc.num_key_value_heads,
+        head_dim=dc.head_dim,
+        is_causal=True,
+        scale=None,
+        sliding_window_size=dc.sliding_window,
+        logit_soft_cap=None,
+        has_sinks=False,
+        has_qkv_biases=dc.attention_bias,
+        has_out_biases=dc.attention_bias,
+    )
+    mlp_config = DenseMLPConfig(
+        linear_config=linear_config,
+        activation=SiLU(),
+        has_up_biases=False,
+        has_down_biases=False,
+        gate_clipping=None,
+        up_clipping=None,
+    )
+    pre_transformer_config = Qwen3TTSPreTransformerConfig(
+        precision=precision,
+        input_projection_config=linear_config,
+        output_projection_config=linear_config,
+        output_norm_config=norm_config,
+        rope_config=UnscaledRoPEConfig(
+            precision=precision,
+            base=dc.rope_theta,
+            max_sequence_length=dc.max_position_embeddings,
+        ),
+        layer_config=Qwen3TTSPreTransformerLayerConfig(
+            precision=precision,
+            attention_config=attention_config,
+            mlp_config=mlp_config,
+            norm_config=norm_config,
+            layer_scale_initial_scale=dc.layer_scale_initial_scale,
+        ),
+        hidden_size=dc.hidden_size,
+        latent_dim=dc.latent_dim,
+        intermediate_size=dc.intermediate_size,
+        num_hidden_layers=dc.num_hidden_layers,
+        max_position_embeddings=dc.max_position_embeddings,
+    )
+
+    snake_config = Qwen3TTSSnakeBetaConfig(precision=precision)
+    convnext_config = ConvNeXtBlockConfig(
+        precision=precision,
+        activation=GELU(approximate=False),
+        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        norm_config=NormalizationConfig(
+            scale_precision=precision,
+            accumulation_precision=precision,
+            epsilon=1e-6,
+            scale_offset=None,
+            upcast_mode=UpcastMode.FULL_LAYER,
+            subtract_mean=True,
+            use_bias=True,
+        ),
+        linear_config=linear_config,
+        gamma_init=1e-6,
+    )
+    quantizer_config = Qwen3TTSSplitResidualVectorQuantizerConfig(
+        precision=precision,
+        residual_vector_quantizer_config=Qwen3TTSResidualVectorQuantizerConfig(
+            precision=precision,
+            rvq_config=Qwen3TTSResidualVectorQuantizationConfig(
+                precision=precision,
+                vector_quantization_config=Qwen3TTSVectorQuantizationConfig(
+                    precision=precision,
+                    codebook_config=Qwen3TTSEuclideanCodebookConfig(precision=precision),
+                    project_out_config=linear_config,
+                ),
+            ),
+            output_projection_config=linear_config,
+        ),
+        n_q_semantic=dc.num_semantic_quantizers,
+    )
+
+    conv_config = CausalConv1dConfig(precision=precision, has_biases=True)
+    transpose_conv_config = CausalTransposeConv1dConfig(precision=precision, has_biases=True)
+    return Qwen3TTSAudioDecoderConfig(
+        precision=precision,
+        quantizer_config=quantizer_config,
+        pre_conv_config=conv_config,
+        pre_transformer_config=pre_transformer_config,
+        upsample_block_config=Qwen3TTSUpsampleBlockConfig(
+            precision=precision,
+            transposed_conv_config=transpose_conv_config,
+            convnext_config=convnext_config,
+        ),
+        decoder_input_conv_config=conv_config,
+        decoder_block_config=Qwen3TTSDecoderBlockConfig(
+            precision=precision,
+            snake_config=snake_config,
+            transposed_conv_config=transpose_conv_config,
+            residual_unit_config=Qwen3TTSResidualUnitConfig(
+                precision=precision,
+                snake_config=snake_config,
+                conv_config=conv_config,
+            ),
+        ),
+        final_snake_config=snake_config,
+        final_conv_config=conv_config,
+        samplerate=top.output_sample_rate,
+        decode_upsample_rate=top.decode_upsample_rate,
+        num_quantizers=dc.num_quantizers,
+        codebook_size=dc.codebook_size,
+        codebook_dim=dc.codebook_dim,
+        latent_dim=dc.latent_dim,
+        upsample_rates=dc.upsample_rates,
+        upsampling_ratios=dc.upsampling_ratios,
+        decoder_dim=dc.decoder_dim,
+        chunk_size=QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
+        left_context_size=QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
     )
 
 
-def _resolve_torch_dtype(raw_config: Mapping[str, Any]) -> str:
-    torch_dtype = raw_config.get("torch_dtype")
-    if isinstance(torch_dtype, str):
-        return torch_dtype
+def _build_text_decoder_config(
+    precision: DTypeLike,
+    talker: Qwen3TTSTalkerConfig,
+    top: Qwen3TTSTokenizer12HzConfig,
+    context_length: int | None,
+) -> Qwen3TTSTextDecoderConfig:
+    predictor = talker.code_predictor_config
 
-    encoder_config = raw_config.get("encoder_config")
-    if isinstance(encoder_config, Mapping):
-        encoder_dtype = encoder_config.get("dtype")
-        if isinstance(encoder_dtype, str):
-            return encoder_dtype
+    if talker.hidden_act != "silu":
+        raise ValueError(f"Only talker hidden_act=silu is supported, got {talker.hidden_act!r}.")
+    if predictor.hidden_act != "silu":
+        raise ValueError(f"Only predictor hidden_act=silu is supported, got {predictor.hidden_act!r}.")
+    if talker.attention_dropout != 0.0:
+        raise ValueError(
+            f"Talker attention dropout is not implemented; expected 0.0, got {talker.attention_dropout}.",
+        )
+    if predictor.attention_dropout != 0.0:
+        raise ValueError(
+            f"Predictor attention dropout is not implemented; expected 0.0, got {predictor.attention_dropout}.",
+        )
 
-    raise ValueError(
-        "Qwen3-TTS config is missing dtype metadata; expected `torch_dtype` or `encoder_config.dtype`.",
+    assert top.tts_pad_token_id is not None, "tts_pad_token_id is required for talker config"
+    assert top.tts_bos_token_id is not None, "tts_bos_token_id is required for talker config"
+    assert top.tts_eos_token_id is not None, "tts_eos_token_id is required for talker config"
+
+    linear_config = FullPrecisionLinearConfig(precision=precision)
+    embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+
+    talker_transformer_config = build_transformer_config(
+        precision=precision,
+        hidden_size=talker.hidden_size,
+        intermediate_size=talker.intermediate_size,
+        num_hidden_layers=talker.num_hidden_layers,
+        num_attention_heads=talker.num_attention_heads,
+        num_key_value_heads=talker.num_key_value_heads,
+        head_dim=talker.head_dim,
+        max_position_embeddings=_clamp_context(context_length, talker.max_position_embeddings),
+        rope_theta=talker.rope_theta,
+        rms_norm_eps=talker.rms_norm_eps,
+        attention_bias=talker.attention_bias,
+        sliding_window_sizes=_build_sliding_window_sizes(
+            num_hidden_layers=talker.num_hidden_layers,
+            use_sliding_window=talker.use_sliding_window,
+            sliding_window=talker.sliding_window,
+            layer_types=talker.layer_types,
+        ),
+    )
+    predictor_transformer_config = build_transformer_config(
+        precision=precision,
+        hidden_size=predictor.hidden_size,
+        intermediate_size=predictor.intermediate_size,
+        num_hidden_layers=predictor.num_hidden_layers,
+        num_attention_heads=predictor.num_attention_heads,
+        num_key_value_heads=predictor.num_key_value_heads,
+        head_dim=predictor.head_dim,
+        max_position_embeddings=_clamp_context(context_length, predictor.max_position_embeddings),
+        rope_theta=predictor.rope_theta,
+        rms_norm_eps=predictor.rms_norm_eps,
+        attention_bias=predictor.attention_bias,
+        sliding_window_sizes=_build_sliding_window_sizes(
+            num_hidden_layers=predictor.num_hidden_layers,
+            use_sliding_window=predictor.use_sliding_window,
+            sliding_window=predictor.sliding_window,
+            max_window_layers=predictor.max_window_layers,
+            layer_types=predictor.layer_types,
+        ),
+    )
+
+    return Qwen3TTSTextDecoderConfig(
+        precision=precision,
+        codec_embedding_config=embedding_config,
+        text_embedding_config=embedding_config,
+        predictor_embedding_config=embedding_config,
+        linear_config=linear_config,
+        talker_transformer_config=talker_transformer_config,
+        predictor_transformer_config=predictor_transformer_config,
+        talker_vocab_size=talker.vocab_size,
+        text_vocab_size=talker.text_vocab_size,
+        talker_hidden_size=talker.hidden_size,
+        text_hidden_size=talker.text_hidden_size,
+        predictor_hidden_size=predictor.hidden_size,
+        predictor_vocab_size=predictor.vocab_size,
+        num_code_groups=talker.num_code_groups,
+        max_new_tokens=_clamp_context(context_length, talker.max_position_embeddings),
+        codec_bos_id=talker.codec_bos_id,
+        codec_eos_token_id=talker.codec_eos_token_id,
+        codec_pad_id=talker.codec_pad_id,
+        codec_think_id=talker.codec_think_id,
+        codec_nothing_id=talker.codec_nothing_id,
+        codec_think_bos_id=talker.codec_think_bos_id,
+        codec_think_eos_id=talker.codec_think_eos_id,
+        tts_bos_token_id=top.tts_bos_token_id,
+        tts_eos_token_id=top.tts_eos_token_id,
+        tts_pad_token_id=top.tts_pad_token_id,
+        spk_id=talker.spk_id,
+        codec_language_id=talker.codec_language_id,
+        im_start_token_id=top.im_start_token_id,
+        assistant_token_id=top.assistant_token_id,
+        im_end_token_id=top.im_end_token_id,
     )
 
 

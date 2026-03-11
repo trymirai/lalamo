@@ -1,7 +1,7 @@
 from .classifier import ClassifierModel, ClassifierModelConfig
 from .common import BatchSizeInfo, BatchSizesComputedEvent
 from .language_model import GenerationConfig, LanguageModel, LanguageModelConfig
-from .tts_model import FishAudioTTSGenerator, Qwen3TTSTTSGenerator, TTSGenerator, TTSGeneratorConfig
+from .tts_model import FishAudioTTSGenerator, Qwen3TTSGenerator, TTSGenerator, TTSGeneratorConfig
 
 __all__ = [
     "BatchSizeInfo",
@@ -12,7 +12,7 @@ __all__ = [
     "GenerationConfig",
     "LanguageModel",
     "LanguageModelConfig",
-    "Qwen3TTSTTSGenerator",
+    "Qwen3TTSGenerator",
     "TTSGenerator",
     "TTSGeneratorConfig",
 ]

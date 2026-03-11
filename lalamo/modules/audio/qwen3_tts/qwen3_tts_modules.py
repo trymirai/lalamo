@@ -1,4 +1,3 @@
-import math
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Self
@@ -13,13 +12,13 @@ from lalamo.common import ParameterTree, require_array, require_tree
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
+    CausalTransposeConv1d,
+    CausalTransposeConv1dConfig,
 )
 from lalamo.modules.common import LalamoModule
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 
 __all__ = [
-    "Qwen3TTSCausalTransposeConv1d",
-    "Qwen3TTSCausalTransposeConv1dConfig",
     "Qwen3TTSDecoderBlock",
     "Qwen3TTSDecoderBlockConfig",
     "Qwen3TTSEuclideanCodebook",
@@ -59,134 +58,6 @@ def apply_rotary_pos_emb(
     q_embed = q * cos + rotate_half(q) * sin
     k_embed = k * cos + rotate_half(k) * sin
     return q_embed, k_embed
-
-
-@dataclass(frozen=True)
-class Qwen3TTSCausalTransposeConv1dConfig:
-    precision: DTypeLike
-    has_biases: bool
-
-    def empty(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        groups: int = 1,
-    ) -> "Qwen3TTSCausalTransposeConv1d":
-        in_per_group = in_channels // groups
-        weights = jnp.zeros((out_channels, in_per_group, kernel_size), dtype=self.precision)
-        if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-        pad = kernel_size - stride
-        left_pad = math.ceil(pad)
-        right_pad = left_pad
-        return Qwen3TTSCausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            in_channels=in_channels,
-            stride=stride,
-            groups=groups,
-            left_pad=left_pad,
-            right_pad=right_pad,
-        )
-
-    def random_init(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        groups: int = 1,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Qwen3TTSCausalTransposeConv1d":
-        in_per_group = in_channels // groups
-        weights = jax.random.normal(key, (out_channels, in_per_group, kernel_size), dtype=self.precision)
-        if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-        pad = kernel_size - stride
-        left_pad = math.ceil(pad)
-        right_pad = left_pad
-        return Qwen3TTSCausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            in_channels=in_channels,
-            stride=stride,
-            groups=groups,
-            left_pad=left_pad,
-            right_pad=right_pad,
-        )
-
-
-class Qwen3TTSCausalTransposeConv1d(LalamoModule[Qwen3TTSCausalTransposeConv1dConfig]):
-    weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
-    biases: Float[Array, " out_channels"] | None
-
-    in_channels: int
-    stride: int
-    groups: int
-    left_pad: int
-    right_pad: int
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def out_channels(self) -> int:
-        out_channels, _, _ = self.weights.shape
-        return int(out_channels)
-
-    @property
-    def kernel_size(self) -> int:
-        return int(self.weights.shape[-1])
-
-    def __call__(
-        self,
-        x: Float[Array, "batch tokens channels"],
-    ) -> Float[Array, "batch tokens channels"]:
-        padding = ((self.kernel_size - 1, self.kernel_size - 1),)
-        output = jax.lax.conv_general_dilated(
-            x,
-            self.weights,
-            window_strides=(1,),
-            padding=padding,
-            lhs_dilation=(self.stride,),
-            rhs_dilation=(1,),
-            dimension_numbers=("NHC", "OIH", "NHC"),
-            feature_group_count=self.groups,
-        )
-        if self.biases is not None:
-            output = output + self.biases[None, None, :]
-
-        _, output_tokens, _ = output.shape
-        end_index = output_tokens - self.right_pad if self.right_pad > 0 else output_tokens
-        return output[:, self.left_pad : end_index, :]
-
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        if self.biases is not None:
-            biases = require_array(weights["biases"])
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=require_array(weights["weights"]),
-            biases=biases,
-        )
 
 
 @dataclass(frozen=True)
@@ -350,7 +221,7 @@ class Qwen3TTSResidualUnit(LalamoModule[Qwen3TTSResidualUnitConfig]):
 class Qwen3TTSDecoderBlockConfig:
     precision: DTypeLike
     snake_config: Qwen3TTSSnakeBetaConfig
-    transposed_conv_config: Qwen3TTSCausalTransposeConv1dConfig
+    transposed_conv_config: CausalTransposeConv1dConfig
     residual_unit_config: Qwen3TTSResidualUnitConfig
 
     def empty(self, in_dim: int, out_dim: int, upsample_rate: int) -> "Qwen3TTSDecoderBlock":
@@ -401,7 +272,7 @@ class Qwen3TTSDecoderBlockConfig:
 
 class Qwen3TTSDecoderBlock(LalamoModule[Qwen3TTSDecoderBlockConfig]):
     snake: Qwen3TTSSnakeBeta
-    transposed_conv: Qwen3TTSCausalTransposeConv1d
+    transposed_conv: CausalTransposeConv1d
     residual_units: tuple[Qwen3TTSResidualUnit, Qwen3TTSResidualUnit, Qwen3TTSResidualUnit]
 
     @property

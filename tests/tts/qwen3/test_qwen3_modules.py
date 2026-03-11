@@ -3,32 +3,31 @@
 import jax.numpy as jnp
 import numpy as np
 import torch
+from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+    EuclideanCodebook as TorchEuclideanCodebook,
+)
+from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+    Qwen3TTSTokenizerV2CausalTransConvNet as TorchCausalTransConvNet,
+)
+from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+    Qwen3TTSTokenizerV2DecoderDecoderResidualUnit as TorchResidualUnit,
+)
+from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
+    SnakeBeta as TorchSnakeBeta,
+)
 
 from lalamo.common import ParameterPath
+from lalamo.model_import.loaders.nanocodec_loaders import load_causal_transpose_conv1d
 from lalamo.model_import.loaders.qwen3_tts_loaders import (
-    load_qwen3_tts_causal_transpose_conv1d,
     load_qwen3_tts_euclidean_codebook,
     load_qwen3_tts_residual_unit,
     load_qwen3_tts_snake_beta,
 )
-from lalamo.modules.audio.common_modules import CausalConv1dConfig
+from lalamo.modules.audio.common_modules import CausalConv1dConfig, CausalTransposeConv1dConfig
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
-    Qwen3TTSCausalTransposeConv1dConfig,
     Qwen3TTSEuclideanCodebookConfig,
     Qwen3TTSResidualUnitConfig,
     Qwen3TTSSnakeBetaConfig,
-)
-from tests.tts.qwen3.reference.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
-    EuclideanCodebook as TorchEuclideanCodebook,
-)
-from tests.tts.qwen3.reference.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
-    Qwen3TTSTokenizerV2CausalTransConvNet as TorchCausalTransConvNet,
-)
-from tests.tts.qwen3.reference.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
-    Qwen3TTSTokenizerV2DecoderDecoderResidualUnit as TorchResidualUnit,
-)
-from tests.tts.qwen3.reference.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
-    SnakeBeta as TorchSnakeBeta,
 )
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
 
@@ -66,7 +65,7 @@ def test_causal_transpose_conv1d_matches_torch() -> None:
 
     torch_conv = TorchCausalTransConvNet(in_channels, out_channels, kernel_size, stride)
 
-    lalamo_conv = Qwen3TTSCausalTransposeConv1dConfig(
+    lalamo_conv = CausalTransposeConv1dConfig(
         precision=jnp.float32, has_biases=True,
     ).empty(
         in_channels=in_channels, out_channels=out_channels,
@@ -74,7 +73,7 @@ def test_causal_transpose_conv1d_matches_torch() -> None:
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_conv.state_dict())
-    lalamo_conv = load_qwen3_tts_causal_transpose_conv1d(lalamo_conv, weights_dict, ParameterPath("conv"))
+    lalamo_conv = load_causal_transpose_conv1d(lalamo_conv, weights_dict, ParameterPath("conv"))
 
     inputs_nct = random_normal(2, in_channels, 10)
     inputs_nsc = np.transpose(inputs_nct, (0, 2, 1))
