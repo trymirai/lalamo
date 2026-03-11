@@ -85,6 +85,7 @@ class DecoderConfig:
     transformer_config: TransformerConfig
 
     vocab_size: int
+    pard_token: int | None = None
 
     def random_init(
         self,

@@ -601,7 +601,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             key=key,
         ):
             all_token_ids.append(token_id.item())
-            current_text = self.message_processor.detokenize(all_token_ids)
+            current_text = self.message_processor.detokenize(all_token_ids, hide_invalid_utf_chars=True)
             yield current_text[len(previous_text) :]
             previous_text = current_text
 
