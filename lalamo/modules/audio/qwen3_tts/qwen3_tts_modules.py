@@ -35,29 +35,7 @@ __all__ = [
     "Qwen3TTSSplitResidualVectorQuantizerConfig",
     "Qwen3TTSVectorQuantization",
     "Qwen3TTSVectorQuantizationConfig",
-    "apply_rotary_pos_emb",
-    "rotate_half",
 ]
-
-
-def rotate_half(x: Float[Array, "*batch channels"]) -> Float[Array, "*batch channels"]:
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return jnp.concatenate((-x2, x1), axis=-1)
-
-
-def apply_rotary_pos_emb(
-    q: Float[Array, "batch heads tokens channels"],
-    k: Float[Array, "batch heads tokens channels"],
-    cos: Float[Array, "batch tokens channels"],
-    sin: Float[Array, "batch tokens channels"],
-    unsqueeze_dim: int = 1,
-) -> tuple[Float[Array, "batch heads tokens channels"], Float[Array, "batch heads tokens channels"]]:
-    cos = jnp.expand_dims(cos, axis=unsqueeze_dim)
-    sin = jnp.expand_dims(sin, axis=unsqueeze_dim)
-    q_embed = q * cos + rotate_half(q) * sin
-    k_embed = k * cos + rotate_half(k) * sin
-    return q_embed, k_embed
 
 
 @dataclass(frozen=True)
@@ -67,8 +45,8 @@ class Qwen3TTSSnakeBetaConfig:
     no_div_by_zero: float = 1e-9
 
     def empty(self, channels: int) -> "Qwen3TTSSnakeBeta":
-        alpha = jnp.zeros((channels,), dtype=self.precision) * self.alpha_init
-        beta = jnp.zeros((channels,), dtype=self.precision) * self.alpha_init
+        alpha = jnp.full((channels,), self.alpha_init, dtype=self.precision)
+        beta = jnp.full((channels,), self.alpha_init, dtype=self.precision)
         return Qwen3TTSSnakeBeta(config=self, alpha=alpha, beta=beta)
 
     def random_init(
@@ -142,10 +120,10 @@ class Qwen3TTSResidualUnitConfig:
         )
 
     def random_init(self, dim: int, dilation: int, *, key: PRNGKeyArray) -> "Qwen3TTSResidualUnit":
-        key_conv1, key_conv2 = jax.random.split(key, 2)
+        key_act1, key_conv1, key_act2, key_conv2 = jax.random.split(key, 4)
         return Qwen3TTSResidualUnit(
             config=self,
-            act1=self.snake_config.random_init(dim, key=key),
+            act1=self.snake_config.random_init(dim, key=key_act1),
             conv1=self.conv_config.random_init(
                 in_channels=dim,
                 out_channels=dim,
@@ -155,7 +133,7 @@ class Qwen3TTSResidualUnitConfig:
                 groups=1,
                 key=key_conv1,
             ),
-            act2=self.snake_config.random_init(dim, key=key),
+            act2=self.snake_config.random_init(dim, key=key_act2),
             conv2=self.conv_config.random_init(
                 in_channels=dim,
                 out_channels=dim,
@@ -250,10 +228,10 @@ class Qwen3TTSDecoderBlockConfig:
         *,
         key: PRNGKeyArray,
     ) -> "Qwen3TTSDecoderBlock":
-        key_transposed, key_r1, key_r2, key_r3 = jax.random.split(key, 4)
+        key_snake, key_transposed, key_r1, key_r2, key_r3 = jax.random.split(key, 5)
         return Qwen3TTSDecoderBlock(
             config=self,
-            snake=self.snake_config.random_init(in_dim, key=key),
+            snake=self.snake_config.random_init(in_dim, key=key_snake),
             transposed_conv=self.transposed_conv_config.random_init(
                 in_channels=in_dim,
                 out_channels=out_dim,
@@ -398,9 +376,9 @@ class Qwen3TTSVectorQuantizationConfig:
         *,
         key: PRNGKeyArray,
     ) -> "Qwen3TTSVectorQuantization":
-        key_project = key
+        key_codebook, key_project = jax.random.split(key)
         codebook_dim = dim if codebook_dim is None else codebook_dim
-        codebook = self.codebook_config.random_init(dim=codebook_dim, codebook_size=codebook_size, key=key)
+        codebook = self.codebook_config.random_init(dim=codebook_dim, codebook_size=codebook_size, key=key_codebook)
         if codebook_dim == dim:
             project_out = None
         else:

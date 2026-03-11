@@ -42,7 +42,7 @@ from lalamo.sampling import SamplingPolicy
 
 from .common import ParameterTree, unflatten_parameters
 
-__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
+__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig", "TTSMessage"]
 
 
 @dataclass(frozen=True)
@@ -63,10 +63,10 @@ class TTSGenerator(eqx.Module):
 
     message_processor: TTSMessageProcessor = eqx.field(static=True)
 
-    def default_speaker_id(self) -> str:
+    def default_speaker_id(self) -> str | None:
         raise NotImplementedError
 
-    def default_style(self) -> str:
+    def default_style(self) -> str | None:
         raise NotImplementedError
 
     @property
@@ -226,13 +226,15 @@ class FishAudioTTSGenerator(TTSGenerator):
 
 
 class Qwen3TTSGenerator(TTSGenerator):
-    def default_style(self) -> str:
-        return ""
+    def default_style(self) -> str | None:
+        return None
 
-    def default_speaker_id(self) -> str:
+    def default_speaker_id(self) -> str | None:
         text_decoder = self.tts_model.text_decoder
         if not isinstance(text_decoder, Qwen3TTSTextDecoder):
             raise NotImplementedError
+        if not text_decoder.config.spk_id:
+            return None
         first_speaker, *_ = text_decoder.config.spk_id
         return first_speaker
 
@@ -262,7 +264,9 @@ class Qwen3TTSGenerator(TTSGenerator):
             instruction_tokens=instruction_tokens,
         )
 
-    def _tokenize_instruction(self, style: str) -> Int[Array, "batch tokens"]:
+    def _tokenize_instruction(self, style: str | None) -> Int[Array, "batch tokens"] | None:
+        if style is None:
+            return None
         instruction_text = f"<|im_start|>user\n{style}<|im_end|>\n"
         token_ids = self.message_processor.tokenize_text(instruction_text)
         return jnp.asarray(token_ids)[None, :]

@@ -18,8 +18,8 @@ class VoicePrompt:
 @dataclass(frozen=True)
 class TTSMessage:
     content: str
-    speaker_id: str
-    style: str
+    speaker_id: str | None = None
+    style: str | None = None
     language: str | None = None
 
 

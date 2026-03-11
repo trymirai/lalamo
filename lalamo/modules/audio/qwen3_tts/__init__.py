@@ -21,8 +21,6 @@ from .qwen3_tts_modules import (
     Qwen3TTSSplitResidualVectorQuantizerConfig,
     Qwen3TTSVectorQuantization,
     Qwen3TTSVectorQuantizationConfig,
-    apply_rotary_pos_emb,
-    rotate_half,
 )
 from .qwen3_tts_text_decoding import (
     Qwen3TTSTextDecoder,
@@ -52,6 +50,4 @@ __all__ = [
     "Qwen3TTSTextDecoderConfig",
     "Qwen3TTSVectorQuantization",
     "Qwen3TTSVectorQuantizationConfig",
-    "apply_rotary_pos_emb",
-    "rotate_half",
 ]

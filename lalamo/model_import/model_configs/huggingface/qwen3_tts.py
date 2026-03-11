@@ -181,7 +181,10 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
             )
         else:
             text_decoder_config = _build_text_decoder_config(
-                activation_precision, self.talker_config, self, context_length,
+                activation_precision,
+                self.talker_config,
+                self,
+                context_length,
             )
 
         return TTSConfig(
@@ -230,7 +233,7 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
             assert isinstance(talker_raw, Mapping), "talker_config must be a mapping"
             talker_config = _structure_talker_config(talker_raw)
 
-        torch_dtype = raw_config["torch_dtype"]
+        torch_dtype = raw_config["encoder_config"]["dtype"]
         assert isinstance(torch_dtype, str), f"torch_dtype must be a string, got {type(torch_dtype)}"
 
         return cls(

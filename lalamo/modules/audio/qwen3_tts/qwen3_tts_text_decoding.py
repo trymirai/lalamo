@@ -137,7 +137,6 @@ def build_transformer_config(
     )
 
 
-
 @dataclass(frozen=True)
 class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     precision: DTypeLike
@@ -529,8 +528,6 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         language: str = "auto",
         instruction_tokens: Int[Array, "batch tokens"] | None = None,
     ) -> Int[Array, "codebooks tokens"]:
-        if speaker is None:
-            raise ValueError("speaker is required for Qwen3TTSTextDecoder")
         if text_tokens.ndim != 2:
             raise ValueError(f"text_tokens must be rank 2, got {text_tokens.shape}")
         batch_size, _ = text_tokens.shape
@@ -542,12 +539,16 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         if key is None:
             key = jax.random.key(123)
 
-        speaker_codec_id = self.config.spk_id.get(speaker)
-        if speaker_codec_id is None:
+        if speaker is not None:
+            speaker_codec_id = self.config.spk_id.get(speaker)
+            if speaker_codec_id is None:
+                available = ", ".join(sorted(self.config.spk_id.keys()))
+                raise ValueError(f"Unknown speaker {speaker!r}. Available speakers: {available}")
+        elif self.config.spk_id:
             available = ", ".join(sorted(self.config.spk_id.keys()))
-            raise ValueError(
-                f"Unknown speaker {speaker!r}. Available speakers: {available}",
-            )
+            raise ValueError(f"speaker is required. Available speakers: {available}")
+        else:
+            speaker_codec_id = None
         language_codec_id = self.config.codec_language_id.get(language) if language != "auto" else None
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(

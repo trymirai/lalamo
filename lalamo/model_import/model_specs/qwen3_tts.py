@@ -53,9 +53,4 @@ QWEN3_TTS_MODELS = [
         size="1.7B",
         repo="Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
     ),
-    _qwen3_tts_model(
-        name="Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-        size="1.7B",
-        repo="Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
-    ),
 ]
