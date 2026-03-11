@@ -30,7 +30,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import (
     Qwen3TTSTextDecoder,
-    default_qwen3_tts_text_sampling_policy,
 )
 from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
@@ -38,7 +37,7 @@ from lalamo.modules.audio.text_to_speech import (
     TTSConfig,
 )
 from lalamo.safetensors import safe_read
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import ParameterTree, unflatten_parameters
 
@@ -51,7 +50,7 @@ class TTSGeneratorConfig:
     message_processor_config: TTSMessageProcessorConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class TTSGenerationResult:
     audio: np.ndarray
     audio_params: AudioRenderingSettings
@@ -252,7 +251,7 @@ class Qwen3TTSGenerator(TTSGenerator):
         assert isinstance(self.tts_model.text_decoder, Qwen3TTSTextDecoder)
 
         if sampling_policy is None:
-            sampling_policy = default_qwen3_tts_text_sampling_policy()
+            sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
 
         random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
@@ -280,13 +279,14 @@ class Qwen3TTSGenerator(TTSGenerator):
     ) -> TTSGenerationResult:
         messages_list = list(messages)
         first_message = messages_list[0]
+        speaker_id = first_message.speaker_id if first_message.speaker_id is not None else self.default_speaker_id()
 
         text_tokens = self.tokenize_text(messages_list)
         instruction_tokens = self._tokenize_instruction(first_message.style)
 
         semantic_tokens = self.decode_text(
             text_tokens,
-            speaker=first_message.speaker_id,
+            speaker=speaker_id,
             sampling_policy=sampling_policy,
             repetition_penalty=repetition_penalty,
             random_key=random_key,

@@ -63,7 +63,12 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models import (
+    ClassifierModelConfig,
+    FishAudioTTSGenerator,
+    LanguageModelConfig,
+    Qwen3TTSGenerator,
+)
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
@@ -392,12 +397,12 @@ def tts(
     console.print(f"🤖 Loading model from specified path: {model_path}.")
     model = TTSGenerator.load_model(model_path)
 
-    if speaker_id is None:
-        speaker_id = model.default_speaker_id()
-    if style is None:
-        style = model.default_style()
+    if isinstance(model, (FishAudioTTSGenerator, Qwen3TTSGenerator)):
+        if speaker_id is None:
+            speaker_id = model.default_speaker_id()
+        if style is None:
+            style = model.default_style()
 
-    assert model is not None
     _stop_word = "/stop"
     while True:
         user_text = console.input(f"[cyan]input text to generate speech({_stop_word} to exit)> [/cyan]")

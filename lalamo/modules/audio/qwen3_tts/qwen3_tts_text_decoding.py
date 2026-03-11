@@ -27,25 +27,6 @@ __all__ = [
 ]
 
 
-def default_qwen3_tts_text_sampling_policy() -> SamplingPolicy:
-    return make_policy(temperature=0.9, top_p=1.0, top_k=50)
-
-
-def _embed_tokens(
-    embedding: TiedEmbedding,
-    token_ids: Int[Array, "batch tokens"],
-) -> Float[Array, "batch tokens channels"]:
-    return vmap(embedding.embed)(token_ids)
-
-
-def _apply_linear_ntc(
-    linear: FullPrecisionLinear,
-    x: Float[Array, "batch tokens channels"],
-) -> Float[Array, "batch tokens channels"]:
-    (y,) = vmap(vmap(linear))(x)
-    return y
-
-
 def _sample_token_ids(
     logits: Float[Array, "batch vocabulary"],
     sampling_policy: SamplingPolicy,
@@ -166,8 +147,8 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     tts_bos_token_id: int
     tts_eos_token_id: int
     tts_pad_token_id: int
-    spk_id: dict[str, int]
-    codec_language_id: dict[str, int]
+    spk_id: Mapping[str, int]
+    codec_language_id: Mapping[str, int]
     im_start_token_id: int | None = None
     assistant_token_id: int | None = None
     im_end_token_id: int | None = None
@@ -332,18 +313,11 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
     ) -> Float[Array, "batch tokens channels"]:
-        x = _embed_tokens(self.text_embedding, text_tokens)
-        x = _apply_linear_ntc(self.text_projection_fc1, x)
+        x = vmap(self.text_embedding.embed)(text_tokens)
+        (x,) = vmap(vmap(self.text_projection_fc1))(x)
         x = jax.nn.silu(x)
-        x = _apply_linear_ntc(self.text_projection_fc2, x)
+        (x,) = vmap(vmap(self.text_projection_fc2))(x)
         return x
-
-    def _apply_codec_head(
-        self,
-        hidden_states: Float[Array, "batch tokens channels"],
-    ) -> Float[Array, "batch tokens vocabulary"]:
-        (logits,) = vmap(vmap(self.codec_head))(hidden_states)
-        return logits
 
     def _to_predictor_space(
         self,
@@ -351,7 +325,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
     ) -> Float[Array, "batch tokens predictor_hidden"]:
         if self.talker_to_predictor_projection is None:
             return x
-        return _apply_linear_ntc(self.talker_to_predictor_projection, x)
+        (y,) = vmap(vmap(self.talker_to_predictor_projection))(x)
+        return y
 
     def _build_talker_prompt(
         self,
@@ -375,26 +350,21 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         special_hidden = self._project_text_embeddings(special_text_tokens)
         tts_bos_embed, tts_eos_embed, tts_pad_embed = jnp.split(special_hidden, 3, axis=1)
 
-        tag_ids: list[int] = []
         if language_codec_id is None:
-            tag_ids.extend(
-                [self.config.codec_nothing_id, self.config.codec_think_bos_id, self.config.codec_think_eos_id],
-            )
+            tag_ids = (self.config.codec_nothing_id, self.config.codec_think_bos_id, self.config.codec_think_eos_id)
         else:
-            tag_ids.extend(
-                [
-                    self.config.codec_think_id,
-                    self.config.codec_think_bos_id,
-                    language_codec_id,
-                    self.config.codec_think_eos_id,
-                ],
+            tag_ids = (
+                self.config.codec_think_id,
+                self.config.codec_think_bos_id,
+                language_codec_id,
+                self.config.codec_think_eos_id,
             )
         if speaker_codec_id is not None:
-            tag_ids.append(speaker_codec_id)
-        tag_ids.extend([self.config.codec_pad_id, self.config.codec_bos_id])
+            tag_ids = (*tag_ids, speaker_codec_id)
+        tag_ids = (*tag_ids, self.config.codec_pad_id, self.config.codec_bos_id)
 
         codec_prefill_ids = jnp.asarray([tag_ids], dtype=jnp.int32)
-        codec_prefill_embed = _embed_tokens(self.codec_embedding, codec_prefill_ids)
+        codec_prefill_embed = vmap(self.codec_embedding.embed)(codec_prefill_ids)
 
         role_length = min(3, text_length)
         role_hidden = text_hidden[:, :role_length, :]
@@ -428,22 +398,17 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         )
 
         codec_prefill_body = codec_prefill_embed[:, :-1, :]
-        body_length = int(codec_prefill_body.shape[1])
-        if body_length <= 0:
-            codec_prompt = jnp.zeros((text_hidden.shape[0], 0, text_hidden.shape[-1]), dtype=text_hidden.dtype)
-        else:
-            left_pad_count = body_length - 1
-            codec_bias = jnp.concatenate(
-                [jnp.repeat(tts_pad_embed, left_pad_count, axis=1), tts_bos_embed],
-                axis=1,
-            )
-            codec_prompt = codec_bias + codec_prefill_body
+        left_pad_count = int(codec_prefill_body.shape[1]) - 1
+        codec_bias = jnp.concatenate(
+            [jnp.repeat(tts_pad_embed, left_pad_count, axis=1), tts_bos_embed],
+            axis=1,
+        )
+        codec_prompt = codec_bias + codec_prefill_body
 
         first_codec_plus_text = first_text_hidden + codec_prefill_embed[:, -1:, :]
-        prompt_parts = []
+        prompt_parts = (role_hidden, codec_prompt, first_codec_plus_text)
         if instruction_tokens is not None:
-            prompt_parts.append(self._project_text_embeddings(instruction_tokens))
-        prompt_parts.extend([role_hidden, codec_prompt, first_codec_plus_text])
+            prompt_parts = (self._project_text_embeddings(instruction_tokens), *prompt_parts)
         prompt = jnp.concatenate(prompt_parts, axis=1)
         trailing_text_hidden = jnp.concatenate([trailing_text_hidden_core, tts_eos_embed], axis=1)
         return prompt, trailing_text_hidden, tts_pad_embed
@@ -458,7 +423,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         Int[Array, "batch codebooks"],
         Float[Array, "batch 1 channels"],
     ]:
-        first_codec_embedding = _embed_tokens(self.codec_embedding, first_codec_id[:, None])
+        first_codec_embedding = vmap(self.codec_embedding.embed)(first_codec_id[:, None])
         predictor_inputs = jnp.concatenate([last_hidden, first_codec_embedding], axis=1)
 
         all_codec_ids = [first_codec_id]
@@ -493,7 +458,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
             key, step_key = jax.random.split(key)
             next_codec_id = _sample_token_ids(jnp.squeeze(step_logits, axis=1), sampling_policy, step_key)
-            next_codec_embedding = _embed_tokens(predictor_embedding, next_codec_id[:, None])
+            next_codec_embedding = vmap(predictor_embedding.embed)(next_codec_id[:, None])
 
             all_codec_ids.append(next_codec_id)
             all_codec_embeddings.append(next_codec_embedding)
@@ -535,9 +500,9 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             raise ValueError("Qwen3-TTS decoder currently supports batch_size=1 only.")
 
         if sampling_policy is None:
-            sampling_policy = default_qwen3_tts_text_sampling_policy()
+            sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
         if key is None:
-            key = jax.random.key(123)
+            raise ValueError("key is required")
 
         if speaker is not None:
             speaker_codec_id = self.config.spk_id.get(speaker)
@@ -549,7 +514,13 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             raise ValueError(f"speaker is required. Available speakers: {available}")
         else:
             speaker_codec_id = None
-        language_codec_id = self.config.codec_language_id.get(language) if language != "auto" else None
+        if language == "auto":
+            language_codec_id = None
+        else:
+            language_codec_id = self.config.codec_language_id.get(language)
+            if language_codec_id is None:
+                available = ", ".join(sorted(self.config.codec_language_id.keys()))
+                raise ValueError(f"Unknown language {language!r}. Available languages: {available}")
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(
             text_tokens,
@@ -586,7 +557,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
         for step in range(max_new_tokens):
             last_hidden = talker_hidden[:, -1:, :]
-            codec_logits = jnp.squeeze(self._apply_codec_head(last_hidden), axis=1)
+            (codec_logits,) = vmap(vmap(self.codec_head))(last_hidden)
+            codec_logits = jnp.squeeze(codec_logits, axis=1)
 
             key, codec_key = jax.random.split(key)
             first_codec_id = _sample_token_ids(codec_logits, sampling_policy, codec_key)
@@ -617,7 +589,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
                 return_layer_results=False,
                 return_positional_embeddings=False,
                 lengths_without_padding=None,
-                forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
+                forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
                 forward_pass_config=None,
             )
             talker_hidden = talker_result.outputs

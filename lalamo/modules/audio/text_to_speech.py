@@ -59,10 +59,13 @@ class TTSModel(LalamoModule[TTSConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return TTSConfig.activation_precision
+        return self.config.activation_precision
 
     def export_weights(self) -> ParameterTree[Array]:
-        return {}
+        return {
+            "text_decoder": self.text_decoder.export_weights(),
+            "audio_decoder": self.audio_decoder.export_weights(),
+        }
 
     def import_weights(
         self,
