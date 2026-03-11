@@ -170,3 +170,6 @@ ignore = [
     "TRY003",
     "CPY001"
 ]
+
+[tool.typos.default.extend-words]
+nothink = "nothink"

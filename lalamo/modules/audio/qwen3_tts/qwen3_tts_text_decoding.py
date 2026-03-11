@@ -141,7 +141,7 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     codec_eos_token_id: int
     codec_pad_id: int
     codec_think_id: int
-    codec_nothing_id: int
+    codec_nothink_id: int
     codec_think_bos_id: int
     codec_think_eos_id: int
     tts_bos_token_id: int
@@ -351,7 +351,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         tts_bos_embed, tts_eos_embed, tts_pad_embed = jnp.split(special_hidden, 3, axis=1)
 
         if language_codec_id is None:
-            tag_ids = (self.config.codec_nothing_id, self.config.codec_think_bos_id, self.config.codec_think_eos_id)
+            tag_ids = (self.config.codec_nothink_id, self.config.codec_think_bos_id, self.config.codec_think_eos_id)
         else:
             tag_ids = (
                 self.config.codec_think_id,

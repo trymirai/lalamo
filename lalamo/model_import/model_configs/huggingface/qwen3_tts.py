@@ -103,7 +103,7 @@ class Qwen3TTSTalkerCodePredictorConfig:
     num_key_value_heads: int
     rms_norm_eps: float
     rope_theta: float
-    sliding_window: int | None
+    sliding_window: int
     use_sliding_window: bool
     vocab_size: int
     layer_types: tuple[str, ...] | None = None
@@ -115,7 +115,7 @@ class Qwen3TTSTalkerConfig:
     attention_dropout: float
     codec_bos_id: int
     codec_eos_token_id: int
-    codec_nothing_id: int
+    codec_nothink_id: int
     codec_pad_id: int
     codec_think_bos_id: int
     codec_think_eos_id: int
@@ -131,7 +131,7 @@ class Qwen3TTSTalkerConfig:
     num_key_value_heads: int
     rms_norm_eps: float
     rope_theta: float
-    sliding_window: int | None
+    sliding_window: int
     text_hidden_size: int
     text_vocab_size: int
     use_sliding_window: bool
@@ -306,7 +306,7 @@ def _build_sliding_window_sizes(
     *,
     num_hidden_layers: int,
     use_sliding_window: bool,
-    sliding_window: int | None,
+    sliding_window: int,
     max_window_layers: int | None = None,
     layer_types: tuple[str, ...] | None = None,
 ) -> tuple[int | None, ...]:
@@ -319,9 +319,6 @@ def _build_sliding_window_sizes(
 
     if not use_sliding_window:
         return tuple(None for _ in range(num_hidden_layers))
-
-    if sliding_window is None:
-        raise ValueError("sliding_window must be set when use_sliding_window is True")
 
     if max_window_layers is None:
         return tuple(sliding_window for _ in range(num_hidden_layers))
@@ -572,7 +569,7 @@ def _build_text_decoder_config(
         codec_eos_token_id=talker.codec_eos_token_id,
         codec_pad_id=talker.codec_pad_id,
         codec_think_id=talker.codec_think_id,
-        codec_nothing_id=talker.codec_nothing_id,
+        codec_nothink_id=talker.codec_nothink_id,
         codec_think_bos_id=talker.codec_think_bos_id,
         codec_think_eos_id=talker.codec_think_eos_id,
         tts_bos_token_id=top.tts_bos_token_id,
