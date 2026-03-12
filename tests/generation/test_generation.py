@@ -15,6 +15,7 @@ MODEL_LIST = [
     "google/gemma-3-1b-it",
     "meta-llama/Llama-3.2-1B-Instruct",
     "cartesia-ai/Llamba-1B",
+    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
 ]
 
 

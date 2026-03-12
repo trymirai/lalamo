@@ -67,7 +67,15 @@ class HFQwen35Config(HuggingFaceLMConfig):
         with open(json_path) as f:
             config = json.load(f)
         text_config = config.pop("text_config", {})
-        return cls._converter.structure({**text_config, **config}, cls)
+        merged = {}
+        for key in {*text_config, *config}:
+            a, b = text_config.get(key), config.get(key)
+            if a is not None and b is not None:
+                raise ValueError(
+                    f"Duplicate key '{key}' with non-None values in both text_config and top-level config"
+                )
+            merged[key] = a if a is not None else b
+        return cls._converter.structure(merged, cls)
 
     def to_decoder_config(
         self,
