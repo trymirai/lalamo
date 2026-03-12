@@ -25,13 +25,17 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
+    FishAudioTTSGenerator,
     GenerationConfig,
     LanguageModel,
     LanguageModelConfig,
+    Qwen3TTSGenerator,
     TTSGenerator,
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules.audio.fishaudio import FishAudioTextDecoder
+from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
@@ -163,13 +167,14 @@ def _instantiate_tokenizer_from_model_spec(
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> Tokenizer:
-    if model_spec.vendor == "NVIDIA" and model_spec.family == "nanocodec":
-        # NOTE: once text decoder for Nanocodec is implemented - proper Tokenizer will hopefully become available
-        tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
-    else:
-        assert isinstance(model_spec.configs.tokenizer, FileSpec)
-        tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback)
-        tokenizer = Tokenizer.from_file(str(tokenizer_file))
+    match model_spec.configs.tokenizer:
+        case None:
+            tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
+        case FileSpec() as file_spec:
+            tokenizer_file = download_file(file_spec, model_spec.repo, output_dir, progress_callback)
+            tokenizer = Tokenizer.from_file(str(tokenizer_file))
+        case str() as tokenizer_string:
+            tokenizer = Tokenizer.from_str(tokenizer_string)
     return tokenizer
 
 
@@ -288,17 +293,21 @@ def _unpack_nemo_model(nemo_model_path: Path) -> Iterator[tuple[list[Path], Path
 def _download_weights_and_config_files(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> Iterator[tuple[list[Path], Path]]:
+) -> Iterator[tuple[list[Path], Path, list[Path]]]:
     if model_spec.weights_type == WeightsType.NEMO:
         (nemo_model_file,) = download_weights(model_spec, progress_callback=progress_callback)
         with _unpack_nemo_model(nemo_model_file) as nemo_file_contents:
             weights_paths, foreign_config_file_path = nemo_file_contents
-            yield (weights_paths, foreign_config_file_path)
+            yield (weights_paths, foreign_config_file_path, [])
     else:
         weights_paths = download_weights(model_spec, progress_callback=progress_callback)
         foreign_config_file_path = download_config_file(model_spec)
 
-        yield (weights_paths, foreign_config_file_path)
+        extra_config_paths = [
+            download_file(extra_config, model_spec.repo) for extra_config in model_spec.configs.extra_configs
+        ]
+
+        yield (weights_paths, foreign_config_file_path, extra_config_paths)
 
 
 def _load_main_processing_module(
@@ -345,8 +354,8 @@ def _import_language_model(
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
-    ) as (model_weights_paths, config_path):
-        foreign_decoder_config = model_spec.config_type.from_json(config_path)
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_decoder_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         assert isinstance(foreign_decoder_config, ForeignLMConfig)
 
         if precision is None:
@@ -402,8 +411,8 @@ def _import_classifier(
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
-    ) as (model_weights_paths, config_path):
-        foreign_classifier_config = model_spec.config_type.from_json(config_path)
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_classifier_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
 
         if precision is None:
@@ -444,8 +453,8 @@ def _import_tts_model(
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
-    ) as (model_weights_paths, config_path):
-        foreign_tts_config = model_spec.config_type.from_json(config_path)
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_tts_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         if precision is None:
             precision = foreign_tts_config.default_precision
         if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
@@ -503,7 +512,12 @@ def _import_tts_model(
         ),
         message_processor_config=message_processor.config,
     )
-    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+    if isinstance(tts_model.text_decoder, Qwen3TTSTextDecoder):
+        tts_generator = Qwen3TTSGenerator(tts_generator_config, tts_model, message_processor)
+    elif isinstance(tts_model.text_decoder, FishAudioTextDecoder):
+        tts_generator = FishAudioTTSGenerator(tts_generator_config, tts_model, message_processor)
+    else:
+        tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
 
     return (tts_generator, tts_generator_config)
 

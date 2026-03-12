@@ -84,11 +84,12 @@ class JSONFieldSpec:
 @dataclass(frozen=True)
 class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
-    tokenizer: FileSpec | None = field(default=FileSpec("tokenizer.json"))
+    tokenizer: FileSpec | str | None = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None
     system_prompt: FileSpec | str | None = None
+    extra_configs: tuple[FileSpec, ...] = ()
 
 
 def _is_foreign_config_type(t: object) -> bool:
@@ -118,7 +119,7 @@ def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Calla
     return _hook
 
 
-def _structure_system_prompt(value: object, _type: object) -> FileSpec | str | None:
+def _structure_file_spec_or_str(value: object, _type: object) -> FileSpec | str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -127,7 +128,7 @@ def _structure_system_prompt(value: object, _type: object) -> FileSpec | str | N
         value = cast("dict[Any, Any]", value)
         if "filename" in value:
             return FileSpec(**value)
-    raise ValueError(f"Invalid system_prompt value: {value}")
+    raise ValueError(f"Invalid FileSpec | str | None value: {value}")
 
 
 def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFieldSpec | str | None:
@@ -154,7 +155,7 @@ class ModelSpec:
     _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
     _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
     _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
-    _converter.register_structure_hook(FileSpec | str | None, _structure_system_prompt)
+    _converter.register_structure_hook(FileSpec | str | None, _structure_file_spec_or_str)
 
     vendor: str
     family: str

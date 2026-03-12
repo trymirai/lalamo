@@ -41,7 +41,7 @@ def pink_noise_via_fft(n: int) -> np.ndarray:
 
 
 def generate_envelope_with_formants(fir_size: int) -> tuple[np.ndarray, np.ndarray]:
-    """Generate a spectral envelope filter with formant-like characteristics.
+    """Generate a spectral envelope filter with format-like characteristics.
 
     Returns:
         Tuple of (fir_coefficients, envelope)
@@ -85,7 +85,7 @@ def generate_spline_curve(
 def generate_harmonic_row(
     fs: float, n_points: int, f0: float, num_harmonics: int = 50, flat_frequency: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate a harmonic signal with varying f0 and formant filtering.
+    """Generate a harmonic signal with varying f0 and format filtering.
 
     Args:
         fs: Sample rate in Hz
@@ -142,7 +142,7 @@ def generate_pseudo_voice_signal(
     Returns:
         Generated pseudo-voice signal
     """
-    # cross-fading margins when transition betwenn voiced-unvoiced segments
+    # cross-fading margins when transition between voiced-unvoiced segments
     margin_n_samples = 200
     half_margin = margin_n_samples // 2
 

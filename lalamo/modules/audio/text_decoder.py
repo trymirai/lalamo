@@ -36,6 +36,10 @@ class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
     def decode_utterance(
         self,
         text_tokens: Array,
+        *,
+        speaker: str | None = None,
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
+        language: str = "auto",
+        instruction_tokens: Array | None = None,
     ) -> Array: ...

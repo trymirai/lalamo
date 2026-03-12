@@ -33,6 +33,7 @@ tpu = ["jax[tpu]>=0.8.1"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
 nanocodec = ["torch>=2.8.0"]
+qwen3-tts = ["qwen-tts>=0.1.1"]
 
 [dependency-groups]
 dev = [
@@ -171,3 +172,6 @@ ignore = [
     "TC003",
     "PLW0108"
 ]
+
+[tool.typos.default.extend-words]
+nothink = "nothink"

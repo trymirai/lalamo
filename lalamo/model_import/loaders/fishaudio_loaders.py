@@ -24,6 +24,7 @@ from lalamo.modules import (
     Transformer,
     TransformerLayer,
 )
+from lalamo.modules.audio.common_modules import ConvNeXtBlock
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishAudioSpecialInferenceTokens,
@@ -33,7 +34,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
     IM_END_TOKEN,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    ConvNeXtBlock,
     DACDecoder,
     DACDecoderBlock,
     DownsampleResidualVectorQuantize,
@@ -536,9 +536,9 @@ def load_convnext_block(
     # PyTorch Linear weight is (out_features, in_features)
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    pointwise_conv_step1 = load_parameters(
+    pointwise_conv1 = load_parameters(
         lambda m: (m.weights, m.biases),
-        module.pointwise_conv_step1,
+        module.pointwise_conv1,
         (pwconv1_weight, pwconv1_bias),
     )
 
@@ -550,16 +550,16 @@ def load_convnext_block(
         layer_scale = weights_dict[layer_scale_path]
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
-    pointwise_conv_step2 = load_parameters(
+    pointwise_conv2 = load_parameters(
         lambda m: (m.weights, m.biases),
-        module.pointwise_conv_step2,
+        module.pointwise_conv2,
         (pwconv2_weight, pwconv2_bias),
     )
 
     return load_parameters(
-        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
+        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv1, m.pointwise_conv2),
         module,
-        (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
+        (depthwise_conv, norm, pointwise_conv1, pointwise_conv2),
     )
 
 

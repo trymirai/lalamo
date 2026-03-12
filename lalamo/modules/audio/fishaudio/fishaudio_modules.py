@@ -8,180 +8,27 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
     CausalTransposeConv1d,
     CausalTransposeConv1dConfig,
+    ConvNeXtBlock,
+    ConvNeXtBlockConfig,
     Snake1d,
     Snake1dConfig,
 )
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
-from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
 
 
 @dataclass(frozen=True)
 class ConvNeXtSpatialParams:
-    """Spatial parameters for ConvNeXt blocks.
-
-    These parameters control the spatial convolution and MLP expansion in ConvNeXt blocks.
-    """
-
-    # NOTE: default values are taken from the code and they do not seem to be present in
-    # the config at all
-    layer_scale_init_value: float = 1e-6
     mlp_ratio: float = 4.0
     kernel_size: int = 7
     dilation: int = 1
-
-
-@dataclass(frozen=True)
-class ConvNeXtBlockConfig:
-    precision: DTypeLike
-    activation: Activation
-    dwconv_config: CausalConv1dConfig
-    norm_config: NormalizationConfig
-    pwconv_config: FullPrecisionLinearConfig
-
-    def random_init(
-        self,
-        dim: int,
-        spatial_params: ConvNeXtSpatialParams,
-        *,
-        key: PRNGKeyArray,
-    ) -> "ConvNeXtBlock":
-        key1, key2, key3 = jax.random.split(key, 3)
-
-        dwconv = self.dwconv_config.random_init(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=spatial_params.kernel_size,
-            stride=1,
-            dilation=spatial_params.dilation,
-            groups=dim,
-            key=key1,
-        )
-
-        norm = self.norm_config.init(dim)
-
-        hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1 = self.pwconv_config.random_init(dim, (hidden_dim,), has_biases=True, key=key2)
-        pwconv2 = self.pwconv_config.random_init(hidden_dim, (dim,), has_biases=True, key=key3)
-
-        return ConvNeXtBlock(
-            config=self,
-            depthwise_conv=dwconv,
-            norm=norm,
-            pointwise_conv_step1=pwconv1,
-            pointwise_conv_step2=pwconv2,
-        )
-
-    def empty(
-        self,
-        dim: int,
-        spatial_params: ConvNeXtSpatialParams,
-    ) -> "ConvNeXtBlock":
-        dwconv = self.dwconv_config.empty(
-            in_channels=dim,
-            out_channels=dim,
-            kernel_size=spatial_params.kernel_size,
-            stride=1,
-            dilation=spatial_params.dilation,
-            groups=dim,
-        )
-
-        norm = self.norm_config.empty(dim)
-
-        hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1 = self.pwconv_config.empty(dim, (hidden_dim,), has_biases=True)
-        pwconv2 = self.pwconv_config.empty(hidden_dim, (dim,), has_biases=True)
-
-        return ConvNeXtBlock(
-            config=self,
-            depthwise_conv=dwconv,
-            norm=norm,
-            pointwise_conv_step1=pwconv1,
-            pointwise_conv_step2=pwconv2,
-        )
-
-
-class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
-    """ConvNeXt block implementation.
-
-    Architecture:
-    1. DwConv (depthwise causal conv)
-    2. LayerNorm
-    3. Pointwise conv 1 (expand)
-    4. GELU
-    5. Pointwise conv 2 (project)
-    6. Layer scale (gamma)
-    7. Residual connection
-
-    Input format: (batch, sequence, channels) - NSC format (JAX convention)
-    Output format: (batch, sequence, channels) - NSC format (JAX convention)
-    """
-
-    depthwise_conv: CausalConv1d
-    norm: Normalization
-    pointwise_conv_step1: FullPrecisionLinear
-    pointwise_conv_step2: FullPrecisionLinear
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
-    def dim(self) -> int:
-        return self.depthwise_conv.out_channels
-
-    def __call__(
-        self,
-        x: Float[Array, "batch sequence channels"],
-        apply_residual: bool = True,
-    ) -> Float[Array, "batch sequence channels"]:
-        residual = x
-
-        x = self.depthwise_conv(x)
-        x = jax.vmap(jax.vmap(self.norm))(x)
-        (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step1))(x)
-        x = jax.vmap(jax.vmap(self.config.activation))(x)
-        (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step2))(x)
-        if apply_residual:
-            x = residual + x
-
-        return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, ParameterTree[Array]] = {
-            "dwconv": self.depthwise_conv.export_weights(),
-            "norm": self.norm.export_weights(),
-            "pwconv1": self.pointwise_conv_step1.export_weights(),
-            "pwconv2": self.pointwise_conv_step2.export_weights(),
-        }
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "ConvNeXtBlock":
-        assert isinstance(weights, Mapping)
-        dwconv_weights = weights["dwconv"]
-        norm_weights = weights["norm"]
-        pwconv1_weights = weights["pwconv1"]
-        pwconv2_weights = weights["pwconv2"]
-        assert isinstance(dwconv_weights, Mapping)
-        assert isinstance(norm_weights, Mapping)
-        assert isinstance(pwconv1_weights, Mapping)
-        assert isinstance(pwconv2_weights, Mapping)
-
-        return replace(
-            self,
-            depthwise_conv=self.depthwise_conv.import_weights(require_tree(dwconv_weights)),
-            norm=self.norm.import_weights(require_tree(norm_weights)),
-            pointwise_conv_step1=self.pointwise_conv_step1.import_weights(require_tree(pwconv1_weights)),
-            pointwise_conv_step2=self.pointwise_conv_step2.import_weights(require_tree(pwconv2_weights)),
-        )
 
 
 @dataclass(frozen=True)
@@ -217,7 +64,9 @@ class UpsamplingBlockConfig:
 
         convnext = self.convnext_config.random_init(
             dim=trans_conv_params.out_channels,
-            spatial_params=convnext_spatial_params,
+            kernel_size=convnext_spatial_params.kernel_size,
+            dilation=convnext_spatial_params.dilation,
+            mlp_ratio=convnext_spatial_params.mlp_ratio,
             key=key2,
         )
 
@@ -241,7 +90,9 @@ class UpsamplingBlockConfig:
 
         convnext = self.convnext_config.empty(
             dim=trans_conv_params.out_channels,
-            spatial_params=convnext_spatial_params,
+            kernel_size=convnext_spatial_params.kernel_size,
+            dilation=convnext_spatial_params.dilation,
+            mlp_ratio=convnext_spatial_params.mlp_ratio,
         )
 
         return UpsamplingBlock(

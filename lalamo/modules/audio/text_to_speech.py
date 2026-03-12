@@ -14,6 +14,8 @@ from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
 from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
 from .nanocodec.audio_decoding import NanoCodecConfig
 from .nanocodec.stub_text_decoder import StubTextDecoderConfig
+from .qwen3_tts.qwen3_tts_audio_decoding import Qwen3TTSAudioDecoderConfig
+from .qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
@@ -21,10 +23,10 @@ DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.3, top_p
 DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig
+TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | Qwen3TTSAudioDecoderConfig
 register_config_union(TTSAudioDecoderConfig)
 
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | StubTextDecoderConfig
+TTSTextDecoderConfig = FishAudioTextDecoderConfig | Qwen3TTSTextDecoderConfig | StubTextDecoderConfig
 register_config_union(TTSTextDecoderConfig)
 
 
@@ -57,10 +59,13 @@ class TTSModel(LalamoModule[TTSConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return TTSConfig.activation_precision
+        return self.config.activation_precision
 
     def export_weights(self) -> ParameterTree[Array]:
-        return {}
+        return {
+            "text_decoder": self.text_decoder.export_weights(),
+            "audio_decoder": self.audio_decoder.export_weights(),
+        }
 
     def import_weights(
         self,

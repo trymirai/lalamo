@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import DTypeLike, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -28,17 +28,20 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
 )
+from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import (
+    Qwen3TTSTextDecoder,
+)
 from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_REPETITION_PENALTY,
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
 )
 from lalamo.safetensors import safe_read
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import ParameterTree, unflatten_parameters
 
-__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
+__all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig", "TTSMessage"]
 
 
 @dataclass(frozen=True)
@@ -47,7 +50,7 @@ class TTSGeneratorConfig:
     message_processor_config: TTSMessageProcessorConfig
 
 
-@dataclass
+@dataclass(frozen=True)
 class TTSGenerationResult:
     audio: np.ndarray
     audio_params: AudioRenderingSettings
@@ -58,6 +61,12 @@ class TTSGenerator(eqx.Module):
     tts_model: TTSModel
 
     message_processor: TTSMessageProcessor = eqx.field(static=True)
+
+    def default_speaker_id(self) -> str | None:
+        raise NotImplementedError
+
+    def default_style(self) -> str | None:
+        raise NotImplementedError
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -76,16 +85,23 @@ class TTSGenerator(eqx.Module):
 
     def decode_text(
         self,
-        text_tokens: Array,
-        sampling_policy: SamplingPolicy,
-        repetition_penalty: float,  # noqa: ARG002, reserved for near future
+        text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str | None = None,
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,
-    ) -> Array:
-        random_key = jax.random.PRNGKey(123) if random_key is None else random_key
+        language: str = "auto",
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,
+    ) -> Int[Array, "num_codebooks sequence"]:
+        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
+            speaker=speaker,
             sampling_policy=sampling_policy,
             key=random_key,
+            language=language,
+            instruction_tokens=instruction_tokens,
         )
 
     def decode_audio(self, semantic_tokens: Array) -> Array:
@@ -95,7 +111,6 @@ class TTSGenerator(eqx.Module):
         return self.tts_model.vocoder(audio_features)
 
     def get_generated_audio_params(self) -> AudioRenderingSettings:
-        # NOTE: think if this could be moved to config level or made mandatory via abstract
         return AudioRenderingSettings(
             samplerate=self.tts_model.audio_decoder.samplerate,
             output_channels=1,
@@ -120,9 +135,7 @@ class TTSGenerator(eqx.Module):
         )
 
         audio_features = self.decode_audio(semantic_tokens)
-
         audio_waveform = self.tts_model.vocoder(audio_features)
-
         audio_settings = self.get_generated_audio_params()
 
         return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
@@ -142,45 +155,147 @@ class TTSGenerator(eqx.Module):
             model = config.tts_config.empty().import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
-        return TTSGenerator(
-            config=config,
-            tts_model=model,
-            message_processor=message_processor,
-        )
+        generator_class: type[TTSGenerator] = TTSGenerator
+        if isinstance(model.text_decoder, FishAudioTextDecoder):
+            generator_class = FishAudioTTSGenerator
+        elif isinstance(model.text_decoder, Qwen3TTSTextDecoder):
+            generator_class = Qwen3TTSGenerator
+
+        return generator_class(config=config, tts_model=model, message_processor=message_processor)
 
 
 class FishAudioTTSGenerator(TTSGenerator):
+    def default_speaker_id(self) -> str:
+        return "speaker:0"
+
+    def default_style(self) -> str:
+        return "interleave"
+
     def decode_text(
         self,
         text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
-        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002
         random_key: PRNGKeyArray | None = None,
+        language: str = "auto",
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks sequence"]:
+        if language != "auto":
+            raise ValueError(f"Fish Audio does not support language selection, got {language!r}.")
+
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
         sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
 
-        random_key = jax.random.PRNGKey(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
+        random_key = jax.random.key(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
             key=random_key,
         )
 
-    def decode_audio(
+    def generate_speech(
         self,
-        semantic_tokens: Int[Array, "batch n_codebooks sequence"],
-    ) -> Float[Array, "batch audio_samples 1"]:
-        return super().decode_audio(semantic_tokens)
+        messages: Iterable[TTSMessage],
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
+        random_key: PRNGKeyArray | None = None,
+    ) -> TTSGenerationResult:
+        messages_list = list(messages)
+        first_message = messages_list[0]
 
-    def generate_waveform(self, audio_features: Array) -> Array:
-        return super().generate_waveform(audio_features)
+        text_tokens = self.tokenize_text(messages_list)
 
-    def get_generated_audio_params(self) -> AudioRenderingSettings:
-        return AudioRenderingSettings(
-            samplerate=self.tts_model.audio_decoder.samplerate,
-            output_channels=1,
-            bitwidth=16,
-            encoding=AudioEncoding.PCM,
+        semantic_tokens = self.decode_text(
+            text_tokens,
+            speaker=first_message.speaker_id,
+            sampling_policy=sampling_policy,
+            repetition_penalty=repetition_penalty,
+            random_key=random_key,
+            language=first_message.language or "auto",
         )
+
+        audio_features = self.decode_audio(semantic_tokens)
+        audio_waveform = self.tts_model.vocoder(audio_features)
+        audio_settings = self.get_generated_audio_params()
+
+        return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
+
+
+class Qwen3TTSGenerator(TTSGenerator):
+    def default_style(self) -> str | None:
+        return None
+
+    def default_speaker_id(self) -> str | None:
+        text_decoder = self.tts_model.text_decoder
+        if not isinstance(text_decoder, Qwen3TTSTextDecoder):
+            raise NotImplementedError
+        if not text_decoder.config.spk_id:
+            return None
+        first_speaker, *_ = text_decoder.config.spk_id
+        return first_speaker
+
+    def decode_text(
+        self,
+        text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str | None = None,
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,  # noqa: ARG002
+        random_key: PRNGKeyArray | None = None,
+        language: str = "auto",
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,
+    ) -> Int[Array, "num_codebooks sequence"]:
+        assert isinstance(self.tts_model.text_decoder, Qwen3TTSTextDecoder)
+
+        if sampling_policy is None:
+            sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
+
+        random_key = jax.random.key(123) if random_key is None else random_key
+        return self.tts_model.text_decoder.decode_utterance(
+            text_tokens,
+            sampling_policy=sampling_policy,
+            key=random_key,
+            speaker=speaker,
+            language=language,
+            instruction_tokens=instruction_tokens,
+        )
+
+    def _tokenize_instruction(self, style: str | None) -> Int[Array, "batch tokens"] | None:
+        if style is None:
+            return None
+        instruction_text = f"<|im_start|>user\n{style}<|im_end|>\n"
+        token_ids = self.message_processor.tokenize_text(instruction_text)
+        return jnp.asarray(token_ids)[None, :]
+
+    def generate_speech(
+        self,
+        messages: Iterable[TTSMessage],
+        sampling_policy: SamplingPolicy | None = None,
+        repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
+        random_key: PRNGKeyArray | None = None,
+    ) -> TTSGenerationResult:
+        messages_list = list(messages)
+        first_message = messages_list[0]
+        speaker_id = first_message.speaker_id if first_message.speaker_id is not None else self.default_speaker_id()
+
+        text_tokens = self.tokenize_text(messages_list)
+        instruction_tokens = self._tokenize_instruction(first_message.style)
+
+        semantic_tokens = self.decode_text(
+            text_tokens,
+            speaker=speaker_id,
+            sampling_policy=sampling_policy,
+            repetition_penalty=repetition_penalty,
+            random_key=random_key,
+            language=first_message.language or "auto",
+            instruction_tokens=instruction_tokens,
+        )
+
+        audio_features = self.decode_audio(semantic_tokens)
+        audio_waveform = self.tts_model.vocoder(audio_features)
+        audio_settings = self.get_generated_audio_params()
+
+        return TTSGenerationResult(audio=np.array(audio_waveform), audio_params=audio_settings)
