@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -10,7 +10,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
 from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
@@ -267,7 +267,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
                 "Mixtures of linear layers cannot be called directly."
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
-        result = self.weights @ inputs
+        result = jnp.dot(self.weights, inputs)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
@@ -282,7 +282,7 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         result = replace(
             self,
             weights=weights["weights"],
@@ -591,7 +591,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
         unpacked_zero_points = require_array(weights["zero_points"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
@@ -866,7 +866,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
@@ -1132,7 +1132,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         weights: ParameterTree[Array],
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         assert isinstance(weights["up_weights"], Sequence)
         result = replace(
             base,

@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Any, Self
 
@@ -7,7 +6,7 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -196,7 +195,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         }
 
     def import_weights(self, weights: ParameterTree) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             embeddings_slow=self.embeddings_slow.import_weights(require_tree(weights["embeddings_slow"])),
@@ -244,7 +243,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             (batch_size, self.config.num_codebooks + 1, seq_length),
             dtype=text_tokens.dtype,
         )
-        # NOTE: the rest of codebook lines should be filled in case audio promt is used, but
+        # NOTE: the rest of codebook lines should be filled in case audio prompt is used, but
         # ignore it for now
         text_and_codebooks = text_and_codebooks.at[:, 0, :].set(text_tokens)
 
@@ -268,7 +267,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         apply_codebook_embeddings: bool = False,
     ) -> Float[Array, "batch tokens embedding"]:
         """
-        apply_codebook_embeddings argumet should be set to 'True' if audio-prompt is used. In this
+        apply_codebook_embeddings argument should be set to 'True' if audio-prompt is used. In this
         case we expect codebook lines [1:-1] to be filled with something meaningful
         """
 
