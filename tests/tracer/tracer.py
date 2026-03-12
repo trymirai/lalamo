@@ -448,8 +448,9 @@ class ModelTracer[ArrayT, LayerT, RMSNormT, AttentionT, MlpT]:
 def configure_precision_for_tests() -> None:
     jax.config.update("jax_default_matmul_precision", "highest")
     torch.backends.cudnn.allow_tf32 = False
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
-    torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
+    if torch.backends.cuda.is_built():
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = False
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = False
 
 
 def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> None:
@@ -480,35 +481,43 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
         dtype=test_spec.dtype,
     )
 
-    model, model_metadata = import_model(
-        test_spec.model_repo,
-        context_length=test_spec.num_tokens * test_spec.token_stride,
-        precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
-    )
-    with jax.disable_jit():
-        inference_results = None
+    model = None
+    inference_results = None
+    try:
+        model, model_metadata = import_model(
+            test_spec.model_repo,
+            context_length=test_spec.num_tokens * test_spec.token_stride,
+            precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
+        )
+        with jax.disable_jit():
+            match model_metadata.model_type:
+                case ModelType.LANGUAGE_MODEL:
+                    assert isinstance(model, LanguageModel)
+                    err, inference_results = checkify_forward(model.model)(
+                        token_ids=token_ids,
+                        token_positions=token_positions,
+                        return_updated_state=True,
+                        return_activation_trace=True,
+                    )
+                    err.throw()
 
-        match model_metadata.model_type:
-            case ModelType.LANGUAGE_MODEL:
-                assert isinstance(model, LanguageModel)
-                err, inference_results = checkify_forward(model.model)(
-                    token_ids=token_ids,
-                    token_positions=token_positions,
-                    return_updated_state=True,
-                    return_activation_trace=True,
-                )
-                err.throw()
+                case ModelType.CLASSIFIER_MODEL:
+                    assert isinstance(model, ClassifierModel)
+                    err, inference_results = checkify_forward(model.model)(
+                        token_ids=token_ids,
+                        token_positions=token_positions,
+                        return_activation_trace=True,
+                    )
+                    err.throw()
 
-            case ModelType.CLASSIFIER_MODEL:
-                assert isinstance(model, ClassifierModel)
-                err, inference_results = checkify_forward(model.model)(
-                    token_ids=token_ids,
-                    token_positions=token_positions,
-                    return_activation_trace=True,
-                )
-                err.throw()
-
-    del model
-    gc.collect()
-
-    tracer.match_activations(inference_results)
+        tracer.match_activations(inference_results)
+    finally:
+        if model is not None:
+            del model
+        if inference_results is not None:
+            del inference_results
+        del tracer
+        gc.collect()
+        jax.clear_caches()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()

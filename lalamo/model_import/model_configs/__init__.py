@@ -1,6 +1,4 @@
 from .common import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig, ForeignTTSConfig
-
-# from .executorch import ETLlamaConfig
 from .huggingface import (
     HFGemma2Config,
     HFGemma3Config,
