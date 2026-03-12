@@ -285,6 +285,7 @@ QWEN3_NEXT = [
         repo="Qwen/Qwen3-Next-80B-A3B-Instruct",
         config_type=HFQwen3NextConfig,
     ),
+    # TODO(knyazer): uncomment and test when sharding is in
     # ModelSpec(
     #     vendor="Alibaba",
     #     family="Qwen3-Next",
@@ -301,4 +302,16 @@ QWEN3_NEXT = [
     # ),
 ]
 
-QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT
+QWEN3_PARD = [
+    ModelSpec(
+        vendor="AMD",
+        family="PARD",
+        name="PARD-Qwen3-0.6B",
+        size="0.6B",
+        quantization=None,
+        repo="amd/PARD-Qwen3-0.6B",
+        config_type=HFQwen3Config,
+    ),
+]
+
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN3_PARD
