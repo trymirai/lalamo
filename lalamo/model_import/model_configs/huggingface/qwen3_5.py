@@ -66,15 +66,10 @@ class HFQwen35Config(HuggingFaceLMConfig):
         json_path = Path(json_path)
         with open(json_path) as f:
             config = json.load(f)
+        # Multimodal configs nest text model params under text_config;
+        # top-level keys override text_config on conflict.
         text_config = config.pop("text_config", {})
-        merged = {}
-        for key in {*text_config, *config}:
-            a, b = text_config.get(key), config.get(key)
-            if a is not None and b is not None:
-                raise ValueError(
-                    f"Duplicate key '{key}' with non-None values in both text_config and top-level config"
-                )
-            merged[key] = a if a is not None else b
+        merged = {**text_config, **config}
         return cls._converter.structure(merged, cls)
 
     def to_decoder_config(
