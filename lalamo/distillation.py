@@ -3,16 +3,23 @@ from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+import equinox as eqx
+import jax.tree_util as jtu
 import jax.numpy as jnp
-from jaxtyping import DTypeLike
+from jax.tree_util import keystr
+from jaxtyping import Array, DTypeLike
 
-from lalamo.modules.common import ParameterLeafInfo, ParameterRole
+from lalamo.modules.common import ParameterLeafInfo, ParameterRole, iter_parameter_leaves
 
 __all__ = [
     "DistillTrainConfig",
     "DistillParameterSummary",
+    "DistillTrainableParameter",
+    "DistillTrainingState",
     "get_optimizer_group",
+    "initialize_distill_training_state",
     "is_leaf_trainable",
+    "materialize_trainable_module",
     "summarize_distill_parameters",
 ]
 
@@ -36,6 +43,20 @@ class DistillParameterSummary:
     total_master_bytes: int
     by_role: dict[str, int]
     by_group: dict[str, int]
+
+
+@dataclass(frozen=True)
+class DistillTrainableParameter:
+    path: str
+    alias_paths: tuple[str, ...]
+    parameter_role: ParameterRole
+    optimizer_group: str
+    master_weight: Array
+
+
+@dataclass(frozen=True)
+class DistillTrainingState:
+    trainable_parameters: tuple[DistillTrainableParameter, ...]
 
 
 def _is_embedding_leaf(info: ParameterLeafInfo) -> bool:
@@ -147,4 +168,78 @@ def summarize_distill_parameters(
         total_master_bytes=total_master_bytes,
         by_role=dict(by_role),
         by_group=dict(by_group),
+    )
+
+
+def _leaf_map(module: eqx.Module) -> dict[str, object]:
+    flat_with_path, _ = jtu.tree_flatten_with_path(module)
+    return {
+        keystr(path).lstrip("."): leaf
+        for path, leaf in flat_with_path
+    }
+
+
+def initialize_distill_training_state(
+    module: eqx.Module,
+    config: DistillTrainConfig,
+) -> DistillTrainingState:
+    master_dtype = jnp.dtype(config.master_dtype)
+    leaves = iter_parameter_leaves(module)
+    path_to_leaf = _leaf_map(module)
+
+    alias_paths: dict[str, list[str]] = defaultdict(list)
+    for info in leaves:
+        canonical_path = info.alias_of or info.path
+        alias_paths[canonical_path].append(info.path)
+
+    trainable_parameters: list[DistillTrainableParameter] = []
+    for info in leaves:
+        if not is_leaf_trainable(info, config):
+            continue
+
+        value = path_to_leaf[info.path]
+        if not eqx.is_array(value):
+            raise TypeError(f"Trainable leaf {info.path} must be an array, got {type(value)}")
+
+        trainable_parameters.append(
+            DistillTrainableParameter(
+                path=info.path,
+                alias_paths=tuple(alias_paths[info.path]),
+                parameter_role=info.parameter_role,
+                optimizer_group=get_optimizer_group(info, config),
+                master_weight=value.astype(master_dtype),
+            )
+        )
+
+    return DistillTrainingState(trainable_parameters=tuple(trainable_parameters))
+
+
+def _select_parameter_paths(module: eqx.Module, paths: Sequence[str]) -> list[object]:
+    path_to_leaf = _leaf_map(module)
+    return [path_to_leaf[path] for path in paths]
+
+
+def materialize_trainable_module[M: eqx.Module](
+    module: M,
+    state: DistillTrainingState,
+    config: DistillTrainConfig,
+) -> M:
+    compute_dtype = jnp.dtype(config.compute_dtype)
+
+    replacement_paths: list[str] = []
+    replacement_values: list[Array] = []
+    for parameter in state.trainable_parameters:
+        compute_weight = parameter.master_weight.astype(compute_dtype)
+        for path in parameter.alias_paths:
+            replacement_paths.append(path)
+            replacement_values.append(compute_weight)
+
+    if not replacement_paths:
+        return module
+
+    return eqx.tree_at(
+        lambda tree: _select_parameter_paths(tree, replacement_paths),
+        module,
+        replacement_values,
+        is_leaf=lambda value: value is None,
     )

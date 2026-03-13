@@ -4,8 +4,10 @@ import jax.numpy as jnp
 
 from lalamo.distillation import (
     DistillTrainConfig,
+    initialize_distill_training_state,
     get_optimizer_group,
     is_leaf_trainable,
+    materialize_trainable_module,
     summarize_distill_parameters,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
@@ -57,6 +59,33 @@ def test_summarize_distill_parameters_counts_unique_aliases_once() -> None:
     assert summary.by_group == {"muon": 4}
 
 
+def test_initialize_distill_training_state_dedupes_alias_masters() -> None:
+    shared = jnp.ones((2, 2), dtype=jnp.float32)
+    module = AliasModule(left=shared, right=shared)
+
+    state = initialize_distill_training_state(
+        module,
+        DistillTrainConfig(train_base_weight=True, compute_dtype=jnp.bfloat16),
+    )
+
+    assert len(state.trainable_parameters) == 1
+    trainable_parameter = state.trainable_parameters[0]
+    assert trainable_parameter.path == "left"
+    assert trainable_parameter.alias_paths == ("left", "right")
+    assert trainable_parameter.master_weight.dtype == jnp.float32
+
+    materialized = materialize_trainable_module(
+        module,
+        state,
+        DistillTrainConfig(train_base_weight=True, compute_dtype=jnp.bfloat16),
+    )
+    materialized_leaves = iter_parameter_leaves(materialized)
+
+    assert materialized.left.dtype == jnp.bfloat16
+    assert materialized.right.dtype == jnp.bfloat16
+    assert materialized_leaves[1].alias_of == "left"
+
+
 def test_q_lora_policy_prefers_adapter_weights() -> None:
     config = QLoRALinearConfig(
         group_size=2,
@@ -93,6 +122,46 @@ def test_quant_aux_can_be_enabled_explicitly() -> None:
     assert is_leaf_trainable(leaves["scales"], train_config)
     assert is_leaf_trainable(leaves["zero_points"], train_config)
     assert get_optimizer_group(leaves["scales"], train_config) == "quant_aux"
+
+
+def test_materialize_trainable_module_casts_only_trainable_leaves() -> None:
+    layer = FullPrecisionLinearConfig(precision=jnp.float32).random_init(
+        input_dim=4,
+        output_dims=(4,),
+        has_biases=True,
+        key=jax.random.key(7),
+    )
+
+    config = DistillTrainConfig(
+        train_base_weight=True,
+        train_bias=False,
+        master_dtype=jnp.float32,
+        compute_dtype=jnp.bfloat16,
+    )
+    state = initialize_distill_training_state(layer, config)
+    materialized = materialize_trainable_module(layer, state, config)
+
+    assert len(state.trainable_parameters) == 1
+    assert state.trainable_parameters[0].path == "weights"
+    assert state.trainable_parameters[0].master_weight.dtype == jnp.float32
+    assert materialized.weights.dtype == jnp.bfloat16
+    assert materialized.biases is not None
+    assert materialized.biases.dtype == jnp.float32
+
+
+def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (4,), True, key=jax.random.key(8))
+
+    config = DistillTrainConfig(train_bias=False, train_quant_aux=True)
+    state = initialize_distill_training_state(layer, config)
+
+    assert {parameter.path for parameter in state.trainable_parameters} == {"scales", "zero_points"}
+    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {"quant_aux"}
 
 
 def test_parameter_roles_cover_llama_relevant_modules() -> None:
