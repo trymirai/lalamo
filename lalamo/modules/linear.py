@@ -16,8 +16,10 @@ from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
+    ParameterRole,
     ShardingOrder,
     TensorSharding,
+    parameter_field,
     register_config_union,
     sharded_field,
 )
@@ -207,8 +209,11 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
+        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    biases: Float[Array, "*components total_out_channels"] | None
+    biases: Float[Array, "*components total_out_channels"] | None = parameter_field(
+        parameter_role=ParameterRole.LINEAR_BIAS,
+    )
 
     @property
     def mixture_size(self) -> int | None:
@@ -428,10 +433,17 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
+        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    scales: Float[Array, "*components total_out_channels groups"]
-    zero_points: Float[Array, "*components total_out_channels groups"]
-    biases: Float[Array, "*components total_out_channels"] | None
+    scales: Float[Array, "*components total_out_channels groups"] = parameter_field(
+        parameter_role=ParameterRole.QUANT_SCALE,
+    )
+    zero_points: Float[Array, "*components total_out_channels groups"] = parameter_field(
+        parameter_role=ParameterRole.QUANT_ZERO_POINT,
+    )
+    biases: Float[Array, "*components total_out_channels"] | None = parameter_field(
+        parameter_role=ParameterRole.LINEAR_BIAS,
+    )
 
     @property
     def mixture_size(self) -> int | None:
@@ -716,10 +728,17 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
+        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    scales: Float[Array, "*components total_out_channels groups"]
-    deq_biases: Float[Array, "*components total_out_channels groups"]
-    biases: Float[Array, "*components total_out_channels"] | None
+    scales: Float[Array, "*components total_out_channels groups"] = parameter_field(
+        parameter_role=ParameterRole.QUANT_SCALE,
+    )
+    deq_biases: Float[Array, "*components total_out_channels groups"] = parameter_field(
+        parameter_role=ParameterRole.QUANT_DEQ_BIAS,
+    )
+    biases: Float[Array, "*components total_out_channels"] | None = parameter_field(
+        parameter_role=ParameterRole.LINEAR_BIAS,
+    )
 
     @property
     def mixture_size(self) -> int | None:
@@ -1032,8 +1051,11 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
             axes=(-2, -1),
             axes_names=(ShardingOrder.INPUT, ShardingOrder.OUTPUT),
         ),
+        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...]
+    lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...] = parameter_field(
+        parameter_role=ParameterRole.LINEAR_WEIGHT,
+    )
 
     def _split_biases(self) -> tuple[Float[Array, "*components out_channels"] | None, ...]:
         if self.biases is not None:

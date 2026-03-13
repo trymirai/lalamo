@@ -1,5 +1,6 @@
 import contextlib
 import contextvars
+import dataclasses
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
@@ -10,8 +11,10 @@ from typing import Any, Generic, Self, TypeVar
 import equinox as eqx
 import jax
 import jax.sharding as shd
+import jax.tree_util as jtu
 from cattrs import Converter
 from jax import numpy as jnp
+from jax.tree_util import keystr
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree, require_array, require_tree
@@ -19,15 +22,25 @@ from lalamo.common import ParameterTree, require_array, require_tree
 __all__ = [
     "DummyUnionMember",
     "ForwardPassMode",
+    "FieldMetadataInfo",
+    "FieldParameterInfo",
+    "FieldTrainingInfo",
     "LalamoModule",
     "ParameterTree",
+    "ParameterLeafInfo",
+    "ParameterRole",
     "PositionalEmbeddingSelector",
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
     "apply_data_sharding",
     "config_converter",
+    "find_field_metadata",
+    "find_field_parameter_info",
+    "find_field_training_info",
     "get_current_sharding_config",
+    "iter_parameter_leaves",
+    "parameter_field",
     "register_config_union",
     "require_array",
     "require_tree",
@@ -44,6 +57,20 @@ class PositionalEmbeddingSelector(Enum):
 class ForwardPassMode(Enum):
     MULTI_TOKEN = "multi_token"
     SINGLE_TOKEN = "single_token"
+
+
+class ParameterRole(Enum):
+    DEFAULT = "default"
+    INPUT_EMBEDDING = "input_embedding"
+    OUTPUT_EMBEDDING = "output_embedding"
+    INPUT_OUTPUT_EMBEDDING = "input_output_embedding"
+    LINEAR_WEIGHT = "linear_weight"
+    LINEAR_BIAS = "linear_bias"
+    NORM_SCALE = "norm_scale"
+    NORM_BIAS = "norm_bias"
+    QUANT_SCALE = "quant_scale"
+    QUANT_ZERO_POINT = "quant_zero_point"
+    QUANT_DEQ_BIAS = "quant_deq_bias"
 
 
 ConfigT_co = TypeVar("ConfigT_co", covariant=True)
@@ -266,9 +293,155 @@ class TensorSharding:
         return (self.axes[pivot], *self.axes[:pivot], *self.axes[pivot + 1 :])
 
 
+@dataclass(frozen=True)
+class FieldMetadataInfo:
+    owner: eqx.Module
+    field: dataclasses.Field
+
+    @property
+    def metadata(self) -> Mapping[str, Any]:
+        return self.field.metadata
+
+
+@dataclass(frozen=True)
+class FieldTrainingInfo:
+    trainable_default: bool
+    parameter_role: ParameterRole
+
+
+@dataclass(frozen=True)
+class FieldParameterInfo:
+    training: FieldTrainingInfo
+    tensor_sharding: TensorSharding | None
+    min_size_to_shard: int
+
+
+@dataclass(frozen=True)
+class ParameterLeafInfo:
+    path: str
+    owner_type: type[eqx.Module]
+    field_name: str
+    parameter_role: ParameterRole
+    shape: tuple[int, ...]
+    dtype: jnp.dtype
+    trainable_default: bool
+    tensor_sharding: TensorSharding | None
+    min_size_to_shard: int
+    alias_of: str | None
+
+
+def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetadataInfo | None:
+    cur: object = module
+    owner = module
+    owner_field: dataclasses.Field | None = None
+
+    for key in path:
+        if isinstance(key, jtu.GetAttrKey):
+            assert isinstance(cur, eqx.Module)
+            owner = cur
+            owner_field = next((field for field in dataclasses.fields(cur) if field.name == key.name), None)
+            cur = getattr(cur, key.name)
+        elif isinstance(key, jtu.SequenceKey):
+            cur = cur[key.idx]  # type: ignore[index]
+        elif isinstance(key, jtu.DictKey):
+            cur = cur[key.key]  # type: ignore[index]
+        else:
+            raise TypeError(f"Unexpected key type: at {path}, key {key}")
+
+    if owner_field is None:
+        return None
+
+    return FieldMetadataInfo(owner=owner, field=owner_field)
+
+
+def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
+    return FieldParameterInfo(
+        training=FieldTrainingInfo(
+            trainable_default=field_info.metadata.get("trainable_default", True),
+            parameter_role=field_info.metadata.get("parameter_role", ParameterRole.DEFAULT),
+        ),
+        tensor_sharding=field_info.metadata.get("tensor_sharding"),
+        min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
+    )
+
+
+def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo | None:
+    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda value: value is target)
+
+    for path, leaf in flat_with_path:
+        if leaf is not target:
+            continue
+        field_info = _field_metadata_from_path(module, path)
+        if field_info is None:
+            raise ValueError(f"Field lookup failed for module {module} at {path}")
+        return field_info
+
+    return None
+
+
+def find_field_training_info(module: eqx.Module, target: object) -> FieldTrainingInfo | None:
+    field_parameter_info = find_field_parameter_info(module, target)
+    if field_parameter_info is None:
+        return None
+    return field_parameter_info.training
+
+
+def find_field_parameter_info(module: eqx.Module, target: object) -> FieldParameterInfo | None:
+    field_info = find_field_metadata(module, target)
+    if field_info is None:
+        return None
+    return _field_parameter_info(field_info)
+
+
+def _is_parameter_leaf(leaf: object) -> bool:
+    return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
+
+
+def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
+    flat_with_path, _ = jtu.tree_flatten_with_path(module)
+
+    results: list[ParameterLeafInfo] = []
+    first_paths: dict[int, str] = {}
+
+    for path, leaf in flat_with_path:
+        if not _is_parameter_leaf(leaf):
+            continue
+
+        field_info = _field_metadata_from_path(module, path)
+        if field_info is None:
+            raise ValueError(f"Field lookup failed for module {module} at {path}")
+
+        parameter_info = _field_parameter_info(field_info)
+
+        path_str = keystr(path).lstrip(".")
+        leaf_key = id(leaf)
+        alias_of = first_paths.get(leaf_key)
+        if alias_of is None:
+            first_paths[leaf_key] = path_str
+
+        results.append(
+            ParameterLeafInfo(
+                path=path_str,
+                owner_type=type(field_info.owner),
+                field_name=field_info.field.name,
+                parameter_role=parameter_info.training.parameter_role,
+                shape=tuple(leaf.shape),
+                dtype=jnp.dtype(leaf.dtype),
+                trainable_default=parameter_info.training.trainable_default,
+                tensor_sharding=parameter_info.tensor_sharding,
+                min_size_to_shard=parameter_info.min_size_to_shard,
+                alias_of=alias_of,
+            )
+        )
+
+    return results
+
+
 def sharded_field(
     tensor_sharding: TensorSharding | None = None,
     min_size_to_shard: int = 2**18,
+    trainable_default: bool = True,
+    parameter_role: ParameterRole = ParameterRole.DEFAULT,
     *,
     converter: Callable[[Any], Any] | None = None,
     static: bool = False,
@@ -278,6 +451,28 @@ def sharded_field(
     merged_metadata = dict(metadata or {})
     merged_metadata["tensor_sharding"] = tensor_sharding
     merged_metadata["min_size_to_shard"] = min_size_to_shard
+    return parameter_field(
+        trainable_default=trainable_default,
+        parameter_role=parameter_role,
+        converter=converter,
+        static=static,
+        metadata=merged_metadata,
+        **kwargs,
+    )
+
+
+def parameter_field(
+    trainable_default: bool = True,
+    parameter_role: ParameterRole = ParameterRole.DEFAULT,
+    *,
+    converter: Callable[[Any], Any] | None = None,
+    static: bool = False,
+    metadata: Mapping[str, Any] | None = None,
+    **kwargs: Any,  # noqa: ANN401
+) -> Any:  # noqa: ANN401
+    merged_metadata = dict(metadata or {})
+    merged_metadata["trainable_default"] = trainable_default
+    merged_metadata["parameter_role"] = parameter_role
     return eqx.field(
         converter=converter,
         static=static,

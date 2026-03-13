@@ -7,6 +7,7 @@ from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
     LalamoModule,
+    ParameterRole,
     PositionalEmbeddingSelector,
     ShardingConfig,
     ShardingOrder,
@@ -14,6 +15,7 @@ from .common import (
     apply_data_sharding,
     config_converter,
     get_current_sharding_config,
+    parameter_field,
     sharded_field,
 )
 from .decoder import (
@@ -145,6 +147,7 @@ __all__ = [
     "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
+    "ParameterRole",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
@@ -187,5 +190,6 @@ __all__ = [
     "apply_data_sharding",
     "config_converter",
     "get_current_sharding_config",
+    "parameter_field",
     "sharded_field",
 ]

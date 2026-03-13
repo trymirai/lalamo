@@ -1,20 +1,20 @@
-import dataclasses
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 import jax.sharding as shd
-import jax.tree_util as jtu
 from jax._src.api import ShapeDtypeStruct
 from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
 from lalamo.modules.common import (
+    FieldMetadataInfo,
     ShardingConfig,
     ShardingOrder,
     TensorSharding,
+    find_field_metadata,
     get_current_sharding_config,
 )
 
@@ -31,43 +31,21 @@ class FieldShardingInfo:
 
 
 def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo | None:
-    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda x: x is target)
+    field_info = find_field_metadata(module, target)
+    if field_info is None:
+        return None
+    return _field_sharding_info(field_info)
 
-    for path, leaf in flat_with_path:
-        if leaf is not target:
-            continue
 
-        cur: eqx.Module | Array = module
-        owner: eqx.Module = module
-        owner_field: dataclasses.Field | None = None
-
-        for key in path:
-            if isinstance(key, jtu.GetAttrKey):
-                assert isinstance(cur, eqx.Module)
-                owner = cur
-                owner_field = next((f for f in dataclasses.fields(cur) if f.name == key.name), None)
-                cur = getattr(cur, key.name)
-            elif isinstance(key, jtu.SequenceKey):
-                cur = cur[key.idx]  # type: ignore[index]
-            elif isinstance(key, jtu.DictKey):
-                cur = cur[key.key]  # type: ignore[index]
-            else:
-                raise TypeError(f"Unexpected key type: at {path}, key {key}")
-
-        if owner_field is None:
-            raise ValueError(f"Attempting to shard root module ({module}), or field on {path} not found")
-
-        tensor_sharding = owner_field.metadata.get("tensor_sharding")
-        if tensor_sharding is None:
-            return None
-
-        return FieldShardingInfo(
-            tensor_sharding,
-            sharding_order=getattr(owner, "sharding_order", None),
-            min_size_to_shard=owner_field.metadata.get("min_size_to_shard", 0),
-        )
-
-    return None
+def _field_sharding_info(field_info: FieldMetadataInfo) -> FieldShardingInfo | None:
+    tensor_sharding = field_info.metadata.get("tensor_sharding")
+    if tensor_sharding is None:
+        return None
+    return FieldShardingInfo(
+        tensor_sharding,
+        sharding_order=getattr(field_info.owner, "sharding_order", None),
+        min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
+    )
 
 
 def _apply_parameter_sharding(
