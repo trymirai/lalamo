@@ -66,7 +66,7 @@ class SeparableCausalConvConfig:
 
 class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     weights: Float[Array, "channels kernel"] = parameter_field()
-    biases: Float[Array, " channels"] | None = parameter_field(default=None)
+    biases: Float[Array, " channels"] | None = parameter_field()
 
     def __post_init__(self) -> None:
         input_dim, _ = self.weights.shape

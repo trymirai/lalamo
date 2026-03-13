@@ -235,7 +235,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     query_norm: Normalization | None
     key_norm: Normalization | None
 
-    sinks: Float[Array, " heads"] | None = parameter_field(default=None)
+    sinks: Float[Array, " heads"] | None = parameter_field()
 
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
