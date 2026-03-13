@@ -9,7 +9,7 @@ import jax.tree_util as jtu
 import jax.numpy as jnp
 from jax.tree_util import keystr
 import optax
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.common import ParameterLeafInfo, ParameterRole, iter_parameter_leaves
@@ -320,8 +320,8 @@ def _token_positions(batch: DistillBatch) -> Int[Array, "batch tokens"]:
     return jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
 
 
-def _prediction_mask(batch: DistillBatch) -> Float[Array, "batch prediction_tokens"]:
-    batch_size, num_tokens = batch.token_ids.shape
+def _prediction_mask(batch: DistillBatch) -> Bool[Array, "batch prediction_tokens"]:
+    _, num_tokens = batch.token_ids.shape
     prediction_tokens = max(num_tokens - 1, 0)
     lengths_without_padding = _batch_lengths(batch)
     return jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths_without_padding[:, None] - 1)
@@ -366,6 +366,8 @@ def distill_train_step(
     batch: DistillBatch,
     config: DistillTrainConfig,
 ) -> tuple[DistillOptimizerState, DistillStepMetrics]:
+    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
+
     def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
         training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
         materialized_student = materialize_trainable_module(student, training_state, config)
@@ -373,11 +375,10 @@ def distill_train_step(
         return metrics.loss, metrics
 
     (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-        _concrete_master_weights(optimizer_state.training_state),
+        current_master_weights,
     )
     del loss
 
-    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
     updates, new_optimizer_state = optimizer.update(
         grads,
         optimizer_state.optimizer_state,

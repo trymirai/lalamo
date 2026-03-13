@@ -13,7 +13,6 @@ import jax
 import jax.numpy as jnp
 import optax
 import typer
-from jaxtyping import Array, Float
 
 from lalamo.common import flatten_parameters
 from lalamo.data import load_hf_parquet, shuffle_dataset
@@ -126,30 +125,6 @@ def _make_batches(sequences: list[jax.Array], *, batch_size: int) -> list[Distil
     return batches
 
 
-def _decoder_logits(
-    decoder: Decoder,
-    batch: DistillBatch,
-) -> Float[Array, "batch prediction_tokens vocabulary"]:
-    _, num_tokens = batch.token_ids.shape
-    token_positions = jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
-    decoder_result = decoder(
-        token_ids=batch.token_ids,
-        token_positions=token_positions,
-    )
-    return decoder_result.logits[:, :-1, :].astype(jnp.float32)
-
-
-def _prediction_mask(batch: DistillBatch) -> jax.Array:
-    if batch.lengths_without_padding is None:
-        _, num_tokens = batch.token_ids.shape
-        lengths_without_padding = jnp.full((batch.token_ids.shape[0],), num_tokens, dtype=jnp.int32)
-    else:
-        lengths_without_padding = batch.lengths_without_padding
-
-    prediction_tokens = max(batch.token_ids.shape[1] - 1, 0)
-    return jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths_without_padding[:, None] - 1)
-
-
 def _evaluate(
     student: Decoder,
     teacher: Decoder,
@@ -160,17 +135,30 @@ def _evaluate(
     total_matches = 0
 
     for batch in batches:
-        metrics = compute_distill_kl_loss(student, teacher, batch)
-        student_logits = _decoder_logits(student, batch)
-        teacher_logits = _decoder_logits(teacher, batch)
-        prediction_mask = _prediction_mask(batch)
+        _, num_tokens = batch.token_ids.shape
+        token_positions = jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
+        student_logits = student(token_ids=batch.token_ids, token_positions=token_positions).logits[:, :-1, :].astype(jnp.float32)
+        teacher_logits = teacher(token_ids=batch.token_ids, token_positions=token_positions).logits[:, :-1, :].astype(jnp.float32)
+
+        if batch.lengths_without_padding is None:
+            lengths_without_padding = jnp.full((batch.token_ids.shape[0],), num_tokens, dtype=jnp.int32)
+        else:
+            lengths_without_padding = batch.lengths_without_padding
+
+        prediction_mask = jnp.arange(max(num_tokens - 1, 0), dtype=jnp.int32)[None, :] < (
+            lengths_without_padding[:, None] - 1
+        )
+        teacher_log_probs = jax.nn.log_softmax(teacher_logits, axis=-1)
+        student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)
+        teacher_probs = jnp.exp(teacher_log_probs)
+        token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
 
         student_top1 = jnp.argmax(student_logits, axis=-1)
         teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
         total_matches += int(jnp.sum((student_top1 == teacher_top1) & prediction_mask))
 
-        valid_tokens = int(metrics.valid_tokens)
-        total_kl += float(metrics.loss) * valid_tokens
+        valid_tokens = int(prediction_mask.sum())
+        total_kl += float(jnp.sum(token_kl * prediction_mask.astype(token_kl.dtype)))
         total_valid_tokens += valid_tokens
 
     return EvaluationMetrics(
@@ -183,14 +171,16 @@ def _evaluate(
 def _save_materialized_student(
     student_path: Path,
     output_path: Path,
-    materialized_student: LanguageModel,
+    student_model: LanguageModel,
+    materialized_student: Decoder,
 ) -> None:
     output_path.mkdir(parents=True, exist_ok=True)
     shutil.copy2(student_path / "config.json", output_path / "config.json")
     shutil.copy2(student_path / "tokenizer.json", output_path / "tokenizer.json")
 
     with Path(output_path / "model.safetensors").open("wb") as fd:
-        safe_write(fd, flatten_parameters(materialized_student.export_weights()))
+        updated_model = eqx.tree_at(lambda model: model.model, student_model, materialized_student)
+        safe_write(fd, flatten_parameters(updated_model.export_weights()))
 
 
 def _build_optimizer(name: OptimizerName, learning_rate: float) -> optax.GradientTransformation:
@@ -199,6 +189,8 @@ def _build_optimizer(name: OptimizerName, learning_rate: float) -> optax.Gradien
             return optax.adamw(learning_rate)
         case OptimizerName.SGD:
             return optax.sgd(learning_rate)
+        case _:
+            raise ValueError(f"Unknown optimizer: {name}")
 
 
 def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: Any) -> Any:
@@ -209,6 +201,8 @@ def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: Any) -> Any:
             return jnp.bfloat16
         case ComputeDTypeName.FLOAT32:
             return jnp.float32
+        case _:
+            raise ValueError(f"Unknown compute dtype: {name}")
 
 
 def main(
@@ -291,6 +285,7 @@ def main(
                 batch,
                 distill_config,
             )
+            # TODO: distill_train_step returns traced metrics, so step logging still recomputes a concrete loss.
             materialized_student = materialize_trainable_module(
                 student_model.model,
                 optimizer_state.training_state,
@@ -320,7 +315,8 @@ def main(
     _save_materialized_student(
         student_path,
         model_output_path,
-        eqx.tree_at(lambda model: model.model, student_model, export_student),
+        student_model,
+        export_student,
     )
 
     result = ExperimentResult(
