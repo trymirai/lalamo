@@ -10,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.common import PositionalEmbeddingSelector
+from lalamo.modules.common import PositionalEmbeddingSelector, parameter_field
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
@@ -209,8 +209,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     conv: SeparableCausalConv
     out_projection: LinearBase
 
-    skip_connection_weight: Float[Array, " heads"]
-    gate_bias: Float[Array, " inner_channels"]
+    skip_connection_weight: Float[Array, " heads"] = parameter_field()
+    gate_bias: Float[Array, " inner_channels"] = parameter_field()
 
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)

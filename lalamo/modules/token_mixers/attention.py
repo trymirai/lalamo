@@ -9,7 +9,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array, require_mapping
-from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
+from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, parameter_field, require_array, require_tree
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -235,7 +235,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     query_norm: Normalization | None
     key_norm: Normalization | None
 
-    sinks: Float[Array, " heads"] | None
+    sinks: Float[Array, " heads"] | None = parameter_field(default=None)
 
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)

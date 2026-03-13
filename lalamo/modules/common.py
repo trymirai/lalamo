@@ -395,6 +395,9 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
         if field_info is None:
             raise ValueError(f"Field lookup failed for module {module} at {path}")
 
+        if "parameter_role" not in field_info.metadata:
+            continue
+
         parameter_info = _field_parameter_info(field_info)
 
         path_str = keystr(path).lstrip(".")

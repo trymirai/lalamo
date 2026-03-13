@@ -8,11 +8,12 @@ from lalamo.distillation import (
     is_leaf_trainable,
     summarize_distill_parameters,
 )
+from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.modules.common import ParameterRole, iter_parameter_leaves, parameter_field
 from lalamo.modules.embedding import (
-    MLXSemiQuantizedUntiedEmbeddingConfig,
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
+    MLXSemiQuantizedUntiedEmbeddingConfig,
     TiedEmbeddingConfig,
     UntiedEmbeddingConfig,
 )
@@ -221,3 +222,55 @@ def test_parameter_roles_cover_llama_relevant_modules() -> None:
     for module, expected_roles in cases:
         roles = {leaf.parameter_role for leaf in iter_parameter_leaves(module)}
         assert roles == expected_roles
+
+
+_TINY_LLAMA_CONFIG = HFLlamaConfig(
+    torch_dtype="float32",
+    architectures=["LlamaForCausalLM"],
+    attention_bias=False,
+    attention_dropout=0.0,
+    bos_token_id=1,
+    eos_token_id=2,
+    hidden_act="silu",
+    hidden_size=32,
+    initializer_range=0.02,
+    intermediate_size=64,
+    max_position_embeddings=64,
+    mlp_bias=False,
+    model_type="llama",
+    num_attention_heads=4,
+    num_hidden_layers=1,
+    num_key_value_heads=2,
+    pretraining_tp=1,
+    rms_norm_eps=1e-5,
+    rope_scaling=None,
+    rope_theta=10000.0,
+    tie_word_embeddings=True,
+    transformers_version="4.0.0",
+    use_cache=True,
+    vocab_size=32,
+)
+
+
+def test_llama_decoder_has_no_default_role_leaves() -> None:
+    decoder_config = _TINY_LLAMA_CONFIG.to_decoder_config(
+        context_length=64,
+        activation_precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+        metadata_dict={},
+    )
+    decoder = decoder_config.empty()
+    leaves = iter_parameter_leaves(decoder)
+
+    default_leaves = [leaf for leaf in leaves if leaf.parameter_role == ParameterRole.DEFAULT]
+    assert default_leaves == [], (
+        f"Unexpected DEFAULT leaves: {[leaf.path for leaf in default_leaves]}"
+    )
+
+    expected_roles = {
+        ParameterRole.INPUT_OUTPUT_EMBEDDING,
+        ParameterRole.LINEAR_WEIGHT,
+        ParameterRole.NORM_SCALE,
+    }
+    actual_roles = {leaf.parameter_role for leaf in leaves}
+    assert actual_roles == expected_roles
