@@ -266,7 +266,7 @@ def main(
 
     with history_path.open("w") as history_file:
         for step, batch in enumerate(islice(step_iterator, num_steps), start=1):
-            optimizer_state, metrics = distill_train_step(
+            optimizer_state, _ = distill_train_step(
                 optimizer_state,
                 optimizer,
                 student_model.model,
@@ -274,8 +274,14 @@ def main(
                 batch,
                 distill_config,
             )
-            train_kl_divergence = float(jax.device_get(metrics.loss))
-            valid_tokens = int(jax.device_get(metrics.valid_tokens))
+            materialized_student = materialize_trainable_module(
+                student_model.model,
+                optimizer_state.training_state,
+                distill_config,
+            )
+            train_metrics = compute_distill_kl_loss(materialized_student, teacher_model.model, batch)
+            train_kl_divergence = float(train_metrics.loss)
+            valid_tokens = int(train_metrics.valid_tokens)
             history_file.write(
                 json.dumps(
                     {
