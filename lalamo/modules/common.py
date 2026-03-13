@@ -24,7 +24,6 @@ __all__ = [
     "ForwardPassMode",
     "FieldMetadataInfo",
     "FieldParameterInfo",
-    "FieldTrainingInfo",
     "LalamoModule",
     "ParameterTree",
     "ParameterLeafInfo",
@@ -37,7 +36,6 @@ __all__ = [
     "config_converter",
     "find_field_metadata",
     "find_field_parameter_info",
-    "find_field_training_info",
     "get_current_sharding_config",
     "iter_parameter_leaves",
     "parameter_field",
@@ -304,14 +302,9 @@ class FieldMetadataInfo:
 
 
 @dataclass(frozen=True)
-class FieldTrainingInfo:
+class FieldParameterInfo:
     trainable_default: bool
     parameter_role: ParameterRole
-
-
-@dataclass(frozen=True)
-class FieldParameterInfo:
-    training: FieldTrainingInfo
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
 
@@ -356,10 +349,8 @@ def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> Fiel
 
 def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
     return FieldParameterInfo(
-        training=FieldTrainingInfo(
-            trainable_default=field_info.metadata.get("trainable_default", True),
-            parameter_role=field_info.metadata.get("parameter_role", ParameterRole.DEFAULT),
-        ),
+        trainable_default=field_info.metadata.get("trainable_default", True),
+        parameter_role=field_info.metadata.get("parameter_role", ParameterRole.DEFAULT),
         tensor_sharding=field_info.metadata.get("tensor_sharding"),
         min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
     )
@@ -377,13 +368,6 @@ def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo
         return field_info
 
     return None
-
-
-def find_field_training_info(module: eqx.Module, target: object) -> FieldTrainingInfo | None:
-    field_parameter_info = find_field_parameter_info(module, target)
-    if field_parameter_info is None:
-        return None
-    return field_parameter_info.training
 
 
 def find_field_parameter_info(module: eqx.Module, target: object) -> FieldParameterInfo | None:
@@ -424,10 +408,10 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
                 path=path_str,
                 owner_type=type(field_info.owner),
                 field_name=field_info.field.name,
-                parameter_role=parameter_info.training.parameter_role,
+                parameter_role=parameter_info.parameter_role,
                 shape=tuple(leaf.shape),
                 dtype=jnp.dtype(leaf.dtype),
-                trainable_default=parameter_info.training.trainable_default,
+                trainable_default=parameter_info.trainable_default,
                 tensor_sharding=parameter_info.tensor_sharding,
                 min_size_to_shard=parameter_info.min_size_to_shard,
                 alias_of=alias_of,
