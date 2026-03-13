@@ -1,4 +1,4 @@
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from itertools import cycle, islice
 import json
 from pathlib import Path
@@ -65,6 +65,12 @@ class ExperimentResult:
 class OptimizerName(StrEnum):
     ADAMW = "adamw"
     SGD = "sgd"
+
+
+class ComputeDTypeName(StrEnum):
+    AUTO = "auto"
+    BFLOAT16 = "bfloat16"
+    FLOAT32 = "float32"
 
 
 def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
@@ -195,6 +201,16 @@ def _build_optimizer(name: OptimizerName, learning_rate: float) -> optax.Gradien
             return optax.sgd(learning_rate)
 
 
+def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: Any) -> Any:
+    match name:
+        case ComputeDTypeName.AUTO:
+            return native_dtype
+        case ComputeDTypeName.BFLOAT16:
+            return jnp.bfloat16
+        case ComputeDTypeName.FLOAT32:
+            return jnp.float32
+
+
 def main(
     teacher_path: Path = typer.Option(..., exists=True, dir_okay=True, file_okay=False),
     student_path: Path = typer.Option(..., exists=True, dir_okay=True, file_okay=False),
@@ -207,6 +223,7 @@ def main(
     num_steps: int = typer.Option(25),
     learning_rate: float = typer.Option(3e-4),
     optimizer_name: OptimizerName = typer.Option(OptimizerName.ADAMW),
+    compute_dtype_name: ComputeDTypeName = typer.Option(ComputeDTypeName.AUTO),
     seed: int = typer.Option(0),
     train_bias: bool = typer.Option(False),
     train_norm: bool = typer.Option(False),
@@ -246,7 +263,7 @@ def main(
         train_quant_aux=train_quant_aux,
         train_base_weight=train_base_weight,
         master_dtype=jnp.float32,
-        compute_dtype=student_model.model.activation_precision,
+        compute_dtype=_resolve_compute_dtype(compute_dtype_name, student_model.model.activation_precision),
     )
     training_state = initialize_distill_training_state(student_model.model, distill_config)
     optimizer = _build_optimizer(optimizer_name, learning_rate)
@@ -298,10 +315,12 @@ def main(
     final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
 
     model_output_path = output_dir / "student-distilled"
+    export_config = replace(distill_config, compute_dtype=student_model.model.activation_precision)
+    export_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, export_config)
     _save_materialized_student(
         student_path,
         model_output_path,
-        eqx.tree_at(lambda model: model.model, student_model, final_student),
+        eqx.tree_at(lambda model: model.model, student_model, export_student),
     )
 
     result = ExperimentResult(
