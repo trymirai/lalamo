@@ -1,23 +1,32 @@
 import math
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import equinox as eqx
+import jax
 import jax.tree_util as jtu
 import jax.numpy as jnp
 from jax.tree_util import keystr
-from jaxtyping import Array, DTypeLike
+import optax
+from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.modules.decoder import Decoder
 from lalamo.modules.common import ParameterLeafInfo, ParameterRole, iter_parameter_leaves
 
 __all__ = [
+    "DistillBatch",
+    "DistillOptimizerState",
     "DistillTrainConfig",
     "DistillParameterSummary",
+    "DistillStepMetrics",
     "DistillTrainableParameter",
     "DistillTrainingState",
+    "compute_distill_kl_loss",
+    "distill_train_step",
     "get_optimizer_group",
     "initialize_distill_training_state",
+    "initialize_distill_optimizer_state",
     "is_leaf_trainable",
     "materialize_trainable_module",
     "summarize_distill_parameters",
@@ -51,12 +60,30 @@ class DistillTrainableParameter:
     alias_paths: tuple[str, ...]
     parameter_role: ParameterRole
     optimizer_group: str
-    master_weight: Array
+    master_weight: Array | jax.ShapeDtypeStruct
 
 
 @dataclass(frozen=True)
 class DistillTrainingState:
     trainable_parameters: tuple[DistillTrainableParameter, ...]
+
+
+@dataclass(frozen=True)
+class DistillOptimizerState:
+    training_state: DistillTrainingState
+    optimizer_state: optax.OptState
+
+
+@dataclass(frozen=True)
+class DistillBatch:
+    token_ids: Int[Array, "batch tokens"]
+    lengths_without_padding: Int[Array, " batch"] | None = None
+
+
+@dataclass(frozen=True)
+class DistillStepMetrics:
+    loss: Float[Array, ""]
+    valid_tokens: Int[Array, ""]
 
 
 def _is_embedding_leaf(info: ParameterLeafInfo) -> bool:
@@ -198,8 +225,8 @@ def initialize_distill_training_state(
             continue
 
         value = path_to_leaf[info.path]
-        if not eqx.is_array(value):
-            raise TypeError(f"Trainable leaf {info.path} must be an array, got {type(value)}")
+        if not (eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)):
+            raise TypeError(f"Trainable leaf {info.path} must be array-like, got {type(value)}")
 
         trainable_parameters.append(
             DistillTrainableParameter(
@@ -207,7 +234,7 @@ def initialize_distill_training_state(
                 alias_paths=tuple(alias_paths[info.path]),
                 parameter_role=info.parameter_role,
                 optimizer_group=get_optimizer_group(info, config),
-                master_weight=value.astype(master_dtype),
+                master_weight=_cast_array_like(value, master_dtype),
             )
         )
 
@@ -227,9 +254,9 @@ def materialize_trainable_module[M: eqx.Module](
     compute_dtype = jnp.dtype(config.compute_dtype)
 
     replacement_paths: list[str] = []
-    replacement_values: list[Array] = []
+    replacement_values: list[Array | jax.ShapeDtypeStruct] = []
     for parameter in state.trainable_parameters:
-        compute_weight = parameter.master_weight.astype(compute_dtype)
+        compute_weight = _cast_array_like(parameter.master_weight, compute_dtype)
         for path in parameter.alias_paths:
             replacement_paths.append(path)
             replacement_values.append(compute_weight)
@@ -242,4 +269,126 @@ def materialize_trainable_module[M: eqx.Module](
         module,
         replacement_values,
         is_leaf=lambda value: value is None,
+    )
+
+
+def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> Array | jax.ShapeDtypeStruct:
+    if eqx.is_array(value):
+        return value.astype(dtype)
+    return jax.ShapeDtypeStruct(value.shape, dtype)
+
+
+def _concrete_master_weights(state: DistillTrainingState) -> tuple[Array, ...]:
+    result: list[Array] = []
+    for parameter in state.trainable_parameters:
+        if not eqx.is_array(parameter.master_weight):
+            raise TypeError(f"Optimizer state requires concrete arrays, got {type(parameter.master_weight)}")
+        result.append(parameter.master_weight)
+    return tuple(result)
+
+
+def _replace_master_weights(
+    state: DistillTrainingState,
+    master_weights: Sequence[Array],
+) -> DistillTrainingState:
+    trainable_parameters = tuple(
+        replace(parameter, master_weight=master_weight)
+        for parameter, master_weight in zip(state.trainable_parameters, master_weights, strict=True)
+    )
+    return DistillTrainingState(trainable_parameters=trainable_parameters)
+
+
+def initialize_distill_optimizer_state(
+    training_state: DistillTrainingState,
+    optimizer: optax.GradientTransformation,
+) -> DistillOptimizerState:
+    return DistillOptimizerState(
+        training_state=training_state,
+        optimizer_state=optimizer.init(_concrete_master_weights(training_state)),
+    )
+
+
+def _batch_lengths(batch: DistillBatch) -> Int[Array, " batch"]:
+    if batch.lengths_without_padding is not None:
+        return batch.lengths_without_padding
+    batch_size, num_tokens = batch.token_ids.shape
+    return jnp.full((batch_size,), num_tokens, dtype=jnp.int32)
+
+
+def _token_positions(batch: DistillBatch) -> Int[Array, "batch tokens"]:
+    _, num_tokens = batch.token_ids.shape
+    return jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
+
+
+def _prediction_mask(batch: DistillBatch) -> Float[Array, "batch prediction_tokens"]:
+    batch_size, num_tokens = batch.token_ids.shape
+    prediction_tokens = max(num_tokens - 1, 0)
+    lengths_without_padding = _batch_lengths(batch)
+    return jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths_without_padding[:, None] - 1)
+
+
+def _decoder_logits(
+    decoder: Decoder,
+    batch: DistillBatch,
+) -> Float[Array, "batch prediction_tokens vocabulary"]:
+    token_positions = _token_positions(batch)
+    decoder_result = decoder(
+        token_ids=batch.token_ids,
+        token_positions=token_positions,
+    )
+    return decoder_result.logits[:, :-1, :]
+
+
+def compute_distill_kl_loss(
+    student: Decoder,
+    teacher: Decoder,
+    batch: DistillBatch,
+) -> DistillStepMetrics:
+    teacher_logits = _decoder_logits(teacher, batch).astype(jnp.float32)
+    student_logits = _decoder_logits(student, batch).astype(jnp.float32)
+
+    teacher_log_probs = jax.nn.log_softmax(teacher_logits, axis=-1)
+    student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)
+    teacher_probs = jnp.exp(teacher_log_probs)
+
+    token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
+    prediction_mask = _prediction_mask(batch).astype(token_kl.dtype)
+    valid_tokens = prediction_mask.sum(dtype=jnp.int32)
+    loss = jnp.sum(token_kl * prediction_mask) / valid_tokens
+    return DistillStepMetrics(loss=loss, valid_tokens=valid_tokens)
+
+
+def distill_train_step(
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    student: Decoder,
+    teacher: Decoder,
+    batch: DistillBatch,
+    config: DistillTrainConfig,
+) -> tuple[DistillOptimizerState, DistillStepMetrics]:
+    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
+        training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
+        materialized_student = materialize_trainable_module(student, training_state, config)
+        metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
+        return metrics.loss, metrics
+
+    (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+        _concrete_master_weights(optimizer_state.training_state),
+    )
+    del loss
+
+    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
+    updates, new_optimizer_state = optimizer.update(
+        grads,
+        optimizer_state.optimizer_state,
+        current_master_weights,
+    )
+    updated_master_weights = optax.apply_updates(current_master_weights, updates)
+    updated_training_state = _replace_master_weights(optimizer_state.training_state, updated_master_weights)
+    return (
+        DistillOptimizerState(
+            training_state=updated_training_state,
+            optimizer_state=new_optimizer_state,
+        ),
+        metrics,
     )

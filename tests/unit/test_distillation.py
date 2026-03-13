@@ -1,10 +1,15 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import optax
 
 from lalamo.distillation import (
+    DistillBatch,
     DistillTrainConfig,
+    compute_distill_kl_loss,
+    distill_train_step,
     initialize_distill_training_state,
+    initialize_distill_optimizer_state,
     get_optimizer_group,
     is_leaf_trainable,
     materialize_trainable_module,
@@ -321,6 +326,16 @@ _TINY_LLAMA_CONFIG = HFLlamaConfig(
 )
 
 
+def _make_tiny_llama_decoder(*, key: jax.Array) -> object:
+    decoder_config = _TINY_LLAMA_CONFIG.to_decoder_config(
+        context_length=64,
+        activation_precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+        metadata_dict={},
+    )
+    return decoder_config.random_init(key=key)
+
+
 def test_llama_decoder_has_no_default_role_leaves() -> None:
     decoder_config = _TINY_LLAMA_CONFIG.to_decoder_config(
         context_length=64,
@@ -343,3 +358,187 @@ def test_llama_decoder_has_no_default_role_leaves() -> None:
     }
     actual_roles = {leaf.parameter_role for leaf in leaves}
     assert actual_roles == expected_roles
+
+
+def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(9))
+    batch = DistillBatch(
+        token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([6], dtype=jnp.int32),
+    )
+
+    metrics = compute_distill_kl_loss(decoder, decoder, batch)
+
+    assert metrics.valid_tokens == 5
+    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
+
+
+def test_distill_train_step_reduces_tiny_llama_loss() -> None:
+    teacher = _make_tiny_llama_decoder(key=jax.random.key(10))
+    student = eqx.tree_at(
+        lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
+        teacher,
+        teacher.transformer.layers[0].mixer.qkv_projection.weights + 0.5,
+    )
+    batch = DistillBatch(
+        token_ids=jnp.array([[1, 2, 3, 4, 5, 6, 7, 8]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([8], dtype=jnp.int32),
+    )
+    config = DistillTrainConfig(
+        train_bias=False,
+        train_norm=False,
+        train_embedding=False,
+        train_adapter=False,
+        train_quant_aux=False,
+        train_base_weight=True,
+        master_dtype=jnp.float32,
+        compute_dtype=jnp.float32,
+    )
+    optimizer = optax.sgd(0.05)
+    training_state = initialize_distill_training_state(student, config)
+    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+
+    initial_metrics = compute_distill_kl_loss(
+        materialize_trainable_module(student, optimizer_state.training_state, config),
+        teacher,
+        batch,
+    )
+
+    for _ in range(20):
+        optimizer_state, _ = distill_train_step(
+            optimizer_state,
+            optimizer,
+            student,
+            teacher,
+            batch,
+            config,
+        )
+
+    final_metrics = compute_distill_kl_loss(
+        materialize_trainable_module(student, optimizer_state.training_state, config),
+        teacher,
+        batch,
+    )
+
+    assert initial_metrics.loss > 1e-4
+    assert final_metrics.loss < initial_metrics.loss * 0.5
+
+
+def test_materialize_returns_module_unchanged_when_nothing_trainable() -> None:
+    layer = FullPrecisionLinearConfig(precision=jnp.float32).random_init(
+        input_dim=4,
+        output_dims=(4,),
+        has_biases=True,
+        key=jax.random.key(10),
+    )
+
+    config = DistillTrainConfig(
+        train_base_weight=False,
+        train_bias=False,
+        train_norm=False,
+    )
+    state = initialize_distill_training_state(layer, config)
+    materialized = materialize_trainable_module(layer, state, config)
+
+    assert len(state.trainable_parameters) == 0
+    assert materialized is layer
+
+
+def test_materialize_preserves_alias_identity() -> None:
+    shared = jnp.ones((2, 2), dtype=jnp.float32)
+    module = AliasModule(left=shared, right=shared)
+
+    config = DistillTrainConfig(train_base_weight=True, compute_dtype=jnp.bfloat16)
+    state = initialize_distill_training_state(module, config)
+    materialized = materialize_trainable_module(module, state, config)
+
+    assert materialized.left is materialized.right
+
+
+def test_master_weights_are_independent_copies() -> None:
+    layer = FullPrecisionLinearConfig(precision=jnp.bfloat16).random_init(
+        input_dim=4,
+        output_dims=(4,),
+        has_biases=False,
+        key=jax.random.key(11),
+    )
+
+    config = DistillTrainConfig(train_base_weight=True, master_dtype=jnp.float32)
+    state = initialize_distill_training_state(layer, config)
+
+    assert state.trainable_parameters[0].master_weight.dtype == jnp.float32
+    assert layer.weights.dtype == jnp.bfloat16
+    assert state.trainable_parameters[0].master_weight is not layer.weights
+
+
+def test_full_pipeline_on_llama_decoder() -> None:
+    decoder_config = _TINY_LLAMA_CONFIG.to_decoder_config(
+        context_length=64,
+        activation_precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+        metadata_dict={},
+    )
+    decoder = decoder_config.empty()
+
+    config = DistillTrainConfig(
+        train_bias=True,
+        train_norm=True,
+        train_base_weight=False,
+        train_embedding=False,
+        master_dtype=jnp.float32,
+        compute_dtype=jnp.bfloat16,
+    )
+    state = initialize_distill_training_state(decoder, config)
+    materialized = materialize_trainable_module(decoder, state, config)
+
+    original_leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(decoder)}
+    materialized_leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(materialized)}
+
+    trainable_paths = set()
+    for parameter in state.trainable_parameters:
+        assert parameter.master_weight.dtype == jnp.float32
+        for path in parameter.alias_paths:
+            trainable_paths.add(path)
+
+    for path, leaf in materialized_leaves.items():
+        if path in trainable_paths:
+            assert leaf.dtype == jnp.bfloat16, f"Trainable leaf {path} should be bf16"
+        else:
+            assert leaf.dtype == original_leaves[path].dtype, (
+                f"Frozen leaf {path} dtype changed from {original_leaves[path].dtype} to {leaf.dtype}"
+            )
+
+    trainable_roles = {parameter.parameter_role for parameter in state.trainable_parameters}
+    assert ParameterRole.NORM_SCALE in trainable_roles
+    assert ParameterRole.LINEAR_WEIGHT not in trainable_roles
+    assert ParameterRole.INPUT_OUTPUT_EMBEDDING not in trainable_roles
+
+
+def test_full_pipeline_round_trip_preserves_values() -> None:
+    layer = FullPrecisionLinearConfig(precision=jnp.float32).random_init(
+        input_dim=4,
+        output_dims=(4,),
+        has_biases=True,
+        key=jax.random.key(12),
+    )
+
+    config = DistillTrainConfig(
+        train_base_weight=True,
+        train_bias=True,
+        master_dtype=jnp.float32,
+        compute_dtype=jnp.bfloat16,
+    )
+    state = initialize_distill_training_state(layer, config)
+    materialized = materialize_trainable_module(layer, state, config)
+
+    assert jnp.allclose(
+        materialized.weights,
+        layer.weights.astype(jnp.bfloat16),
+        atol=0,
+    )
+    assert materialized.biases is not None
+    assert jnp.allclose(
+        materialized.biases,
+        layer.biases.astype(jnp.bfloat16),
+        atol=0,
+    )
