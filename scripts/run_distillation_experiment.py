@@ -274,12 +274,14 @@ def main(
                 batch,
                 distill_config,
             )
+            train_kl_divergence = float(jax.device_get(metrics.loss))
+            valid_tokens = int(jax.device_get(metrics.valid_tokens))
             history_file.write(
                 json.dumps(
                     {
                         "step": step,
-                        "train_kl_divergence": float(metrics.loss),
-                        "valid_tokens": int(metrics.valid_tokens),
+                        "train_kl_divergence": train_kl_divergence,
+                        "valid_tokens": valid_tokens,
                     }
                 )
                 + "\n"
