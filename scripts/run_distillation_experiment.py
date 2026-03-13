@@ -63,7 +63,14 @@ class ExperimentResult:
 
 def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
     dataframe = shuffle_dataset(load_hf_parquet(dataset_path), seed=seed)
-    conversations = dataframe.get_column("conversation").to_list()[:num_examples]
+    if "conversation" in dataframe.columns:
+        column_name = "conversation"
+    elif "messages" in dataframe.columns:
+        column_name = "messages"
+    else:
+        raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
+
+    conversations = dataframe.get_column(column_name).to_list()[:num_examples]
     return [
         [HFMessage.from_dict(message) for message in conversation]
         for conversation in conversations
