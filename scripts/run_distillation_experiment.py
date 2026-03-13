@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import shutil
 import time
+from enum import StrEnum
 
 from typing import Any
 
@@ -59,6 +60,11 @@ class ExperimentResult:
     elapsed_seconds: float
     seconds_per_step: float
     output_model_path: str
+
+
+class OptimizerName(StrEnum):
+    ADAMW = "adamw"
+    SGD = "sgd"
 
 
 def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
@@ -181,6 +187,14 @@ def _save_materialized_student(
         safe_write(fd, flatten_parameters(materialized_student.export_weights()))
 
 
+def _build_optimizer(name: OptimizerName, learning_rate: float) -> optax.GradientTransformation:
+    match name:
+        case OptimizerName.ADAMW:
+            return optax.adamw(learning_rate)
+        case OptimizerName.SGD:
+            return optax.sgd(learning_rate)
+
+
 def main(
     teacher_path: Path = typer.Option(..., exists=True, dir_okay=True, file_okay=False),
     student_path: Path = typer.Option(..., exists=True, dir_okay=True, file_okay=False),
@@ -192,6 +206,7 @@ def main(
     batch_size: int = typer.Option(4),
     num_steps: int = typer.Option(25),
     learning_rate: float = typer.Option(3e-4),
+    optimizer_name: OptimizerName = typer.Option(OptimizerName.ADAMW),
     seed: int = typer.Option(0),
     train_bias: bool = typer.Option(False),
     train_norm: bool = typer.Option(False),
@@ -234,7 +249,7 @@ def main(
         compute_dtype=student_model.model.activation_precision,
     )
     training_state = initialize_distill_training_state(student_model.model, distill_config)
-    optimizer = optax.adamw(learning_rate)
+    optimizer = _build_optimizer(optimizer_name, learning_rate)
     optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
     parameter_summary = summarize_distill_parameters(
         iter_parameter_leaves(student_model.model),
@@ -291,7 +306,7 @@ def main(
         batch_size=batch_size,
         num_steps=num_steps,
         learning_rate=learning_rate,
-        optimizer="adamw",
+        optimizer=optimizer_name.value,
         distill_config={
             "train_bias": distill_config.train_bias,
             "train_norm": distill_config.train_norm,
