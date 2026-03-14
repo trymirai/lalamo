@@ -1,5 +1,7 @@
 from enum import Enum
+from functools import partial
 
+import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
@@ -54,9 +56,35 @@ MODE_TO_RANGE = {
 }
 
 
-def quantize_weights(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
+def _quantize_weights_primal(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
     range_min, range_max = MODE_TO_RANGE[mode]
     return jnp.clip(jnp.round(x), range_min, range_max)
+
+
+@partial(jax.custom_vjp, nondiff_argnums=(1,))
+def quantize_weights(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
+    return _quantize_weights_primal(x, mode)
+
+
+def _quantize_weights_fwd(
+    x: Float[Array, "..."],
+    mode: QuantizationMode,
+) -> tuple[Float[Array, "..."], Float[Array, "..."]]:
+    return _quantize_weights_primal(x, mode), x
+
+
+def _quantize_weights_bwd(
+    mode: QuantizationMode,
+    residuals: Float[Array, "..."],
+    grad_output: Float[Array, "..."],
+) -> tuple[Float[Array, "..."]]:
+    x = residuals
+    range_min, range_max = mode.range
+    gradient_mask = (x >= range_min) & (x <= range_max)
+    return (grad_output * gradient_mask.astype(grad_output.dtype),)
+
+
+quantize_weights.defvjp(_quantize_weights_fwd, _quantize_weights_bwd)
 
 
 def dynamically_quantize_activations(
