@@ -6,6 +6,7 @@ import optax
 from lalamo.distillation import (
     DistillBatch,
     DistillTrainConfig,
+    OptimizerGroup,
     compute_distill_kl_loss,
     distill_train_step,
     get_optimizer_group,
@@ -17,6 +18,7 @@ from lalamo.distillation import (
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.modules.common import ParameterRole, iter_parameter_leaves, parameter_field
+from lalamo.modules.decoder import Decoder
 from lalamo.modules.embedding import (
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
@@ -61,7 +63,7 @@ def test_summarize_distill_parameters_counts_unique_aliases_once() -> None:
     assert summary.trainable_parameters == 4
     assert summary.total_master_bytes == 16
     assert summary.by_role == {"linear_weight": 4}
-    assert summary.by_group == {"muon": 4}
+    assert summary.by_group == {OptimizerGroup.MUON: 4}
 
 
 def test_initialize_distill_training_state_dedupes_alias_masters() -> None:
@@ -109,7 +111,7 @@ def test_q_lora_policy_prefers_adapter_weights() -> None:
     assert is_leaf_trainable(leaves["lora_up_weights"], train_config)
     assert not is_leaf_trainable(leaves["weights"], train_config)
     assert not is_leaf_trainable(leaves["scales"], train_config)
-    assert get_optimizer_group(leaves["lora_down_weights"], train_config) == "muon"
+    assert get_optimizer_group(leaves["lora_down_weights"], train_config) == OptimizerGroup.MUON
 
 
 def test_quant_aux_can_be_enabled_explicitly() -> None:
@@ -126,7 +128,7 @@ def test_quant_aux_can_be_enabled_explicitly() -> None:
 
     assert is_leaf_trainable(leaves["scales"], train_config)
     assert is_leaf_trainable(leaves["zero_points"], train_config)
-    assert get_optimizer_group(leaves["scales"], train_config) == "quant_aux"
+    assert get_optimizer_group(leaves["scales"], train_config) == OptimizerGroup.QUANT_AUX
 
 
 def test_materialize_trainable_module_casts_only_trainable_leaves() -> None:
@@ -166,7 +168,7 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
     state = initialize_distill_training_state(layer, config)
 
     assert {parameter.path for parameter in state.trainable_parameters} == {"scales", "zero_points"}
-    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {"quant_aux"}
+    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {OptimizerGroup.QUANT_AUX}
 
 
 def test_parameter_roles_cover_llama_relevant_modules() -> None:
@@ -326,7 +328,7 @@ _TINY_LLAMA_CONFIG = HFLlamaConfig(
 )
 
 
-def _make_tiny_llama_decoder(*, key: jax.Array) -> object:
+def _make_tiny_llama_decoder(*, key: jax.Array) -> Decoder:
     decoder_config = _TINY_LLAMA_CONFIG.to_decoder_config(
         context_length=64,
         activation_precision=jnp.float32,

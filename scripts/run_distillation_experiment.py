@@ -51,7 +51,7 @@ class ExperimentResult:
     batch_size: int
     num_steps: int
     learning_rate: float
-    optimizer: str
+    optimizer: "OptimizerName"
     distill_config: dict[str, Any]
     parameter_summary: dict[str, Any]
     initial_eval: dict[str, Any]
@@ -72,7 +72,8 @@ class ComputeDTypeName(StrEnum):
     FLOAT32 = "float32"
 
 
-def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
+def _load_conversations(dataset_path: Path | str, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
+    dataset_path = Path(dataset_path)
     dataframe = shuffle_dataset(load_hf_parquet(dataset_path), seed=seed)
     if "conversation" in dataframe.columns:
         column_name = "conversation"
@@ -168,11 +169,13 @@ def _evaluate(
 
 
 def _save_materialized_student(
-    student_path: Path,
-    output_path: Path,
+    student_path: Path | str,
+    output_path: Path | str,
     student_model: LanguageModel,
     materialized_student: Decoder,
 ) -> None:
+    student_path = Path(student_path)
+    output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
     shutil.copy2(student_path / "config.json", output_path / "config.json")
     shutil.copy2(student_path / "tokenizer.json", output_path / "tokenizer.json")

@@ -2,6 +2,7 @@ import math
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
+from enum import StrEnum
 
 import equinox as eqx
 import jax
@@ -22,6 +23,7 @@ __all__ = [
     "DistillTrainConfig",
     "DistillTrainableParameter",
     "DistillTrainingState",
+    "OptimizerGroup",
     "compute_distill_kl_loss",
     "distill_train_step",
     "get_optimizer_group",
@@ -51,7 +53,17 @@ class DistillParameterSummary:
     trainable_parameters: int
     total_master_bytes: int
     by_role: dict[str, int]
-    by_group: dict[str, int]
+    by_group: dict["OptimizerGroup", int]
+
+
+class OptimizerGroup(StrEnum):
+    FROZEN = "frozen"
+    QUANT_AUX = "quant_aux"
+    EMBEDDING = "embedding"
+    NORM = "norm"
+    BIAS = "bias"
+    MUON = "muon"
+    DEFAULT = "default"
 
 
 @dataclass(frozen=True)
@@ -59,7 +71,7 @@ class DistillTrainableParameter:
     path: str
     alias_paths: tuple[str, ...]
     parameter_role: ParameterRole
-    optimizer_group: str
+    optimizer_group: OptimizerGroup
     master_weight: Array | jax.ShapeDtypeStruct
 
 
@@ -142,20 +154,20 @@ def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bo
     return info.trainable_default
 
 
-def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> str:  # noqa: PLR0911
+def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> OptimizerGroup:  # noqa: PLR0911
     if not is_leaf_trainable(info, config):
-        return "frozen"
+        return OptimizerGroup.FROZEN
     if _is_quant_aux_leaf(info):
-        return "quant_aux"
+        return OptimizerGroup.QUANT_AUX
     if _is_embedding_leaf(info):
-        return "embedding"
+        return OptimizerGroup.EMBEDDING
     if _is_norm_leaf(info):
-        return "norm"
+        return OptimizerGroup.NORM
     if _is_bias_leaf(info):
-        return "bias"
+        return OptimizerGroup.BIAS
     if len(info.shape) >= 2:
-        return "muon"
-    return "default"
+        return OptimizerGroup.MUON
+    return OptimizerGroup.DEFAULT
 
 
 def summarize_distill_parameters(
@@ -163,7 +175,7 @@ def summarize_distill_parameters(
     config: DistillTrainConfig,
 ) -> DistillParameterSummary:
     by_role: dict[str, int] = defaultdict(int)
-    by_group: dict[str, int] = defaultdict(int)
+    by_group: dict[OptimizerGroup, int] = defaultdict(int)
     master_dtype = jnp.dtype(config.master_dtype)
 
     total_parameters = 0
@@ -183,7 +195,7 @@ def summarize_distill_parameters(
         optimizer_group = get_optimizer_group(info, config)
         by_group[optimizer_group] += parameter_count
 
-        if optimizer_group == "frozen":
+        if optimizer_group == OptimizerGroup.FROZEN:
             continue
 
         trainable_parameters += parameter_count
