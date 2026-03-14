@@ -431,6 +431,7 @@ def test_full_pipeline_on_llama_decoder() -> None:
                 f"Frozen leaf {path} dtype changed from {original_leaves[path].dtype} to {leaf.dtype}"
             )
 
+    assert any("norm" in path and path.endswith("scales") for path in trainable_paths)
     assert not any(path.startswith("transformer.global_rope.") for path in trainable_paths)
     assert any("embedding" in path for path in trainable_paths)
     assert any(path.endswith("weights") for path in trainable_paths)

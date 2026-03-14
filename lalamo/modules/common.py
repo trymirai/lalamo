@@ -361,7 +361,7 @@ def find_field_parameter_info(module: eqx.Module, target: object) -> FieldParame
     return _field_parameter_info(field_info)
 
 
-def is_array_like(leaf: object) -> bool:
+def _is_array_like(leaf: object) -> bool:
     return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
@@ -372,7 +372,7 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
     first_paths: dict[int, str] = {}
 
     for path, leaf in flat_with_path:
-        if not is_array_like(leaf):
+        if not _is_array_like(leaf):
             continue
 
         field_info = _field_metadata_from_path(module, path)
