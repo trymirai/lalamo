@@ -8,6 +8,7 @@ from lalamo.distillation import (
     DistillBatch,
     DistillTrainConfig,
     OptimizerGroup,
+    compute_distill_batch_metrics,
     compute_distill_kl_loss,
     compute_trace_distill_kl_loss,
     distill_train_step,
@@ -296,6 +297,20 @@ def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:
     metrics = compute_distill_kl_loss(decoder, decoder, batch)
 
     assert metrics.valid_tokens == 5
+    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
+
+
+def test_compute_distill_batch_metrics_counts_all_matching_top1_tokens() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(14))
+    batch = DistillBatch(
+        token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([6], dtype=jnp.int32),
+    )
+
+    metrics = compute_distill_batch_metrics(decoder, decoder, batch)
+
+    assert metrics.valid_tokens == 5
+    assert metrics.top1_matches == 5
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 

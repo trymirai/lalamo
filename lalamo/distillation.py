@@ -19,6 +19,7 @@ from lalamo.quantization import stochastic_quantize_weights
 
 __all__ = [
     "DistillBatch",
+    "DistillBatchMetrics",
     "DistillOptimizerState",
     "DistillParameterSummary",
     "DistillStepMetrics",
@@ -27,6 +28,7 @@ __all__ = [
     "DistillTrainingState",
     "OptimizerGroup",
     "TraceDistillBatch",
+    "compute_distill_batch_metrics",
     "compute_distill_kl_loss",
     "compute_trace_distill_kl_loss",
     "distill_train_step",
@@ -91,6 +93,13 @@ class DistillBatch:
 class DistillStepMetrics:
     loss: Float[Array, ""]
     valid_tokens: Int[Array, ""]
+
+
+@dataclass(frozen=True)
+class DistillBatchMetrics:
+    loss: Float[Array, ""]
+    valid_tokens: Int[Array, ""]
+    top1_matches: Int[Array, ""]
 
 
 @dataclass(frozen=True)
@@ -429,6 +438,15 @@ def compute_distill_kl_loss(
     teacher: Decoder,
     batch: DistillBatch,
 ) -> DistillStepMetrics:
+    metrics = compute_distill_batch_metrics(student, teacher, batch)
+    return DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
+
+
+def compute_distill_batch_metrics(
+    student: Decoder,
+    teacher: Decoder,
+    batch: DistillBatch,
+) -> DistillBatchMetrics:
     teacher_logits = _decoder_logits(teacher, batch).astype(jnp.float32)
     student_logits = _decoder_logits(student, batch).astype(jnp.float32)
 
@@ -440,7 +458,14 @@ def compute_distill_kl_loss(
     prediction_mask = _prediction_mask(batch).astype(token_kl.dtype)
     valid_tokens = prediction_mask.sum(dtype=jnp.int32)
     loss = jnp.sum(token_kl * prediction_mask) / valid_tokens
-    return DistillStepMetrics(loss=loss, valid_tokens=valid_tokens)
+    student_top1 = jnp.argmax(student_logits, axis=-1)
+    teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
+    top1_matches = jnp.sum((student_top1 == teacher_top1) & prediction_mask.astype(jnp.bool_), dtype=jnp.int32)
+    return DistillBatchMetrics(
+        loss=loss,
+        valid_tokens=valid_tokens,
+        top1_matches=top1_matches,
+    )
 
 
 def _trace_completion_mask(batch: TraceDistillBatch) -> Bool[Array, "batch completion_tokens"]:

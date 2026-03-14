@@ -22,6 +22,7 @@ from lalamo.distillation import (
     DistillParameterSummary,
     DistillTrainConfig,
     DistillTrainingState,
+    compute_distill_batch_metrics,
     compute_distill_kl_loss,
     distill_train_step,
     get_muon_weight_dimension_numbers,
@@ -144,28 +145,10 @@ def _evaluate(
     total_matches = 0
 
     for batch in batches:
-        kl_metrics = compute_distill_kl_loss(student, teacher, batch)
-        total_kl += float(kl_metrics.loss) * int(kl_metrics.valid_tokens)
-        total_valid_tokens += int(kl_metrics.valid_tokens)
-
-        _, num_tokens = batch.token_ids.shape
-        token_positions = jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
-        student_result = student(token_ids=batch.token_ids, token_positions=token_positions)
-        teacher_result = teacher(token_ids=batch.token_ids, token_positions=token_positions)
-        student_logits = student_result.logits[:, :-1, :].astype(jnp.float32)
-        teacher_logits = teacher_result.logits[:, :-1, :].astype(jnp.float32)
-
-        if batch.lengths_without_padding is None:
-            lengths_without_padding = jnp.full((batch.token_ids.shape[0],), num_tokens, dtype=jnp.int32)
-        else:
-            lengths_without_padding = batch.lengths_without_padding
-
-        prediction_mask = jnp.arange(max(num_tokens - 1, 0), dtype=jnp.int32)[None, :] < (
-            lengths_without_padding[:, None] - 1
-        )
-        student_top1 = jnp.argmax(student_logits, axis=-1)
-        teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
-        total_matches += int(jnp.sum((student_top1 == teacher_top1) & prediction_mask))
+        batch_metrics = compute_distill_batch_metrics(student, teacher, batch)
+        total_kl += float(batch_metrics.loss) * int(batch_metrics.valid_tokens)
+        total_valid_tokens += int(batch_metrics.valid_tokens)
+        total_matches += int(batch_metrics.top1_matches)
 
     return EvaluationMetrics(
         kl_divergence=total_kl / total_valid_tokens,
