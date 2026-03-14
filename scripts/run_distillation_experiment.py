@@ -1,18 +1,18 @@
-from dataclasses import asdict, dataclass, replace
-from itertools import cycle, islice
 import json
-from pathlib import Path
 import shutil
 import time
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
-
-from typing import Any
+from itertools import cycle, islice
+from pathlib import Path
+from typing import Annotated, Any
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
 import typer
+from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters
 from lalamo.data import load_hf_parquet, shuffle_dataset
@@ -82,10 +82,7 @@ def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> 
         raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
 
     conversations = dataframe.get_column(column_name).to_list()[:num_examples]
-    return [
-        [HFMessage.from_dict(message) for message in conversation]
-        for conversation in conversations
-    ]
+    return [[HFMessage.from_dict(message) for message in conversation] for conversation in conversations]
 
 
 def _tokenize_conversations(
@@ -137,8 +134,10 @@ def _evaluate(
     for batch in batches:
         _, num_tokens = batch.token_ids.shape
         token_positions = jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
-        student_logits = student(token_ids=batch.token_ids, token_positions=token_positions).logits[:, :-1, :].astype(jnp.float32)
-        teacher_logits = teacher(token_ids=batch.token_ids, token_positions=token_positions).logits[:, :-1, :].astype(jnp.float32)
+        student_result = student(token_ids=batch.token_ids, token_positions=token_positions)
+        teacher_result = teacher(token_ids=batch.token_ids, token_positions=token_positions)
+        student_logits = student_result.logits[:, :-1, :].astype(jnp.float32)
+        teacher_logits = teacher_result.logits[:, :-1, :].astype(jnp.float32)
 
         if batch.lengths_without_padding is None:
             lengths_without_padding = jnp.full((batch.token_ids.shape[0],), num_tokens, dtype=jnp.int32)
@@ -193,7 +192,7 @@ def _build_optimizer(name: OptimizerName, learning_rate: float) -> optax.Gradien
             raise ValueError(f"Unknown optimizer: {name}")
 
 
-def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: Any) -> Any:
+def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: DTypeLike) -> DTypeLike:
     match name:
         case ComputeDTypeName.AUTO:
             return native_dtype
@@ -206,24 +205,24 @@ def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: Any) -> Any:
 
 
 def main(
-    teacher_path: Path = typer.Option(..., exists=True, dir_okay=True, file_okay=False),
-    student_path: Path = typer.Option(..., exists=True, dir_okay=True, file_okay=False),
-    dataset_path: Path = typer.Option(..., exists=True, dir_okay=False, file_okay=True),
-    output_dir: Path = typer.Option(...),
-    train_examples: int = typer.Option(256),
-    eval_examples: int = typer.Option(64),
-    max_sequence_length: int = typer.Option(256),
-    batch_size: int = typer.Option(4),
-    num_steps: int = typer.Option(25),
-    learning_rate: float = typer.Option(3e-4),
-    optimizer_name: OptimizerName = typer.Option(OptimizerName.ADAMW),
-    compute_dtype_name: ComputeDTypeName = typer.Option(ComputeDTypeName.AUTO),
-    seed: int = typer.Option(0),
-    train_bias: bool = typer.Option(False),
-    train_norm: bool = typer.Option(False),
-    train_embedding: bool = typer.Option(False),
-    train_quant_aux: bool = typer.Option(False),
-    train_base_weight: bool = typer.Option(True),
+    teacher_path: Annotated[Path, typer.Option(exists=True, dir_okay=True, file_okay=False)],
+    student_path: Annotated[Path, typer.Option(exists=True, dir_okay=True, file_okay=False)],
+    dataset_path: Annotated[Path, typer.Option(exists=True, dir_okay=False, file_okay=True)],
+    output_dir: Annotated[Path, typer.Option()],
+    train_examples: Annotated[int, typer.Option()] = 256,
+    eval_examples: Annotated[int, typer.Option()] = 64,
+    max_sequence_length: Annotated[int, typer.Option()] = 256,
+    batch_size: Annotated[int, typer.Option()] = 4,
+    num_steps: Annotated[int, typer.Option()] = 25,
+    learning_rate: Annotated[float, typer.Option()] = 3e-4,
+    optimizer_name: Annotated[OptimizerName, typer.Option()] = OptimizerName.ADAMW,
+    compute_dtype_name: Annotated[ComputeDTypeName, typer.Option()] = ComputeDTypeName.AUTO,
+    seed: Annotated[int, typer.Option()] = 0,
+    train_bias: Annotated[bool, typer.Option()] = False,
+    train_norm: Annotated[bool, typer.Option()] = False,
+    train_embedding: Annotated[bool, typer.Option()] = False,
+    train_quant_aux: Annotated[bool, typer.Option()] = False,
+    train_base_weight: Annotated[bool, typer.Option()] = True,
 ) -> None:
     teacher_model = LanguageModelConfig.load_model(teacher_path)
     student_model = LanguageModelConfig.load_model(student_path)
@@ -285,7 +284,7 @@ def main(
                 batch,
                 distill_config,
             )
-            # TODO: distill_train_step returns traced metrics, so step logging still recomputes a concrete loss.
+            # Step logging recomputes a concrete loss because distill_train_step returns traced metrics.
             materialized_student = materialize_trainable_module(
                 student_model.model,
                 optimizer_state.training_state,
@@ -300,9 +299,9 @@ def main(
                         "step": step,
                         "train_kl_divergence": train_kl_divergence,
                         "valid_tokens": valid_tokens,
-                    }
+                    },
                 )
-                + "\n"
+                + "\n",
             )
 
     elapsed_seconds = time.perf_counter() - start_time

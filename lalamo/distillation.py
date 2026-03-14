@@ -5,28 +5,28 @@ from dataclasses import dataclass, replace
 
 import equinox as eqx
 import jax
-import jax.tree_util as jtu
 import jax.numpy as jnp
-from jax.tree_util import keystr
+import jax.tree_util as jtu
 import optax
+from jax.tree_util import keystr
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.modules.decoder import Decoder
 from lalamo.modules.common import ParameterLeafInfo, ParameterRole, iter_parameter_leaves
+from lalamo.modules.decoder import Decoder
 
 __all__ = [
     "DistillBatch",
     "DistillOptimizerState",
-    "DistillTrainConfig",
     "DistillParameterSummary",
     "DistillStepMetrics",
+    "DistillTrainConfig",
     "DistillTrainableParameter",
     "DistillTrainingState",
     "compute_distill_kl_loss",
     "distill_train_step",
     "get_optimizer_group",
-    "initialize_distill_training_state",
     "initialize_distill_optimizer_state",
+    "initialize_distill_training_state",
     "is_leaf_trainable",
     "materialize_trainable_module",
     "summarize_distill_parameters",
@@ -124,7 +124,7 @@ def _is_base_weight_leaf(info: ParameterLeafInfo) -> bool:
     return info.parameter_role == ParameterRole.LINEAR_WEIGHT and not _is_adapter_leaf(info)
 
 
-def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bool:
+def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bool:  # noqa: PLR0911
     if info.alias_of is not None:
         return False
     if _is_adapter_leaf(info):
@@ -142,7 +142,7 @@ def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bo
     return info.trainable_default
 
 
-def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> str:
+def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> str:  # noqa: PLR0911
     if not is_leaf_trainable(info, config):
         return "frozen"
     if _is_quant_aux_leaf(info):
@@ -200,10 +200,7 @@ def summarize_distill_parameters(
 
 def _leaf_map(module: eqx.Module) -> dict[str, object]:
     flat_with_path, _ = jtu.tree_flatten_with_path(module)
-    return {
-        keystr(path).lstrip("."): leaf
-        for path, leaf in flat_with_path
-    }
+    return {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
 
 
 def initialize_distill_training_state(
@@ -235,7 +232,7 @@ def initialize_distill_training_state(
                 parameter_role=info.parameter_role,
                 optimizer_group=get_optimizer_group(info, config),
                 master_weight=_cast_array_like(value, master_dtype),
-            )
+            ),
         )
 
     return DistillTrainingState(trainable_parameters=tuple(trainable_parameters))

@@ -8,9 +8,9 @@ from lalamo.distillation import (
     DistillTrainConfig,
     compute_distill_kl_loss,
     distill_train_step,
-    initialize_distill_training_state,
-    initialize_distill_optimizer_state,
     get_optimizer_group,
+    initialize_distill_optimizer_state,
+    initialize_distill_training_state,
     is_leaf_trainable,
     materialize_trainable_module,
     summarize_distill_parameters,
@@ -100,7 +100,7 @@ def test_q_lora_policy_prefers_adapter_weights() -> None:
         lora_rank=2,
         lora_scale=1.0,
     )
-    layer = config.random_init(4, (4,), True, key=jax.random.key(0))
+    layer = config.random_init(4, (4,), has_biases=True, key=jax.random.key(0))
     leaves = {leaf.field_name: leaf for leaf in iter_parameter_leaves(layer)}
 
     train_config = DistillTrainConfig()
@@ -119,7 +119,7 @@ def test_quant_aux_can_be_enabled_explicitly() -> None:
         activation_quantization_mode=None,
         activation_precision=jnp.float32,
     )
-    layer = config.random_init(4, (4,), True, key=jax.random.key(1))
+    layer = config.random_init(4, (4,), has_biases=True, key=jax.random.key(1))
     leaves = {leaf.field_name: leaf for leaf in iter_parameter_leaves(layer)}
 
     train_config = DistillTrainConfig(train_quant_aux=True)
@@ -160,7 +160,7 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
         weight_quantization_mode=QuantizationMode.UINT4,
         activation_quantization_mode=None,
         activation_precision=jnp.float32,
-    ).random_init(4, (4,), True, key=jax.random.key(8))
+    ).random_init(4, (4,), has_biases=True, key=jax.random.key(8))
 
     config = DistillTrainConfig(train_bias=False, train_quant_aux=True)
     state = initialize_distill_training_state(layer, config)
@@ -347,9 +347,7 @@ def test_llama_decoder_has_no_default_role_leaves() -> None:
     leaves = iter_parameter_leaves(decoder)
 
     default_leaves = [leaf for leaf in leaves if leaf.parameter_role == ParameterRole.DEFAULT]
-    assert default_leaves == [], (
-        f"Unexpected DEFAULT leaves: {[leaf.path for leaf in default_leaves]}"
-    )
+    assert default_leaves == [], f"Unexpected DEFAULT leaves: {[leaf.path for leaf in default_leaves]}"
 
     expected_roles = {
         ParameterRole.INPUT_OUTPUT_EMBEDDING,
