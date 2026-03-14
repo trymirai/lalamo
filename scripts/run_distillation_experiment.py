@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from itertools import cycle, islice
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated
 
 import equinox as eqx
 import jax
@@ -19,6 +19,7 @@ from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
 from lalamo.distillation import (
     DistillBatch,
+    DistillParameterSummary,
     DistillTrainConfig,
     DistillTrainingState,
     compute_distill_kl_loss,
@@ -35,11 +36,29 @@ from lalamo.modules.decoder import Decoder
 from lalamo.safetensors import safe_write
 
 
+class OptimizerName(StrEnum):
+    ADAMW = "adamw"
+    MUON = "muon"
+    SGD = "sgd"
+
+
+class ComputeDTypeName(StrEnum):
+    AUTO = "auto"
+    BFLOAT16 = "bfloat16"
+    FLOAT32 = "float32"
+
+
 @dataclass(frozen=True)
 class EvaluationMetrics:
     kl_divergence: float
     top1_agreement: float
     valid_tokens: int
+
+
+@dataclass(frozen=True)
+class DistillConfigSnapshot:
+    master_dtype: str
+    compute_dtype: str
 
 
 @dataclass(frozen=True)
@@ -54,26 +73,14 @@ class ExperimentResult:
     num_steps: int
     learning_rate: float
     seed: int
-    optimizer: "OptimizerName"
-    distill_config: dict[str, Any]
-    parameter_summary: dict[str, Any]
-    initial_eval: dict[str, Any]
-    final_eval: dict[str, Any]
+    optimizer: OptimizerName
+    distill_config: DistillConfigSnapshot
+    parameter_summary: DistillParameterSummary
+    initial_eval: EvaluationMetrics
+    final_eval: EvaluationMetrics
     elapsed_seconds: float
     seconds_per_step: float
     output_model_path: str
-
-
-class OptimizerName(StrEnum):
-    ADAMW = "adamw"
-    MUON = "muon"
-    SGD = "sgd"
-
-
-class ComputeDTypeName(StrEnum):
-    AUTO = "auto"
-    BFLOAT16 = "bfloat16"
-    FLOAT32 = "float32"
 
 
 def _load_conversations(dataset_path: Path | str, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
@@ -337,14 +344,14 @@ def main(
         num_steps=num_steps,
         learning_rate=learning_rate,
         seed=seed,
-        optimizer=optimizer_name.value,
-        distill_config={
-            "master_dtype": str(jnp.dtype(distill_config.master_dtype)),
-            "compute_dtype": str(jnp.dtype(distill_config.compute_dtype)),
-        },
-        parameter_summary=asdict(parameter_summary),
-        initial_eval=asdict(initial_eval),
-        final_eval=asdict(final_eval),
+        optimizer=optimizer_name,
+        distill_config=DistillConfigSnapshot(
+            master_dtype=str(jnp.dtype(distill_config.master_dtype)),
+            compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
+        ),
+        parameter_summary=parameter_summary,
+        initial_eval=initial_eval,
+        final_eval=final_eval,
         elapsed_seconds=elapsed_seconds,
         seconds_per_step=elapsed_seconds / num_steps,
         output_model_path=str(model_output_path),
