@@ -20,8 +20,10 @@ from lalamo.data.huggingface_message import HFMessage
 from lalamo.distillation import (
     DistillBatch,
     DistillTrainConfig,
+    DistillTrainingState,
     compute_distill_kl_loss,
     distill_train_step,
+    get_muon_weight_dimension_numbers,
     initialize_distill_optimizer_state,
     initialize_distill_training_state,
     materialize_trainable_module,
@@ -63,6 +65,7 @@ class ExperimentResult:
 
 class OptimizerName(StrEnum):
     ADAMW = "adamw"
+    MUON = "muon"
     SGD = "sgd"
 
 
@@ -185,10 +188,19 @@ def _save_materialized_student(
         safe_write(fd, flatten_parameters(updated_model.export_weights()))
 
 
-def _build_optimizer(name: OptimizerName, learning_rate: float) -> optax.GradientTransformation:
+def _build_optimizer(
+    name: OptimizerName,
+    learning_rate: float,
+    training_state: DistillTrainingState,
+) -> optax.GradientTransformation:
     match name:
         case OptimizerName.ADAMW:
             return optax.adamw(learning_rate)
+        case OptimizerName.MUON:
+            return optax.contrib.muon(
+                learning_rate=learning_rate,
+                muon_weight_dimension_numbers=get_muon_weight_dimension_numbers(training_state),
+            )
         case OptimizerName.SGD:
             return optax.sgd(learning_rate)
         case _:
@@ -262,7 +274,7 @@ def main(
         compute_dtype=_resolve_compute_dtype(compute_dtype_name, student_model.model.activation_precision),
     )
     training_state = initialize_distill_training_state(student_model.model, distill_config)
-    optimizer = _build_optimizer(optimizer_name, learning_rate)
+    optimizer = _build_optimizer(optimizer_name, learning_rate, training_state)
     optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
     parameter_summary = summarize_distill_parameters(
         iter_parameter_leaves(student_model.model),

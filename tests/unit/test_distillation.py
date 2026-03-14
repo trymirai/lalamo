@@ -9,6 +9,7 @@ from lalamo.distillation import (
     OptimizerGroup,
     compute_distill_kl_loss,
     distill_train_step,
+    get_muon_weight_dimension_numbers,
     get_optimizer_group,
     initialize_distill_optimizer_state,
     initialize_distill_training_state,
@@ -169,6 +170,31 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
 
     assert {parameter.path for parameter in state.trainable_parameters} == {"scales", "zero_points"}
     assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {OptimizerGroup.QUANT_AUX}
+
+
+def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (4,), has_biases=True, key=jax.random.key(11))
+
+    state = initialize_distill_training_state(
+        layer,
+        DistillTrainConfig(
+            train_bias=False,
+            train_quant_aux=True,
+            train_base_weight=True,
+        ),
+    )
+
+    assert tuple(parameter.path for parameter in state.trainable_parameters) == ("weights", "scales", "zero_points")
+    assert get_muon_weight_dimension_numbers(state) == (
+        optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0),
+        None,
+        None,
+    )
 
 
 def test_parameter_roles_cover_llama_relevant_modules() -> None:

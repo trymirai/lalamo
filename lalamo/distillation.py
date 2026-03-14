@@ -26,6 +26,7 @@ __all__ = [
     "OptimizerGroup",
     "compute_distill_kl_loss",
     "distill_train_step",
+    "get_muon_weight_dimension_numbers",
     "get_optimizer_group",
     "initialize_distill_optimizer_state",
     "initialize_distill_training_state",
@@ -248,6 +249,30 @@ def initialize_distill_training_state(
         )
 
     return DistillTrainingState(trainable_parameters=tuple(trainable_parameters))
+
+
+def get_muon_weight_dimension_numbers(
+    training_state: DistillTrainingState,
+) -> tuple[optax.contrib.MuonDimensionNumbers | None, ...]:
+    result: list[optax.contrib.MuonDimensionNumbers | None] = []
+
+    for parameter in training_state.trainable_parameters:
+        if parameter.optimizer_group != OptimizerGroup.MUON:
+            result.append(None)
+            continue
+
+        ndim = len(parameter.master_weight.shape)
+        if ndim < 2:
+            raise ValueError(f"Muon parameters must have at least 2 dimensions, got {parameter.path} with {ndim}")
+
+        result.append(
+            optax.contrib.MuonDimensionNumbers(
+                reduction_axis=ndim - 1,
+                output_axis=ndim - 2,
+            ),
+        )
+
+    return tuple(result)
 
 
 def _select_parameter_paths(module: eqx.Module, paths: Sequence[str]) -> list[object]:
