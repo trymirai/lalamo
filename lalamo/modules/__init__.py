@@ -7,16 +7,14 @@ from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
     LalamoModule,
-    ParameterRole,
     PositionalEmbeddingSelector,
     ShardingConfig,
     ShardingOrder,
     TensorSharding,
     apply_data_sharding,
     config_converter,
+    field,
     get_current_sharding_config,
-    parameter_field,
-    sharded_field,
 )
 from .decoder import (
     Decoder,
@@ -147,7 +145,6 @@ __all__ = [
     "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
-    "ParameterRole",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
@@ -189,7 +186,6 @@ __all__ = [
     "YARNRoPEConfig",
     "apply_data_sharding",
     "config_converter",
+    "field",
     "get_current_sharding_config",
-    "parameter_field",
-    "sharded_field",
 ]

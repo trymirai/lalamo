@@ -16,12 +16,10 @@ from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
-    ParameterRole,
     ShardingOrder,
     TensorSharding,
-    parameter_field,
+    field,
     register_config_union,
-    sharded_field,
 )
 
 __all__ = [
@@ -204,16 +202,13 @@ class FullPrecisionLinearConfig(LinearConfigBase):
 
 
 class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
-    weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
+    weights: Float[Array, "*components total_out_channels in_channels"] = field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
-        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    biases: Float[Array, "*components total_out_channels"] | None = parameter_field(
-        parameter_role=ParameterRole.LINEAR_BIAS,
-    )
+    biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
     def mixture_size(self) -> int | None:
@@ -428,22 +423,15 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
 
 
 class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
-    weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
+    weights: Float[Array, "*components total_out_channels in_channels"] = field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
-        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    scales: Float[Array, "*components total_out_channels groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_SCALE,
-    )
-    zero_points: Float[Array, "*components total_out_channels groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_ZERO_POINT,
-    )
-    biases: Float[Array, "*components total_out_channels"] | None = parameter_field(
-        parameter_role=ParameterRole.LINEAR_BIAS,
-    )
+    scales: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
+    zero_points: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
+    biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
     def mixture_size(self) -> int | None:
@@ -723,22 +711,15 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
 
 
 class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
-    weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
+    weights: Float[Array, "*components total_out_channels in_channels"] = field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
-        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    scales: Float[Array, "*components total_out_channels groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_SCALE,
-    )
-    deq_biases: Float[Array, "*components total_out_channels groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_DEQ_BIAS,
-    )
-    biases: Float[Array, "*components total_out_channels"] | None = parameter_field(
-        parameter_role=ParameterRole.LINEAR_BIAS,
-    )
+    scales: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
+    deq_biases: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
+    biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
     def mixture_size(self) -> int | None:
@@ -1046,16 +1027,13 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
 
 
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
-    lora_down_weights: Float[Array, "*components in_channels total_lora_channels"] = sharded_field(
+    lora_down_weights: Float[Array, "*components in_channels total_lora_channels"] = field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.INPUT, ShardingOrder.OUTPUT),
         ),
-        parameter_role=ParameterRole.LINEAR_WEIGHT,
     )
-    lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...] = parameter_field(
-        parameter_role=ParameterRole.LINEAR_WEIGHT,
-    )
+    lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...] = field()
 
     def _split_biases(self) -> tuple[Float[Array, "*components out_channels"] | None, ...]:
         if self.biases is not None:

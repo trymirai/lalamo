@@ -21,28 +21,26 @@ from lalamo.common import ParameterTree, require_array, require_tree
 
 __all__ = [
     "DummyUnionMember",
-    "ForwardPassMode",
     "FieldMetadataInfo",
     "FieldParameterInfo",
+    "ForwardPassMode",
     "LalamoModule",
-    "ParameterTree",
     "ParameterLeafInfo",
-    "ParameterRole",
+    "ParameterTree",
     "PositionalEmbeddingSelector",
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
     "apply_data_sharding",
     "config_converter",
+    "field",
     "find_field_metadata",
     "find_field_parameter_info",
     "get_current_sharding_config",
     "iter_parameter_leaves",
-    "parameter_field",
     "register_config_union",
     "require_array",
     "require_tree",
-    "sharded_field",
 ]
 
 
@@ -57,24 +55,10 @@ class ForwardPassMode(Enum):
     SINGLE_TOKEN = "single_token"
 
 
-class ParameterRole(Enum):
-    DEFAULT = "default"
-    INPUT_EMBEDDING = "input_embedding"
-    OUTPUT_EMBEDDING = "output_embedding"
-    INPUT_OUTPUT_EMBEDDING = "input_output_embedding"
-    LINEAR_WEIGHT = "linear_weight"
-    LINEAR_BIAS = "linear_bias"
-    NORM_SCALE = "norm_scale"
-    NORM_BIAS = "norm_bias"
-    QUANT_SCALE = "quant_scale"
-    QUANT_ZERO_POINT = "quant_zero_point"
-    QUANT_DEQ_BIAS = "quant_deq_bias"
-
-
 ConfigT_co = TypeVar("ConfigT_co", covariant=True)
 
 
-class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
+class LalamoModule(eqx.Module, Generic[ConfigT_co]):
     config: ConfigT_co = eqx.field(static=True)
 
     @property
@@ -303,8 +287,8 @@ class FieldMetadataInfo:
 
 @dataclass(frozen=True)
 class FieldParameterInfo:
-    trainable_default: bool
-    parameter_role: ParameterRole
+    trainable: bool
+    matrix: bool
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
 
@@ -314,10 +298,10 @@ class ParameterLeafInfo:
     path: str
     owner_type: type[eqx.Module]
     field_name: str
-    parameter_role: ParameterRole
     shape: tuple[int, ...]
     dtype: jnp.dtype
-    trainable_default: bool
+    trainable: bool
+    matrix: bool
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
     alias_of: str | None
@@ -349,8 +333,8 @@ def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> Fiel
 
 def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
     return FieldParameterInfo(
-        trainable_default=field_info.metadata.get("trainable_default", True),
-        parameter_role=field_info.metadata.get("parameter_role", ParameterRole.DEFAULT),
+        trainable=field_info.metadata.get("trainable", True),
+        matrix=field_info.metadata.get("matrix", True),
         tensor_sharding=field_info.metadata.get("tensor_sharding"),
         min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
     )
@@ -395,9 +379,6 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
         if field_info is None:
             raise ValueError(f"Field lookup failed for module {module} at {path}")
 
-        if "parameter_role" not in field_info.metadata:
-            continue
-
         parameter_info = _field_parameter_info(field_info)
 
         path_str = keystr(path).lstrip(".")
@@ -411,24 +392,24 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
                 path=path_str,
                 owner_type=type(field_info.owner),
                 field_name=field_info.field.name,
-                parameter_role=parameter_info.parameter_role,
                 shape=tuple(leaf.shape),
                 dtype=jnp.dtype(leaf.dtype),
-                trainable_default=parameter_info.trainable_default,
+                trainable=parameter_info.trainable,
+                matrix=parameter_info.matrix,
                 tensor_sharding=parameter_info.tensor_sharding,
                 min_size_to_shard=parameter_info.min_size_to_shard,
                 alias_of=alias_of,
-            )
+            ),
         )
 
     return results
 
 
-def sharded_field(
+def field(
     tensor_sharding: TensorSharding | None = None,
     min_size_to_shard: int = 2**18,
-    trainable_default: bool = True,
-    parameter_role: ParameterRole = ParameterRole.DEFAULT,
+    trainable: bool = True,
+    matrix: bool = True,
     *,
     converter: Callable[[Any], Any] | None = None,
     static: bool = False,
@@ -436,30 +417,10 @@ def sharded_field(
     **kwargs: Any,  # noqa: ANN401
 ) -> Any:  # noqa: ANN401
     merged_metadata = dict(metadata or {})
+    merged_metadata["trainable"] = trainable
+    merged_metadata["matrix"] = matrix
     merged_metadata["tensor_sharding"] = tensor_sharding
     merged_metadata["min_size_to_shard"] = min_size_to_shard
-    return parameter_field(
-        trainable_default=trainable_default,
-        parameter_role=parameter_role,
-        converter=converter,
-        static=static,
-        metadata=merged_metadata,
-        **kwargs,
-    )
-
-
-def parameter_field(
-    trainable_default: bool = True,
-    parameter_role: ParameterRole = ParameterRole.DEFAULT,
-    *,
-    converter: Callable[[Any], Any] | None = None,
-    static: bool = False,
-    metadata: Mapping[str, Any] | None = None,
-    **kwargs: Any,  # noqa: ANN401
-) -> Any:  # noqa: ANN401
-    merged_metadata = dict(metadata or {})
-    merged_metadata["trainable_default"] = trainable_default
-    merged_metadata["parameter_role"] = parameter_role
     return eqx.field(
         converter=converter,
         static=static,

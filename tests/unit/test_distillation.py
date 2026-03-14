@@ -3,43 +3,42 @@ import jax
 import jax.numpy as jnp
 import optax
 
+from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
     DistillBatch,
     DistillTrainConfig,
     OptimizerGroup,
     compute_distill_kl_loss,
+    compute_trace_distill_kl_loss,
     distill_train_step,
     get_muon_weight_dimension_numbers,
     get_optimizer_group,
     initialize_distill_optimizer_state,
     initialize_distill_training_state,
     is_leaf_trainable,
+    make_trace_distill_batch,
     materialize_trainable_module,
     summarize_distill_parameters,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.modules.common import ParameterRole, iter_parameter_leaves, parameter_field
+from lalamo.modules.common import field, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
-from lalamo.modules.embedding import (
-    MLXQuantizedTiedEmbeddingConfig,
-    MLXQuantizedUntiedEmbeddingConfig,
-    MLXSemiQuantizedUntiedEmbeddingConfig,
-    TiedEmbeddingConfig,
-    UntiedEmbeddingConfig,
-)
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
-    MLXQuantizedLinearConfig,
     QLoRALinearConfig,
 )
-from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.quantization import QuantizationMode
 
 
 class AliasModule(eqx.Module):
-    left: jax.Array = parameter_field(parameter_role=ParameterRole.LINEAR_WEIGHT)
-    right: jax.Array = parameter_field(parameter_role=ParameterRole.LINEAR_WEIGHT)
+    left: jax.Array = field()
+    right: jax.Array = field()
+
+
+class BufferModule(eqx.Module):
+    parameter: jax.Array = field()
+    buffer: jax.Array = field(trainable=False, matrix=False)
 
 
 def test_iter_parameter_leaves_detects_aliases() -> None:
@@ -63,7 +62,6 @@ def test_summarize_distill_parameters_counts_unique_aliases_once() -> None:
     assert summary.total_parameters == 4
     assert summary.trainable_parameters == 4
     assert summary.total_master_bytes == 16
-    assert summary.by_role == {"linear_weight": 4}
     assert summary.by_group == {OptimizerGroup.MUON: 4}
 
 
@@ -129,7 +127,7 @@ def test_quant_aux_can_be_enabled_explicitly() -> None:
 
     assert is_leaf_trainable(leaves["scales"], train_config)
     assert is_leaf_trainable(leaves["zero_points"], train_config)
-    assert get_optimizer_group(leaves["scales"], train_config) == OptimizerGroup.QUANT_AUX
+    assert get_optimizer_group(leaves["scales"], train_config) == OptimizerGroup.DEFAULT
 
 
 def test_materialize_trainable_module_casts_only_trainable_leaves() -> None:
@@ -169,7 +167,7 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
     state = initialize_distill_training_state(layer, config)
 
     assert {parameter.path for parameter in state.trainable_parameters} == {"scales", "zero_points"}
-    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {OptimizerGroup.QUANT_AUX}
+    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {OptimizerGroup.DEFAULT}
 
 
 def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
@@ -197,133 +195,17 @@ def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
     )
 
 
-def test_parameter_roles_cover_llama_relevant_modules() -> None:
-    full_precision = FullPrecisionLinearConfig(precision=jnp.float32).random_init(
-        input_dim=4,
-        output_dims=(4,),
-        has_biases=True,
-        key=jax.random.key(2),
+def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_matrices() -> None:
+    module = BufferModule(
+        parameter=jnp.ones((2, 2), dtype=jnp.float32),
+        buffer=jnp.ones((4,), dtype=jnp.float32),
     )
-    group_quantized = GroupQuantizedLinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).random_init(
-        input_dim=4,
-        output_dims=(4,),
-        has_biases=True,
-        key=jax.random.key(3),
-    )
-    mlx_quantized = MLXQuantizedLinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).random_init(
-        input_dim=4,
-        output_dims=(4,),
-        has_biases=True,
-        key=jax.random.key(4),
-    )
-    tied_embedding = TiedEmbeddingConfig(
-        input_scale=None,
-        logit_soft_cap=None,
-        precision=jnp.float32,
-    ).random_init(vocab_size=4, model_dim=4, key=jax.random.key(5))
-    untied_embedding = UntiedEmbeddingConfig(
-        input_scale=None,
-        logit_soft_cap=None,
-        precision=jnp.float32,
-    ).random_init(vocab_size=4, model_dim=4, key=jax.random.key(6))
-    mlx_tied_embedding = MLXQuantizedTiedEmbeddingConfig(
-        input_scale=None,
-        logit_soft_cap=None,
-        group_size=2,
-        embedding_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).empty(vocab_size=4, model_dim=4)
-    mlx_untied_embedding = MLXQuantizedUntiedEmbeddingConfig(
-        input_scale=None,
-        logit_soft_cap=None,
-        group_size=2,
-        embedding_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).empty(vocab_size=4, model_dim=4)
-    semi_quantized_embedding = MLXSemiQuantizedUntiedEmbeddingConfig(
-        input_scale=None,
-        logit_soft_cap=None,
-        group_size=2,
-        embedding_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    ).empty(vocab_size=4, model_dim=4)
-    normalization = NormalizationConfig(
-        scale_precision=jnp.float32,
-        accumulation_precision=jnp.float32,
-        epsilon=1e-5,
-        scale_offset=None,
-        upcast_mode=UpcastMode.ONLY_NORMALIZATION,
-        subtract_mean=False,
-        use_bias=True,
-    ).init(4)
+    leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(module)}
 
-    cases = [
-        (full_precision, {ParameterRole.LINEAR_WEIGHT, ParameterRole.LINEAR_BIAS}),
-        (
-            group_quantized,
-            {
-                ParameterRole.LINEAR_WEIGHT,
-                ParameterRole.LINEAR_BIAS,
-                ParameterRole.QUANT_SCALE,
-                ParameterRole.QUANT_ZERO_POINT,
-            },
-        ),
-        (
-            mlx_quantized,
-            {
-                ParameterRole.LINEAR_WEIGHT,
-                ParameterRole.LINEAR_BIAS,
-                ParameterRole.QUANT_SCALE,
-                ParameterRole.QUANT_DEQ_BIAS,
-            },
-        ),
-        (tied_embedding, {ParameterRole.INPUT_OUTPUT_EMBEDDING}),
-        (untied_embedding, {ParameterRole.INPUT_EMBEDDING, ParameterRole.OUTPUT_EMBEDDING}),
-        (
-            mlx_tied_embedding,
-            {
-                ParameterRole.INPUT_OUTPUT_EMBEDDING,
-                ParameterRole.QUANT_SCALE,
-                ParameterRole.QUANT_DEQ_BIAS,
-            },
-        ),
-        (
-            mlx_untied_embedding,
-            {
-                ParameterRole.INPUT_EMBEDDING,
-                ParameterRole.OUTPUT_EMBEDDING,
-                ParameterRole.QUANT_SCALE,
-                ParameterRole.QUANT_DEQ_BIAS,
-            },
-        ),
-        (
-            semi_quantized_embedding,
-            {
-                ParameterRole.INPUT_EMBEDDING,
-                ParameterRole.OUTPUT_EMBEDDING,
-                ParameterRole.QUANT_SCALE,
-                ParameterRole.QUANT_DEQ_BIAS,
-            },
-        ),
-        (normalization, {ParameterRole.NORM_SCALE, ParameterRole.NORM_BIAS}),
-    ]
-
-    for module, expected_roles in cases:
-        roles = {leaf.parameter_role for leaf in iter_parameter_leaves(module)}
-        assert roles == expected_roles
+    assert leaves["parameter"].trainable
+    assert leaves["parameter"].matrix
+    assert not leaves["buffer"].trainable
+    assert not leaves["buffer"].matrix
 
 
 _TINY_LLAMA_CONFIG = HFLlamaConfig(
@@ -364,7 +246,7 @@ def _make_tiny_llama_decoder(*, key: jax.Array) -> Decoder:
     return decoder_config.random_init(key=key)
 
 
-def test_llama_decoder_has_no_default_role_leaves() -> None:
+def test_llama_decoder_marks_rope_tables_frozen() -> None:
     decoder_config = _TINY_LLAMA_CONFIG.to_decoder_config(
         context_length=64,
         activation_precision=jnp.float32,
@@ -372,18 +254,12 @@ def test_llama_decoder_has_no_default_role_leaves() -> None:
         metadata_dict={},
     )
     decoder = decoder_config.empty()
-    leaves = iter_parameter_leaves(decoder)
+    leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(decoder)}
 
-    default_leaves = [leaf for leaf in leaves if leaf.parameter_role == ParameterRole.DEFAULT]
-    assert default_leaves == [], f"Unexpected DEFAULT leaves: {[leaf.path for leaf in default_leaves]}"
-
-    expected_roles = {
-        ParameterRole.INPUT_OUTPUT_EMBEDDING,
-        ParameterRole.LINEAR_WEIGHT,
-        ParameterRole.NORM_SCALE,
-    }
-    actual_roles = {leaf.parameter_role for leaf in leaves}
-    assert actual_roles == expected_roles
+    assert not leaves["transformer.global_rope.cosines"].trainable
+    assert not leaves["transformer.global_rope.sines"].trainable
+    assert not leaves["transformer.global_rope.cosines"].matrix
+    assert not leaves["transformer.global_rope.sines"].matrix
 
 
 def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:
@@ -396,6 +272,64 @@ def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:
     metrics = compute_distill_kl_loss(decoder, decoder, batch)
 
     assert metrics.valid_tokens == 5
+    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
+
+
+def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
+    traces = (
+        LalamoCompletion(
+            prefix_token_ids=[1, 2],
+            completion_token_ids=[3, 4],
+            completion_token_logits=[{3: 0.5, 7: -1.0}, {4: 0.25}],
+        ),
+        LalamoCompletion(
+            prefix_token_ids=[9],
+            completion_token_ids=[8],
+            completion_token_logits=[{8: 0.75, 6: -0.5, 5: -2.0}],
+        ),
+    )
+
+    batch = make_trace_distill_batch(traces, pad_token_id=0)
+
+    assert batch.token_ids.tolist() == [[1, 2, 3, 4], [9, 8, 0, 0]]
+    assert batch.prefix_lengths.tolist() == [2, 1]
+    assert batch.completion_lengths.tolist() == [2, 1]
+    assert batch.support_token_ids.tolist() == [
+        [[3, 7, 0], [4, 0, 0]],
+        [[8, 6, 5], [0, 0, 0]],
+    ]
+    assert batch.support_mask.tolist() == [
+        [[True, True, False], [True, False, False]],
+        [[True, True, True], [False, False, False]],
+    ]
+
+
+def test_compute_trace_distill_kl_loss_is_zero_for_matching_decoder() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(13))
+    token_ids = jnp.array([[1, 2, 3, 4, 5]], dtype=jnp.int32)
+    decoder_logits = decoder(
+        token_ids=token_ids,
+        token_positions=jnp.arange(token_ids.shape[1], dtype=jnp.int32)[None, :],
+    ).logits[:, :-1, :]
+    completion_logits = jax.device_get(decoder_logits[0, 2:, :])
+    top_k = 4
+
+    def select_support(step_logits: jax.Array) -> dict[int, float]:
+        support_values, support_ids = jax.lax.top_k(step_logits, top_k)
+        return dict(zip(support_ids.tolist(), support_values.tolist(), strict=True))
+
+    traces = (
+        LalamoCompletion(
+            prefix_token_ids=[1, 2, 3],
+            completion_token_ids=[4, 5],
+            completion_token_logits=[select_support(step_logits) for step_logits in completion_logits],
+        ),
+    )
+
+    trace_batch = make_trace_distill_batch(traces, pad_token_id=0)
+    metrics = compute_trace_distill_kl_loss(decoder, trace_batch)
+
+    assert metrics.valid_tokens == 2
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
@@ -534,10 +468,10 @@ def test_full_pipeline_on_llama_decoder() -> None:
                 f"Frozen leaf {path} dtype changed from {original_leaves[path].dtype} to {leaf.dtype}"
             )
 
-    trainable_roles = {parameter.parameter_role for parameter in state.trainable_parameters}
-    assert ParameterRole.NORM_SCALE in trainable_roles
-    assert ParameterRole.LINEAR_WEIGHT not in trainable_roles
-    assert ParameterRole.INPUT_OUTPUT_EMBEDDING not in trainable_roles
+    assert any("norm" in path and path.endswith("scales") for path in trainable_paths)
+    assert not any(path.startswith("transformer.global_rope.") for path in trainable_paths)
+    assert not any("embedding" in path for path in trainable_paths)
+    assert not any(path.endswith("weights") for path in trainable_paths)
 
 
 def test_full_pipeline_round_trip_preserves_values() -> None:

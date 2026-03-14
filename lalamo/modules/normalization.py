@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.common import ParameterTree, dummy_array, require_mapping
 
-from .common import LalamoModule, ParameterRole, parameter_field
+from .common import LalamoModule, field
 
 __all__ = [
     "Normalization",
@@ -50,8 +50,8 @@ class NormalizationConfig:
 
 
 class Normalization(LalamoModule[NormalizationConfig]):
-    scales: Float[Array, " channels"] = parameter_field(parameter_role=ParameterRole.NORM_SCALE)
-    biases: Float[Array, " channels"] | None = parameter_field(parameter_role=ParameterRole.NORM_BIAS, default=None)
+    scales: Float[Array, " channels"] = field()
+    biases: Float[Array, " channels"] | None = field(default=None)
 
     @property
     def activation_precision(self) -> DTypeLike:

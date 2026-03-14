@@ -14,8 +14,7 @@ from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
-    ParameterRole,
-    parameter_field,
+    field,
     register_config_union,
 )
 from .utils import apply_soft_capping
@@ -112,9 +111,7 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
-    weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.INPUT_OUTPUT_EMBEDDING,
-    )
+    weights: Float[Array, "vocabulary channels"] = field(matrix=False)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -188,12 +185,8 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.INPUT_EMBEDDING,
-    )
-    output_weights: Float[Array, "channels vocabulary"] = parameter_field(
-        parameter_role=ParameterRole.OUTPUT_EMBEDDING,
-    )
+    input_weights: Float[Array, "vocabulary channels"] = field(matrix=False)
+    output_weights: Float[Array, "channels vocabulary"] = field(matrix=False)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -254,6 +247,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
             output_weights=weights["output_weights"],
         )
 
+
 @dataclass(frozen=True)
 class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
     group_size: int
@@ -284,15 +278,9 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
-    weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.INPUT_OUTPUT_EMBEDDING,
-    )
-    scales: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_SCALE,
-    )
-    biases: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_DEQ_BIAS,
-    )
+    weights: Float[Array, "vocabulary channels"] = field(matrix=False)
+    scales: Float[Array, "vocabulary groups"] = field(matrix=False)
+    biases: Float[Array, "vocabulary groups"] = field(matrix=False)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -407,24 +395,12 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.INPUT_EMBEDDING,
-    )
-    input_scales: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_SCALE,
-    )
-    input_biases: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_DEQ_BIAS,
-    )
-    output_weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.OUTPUT_EMBEDDING,
-    )
-    output_scales: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_SCALE,
-    )
-    output_biases: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_DEQ_BIAS,
-    )
+    input_weights: Float[Array, "vocabulary channels"] = field(matrix=False)
+    input_scales: Float[Array, "vocabulary groups"] = field(matrix=False)
+    input_biases: Float[Array, "vocabulary groups"] = field(matrix=False)
+    output_weights: Float[Array, "vocabulary channels"] = field(matrix=False)
+    output_scales: Float[Array, "vocabulary groups"] = field(matrix=False)
+    output_biases: Float[Array, "vocabulary groups"] = field(matrix=False)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -575,18 +551,10 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.INPUT_EMBEDDING,
-    )
-    output_weights: Float[Array, "vocabulary channels"] = parameter_field(
-        parameter_role=ParameterRole.OUTPUT_EMBEDDING,
-    )
-    output_scales: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_SCALE,
-    )
-    output_biases: Float[Array, "vocabulary groups"] = parameter_field(
-        parameter_role=ParameterRole.QUANT_DEQ_BIAS,
-    )
+    input_weights: Float[Array, "vocabulary channels"] = field(matrix=False)
+    output_weights: Float[Array, "vocabulary channels"] = field(matrix=False)
+    output_scales: Float[Array, "vocabulary groups"] = field(matrix=False)
+    output_biases: Float[Array, "vocabulary groups"] = field(matrix=False)
 
     @property
     def activation_precision(self) -> DTypeLike:

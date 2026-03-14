@@ -12,7 +12,8 @@ import optax
 from jax.tree_util import keystr
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.modules.common import ParameterLeafInfo, ParameterRole, iter_parameter_leaves
+from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 
 __all__ = [
@@ -24,13 +25,16 @@ __all__ = [
     "DistillTrainableParameter",
     "DistillTrainingState",
     "OptimizerGroup",
+    "TraceDistillBatch",
     "compute_distill_kl_loss",
+    "compute_trace_distill_kl_loss",
     "distill_train_step",
     "get_muon_weight_dimension_numbers",
     "get_optimizer_group",
     "initialize_distill_optimizer_state",
     "initialize_distill_training_state",
     "is_leaf_trainable",
+    "make_trace_distill_batch",
     "materialize_trainable_module",
     "summarize_distill_parameters",
 ]
@@ -53,16 +57,11 @@ class DistillParameterSummary:
     total_parameters: int
     trainable_parameters: int
     total_master_bytes: int
-    by_role: dict[str, int]
     by_group: dict["OptimizerGroup", int]
 
 
 class OptimizerGroup(StrEnum):
     FROZEN = "frozen"
-    QUANT_AUX = "quant_aux"
-    EMBEDDING = "embedding"
-    NORM = "norm"
-    BIAS = "bias"
     MUON = "muon"
     DEFAULT = "default"
 
@@ -71,7 +70,6 @@ class OptimizerGroup(StrEnum):
 class DistillTrainableParameter:
     path: str
     alias_paths: tuple[str, ...]
-    parameter_role: ParameterRole
     optimizer_group: OptimizerGroup
     master_weight: Array | jax.ShapeDtypeStruct
 
@@ -99,27 +97,36 @@ class DistillStepMetrics:
     valid_tokens: Int[Array, ""]
 
 
+@dataclass(frozen=True)
+class TraceDistillBatch:
+    token_ids: Int[Array, "batch tokens"]
+    prefix_lengths: Int[Array, " batch"]
+    completion_lengths: Int[Array, " batch"]
+    support_token_ids: Int[Array, "batch completion_tokens support"]
+    support_logits: Float[Array, "batch completion_tokens support"]
+    support_mask: Bool[Array, "batch completion_tokens support"]
+
+
 def _is_embedding_leaf(info: ParameterLeafInfo) -> bool:
-    return info.parameter_role in {
-        ParameterRole.INPUT_EMBEDDING,
-        ParameterRole.OUTPUT_EMBEDDING,
-        ParameterRole.INPUT_OUTPUT_EMBEDDING,
-    }
+    return "Embedding" in info.owner_type.__name__ and "weight" in info.field_name
 
 
 def _is_norm_leaf(info: ParameterLeafInfo) -> bool:
-    return info.parameter_role in {
-        ParameterRole.NORM_SCALE,
-        ParameterRole.NORM_BIAS,
-    }
+    return info.owner_type.__name__ == "Normalization" and info.field_name in {"scales", "biases"}
 
 
 def _is_quant_aux_leaf(info: ParameterLeafInfo) -> bool:
-    return info.parameter_role in {
-        ParameterRole.QUANT_SCALE,
-        ParameterRole.QUANT_ZERO_POINT,
-        ParameterRole.QUANT_DEQ_BIAS,
-    }
+    if "Quantized" in info.owner_type.__name__ and "Embedding" in info.owner_type.__name__:
+        return info.field_name in {
+            "scales",
+            "biases",
+            "input_scales",
+            "input_biases",
+            "output_scales",
+            "output_biases",
+        }
+
+    return info.field_name in {"scales", "zero_points", "deq_biases"} and not _is_norm_leaf(info)
 
 
 def _is_adapter_leaf(info: ParameterLeafInfo) -> bool:
@@ -130,15 +137,25 @@ def _is_adapter_leaf(info: ParameterLeafInfo) -> bool:
 
 
 def _is_bias_leaf(info: ParameterLeafInfo) -> bool:
-    return info.parameter_role == ParameterRole.LINEAR_BIAS
+    return info.field_name == "biases" or info.field_name.endswith("_bias")
 
 
 def _is_base_weight_leaf(info: ParameterLeafInfo) -> bool:
-    return info.parameter_role == ParameterRole.LINEAR_WEIGHT and not _is_adapter_leaf(info)
+    return (
+        info.matrix
+        and len(info.shape) >= 2
+        and not _is_adapter_leaf(info)
+        and not _is_quant_aux_leaf(info)
+        and not _is_embedding_leaf(info)
+        and not _is_norm_leaf(info)
+        and not _is_bias_leaf(info)
+    )
 
 
 def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bool:  # noqa: PLR0911
     if info.alias_of is not None:
+        return False
+    if not info.trainable:
         return False
     if _is_adapter_leaf(info):
         return config.train_adapter
@@ -152,21 +169,13 @@ def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bo
         return config.train_bias
     if _is_base_weight_leaf(info):
         return config.train_base_weight
-    return info.trainable_default
+    return info.trainable
 
 
-def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> OptimizerGroup:  # noqa: PLR0911
+def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> OptimizerGroup:
     if not is_leaf_trainable(info, config):
         return OptimizerGroup.FROZEN
-    if _is_quant_aux_leaf(info):
-        return OptimizerGroup.QUANT_AUX
-    if _is_embedding_leaf(info):
-        return OptimizerGroup.EMBEDDING
-    if _is_norm_leaf(info):
-        return OptimizerGroup.NORM
-    if _is_bias_leaf(info):
-        return OptimizerGroup.BIAS
-    if len(info.shape) >= 2:
+    if info.matrix and len(info.shape) == 2:
         return OptimizerGroup.MUON
     return OptimizerGroup.DEFAULT
 
@@ -175,7 +184,6 @@ def summarize_distill_parameters(
     leaves: Sequence[ParameterLeafInfo],
     config: DistillTrainConfig,
 ) -> DistillParameterSummary:
-    by_role: dict[str, int] = defaultdict(int)
     by_group: dict[OptimizerGroup, int] = defaultdict(int)
     master_dtype = jnp.dtype(config.master_dtype)
 
@@ -190,9 +198,6 @@ def summarize_distill_parameters(
         parameter_count = math.prod(info.shape)
         total_parameters += parameter_count
 
-        role_key = info.parameter_role.value
-        by_role[role_key] += parameter_count
-
         optimizer_group = get_optimizer_group(info, config)
         by_group[optimizer_group] += parameter_count
 
@@ -206,7 +211,6 @@ def summarize_distill_parameters(
         total_parameters=total_parameters,
         trainable_parameters=trainable_parameters,
         total_master_bytes=total_master_bytes,
-        by_role=dict(by_role),
         by_group=dict(by_group),
     )
 
@@ -242,7 +246,6 @@ def initialize_distill_training_state(
             DistillTrainableParameter(
                 path=info.path,
                 alias_paths=tuple(alias_paths[info.path]),
-                parameter_role=info.parameter_role,
                 optimizer_group=get_optimizer_group(info, config),
                 master_weight=_cast_array_like(value, master_dtype),
             ),
@@ -262,13 +265,13 @@ def get_muon_weight_dimension_numbers(
             continue
 
         ndim = len(parameter.master_weight.shape)
-        if ndim < 2:
-            raise ValueError(f"Muon parameters must have at least 2 dimensions, got {parameter.path} with {ndim}")
+        if ndim != 2:
+            raise ValueError(f"Muon parameters must have rank 2, got {parameter.path} with {ndim}")
 
         result.append(
             optax.contrib.MuonDimensionNumbers(
-                reduction_axis=ndim - 1,
-                output_axis=ndim - 2,
+                reduction_axis=1,
+                output_axis=0,
             ),
         )
 
@@ -361,6 +364,63 @@ def _prediction_mask(batch: DistillBatch) -> Bool[Array, "batch prediction_token
     return jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths_without_padding[:, None] - 1)
 
 
+def make_trace_distill_batch(
+    traces: Sequence[LalamoCompletion],
+    *,
+    pad_token_id: int,
+) -> TraceDistillBatch:
+    if not traces:
+        raise ValueError("Trace distillation batch requires at least one trace")
+
+    prefix_lengths = jnp.array([len(trace.prefix_token_ids) for trace in traces], dtype=jnp.int32)
+    completion_lengths = jnp.array([len(trace.completion_token_ids) for trace in traces], dtype=jnp.int32)
+
+    max_sequence_tokens = max(len(trace.prefix_token_ids) + len(trace.completion_token_ids) for trace in traces)
+    max_completion_tokens = max((len(trace.completion_token_ids) for trace in traces), default=0)
+    max_support_tokens = max(
+        (len(token_logits) for trace in traces for token_logits in trace.completion_token_logits),
+        default=0,
+    )
+
+    token_ids = jnp.full((len(traces), max_sequence_tokens), pad_token_id, dtype=jnp.int32)
+    support_token_ids = jnp.zeros((len(traces), max_completion_tokens, max_support_tokens), dtype=jnp.int32)
+    support_logits = jnp.full(
+        (len(traces), max_completion_tokens, max_support_tokens),
+        -jnp.inf,
+        dtype=jnp.float32,
+    )
+    support_mask = jnp.zeros((len(traces), max_completion_tokens, max_support_tokens), dtype=jnp.bool_)
+
+    for batch_index, trace in enumerate(traces):
+        sequence_token_ids = jnp.array(
+            [*trace.prefix_token_ids, *trace.completion_token_ids],
+            dtype=jnp.int32,
+        )
+        token_ids = token_ids.at[batch_index, : sequence_token_ids.shape[0]].set(sequence_token_ids)
+
+        for completion_index, token_logits in enumerate(trace.completion_token_logits):
+            if not token_logits:
+                continue
+
+            support_items = tuple(token_logits.items())
+            support_ids = jnp.array([token_id for token_id, _ in support_items], dtype=jnp.int32)
+            support_values = jnp.array([logit for _, logit in support_items], dtype=jnp.float32)
+            support_width = support_ids.shape[0]
+
+            support_token_ids = support_token_ids.at[batch_index, completion_index, :support_width].set(support_ids)
+            support_logits = support_logits.at[batch_index, completion_index, :support_width].set(support_values)
+            support_mask = support_mask.at[batch_index, completion_index, :support_width].set(True)
+
+    return TraceDistillBatch(
+        token_ids=token_ids,
+        prefix_lengths=prefix_lengths,
+        completion_lengths=completion_lengths,
+        support_token_ids=support_token_ids,
+        support_logits=support_logits,
+        support_mask=support_mask,
+    )
+
+
 def _decoder_logits(
     decoder: Decoder,
     batch: DistillBatch,
@@ -389,6 +449,55 @@ def compute_distill_kl_loss(
     prediction_mask = _prediction_mask(batch).astype(token_kl.dtype)
     valid_tokens = prediction_mask.sum(dtype=jnp.int32)
     loss = jnp.sum(token_kl * prediction_mask) / valid_tokens
+    return DistillStepMetrics(loss=loss, valid_tokens=valid_tokens)
+
+
+def _trace_completion_mask(batch: TraceDistillBatch) -> Bool[Array, "batch completion_tokens"]:
+    _, completion_tokens, _ = batch.support_token_ids.shape
+    return jnp.arange(completion_tokens, dtype=jnp.int32)[None, :] < batch.completion_lengths[:, None]
+
+
+def _trace_prediction_indices(batch: TraceDistillBatch) -> Int[Array, "batch completion_tokens"]:
+    _, completion_tokens, _ = batch.support_token_ids.shape
+    raw_indices = batch.prefix_lengths[:, None] - 1 + jnp.arange(completion_tokens, dtype=jnp.int32)[None, :]
+    max_indices = jnp.maximum(batch.prefix_lengths + batch.completion_lengths - 2, 0)
+    return jnp.minimum(raw_indices, max_indices[:, None])
+
+
+def compute_trace_distill_kl_loss(
+    student: Decoder,
+    batch: TraceDistillBatch,
+) -> DistillStepMetrics:
+    token_positions = _token_positions(DistillBatch(token_ids=batch.token_ids))
+    decoder_result = student(
+        token_ids=batch.token_ids,
+        token_positions=token_positions,
+    )
+    student_logits = decoder_result.logits[:, :-1, :].astype(jnp.float32)
+
+    prediction_indices = _trace_prediction_indices(batch)
+    batch_indices = jnp.arange(batch.token_ids.shape[0], dtype=jnp.int32)[:, None]
+    student_completion_logits = student_logits[batch_indices, prediction_indices, :]
+    student_support_logits = jnp.take_along_axis(
+        student_completion_logits,
+        batch.support_token_ids,
+        axis=-1,
+    )
+
+    completion_mask = _trace_completion_mask(batch)
+    support_rows = batch.support_mask.any(axis=-1, keepdims=True)
+    masked_teacher_logits = jnp.where(batch.support_mask, batch.support_logits, -jnp.inf)
+    masked_student_logits = jnp.where(batch.support_mask, student_support_logits, -jnp.inf)
+    safe_teacher_logits = jnp.where(support_rows, masked_teacher_logits, jnp.zeros_like(masked_teacher_logits))
+    safe_student_logits = jnp.where(support_rows, masked_student_logits, jnp.zeros_like(masked_student_logits))
+
+    teacher_log_probs = jax.nn.log_softmax(safe_teacher_logits, axis=-1)
+    student_log_probs = jax.nn.log_softmax(safe_student_logits, axis=-1)
+    teacher_probs = jnp.exp(teacher_log_probs)
+    token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
+
+    valid_tokens = completion_mask.sum(dtype=jnp.int32)
+    loss = jnp.sum(token_kl * completion_mask.astype(token_kl.dtype)) / valid_tokens
     return DistillStepMetrics(loss=loss, valid_tokens=valid_tokens)
 
 
