@@ -144,6 +144,10 @@ def _evaluate(
     total_matches = 0
 
     for batch in batches:
+        kl_metrics = compute_distill_kl_loss(student, teacher, batch)
+        total_kl += float(kl_metrics.loss) * int(kl_metrics.valid_tokens)
+        total_valid_tokens += int(kl_metrics.valid_tokens)
+
         _, num_tokens = batch.token_ids.shape
         token_positions = jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
         student_result = student(token_ids=batch.token_ids, token_positions=token_positions)
@@ -159,18 +163,9 @@ def _evaluate(
         prediction_mask = jnp.arange(max(num_tokens - 1, 0), dtype=jnp.int32)[None, :] < (
             lengths_without_padding[:, None] - 1
         )
-        teacher_log_probs = jax.nn.log_softmax(teacher_logits, axis=-1)
-        student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)
-        teacher_probs = jnp.exp(teacher_log_probs)
-        token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
-
         student_top1 = jnp.argmax(student_logits, axis=-1)
         teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
         total_matches += int(jnp.sum((student_top1 == teacher_top1) & prediction_mask))
-
-        valid_tokens = int(prediction_mask.sum())
-        total_kl += float(jnp.sum(token_kl * prediction_mask.astype(token_kl.dtype)))
-        total_valid_tokens += valid_tokens
 
     return EvaluationMetrics(
         kl_divergence=total_kl / total_valid_tokens,

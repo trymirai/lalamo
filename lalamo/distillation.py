@@ -298,10 +298,10 @@ def _alias_paths_by_canonical_path(leaves: Sequence[ParameterLeafInfo]) -> dict[
 
 
 def _split_quantization_keys(
-    quantization_key: PRNGKeyArray | None,
+    quantization_key: PRNGKeyArray,
     leaves: Sequence[ParameterLeafInfo],
 ) -> dict[str, PRNGKeyArray]:
-    if quantization_key is None or not leaves:
+    if not leaves:
         return {}
     return {info.path: key for info, key in zip(leaves, jax.random.split(quantization_key, len(leaves)), strict=True)}
 
