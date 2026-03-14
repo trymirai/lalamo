@@ -246,6 +246,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
             output_weights=weights["output_weights"],
         )
 
+
 @dataclass(frozen=True)
 class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
     group_size: int
