@@ -230,7 +230,7 @@ def main(
     max_sequence_length: Annotated[int, typer.Option()] = 256,
     batch_size: Annotated[int, typer.Option()] = 4,
     num_steps: Annotated[int, typer.Option()] = 25,
-    learning_rate: Annotated[float, typer.Option()] = 3e-4,
+    learning_rate: Annotated[float, typer.Option()] = 3e-6,
     optimizer_name: Annotated[OptimizerName, typer.Option()] = OptimizerName.ADAMW,
     compute_dtype_name: Annotated[ComputeDTypeName, typer.Option()] = ComputeDTypeName.AUTO,
     seed: Annotated[int, typer.Option()] = 0,
