@@ -53,6 +53,7 @@ class ExperimentResult:
     batch_size: int
     num_steps: int
     learning_rate: float
+    seed: int
     optimizer: "OptimizerName"
     distill_config: dict[str, Any]
     parameter_summary: dict[str, Any]
@@ -277,9 +278,11 @@ def main(
     history_path = output_dir / "history.jsonl"
     step_iterator = cycle(train_batches)
     start_time = time.perf_counter()
+    train_key = jax.random.key(seed)
 
     with history_path.open("w") as history_file:
         for step, batch in enumerate(islice(step_iterator, num_steps), start=1):
+            train_key, step_key = jax.random.split(train_key)
             optimizer_state, _ = distill_train_step(
                 optimizer_state,
                 optimizer,
@@ -287,6 +290,7 @@ def main(
                 teacher_model.model,
                 batch,
                 distill_config,
+                quantization_key=step_key,
             )
             # Step logging recomputes a concrete loss because distill_train_step returns traced metrics.
             materialized_student = materialize_trainable_module(
@@ -332,6 +336,7 @@ def main(
         batch_size=batch_size,
         num_steps=num_steps,
         learning_rate=learning_rate,
+        seed=seed,
         optimizer=optimizer_name.value,
         distill_config={
             "master_dtype": str(jnp.dtype(distill_config.master_dtype)),

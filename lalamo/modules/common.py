@@ -18,6 +18,7 @@ from jax.tree_util import keystr
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree, require_array, require_tree
+from lalamo.quantization import QuantizationMode
 
 __all__ = [
     "DummyUnionMember",
@@ -289,6 +290,7 @@ class FieldMetadataInfo:
 class FieldParameterInfo:
     trainable: bool
     matrix: bool
+    quantization_mode_attr: str | None
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
 
@@ -302,6 +304,7 @@ class ParameterLeafInfo:
     dtype: jnp.dtype
     trainable: bool
     matrix: bool
+    quantization_mode: QuantizationMode | None
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
     alias_of: str | None
@@ -335,6 +338,7 @@ def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
     return FieldParameterInfo(
         trainable=field_info.metadata.get("trainable", True),
         matrix=field_info.metadata.get("matrix", True),
+        quantization_mode_attr=field_info.metadata.get("quantization_mode_attr"),
         tensor_sharding=field_info.metadata.get("tensor_sharding"),
         min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
     )
@@ -380,6 +384,14 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
             raise ValueError(f"Field lookup failed for module {module} at {path}")
 
         parameter_info = _field_parameter_info(field_info)
+        quantization_mode = None
+        if parameter_info.quantization_mode_attr is not None:
+            quantization_mode = getattr(field_info.owner.config, parameter_info.quantization_mode_attr)
+            if not isinstance(quantization_mode, QuantizationMode):
+                raise TypeError(
+                    f"{field_info.owner.config}.{parameter_info.quantization_mode_attr} must be a QuantizationMode,"
+                    f" got {type(quantization_mode)}",
+                )
 
         path_str = keystr(path).lstrip(".")
         leaf_key = id(leaf)
@@ -396,6 +408,7 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
                 dtype=jnp.dtype(leaf.dtype),
                 trainable=parameter_info.trainable,
                 matrix=parameter_info.matrix,
+                quantization_mode=quantization_mode,
                 tensor_sharding=parameter_info.tensor_sharding,
                 min_size_to_shard=parameter_info.min_size_to_shard,
                 alias_of=alias_of,
@@ -410,6 +423,7 @@ def field(
     min_size_to_shard: int = 2**18,
     trainable: bool = True,
     matrix: bool = True,
+    quantization_mode_attr: str | None = None,
     *,
     converter: Callable[[Any], Any] | None = None,
     static: bool = False,
@@ -419,6 +433,7 @@ def field(
     merged_metadata = dict(metadata or {})
     merged_metadata["trainable"] = trainable
     merged_metadata["matrix"] = matrix
+    merged_metadata["quantization_mode_attr"] = quantization_mode_attr
     merged_metadata["tensor_sharding"] = tensor_sharding
     merged_metadata["min_size_to_shard"] = min_size_to_shard
     return eqx.field(

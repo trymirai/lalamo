@@ -149,6 +149,38 @@ def test_materialize_trainable_module_casts_only_trainable_leaves() -> None:
     assert materialized.buffer.dtype == jnp.float32
 
 
+def test_materialize_trainable_module_stochastically_quantizes_quantized_weights() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (4,), has_biases=True, key=jax.random.key(14))
+    layer = eqx.tree_at(
+        lambda current_layer: current_layer.weights,
+        layer,
+        jnp.full_like(layer.weights, 1.25),
+    )
+
+    config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
+    state = initialize_distill_training_state(layer, config)
+    first = materialize_trainable_module(
+        layer,
+        state,
+        config,
+        quantization_key=jax.random.key(0),
+    )
+    second = materialize_trainable_module(
+        layer,
+        state,
+        config,
+        quantization_key=jax.random.key(0),
+    )
+
+    assert jnp.array_equal(first.weights, second.weights)
+    assert jnp.all((first.weights == 1.0) | (first.weights == 2.0))
+
+
 def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
     layer = GroupQuantizedLinearConfig(
         group_size=2,

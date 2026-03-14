@@ -3,9 +3,9 @@ from functools import partial
 
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-__all__ = ["QuantizationMode", "quantize_weights"]
+__all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"]
 
 
 class QuantizationMode(Enum):
@@ -85,6 +85,20 @@ def _quantize_weights_bwd(
 
 
 quantize_weights.defvjp(_quantize_weights_fwd, _quantize_weights_bwd)
+
+
+def stochastic_quantize_weights(
+    x: Float[Array, "..."],
+    mode: QuantizationMode,
+    key: PRNGKeyArray,
+) -> Float[Array, "..."]:
+    range_min, range_max = mode.range
+    clipped = jnp.clip(x, range_min, range_max)
+    lower = jnp.floor(clipped)
+    upper = jnp.ceil(clipped)
+    upper_probability = clipped - lower
+    samples = jax.random.uniform(key, clipped.shape, dtype=clipped.dtype)
+    return jnp.where(samples < upper_probability, upper, lower)
 
 
 def dynamically_quantize_activations(

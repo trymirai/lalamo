@@ -5,7 +5,7 @@ import jax
 import jax.numpy as jnp
 
 from lalamo.modules.linear import GroupQuantizedLinearConfig, MLXQuantizedLinearConfig
-from lalamo.quantization import QuantizationMode, quantize_weights
+from lalamo.quantization import QuantizationMode, quantize_weights, stochastic_quantize_weights
 
 
 def test_quantize_weights_primal_matches_round_clip_reference() -> None:
@@ -27,6 +27,25 @@ def test_quantize_weights_uses_clipped_ste_gradient() -> None:
 
     expected = jnp.array([0.0, 1.0, 1.0, 1.0, 1.0, 0.0, 0.0], dtype=jnp.float32)
     assert jnp.array_equal(grad, expected)
+
+
+def test_stochastic_quantize_weights_is_deterministic_for_fixed_key() -> None:
+    x = jnp.array([-1.0, 0.2, 0.75, 7.5, 14.25, 15.9], dtype=jnp.float32)
+    key = jax.random.key(0)
+
+    first = stochastic_quantize_weights(x, QuantizationMode.UINT4, key)
+    second = stochastic_quantize_weights(x, QuantizationMode.UINT4, key)
+
+    assert jnp.array_equal(first, second)
+
+
+def test_stochastic_quantize_weights_matches_input_in_expectation() -> None:
+    x = jnp.array([0.2, 0.75, 7.5, 14.25], dtype=jnp.float32)
+    keys = jax.random.split(jax.random.key(1), 4096)
+    samples = jax.vmap(lambda key: stochastic_quantize_weights(x, QuantizationMode.UINT4, key))(keys)
+    means = samples.mean(axis=0)
+
+    assert jnp.allclose(means, x, atol=0.05)
 
 
 def test_quantized_linear_weights_have_nonzero_gradients() -> None:

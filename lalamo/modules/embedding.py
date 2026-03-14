@@ -278,7 +278,11 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
-    weights: Float[Array, "vocabulary channels"] = field(trainable=False, matrix=False)
+    weights: Float[Array, "vocabulary channels"] = field(
+        trainable=False,
+        matrix=False,
+        quantization_mode_attr="embedding_quantization_mode",
+    )
     scales: Float[Array, "vocabulary groups"] = field(matrix=False)
     biases: Float[Array, "vocabulary groups"] = field(matrix=False)
 
@@ -395,10 +399,18 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field(trainable=False, matrix=False)
+    input_weights: Float[Array, "vocabulary channels"] = field(
+        trainable=False,
+        matrix=False,
+        quantization_mode_attr="embedding_quantization_mode",
+    )
     input_scales: Float[Array, "vocabulary groups"] = field(matrix=False)
     input_biases: Float[Array, "vocabulary groups"] = field(matrix=False)
-    output_weights: Float[Array, "vocabulary channels"] = field(trainable=False, matrix=False)
+    output_weights: Float[Array, "vocabulary channels"] = field(
+        trainable=False,
+        matrix=False,
+        quantization_mode_attr="embedding_quantization_mode",
+    )
     output_scales: Float[Array, "vocabulary groups"] = field(matrix=False)
     output_biases: Float[Array, "vocabulary groups"] = field(matrix=False)
 
@@ -551,8 +563,16 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field(trainable=False, matrix=False)
-    output_weights: Float[Array, "vocabulary channels"] = field(trainable=False, matrix=False)
+    input_weights: Float[Array, "vocabulary channels"] = field(
+        trainable=False,
+        matrix=False,
+        quantization_mode_attr="embedding_quantization_mode",
+    )
+    output_weights: Float[Array, "vocabulary channels"] = field(
+        trainable=False,
+        matrix=False,
+        quantization_mode_attr="embedding_quantization_mode",
+    )
     output_scales: Float[Array, "vocabulary groups"] = field(matrix=False)
     output_biases: Float[Array, "vocabulary groups"] = field(matrix=False)
 
