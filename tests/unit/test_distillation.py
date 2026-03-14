@@ -28,6 +28,7 @@ from lalamo.modules.linear import (
     GroupQuantizedLinearConfig,
     QLoRALinearConfig,
 )
+from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
 
@@ -178,6 +179,20 @@ def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
 
     assert {parameter.path for parameter in state.trainable_parameters} == {"biases", "scales", "zero_points"}
     assert get_muon_weight_dimension_numbers(state) == (None, None, None)
+
+
+def test_separable_causal_conv_weights_do_not_use_muon() -> None:
+    layer = SeparableCausalConvConfig(
+        precision=jnp.float32,
+        has_biases=True,
+    ).random_init(8, 4, key=jax.random.key(13))
+
+    leaves = {leaf.field_name: leaf for leaf in iter_parameter_leaves(layer)}
+    state = initialize_distill_training_state(layer, DistillTrainConfig())
+
+    assert is_leaf_trainable(leaves["weights"])
+    assert get_optimizer_group(leaves["weights"]) == OptimizerGroup.DEFAULT
+    assert get_muon_weight_dimension_numbers(state) == (None, None)
 
 
 def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_matrices() -> None:
