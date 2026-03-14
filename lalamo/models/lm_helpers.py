@@ -1,5 +1,3 @@
-import functools
-import itertools
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -17,8 +15,9 @@ type TokenSequence = list[int] | np.ndarray | jnp.ndarray
 
 __all__ = [
     "BatchSizeEstimatingEvent",
+    "MemoryPredictor",
+    "MemoryProbe",
     "decrease_batchsize_on_oom",
-    "estimate_batchsize_from_bytes",
     "estimate_batchsizes_from_vram",
     "merge_small_buckets",
     "pad_keys_to_size",
@@ -28,8 +27,43 @@ __all__ = [
 
 @dataclass(frozen=True)
 class BatchSizeEstimatingEvent:
-    lo: int
-    hi: int | None
+    num_compilations_done: int
+    num_compilations_total: int
+
+
+@dataclass(frozen=True)
+class MemoryProbe:
+    batch_size: int
+    seq_len: int
+
+
+class MemoryPredictor:
+    """Fits mem = a + b·bs + c·seq_len + d·bs·seq_len from probe measurements."""
+
+    def __init__(self) -> None:
+        self._coefficients: np.ndarray | None = None
+
+    def fit(self, probes: list[MemoryProbe], measured: list[int]) -> None:
+        matrix = np.array(
+            [[1, p.batch_size, p.seq_len, p.batch_size * p.seq_len] for p in probes],
+            dtype=np.float64,
+        )
+        target = np.array(measured, dtype=np.float64)
+        self._coefficients, *_ = np.linalg.lstsq(matrix, target, rcond=None)
+
+    def predict(self, batch_size: int, seq_len: int) -> int:
+        assert self._coefficients is not None
+        a, b, c, d = self._coefficients
+        return int(a + b * batch_size + c * seq_len + d * batch_size * seq_len)
+
+    def max_batch_size(self, seq_len: int, memory_budget: int, *, safety_margin: float = 0.9) -> int:
+        assert self._coefficients is not None
+        a, b, c, d = self._coefficients
+        numerator = memory_budget * safety_margin - a - c * seq_len
+        denominator = b + d * seq_len
+        if denominator <= 0:
+            return 1
+        return max(1, int(numerator / denominator))
 
 
 def _assert_sorted(values: list[int]) -> None:
@@ -104,66 +138,39 @@ def pad_keys_to_size(keys: Iterable, size: int, *, seed: int = 0) -> jnp.ndarray
     return jnp.concatenate([jnp.array(keys_list), dummy_keys])
 
 
+_PROBE_BATCH_SIZES = (8, 32)
+
+
 def estimate_batchsizes_from_vram(
     memory_consumption_callback: Callable[[InferenceConfig], int],
     sorted_lengths: list[int],
     vram_bytes: int,
     inference_config: InferenceConfig,
+    progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
 ) -> dict[int, int]:
     _assert_sorted(sorted_lengths)
     assert len(sorted_lengths) > 0
     usable_memory = get_usable_memory_from_bytes(vram_bytes)
 
-    def memory_consumption(bs: int, seq_len: int) -> int:
+    len_short, len_long = sorted_lengths[0], sorted_lengths[-1]
+    probe_lengths = (len_short,) if len_short == len_long else (len_short, len_long)
+    probes = [MemoryProbe(bs, sl) for bs in _PROBE_BATCH_SIZES for sl in probe_lengths]
+
+    measured: list[int] = []
+    for i, probe in enumerate(probes):
+        if progress is not None:
+            progress(BatchSizeEstimatingEvent(i, len(probes)))
         config = InferenceConfig(
             max_output_length=inference_config.max_output_length,
-            padded_length=seq_len,
+            padded_length=probe.seq_len,
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
-            batch_size=bs,
+            batch_size=probe.batch_size,
         )
-        return memory_consumption_callback(config)
+        measured.append(memory_consumption_callback(config))
 
-    result: dict[int, int] = {}
-
-    first_seq_len = sorted_lengths[0]
-    bs = estimate_batchsize_from_bytes(functools.partial(memory_consumption, seq_len=sorted_lengths[0]), usable_memory)
-    result[first_seq_len] = bs
-    for seq_len in sorted_lengths[1:]:
-        while bs > 1 and memory_consumption(bs, seq_len) > usable_memory:
-            bs = max(1, int(bs * 0.8))
-
-        result[seq_len] = bs
-
-    return result
-
-
-def estimate_batchsize_from_bytes(
-    memory_per_batchsize_callback: Callable[[int], int],
-    target_mem_bytes: int,
-    progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
-) -> int:
-    lo = 0
-    hi = 0
-    for candidate_exp in itertools.count():
-        lo = hi
-        hi = 4**candidate_exp
-
-        if progress is not None:
-            progress(BatchSizeEstimatingEvent(lo, None))
-        if target_mem_bytes < memory_per_batchsize_callback(hi):
-            break
-
-    while hi - lo > 1:
-        mid = (lo + hi) // 2
-
-        if progress is not None:
-            progress(BatchSizeEstimatingEvent(lo, hi))
-        if target_mem_bytes < memory_per_batchsize_callback(mid):
-            hi = mid
-        else:
-            lo = mid
-
-    return lo
+    predictor = MemoryPredictor()
+    predictor.fit(probes, measured)
+    return {sl: predictor.max_batch_size(sl, usable_memory) for sl in sorted_lengths}
 
 
 def decrease_batchsize_on_oom[T](

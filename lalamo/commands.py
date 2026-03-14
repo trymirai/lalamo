@@ -30,7 +30,7 @@ from lalamo.model_import.common import (
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
-from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
+from lalamo.models.lm_helpers import MemoryPredictor, MemoryProbe
 from lalamo.modules import config_converter
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
@@ -313,7 +313,7 @@ class EstimateBatchsizeCallbacks:
     def finished_loading_model(self) -> None:
         pass
 
-    def estimating_batchsize(self, lo: int, hi: int | None) -> None:
+    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
         pass
 
     def finished_estimating_batchsize(self, batchsize: int) -> None:
@@ -343,20 +343,21 @@ def estimate_batchsize(
     model = LanguageModelConfig.load_model(model_path)
     callbacks.finished_loading_model()
 
-    def memory_per_batchsize(batch_size: int) -> int:
-        inference_config = InferenceConfig(
+    probes = [MemoryProbe(bs, max_input_length) for bs in (8, 32)]
+    measured: list[int] = []
+    for i, probe in enumerate(probes):
+        callbacks.estimating_batchsize(i, len(probes))
+        config = InferenceConfig(
             max_output_length=max_output_length,
-            padded_length=max_input_length,
+            padded_length=probe.seq_len,
             num_top_logits_to_return=num_logits_per_token,
-            batch_size=batch_size,
+            batch_size=probe.batch_size,
         )
-        return model.estimate_memory_consumption(inference_config=inference_config)
+        measured.append(model.estimate_memory_consumption(inference_config=config))
 
-    bs = estimate_batchsize_from_bytes(
-        memory_per_batchsize,
-        mem,
-        lambda event: callbacks.estimating_batchsize(event.lo, event.hi),
-    )
+    predictor = MemoryPredictor()
+    predictor.fit(probes, measured)
+    bs = predictor.max_batch_size(max_input_length, mem)
 
     callbacks.finished_estimating_batchsize(bs)
     return bs
@@ -556,7 +557,7 @@ class GenerateRepliesCallbacks:
     def finished_loading_dataset(self) -> None:
         pass
 
-    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
         pass
 
     def batch_sizes_estimated(self) -> None:

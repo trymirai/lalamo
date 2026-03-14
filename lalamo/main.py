@@ -721,12 +721,9 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
         assert self.loading_task is not None
         self.progress.remove_task(self.loading_task)
 
-    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
         assert self.progress is not None
-        hi_str = str(hi) if hi is not None else "?"
-        description = (
-            f"📐 [cyan]Computing batch size for the prompt length of {sequence_length}... ({lo}..{hi_str})[/cyan]"
-        )
+        description = f"📐 [cyan]Compiling memory probes... ({num_done + 1}/{num_total})[/cyan]"
         if self.estimating_task is None:
             self.estimating_task = self.progress.add_task(description)
         else:
@@ -856,9 +853,8 @@ class CliEstimateBatchsizeCallbacks(EstimateBatchsizeCallbacks):
         assert self.loading_task is not None
         self.progress.remove_task(self.loading_task)
 
-    def estimating_batchsize(self, lo: int, hi: int | None) -> None:
-        hi_str = str(hi) if hi is not None else "?"
-        description = f"[cyan]Estimating batch size... ({lo}..{hi_str})[/cyan]"
+    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
+        description = f"[cyan]Compiling memory probes... ({num_done + 1}/{num_total})[/cyan]"
         if self.estimating_task is None:
             self.estimating_task = self.progress.add_task(description)
         else:
