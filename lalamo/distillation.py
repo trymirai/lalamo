@@ -15,7 +15,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
-from lalamo.quantization import QuantizationMode, stochastic_quantize_weights
+from lalamo.quantization import stochastic_quantize_weights
 
 __all__ = [
     "DistillBatch",
@@ -37,6 +37,7 @@ __all__ = [
     "is_leaf_trainable",
     "make_trace_distill_batch",
     "materialize_trainable_module",
+    "stochastically_quantize_module",
     "summarize_distill_parameters",
 ]
 
@@ -224,50 +225,53 @@ def materialize_trainable_module[M: eqx.Module](
     module: M,
     state: DistillTrainingState,
     config: DistillTrainConfig,
-    *,
-    quantization_key: PRNGKeyArray | None = None,
 ) -> M:
     compute_dtype = jnp.dtype(config.compute_dtype)
-    leaf_infos = iter_parameter_leaves(module)
-    leaf_info_by_path = {info.path: info for info in leaf_infos}
-    alias_paths_by_canonical = _alias_paths_by_canonical_path(leaf_infos)
-    stochastic_infos = [info for info in leaf_infos if info.alias_of is None and info.quantization_mode is not None]
-    stochastic_keys = _split_quantization_keys(quantization_key, stochastic_infos)
-    path_to_leaf = _leaf_map(module)
 
     replacement_paths: list[str] = []
     replacement_values: list[Array | jax.ShapeDtypeStruct] = []
-    trainable_paths = {parameter.path for parameter in state.trainable_parameters}
     for parameter in state.trainable_parameters:
-        leaf_info = leaf_info_by_path[parameter.path]
         compute_weight = _cast_array_like(parameter.master_weight, compute_dtype)
-        if quantization_key is not None and leaf_info.quantization_mode is not None:
-            compute_weight = _stochastically_quantize_array_like(
-                compute_weight,
-                leaf_info.quantization_mode,
-                stochastic_keys[parameter.path],
-                preserve_gradient=True,
-            )
         for path in parameter.alias_paths:
             replacement_paths.append(path)
             replacement_values.append(compute_weight)
 
-    if quantization_key is not None:
-        for info in stochastic_infos:
-            if info.path in trainable_paths:
-                continue
+    if not replacement_paths:
+        return module
 
-            original_leaf = path_to_leaf[info.path]
-            compute_weight = _cast_array_like(original_leaf, compute_dtype)
-            compute_weight = _stochastically_quantize_array_like(
-                compute_weight,
-                info.quantization_mode,
-                stochastic_keys[info.path],
-                preserve_gradient=False,
-            )
-            for path in alias_paths_by_canonical[info.path]:
-                replacement_paths.append(path)
-                replacement_values.append(compute_weight)
+    return eqx.tree_at(
+        lambda tree: _select_parameter_paths(tree, replacement_paths),
+        module,
+        replacement_values,
+        is_leaf=lambda value: value is None,
+    )
+
+
+def stochastically_quantize_module[M: eqx.Module](
+    module: M,
+    key: PRNGKeyArray,
+) -> M:
+    leaf_infos = iter_parameter_leaves(module)
+    quantized_infos = [info for info in leaf_infos if info.alias_of is None and info.quantization_mode is not None]
+    if not quantized_infos:
+        return module
+
+    alias_paths = _alias_paths_by_canonical_path(leaf_infos)
+    quantization_keys = _split_quantization_keys(key, quantized_infos)
+    path_to_leaf = _leaf_map(module)
+
+    replacement_paths: list[str] = []
+    replacement_values: list[Array] = []
+    for info in quantized_infos:
+        leaf = path_to_leaf[info.path]
+        if not eqx.is_array(leaf):
+            continue
+
+        stochastic_value = stochastic_quantize_weights(leaf, info.quantization_mode, quantization_keys[info.path])
+        rounded_value = leaf + jax.lax.stop_gradient(stochastic_value - leaf)
+        for path in alias_paths[info.path]:
+            replacement_paths.append(path)
+            replacement_values.append(rounded_value)
 
     if not replacement_paths:
         return module
@@ -300,22 +304,6 @@ def _split_quantization_keys(
     if quantization_key is None or not leaves:
         return {}
     return {info.path: key for info, key in zip(leaves, jax.random.split(quantization_key, len(leaves)), strict=True)}
-
-
-def _stochastically_quantize_array_like(
-    value: Array | jax.ShapeDtypeStruct,
-    quantization_mode: QuantizationMode,
-    key: PRNGKeyArray,
-    *,
-    preserve_gradient: bool,
-) -> Array | jax.ShapeDtypeStruct:
-    if not eqx.is_array(value):
-        return value
-
-    stochastic_value = stochastic_quantize_weights(value, quantization_mode, key)
-    if preserve_gradient:
-        return value + jax.lax.stop_gradient(stochastic_value - value)
-    return stochastic_value
 
 
 def _concrete_master_weights(state: DistillTrainingState) -> tuple[Array, ...]:
@@ -518,12 +506,9 @@ def distill_train_step(
 
     def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
         training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
-        materialized_student = materialize_trainable_module(
-            student,
-            training_state,
-            config,
-            quantization_key=quantization_key,
-        )
+        materialized_student = materialize_trainable_module(student, training_state, config)
+        if quantization_key is not None:
+            materialized_student = stochastically_quantize_module(materialized_student, quantization_key)
         metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
         return metrics.loss, metrics
 

@@ -18,6 +18,7 @@ from lalamo.distillation import (
     is_leaf_trainable,
     make_trace_distill_batch,
     materialize_trainable_module,
+    stochastically_quantize_module,
     summarize_distill_parameters,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
@@ -149,7 +150,7 @@ def test_materialize_trainable_module_casts_only_trainable_leaves() -> None:
     assert materialized.buffer.dtype == jnp.float32
 
 
-def test_materialize_trainable_module_stochastically_quantizes_quantized_weights() -> None:
+def test_stochastically_quantize_module_quantizes_quantized_weights() -> None:
     layer = GroupQuantizedLinearConfig(
         group_size=2,
         weight_quantization_mode=QuantizationMode.UINT4,
@@ -164,18 +165,9 @@ def test_materialize_trainable_module_stochastically_quantizes_quantized_weights
 
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     state = initialize_distill_training_state(layer, config)
-    first = materialize_trainable_module(
-        layer,
-        state,
-        config,
-        quantization_key=jax.random.key(0),
-    )
-    second = materialize_trainable_module(
-        layer,
-        state,
-        config,
-        quantization_key=jax.random.key(0),
-    )
+    materialized = materialize_trainable_module(layer, state, config)
+    first = stochastically_quantize_module(materialized, jax.random.key(0))
+    second = stochastically_quantize_module(materialized, jax.random.key(0))
 
     assert jnp.array_equal(first.weights, second.weights)
     assert jnp.all((first.weights == 1.0) | (first.weights == 2.0))
