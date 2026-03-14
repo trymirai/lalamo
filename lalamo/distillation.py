@@ -42,12 +42,6 @@ __all__ = [
 
 @dataclass(frozen=True)
 class DistillTrainConfig:
-    train_bias: bool = True
-    train_norm: bool = True
-    train_embedding: bool = False
-    train_adapter: bool = True
-    train_quant_aux: bool = False
-    train_base_weight: bool = False
     master_dtype: DTypeLike = jnp.float32
     compute_dtype: DTypeLike = jnp.bfloat16
 
@@ -107,73 +101,14 @@ class TraceDistillBatch:
     support_mask: Bool[Array, "batch completion_tokens support"]
 
 
-def _is_embedding_leaf(info: ParameterLeafInfo) -> bool:
-    return "Embedding" in info.owner_type.__name__ and "weight" in info.field_name
-
-
-def _is_norm_leaf(info: ParameterLeafInfo) -> bool:
-    return info.owner_type.__name__ == "Normalization" and info.field_name in {"scales", "biases"}
-
-
-def _is_quant_aux_leaf(info: ParameterLeafInfo) -> bool:
-    if "Quantized" in info.owner_type.__name__ and "Embedding" in info.owner_type.__name__:
-        return info.field_name in {
-            "scales",
-            "biases",
-            "input_scales",
-            "input_biases",
-            "output_scales",
-            "output_biases",
-        }
-
-    return info.field_name in {"scales", "zero_points", "deq_biases"} and not _is_norm_leaf(info)
-
-
-def _is_adapter_leaf(info: ParameterLeafInfo) -> bool:
-    return info.owner_type.__name__ == "QLoRALinear" and info.field_name in {
-        "lora_down_weights",
-        "lora_up_weights",
-    }
-
-
-def _is_bias_leaf(info: ParameterLeafInfo) -> bool:
-    return info.field_name == "biases" or info.field_name.endswith("_bias")
-
-
-def _is_base_weight_leaf(info: ParameterLeafInfo) -> bool:
-    return (
-        info.matrix
-        and len(info.shape) >= 2
-        and not _is_adapter_leaf(info)
-        and not _is_quant_aux_leaf(info)
-        and not _is_embedding_leaf(info)
-        and not _is_norm_leaf(info)
-        and not _is_bias_leaf(info)
-    )
-
-
-def is_leaf_trainable(info: ParameterLeafInfo, config: DistillTrainConfig) -> bool:  # noqa: PLR0911
+def is_leaf_trainable(info: ParameterLeafInfo) -> bool:
     if info.alias_of is not None:
         return False
-    if not info.trainable:
-        return False
-    if _is_adapter_leaf(info):
-        return config.train_adapter
-    if _is_quant_aux_leaf(info):
-        return config.train_quant_aux
-    if _is_embedding_leaf(info):
-        return config.train_embedding
-    if _is_norm_leaf(info):
-        return config.train_norm
-    if _is_bias_leaf(info):
-        return config.train_bias
-    if _is_base_weight_leaf(info):
-        return config.train_base_weight
     return info.trainable
 
 
-def get_optimizer_group(info: ParameterLeafInfo, config: DistillTrainConfig) -> OptimizerGroup:
-    if not is_leaf_trainable(info, config):
+def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:
+    if not is_leaf_trainable(info):
         return OptimizerGroup.FROZEN
     if info.matrix and len(info.shape) == 2:
         return OptimizerGroup.MUON
@@ -198,7 +133,7 @@ def summarize_distill_parameters(
         parameter_count = math.prod(info.shape)
         total_parameters += parameter_count
 
-        optimizer_group = get_optimizer_group(info, config)
+        optimizer_group = get_optimizer_group(info)
         by_group[optimizer_group] += parameter_count
 
         if optimizer_group == OptimizerGroup.FROZEN:
@@ -235,18 +170,19 @@ def initialize_distill_training_state(
 
     trainable_parameters: list[DistillTrainableParameter] = []
     for info in leaves:
-        if not is_leaf_trainable(info, config):
+        if not is_leaf_trainable(info):
             continue
 
         value = path_to_leaf[info.path]
         if not (eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)):
             raise TypeError(f"Trainable leaf {info.path} must be array-like, got {type(value)}")
 
+        optimizer_group = get_optimizer_group(info)
         trainable_parameters.append(
             DistillTrainableParameter(
                 path=info.path,
                 alias_paths=tuple(alias_paths[info.path]),
-                optimizer_group=get_optimizer_group(info, config),
+                optimizer_group=optimizer_group,
                 master_weight=_cast_array_like(value, master_dtype),
             ),
         )

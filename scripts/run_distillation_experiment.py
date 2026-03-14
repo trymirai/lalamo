@@ -233,11 +233,6 @@ def main(
     optimizer_name: Annotated[OptimizerName, typer.Option()] = OptimizerName.ADAMW,
     compute_dtype_name: Annotated[ComputeDTypeName, typer.Option()] = ComputeDTypeName.AUTO,
     seed: Annotated[int, typer.Option()] = 0,
-    train_bias: Annotated[bool, typer.Option()] = False,
-    train_norm: Annotated[bool, typer.Option()] = False,
-    train_embedding: Annotated[bool, typer.Option()] = False,
-    train_quant_aux: Annotated[bool, typer.Option()] = False,
-    train_base_weight: Annotated[bool, typer.Option()] = True,
 ) -> None:
     teacher_model = LanguageModelConfig.load_model(teacher_path)
     student_model = LanguageModelConfig.load_model(student_path)
@@ -264,12 +259,6 @@ def main(
     eval_batches = _make_batches(eval_sequences, batch_size=batch_size)
 
     distill_config = DistillTrainConfig(
-        train_bias=train_bias,
-        train_norm=train_norm,
-        train_embedding=train_embedding,
-        train_adapter=False,
-        train_quant_aux=train_quant_aux,
-        train_base_weight=train_base_weight,
         master_dtype=jnp.float32,
         compute_dtype=_resolve_compute_dtype(compute_dtype_name, student_model.model.activation_precision),
     )
@@ -345,11 +334,6 @@ def main(
         learning_rate=learning_rate,
         optimizer=optimizer_name.value,
         distill_config={
-            "train_bias": distill_config.train_bias,
-            "train_norm": distill_config.train_norm,
-            "train_embedding": distill_config.train_embedding,
-            "train_quant_aux": distill_config.train_quant_aux,
-            "train_base_weight": distill_config.train_base_weight,
             "master_dtype": str(jnp.dtype(distill_config.master_dtype)),
             "compute_dtype": str(jnp.dtype(distill_config.compute_dtype)),
         },

@@ -424,6 +424,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
 
 class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
     weights: Float[Array, "*components total_out_channels in_channels"] = field(
+        trainable=False,
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
@@ -712,6 +713,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
 
 class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
     weights: Float[Array, "*components total_out_channels in_channels"] = field(
+        trainable=False,
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
