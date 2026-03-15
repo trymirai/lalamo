@@ -133,13 +133,23 @@ class RemoteModelParser(ParamType):
         return model_spec
 
 
-def _closest_repo(query: str, repo_ids: list[str], min_score: float = 80) -> str | None:
+def _closest_repo(query: str, repo_ids: list[str], min_score: float = 75, min_margin: float = 8) -> str | None:
     if not repo_ids:
         return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, repo_ids)
-    if closest_match and score >= min_score:
-        return closest_match
-    return None
+    matches = thefuzz.process.extract(query, repo_ids, limit=2, scorer=thefuzz.fuzz.ratio)
+    (best_match, best_score), (_, second_best_score) = matches
+
+    if not best_match or best_score < min_score:
+        return None
+
+    if best_score >= 99:
+        # short circuit on exact-ish matches
+        return best_match
+
+    if best_score - second_best_score < min_margin:
+        return None
+
+    return best_match
 
 
 def _error(message: str) -> None:
