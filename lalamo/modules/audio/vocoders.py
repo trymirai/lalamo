@@ -15,7 +15,7 @@ class NoopVocoderConfig:
 
 
 class NoopVocoder(LalamoModule[NoopVocoderConfig]):
-    # Used in models where vocoder is absent and ther is no additional
+    # Used in models where vocoder is absent and there is no additional
     # conversion from audio-features space to audio waveform space
 
     @property

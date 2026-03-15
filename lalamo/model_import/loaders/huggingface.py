@@ -92,6 +92,18 @@ def _process_quantized_tensor(
     return unpacked.astype(activation_precision)
 
 
+def _detect_mlx_quantization(
+    expected_in_dim: int,
+    packed_dim: int,
+    default: QuantizationMode,
+) -> QuantizationMode:
+    if packed_dim * 8 == expected_in_dim:
+        return QuantizationMode.UINT4
+    if packed_dim * 4 == expected_in_dim:
+        return QuantizationMode.UINT8
+    return default
+
+
 def _maybe_reorder(array: Array, reorder: tuple[Array, int] | None) -> Array:
     if reorder is None:
         return array
@@ -183,6 +195,8 @@ def load_linear(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None = None,
+    *,
+    reorder: Array | None = None,
 ) -> LinearBase:
     """Loads a linear layer, optionally fusing weights from sublayers."""
     if not module.has_biases:
@@ -202,11 +216,17 @@ def load_linear(
             axis=0,
         )
 
+    if reorder is not None and bias is not None:
+        bias = _maybe_reorder(bias, (reorder, 0))
+
     if isinstance(module, FullPrecisionLinear):
-        weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
+        reorder_tuple = (reorder, 0) if reorder is not None else None
+        weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse, reorder=reorder_tuple)
         return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
 
     if isinstance(module, GroupQuantizedLinear):
+        if reorder is not None:
+            raise ValueError("Reorder is not supported for AWQ quantized weights.")
         qweights, qzeros, scales = _fuse_quantized_weights(
             weights_dict,
             path,
@@ -242,25 +262,22 @@ def load_linear(
         )
 
     if isinstance(module, MLXQuantizedLinear):
+        reorder_tuple = (reorder, 0) if reorder is not None else None
         qweights, deq_biases, scales = _fuse_quantized_weights(
             weights_dict,
             path,
             sublayers_to_fuse,
             MLX_QUANTIZED_WEIGHT_LAYOUT,
+            reorder=reorder_tuple,
         )
         weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
 
-        # MLX models can have per-layer quantization (e.g., 8-bit for MoE router, 4-bit elsewhere).
-        # Detect actual quantization from weight shape: UINT4 packs 8 values per int32, UINT8 packs 4.
-        expected_in_dim = module.weights.shape[1]
-        packed_dim = qweights.shape[1]
-        if packed_dim * 8 == expected_in_dim:
-            actual_quantization = QuantizationMode.UINT4
-        elif packed_dim * 4 == expected_in_dim:
-            actual_quantization = QuantizationMode.UINT8
-        else:
-            actual_quantization = weight_quantization
+        actual_quantization = _detect_mlx_quantization(
+            module.weights.shape[1],
+            qweights.shape[1],
+            weight_quantization,
+        )
 
         weights = _process_quantized_tensor(
             qweights,
@@ -553,111 +570,15 @@ def load_attention(
             q_perm = jnp.concatenate([q.reshape(-1), gate.reshape(-1)], axis=0)
         else:
             q_perm = jnp.arange(q_len, dtype=jnp.int32)
-        reorder = (_build_qkv_gate_reorder(q_len, k_output_dim, v_output_dim, q_perm, q_output_dim), 0)
+        reorder_perm = _build_qkv_gate_reorder(q_len, k_output_dim, v_output_dim, q_perm, q_output_dim)
 
-        def fuse_bias() -> Array | None:
-            if not module.qkv_projection.has_biases:
-                for proj in ("q_proj", "k_proj", "v_proj"):
-                    if (path / proj / "bias") in weights_dict:
-                        raise ValueError(
-                            f"Bias tensor found at {path / proj / 'bias'} but module does not support it.",
-                        )
-                return None
-            return _fuse_full_precision_weights(
-                weights_dict,
-                path,
-                ["q_proj", "k_proj", "v_proj"],
-                param_name="bias",
-                reorder=reorder,
-            )
-
-        if isinstance(module.qkv_projection, FullPrecisionLinear):
-            weights = _fuse_full_precision_weights(
-                weights_dict,
-                path,
-                ["q_proj", "k_proj", "v_proj"],
-                reorder=reorder,
-            )
-            bias = fuse_bias()
-
-            qkv_projection = load_parameters(
-                lambda m: (m.weights, m.biases),
-                module.qkv_projection,
-                (weights, bias),
-            )
-        elif isinstance(module.qkv_projection, GroupQuantizedLinear):
-            layout = AWQ_QUANTIZED_WEIGHT_LAYOUT
-            axis = int(layout.transposed)
-            reorder_with_axis = (reorder[0], axis)
-            fused_qweights, fused_qzeros, fused_scales = _fuse_quantized_weights(
-                weights_dict,
-                path,
-                ["q_proj", "k_proj", "v_proj"],
-                layout,
-                reorder=reorder_with_axis,
-            )
-            bias = fuse_bias()
-
-            weight_quantization = module.qkv_projection.config.weight_quantization_mode
-            activation_precision = module.qkv_projection.activation_precision
-            reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
-
-            weights = _process_quantized_tensor(
-                fused_qweights,
-                weight_quantization,
-                activation_precision,
-                reverse_order,
-            )
-            zeros = _process_quantized_tensor(
-                fused_qzeros,
-                weight_quantization,
-                activation_precision,
-                reverse_order,
-            )
-            scales = fused_scales.astype(activation_precision)
-
-            qkv_projection = load_parameters(
-                lambda m: (m.weights, m.scales, m.zero_points, m.biases),
-                module.qkv_projection,
-                (weights.T, scales.T, zeros.T, bias),
-            )
-        elif isinstance(module.qkv_projection, MLXQuantizedLinear):
-            layout = MLX_QUANTIZED_WEIGHT_LAYOUT
-            axis = int(layout.transposed)
-            reorder_with_axis = (reorder[0], axis)
-            fused_qweights, fused_qzeros, fused_scales = _fuse_quantized_weights(
-                weights_dict,
-                path,
-                ["q_proj", "k_proj", "v_proj"],
-                layout,
-                reorder=reorder_with_axis,
-            )
-            bias = fuse_bias()
-
-            weight_quantization = module.qkv_projection.config.weight_quantization_mode
-            activation_precision = module.qkv_projection.activation_precision
-
-            weights = _process_quantized_tensor(
-                fused_qweights,
-                weight_quantization,
-                activation_precision,
-                None,
-            )
-            deq_biases = _process_quantized_tensor(
-                fused_qzeros,
-                weight_quantization,
-                activation_precision,
-                None,
-            )
-            scales = fused_scales.astype(activation_precision)
-
-            qkv_projection = load_parameters(
-                lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
-                module.qkv_projection,
-                (weights, scales, deq_biases, bias),
-            )
-        else:
-            raise NotImplementedError("Unsupported qkv projection type for gated attention.")
+        qkv_projection = load_linear(
+            module.qkv_projection,
+            weights_dict,
+            path,
+            sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
+            reorder=reorder_perm,
+        )
     else:
         qkv_projection = load_linear(
             module.qkv_projection,
@@ -843,111 +764,69 @@ def load_delta_net_attention(
     if in_proj_weight_path in weights_dict:
         in_proj = load_linear(module.in_proj, weights_dict, in_proj_path)
     else:
-        qkvz_path = path / "in_proj_qkvz"
-        ba_path = path / "in_proj_ba"
-        qkvz_weight_path = qkvz_path / "weight"
-        ba_weight_path = ba_path / "weight"
-        if not (qkvz_weight_path in weights_dict and ba_weight_path in weights_dict):
-            raise ValueError("Expected in_proj or in_proj_qkvz/in_proj_ba weights for DeltaNetAttention.")
-
-        qkvz_perm = _delta_net_qkvz_perm()
-        ba_perm = _delta_net_ba_perm()
-
-        def _reorder(array: Array, perm: Array, axis: int) -> Array:
-            return jnp.take(array, perm, axis=axis)
+        qkv_path = path / "in_proj_qkv"
+        z_path = path / "in_proj_z"
+        b_path = path / "in_proj_b"
+        a_path = path / "in_proj_a"
+        has_qwen35_split_projections = all(
+            projection_path / "weight" in weights_dict for projection_path in (qkv_path, z_path, b_path, a_path)
+        )
+        if has_qwen35_split_projections:
+            projection_branches: list[tuple[ParameterPath, Array | None]] = [
+                (qkv_path, None),
+                (z_path, None),
+                (b_path, None),
+                (a_path, None),
+            ]
+        else:
+            qkvz_path = path / "in_proj_qkvz"
+            ba_path = path / "in_proj_ba"
+            if not ((qkvz_path / "weight") in weights_dict and (ba_path / "weight") in weights_dict):
+                raise ValueError(
+                    "Expected in_proj, in_proj_qkvz/in_proj_ba, or "
+                    "in_proj_qkv/in_proj_z/in_proj_b/in_proj_a weights for DeltaNetAttention.",
+                )
+            projection_branches = [
+                (qkvz_path, _delta_net_qkvz_perm()),
+                (ba_path, _delta_net_ba_perm()),
+            ]
 
         if isinstance(module.in_proj, FullPrecisionLinear):
-            qkvz_weight = _fuse_full_precision_weights(weights_dict, qkvz_path, None)
-            ba_weight = _fuse_full_precision_weights(weights_dict, ba_path, None)
-            qkvz_weight = _reorder(qkvz_weight, qkvz_perm, axis=0)
-            ba_weight = _reorder(ba_weight, ba_perm, axis=0)
-            merged = jnp.concatenate([qkvz_weight, ba_weight], axis=0)
+            merged = jnp.concatenate(
+                [
+                    _fuse_full_precision_weights(
+                        weights_dict,
+                        bp,
+                        None,
+                        reorder=(perm, 0) if perm is not None else None,
+                    )
+                    for bp, perm in projection_branches
+                ],
+                axis=0,
+            )
             in_proj = load_parameters(lambda m: (m.weights, m.biases), module.in_proj, (merged, None))
         elif isinstance(module.in_proj, GroupQuantizedLinear):
-            qweights, qzeros, qscales = _fuse_quantized_weights(
-                weights_dict,
-                qkvz_path,
-                None,
-                AWQ_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            bweights, bzeros, bscales = _fuse_quantized_weights(
-                weights_dict,
-                ba_path,
-                None,
-                AWQ_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            axis = int(AWQ_QUANTIZED_WEIGHT_LAYOUT.transposed)
-            qweights = _reorder(qweights, qkvz_perm, axis=axis)
-            qzeros = _reorder(qzeros, qkvz_perm, axis=axis)
-            qscales = _reorder(qscales, qkvz_perm, axis=axis)
-            bweights = _reorder(bweights, ba_perm, axis=axis)
-            bzeros = _reorder(bzeros, ba_perm, axis=axis)
-            bscales = _reorder(bscales, ba_perm, axis=axis)
-
-            fused_qweights = jnp.concatenate([qweights, bweights], axis=axis)
-            fused_qzeros = jnp.concatenate([qzeros, bzeros], axis=axis)
-            fused_scales = jnp.concatenate([qscales, bscales], axis=axis)
-
-            weight_quantization = module.in_proj.config.weight_quantization_mode
-            activation_precision = module.in_proj.activation_precision
-            reverse_order = AWQ_UINT4_REVERSE_ORDER if weight_quantization == QuantizationMode.UINT4 else None
-
-            weights = _process_quantized_tensor(
-                fused_qweights,
-                weight_quantization,
-                activation_precision,
-                reverse_order,
-            )
-            zeros = _process_quantized_tensor(
-                fused_qzeros,
-                weight_quantization,
-                activation_precision,
-                reverse_order,
-            )
-            scales = fused_scales.astype(activation_precision)
-
-            in_proj = load_parameters(
-                lambda m: (m.weights, m.scales, m.zero_points, m.biases),
-                module.in_proj,
-                (weights.T, scales.T, zeros.T, None),
-            )
+            raise ValueError("DeltaNetAttention does not support AWQ quantization.")
         elif isinstance(module.in_proj, MLXQuantizedLinear):
-            qweights, qdeq_biases, qscales = _fuse_quantized_weights(
-                weights_dict,
-                qkvz_path,
-                None,
-                MLX_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            bweights, bdeq_biases, bscales = _fuse_quantized_weights(
-                weights_dict,
-                ba_path,
-                None,
-                MLX_QUANTIZED_WEIGHT_LAYOUT,
-            )
-            axis = int(MLX_QUANTIZED_WEIGHT_LAYOUT.transposed)
-            qweights = _reorder(qweights, qkvz_perm, axis=axis)
-            qdeq_biases = _reorder(qdeq_biases, qkvz_perm, axis=axis)
-            qscales = _reorder(qscales, qkvz_perm, axis=axis)
-            bweights = _reorder(bweights, ba_perm, axis=axis)
-            bdeq_biases = _reorder(bdeq_biases, ba_perm, axis=axis)
-            bscales = _reorder(bscales, ba_perm, axis=axis)
-
-            fused_qweights = jnp.concatenate([qweights, bweights], axis=axis)
-            fused_deq_biases = jnp.concatenate([qdeq_biases, bdeq_biases], axis=axis)
-            fused_scales = jnp.concatenate([qscales, bscales], axis=axis)
+            per_branch = [
+                _fuse_quantized_weights(
+                    weights_dict,
+                    bp,
+                    None,
+                    MLX_QUANTIZED_WEIGHT_LAYOUT,
+                    reorder=(perm, 0) if perm is not None else None,
+                )
+                for bp, perm in projection_branches
+            ]
+            fused_qweights = jnp.concatenate([qw for qw, _, _ in per_branch], axis=0)
+            fused_deq_biases = jnp.concatenate([db for _, db, _ in per_branch], axis=0)
+            fused_scales = jnp.concatenate([s for _, _, s in per_branch], axis=0)
 
             weight_quantization = module.in_proj.config.weight_quantization_mode
             activation_precision = module.in_proj.activation_precision
-
-            weights = _process_quantized_tensor(
-                fused_qweights,
-                weight_quantization,
-                activation_precision,
-                None,
-            )
+            weights = _process_quantized_tensor(fused_qweights, weight_quantization, activation_precision, None)
             scales = fused_scales.astype(activation_precision)
             deq_biases = fused_deq_biases.astype(activation_precision)
-
             in_proj = load_parameters(
                 lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
                 module.in_proj,
@@ -1215,6 +1094,9 @@ def load_huggingface_decoder(
     *,
     reorder_q_proj_gate: bool = True,
 ) -> Decoder:
+    if any(key.startswith("model.language_model.") for key in weights_dict):
+        weights_dict = {k.replace("model.language_model.", "model.", 1): v for k, v in weights_dict.items()}
+
     if any(key.startswith("language_model.") for key in weights_dict):
         base_path = ParameterPath("language_model")
     else:

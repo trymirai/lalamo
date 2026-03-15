@@ -24,6 +24,7 @@ from transformers.models.gemma3.modeling_gemma3 import (
 from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from transformers.models.modernbert.modeling_modernbert import ModernBertEncoderLayer
 from transformers.models.modernbert.modular_modernbert import ModernBertAttention, ModernBertMLP
+from transformers.models.qwen3_5.modeling_qwen3_5 import Qwen3_5GatedDeltaNet
 from transformers.models.qwen3_next.modeling_qwen3_next import Qwen3NextDecoderLayer, Qwen3NextGatedDeltaNet
 from transformers.processing_utils import Unpack
 
@@ -327,7 +328,9 @@ class HFDecoderTracer(
         position_embeddings: tuple[torch.Tensor, torch.Tensor] | None,
     ) -> torch.Tensor:
         attention_device = _module_device(attention, self.device)  # type: ignore[arg-type]
-        if Qwen3NextGatedDeltaNet is not None and isinstance(attention, Qwen3NextGatedDeltaNet):
+        if Qwen3NextGatedDeltaNet is not None and isinstance(
+            attention, (Qwen3NextGatedDeltaNet, Qwen3_5GatedDeltaNet)
+        ):
             # DeltaNet does not have attention
             return attention.forward(
                 hidden_states=hidden_states.to(attention_device),
