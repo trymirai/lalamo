@@ -107,8 +107,8 @@ class ExperimentConfig:
     max_sequence_length: int = 256
     batch_size: int = 4
     num_steps: int = 25
-    learning_rate: float = 3e-6
-    optimizer_name: OptimizerName = OptimizerName.ADAMW
+    learning_rate: float = 3e-7
+    optimizer_name: OptimizerName = OptimizerName.MUON
     quantization_mode: QuantizationMode = QuantizationMode.UINT4
     compute_dtype_name: ComputeDTypeName = ComputeDTypeName.AUTO
     eval_every_steps: int = 0
@@ -672,8 +672,8 @@ def main(
     max_sequence_length: Annotated[int, typer.Option()] = 256,
     batch_size: Annotated[int, typer.Option()] = 4,
     num_steps: Annotated[int, typer.Option()] = 25,
-    learning_rate: Annotated[float, typer.Option()] = 3e-6,
-    optimizer_name: Annotated[OptimizerName, typer.Option()] = OptimizerName.ADAMW,
+    learning_rate: Annotated[float, typer.Option()] = 3e-7,
+    optimizer_name: Annotated[OptimizerName, typer.Option()] = OptimizerName.MUON,
     quantization_mode: Annotated[QuantizationMode, typer.Option()] = QuantizationMode.UINT4,
     compute_dtype_name: Annotated[ComputeDTypeName, typer.Option()] = ComputeDTypeName.AUTO,
     eval_every_steps: Annotated[int, typer.Option()] = 0,
