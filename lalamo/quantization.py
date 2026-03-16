@@ -3,7 +3,7 @@ from functools import partial
 
 import jax
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Key
 
 __all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"]
 
@@ -80,7 +80,7 @@ def _quantize_weights_bwd(
 ) -> tuple[Float[Array, "..."]]:
     x = residuals
     range_min, range_max = mode.range
-    gradient_mask = (x >= range_min) & (x <= range_max)
+    gradient_mask = jnp.logical_and(x >= range_min, x <= range_max)
     return (grad_output * gradient_mask.astype(grad_output.dtype),)
 
 
@@ -90,7 +90,7 @@ quantize_weights.defvjp(_quantize_weights_fwd, _quantize_weights_bwd)
 def stochastic_quantize_weights(
     x: Float[Array, "..."],
     mode: QuantizationMode,
-    key: PRNGKeyArray,
+    key: Key[Array, ""],
 ) -> Float[Array, "..."]:
     range_min, range_max = mode.range
     clipped = jnp.clip(x, range_min, range_max)

@@ -1,7 +1,7 @@
 import math
 from collections import defaultdict
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import StrEnum
 
 import equinox as eqx
@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import jax.tree_util as jtu
 import optax
 from jax.tree_util import keystr
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
@@ -259,7 +259,7 @@ def materialize_trainable_module[M: eqx.Module](
 def stochastically_quantize_module[M: eqx.Module](
     module: M,
     quantization_mode: QuantizationMode,
-    key: PRNGKeyArray,
+    key: Key[Array, ""],
 ) -> M:
     leaf_infos = iter_parameter_leaves(module)
     quantized_infos = [info for info in leaf_infos if info.alias_of is None and info.quantized]
@@ -321,8 +321,8 @@ def _replace_master_weights(
     master_weights: Sequence[Array],
 ) -> DistillTrainingState:
     trainable_parameters = tuple(
-        replace(parameter, master_weight=master_weight)
-        for parameter, master_weight in zip(state.trainable_parameters, master_weights, strict=True)
+        eqx.tree_at(lambda p: p.master_weight, parameter, mw)
+        for parameter, mw in zip(state.trainable_parameters, master_weights, strict=True)
     )
     return DistillTrainingState(trainable_parameters=trainable_parameters)
 
@@ -367,7 +367,7 @@ def make_trace_distill_batch(
         -jnp.inf,
         dtype=jnp.float32,
     )
-    support_mask = jnp.zeros((len(traces), max_completion_tokens, max_support_tokens), dtype=jnp.bool_)
+    support_mask = jnp.zeros((len(traces), max_completion_tokens, max_support_tokens), dtype=bool)
 
     for batch_index, trace in enumerate(traces):
         sequence_token_ids = jnp.array(
@@ -445,7 +445,9 @@ def compute_distill_batch_metrics(
     loss = jnp.sum(token_kl * prediction_mask) / valid_tokens
     student_top1 = jnp.argmax(student_logits, axis=-1)
     teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
-    top1_matches = jnp.sum((student_top1 == teacher_top1) & prediction_mask.astype(jnp.bool_), dtype=jnp.int32)
+    top1_matches = jnp.sum(
+        jnp.logical_and(student_top1 == teacher_top1, prediction_mask.astype(bool)), dtype=jnp.int32,
+    )
     return DistillBatchMetrics(
         loss=loss,
         valid_tokens=valid_tokens,
@@ -503,7 +505,7 @@ def distill_train_step(
     batch: DistillBatch,
     config: DistillTrainConfig,
     *,
-    quantization_key: PRNGKeyArray | None = None,
+    quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
 ) -> tuple[DistillOptimizerState, DistillStepMetrics]:
     current_master_weights = _concrete_master_weights(optimizer_state.training_state)
