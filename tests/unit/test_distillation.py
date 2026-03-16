@@ -175,7 +175,7 @@ def test_stochastically_quantize_module_quantizes_quantized_weights() -> None:
     second = stochastically_quantize_module(materialized, QuantizationMode.UINT4, jax.random.key(0))
 
     assert jnp.array_equal(first.weights, second.weights)
-    assert jnp.all((first.weights == 1.0) | (first.weights == 2.0))
+    assert jnp.all(jnp.logical_or(first.weights == 1.0, first.weights == 2.0))
 
 
 def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:

@@ -158,7 +158,7 @@ def summarize_distill_parameters(
     )
 
 
-def _leaf_map(module: eqx.Module) -> dict[str, object]:
+def _path_to_leaf(module: eqx.Module) -> dict[str, object]:
     flat_with_path, _ = jtu.tree_flatten_with_path(module)
     return {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
 
@@ -171,7 +171,7 @@ def initialize_distill_training_state(
 ) -> DistillTrainingState:
     master_dtype = jnp.dtype(config.master_dtype)
     leaves = iter_parameter_leaves(module)
-    path_to_leaf = _leaf_map(module)
+    path_to_leaf = _path_to_leaf(module)
 
     alias_paths: dict[str, list[str]] = defaultdict(list)
     for info in leaves:
@@ -226,8 +226,8 @@ def get_muon_weight_dimension_numbers(
     return tuple(result)
 
 
-def _select_parameter_paths(module: eqx.Module, paths: Sequence[str]) -> list[object]:
-    path_to_leaf = _leaf_map(module)
+def _select_leaves_by_path(module: eqx.Module, paths: Sequence[str]) -> list[object]:
+    path_to_leaf = _path_to_leaf(module)
     return [path_to_leaf[path] for path in paths]
 
 
@@ -250,7 +250,7 @@ def materialize_trainable_module[M: eqx.Module](
         return module
 
     return eqx.tree_at(
-        lambda tree: _select_parameter_paths(tree, replacement_paths),
+        lambda tree: _select_leaves_by_path(tree, replacement_paths),
         module,
         replacement_values,
         is_leaf=lambda value: value is None,
@@ -274,7 +274,7 @@ def stochastically_quantize_module[M: eqx.Module](
     quantization_keys = {
         info.path: k for info, k in zip(quantized_infos, jax.random.split(key, len(quantized_infos)), strict=True)
     }
-    path_to_leaf = _leaf_map(module)
+    path_to_leaf = _path_to_leaf(module)
 
     replacement_paths: list[str] = []
     replacement_values: list[Array] = []
@@ -293,7 +293,7 @@ def stochastically_quantize_module[M: eqx.Module](
         return module
 
     return eqx.tree_at(
-        lambda tree: _select_parameter_paths(tree, replacement_paths),
+        lambda tree: _select_leaves_by_path(tree, replacement_paths),
         module,
         replacement_values,
         is_leaf=lambda value: value is None,
@@ -336,9 +336,9 @@ def initialize_distill_optimizer_state(
     )
 
 
-def _token_positions(batch: DistillBatch) -> Int[Array, "batch tokens"]:
-    _, num_tokens = batch.token_ids.shape
-    return jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
+def _token_positions(token_ids: Int[Array, "batch tokens"]) -> Int[Array, "batch tokens"]:
+    _, num_tokens = token_ids.shape
+    return jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), token_ids.shape)
 
 
 def make_trace_distill_batch(
@@ -402,7 +402,7 @@ def _decoder_logits(
     decoder: Decoder,
     batch: DistillBatch,
 ) -> Float[Array, "batch prediction_tokens vocabulary"]:
-    token_positions = _token_positions(batch)
+    token_positions = _token_positions(batch.token_ids)
     decoder_result = decoder(
         token_ids=batch.token_ids,
         token_positions=token_positions,
@@ -467,7 +467,7 @@ def compute_trace_distill_batch_metrics(
     student: Decoder,
     batch: TraceDistillBatch,
 ) -> DistillBatchMetrics:
-    token_positions = _token_positions(DistillBatch(token_ids=batch.token_ids))
+    token_positions = _token_positions(batch.token_ids)
     decoder_result = student(
         token_ids=batch.token_ids,
         token_positions=token_positions,

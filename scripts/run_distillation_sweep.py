@@ -7,7 +7,7 @@ from typing import Annotated
 
 import typer
 
-from lalamo.modules.common import ParameterNorm
+from lalamo.modules.common import ParameterLeafInfo, ParameterNorm
 
 from .run_distillation_experiment import (
     ExperimentConfig,
@@ -26,7 +26,7 @@ class TrainableSubset(StrEnum):
 
 def _make_trainable_filter(
     subset: TrainableSubset,
-) -> Callable | None:
+) -> Callable[[ParameterLeafInfo], bool] | None:
     match subset:
         case TrainableSubset.ALL:
             return None
