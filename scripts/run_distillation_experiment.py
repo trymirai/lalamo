@@ -1,7 +1,7 @@
 import json
 import shutil
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from itertools import cycle, islice
@@ -39,7 +39,7 @@ from lalamo.distillation import (
     trace_distill_train_step,
 )
 from lalamo.models import LanguageModel, LanguageModelConfig
-from lalamo.modules.common import iter_parameter_leaves
+from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_write
@@ -93,6 +93,31 @@ class HistoryEntry:
     eval_kl_divergence: float | None = None
     eval_top1_agreement: float | None = None
     eval_valid_tokens: int | None = None
+
+
+@dataclass(frozen=True)
+class ExperimentConfig:
+    teacher_path: Path
+    student_path: Path
+    dataset_path: Path
+    output_dir: Path
+    training_mode: TrainingMode = TrainingMode.ONLINE_EXACT
+    train_examples: int = 256
+    eval_examples: int = 64
+    max_sequence_length: int = 256
+    batch_size: int = 4
+    num_steps: int = 25
+    learning_rate: float = 3e-6
+    optimizer_name: OptimizerName = OptimizerName.ADAMW
+    quantization_mode: QuantizationMode = QuantizationMode.UINT4
+    compute_dtype_name: ComputeDTypeName = ComputeDTypeName.AUTO
+    eval_every_steps: int = 0
+    checkpoint_every_steps: int = 0
+    early_stop_patience: int = 0
+    resume_from: Path | None = None
+    seed: int = 0
+    stochastic_rounding: bool = True
+    save_checkpoints: bool = True
 
 
 @dataclass(frozen=True)
@@ -304,6 +329,338 @@ def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: DTypeLike) -> D
             raise ValueError(f"Unknown compute dtype: {name}")
 
 
+def run_experiment(
+    config: ExperimentConfig,
+    *,
+    trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
+) -> ExperimentResult:
+    teacher_model = LanguageModelConfig.load_model(config.teacher_path)
+    student_model = LanguageModelConfig.load_model(config.student_path)
+
+    match config.training_mode:
+        case TrainingMode.ONLINE_EXACT:
+            conversations = _load_conversations(
+                config.dataset_path,
+                num_examples=config.train_examples + config.eval_examples,
+                seed=config.seed,
+            )
+            tokenized = _tokenize_conversations(
+                conversations,
+                language_model=student_model,
+                max_sequence_length=config.max_sequence_length,
+            )
+            if len(tokenized) < config.train_examples + config.eval_examples:
+                raise ValueError(
+                    f"Requested {config.train_examples + config.eval_examples} usable sequences, "
+                    f"got {len(tokenized)} from {config.dataset_path}",
+                )
+            train_items = tokenized[: config.train_examples]
+            eval_items = tokenized[config.train_examples : config.train_examples + config.eval_examples]
+            train_batches = _make_batches(train_items, batch_size=config.batch_size)
+            eval_batches = _make_batches(eval_items, batch_size=config.batch_size)
+        case TrainingMode.TRACE_TOPK:
+            traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
+            if len(traces) < config.train_examples + config.eval_examples:
+                raise ValueError(
+                    f"Requested {config.train_examples + config.eval_examples} traces, "
+                    f"got {len(traces)} from {config.dataset_path}",
+                )
+            train_items = traces[: config.train_examples]
+            eval_items = traces[config.train_examples : config.train_examples + config.eval_examples]
+            train_batches = _make_trace_batches(train_items, batch_size=config.batch_size, pad_token_id=0)
+            eval_batches = _make_trace_batches(eval_items, batch_size=config.batch_size, pad_token_id=0)
+
+    distill_config = DistillTrainConfig(
+        master_dtype=jnp.float32,
+        compute_dtype=_resolve_compute_dtype(config.compute_dtype_name, student_model.model.activation_precision),
+    )
+    training_state = initialize_distill_training_state(
+        student_model.model,
+        distill_config,
+        trainable_filter=trainable_filter,
+    )
+    optimizer = _build_optimizer(config.optimizer_name, config.learning_rate, training_state)
+    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+    parameter_summary = summarize_distill_parameters(
+        iter_parameter_leaves(student_model.model),
+        distill_config,
+        trainable_filter=trainable_filter,
+    )
+
+    train_key = jax.random.key(config.seed)
+    completed_steps = 0
+    best_eval_kl: float | None = None
+    best_step: int | None = None
+    evaluations_without_improvement = 0
+    resume_best_checkpoint_dir: Path | None = None
+    if config.resume_from is not None:
+        checkpoint, checkpoint_metadata = _load_checkpoint(
+            config.resume_from,
+            ExperimentCheckpoint(
+                optimizer_state=optimizer_state,
+                train_key_data=jax.random.key_data(train_key),
+            ),
+        )
+        optimizer_state = checkpoint.optimizer_state
+        train_key = jax.random.wrap_key_data(checkpoint.train_key_data)
+        completed_steps = checkpoint_metadata.step
+        best_eval_kl = checkpoint_metadata.best_eval_kl
+        best_step = checkpoint_metadata.best_step
+        evaluations_without_improvement = checkpoint_metadata.evaluations_without_improvement
+        if best_step is not None and best_step != completed_steps:
+            resume_best_checkpoint_dir = Path(config.resume_from).parent / "best-checkpoint"
+            if not resume_best_checkpoint_dir.exists():
+                raise ValueError(
+                    f"Resume checkpoint {config.resume_from} is missing sibling best-checkpoint directory",
+                )
+
+    initial_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
+    match config.training_mode:
+        case TrainingMode.ONLINE_EXACT:
+            initial_eval = _evaluate(initial_student, teacher_model.model, eval_batches)
+        case TrainingMode.TRACE_TOPK:
+            initial_eval = _evaluate_trace(initial_student, eval_batches)
+
+    if best_eval_kl is None:
+        best_eval_kl = initial_eval.kl_divergence
+        best_step = max(0, completed_steps)
+
+    config.output_dir.mkdir(parents=True, exist_ok=True)
+    latest_checkpoint_dir = config.output_dir / "latest-checkpoint"
+    best_checkpoint_dir = config.output_dir / "best-checkpoint"
+    if config.save_checkpoints:
+        if resume_best_checkpoint_dir is not None:
+            shutil.copytree(resume_best_checkpoint_dir, best_checkpoint_dir, dirs_exist_ok=True)
+        elif best_step == completed_steps:
+            _save_checkpoint(
+                best_checkpoint_dir,
+                ExperimentCheckpoint(
+                    optimizer_state=optimizer_state,
+                    train_key_data=jax.random.key_data(train_key),
+                ),
+                CheckpointMetadata(
+                    step=completed_steps,
+                    best_eval_kl=best_eval_kl,
+                    best_step=best_step,
+                    evaluations_without_improvement=evaluations_without_improvement,
+                ),
+            )
+    history_path = config.output_dir / "history.jsonl"
+    step_iterator = cycle(train_batches)
+    compilation_seconds = 0.0
+    start_time: float | None = None
+    executed_steps = 0
+    stopped_early = False
+
+    with history_path.open("a" if completed_steps > 0 else "w") as history_file:
+        remaining_steps = islice(step_iterator, completed_steps, config.num_steps)
+        for step, batch in enumerate(remaining_steps, start=completed_steps + 1):
+            train_key, step_key = jax.random.split(train_key)
+            quantization_key = step_key if config.stochastic_rounding else None
+
+            if executed_steps == 0:
+                warmup_start = time.perf_counter()
+
+            match config.training_mode:
+                case TrainingMode.ONLINE_EXACT:
+                    optimizer_state, _ = distill_train_step(
+                        optimizer_state,
+                        optimizer,
+                        student_model.model,
+                        teacher_model.model,
+                        batch,
+                        distill_config,
+                        quantization_key=quantization_key,
+                        quantization_mode=config.quantization_mode,
+                    )
+                    train_metrics = compute_distill_batch_metrics(
+                        materialize_trainable_module(
+                            student_model.model,
+                            optimizer_state.training_state,
+                            distill_config,
+                        ),
+                        teacher_model.model,
+                        batch,
+                    )
+                case TrainingMode.TRACE_TOPK:
+                    optimizer_state, _ = trace_distill_train_step(
+                        optimizer_state,
+                        optimizer,
+                        student_model.model,
+                        batch,
+                        distill_config,
+                        quantization_key=quantization_key,
+                        quantization_mode=config.quantization_mode,
+                    )
+                    train_metrics = compute_trace_distill_batch_metrics(
+                        materialize_trainable_module(
+                            student_model.model,
+                            optimizer_state.training_state,
+                            distill_config,
+                        ),
+                        batch,
+                    )
+
+            if executed_steps == 0:
+                compilation_seconds = time.perf_counter() - warmup_start
+                start_time = time.perf_counter()
+
+            history_entry = HistoryEntry(
+                step=step,
+                train_kl_divergence=float(train_metrics.loss),
+                valid_tokens=int(train_metrics.valid_tokens),
+            )
+
+            if config.eval_every_steps > 0 and step % config.eval_every_steps == 0:
+                materialized_student = materialize_trainable_module(
+                    student_model.model,
+                    optimizer_state.training_state,
+                    distill_config,
+                )
+                match config.training_mode:
+                    case TrainingMode.ONLINE_EXACT:
+                        eval_metrics = _evaluate(materialized_student, teacher_model.model, eval_batches)
+                    case TrainingMode.TRACE_TOPK:
+                        eval_metrics = _evaluate_trace(materialized_student, eval_batches)
+
+                history_entry = HistoryEntry(
+                    step=step,
+                    train_kl_divergence=float(train_metrics.loss),
+                    valid_tokens=int(train_metrics.valid_tokens),
+                    eval_kl_divergence=eval_metrics.kl_divergence,
+                    eval_top1_agreement=eval_metrics.top1_agreement,
+                    eval_valid_tokens=eval_metrics.valid_tokens,
+                )
+                if best_eval_kl is None or eval_metrics.kl_divergence < best_eval_kl:
+                    best_eval_kl = eval_metrics.kl_divergence
+                    best_step = step
+                    evaluations_without_improvement = 0
+                    if config.save_checkpoints:
+                        _save_checkpoint(
+                            best_checkpoint_dir,
+                            ExperimentCheckpoint(
+                                optimizer_state=optimizer_state,
+                                train_key_data=jax.random.key_data(train_key),
+                            ),
+                            CheckpointMetadata(
+                                step=step,
+                                best_eval_kl=best_eval_kl,
+                                best_step=best_step,
+                                evaluations_without_improvement=evaluations_without_improvement,
+                            ),
+                        )
+                else:
+                    evaluations_without_improvement += 1
+                    patience_exceeded = evaluations_without_improvement >= config.early_stop_patience
+                    if config.early_stop_patience > 0 and patience_exceeded:
+                        stopped_early = True
+
+            history_file.write(json.dumps(asdict(history_entry)) + "\n")
+            executed_steps += 1
+            completed_steps = step
+
+            should_save_checkpoint = config.checkpoint_every_steps > 0 and step % config.checkpoint_every_steps == 0
+            if config.save_checkpoints and (should_save_checkpoint or stopped_early):
+                _save_checkpoint(
+                    latest_checkpoint_dir,
+                    ExperimentCheckpoint(
+                        optimizer_state=optimizer_state,
+                        train_key_data=jax.random.key_data(train_key),
+                    ),
+                    CheckpointMetadata(
+                        step=step,
+                        best_eval_kl=best_eval_kl,
+                        best_step=best_step,
+                        evaluations_without_improvement=evaluations_without_improvement,
+                    ),
+                )
+            if stopped_early:
+                break
+
+    if config.save_checkpoints:
+        _save_checkpoint(
+            latest_checkpoint_dir,
+            ExperimentCheckpoint(
+                optimizer_state=optimizer_state,
+                train_key_data=jax.random.key_data(train_key),
+            ),
+            CheckpointMetadata(
+                step=completed_steps,
+                best_eval_kl=best_eval_kl,
+                best_step=best_step,
+                evaluations_without_improvement=evaluations_without_improvement,
+            ),
+        )
+
+    elapsed_seconds = 0.0 if start_time is None else time.perf_counter() - start_time
+    measured_steps = max(executed_steps - 1, 0)
+
+    if (
+        config.save_checkpoints
+        and best_checkpoint_dir.exists()
+        and best_step is not None
+        and best_step != completed_steps
+    ):
+        best_checkpoint, _ = _load_checkpoint(
+            best_checkpoint_dir,
+            ExperimentCheckpoint(
+                optimizer_state=optimizer_state,
+                train_key_data=jax.random.key_data(train_key),
+            ),
+        )
+        optimizer_state = best_checkpoint.optimizer_state
+
+    final_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
+    match config.training_mode:
+        case TrainingMode.ONLINE_EXACT:
+            final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
+        case TrainingMode.TRACE_TOPK:
+            final_eval = _evaluate_trace(final_student, eval_batches)
+
+    model_output_path = config.output_dir / "student-distilled"
+    export_config = DistillTrainConfig(
+        master_dtype=distill_config.master_dtype,
+        compute_dtype=student_model.model.activation_precision,
+    )
+    export_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, export_config)
+    _save_materialized_student(
+        config.student_path,
+        model_output_path,
+        student_model,
+        export_student,
+    )
+
+    return ExperimentResult(
+        teacher_path=str(config.teacher_path),
+        student_path=str(config.student_path),
+        dataset_path=str(config.dataset_path),
+        training_mode=config.training_mode,
+        train_examples=len(train_items),
+        eval_examples=len(eval_items),
+        max_sequence_length=config.max_sequence_length,
+        batch_size=config.batch_size,
+        num_steps=config.num_steps,
+        completed_steps=completed_steps,
+        learning_rate=config.learning_rate,
+        seed=config.seed,
+        optimizer=config.optimizer_name,
+        quantization_mode=config.quantization_mode.value,
+        distill_config=DistillConfigSnapshot(
+            master_dtype=str(jnp.dtype(distill_config.master_dtype)),
+            compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
+        ),
+        parameter_summary=parameter_summary,
+        initial_eval=initial_eval,
+        final_eval=final_eval,
+        best_step=best_step,
+        stopped_early=stopped_early,
+        compilation_seconds=compilation_seconds,
+        elapsed_seconds=elapsed_seconds,
+        seconds_per_step=0.0 if measured_steps == 0 else elapsed_seconds / measured_steps,
+        output_model_path=str(model_output_path),
+    )
+
+
 def main(
     teacher_path: Annotated[Path, typer.Option(exists=True, dir_okay=True, file_okay=False)],
     student_path: Annotated[Path, typer.Option(exists=True, dir_okay=True, file_okay=False)],
@@ -325,312 +682,28 @@ def main(
     resume_from: Annotated[Path | None, typer.Option()] = None,
     seed: Annotated[int, typer.Option()] = 0,
 ) -> None:
-    teacher_model = LanguageModelConfig.load_model(teacher_path)
-    student_model = LanguageModelConfig.load_model(student_path)
-
-    match training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            conversations = _load_conversations(
-                dataset_path,
-                num_examples=train_examples + eval_examples,
-                seed=seed,
-            )
-            tokenized = _tokenize_conversations(
-                conversations,
-                language_model=student_model,
-                max_sequence_length=max_sequence_length,
-            )
-            if len(tokenized) < train_examples + eval_examples:
-                raise ValueError(
-                    f"Requested {train_examples + eval_examples} usable sequences, "
-                    f"got {len(tokenized)} from {dataset_path}",
-                )
-            train_items = tokenized[:train_examples]
-            eval_items = tokenized[train_examples : train_examples + eval_examples]
-            train_batches = _make_batches(train_items, batch_size=batch_size)
-            eval_batches = _make_batches(eval_items, batch_size=batch_size)
-        case TrainingMode.TRACE_TOPK:
-            traces = _load_traces(dataset_path, num_examples=train_examples + eval_examples)
-            if len(traces) < train_examples + eval_examples:
-                raise ValueError(
-                    f"Requested {train_examples + eval_examples} traces, got {len(traces)} from {dataset_path}",
-                )
-            train_items = traces[:train_examples]
-            eval_items = traces[train_examples : train_examples + eval_examples]
-            train_batches = _make_trace_batches(train_items, batch_size=batch_size, pad_token_id=0)
-            eval_batches = _make_trace_batches(eval_items, batch_size=batch_size, pad_token_id=0)
-
-    distill_config = DistillTrainConfig(
-        master_dtype=jnp.float32,
-        compute_dtype=_resolve_compute_dtype(compute_dtype_name, student_model.model.activation_precision),
-    )
-    training_state = initialize_distill_training_state(student_model.model, distill_config)
-    optimizer = _build_optimizer(optimizer_name, learning_rate, training_state)
-    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
-    parameter_summary = summarize_distill_parameters(
-        iter_parameter_leaves(student_model.model),
-        distill_config,
-    )
-
-    train_key = jax.random.key(seed)
-    completed_steps = 0
-    best_eval_kl: float | None = None
-    best_step: int | None = None
-    evaluations_without_improvement = 0
-    resume_best_checkpoint_dir: Path | None = None
-    if resume_from is not None:
-        checkpoint, checkpoint_metadata = _load_checkpoint(
-            resume_from,
-            ExperimentCheckpoint(
-                optimizer_state=optimizer_state,
-                train_key_data=jax.random.key_data(train_key),
-            ),
-        )
-        optimizer_state = checkpoint.optimizer_state
-        train_key = jax.random.wrap_key_data(checkpoint.train_key_data)
-        completed_steps = checkpoint_metadata.step
-        best_eval_kl = checkpoint_metadata.best_eval_kl
-        best_step = checkpoint_metadata.best_step
-        evaluations_without_improvement = checkpoint_metadata.evaluations_without_improvement
-        if best_step is not None and best_step != completed_steps:
-            resume_best_checkpoint_dir = Path(resume_from).parent / "best-checkpoint"
-            if not resume_best_checkpoint_dir.exists():
-                raise ValueError(f"Resume checkpoint {resume_from} is missing sibling best-checkpoint directory")
-
-    initial_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
-    match training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            initial_eval = _evaluate(initial_student, teacher_model.model, eval_batches)
-        case TrainingMode.TRACE_TOPK:
-            initial_eval = _evaluate_trace(initial_student, eval_batches)
-
-    if best_eval_kl is None:
-        best_eval_kl = initial_eval.kl_divergence
-        best_step = max(0, completed_steps)
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    latest_checkpoint_dir = output_dir / "latest-checkpoint"
-    best_checkpoint_dir = output_dir / "best-checkpoint"
-    if resume_best_checkpoint_dir is not None:
-        shutil.copytree(resume_best_checkpoint_dir, best_checkpoint_dir, dirs_exist_ok=True)
-    elif best_step == completed_steps:
-        _save_checkpoint(
-            best_checkpoint_dir,
-            ExperimentCheckpoint(
-                optimizer_state=optimizer_state,
-                train_key_data=jax.random.key_data(train_key),
-            ),
-            CheckpointMetadata(
-                step=completed_steps,
-                best_eval_kl=best_eval_kl,
-                best_step=best_step,
-                evaluations_without_improvement=evaluations_without_improvement,
-            ),
-        )
-    history_path = output_dir / "history.jsonl"
-    step_iterator = cycle(train_batches)
-    compilation_seconds = 0.0
-    start_time: float | None = None
-    executed_steps = 0
-    stopped_early = False
-
-    with history_path.open("a" if completed_steps > 0 else "w") as history_file:
-        for step, batch in enumerate(islice(step_iterator, completed_steps, num_steps), start=completed_steps + 1):
-            train_key, step_key = jax.random.split(train_key)
-
-            if executed_steps == 0:
-                warmup_start = time.perf_counter()
-
-            match training_mode:
-                case TrainingMode.ONLINE_EXACT:
-                    optimizer_state, _ = distill_train_step(
-                        optimizer_state,
-                        optimizer,
-                        student_model.model,
-                        teacher_model.model,
-                        batch,
-                        distill_config,
-                        quantization_key=step_key,
-                        quantization_mode=quantization_mode,
-                    )
-                    train_metrics = compute_distill_batch_metrics(
-                        materialize_trainable_module(
-                            student_model.model,
-                            optimizer_state.training_state,
-                            distill_config,
-                        ),
-                        teacher_model.model,
-                        batch,
-                    )
-                case TrainingMode.TRACE_TOPK:
-                    optimizer_state, _ = trace_distill_train_step(
-                        optimizer_state,
-                        optimizer,
-                        student_model.model,
-                        batch,
-                        distill_config,
-                        quantization_key=step_key,
-                        quantization_mode=quantization_mode,
-                    )
-                    train_metrics = compute_trace_distill_batch_metrics(
-                        materialize_trainable_module(
-                            student_model.model,
-                            optimizer_state.training_state,
-                            distill_config,
-                        ),
-                        batch,
-                    )
-
-            if executed_steps == 0:
-                compilation_seconds = time.perf_counter() - warmup_start
-                start_time = time.perf_counter()
-
-            history_entry = HistoryEntry(
-                step=step,
-                train_kl_divergence=float(train_metrics.loss),
-                valid_tokens=int(train_metrics.valid_tokens),
-            )
-
-            if eval_every_steps > 0 and step % eval_every_steps == 0:
-                materialized_student = materialize_trainable_module(
-                    student_model.model,
-                    optimizer_state.training_state,
-                    distill_config,
-                )
-                match training_mode:
-                    case TrainingMode.ONLINE_EXACT:
-                        eval_metrics = _evaluate(materialized_student, teacher_model.model, eval_batches)
-                    case TrainingMode.TRACE_TOPK:
-                        eval_metrics = _evaluate_trace(materialized_student, eval_batches)
-
-                history_entry = HistoryEntry(
-                    step=step,
-                    train_kl_divergence=float(train_metrics.loss),
-                    valid_tokens=int(train_metrics.valid_tokens),
-                    eval_kl_divergence=eval_metrics.kl_divergence,
-                    eval_top1_agreement=eval_metrics.top1_agreement,
-                    eval_valid_tokens=eval_metrics.valid_tokens,
-                )
-                if best_eval_kl is None or eval_metrics.kl_divergence < best_eval_kl:
-                    best_eval_kl = eval_metrics.kl_divergence
-                    best_step = step
-                    evaluations_without_improvement = 0
-                    _save_checkpoint(
-                        best_checkpoint_dir,
-                        ExperimentCheckpoint(
-                            optimizer_state=optimizer_state,
-                            train_key_data=jax.random.key_data(train_key),
-                        ),
-                        CheckpointMetadata(
-                            step=step,
-                            best_eval_kl=best_eval_kl,
-                            best_step=best_step,
-                            evaluations_without_improvement=evaluations_without_improvement,
-                        ),
-                    )
-                else:
-                    evaluations_without_improvement += 1
-                    if early_stop_patience > 0 and evaluations_without_improvement >= early_stop_patience:
-                        stopped_early = True
-
-            history_file.write(json.dumps(asdict(history_entry)) + "\n")
-            executed_steps += 1
-            completed_steps = step
-
-            should_save_checkpoint = checkpoint_every_steps > 0 and step % checkpoint_every_steps == 0
-            if should_save_checkpoint or stopped_early:
-                _save_checkpoint(
-                    latest_checkpoint_dir,
-                    ExperimentCheckpoint(
-                        optimizer_state=optimizer_state,
-                        train_key_data=jax.random.key_data(train_key),
-                    ),
-                    CheckpointMetadata(
-                        step=step,
-                        best_eval_kl=best_eval_kl,
-                        best_step=best_step,
-                        evaluations_without_improvement=evaluations_without_improvement,
-                    ),
-                )
-            if stopped_early:
-                break
-
-    _save_checkpoint(
-        latest_checkpoint_dir,
-        ExperimentCheckpoint(
-            optimizer_state=optimizer_state,
-            train_key_data=jax.random.key_data(train_key),
-        ),
-        CheckpointMetadata(
-            step=completed_steps,
-            best_eval_kl=best_eval_kl,
-            best_step=best_step,
-            evaluations_without_improvement=evaluations_without_improvement,
-        ),
-    )
-
-    elapsed_seconds = 0.0 if start_time is None else time.perf_counter() - start_time
-    measured_steps = max(executed_steps - 1, 0)
-
-    if best_checkpoint_dir.exists() and best_step is not None and best_step != completed_steps:
-        best_checkpoint, _ = _load_checkpoint(
-            best_checkpoint_dir,
-            ExperimentCheckpoint(
-                optimizer_state=optimizer_state,
-                train_key_data=jax.random.key_data(train_key),
-            ),
-        )
-        optimizer_state = best_checkpoint.optimizer_state
-
-    final_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
-    match training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
-        case TrainingMode.TRACE_TOPK:
-            final_eval = _evaluate_trace(final_student, eval_batches)
-
-    model_output_path = output_dir / "student-distilled"
-    export_config = DistillTrainConfig(
-        master_dtype=distill_config.master_dtype,
-        compute_dtype=student_model.model.activation_precision,
-    )
-    export_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, export_config)
-    _save_materialized_student(
-        student_path,
-        model_output_path,
-        student_model,
-        export_student,
-    )
-
-    result = ExperimentResult(
-        teacher_path=str(teacher_path),
-        student_path=str(student_path),
-        dataset_path=str(dataset_path),
+    experiment_config = ExperimentConfig(
+        teacher_path=teacher_path,
+        student_path=student_path,
+        dataset_path=dataset_path,
+        output_dir=output_dir,
         training_mode=training_mode,
-        train_examples=len(train_items),
-        eval_examples=len(eval_items),
+        train_examples=train_examples,
+        eval_examples=eval_examples,
         max_sequence_length=max_sequence_length,
         batch_size=batch_size,
         num_steps=num_steps,
-        completed_steps=completed_steps,
         learning_rate=learning_rate,
+        optimizer_name=optimizer_name,
+        quantization_mode=quantization_mode,
+        compute_dtype_name=compute_dtype_name,
+        eval_every_steps=eval_every_steps,
+        checkpoint_every_steps=checkpoint_every_steps,
+        early_stop_patience=early_stop_patience,
+        resume_from=resume_from,
         seed=seed,
-        optimizer=optimizer_name,
-        quantization_mode=quantization_mode.value,
-        distill_config=DistillConfigSnapshot(
-            master_dtype=str(jnp.dtype(distill_config.master_dtype)),
-            compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
-        ),
-        parameter_summary=parameter_summary,
-        initial_eval=initial_eval,
-        final_eval=final_eval,
-        best_step=best_step,
-        stopped_early=stopped_early,
-        compilation_seconds=compilation_seconds,
-        elapsed_seconds=elapsed_seconds,
-        seconds_per_step=0.0 if measured_steps == 0 else elapsed_seconds / measured_steps,
-        output_model_path=str(model_output_path),
     )
+    result = run_experiment(experiment_config)
 
     with (output_dir / "metrics.json").open("w") as metrics_file:
         json.dump(asdict(result), metrics_file, indent=4)
