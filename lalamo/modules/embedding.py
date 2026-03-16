@@ -278,11 +278,7 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
-    weights: Float[Array, "vocabulary channels"] = field(
-        trainable=False,
-        spectral=False,
-        quantized=True,
-    )
+    weights: Float[Array, "vocabulary channels"] = field(quantized=True)
     scales: Float[Array, "vocabulary groups"] = field(spectral=False)
     biases: Float[Array, "vocabulary groups"] = field(spectral=False)
 
@@ -399,18 +395,10 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field(
-        trainable=False,
-        spectral=False,
-        quantized=True,
-    )
+    input_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
     input_scales: Float[Array, "vocabulary groups"] = field(spectral=False)
     input_biases: Float[Array, "vocabulary groups"] = field(spectral=False)
-    output_weights: Float[Array, "vocabulary channels"] = field(
-        trainable=False,
-        spectral=False,
-        quantized=True,
-    )
+    output_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
     output_scales: Float[Array, "vocabulary groups"] = field(spectral=False)
     output_biases: Float[Array, "vocabulary groups"] = field(spectral=False)
 
@@ -563,16 +551,8 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field(
-        trainable=False,
-        spectral=False,
-        quantized=True,
-    )
-    output_weights: Float[Array, "vocabulary channels"] = field(
-        trainable=False,
-        spectral=False,
-        quantized=True,
-    )
+    input_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
+    output_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
     output_scales: Float[Array, "vocabulary groups"] = field(spectral=False)
     output_biases: Float[Array, "vocabulary groups"] = field(spectral=False)
 

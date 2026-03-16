@@ -114,8 +114,9 @@ def test_q_lora_policy_prefers_adapter_weights() -> None:
 
     assert is_leaf_trainable(leaves["lora_down_weights"])
     assert is_leaf_trainable(leaves["lora_up_weights"])
-    assert not is_leaf_trainable(leaves["weights"])
+    assert is_leaf_trainable(leaves["weights"])
     assert is_leaf_trainable(leaves["scales"])
+    assert get_optimizer_group(leaves["weights"]) == OptimizerGroup.MUON
     assert get_optimizer_group(leaves["lora_down_weights"]) == OptimizerGroup.MUON
 
 
@@ -185,8 +186,16 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
     config = DistillTrainConfig()
     state = initialize_distill_training_state(layer, config)
 
-    assert {parameter.path for parameter in state.trainable_parameters} == {"biases", "scales", "zero_points"}
-    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {OptimizerGroup.DEFAULT}
+    assert {parameter.path for parameter in state.trainable_parameters} == {
+        "biases",
+        "scales",
+        "weights",
+        "zero_points",
+    }
+    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {
+        OptimizerGroup.DEFAULT,
+        OptimizerGroup.MUON,
+    }
 
 
 def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
@@ -202,8 +211,26 @@ def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
         DistillTrainConfig(),
     )
 
-    assert {parameter.path for parameter in state.trainable_parameters} == {"biases", "scales", "zero_points"}
-    assert get_muon_weight_dimension_numbers(state) == (None, None, None)
+    assert {parameter.path for parameter in state.trainable_parameters} == {
+        "biases",
+        "scales",
+        "weights",
+        "zero_points",
+    }
+    dimension_numbers_by_path = dict(
+        zip(
+            (parameter.path for parameter in state.trainable_parameters),
+            get_muon_weight_dimension_numbers(state),
+            strict=True,
+        ),
+    )
+    assert dimension_numbers_by_path["weights"] == optax.contrib.MuonDimensionNumbers(
+        reduction_axis=1,
+        output_axis=0,
+    )
+    assert dimension_numbers_by_path["biases"] is None
+    assert dimension_numbers_by_path["scales"] is None
+    assert dimension_numbers_by_path["zero_points"] is None
 
 
 def test_separable_causal_conv_weights_do_not_use_muon() -> None:
