@@ -75,6 +75,7 @@ class ExperimentResult:
     learning_rate: float
     seed: int
     optimizer: OptimizerName
+    quantization_mode: str
     distill_config: DistillConfigSnapshot
     parameter_summary: DistillParameterSummary
     initial_eval: EvaluationMetrics
@@ -218,6 +219,7 @@ def main(
     num_steps: Annotated[int, typer.Option()] = 25,
     learning_rate: Annotated[float, typer.Option()] = 3e-6,
     optimizer_name: Annotated[OptimizerName, typer.Option()] = OptimizerName.ADAMW,
+    quantization_mode: Annotated[QuantizationMode, typer.Option()] = QuantizationMode.UINT4,
     compute_dtype_name: Annotated[ComputeDTypeName, typer.Option()] = ComputeDTypeName.AUTO,
     seed: Annotated[int, typer.Option()] = 0,
 ) -> None:
@@ -264,6 +266,8 @@ def main(
     history_path = output_dir / "history.jsonl"
     step_iterator = cycle(train_batches)
     train_key = jax.random.key(seed)
+    compilation_seconds = 0.0
+    start_time: float | None = None
 
     with history_path.open("w") as history_file:
         for step, batch in enumerate(islice(step_iterator, num_steps), start=1):
@@ -280,7 +284,7 @@ def main(
                 batch,
                 distill_config,
                 quantization_key=step_key,
-                quantization_mode=QuantizationMode.UINT4,
+                quantization_mode=quantization_mode,
             )
 
             if step == 1:
@@ -307,7 +311,7 @@ def main(
                 + "\n",
             )
 
-    elapsed_seconds = time.perf_counter() - start_time
+    elapsed_seconds = 0.0 if start_time is None else time.perf_counter() - start_time
     final_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
     final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
 
@@ -333,6 +337,7 @@ def main(
         learning_rate=learning_rate,
         seed=seed,
         optimizer=optimizer_name,
+        quantization_mode=quantization_mode.value,
         distill_config=DistillConfigSnapshot(
             master_dtype=str(jnp.dtype(distill_config.master_dtype)),
             compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
@@ -342,7 +347,7 @@ def main(
         final_eval=final_eval,
         compilation_seconds=compilation_seconds,
         elapsed_seconds=elapsed_seconds,
-        seconds_per_step=elapsed_seconds / max(num_steps - 1, 1),
+        seconds_per_step=0.0 if num_steps <= 1 else elapsed_seconds / (num_steps - 1),
         output_model_path=str(model_output_path),
     )
 

@@ -64,46 +64,39 @@ class OptimizerGroup(StrEnum):
     DEFAULT = "default"
 
 
-@dataclass(frozen=True)
-class DistillTrainableParameter:
-    path: str
-    alias_paths: tuple[str, ...]
-    optimizer_group: OptimizerGroup
+class DistillTrainableParameter(eqx.Module):
+    path: str = eqx.field(static=True)
+    alias_paths: tuple[str, ...] = eqx.field(static=True)
+    optimizer_group: OptimizerGroup = eqx.field(static=True)
     master_weight: Array | jax.ShapeDtypeStruct
 
 
-@dataclass(frozen=True)
-class DistillTrainingState:
+class DistillTrainingState(eqx.Module):
     trainable_parameters: tuple[DistillTrainableParameter, ...]
 
 
-@dataclass(frozen=True)
-class DistillOptimizerState:
+class DistillOptimizerState(eqx.Module):
     training_state: DistillTrainingState
     optimizer_state: optax.OptState
 
 
-@dataclass(frozen=True)
-class DistillBatch:
+class DistillBatch(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     lengths_without_padding: Int[Array, " batch"] | None = None
 
 
-@dataclass(frozen=True)
-class DistillStepMetrics:
+class DistillStepMetrics(eqx.Module):
     loss: Float[Array, ""]
     valid_tokens: Int[Array, ""]
 
 
-@dataclass(frozen=True)
-class DistillBatchMetrics:
+class DistillBatchMetrics(eqx.Module):
     loss: Float[Array, ""]
     valid_tokens: Int[Array, ""]
     top1_matches: Int[Array, ""]
 
 
-@dataclass(frozen=True)
-class TraceDistillBatch:
+class TraceDistillBatch(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     prefix_lengths: Int[Array, " batch"]
     completion_lengths: Int[Array, " batch"]
@@ -271,8 +264,7 @@ def stochastically_quantize_module[M: eqx.Module](
         alias_paths[info.alias_of or info.path].append(info.path)
 
     quantization_keys = {
-        info.path: k
-        for info, k in zip(quantized_infos, jax.random.split(key, len(quantized_infos)), strict=True)
+        info.path: k for info, k in zip(quantized_infos, jax.random.split(key, len(quantized_infos)), strict=True)
     }
     path_to_leaf = _leaf_map(module)
 
@@ -304,7 +296,6 @@ def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> A
     if eqx.is_array(value):
         return value.astype(dtype)
     return jax.ShapeDtypeStruct(value.shape, dtype)
-
 
 
 def _concrete_master_weights(state: DistillTrainingState) -> tuple[Array, ...]:
@@ -435,19 +426,26 @@ def compute_distill_batch_metrics(
 
     batch_size, num_tokens = batch.token_ids.shape
     prediction_tokens = max(num_tokens - 1, 0)
-    lengths = batch.lengths_without_padding if batch.lengths_without_padding is not None else jnp.full(
-        (batch_size,), num_tokens, dtype=jnp.int32,
+    lengths = (
+        batch.lengths_without_padding
+        if batch.lengths_without_padding is not None
+        else jnp.full(
+            (batch_size,),
+            num_tokens,
+            dtype=jnp.int32,
+        )
     )
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
-    prediction_mask = (
-        jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths[:, None] - 1)
-    ).astype(token_kl.dtype)
+    prediction_mask = (jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths[:, None] - 1)).astype(
+        token_kl.dtype,
+    )
     valid_tokens = prediction_mask.sum(dtype=jnp.int32)
     loss = jnp.sum(token_kl * prediction_mask) / valid_tokens
     student_top1 = jnp.argmax(student_logits, axis=-1)
     teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
     top1_matches = jnp.sum(
-        jnp.logical_and(student_top1 == teacher_top1, prediction_mask.astype(bool)), dtype=jnp.int32,
+        jnp.logical_and(student_top1 == teacher_top1, prediction_mask.astype(bool)),
+        dtype=jnp.int32,
     )
     return DistillBatchMetrics(
         loss=loss,
@@ -518,7 +516,9 @@ def distill_train_step(
         materialized_student = materialize_trainable_module(student, training_state, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
-                materialized_student, quantization_mode, quantization_key,
+                materialized_student,
+                quantization_mode,
+                quantization_key,
             )
         metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
         return metrics.loss, metrics
