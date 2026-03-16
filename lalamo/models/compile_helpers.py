@@ -5,12 +5,12 @@ import weakref
 from typing import TYPE_CHECKING
 
 import jax
-from jax.sharding import Sharding
 
 from .common import InferenceConfig
 
 if TYPE_CHECKING:
     from jax._src.stages import Compiled
+    from jax.sharding import Sharding
     from jaxtyping import Array, Int, Key
 
     from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
