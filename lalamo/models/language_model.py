@@ -517,7 +517,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             forward_pass_config=forward_pass_config,
             keys=keys,
-        ).token_ids.squeeze(0)
+        ).token_ids[0]
         trimmed_ids = self._trim_at_eos(response_ids.tolist())
         response_text = self.message_processor.detokenize(trimmed_ids)
         return self.message_processor.parse_response(response_text)
