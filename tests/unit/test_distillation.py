@@ -201,6 +201,43 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
     }
 
 
+def test_trainable_filter_narrows_to_quantized_only() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (4,), has_biases=True, key=jax.random.key(20))
+
+    config = DistillTrainConfig()
+    full_state = initialize_distill_training_state(layer, config)
+    filtered_state = initialize_distill_training_state(
+        layer,
+        config,
+        trainable_filter=lambda info: info.quantized,
+    )
+
+    assert {p.path for p in full_state.trainable_parameters} == {
+        "biases",
+        "scales",
+        "weights",
+        "zero_points",
+    }
+    assert {p.path for p in filtered_state.trainable_parameters} == {"weights"}
+
+    full_summary = summarize_distill_parameters(
+        iter_parameter_leaves(layer),
+        config,
+    )
+    filtered_summary = summarize_distill_parameters(
+        iter_parameter_leaves(layer),
+        config,
+        trainable_filter=lambda info: info.quantized,
+    )
+    assert filtered_summary.trainable_parameters < full_summary.trainable_parameters
+    assert filtered_summary.total_parameters == full_summary.total_parameters
+
+
 def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
     layer = GroupQuantizedLinearConfig(
         group_size=2,

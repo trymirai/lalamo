@@ -1,6 +1,6 @@
 import math
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 
@@ -123,6 +123,8 @@ def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:
 def summarize_distill_parameters(
     leaves: Sequence[ParameterLeafInfo],
     config: DistillTrainConfig,
+    *,
+    trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
 ) -> DistillParameterSummary:
     by_group: dict[OptimizerGroup, int] = defaultdict(int)
     master_dtype = jnp.dtype(config.master_dtype)
@@ -138,11 +140,12 @@ def summarize_distill_parameters(
         parameter_count = math.prod(info.shape)
         total_parameters += parameter_count
 
+        if not is_leaf_trainable(info) or (trainable_filter is not None and not trainable_filter(info)):
+            by_group[OptimizerGroup.FROZEN] += parameter_count
+            continue
+
         optimizer_group = get_optimizer_group(info)
         by_group[optimizer_group] += parameter_count
-
-        if optimizer_group == OptimizerGroup.FROZEN:
-            continue
 
         trainable_parameters += parameter_count
         total_master_bytes += parameter_count * master_dtype.itemsize
@@ -163,6 +166,8 @@ def _leaf_map(module: eqx.Module) -> dict[str, object]:
 def initialize_distill_training_state(
     module: eqx.Module,
     config: DistillTrainConfig,
+    *,
+    trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
 ) -> DistillTrainingState:
     master_dtype = jnp.dtype(config.master_dtype)
     leaves = iter_parameter_leaves(module)
@@ -176,6 +181,8 @@ def initialize_distill_training_state(
     trainable_parameters: list[DistillTrainableParameter] = []
     for info in leaves:
         if not is_leaf_trainable(info):
+            continue
+        if trainable_filter is not None and not trainable_filter(info):
             continue
 
         value = path_to_leaf[info.path]
