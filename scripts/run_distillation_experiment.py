@@ -316,7 +316,10 @@ def main(
     final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
 
     model_output_path = output_dir / "student-distilled"
-    export_config = eqx.tree_at(lambda c: c.compute_dtype, distill_config, student_model.model.activation_precision)
+    export_config = DistillTrainConfig(
+        master_dtype=distill_config.master_dtype,
+        compute_dtype=student_model.model.activation_precision,
+    )
     export_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, export_config)
     _save_materialized_student(
         student_path,
