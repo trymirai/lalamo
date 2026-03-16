@@ -57,7 +57,7 @@ MODE_TO_RANGE = {
 
 
 def _quantize_weights_primal(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
-    range_min, range_max = MODE_TO_RANGE[mode]
+    range_min, range_max = mode.range
     return jnp.clip(jnp.round(x), range_min, range_max)
 
 

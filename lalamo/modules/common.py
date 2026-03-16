@@ -285,10 +285,15 @@ class FieldMetadataInfo:
         return self.field.metadata
 
 
+class ParameterNorm(Enum):
+    SPECTRAL = "spectral"
+    L_INF = "l_inf"
+
+
 @dataclass(frozen=True)
 class FieldParameterInfo:
     trainable: bool
-    spectral: bool
+    norm: ParameterNorm
     quantized: bool
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
@@ -302,7 +307,7 @@ class ParameterLeafInfo:
     shape: tuple[int, ...]
     dtype: jnp.dtype
     trainable: bool
-    spectral: bool
+    norm: ParameterNorm
     quantized: bool
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
@@ -336,7 +341,7 @@ def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> Fiel
 def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
     return FieldParameterInfo(
         trainable=field_info.metadata.get("trainable", True),
-        spectral=field_info.metadata.get("spectral", True),
+        norm=field_info.metadata.get("norm", ParameterNorm.SPECTRAL),
         quantized=field_info.metadata.get("quantized", False),
         tensor_sharding=field_info.metadata.get("tensor_sharding"),
         min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
@@ -398,7 +403,7 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
                 shape=tuple(leaf.shape),
                 dtype=jnp.dtype(leaf.dtype),
                 trainable=parameter_info.trainable,
-                spectral=parameter_info.spectral,
+                norm=parameter_info.norm,
                 quantized=parameter_info.quantized,
                 tensor_sharding=parameter_info.tensor_sharding,
                 min_size_to_shard=parameter_info.min_size_to_shard,
@@ -413,7 +418,7 @@ def field(
     tensor_sharding: TensorSharding | None = None,
     min_size_to_shard: int = 2**18,
     trainable: bool = True,
-    spectral: bool = True,
+    norm: ParameterNorm = ParameterNorm.SPECTRAL,
     quantized: bool = False,
     *,
     converter: Callable[[Any], Any] | None = None,
@@ -423,7 +428,7 @@ def field(
 ) -> Any:  # noqa: ANN401
     merged_metadata = dict(metadata or {})
     merged_metadata["trainable"] = trainable
-    merged_metadata["spectral"] = spectral
+    merged_metadata["norm"] = norm
     merged_metadata["quantized"] = quantized
     merged_metadata["tensor_sharding"] = tensor_sharding
     merged_metadata["min_size_to_shard"] = min_size_to_shard

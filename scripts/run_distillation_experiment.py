@@ -14,7 +14,7 @@ import jax.numpy as jnp
 import optax
 import typer
 from cattrs import Converter
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array, DTypeLike, Int
 
 from lalamo.common import flatten_parameters
 from lalamo.data import load_hf_parquet, shuffle_dataset
@@ -166,7 +166,7 @@ def _tokenize_conversations(
     return tokenized_sequences
 
 
-def _make_batches(sequences: list[jax.Array], *, batch_size: int) -> list[DistillBatch]:
+def _make_batches(sequences: list[Int[Array, " seq_len"]], *, batch_size: int) -> list[DistillBatch]:
     batches: list[DistillBatch] = []
     for start in range(0, len(sequences), batch_size):
         batch_sequences = sequences[start : start + batch_size]

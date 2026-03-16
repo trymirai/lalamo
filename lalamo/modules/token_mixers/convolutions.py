@@ -8,7 +8,7 @@ from einops import einsum
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
-from lalamo.modules.common import LalamoModule, field
+from lalamo.modules.common import LalamoModule, ParameterNorm, field
 
 __all__ = [
     "CausalConvResult",
@@ -65,7 +65,7 @@ class SeparableCausalConvConfig:
 
 
 class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
-    weights: Float[Array, "channels kernel"] = field(spectral=False)
+    weights: Float[Array, "channels kernel"] = field(norm=ParameterNorm.L_INF)
     biases: Float[Array, " channels"] | None = field()
 
     def __post_init__(self) -> None:

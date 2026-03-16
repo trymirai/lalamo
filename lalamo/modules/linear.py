@@ -16,6 +16,7 @@ from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
 from .common import (
     LalamoModule,
+    ParameterNorm,
     ShardingOrder,
     TensorSharding,
     field,
@@ -430,8 +431,8 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    scales: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
-    zero_points: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
+    scales: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
+    zero_points: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
     biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
@@ -719,8 +720,8 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    scales: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
-    deq_biases: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
+    scales: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
+    deq_biases: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
     biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property

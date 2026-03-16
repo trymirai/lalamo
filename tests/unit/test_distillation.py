@@ -26,7 +26,7 @@ from lalamo.distillation import (
     trace_distill_train_step,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.modules.common import field, iter_parameter_leaves
+from lalamo.modules.common import ParameterNorm, field, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
@@ -44,12 +44,12 @@ class AliasModule(eqx.Module):
 
 class BufferModule(eqx.Module):
     parameter: jax.Array = field()
-    buffer: jax.Array = field(trainable=False, spectral=False)
+    buffer: jax.Array = field(trainable=False, norm=ParameterNorm.L_INF)
 
 
 class FrozenModule(eqx.Module):
     left: jax.Array = field(trainable=False)
-    right: jax.Array = field(trainable=False, spectral=False)
+    right: jax.Array = field(trainable=False, norm=ParameterNorm.L_INF)
 
 
 def test_iter_parameter_leaves_detects_aliases() -> None:
@@ -258,9 +258,9 @@ def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_spectral(
     leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(module)}
 
     assert leaves["parameter"].trainable
-    assert leaves["parameter"].spectral
+    assert leaves["parameter"].norm == ParameterNorm.SPECTRAL
     assert not leaves["buffer"].trainable
-    assert not leaves["buffer"].spectral
+    assert leaves["buffer"].norm == ParameterNorm.L_INF
 
 
 _TINY_LLAMA_CONFIG = HFLlamaConfig(
@@ -313,8 +313,8 @@ def test_llama_decoder_marks_rope_tables_frozen() -> None:
 
     assert not leaves["transformer.global_rope.cosines"].trainable
     assert not leaves["transformer.global_rope.sines"].trainable
-    assert not leaves["transformer.global_rope.cosines"].spectral
-    assert not leaves["transformer.global_rope.sines"].spectral
+    assert leaves["transformer.global_rope.cosines"].norm == ParameterNorm.L_INF
+    assert leaves["transformer.global_rope.sines"].norm == ParameterNorm.L_INF
 
 
 def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:

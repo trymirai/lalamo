@@ -13,7 +13,7 @@ from jax.tree_util import keystr
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
+from lalamo.modules.common import ParameterLeafInfo, ParameterNorm, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.quantization import QuantizationMode, stochastic_quantize_weights
 
@@ -115,7 +115,7 @@ def is_leaf_trainable(info: ParameterLeafInfo) -> bool:
 def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:
     if not is_leaf_trainable(info):
         return OptimizerGroup.FROZEN
-    if info.spectral and len(info.shape) == 2:
+    if info.norm == ParameterNorm.SPECTRAL and len(info.shape) == 2:
         return OptimizerGroup.MUON
     return OptimizerGroup.DEFAULT
 
