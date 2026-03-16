@@ -289,6 +289,19 @@ def sharded_field(
 def shard_batch_axis(array: Array, sharding_config: ShardingConfig, *, batch_axis: int) -> Array:
     if array.ndim == 0:
         return array
+
+    dp = sharding_config.data_axis_size
+    batch_size = array.shape[batch_axis]
+    padded_size = ((batch_size + dp - 1) // dp) * dp
+    if padded_size != batch_size:
+        pad_shape = list(array.shape)
+        pad_shape[batch_axis] = padded_size - batch_size
+        if jnp.issubdtype(array.dtype, jax.dtypes.prng_key):
+            padding = jax.random.split(jax.random.key(0), pad_shape[batch_axis])
+        else:
+            padding = jnp.zeros(pad_shape, dtype=array.dtype)
+        array = jnp.concat([array, padding], axis=batch_axis)
+
     parts: list[str | None] = [None] * array.ndim
     parts[batch_axis] = sharding_config.data_axis_name
     pspec = shd.PartitionSpec(*parts)

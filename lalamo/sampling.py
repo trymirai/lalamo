@@ -46,8 +46,9 @@ class TopKPolicy(SamplingPolicy):
     k: int = eqx.field(static=True)
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        top_k_logits, _ = jax.lax.top_k(logits, self.k)
-        min_logit_val = jnp.min(top_k_logits)
+        # jax.lax.top_k triggers an XLA topk-decomposer bug under SPMD: the decomposed sort
+        # comparator gets 2 params instead of the 4 required for multi-device sort.
+        min_logit_val = jnp.sort(logits, descending=True)[self.k - 1]
         return jnp.where(logits >= min_logit_val, logits, -jnp.inf)
 
 

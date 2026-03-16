@@ -32,6 +32,7 @@ from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
+from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
@@ -609,6 +610,8 @@ def generate_replies(
 
     ``callbacks_type`` is used internally (cli) for progress visualisation.
     """
+    sharding_config = ShardingConfig.build()
+
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
         max_vram = get_default_device_bytes()
@@ -630,7 +633,8 @@ def generate_replies(
     )
 
     callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
+    with use_sharding(sharding_config):
+        model = LanguageModelConfig.load_model(model_path)
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
@@ -666,18 +670,19 @@ def generate_replies(
             stop_token_ids=model.config.generation_config.stop_token_ids,
         )
 
-    replies: list[tuple[int, AssistantMessage]] = []
-    for rows_processed, (idx, reply) in enumerate(
-        model.reply_many(
-            dataset,
-            generation_config=generation_config,
-            inference_config=inference_config,
-            vram_bytes=max_vram,
-            batch_sizes_callback=callbacks.batch_sizes_computed,
-        ),
-    ):
-        replies.append((idx, reply))
-        callbacks.generation_progress(rows_processed)
+    with use_sharding(sharding_config):
+        replies: list[tuple[int, AssistantMessage]] = []
+        for rows_processed, (idx, reply) in enumerate(
+            model.reply_many(
+                dataset,
+                generation_config=generation_config,
+                inference_config=inference_config,
+                vram_bytes=max_vram,
+                batch_sizes_callback=callbacks.batch_sizes_computed,
+            ),
+        ):
+            replies.append((idx, reply))
+            callbacks.generation_progress(rows_processed)
 
     # Sort by original index to restore input order
     replies.sort(key=lambda x: x[0])
