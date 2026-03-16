@@ -10,6 +10,7 @@ from pathlib import Path
 
 import polars as pl
 import requests
+import thefuzz.fuzz
 import thefuzz.process
 from jaxtyping import DTypeLike
 
@@ -70,10 +71,12 @@ def _download_file(url: str, dest_path: Path) -> None:
                 f.write(chunk)
 
 
-def _suggest_similar_models(query: str, available_models: list[RegistryModel], limit: int = 3) -> list[str]:
-    repo_ids = [m.repo_id for m in available_models]
-    matches = thefuzz.process.extract(query, repo_ids, limit=limit)
-    return [match[0] for match in matches if match[1] >= 50]
+def _suggest_similar_models(query: str, repo_ids: list[str], limit: int = 3, min_score: int = 70) -> str:
+    ranked_matches = thefuzz.process.extract(query, repo_ids, limit=limit, scorer=thefuzz.fuzz.ratio)
+    similar_repos = [repo for repo, score in ranked_matches if score >= min_score]
+    if not similar_repos:
+        return ""
+    return "\n\nDid you mean one of these?\n" + "\n".join(f"  - {repo}" for repo in similar_repos)
 
 
 def pull(
