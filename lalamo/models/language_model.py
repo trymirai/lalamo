@@ -21,8 +21,8 @@ from lalamo.modules import (
     LalamoModule,
     ShardingConfig,
     State,
-    apply_data_sharding,
     get_current_sharding_config,
+    pad_and_apply_data_sharding,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -357,11 +357,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         batch_size = inference_config.batch_size
 
         padded_token_ids = pad_sequences(batch, (batch_size, inference_config.padded_length), dtype=jnp.int32)
+
         padded_lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
         padded_lengths = jnp.pad(padded_lengths, (0, batch_size - len(batch)))
+
         padded_keys = pad_keys_to_size(batch_keys, batch_size)
 
-        padded_token_ids, padded_lengths, padded_keys = apply_data_sharding(
+        padded_token_ids, padded_lengths, padded_keys = pad_and_apply_data_sharding(
             (padded_token_ids, padded_lengths, padded_keys),
             sharding_config=sharding_config,
             batch_axis=0,
@@ -436,7 +438,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        sharding_config: ShardingConfig | None = None,
     ) -> int:
+        if sharding_config is None:
+            sharding_config = get_current_sharding_config()
+
         assert inference_config.batch_size is not None
         batch_size = inference_config.batch_size
 
@@ -444,9 +450,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         dummy_lengths = jnp.zeros((batch_size,), dtype=jnp.int32)
         dummy_keys = jax.random.split(jax.random.key(0), num=batch_size)
 
-        dummy_token_ids, dummy_lengths, dummy_keys = apply_data_sharding(
+        dummy_token_ids, dummy_lengths, dummy_keys = pad_and_apply_data_sharding(
             (dummy_token_ids, dummy_lengths, dummy_keys),
-            sharding_config=get_current_sharding_config(),
+            sharding_config=sharding_config,
             batch_axis=0,
         )
 
@@ -492,7 +498,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
         keys = key[None, ...] if key is not None else None
-        token_ids, keys = apply_data_sharding(
+        token_ids, keys = pad_and_apply_data_sharding(
             (token_ids, keys),
             sharding_config=sharding_config,
             batch_axis=0,
@@ -554,6 +560,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_size_per_bucket = estimate_batchsizes_from_vram(
                 lambda config: self.estimate_memory_consumption(
                     inference_config=config,
+                    sharding_config=sharding_config,
                 ),
                 sorted_lengths,
                 vram_bytes,  # type: ignore

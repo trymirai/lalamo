@@ -25,9 +25,9 @@ __all__ = [
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
-    "apply_data_sharding",
     "config_converter",
     "get_current_sharding_config",
+    "pad_and_apply_data_sharding",
     "register_config_union",
     "require_array",
     "require_tree",
@@ -308,7 +308,7 @@ def shard_batch_axis(array: Array, sharding_config: ShardingConfig, *, batch_axi
     return jax.lax.with_sharding_constraint(array, sharding_config.make_sharding(pspec))
 
 
-def apply_data_sharding[T](value: T, *, sharding_config: ShardingConfig | None, batch_axis: int) -> T:
+def pad_and_apply_data_sharding[T](value: T, *, sharding_config: ShardingConfig | None, batch_axis: int) -> T:
     if sharding_config is None:
         return value
     return jax.tree.map(
