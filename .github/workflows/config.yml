@@ -1,0 +1,26 @@
+name: "Setup conditionals"
+
+permissions: {}
+
+on:
+  workflow_call:
+    outputs:
+      run-tests:
+        description: "Whether to run heavyweight test jobs"
+        value: ${{ jobs.config.outputs.run-tests }}
+      is-prerelease:
+        description: "Whether the PR has the prerelease label"
+        value: ${{ jobs.config.outputs.is-prerelease }}
+      latest-deps-python-versions:
+        description: "JSON array of Python versions for latest-deps testing"
+        value: ${{ jobs.config.outputs.latest-deps-python-versions }}
+
+jobs:
+  config:
+    runs-on: ubuntu-latest
+    outputs:
+      run-tests: ${{ github.event_name != 'pull_request' || (github.event.action != 'closed' && github.event.pull_request.draft == false) }}
+      is-prerelease: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'prerelease') }}
+      latest-deps-python-versions: ${{ (github.event_name != 'pull_request' || contains(github.event.pull_request.labels.*.name, 'prerelease')) && '["py313", "py314"]' || '["py314"]' }}
+    steps:
+      - run: true

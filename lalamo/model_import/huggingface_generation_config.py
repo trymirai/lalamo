@@ -33,7 +33,10 @@ class HFGenerationConfig:
     temperature: float | None = None
     min_p: float | None = None
     top_p: float | None = None
-    top_k: int | None = 50
+
+    # top_k is None by default, which matches HF trasnformers versions above 5.0.0.
+    # HF changed their default top_k in the following PR: https://github.com/huggingface/transformers/pull/42702
+    top_k: int | None = None
     repetition_penalty: float | None = None
 
     # -------- length limits -----------------

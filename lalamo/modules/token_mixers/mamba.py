@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -9,7 +8,7 @@ from einops import einsum, rearrange
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_tree
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 from lalamo.modules.activations import Activation
 from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
@@ -625,7 +624,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             in_projection=self.in_projection.import_weights(require_tree(weights["in_projection"])),

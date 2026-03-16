@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Self
@@ -8,7 +7,7 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import ParameterTree, dummy_array, require_mapping
 
 from .common import LalamoModule
 
@@ -110,7 +109,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         if self.config.use_bias:
             assert isinstance(weights["biases"], Array)
             biases = weights["biases"]

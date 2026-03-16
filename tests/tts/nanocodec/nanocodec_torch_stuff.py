@@ -6,7 +6,7 @@ from abc import abstractmethod
 from collections.abc import Iterable, Mapping
 from dataclasses import is_dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 import einops
 import huggingface_hub
@@ -228,7 +228,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         """Converts a code vector to a single index."""
         if codes.size(1) != self.dim:
             raise RuntimeError(
-                f"Input code dimension {codes.size(1)} not matching the expected dimension {self.dim}, input codes shape {codes.shape}"
+                f"Input code dimension {codes.size(1)} not matching the expected dimension {self.dim}, input codes shape {codes.shape}",
             )
         # convert code vectors to nonnegative values
         indices = self.codes_to_nonnegative(codes)
@@ -237,11 +237,11 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         return indices.to(torch.int32)
 
     def forward(
-        self, inputs: torch.Tensor, input_len: torch.Tensor | None = None
+        self, inputs: torch.Tensor, input_len: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if inputs.size(1) != self.dim:
             raise RuntimeError(
-                f"Input dimension {inputs.size(1)} not matching the expected dimension {self.dim}, inputs shape {inputs.shape}"
+                f"Input dimension {inputs.size(1)} not matching the expected dimension {self.dim}, inputs shape {inputs.shape}",
             )
 
         dequantized = self.inputs_to_codes(inputs=inputs, input_len=input_len)
@@ -266,7 +266,7 @@ class FiniteScalarQuantizer(VectorQuantizerBase):
         if indices.size(0) > 1:
             # codebook dimension used for compatibility with RVQ
             raise ValueError(
-                f"Expected a single codebook, got {indices.size(0)} codebooks for indices with shape {indices.shape}."
+                f"Expected a single codebook, got {indices.size(0)} codebooks for indices with shape {indices.shape}.",
             )
 
         indices = rearrange(indices, "D B T -> B D T")
@@ -304,7 +304,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
         # Initialize FSQ for each group
         self.fsqs = torch.nn.ModuleList(
-            [FiniteScalarQuantizer(num_levels=num_levels_per_group, **kwargs) for _ in range(self.num_groups)]
+            [FiniteScalarQuantizer(num_levels=num_levels_per_group, **kwargs) for _ in range(self.num_groups)],
         )
 
     @property
@@ -329,7 +329,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
 
         dequantized, indices = [], []
 
-        for in_group, fsq_group in zip(inputs_grouped, self.fsqs):
+        for in_group, fsq_group in zip(inputs_grouped, self.fsqs, strict=False):
             dequantized_group, indices_group = fsq_group(inputs=in_group, input_len=input_len)
             dequantized.append(dequantized_group)
             indices.append(indices_group)
@@ -347,7 +347,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         inputs_grouped = inputs.chunk(self.num_groups, dim=1)
         indices = []
 
-        for in_group, fsq_group in zip(inputs_grouped, self.fsqs):
+        for in_group, fsq_group in zip(inputs_grouped, self.fsqs, strict=False):
             indices_group = fsq_group.encode(inputs=in_group, input_len=input_len)
             indices.append(indices_group)
 
@@ -361,7 +361,7 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         indices_grouped = indices.chunk(self.num_groups, dim=0)
         dequantized = []
 
-        for indices_group, fsq_group in zip(indices_grouped, self.fsqs):
+        for indices_group, fsq_group in zip(indices_grouped, self.fsqs, strict=False):
             dequantized_group = fsq_group.decode(indices=indices_group, input_len=input_len)
             dequantized.append(dequantized_group)
 
@@ -371,13 +371,13 @@ class GroupFiniteScalarQuantizer(VectorQuantizerBase):
         return dequantized
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,
     ) -> None:
         print(f"Loading with prefix: '{prefix}'")
         # print(f"Keys: {[k for k in state_dict.keys() if k.startswith(prefix)]}")
 
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs,
         )
 
 
@@ -403,7 +403,7 @@ class CausalConv1dNorm(torch.nn.Module):
         if stride > 1 and dilation > 1:
             print(
                 "CausalConv1dNorm has been initialized with stride > 1 and dilation > 1"
-                f" (kernel_size={kernel_size} stride={stride}, dilation={dilation})."
+                f" (kernel_size={kernel_size} stride={stride}, dilation={dilation}).",
             )
 
         self.conv = nn.Conv1d(
@@ -623,7 +623,7 @@ class Conv1dNorm(torch.nn.Module):
         kernel_size: int,
         stride: int = 1,
         dilation: int = 1,
-        padding: Optional[int] = None,
+        padding: int | None = None,
         pad_mode: str = "reflect",
     ):
         super().__init__()
@@ -688,7 +688,7 @@ class ResidualBlock(torch.nn.Module):
                 pad_mode=pad_mode,
             )
             self.skip_conv = Conv1dNorm(
-                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode
+                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode,
             )
         else:
             self.input_conv = CausalConv1dNorm(
@@ -699,7 +699,7 @@ class ResidualBlock(torch.nn.Module):
                 pad_mode=pad_mode,
             )
             self.skip_conv = CausalConv1dNorm(
-                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode
+                in_channels=filters, out_channels=channels, kernel_size=kernel_size, pad_mode=pad_mode,
             )
 
     def remove_weight_norm(self):
@@ -750,7 +750,7 @@ class HiFiGANResBlock(torch.nn.Module):
                     pad_mode=pad_mode,
                 )
                 for dilation in dilations
-            ]
+            ],
         )
 
     def remove_weight_norm(self):
@@ -799,7 +799,7 @@ class HiFiGANResLayer(torch.nn.Module):
                     pad_mode=pad_mode,
                 )
                 for kernel_size in kernel_sizes
-            ]
+            ],
         )
 
     def remove_weight_norm(self):
@@ -812,13 +812,13 @@ class HiFiGANResLayer(torch.nn.Module):
         return out
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,
     ) -> None:
         print(f"Loading with prefix: '{prefix}'")
         # print(f"Keys: {[k for k in state_dict.keys() if k.startswith(prefix)]}")
 
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs,
         )
 
 
@@ -865,7 +865,7 @@ class CausalHiFiGANDecoder(torch.nn.Module):
         self.up_sample_rates = up_sample_rates
 
         self.pre_conv = CausalConv1dNorm(
-            in_channels=input_dim, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+            in_channels=input_dim, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode,
         )
 
         in_channels = base_channels
@@ -901,7 +901,7 @@ class CausalHiFiGANDecoder(torch.nn.Module):
 
         self.post_activation = CodecActivation(activation, channels=in_channels)
         self.post_conv = CausalConv1dNorm(
-            in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size, pad_mode=pad_mode
+            in_channels=in_channels, out_channels=1, kernel_size=out_kernel_size, pad_mode=pad_mode,
         )
         if output_activation == "tanh":
             self.out_activation = nn.Tanh()
@@ -922,7 +922,7 @@ class CausalHiFiGANDecoder(torch.nn.Module):
         # [B, C, T_encoded]
         out = self.pre_conv(inputs=inputs, input_len=audio_len)
         for act, res_layer, up_sample_conv, up_sample_rate in zip(
-            self.activations, self.res_layers, self.up_sample_conv_layers, self.up_sample_rates
+            self.activations, self.res_layers, self.up_sample_conv_layers, self.up_sample_rates, strict=False,
         ):
             audio_len = audio_len * up_sample_rate
             out = act(out)
@@ -938,13 +938,13 @@ class CausalHiFiGANDecoder(torch.nn.Module):
         return audio, audio_len
 
     def _load_from_state_dict(
-        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs,
     ) -> None:
         print(f"Loading with prefix: '{prefix}'")
         # print(f"Keys: {[k for k in state_dict.keys() if k.startswith(prefix)]}")
 
         super()._load_from_state_dict(
-            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs=error_msgs,
         )
 
 
@@ -1013,7 +1013,7 @@ class HiFiGANEncoder(torch.nn.Module):
 
         self.down_sample_rates = down_sample_rates
         self.pre_conv = Conv1dNorm(
-            in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode
+            in_channels=1, out_channels=base_channels, kernel_size=in_kernel_size, pad_mode=pad_mode,
         )
 
         in_channels = base_channels
@@ -1050,7 +1050,7 @@ class HiFiGANEncoder(torch.nn.Module):
 
         self.post_activation = CodecActivation(activation, channels=in_channels)
         self.post_conv = Conv1dNorm(
-            in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size, pad_mode=pad_mode
+            in_channels=in_channels, out_channels=encoded_dim, kernel_size=out_kernel_size, pad_mode=pad_mode,
         )
 
     def remove_weight_norm(self):
@@ -1067,7 +1067,7 @@ class HiFiGANEncoder(torch.nn.Module):
         # [B, C, T_audio]
         out = self.pre_conv(inputs=audio, input_len=encoded_len)
         for act, res_layer, down_sample_conv, down_sample_rate in zip(
-            self.activations, self.res_layers, self.down_sample_conv_layers, self.down_sample_rates
+            self.activations, self.res_layers, self.down_sample_conv_layers, self.down_sample_rates, strict=False,
         ):
             # [B, C, T]
             out = res_layer(inputs=out, input_len=encoded_len)
@@ -1107,12 +1107,12 @@ class AudioCodecModel(torch.nn.Module):
         self.disc_update_period = cfg.get("disc_update_period", 1)
         if self.disc_updates_per_period > self.disc_update_period:
             raise ValueError(
-                f"Number of discriminator updates ({self.disc_updates_per_period}) per period must be less or equal to the configured period ({self.disc_update_period})"
+                f"Number of discriminator updates ({self.disc_updates_per_period}) per period must be less or equal to the configured period ({self.disc_update_period})",
             )
 
         if "vector_quantizer" in cfg:
             self.vector_quantizer = GroupFiniteScalarQuantizer(
-                cfg.vector_quantizer.num_groups, cfg.vector_quantizer.num_levels_per_group
+                cfg.vector_quantizer.num_groups, cfg.vector_quantizer.num_levels_per_group,
             )
         else:
             logging.warning("Vector quantizer will not be used.")

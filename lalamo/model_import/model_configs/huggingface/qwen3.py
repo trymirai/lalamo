@@ -52,6 +52,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
     head_dim: int
 
     quantization_config: QuantizationConfigType = None
+    pard_token: int | None = None
 
     def _get_sliding_window_sizes(self) -> tuple[int | None, ...]:
         if not self.use_sliding_window:
@@ -188,4 +189,5 @@ class HFQwen3Config(HuggingFaceLMConfig):
             embedding_config=embedding_config,
             transformer_config=transformer_config,
             vocab_size=self.vocab_size,
+            pard_token=self.pard_token,
         )

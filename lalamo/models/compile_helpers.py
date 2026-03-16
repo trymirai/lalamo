@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import weakref
 from typing import TYPE_CHECKING
 
 import jax
@@ -15,9 +16,16 @@ if TYPE_CHECKING:
     from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 
 _compile_cache: dict[
-    tuple[int, GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None, Sharding | None],
-    Compiled,
+    int,
+    dict[
+        tuple[GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None, Sharding | None],
+        Compiled,
+    ],
 ] = {}
+
+
+def _make_weak_finalizer(model_id: int) -> None:
+    _compile_cache.pop(model_id, None)
 
 
 def compile_generate_tokens(
@@ -32,8 +40,12 @@ def compile_generate_tokens(
 ) -> Compiled:
     from .language_model import LanguageModel
 
-    key = (id(model), generation_config, inference_config, forward_pass_config, prompt_token_ids.sharding)
-    if key not in _compile_cache:
+    model_id = id(model)
+    key = (generation_config, inference_config, forward_pass_config, prompt_token_ids.sharding)
+    if model_id not in _compile_cache:
+        _compile_cache[model_id] = {}
+        weakref.finalize(model, _make_weak_finalizer, model_id)
+    if key not in _compile_cache[model_id]:
         generate_tokens_fn = functools.partial(
             LanguageModel.generate_tokens,
             generation_config=generation_config,
@@ -41,7 +53,7 @@ def compile_generate_tokens(
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             forward_pass_config=forward_pass_config,
         )
-        _compile_cache[key] = (
+        _compile_cache[model_id][key] = (
             jax.jit(generate_tokens_fn)
             .lower(
                 model,
@@ -56,4 +68,4 @@ def compile_generate_tokens(
             # 4 (default) - gpu might allocate more memory than the run would require!
             .compile(compiler_options={"xla_gpu_autotune_level": "0"})
         )
-    return _compile_cache[key]
+    return _compile_cache[model_id][key]

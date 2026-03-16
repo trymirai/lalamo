@@ -1,0 +1,51 @@
+task_prompt = "Explain what a hash table is and give one real-world use case. Keep it to a few sentences."
+
+[[coherent]]
+output = """\
+A hash table is a data structure that maps keys to values using a hash function \
+to compute an index into an array of buckets. One common use case is implementing \
+a cache, where you need fast O(1) lookups by key."""
+score = 0.95
+summary = "Correct, concise explanation with a good use case."
+issues = []
+
+[[coherent]]
+output = """\
+<think>Hash table... it's basically an associative array. Let me explain simply.</think>
+
+A hash table stores key-value pairs. It uses a hash function to convert keys into \
+array indices for fast access. A real-world example is a phone book lookup — given \
+a person's name (the key), you can quickly find their number (the value)."""
+score = 0.9
+summary = "Good explanation with thinking prefix, valid use case."
+issues = []
+
+[[coherent]]
+output = """\
+Hash tables are used to store data in key-value pairs. They work by hashing the key \
+to find where to put the value. They're used in databases for indexing."""
+score = 0.8
+summary = "Somewhat brief but correct and on-topic."
+issues = []
+
+[[coherent]]
+output = """\
+A hash table stores key-value pairs and uses a hash function so lookups are usually fast. \
+Some explanations wrongly attribute the idea to a single person, but the response is still \
+coherent if it clearly explains keys, buckets, and lookup behavior. A common use case is \
+caching or indexing for fast retrieval."""
+score = 0.75
+summary = "Readable and on-topic despite extra or potentially inaccurate detail."
+issues = ["minor_factual_error", "verbose"]
+
+[[incoherent]]
+output = "Ahashtableisadatastructurethatstoreskeysandvaluesusingahashfunction..."
+score = 0.05
+summary = "No spaces in the output."
+issues = ["garbled_text"]
+
+[[incoherent]]
+output = "<eos><eos><eos> hash hash hash table table table key key key value value"
+score = 0.0
+summary = "Degenerate repetition and eos spam."
+issues = ["eos_spam", "repetition"]

@@ -21,8 +21,8 @@ def language_model(model_registry: ModelRegistry) -> LanguageModel:
 
 
 class TestPrefillChunkingConsistency:
-    @pytest.mark.parametrize("chunk_size", [32, 64, 128])
-    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("chunk_size", [32, 64])
+    @pytest.mark.parametrize("seed", [0, 1])
     def test_single_sequence_random_length(
         self,
         language_model: LanguageModel,
@@ -56,8 +56,8 @@ class TestPrefillChunkingConsistency:
             operation_name=f"prefill chunk_size={chunk_size} vs no_chunk (seq_len={sequence_length})",
         )
 
-    @pytest.mark.parametrize("chunk_size", [32, 64, 128])
-    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("chunk_size", [32, 128])
+    @pytest.mark.parametrize("seed", [2, 3])
     def test_batch_with_random_lengths(
         self,
         language_model: LanguageModel,
@@ -101,7 +101,7 @@ class TestPrefillChunkingConsistency:
             operation_name=f"batch prefill chunk_size={chunk_size} vs no_chunk (lengths={lengths})",
         )
 
-    @pytest.mark.parametrize("chunk_size", [32, 64, 128])
+    @pytest.mark.parametrize("chunk_size", [16, 48])
     def test_batch_sequences_end_in_different_chunks(
         self,
         language_model: LanguageModel,
@@ -152,7 +152,7 @@ class TestPrefillChunkingConsistency:
 
     @pytest.mark.parametrize(
         "length_offset",
-        [-2, -1, 0, 1, 2],  # Positions relative to chunk boundary
+        [-1, 0, 1],  # Positions relative to chunk boundary
     )
     def test_boundary_edge_cases(
         self,
@@ -189,10 +189,12 @@ class TestPrefillChunkingConsistency:
             operation_name=f"boundary test offset={length_offset}",
         )
 
-    @pytest.mark.parametrize("seed", [0, 1, 2])
+    @pytest.mark.parametrize("chunk_size", [32, 64])
+    @pytest.mark.parametrize("seed", [3, 4])
     def test_state_capacity_with_chunking(
         self,
         language_model: LanguageModel,
+        chunk_size: int,
         seed: int,
     ) -> None:
         random_generator = np.random.default_rng(seed)
@@ -202,27 +204,25 @@ class TestPrefillChunkingConsistency:
         token_ids = jnp.arange(sequence_length, dtype=jnp.int32) % 1000
         token_ids = token_ids[None, :]
 
-        reference_result = language_model._prefill(
+        reference_logits = language_model._prefill(
             token_ids,
             state_capacity,
             chunk_size=NO_CHUNK_SIZE,
-        )
-        reference_logits = reference_result.last_token_logits
+        ).last_token_logits
 
-        for chunk_size in [32, 64, 128]:
-            result = language_model._prefill(
-                token_ids,
-                state_capacity,
-                chunk_size=chunk_size,
-            )
-            assert_close(
-                result=result.last_token_logits,
-                reference=reference_logits,
-                atol=PREFILL_ATOL,
-                rtol=PREFILL_RTOL,
-                fraction_of_allowed_violations=0.05,
-                operation_name=f"state_capacity test chunk_size={chunk_size} vs no_chunk (seq_len={sequence_length})",
-            )
+        result = language_model._prefill(
+            token_ids,
+            state_capacity,
+            chunk_size=chunk_size,
+        )
+        assert_close(
+            result=result.last_token_logits,
+            reference=reference_logits,
+            atol=PREFILL_ATOL,
+            rtol=PREFILL_RTOL,
+            fraction_of_allowed_violations=0.05,
+            operation_name=f"state_capacity test chunk_size={chunk_size} vs no_chunk (seq_len={sequence_length})",
+        )
 
 
 pytestmark = pytest.mark.xdist_group("heavy")

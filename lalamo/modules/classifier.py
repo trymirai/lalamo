@@ -1,4 +1,3 @@
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import Self
@@ -9,7 +8,7 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
+from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules import Activation
 from lalamo.modules.normalization import NormalizationConfig
 from lalamo.modules.transformer import (
@@ -121,7 +120,7 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             dense=self.dense.import_weights(require_tree(weights["dense"])),
@@ -319,7 +318,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             embedding=self.embedding.import_weights(require_tree(weights["embedding"])),

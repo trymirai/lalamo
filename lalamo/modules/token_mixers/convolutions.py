@@ -1,5 +1,4 @@
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
@@ -8,7 +7,7 @@ import jax.numpy as jnp
 from einops import einsum
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.modules.common import LalamoModule
 
 __all__ = [
@@ -163,7 +162,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> "SeparableCausalConv":
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             weights=require_array(weights["weights"]),

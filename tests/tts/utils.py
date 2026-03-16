@@ -83,7 +83,7 @@ def generate_spline_curve(
 
 
 def generate_harmonic_row(
-    fs: float, n_points: int, f0: float, num_harmonics: int = 50, flat_frequency: bool = False
+    fs: float, n_points: int, f0: float, num_harmonics: int = 50, flat_frequency: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate a harmonic signal with varying f0 and formant filtering.
 

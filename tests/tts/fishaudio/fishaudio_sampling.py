@@ -1,6 +1,12 @@
 from dataclasses import dataclass
 
-from lalamo.sampling import CompositePolicy, GreedyPolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy
+from lalamo.sampling import (
+    CompositePolicy,
+    GreedyPolicy,
+    SamplingPolicy,
+    TemperaturePolicy,
+    TopPPolicy,
+)
 
 
 @dataclass(frozen=True)
