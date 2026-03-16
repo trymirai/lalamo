@@ -30,6 +30,7 @@ __all__ = [
     "TraceDistillBatch",
     "compute_distill_batch_metrics",
     "compute_distill_kl_loss",
+    "compute_trace_distill_batch_metrics",
     "compute_trace_distill_kl_loss",
     "distill_train_step",
     "get_muon_weight_dimension_numbers",
@@ -41,6 +42,7 @@ __all__ = [
     "materialize_trainable_module",
     "stochastically_quantize_module",
     "summarize_distill_parameters",
+    "trace_distill_train_step",
 ]
 
 
@@ -455,10 +457,10 @@ def compute_distill_batch_metrics(
 
 
 @eqx.filter_jit
-def compute_trace_distill_kl_loss(
+def compute_trace_distill_batch_metrics(
     student: Decoder,
     batch: TraceDistillBatch,
-) -> DistillStepMetrics:
+) -> DistillBatchMetrics:
     token_positions = _token_positions(DistillBatch(token_ids=batch.token_ids))
     decoder_result = student(
         token_ids=batch.token_ids,
@@ -494,7 +496,25 @@ def compute_trace_distill_kl_loss(
 
     valid_tokens = completion_mask.sum(dtype=jnp.int32)
     loss = jnp.sum(token_kl * completion_mask.astype(token_kl.dtype)) / valid_tokens
-    return DistillStepMetrics(loss=loss, valid_tokens=valid_tokens)
+    student_top1 = jnp.argmax(safe_student_logits, axis=-1)
+    teacher_top1 = jnp.argmax(safe_teacher_logits, axis=-1)
+    top1_matches = jnp.sum(
+        jnp.logical_and(student_top1 == teacher_top1, completion_mask),
+        dtype=jnp.int32,
+    )
+    return DistillBatchMetrics(
+        loss=loss,
+        valid_tokens=valid_tokens,
+        top1_matches=top1_matches,
+    )
+
+
+def compute_trace_distill_kl_loss(
+    student: Decoder,
+    batch: TraceDistillBatch,
+) -> DistillStepMetrics:
+    metrics = compute_trace_distill_batch_metrics(student, batch)
+    return DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
 
 @eqx.filter_jit
@@ -521,6 +541,52 @@ def distill_train_step(
                 quantization_key,
             )
         metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
+        return metrics.loss, metrics
+
+    (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
+        current_master_weights,
+    )
+    del loss
+
+    updates, new_optimizer_state = optimizer.update(
+        grads,
+        optimizer_state.optimizer_state,
+        current_master_weights,
+    )
+    updated_master_weights = optax.apply_updates(current_master_weights, updates)
+    updated_training_state = _replace_master_weights(optimizer_state.training_state, updated_master_weights)
+    return (
+        DistillOptimizerState(
+            training_state=updated_training_state,
+            optimizer_state=new_optimizer_state,
+        ),
+        metrics,
+    )
+
+
+@eqx.filter_jit
+def trace_distill_train_step(
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    student: Decoder,
+    batch: TraceDistillBatch,
+    config: DistillTrainConfig,
+    *,
+    quantization_key: Key[Array, ""] | None = None,
+    quantization_mode: QuantizationMode | None = None,
+) -> tuple[DistillOptimizerState, DistillStepMetrics]:
+    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
+
+    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
+        training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
+        materialized_student = materialize_trainable_module(student, training_state, config)
+        if quantization_key is not None and quantization_mode is not None:
+            materialized_student = stochastically_quantize_module(
+                materialized_student,
+                quantization_mode,
+                quantization_key,
+            )
+        metrics = compute_trace_distill_kl_loss(materialized_student, batch)
         return metrics.loss, metrics
 
     (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(

@@ -8,8 +8,10 @@ from lalamo.distillation import (
     DistillBatch,
     DistillTrainConfig,
     OptimizerGroup,
+    TraceDistillBatch,
     compute_distill_batch_metrics,
     compute_distill_kl_loss,
+    compute_trace_distill_batch_metrics,
     compute_trace_distill_kl_loss,
     distill_train_step,
     get_muon_weight_dimension_numbers,
@@ -21,6 +23,7 @@ from lalamo.distillation import (
     materialize_trainable_module,
     stochastically_quantize_module,
     summarize_distill_parameters,
+    trace_distill_train_step,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.modules.common import field, iter_parameter_leaves
@@ -370,18 +373,16 @@ def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
     ]
 
 
-def test_compute_trace_distill_kl_loss_is_zero_for_matching_decoder() -> None:
-    decoder = _make_tiny_llama_decoder(key=jax.random.key(13))
+def _make_trace_batch_from_decoder(decoder: Decoder) -> tuple[TraceDistillBatch, jax.Array]:
     token_ids = jnp.array([[1, 2, 3, 4, 5]], dtype=jnp.int32)
     decoder_logits = decoder(
         token_ids=token_ids,
         token_positions=jnp.arange(token_ids.shape[1], dtype=jnp.int32)[None, :],
     ).logits[:, :-1, :]
     completion_logits = jax.device_get(decoder_logits[0, 2:, :])
-    top_k = 4
 
     def select_support(step_logits: jax.Array) -> dict[int, float]:
-        support_values, support_ids = jax.lax.top_k(step_logits, top_k)
+        support_values, support_ids = jax.lax.top_k(step_logits, 4)
         return dict(zip(support_ids.tolist(), support_values.tolist(), strict=True))
 
     traces = (
@@ -391,11 +392,26 @@ def test_compute_trace_distill_kl_loss_is_zero_for_matching_decoder() -> None:
             completion_token_logits=[select_support(step_logits) for step_logits in completion_logits],
         ),
     )
+    return make_trace_distill_batch(traces, pad_token_id=0), token_ids
 
-    trace_batch = make_trace_distill_batch(traces, pad_token_id=0)
+
+def test_compute_trace_distill_kl_loss_is_zero_for_matching_decoder() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(13))
+    trace_batch, _ = _make_trace_batch_from_decoder(decoder)
     metrics = compute_trace_distill_kl_loss(decoder, trace_batch)
 
     assert metrics.valid_tokens == 2
+    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
+
+
+def test_compute_trace_distill_batch_metrics_counts_all_matching_top1_tokens() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(15))
+    trace_batch, _ = _make_trace_batch_from_decoder(decoder)
+
+    metrics = compute_trace_distill_batch_metrics(decoder, trace_batch)
+
+    assert metrics.valid_tokens == 2
+    assert metrics.top1_matches == 2
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
@@ -439,6 +455,42 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
 
     assert initial_metrics.loss > 1e-4
     assert final_metrics.loss < initial_metrics.loss * 0.5
+
+
+def test_trace_distill_train_step_reduces_trace_loss() -> None:
+    teacher = _make_tiny_llama_decoder(key=jax.random.key(16))
+    student = eqx.tree_at(
+        lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
+        teacher,
+        teacher.transformer.layers[0].mixer.qkv_projection.weights + 2.0,
+    )
+    trace_batch, _ = _make_trace_batch_from_decoder(teacher)
+    config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
+    optimizer = optax.sgd(0.05)
+    training_state = initialize_distill_training_state(student, config)
+    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+
+    initial_metrics = compute_trace_distill_kl_loss(
+        materialize_trainable_module(student, optimizer_state.training_state, config),
+        trace_batch,
+    )
+
+    for _ in range(20):
+        optimizer_state, _ = trace_distill_train_step(
+            optimizer_state,
+            optimizer,
+            student,
+            trace_batch,
+            config,
+        )
+
+    final_metrics = compute_trace_distill_kl_loss(
+        materialize_trainable_module(student, optimizer_state.training_state, config),
+        trace_batch,
+    )
+
+    assert initial_metrics.loss > 1e-5
+    assert final_metrics.loss < initial_metrics.loss
 
 
 def test_materialize_returns_module_unchanged_when_nothing_trainable() -> None:
