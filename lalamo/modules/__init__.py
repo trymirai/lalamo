@@ -13,8 +13,8 @@ from .common import (
     TensorSharding,
     apply_data_sharding,
     config_converter,
+    field,
     get_current_sharding_config,
-    sharded_field,
 )
 from .decoder import (
     Decoder,
@@ -186,6 +186,6 @@ __all__ = [
     "YARNRoPEConfig",
     "apply_data_sharding",
     "config_converter",
+    "field",
     "get_current_sharding_config",
-    "sharded_field",
 ]

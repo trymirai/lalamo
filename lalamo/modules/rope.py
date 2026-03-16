@@ -24,7 +24,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping
 
-from .common import LalamoModule, register_config_union
+from .common import LalamoModule, field, register_config_union
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -107,8 +107,8 @@ class RoPEConfigBase:
 
 
 class RoPE(LalamoModule[RoPEConfigBase]):
-    sines: Float[Array, "tokens head_channels"]
-    cosines: Float[Array, "tokens head_channels"]
+    sines: Float[Array, "tokens head_channels"] = field(trainable=False, spectral=False)
+    cosines: Float[Array, "tokens head_channels"] = field(trainable=False, spectral=False)
 
     @property
     def activation_precision(self) -> DTypeLike:

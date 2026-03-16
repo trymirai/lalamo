@@ -1,5 +1,6 @@
 import contextlib
 import contextvars
+import dataclasses
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
@@ -10,16 +11,21 @@ from typing import Any, Generic, Self, TypeVar
 import equinox as eqx
 import jax
 import jax.sharding as shd
+import jax.tree_util as jtu
 from cattrs import Converter
 from jax import numpy as jnp
+from jax.tree_util import keystr
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree, require_array, require_tree
 
 __all__ = [
     "DummyUnionMember",
+    "FieldMetadataInfo",
+    "FieldParameterInfo",
     "ForwardPassMode",
     "LalamoModule",
+    "ParameterLeafInfo",
     "ParameterTree",
     "PositionalEmbeddingSelector",
     "ShardingConfig",
@@ -27,11 +33,14 @@ __all__ = [
     "TensorSharding",
     "apply_data_sharding",
     "config_converter",
+    "field",
+    "find_field_metadata",
+    "find_field_parameter_info",
     "get_current_sharding_config",
+    "iter_parameter_leaves",
     "register_config_union",
     "require_array",
     "require_tree",
-    "sharded_field",
 ]
 
 
@@ -49,7 +58,7 @@ class ForwardPassMode(Enum):
 ConfigT_co = TypeVar("ConfigT_co", covariant=True)
 
 
-class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
+class LalamoModule(eqx.Module, Generic[ConfigT_co]):
     config: ConfigT_co = eqx.field(static=True)
 
     @property
@@ -266,9 +275,146 @@ class TensorSharding:
         return (self.axes[pivot], *self.axes[:pivot], *self.axes[pivot + 1 :])
 
 
-def sharded_field(
+@dataclass(frozen=True)
+class FieldMetadataInfo:
+    owner: eqx.Module
+    field: dataclasses.Field
+
+    @property
+    def metadata(self) -> Mapping[str, Any]:
+        return self.field.metadata
+
+
+@dataclass(frozen=True)
+class FieldParameterInfo:
+    trainable: bool
+    spectral: bool
+    quantized: bool
+    tensor_sharding: TensorSharding | None
+    min_size_to_shard: int
+
+
+@dataclass(frozen=True)
+class ParameterLeafInfo:
+    path: str
+    owner_type: type[eqx.Module]
+    field_name: str
+    shape: tuple[int, ...]
+    dtype: jnp.dtype
+    trainable: bool
+    spectral: bool
+    quantized: bool
+    tensor_sharding: TensorSharding | None
+    min_size_to_shard: int
+    alias_of: str | None
+
+
+def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetadataInfo | None:
+    cur: object = module
+    owner = module
+    owner_field: dataclasses.Field | None = None
+
+    for key in path:
+        if isinstance(key, jtu.GetAttrKey):
+            assert isinstance(cur, eqx.Module)
+            owner = cur
+            owner_field = next((field for field in dataclasses.fields(cur) if field.name == key.name), None)
+            cur = getattr(cur, key.name)
+        elif isinstance(key, jtu.SequenceKey):
+            cur = cur[key.idx]  # type: ignore[index]
+        elif isinstance(key, jtu.DictKey):
+            cur = cur[key.key]  # type: ignore[index]
+        else:
+            raise TypeError(f"Unexpected key type: at {path}, key {key}")
+
+    if owner_field is None:
+        return None
+
+    return FieldMetadataInfo(owner=owner, field=owner_field)
+
+
+def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
+    return FieldParameterInfo(
+        trainable=field_info.metadata.get("trainable", True),
+        spectral=field_info.metadata.get("spectral", True),
+        quantized=field_info.metadata.get("quantized", False),
+        tensor_sharding=field_info.metadata.get("tensor_sharding"),
+        min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
+    )
+
+
+def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo | None:
+    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda value: value is target)
+
+    for path, leaf in flat_with_path:
+        if leaf is not target:
+            continue
+        field_info = _field_metadata_from_path(module, path)
+        if field_info is None:
+            raise ValueError(f"Field lookup failed for module {module} at {path}")
+        return field_info
+
+    return None
+
+
+def find_field_parameter_info(module: eqx.Module, target: object) -> FieldParameterInfo | None:
+    field_info = find_field_metadata(module, target)
+    if field_info is None:
+        return None
+    return _field_parameter_info(field_info)
+
+
+def _is_array_like(leaf: object) -> bool:
+    return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
+
+
+def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
+    flat_with_path, _ = jtu.tree_flatten_with_path(module)
+
+    results: list[ParameterLeafInfo] = []
+    first_paths: dict[int, str] = {}
+
+    for path, leaf in flat_with_path:
+        if not _is_array_like(leaf):
+            continue
+
+        field_info = _field_metadata_from_path(module, path)
+        if field_info is None:
+            raise ValueError(f"Field lookup failed for module {module} at {path}")
+
+        parameter_info = _field_parameter_info(field_info)
+
+        path_str = keystr(path).lstrip(".")
+        leaf_key = id(leaf)
+        alias_of = first_paths.get(leaf_key)
+        if alias_of is None:
+            first_paths[leaf_key] = path_str
+
+        results.append(
+            ParameterLeafInfo(
+                path=path_str,
+                owner_type=type(field_info.owner),
+                field_name=field_info.field.name,
+                shape=tuple(leaf.shape),
+                dtype=jnp.dtype(leaf.dtype),
+                trainable=parameter_info.trainable,
+                spectral=parameter_info.spectral,
+                quantized=parameter_info.quantized,
+                tensor_sharding=parameter_info.tensor_sharding,
+                min_size_to_shard=parameter_info.min_size_to_shard,
+                alias_of=alias_of,
+            ),
+        )
+
+    return results
+
+
+def field(
     tensor_sharding: TensorSharding | None = None,
     min_size_to_shard: int = 2**18,
+    trainable: bool = True,
+    spectral: bool = True,
+    quantized: bool = False,
     *,
     converter: Callable[[Any], Any] | None = None,
     static: bool = False,
@@ -276,6 +422,9 @@ def sharded_field(
     **kwargs: Any,  # noqa: ANN401
 ) -> Any:  # noqa: ANN401
     merged_metadata = dict(metadata or {})
+    merged_metadata["trainable"] = trainable
+    merged_metadata["spectral"] = spectral
+    merged_metadata["quantized"] = quantized
     merged_metadata["tensor_sharding"] = tensor_sharding
     merged_metadata["min_size_to_shard"] = min_size_to_shard
     return eqx.field(
