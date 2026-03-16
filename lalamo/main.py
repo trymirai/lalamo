@@ -457,7 +457,6 @@ def pull(
             help=(
                 "Model repository ID from the pre-converted catalog. "
                 "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan]. "
-                "Fuzzy matching is supported for typos and partial names."
             ),
             click_type=RemoteModelParser(),
             show_default=False,
