@@ -107,8 +107,8 @@ class RoPEConfigBase:
 
 
 class RoPE(LalamoModule[RoPEConfigBase]):
-    sines: Float[Array, "tokens head_channels"] = field(trainable=False, matrix=False)
-    cosines: Float[Array, "tokens head_channels"] = field(trainable=False, matrix=False)
+    sines: Float[Array, "tokens head_channels"] = field(trainable=False, spectral=False)
+    cosines: Float[Array, "tokens head_channels"] = field(trainable=False, spectral=False)
 
     @property
     def activation_precision(self) -> DTypeLike:

@@ -15,7 +15,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
-from lalamo.quantization import stochastic_quantize_weights
+from lalamo.quantization import QuantizationMode, stochastic_quantize_weights
 
 __all__ = [
     "DistillBatch",
@@ -121,7 +121,7 @@ def is_leaf_trainable(info: ParameterLeafInfo) -> bool:
 def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:
     if not is_leaf_trainable(info):
         return OptimizerGroup.FROZEN
-    if info.matrix and len(info.shape) == 2:
+    if info.spectral and len(info.shape) == 2:
         return OptimizerGroup.MUON
     return OptimizerGroup.DEFAULT
 
@@ -258,10 +258,11 @@ def materialize_trainable_module[M: eqx.Module](
 
 def stochastically_quantize_module[M: eqx.Module](
     module: M,
+    quantization_mode: QuantizationMode,
     key: PRNGKeyArray,
 ) -> M:
     leaf_infos = iter_parameter_leaves(module)
-    quantized_infos = [info for info in leaf_infos if info.alias_of is None and info.quantization_mode is not None]
+    quantized_infos = [info for info in leaf_infos if info.alias_of is None and info.quantized]
     if not quantized_infos:
         return module
 
@@ -276,7 +277,7 @@ def stochastically_quantize_module[M: eqx.Module](
         if not eqx.is_array(leaf):
             continue
 
-        stochastic_value = stochastic_quantize_weights(leaf, info.quantization_mode, quantization_keys[info.path])
+        stochastic_value = stochastic_quantize_weights(leaf, quantization_mode, quantization_keys[info.path])
         rounded_value = leaf + jax.lax.stop_gradient(stochastic_value - leaf)
         for path in alias_paths[info.path]:
             replacement_paths.append(path)
@@ -526,14 +527,17 @@ def distill_train_step(
     config: DistillTrainConfig,
     *,
     quantization_key: PRNGKeyArray | None = None,
+    quantization_mode: QuantizationMode | None = None,
 ) -> tuple[DistillOptimizerState, DistillStepMetrics]:
     current_master_weights = _concrete_master_weights(optimizer_state.training_state)
 
     def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
         training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
         materialized_student = materialize_trainable_module(student, training_state, config)
-        if quantization_key is not None:
-            materialized_student = stochastically_quantize_module(materialized_student, quantization_key)
+        if quantization_key is not None and quantization_mode is not None:
+            materialized_student = stochastically_quantize_module(
+                materialized_student, quantization_mode, quantization_key,
+            )
         metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
         return metrics.loss, metrics
 

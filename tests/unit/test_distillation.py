@@ -41,12 +41,12 @@ class AliasModule(eqx.Module):
 
 class BufferModule(eqx.Module):
     parameter: jax.Array = field()
-    buffer: jax.Array = field(trainable=False, matrix=False)
+    buffer: jax.Array = field(trainable=False, spectral=False)
 
 
 class FrozenModule(eqx.Module):
     left: jax.Array = field(trainable=False)
-    right: jax.Array = field(trainable=False, matrix=False)
+    right: jax.Array = field(trainable=False, spectral=False)
 
 
 def test_iter_parameter_leaves_detects_aliases() -> None:
@@ -167,8 +167,8 @@ def test_stochastically_quantize_module_quantizes_quantized_weights() -> None:
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     state = initialize_distill_training_state(layer, config)
     materialized = materialize_trainable_module(layer, state, config)
-    first = stochastically_quantize_module(materialized, jax.random.key(0))
-    second = stochastically_quantize_module(materialized, jax.random.key(0))
+    first = stochastically_quantize_module(materialized, QuantizationMode.UINT4, jax.random.key(0))
+    second = stochastically_quantize_module(materialized, QuantizationMode.UINT4, jax.random.key(0))
 
     assert jnp.array_equal(first.weights, second.weights)
     assert jnp.all((first.weights == 1.0) | (first.weights == 2.0))
@@ -220,7 +220,7 @@ def test_separable_causal_conv_weights_do_not_use_muon() -> None:
     assert get_muon_weight_dimension_numbers(state) == (None, None)
 
 
-def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_matrices() -> None:
+def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_spectral() -> None:
     module = BufferModule(
         parameter=jnp.ones((2, 2), dtype=jnp.float32),
         buffer=jnp.ones((4,), dtype=jnp.float32),
@@ -228,9 +228,9 @@ def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_matrices(
     leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(module)}
 
     assert leaves["parameter"].trainable
-    assert leaves["parameter"].matrix
+    assert leaves["parameter"].spectral
     assert not leaves["buffer"].trainable
-    assert not leaves["buffer"].matrix
+    assert not leaves["buffer"].spectral
 
 
 _TINY_LLAMA_CONFIG = HFLlamaConfig(
@@ -283,8 +283,8 @@ def test_llama_decoder_marks_rope_tables_frozen() -> None:
 
     assert not leaves["transformer.global_rope.cosines"].trainable
     assert not leaves["transformer.global_rope.sines"].trainable
-    assert not leaves["transformer.global_rope.cosines"].matrix
-    assert not leaves["transformer.global_rope.sines"].matrix
+    assert not leaves["transformer.global_rope.cosines"].spectral
+    assert not leaves["transformer.global_rope.sines"].spectral
 
 
 def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:

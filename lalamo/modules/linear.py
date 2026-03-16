@@ -425,14 +425,14 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
 class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
     weights: Float[Array, "*components total_out_channels in_channels"] = field(
         trainable=False,
-        quantization_mode_attr="weight_quantization_mode",
+        quantized=True,
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    scales: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
-    zero_points: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
+    scales: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
+    zero_points: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
     biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
@@ -715,14 +715,14 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
 class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
     weights: Float[Array, "*components total_out_channels in_channels"] = field(
         trainable=False,
-        quantization_mode_attr="weight_quantization_mode",
+        quantized=True,
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    scales: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
-    deq_biases: Float[Array, "*components total_out_channels groups"] = field(matrix=False)
+    scales: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
+    deq_biases: Float[Array, "*components total_out_channels groups"] = field(spectral=False)
     biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property

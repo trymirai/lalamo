@@ -34,6 +34,7 @@ from lalamo.distillation import (
 from lalamo.models import LanguageModel, LanguageModelConfig
 from lalamo.modules.common import iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
+from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_write
 
 
@@ -276,6 +277,7 @@ def main(
                 batch,
                 distill_config,
                 quantization_key=step_key,
+                quantization_mode=QuantizationMode.UINT4,
             )
             # Step logging recomputes a concrete loss because distill_train_step returns traced metrics.
             materialized_student = materialize_trainable_module(
