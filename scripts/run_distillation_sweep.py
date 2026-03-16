@@ -150,7 +150,7 @@ def main(
             config=make_config(f"{opt.value}_lr{lr}", optimizer_name=opt, learning_rate=lr),
         )
         for opt in [OptimizerName.ADAMW, OptimizerName.MUON]
-        for lr in [1e-6, 3e-6, 1e-5]
+        for lr in [1e-7, 3e-7, 1e-6, 3e-6]
     ]
     phase1_results = _run_sweep_phase("Optimizer/LR", phase1_runs)
     all_results.extend(_summarize(run, result) for run, result in phase1_results)
