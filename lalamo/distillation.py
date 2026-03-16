@@ -420,6 +420,7 @@ def compute_distill_kl_loss(
     return DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
 
+@eqx.filter_jit
 def compute_distill_batch_metrics(
     student: Decoder,
     teacher: Decoder,
@@ -455,6 +456,7 @@ def compute_distill_batch_metrics(
     )
 
 
+@eqx.filter_jit
 def compute_trace_distill_kl_loss(
     student: Decoder,
     batch: TraceDistillBatch,
@@ -497,6 +499,7 @@ def compute_trace_distill_kl_loss(
     return DistillStepMetrics(loss=loss, valid_tokens=valid_tokens)
 
 
+@eqx.filter_jit
 def distill_train_step(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,

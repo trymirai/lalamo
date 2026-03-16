@@ -23,7 +23,6 @@ from lalamo.distillation import (
     DistillTrainConfig,
     DistillTrainingState,
     compute_distill_batch_metrics,
-    compute_distill_kl_loss,
     distill_train_step,
     get_muon_weight_dimension_numbers,
     initialize_distill_optimizer_state,
@@ -80,6 +79,7 @@ class ExperimentResult:
     parameter_summary: DistillParameterSummary
     initial_eval: EvaluationMetrics
     final_eval: EvaluationMetrics
+    compilation_seconds: float
     elapsed_seconds: float
     seconds_per_step: float
     output_model_path: str
@@ -263,12 +263,15 @@ def main(
     output_dir.mkdir(parents=True, exist_ok=True)
     history_path = output_dir / "history.jsonl"
     step_iterator = cycle(train_batches)
-    start_time = time.perf_counter()
     train_key = jax.random.key(seed)
 
     with history_path.open("w") as history_file:
         for step, batch in enumerate(islice(step_iterator, num_steps), start=1):
             train_key, step_key = jax.random.split(train_key)
+
+            if step == 1:
+                warmup_start = time.perf_counter()
+
             optimizer_state, _ = distill_train_step(
                 optimizer_state,
                 optimizer,
@@ -279,21 +282,26 @@ def main(
                 quantization_key=step_key,
                 quantization_mode=QuantizationMode.UINT4,
             )
-            # Step logging recomputes a concrete loss because distill_train_step returns traced metrics.
-            materialized_student = materialize_trainable_module(
-                student_model.model,
-                optimizer_state.training_state,
-                distill_config,
+
+            if step == 1:
+                compilation_seconds = time.perf_counter() - warmup_start
+                start_time = time.perf_counter()
+
+            train_metrics = compute_distill_batch_metrics(
+                materialize_trainable_module(
+                    student_model.model,
+                    optimizer_state.training_state,
+                    distill_config,
+                ),
+                teacher_model.model,
+                batch,
             )
-            train_metrics = compute_distill_kl_loss(materialized_student, teacher_model.model, batch)
-            train_kl_divergence = float(train_metrics.loss)
-            valid_tokens = int(train_metrics.valid_tokens)
             history_file.write(
                 json.dumps(
                     {
                         "step": step,
-                        "train_kl_divergence": train_kl_divergence,
-                        "valid_tokens": valid_tokens,
+                        "train_kl_divergence": float(train_metrics.loss),
+                        "valid_tokens": int(train_metrics.valid_tokens),
                     },
                 )
                 + "\n",
@@ -332,8 +340,9 @@ def main(
         parameter_summary=parameter_summary,
         initial_eval=initial_eval,
         final_eval=final_eval,
+        compilation_seconds=compilation_seconds,
         elapsed_seconds=elapsed_seconds,
-        seconds_per_step=elapsed_seconds / num_steps,
+        seconds_per_step=elapsed_seconds / max(num_steps - 1, 1),
         output_model_path=str(model_output_path),
     )
 
