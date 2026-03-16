@@ -46,8 +46,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class DistillTrainConfig:
+class DistillTrainConfig(eqx.Module):
     master_dtype: DTypeLike = jnp.float32
     compute_dtype: DTypeLike = jnp.bfloat16
 

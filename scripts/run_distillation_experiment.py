@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from enum import StrEnum
 from itertools import cycle, islice
 from pathlib import Path
-from typing import Annotated, TypeVar
+from typing import Annotated
 
 import equinox as eqx
 import jax
@@ -43,8 +43,6 @@ from lalamo.modules.common import iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_write
-
-BatchT = TypeVar("BatchT", DistillBatch, TraceDistillBatch)
 
 _CHECKPOINT_CONVERTER = Converter()
 
