@@ -266,8 +266,14 @@ def stochastically_quantize_module[M: eqx.Module](
     if not quantized_infos:
         return module
 
-    alias_paths = _alias_paths_by_canonical_path(leaf_infos)
-    quantization_keys = _split_quantization_keys(key, quantized_infos)
+    alias_paths: dict[str, list[str]] = defaultdict(list)
+    for info in leaf_infos:
+        alias_paths[info.alias_of or info.path].append(info.path)
+
+    quantization_keys = {
+        info.path: k
+        for info, k in zip(quantized_infos, jax.random.split(key, len(quantized_infos)), strict=True)
+    }
     path_to_leaf = _leaf_map(module)
 
     replacement_paths: list[str] = []
@@ -300,21 +306,6 @@ def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> A
     return jax.ShapeDtypeStruct(value.shape, dtype)
 
 
-def _alias_paths_by_canonical_path(leaves: Sequence[ParameterLeafInfo]) -> dict[str, tuple[str, ...]]:
-    alias_paths: dict[str, list[str]] = defaultdict(list)
-    for info in leaves:
-        alias_paths[info.alias_of or info.path].append(info.path)
-    return {path: tuple(paths) for path, paths in alias_paths.items()}
-
-
-def _split_quantization_keys(
-    quantization_key: PRNGKeyArray,
-    leaves: Sequence[ParameterLeafInfo],
-) -> dict[str, PRNGKeyArray]:
-    if not leaves:
-        return {}
-    return {info.path: key for info, key in zip(leaves, jax.random.split(quantization_key, len(leaves)), strict=True)}
-
 
 def _concrete_master_weights(state: DistillTrainingState) -> tuple[Array, ...]:
     result: list[Array] = []
@@ -346,23 +337,9 @@ def initialize_distill_optimizer_state(
     )
 
 
-def _batch_lengths(batch: DistillBatch) -> Int[Array, " batch"]:
-    if batch.lengths_without_padding is not None:
-        return batch.lengths_without_padding
-    batch_size, num_tokens = batch.token_ids.shape
-    return jnp.full((batch_size,), num_tokens, dtype=jnp.int32)
-
-
 def _token_positions(batch: DistillBatch) -> Int[Array, "batch tokens"]:
     _, num_tokens = batch.token_ids.shape
     return jnp.broadcast_to(jnp.arange(num_tokens, dtype=jnp.int32), batch.token_ids.shape)
-
-
-def _prediction_mask(batch: DistillBatch) -> Bool[Array, "batch prediction_tokens"]:
-    _, num_tokens = batch.token_ids.shape
-    prediction_tokens = max(num_tokens - 1, 0)
-    lengths_without_padding = _batch_lengths(batch)
-    return jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths_without_padding[:, None] - 1)
 
 
 def make_trace_distill_batch(
@@ -455,8 +432,15 @@ def compute_distill_batch_metrics(
     student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)
     teacher_probs = jnp.exp(teacher_log_probs)
 
+    batch_size, num_tokens = batch.token_ids.shape
+    prediction_tokens = max(num_tokens - 1, 0)
+    lengths = batch.lengths_without_padding if batch.lengths_without_padding is not None else jnp.full(
+        (batch_size,), num_tokens, dtype=jnp.int32,
+    )
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
-    prediction_mask = _prediction_mask(batch).astype(token_kl.dtype)
+    prediction_mask = (
+        jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths[:, None] - 1)
+    ).astype(token_kl.dtype)
     valid_tokens = prediction_mask.sum(dtype=jnp.int32)
     loss = jnp.sum(token_kl * prediction_mask) / valid_tokens
     student_top1 = jnp.argmax(student_logits, axis=-1)
@@ -467,18 +451,6 @@ def compute_distill_batch_metrics(
         valid_tokens=valid_tokens,
         top1_matches=top1_matches,
     )
-
-
-def _trace_completion_mask(batch: TraceDistillBatch) -> Bool[Array, "batch completion_tokens"]:
-    _, completion_tokens, _ = batch.support_token_ids.shape
-    return jnp.arange(completion_tokens, dtype=jnp.int32)[None, :] < batch.completion_lengths[:, None]
-
-
-def _trace_prediction_indices(batch: TraceDistillBatch) -> Int[Array, "batch completion_tokens"]:
-    _, completion_tokens, _ = batch.support_token_ids.shape
-    raw_indices = batch.prefix_lengths[:, None] - 1 + jnp.arange(completion_tokens, dtype=jnp.int32)[None, :]
-    max_indices = jnp.maximum(batch.prefix_lengths + batch.completion_lengths - 2, 0)
-    return jnp.minimum(raw_indices, max_indices[:, None])
 
 
 def compute_trace_distill_kl_loss(
@@ -492,7 +464,14 @@ def compute_trace_distill_kl_loss(
     )
     student_logits = decoder_result.logits[:, :-1, :].astype(jnp.float32)
 
-    prediction_indices = _trace_prediction_indices(batch)
+    _, completion_tokens, _ = batch.support_token_ids.shape
+    completion_range = jnp.arange(completion_tokens, dtype=jnp.int32)[None, :]
+    completion_mask = completion_range < batch.completion_lengths[:, None]
+
+    raw_indices = batch.prefix_lengths[:, None] - 1 + completion_range
+    max_indices = jnp.maximum(batch.prefix_lengths + batch.completion_lengths - 2, 0)
+    prediction_indices = jnp.minimum(raw_indices, max_indices[:, None])
+
     batch_indices = jnp.arange(batch.token_ids.shape[0], dtype=jnp.int32)[:, None]
     student_completion_logits = student_logits[batch_indices, prediction_indices, :]
     student_support_logits = jnp.take_along_axis(
@@ -500,8 +479,6 @@ def compute_trace_distill_kl_loss(
         batch.support_token_ids,
         axis=-1,
     )
-
-    completion_mask = _trace_completion_mask(batch)
     support_rows = batch.support_mask.any(axis=-1, keepdims=True)
     masked_teacher_logits = jnp.where(batch.support_mask, batch.support_logits, -jnp.inf)
     masked_student_logits = jnp.where(batch.support_mask, student_support_logits, -jnp.inf)
