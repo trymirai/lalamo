@@ -3,19 +3,22 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax
+import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
-
-from .fishaudio_modules import (
+from lalamo.modules.audio.common_modules import (
     ConvNeXtSpatialParams,
     DACDecoder,
     DACDecoderConfig,
     DACDecoderSpatialParams,
+    TransposeConvSpatialParams,
+)
+
+from .fishaudio_modules import (
     DownsampleResidualVectorQuantize,
     DownsampleResidualVectorQuantizeConfig,
-    TransposeConvSpatialParams,
     VectorQuantizerParams,
 )
 
@@ -217,8 +220,7 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     ) -> Float[Array, "batch audio_samples 1"]:
         z = self.quantizer.decode(indices)
         audio = self.decoder(z)
-
-        return audio
+        return jnp.tanh(audio)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {

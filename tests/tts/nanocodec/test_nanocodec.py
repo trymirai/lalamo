@@ -12,10 +12,8 @@ from lalamo.model_import.common import import_model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.models import TTSGenerator
 from lalamo.modules.audio.common_modules import (
-    CausalConv1dConfig,
     CausalTransposeConv1dConfig,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+    Conv1dConfig,
     Snake1dConfig,
 )
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
@@ -334,7 +332,7 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     # Build decoder config hierarchy
     snake_config = Snake1dConfig(precision=jnp.float32)
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
 
     residual_block_config = ResidualBlockConfig(

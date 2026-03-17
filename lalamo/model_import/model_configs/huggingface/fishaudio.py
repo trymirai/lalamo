@@ -1,5 +1,4 @@
-import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -32,7 +31,14 @@ from lalamo.modules import (
     VocoderConfig,
 )
 from lalamo.modules.audio.common_modules import (
-    CausalConv1dConfig,
+    CausalTransposeConv1dConfig,
+    Conv1dConfig,
+    ConvNeXtBlockConfig,
+    DACDecoderConfig,
+    DecoderBlockConfig,
+    ResidualUnitConfig,
+    Snake1dConfig,
+    UpsamplingBlockConfig,
 )
 from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
@@ -42,16 +48,9 @@ from lalamo.modules.audio.fishaudio import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalTransposeConv1dConfig,
-    ConvNeXtBlockConfig,
-    DACDecoderBlockConfig,
-    DACDecoderConfig,
     DownsampleResidualVectorQuantizeConfig,
-    ResidualUnitConfig,
     ResidualVectorQuantizeConfig,
-    Snake1dConfig,
     UpsamplerConfig,
-    UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
 
@@ -169,7 +168,7 @@ def instantiate_dac_config_from_fishaudio_config(
     convnext_config = ConvNeXtBlockConfig(
         precision=jnp.float32,
         activation=GELU(approximate=False),
-        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        conv_config=Conv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
             scale_precision=jnp.float32,
             accumulation_precision=jnp.float32,
@@ -179,7 +178,7 @@ def instantiate_dac_config_from_fishaudio_config(
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        linear_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
     upsampling_block_config = UpsamplingBlockConfig(
         precision=jnp.float32,
@@ -222,10 +221,10 @@ def instantiate_dac_config_from_fishaudio_config(
     res_unit_config = ResidualUnitConfig(
         precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
-        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        conv_config=Conv1dConfig(precision=jnp.float32, has_biases=True),
         causal=True,
     )
-    decoder_block_config = DACDecoderBlockConfig(
+    decoder_block_config = DecoderBlockConfig(
         precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
         trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
@@ -234,7 +233,7 @@ def instantiate_dac_config_from_fishaudio_config(
     )
     decoder_config = DACDecoderConfig(
         precision=jnp.float32,
-        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        conv_config=Conv1dConfig(precision=jnp.float32, has_biases=True),
         snake_config=Snake1dConfig(precision=jnp.float32),
         decoder_block_config=decoder_block_config,
         causal=True,
@@ -468,10 +467,8 @@ class FishAudioConfig(ForeignTTSConfig):
         )
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            config = json.load(f)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls(**config)
 
     @property

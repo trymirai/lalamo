@@ -296,8 +296,12 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
+        *,
+        speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
+        language: str = "auto",  # noqa: ARG002
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive

@@ -63,7 +63,12 @@ from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models import (
+    ClassifierModelConfig,
+    FishAudioTTSGenerator,
+    LanguageModelConfig,
+    Qwen3TTSGenerator,
+)
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
@@ -372,6 +377,20 @@ def tts(
             help="Render synthesized speech into default audio interface.",
         ),
     ] = False,
+    speaker_id: Annotated[
+        str | None,
+        Option(
+            help="Speaker ID for speech synthesis.",
+            show_default="First available speaker from the model",
+        ),
+    ] = None,
+    style: Annotated[
+        str | None,
+        Option(
+            help="Style instruction for speech synthesis (e.g. voice description or intonation hint).",
+            show_default="Default style from the model",
+        ),
+    ] = None,
 ) -> None:
     if output_file is None:
         output_file = Path.cwd() / "generated_speech.wav"
@@ -384,7 +403,12 @@ def tts(
     console.print(f"🤖 Loading model from specified path: {model_path}.")
     model = TTSGenerator.load_model(model_path)
 
-    assert model is not None
+    if isinstance(model, (FishAudioTTSGenerator, Qwen3TTSGenerator)):
+        if speaker_id is None:
+            speaker_id = model.default_speaker_id()
+        if style is None:
+            style = model.default_style()
+
     _stop_word = "/stop"
     while True:
         user_text = console.input(f"[cyan]input text to generate speech({_stop_word} to exit)> [/cyan]")
@@ -394,7 +418,7 @@ def tts(
         if user_text == "":
             continue
 
-        user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
+        user_message = TTSMessage(content=user_text, speaker_id=speaker_id, style=style)
 
         tts_result = model.generate_speech([user_message])
 

@@ -1,7 +1,6 @@
 """Foreign config for NanoCodec TTS models from NVIDIA NeMo."""
 
-import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -14,8 +13,7 @@ from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import LalamoModule, TTSConfig, TTSModel, VocoderConfig
-from lalamo.modules.audio.common_modules import CausalConv1dConfig
-from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
+from lalamo.modules.audio.common_modules import Conv1dConfig, Snake1dConfig
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
@@ -94,7 +92,7 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             snake_config=snake_config,
             leaky_relu_negative_slope=DEFAULT_LEAKY_RELU_NEGATIVE_SLOPE,
         )
-        conv_config = CausalConv1dConfig(precision=activation_precision, has_biases=True)
+        conv_config = Conv1dConfig(precision=activation_precision, has_biases=True)
         transpose_conv_config = CausalTransposeConv1dConfig(precision=activation_precision, has_biases=True)
 
         residual_block_config = ResidualBlockConfig(
@@ -159,10 +157,8 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         )
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            config = json.load(f)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls.from_nemo_config(config)
 
     @classmethod

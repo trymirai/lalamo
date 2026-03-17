@@ -24,6 +24,13 @@ from lalamo.modules import (
     Transformer,
     TransformerLayer,
 )
+from lalamo.modules.audio.common_modules import (
+    ConvNeXtBlock,
+    DACDecoder,
+    DecoderBlock,
+    ResidualUnit,
+    UpsamplingBlock,
+)
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     FishAudioSpecialInferenceTokens,
@@ -33,14 +40,9 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import (
     IM_END_TOKEN,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    ConvNeXtBlock,
-    DACDecoder,
-    DACDecoderBlock,
     DownsampleResidualVectorQuantize,
-    ResidualUnit,
     ResidualVectorQuantize,
     Upsampler,
-    UpsamplingBlock,
     VectorQuantize,
 )
 
@@ -536,9 +538,9 @@ def load_convnext_block(
     # PyTorch Linear weight is (out_features, in_features)
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    pointwise_conv_step1 = load_parameters(
+    pointwise_conv1 = load_parameters(
         lambda m: (m.weights, m.biases),
-        module.pointwise_conv_step1,
+        module.pointwise_conv1,
         (pwconv1_weight, pwconv1_bias),
     )
 
@@ -550,16 +552,16 @@ def load_convnext_block(
         layer_scale = weights_dict[layer_scale_path]
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
-    pointwise_conv_step2 = load_parameters(
+    pointwise_conv2 = load_parameters(
         lambda m: (m.weights, m.biases),
-        module.pointwise_conv_step2,
+        module.pointwise_conv2,
         (pwconv2_weight, pwconv2_bias),
     )
 
     return load_parameters(
-        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv_step1, m.pointwise_conv_step2),
+        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv1, m.pointwise_conv2),
         module,
-        (depthwise_conv, norm, pointwise_conv_step1, pointwise_conv_step2),
+        (depthwise_conv, norm, pointwise_conv1, pointwise_conv2),
     )
 
 
@@ -747,24 +749,24 @@ def load_residual_unit(
     Returns:
         ResidualUnit module with loaded weights.
     """
-    snake1 = load_snake1d(module.snake1, weights_dict, path / "block" / "0")
+    act1 = load_snake1d(module.act1, weights_dict, path / "block" / "0")
     conv1 = load_causal_conv1d(module.conv1, weights_dict, path / "block" / "1" / "conv")
-    snake2 = load_snake1d(module.snake2, weights_dict, path / "block" / "2")
+    act2 = load_snake1d(module.act2, weights_dict, path / "block" / "2")
     conv2 = load_causal_conv1d(module.conv2, weights_dict, path / "block" / "3" / "conv")
 
     return load_parameters(
-        lambda m: (m.snake1, m.conv1, m.snake2, m.conv2),
+        lambda m: (m.act1, m.conv1, m.act2, m.conv2),
         module,
-        (snake1, conv1, snake2, conv2),
+        (act1, conv1, act2, conv2),
     )
 
 
 def load_audio_decoder_block(
-    module: DACDecoderBlock,
+    module: DecoderBlock,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> DACDecoderBlock:
-    """Loads an AudioDecoderBlock module from weights.
+) -> DecoderBlock:
+    """Loads a DecoderBlock module from weights.
 
     Expected weight structure at path (PyTorch block is nn.Sequential):
         - block.0.alpha (Snake1d)
@@ -774,23 +776,24 @@ def load_audio_decoder_block(
         - block.4.block.0..3 (ResidualUnit, dilation=9)
 
     Args:
-        module: The AudioDecoderBlock module to load weights into.
+        module: The DecoderBlock module to load weights into.
         weights_dict: Dictionary mapping parameter paths to weight arrays.
         path: Base path for this module's weights.
 
     Returns:
-        AudioDecoderBlock module with loaded weights.
+        DecoderBlock module with loaded weights.
     """
     snake = load_snake1d(module.snake, weights_dict, path / "block" / "0")
     trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "block" / "1" / "conv")
-    res_unit1 = load_residual_unit(module.res_unit1, weights_dict, path / "block" / "2")
-    res_unit2 = load_residual_unit(module.res_unit2, weights_dict, path / "block" / "3")
-    res_unit3 = load_residual_unit(module.res_unit3, weights_dict, path / "block" / "4")
+    residual_units = tuple(
+        load_residual_unit(unit, weights_dict, path / "block" / (i + 2))
+        for i, unit in enumerate(module.residual_units)
+    )
 
     return load_parameters(
-        lambda m: (m.snake, m.trans_conv, m.res_unit1, m.res_unit2, m.res_unit3),
+        lambda m: (m.snake, m.trans_conv, m.residual_units),
         module,
-        (snake, trans_conv, res_unit1, res_unit2, res_unit3),
+        (snake, trans_conv, residual_units),
     )
 
 

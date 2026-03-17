@@ -538,8 +538,12 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
+        *,
+        speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,  # noqa: ARG002
+        language: str = "auto",  # noqa: ARG002
+        instruction_tokens: Int[Array, "batch tokens"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)

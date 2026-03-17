@@ -43,8 +43,12 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch sequence"],
+        *,
+        speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
         key: PRNGKeyArray | None = None,
+        language: str = "auto",  # noqa: ARG002
+        instruction_tokens: Int[Array, "batch sequence"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "batch num_codebooks tokens"]:
         """Generate random codebook indices with length derived from input tokens."""
         if key is None:
