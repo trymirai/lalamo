@@ -12,7 +12,7 @@ from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.common import LalamoModule
+from lalamo.modules.common import LalamoModule, register_config_union
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 
@@ -461,6 +461,7 @@ class SnakeBeta(LalamoModule[SnakeBetaConfig]):
 
 SnakeActivation = Snake1d | SnakeBeta
 SnakeActivationConfig = Snake1dConfig | SnakeBetaConfig
+register_config_union(SnakeActivationConfig)
 
 
 @dataclass(frozen=True)

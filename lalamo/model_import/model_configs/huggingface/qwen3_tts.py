@@ -1,8 +1,6 @@
 import math
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, fields
-from pathlib import Path
-from typing import Any, Self
+from collections.abc import Mapping
+from dataclasses import dataclass
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
@@ -65,6 +63,11 @@ __all__ = ["Qwen3TTSTokenizer12HzConfig"]
 
 
 @dataclass(frozen=True)
+class Qwen3TTSEncoderConfig:
+    dtype: str
+
+
+@dataclass(frozen=True)
 class Qwen3TTSTokenizer12HzDecoderConfig:
     attention_dropout: float
     attention_bias: bool
@@ -108,7 +111,7 @@ class Qwen3TTSTalkerCodePredictorConfig:
     num_key_value_heads: int
     rms_norm_eps: float
     rope_theta: float
-    sliding_window: int
+    sliding_window: int | None
     use_sliding_window: bool
     vocab_size: int
     layer_types: tuple[str, ...] | None = None
@@ -136,7 +139,7 @@ class Qwen3TTSTalkerConfig:
     num_key_value_heads: int
     rms_norm_eps: float
     rope_theta: float
-    sliding_window: int
+    sliding_window: int | None
     text_hidden_size: int
     text_vocab_size: int
     use_sliding_window: bool
@@ -154,9 +157,9 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     encode_downsample_rate: int
     encoder_valid_num_quantizers: int
     input_sample_rate: int
+    encoder_config: Qwen3TTSEncoderConfig
     model_type: str
     output_sample_rate: int
-    torch_dtype: str
 
     talker_config: Qwen3TTSTalkerConfig | None = None
     tts_pad_token_id: int | None = None
@@ -173,8 +176,23 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
         dc = self.decoder_config
-        _validate_decoder_config_assumptions(dc)
-        _validate_top_level_config_assumptions(self, dc)
+        assert dc.hidden_act == "silu", (
+            f"Only `hidden_act=silu` is supported for Qwen3-TTS decoder, got {dc.hidden_act!r}."
+        )
+        assert dc.attention_dropout == 0.0, (
+            f"Attention dropout is not implemented in Lalamo Qwen3-TTS decoder; expected 0.0, got {dc.attention_dropout}."
+        )
+        assert self.encoder_valid_num_quantizers == dc.num_quantizers, (
+            f"Mismatch between top-level and decoder quantizer counts:"
+            f" encoder_valid_num_quantizers={self.encoder_valid_num_quantizers},"
+            f" decoder.num_quantizers={dc.num_quantizers}."
+        )
+        upsample_rate = math.prod((*dc.upsample_rates, *dc.upsampling_ratios))
+        assert self.decode_upsample_rate == upsample_rate, (
+            f"decode_upsample_rate does not match decoder upsampling factors:"
+            f" decode_upsample_rate={self.decode_upsample_rate},"
+            f" product(upsample_rates, upsampling_ratios)={upsample_rate}."
+        )
 
         audio_decoder_config = _build_audio_decoder_config(activation_precision, dc, self)
 
@@ -224,94 +242,16 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
             (loaded_text_decoder, loaded_audio_decoder),
         )
 
-    @classmethod
-    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
-        raw_config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
-
-        decoder_raw = raw_config["decoder_config"]
-        assert isinstance(decoder_raw, Mapping), "decoder_config must be a mapping"
-        decoder_config = _structure_decoder_config(decoder_raw)
-
-        talker_raw = raw_config.get("talker_config")
-        talker_config: Qwen3TTSTalkerConfig | None = None
-        if talker_raw is not None:
-            assert isinstance(talker_raw, Mapping), "talker_config must be a mapping"
-            talker_config = _structure_talker_config(talker_raw)
-
-        torch_dtype = raw_config["encoder_config"]["dtype"]
-        assert isinstance(torch_dtype, str), f"torch_dtype must be a string, got {type(torch_dtype)}"
-
-        return cls(
-            decoder_config=decoder_config,
-            decode_upsample_rate=int(raw_config["decode_upsample_rate"]),
-            encode_downsample_rate=int(raw_config["encode_downsample_rate"]),
-            encoder_valid_num_quantizers=int(raw_config["encoder_valid_num_quantizers"]),
-            input_sample_rate=int(raw_config["input_sample_rate"]),
-            model_type=str(raw_config["model_type"]),
-            output_sample_rate=int(raw_config["output_sample_rate"]),
-            torch_dtype=torch_dtype,
-            talker_config=talker_config,
-            tts_pad_token_id=raw_config.get("tts_pad_token_id"),
-            tts_bos_token_id=raw_config.get("tts_bos_token_id"),
-            tts_eos_token_id=raw_config.get("tts_eos_token_id"),
-            assistant_token_id=raw_config.get("assistant_token_id"),
-            im_start_token_id=raw_config.get("im_start_token_id"),
-            im_end_token_id=raw_config.get("im_end_token_id"),
-        )
-
     @property
     def default_precision(self) -> DTypeLike:
-        return jnp.dtype(self.torch_dtype)
-
-
-def _structure_decoder_config(raw: Mapping[str, Any]) -> Qwen3TTSTokenizer12HzDecoderConfig:
-    field_names = {f.name for f in fields(Qwen3TTSTokenizer12HzDecoderConfig)}
-    filtered: dict[str, Any] = {k: v for k, v in raw.items() if k in field_names}
-
-    if "upsample_rates" in filtered:
-        filtered["upsample_rates"] = tuple(int(r) for r in filtered["upsample_rates"])
-    if "upsampling_ratios" in filtered:
-        filtered["upsampling_ratios"] = tuple(int(r) for r in filtered["upsampling_ratios"])
-
-    return Qwen3TTSTokenizer12HzDecoderConfig(**filtered)
-
-
-def _structure_talker_config(raw: Mapping[str, Any]) -> Qwen3TTSTalkerConfig:
-    predictor_raw = raw["code_predictor_config"]
-    assert isinstance(predictor_raw, Mapping), "code_predictor_config must be a mapping"
-    predictor_config = _structure_predictor_config(predictor_raw)
-
-    field_names = {f.name for f in fields(Qwen3TTSTalkerConfig)}
-    filtered: dict[str, Any] = {k: v for k, v in raw.items() if k in field_names}
-    filtered["code_predictor_config"] = predictor_config
-
-    layer_types = filtered.get("layer_types")
-    if isinstance(layer_types, Sequence) and not isinstance(layer_types, str):
-        filtered["layer_types"] = tuple(str(v) for v in layer_types)
-    else:
-        filtered["layer_types"] = None
-
-    return Qwen3TTSTalkerConfig(**filtered)
-
-
-def _structure_predictor_config(raw: Mapping[str, Any]) -> Qwen3TTSTalkerCodePredictorConfig:
-    field_names = {f.name for f in fields(Qwen3TTSTalkerCodePredictorConfig)}
-    filtered: dict[str, Any] = {k: v for k, v in raw.items() if k in field_names}
-
-    layer_types = filtered.get("layer_types")
-    if isinstance(layer_types, Sequence) and not isinstance(layer_types, str):
-        filtered["layer_types"] = tuple(str(v) for v in layer_types)
-    else:
-        filtered["layer_types"] = None
-
-    return Qwen3TTSTalkerCodePredictorConfig(**filtered)
+        return jnp.dtype(self.encoder_config.dtype)
 
 
 def _build_sliding_window_sizes(
     *,
     num_hidden_layers: int,
     use_sliding_window: bool,
-    sliding_window: int,
+    sliding_window: int | None,
     max_window_layers: int | None = None,
     layer_types: tuple[str, ...] | None = None,
 ) -> tuple[int | None, ...]:
@@ -589,36 +529,3 @@ def _build_text_decoder_config(
         assistant_token_id=top.assistant_token_id,
         im_end_token_id=top.im_end_token_id,
     )
-
-
-def _validate_decoder_config_assumptions(decoder_config: Qwen3TTSTokenizer12HzDecoderConfig) -> None:
-    if decoder_config.hidden_act != "silu":
-        raise ValueError(
-            f"Only `hidden_act=silu` is supported for Qwen3-TTS decoder, got {decoder_config.hidden_act!r}.",
-        )
-
-    if decoder_config.attention_dropout != 0.0:
-        raise ValueError(
-            "Attention dropout is not implemented in Lalamo Qwen3-TTS decoder;"
-            f" expected 0.0, got {decoder_config.attention_dropout}.",
-        )
-
-
-def _validate_top_level_config_assumptions(
-    config: Qwen3TTSTokenizer12HzConfig,
-    decoder_config: Qwen3TTSTokenizer12HzDecoderConfig,
-) -> None:
-    if config.encoder_valid_num_quantizers != decoder_config.num_quantizers:
-        raise ValueError(
-            "Mismatch between top-level and decoder quantizer counts:"
-            f" encoder_valid_num_quantizers={config.encoder_valid_num_quantizers},"
-            f" decoder.num_quantizers={decoder_config.num_quantizers}.",
-        )
-
-    upsample_rate = math.prod((*decoder_config.upsample_rates, *decoder_config.upsampling_ratios))
-    if config.decode_upsample_rate != upsample_rate:
-        raise ValueError(
-            "decode_upsample_rate does not match decoder upsampling factors:"
-            f" decode_upsample_rate={config.decode_upsample_rate},"
-            f" product(upsample_rates, upsampling_ratios)={upsample_rate}.",
-        )

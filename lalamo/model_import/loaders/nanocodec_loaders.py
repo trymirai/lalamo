@@ -16,7 +16,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.common import ParameterPath
-from lalamo.modules.audio.common_modules import Conv1d, Snake1d, SnakeBeta
+from lalamo.modules.audio.common_modules import Conv1d, Snake1d
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -40,7 +40,6 @@ __all__ = [
     "load_nanocodec",
     "load_residual_block",
     "load_snake1d",
-    "load_snake_beta",
     "transform_pytorch_transpose_conv_weights",
 ]
 
@@ -123,21 +122,6 @@ def load_snake1d(
         lambda m: (m.alpha,),
         module,
         (alpha,),
-    )
-
-
-def load_snake_beta(
-    module: SnakeBeta,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> SnakeBeta:
-    return load_parameters(
-        lambda m: (m.alpha, m.beta),
-        module,
-        (
-            weights_dict[path / "alpha"],
-            weights_dict[path / "beta"],
-        ),
     )
 
 
