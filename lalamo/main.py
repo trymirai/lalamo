@@ -1036,6 +1036,10 @@ def distill(
         bool,
         Option(help="Enable stochastic rounding for quantized training leaves."),
     ] = True,
+    num_devices: Annotated[
+        int,
+        Option(help="Number of devices for data-parallel training."),
+    ] = 1,
     save_checkpoints: Annotated[
         bool,
         Option(help="Persist latest and best checkpoints."),
@@ -1066,6 +1070,7 @@ def distill(
             checkpoint_every_steps=checkpoint_every_steps,
             early_stop_patience=early_stop_patience,
             resume_from=resume_from,
+            num_devices=num_devices,
             seed=seed,
             stochastic_rounding=stochastic_rounding,
             save_checkpoints=save_checkpoints,

@@ -12,6 +12,8 @@ import jax
 import jax.numpy as jnp
 import optax
 from cattrs import Converter
+from jax.sharding import Mesh, NamedSharding
+from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, DTypeLike, Int, Key
 
 from lalamo.common import flatten_parameters
@@ -138,6 +140,7 @@ class DistillConfig:
     checkpoint_every_steps: int = 0
     early_stop_patience: int = 0
     resume_from: Path | None = None
+    num_devices: int = 1
     seed: int = 0
     stochastic_rounding: bool = True
     save_checkpoints: bool = True
@@ -487,6 +490,23 @@ def _accumulate_train_step[BatchT: eqx.Module](
     return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), accumulated_metrics, train_key
 
 
+def _setup_device_mesh(num_devices: int) -> Mesh | None:
+    if num_devices <= 1:
+        return None
+    devices = jax.devices()[:num_devices]
+    if len(devices) < num_devices:
+        raise ValueError(f"Requested {num_devices} devices but only {len(devices)} available")
+    return Mesh(devices, axis_names=("batch",))
+
+
+def _shard_batch[B: eqx.Module](batch: B, mesh: Mesh) -> B:
+    return eqx.filter_shard(batch, NamedSharding(mesh, P("batch")))
+
+
+def _replicate[M: eqx.Module](module: M, mesh: Mesh) -> M:
+    return eqx.filter_shard(module, NamedSharding(mesh, P()))
+
+
 def distill(
     config: DistillConfig,
     *,
@@ -499,6 +519,11 @@ def distill(
         raise ValueError("gradient_accumulation_steps must be at least 1")
     if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
         raise ValueError("gradient_clip_norm must be positive when provided")
+    if config.num_devices < 1:
+        raise ValueError("num_devices must be at least 1")
+
+    mesh = _setup_device_mesh(config.num_devices)
+    device_batch_size = config.batch_size * config.num_devices
 
     callbacks = callbacks_type(config)
     callbacks.started()
@@ -539,8 +564,8 @@ def distill(
                 )
             train_items = tokenized[: config.train_examples]
             eval_items = tokenized[config.train_examples : config.train_examples + config.eval_examples]
-            train_batches = _make_batches(train_items, batch_size=config.batch_size)
-            eval_batches = _make_batches(eval_items, batch_size=config.batch_size)
+            train_batches = _make_batches(train_items, batch_size=device_batch_size)
+            eval_batches = _make_batches(eval_items, batch_size=device_batch_size)
         case TrainingMode.TRACE_TOPK:
             traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
             if len(traces) < config.train_examples + config.eval_examples:
@@ -550,9 +575,12 @@ def distill(
                 )
             train_items = traces[: config.train_examples]
             eval_items = traces[config.train_examples : config.train_examples + config.eval_examples]
-            train_batches = _make_trace_batches(train_items, batch_size=config.batch_size, pad_token_id=0)
-            eval_batches = _make_trace_batches(eval_items, batch_size=config.batch_size, pad_token_id=0)
+            train_batches = _make_trace_batches(train_items, batch_size=device_batch_size, pad_token_id=0)
+            eval_batches = _make_trace_batches(eval_items, batch_size=device_batch_size, pad_token_id=0)
     callbacks.finished_loading_dataset()
+
+    if mesh is not None:
+        eval_batches = [_shard_batch(b, mesh) for b in eval_batches]
 
     distill_config = DistillTrainConfig(
         master_dtype=jnp.float32,
@@ -576,6 +604,11 @@ def distill(
         distill_config,
         trainable_filter=effective_trainable_filter,
     )
+
+    if mesh is not None:
+        student_model = _replicate(student_model, mesh)
+        teacher_model = _replicate(teacher_model, mesh)
+        optimizer_state = _replicate(optimizer_state, mesh)
 
     train_key = jax.random.key(config.seed)
     completed_steps = 0
@@ -650,6 +683,8 @@ def distill(
         )
         for step in range(completed_steps + 1, config.num_steps + 1):
             microbatches = tuple(next(microbatch_iterator) for _ in range(config.gradient_accumulation_steps))
+            if mesh is not None:
+                microbatches = tuple(_shard_batch(mb, mesh) for mb in microbatches)
             current_training_state = optimizer_state.training_state
 
             if executed_steps == 0:
