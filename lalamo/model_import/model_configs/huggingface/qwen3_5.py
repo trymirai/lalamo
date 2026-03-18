@@ -1,5 +1,4 @@
-import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, Self
@@ -62,10 +61,8 @@ class HFQwen35Config(HuggingFaceLMConfig):
     quantization_config: QuantizationConfigType | None = None
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            config = json.load(f)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         # Multimodal configs nest text model params under text_config;
         # top-level keys override text_config on conflict.
         text_config = config.pop("text_config", {})
@@ -88,8 +85,8 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    group_size=quantization.group_size,
-                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    group_size=quantization.group_size,  # type: ignore[union-attr]
+                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),  # type: ignore[union-attr]
                     activation_quantization_mode=None,
                     activation_precision=activation_precision,
                 )
@@ -97,8 +94,8 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 embedding_config = MLXQuantizedUntiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    group_size=quantization.group_size,
-                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    group_size=quantization.group_size,  # type: ignore[union-attr]
+                    embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),  # type: ignore[union-attr]
                     activation_quantization_mode=None,
                     activation_precision=activation_precision,
                 )

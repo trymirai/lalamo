@@ -29,6 +29,7 @@ from lalamo.modules.audio.common_modules import (
     DACDecoder,
     DecoderBlock,
     ResidualUnit,
+    Snake1d,
     UpsamplingBlock,
 )
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
@@ -749,6 +750,8 @@ def load_residual_unit(
     Returns:
         ResidualUnit module with loaded weights.
     """
+    assert isinstance(module.act1, Snake1d)
+    assert isinstance(module.act2, Snake1d)
     act1 = load_snake1d(module.act1, weights_dict, path / "block" / "0")
     conv1 = load_causal_conv1d(module.conv1, weights_dict, path / "block" / "1" / "conv")
     act2 = load_snake1d(module.act2, weights_dict, path / "block" / "2")
@@ -783,6 +786,7 @@ def load_audio_decoder_block(
     Returns:
         DecoderBlock module with loaded weights.
     """
+    assert isinstance(module.snake, Snake1d)
     snake = load_snake1d(module.snake, weights_dict, path / "block" / "0")
     trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "block" / "1" / "conv")
     residual_units = tuple(
@@ -849,6 +853,7 @@ def load_audio_decoder(
 
     # model.N+1 is final snake (where N = num_blocks)
     final_snake_idx = num_blocks + 1
+    assert isinstance(module.final_snake, Snake1d)
     final_snake = load_snake1d(module.final_snake, weights_dict, path / "model" / final_snake_idx)
 
     # model.N+2 is final conv

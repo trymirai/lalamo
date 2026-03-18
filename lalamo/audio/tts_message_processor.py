@@ -4,7 +4,6 @@ from functools import cached_property
 from typing import TypedDict
 
 from jaxtyping import Array, Float
-
 from jinja2 import Template
 from tokenizers import Tokenizer
 

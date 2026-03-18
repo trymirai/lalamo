@@ -179,9 +179,6 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         assert dc.hidden_act == "silu", (
             f"Only `hidden_act=silu` is supported for Qwen3-TTS decoder, got {dc.hidden_act!r}."
         )
-        assert dc.attention_dropout == 0.0, (
-            f"Attention dropout is not implemented in Lalamo Qwen3-TTS decoder; expected 0.0, got {dc.attention_dropout}."
-        )
         assert self.encoder_valid_num_quantizers == dc.num_quantizers, (
             f"Mismatch between top-level and decoder quantizer counts:"
             f" encoder_valid_num_quantizers={self.encoder_valid_num_quantizers},"

@@ -106,6 +106,8 @@ def load_qwen3_tts_residual_unit(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> ResidualUnit:
+    assert isinstance(module.act1, SnakeBeta)
+    assert isinstance(module.act2, SnakeBeta)
     act1 = load_qwen3_tts_snake_beta(module.act1, weights_dict, path / "act1")
     conv1 = load_causal_conv1d(module.conv1, weights_dict, path / "conv1" / "conv")
     act2 = load_qwen3_tts_snake_beta(module.act2, weights_dict, path / "act2")
@@ -122,6 +124,7 @@ def load_qwen3_tts_decoder_block(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> DecoderBlock:
+    assert isinstance(module.snake, SnakeBeta)
     snake = load_qwen3_tts_snake_beta(module.snake, weights_dict, path / "block" / "0")
     trans_conv = load_causal_transpose_conv1d(
         module.trans_conv,
