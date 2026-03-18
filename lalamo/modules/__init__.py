@@ -1,5 +1,6 @@
 from .activations import GELU, Activation, Identity, SiLU
 from .audio.audio_decoder import TTSAudioDecoder
+from .audio.latent_tts import LatentTTSConfig, LatentTTSGenerationConfig, LatentTTSModel, LatentTTSOutputs
 from .audio.text_decoder import TTSTextDecoder
 from .audio.text_to_speech import TTSConfig, TTSModel
 from .audio.vocoders import NoopVocoder, Vocoder, VocoderConfig
@@ -123,6 +124,10 @@ __all__ = [
     "Identity",
     "KVCacheLayer",
     "LalamoModule",
+    "LatentTTSConfig",
+    "LatentTTSGenerationConfig",
+    "LatentTTSModel",
+    "LatentTTSOutputs",
     "LinearBase",
     "LinearConfig",
     "LinearScalingRoPEConfig",

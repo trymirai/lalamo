@@ -29,11 +29,13 @@ from lalamo.models import (
     GenerationConfig,
     LanguageModel,
     LanguageModelConfig,
+    LatentTTSGenerator,
+    LatentTTSGeneratorConfig,
     Qwen3TTSGenerator,
     TTSGenerator,
     TTSGeneratorConfig,
 )
-from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
+from lalamo.modules import Classifier, Decoder, LalamoModule, LatentTTSModel, TTSModel
 from lalamo.modules.audio.fishaudio import FishAudioTextDecoder
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
 from lalamo.modules.common import ShardingConfig, use_sharding
@@ -94,7 +96,7 @@ class ModelMetadata:
     repo: str
     use_cases: tuple[UseCase, ...]
     model_type: ModelType
-    model_config: LanguageModelConfig | ClassifierModelConfig | TTSGeneratorConfig
+    model_config: LanguageModelConfig | ClassifierModelConfig | TTSGeneratorConfig | LatentTTSGeneratorConfig
     grammar_start_tokens: tuple[str, ...]
 
 
@@ -147,7 +149,7 @@ def download_config_file(
 
 
 class ImportResults(NamedTuple):
-    model: LanguageModel | ClassifierModel | TTSGenerator
+    model: LanguageModel | ClassifierModel | TTSGenerator | LatentTTSGenerator
     metadata: ModelMetadata
 
 
@@ -529,6 +531,65 @@ def _import_tts_model(
     return (tts_generator, tts_generator_config)
 
 
+def _import_latent_tts_model(
+    model_spec: ModelSpec,
+    *,
+    context_length: int | None = None,
+    precision: DTypeLike | None = None,
+    accumulation_precision: DTypeLike = jnp.float32,
+    progress_callback: Callable[[StatusEvent], None] | None = None,
+) -> tuple[LatentTTSGenerator, LatentTTSGeneratorConfig]:
+    with _download_weights_and_config_files(
+        model_spec,
+        progress_callback=progress_callback,
+    ) as (model_weights_paths, config_path, extra_config_paths):
+        foreign_config = model_spec.config_type.from_json(config_path, extra_config_paths)
+        if precision is None:
+            precision = foreign_config.default_precision
+
+        tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, None, progress_callback)
+
+        latent_tts_model = _load_main_processing_module(
+            model_spec,
+            model_weights_paths,
+            precision,
+            foreign_config,
+            progress_callback,
+            context_length,
+            accumulation_precision,
+        )
+
+        assert isinstance(latent_tts_model, LatentTTSModel)
+        if progress_callback is not None:
+            progress_callback(FinishedInitializingModelEvent())
+
+    assert isinstance(model_spec.configs.chat_template, str)
+    tts_request_factory_config = TTSMessageProcessorConfig(
+        prompt_template=model_spec.configs.chat_template,
+    )
+    message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
+
+    latent_tts_config = foreign_config.to_lalamo_config(
+        context_length=context_length,
+        activation_precision=precision,
+        accumulation_precision=precision,
+        metadata_dict={},
+    )
+
+    generator_config = LatentTTSGeneratorConfig(
+        latent_tts_config=latent_tts_config,
+        message_processor_config=message_processor.config,
+    )
+
+    generator = LatentTTSGenerator(
+        config=generator_config,
+        latent_tts_model=latent_tts_model,
+        message_processor=message_processor,
+    )
+
+    return (generator, generator_config)
+
+
 def import_model(
     model_spec: ModelSpec | str,
     *,
@@ -564,6 +625,14 @@ def import_model(
                 )
             case ModelType.TTS_MODEL:
                 model, config = _import_tts_model(
+                    model_spec,
+                    context_length=context_length,
+                    precision=precision,
+                    accumulation_precision=accumulation_precision,
+                    progress_callback=progress_callback,
+                )
+            case ModelType.LATENT_TTS_MODEL:
+                model, config = _import_latent_tts_model(
                     model_spec,
                     context_length=context_length,
                     precision=precision,

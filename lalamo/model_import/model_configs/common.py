@@ -9,12 +9,13 @@ import cattrs
 from jaxtyping import Array, DTypeLike
 
 from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
+from lalamo.modules.audio.latent_tts import LatentTTSConfig
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 
-__all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
+__all__ = ["ForeignClassifierConfig", "ForeignLatentTTSConfig", "ForeignLMConfig"]
 
-SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig
+SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig | LatentTTSConfig
 
 
 @dataclass(frozen=True)
@@ -146,3 +147,23 @@ class ForeignTTSConfig(ForeignConfig, RegistryABC):
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> TTSConfig:
         return self.to_tts_config(context_length, activation_precision, accumulation_precision)
+
+
+@dataclass(frozen=True)
+class ForeignLatentTTSConfig(ForeignConfig, RegistryABC):
+    @abstractmethod
+    def to_latent_tts_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+    ) -> LatentTTSConfig: ...
+
+    def to_lalamo_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
+    ) -> LatentTTSConfig:
+        return self.to_latent_tts_config(context_length, activation_precision, accumulation_precision)

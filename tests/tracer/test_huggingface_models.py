@@ -1,7 +1,6 @@
 import pytest
 import torch
 
-from tests.common import tolerance
 from tests.helpers import unsi
 from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer

@@ -37,6 +37,7 @@ class ModelType(StrEnum):
     LANGUAGE_MODEL = "language_model"
     CLASSIFIER_MODEL = "classifier_model"
     TTS_MODEL = "tts_model"
+    LATENT_TTS_MODEL = "latent_tts_model"
 
 
 class WeightsType(Enum):

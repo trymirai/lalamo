@@ -1,4 +1,4 @@
-from .common import ForeignClassifierConfig, ForeignConfig, ForeignLMConfig, ForeignTTSConfig
+from .common import ForeignClassifierConfig, ForeignConfig, ForeignLatentTTSConfig, ForeignLMConfig, ForeignTTSConfig
 from .huggingface import (
     HFGemma2Config,
     HFGemma3Config,
@@ -19,6 +19,7 @@ from .huggingface import (
 __all__ = [
     "ForeignClassifierConfig",
     "ForeignConfig",
+    "ForeignLatentTTSConfig",
     "ForeignLMConfig",
     "ForeignTTSConfig",
     "HFGPTOssConfig",

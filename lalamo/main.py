@@ -1,3 +1,4 @@
+import json
 import random
 import re
 import shutil
@@ -67,6 +68,7 @@ from lalamo.models import (
     ClassifierModelConfig,
     FishAudioTTSGenerator,
     LanguageModelConfig,
+    LatentTTSGenerator,
     Qwen3TTSGenerator,
 )
 from lalamo.models.common import BatchSizesComputedEvent
@@ -145,6 +147,15 @@ def _closest_repo(query: str, repo_ids: list[str], min_score: float = 80) -> str
     if closest_match and score >= min_score:
         return closest_match
     return None
+
+
+def _is_latent_tts_model(model_path: Path) -> bool:
+    config_path = model_path / "config.json"
+    if not config_path.exists():
+        return False
+    with open(config_path) as f:
+        config_json = json.load(f)
+    return config_json.get("model_type") == "latent_tts_model"
 
 
 def _error(message: str) -> None:
@@ -401,7 +412,12 @@ def tts(
         raise Exit(1)
 
     console.print(f"🤖 Loading model from specified path: {model_path}.")
-    model = TTSGenerator.load_model(model_path)
+
+    model: TTSGenerator | LatentTTSGenerator
+    if _is_latent_tts_model(model_path):
+        model = LatentTTSGenerator.load_model(model_path)
+    else:
+        model = TTSGenerator.load_model(model_path)
 
     if isinstance(model, (FishAudioTTSGenerator, Qwen3TTSGenerator)):
         if speaker_id is None:
