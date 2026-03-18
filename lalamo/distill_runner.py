@@ -252,15 +252,20 @@ def _tokenize_conversations(
     return tokenized_sequences
 
 
-def _make_batches(sequences: list[Int[Array, " seq_len"]], *, batch_size: int) -> list[DistillBatch]:
+def _make_batches(
+    sequences: list[Int[Array, " seq_len"]],
+    *,
+    batch_size: int,
+    fixed_sequence_length: int | None = None,
+) -> list[DistillBatch]:
     batches: list[DistillBatch] = []
     for start in range(0, len(sequences), batch_size):
         batch_sequences = sequences[start : start + batch_size]
         if not batch_sequences:
             continue
 
-        max_length = max(sequence.shape[0] for sequence in batch_sequences)
-        padded = jnp.zeros((len(batch_sequences), max_length), dtype=jnp.int32)
+        pad_length = fixed_sequence_length or max(sequence.shape[0] for sequence in batch_sequences)
+        padded = jnp.zeros((len(batch_sequences), pad_length), dtype=jnp.int32)
         lengths = jnp.array([sequence.shape[0] for sequence in batch_sequences], dtype=jnp.int32)
 
         for row, sequence in enumerate(batch_sequences):
@@ -564,8 +569,13 @@ def distill(
                 )
             train_items = tokenized[: config.train_examples]
             eval_items = tokenized[config.train_examples : config.train_examples + config.eval_examples]
-            train_batches = _make_batches(train_items, batch_size=device_batch_size)
-            eval_batches = _make_batches(eval_items, batch_size=device_batch_size)
+            fixed_seq_len = config.max_sequence_length if mesh is not None else None
+            train_batches = _make_batches(
+                train_items, batch_size=device_batch_size, fixed_sequence_length=fixed_seq_len,
+            )
+            eval_batches = _make_batches(
+                eval_items, batch_size=device_batch_size, fixed_sequence_length=fixed_seq_len,
+            )
         case TrainingMode.TRACE_TOPK:
             traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
             if len(traces) < config.train_examples + config.eval_examples:
