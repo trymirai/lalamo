@@ -580,7 +580,9 @@ def distill(
     callbacks.finished_loading_dataset()
 
     if mesh is not None:
-        eval_batches = [_shard_batch(b, mesh) for b in eval_batches]
+        is_shardable = lambda b: b.token_ids.shape[0] % config.num_devices == 0  # noqa: E731
+        train_batches = [_shard_batch(b, mesh) for b in train_batches if is_shardable(b)]
+        eval_batches = [_shard_batch(b, mesh) for b in eval_batches if is_shardable(b)]
 
     distill_config = DistillTrainConfig(
         master_dtype=jnp.float32,
@@ -683,8 +685,6 @@ def distill(
         )
         for step in range(completed_steps + 1, config.num_steps + 1):
             microbatches = tuple(next(microbatch_iterator) for _ in range(config.gradient_accumulation_steps))
-            if mesh is not None:
-                microbatches = tuple(_shard_batch(mb, mesh) for mb in microbatches)
             current_training_state = optimizer_state.training_state
 
             if executed_steps == 0:
