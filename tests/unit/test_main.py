@@ -28,6 +28,12 @@ def test_distill_cli_invokes_runner(mock_distill: Mock, tmp_path: Path) -> None:
             str(output_dir),
             "--num-steps",
             "1",
+            "--warmup-steps",
+            "8",
+            "--gradient-clip-norm",
+            "0.01",
+            "--gradient-accumulation-steps",
+            "4",
             "--lora-rank",
             "16",
             "--bits",
@@ -45,5 +51,8 @@ def test_distill_cli_invokes_runner(mock_distill: Mock, tmp_path: Path) -> None:
     assert config.dataset_path == dataset_path
     assert config.output_dir == output_dir
     assert config.num_steps == 1
+    assert config.warmup_steps == 8
+    assert config.gradient_clip_norm == 0.01
+    assert config.gradient_accumulation_steps == 4
     assert config.lora_rank == 16
     assert config.quantization_mode == QuantizationMode.UINT8

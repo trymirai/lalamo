@@ -11,10 +11,13 @@ from lalamo.distillation import (
     DistillTrainConfig,
     OptimizerGroup,
     TraceDistillBatch,
+    apply_distill_gradients,
     compute_distill_batch_metrics,
     compute_distill_kl_loss,
+    compute_distill_step_gradients,
     compute_trace_distill_batch_metrics,
     compute_trace_distill_kl_loss,
+    compute_trace_distill_step_gradients,
     distill_train_step,
     get_muon_weight_dimension_numbers,
     get_optimizer_group,
@@ -586,6 +589,53 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
     assert final_metrics.loss < initial_metrics.loss * 0.5
 
 
+def test_applying_distill_step_gradients_matches_distill_train_step() -> None:
+    teacher = _make_tiny_llama_decoder(key=jax.random.key(17))
+    student = eqx.tree_at(
+        lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
+        teacher,
+        teacher.transformer.layers[0].mixer.qkv_projection.weights + 0.5,
+    )
+    batch = DistillBatch(
+        token_ids=jnp.array([[1, 2, 3, 4, 5, 6, 7, 8]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([8], dtype=jnp.int32),
+    )
+    config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
+    optimizer = optax.sgd(0.05)
+    training_state = initialize_distill_training_state(student, config)
+    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+
+    step_optimizer_state, step_metrics = distill_train_step(
+        optimizer_state,
+        optimizer,
+        student,
+        teacher,
+        batch,
+        config,
+    )
+    grads, grad_metrics = compute_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        teacher,
+        batch,
+        config,
+    )
+    applied_optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
+
+    assert jnp.isclose(step_metrics.loss, grad_metrics.loss)
+    assert step_metrics.valid_tokens == grad_metrics.valid_tokens
+
+    step_weights = tuple(
+        parameter.master_weight for parameter in step_optimizer_state.training_state.trainable_parameters
+    )
+    applied_weights = tuple(
+        parameter.master_weight for parameter in applied_optimizer_state.training_state.trainable_parameters
+    )
+    assert len(step_weights) == len(applied_weights)
+    for step_weight, applied_weight in zip(step_weights, applied_weights, strict=True):
+        assert jnp.allclose(step_weight, applied_weight)
+
+
 def test_trace_distill_train_step_reduces_trace_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(16))
     student = eqx.tree_at(
@@ -620,6 +670,48 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
 
     assert initial_metrics.loss > 1e-5
     assert final_metrics.loss < initial_metrics.loss
+
+
+def test_applying_trace_distill_step_gradients_matches_trace_distill_train_step() -> None:
+    teacher = _make_tiny_llama_decoder(key=jax.random.key(18))
+    student = eqx.tree_at(
+        lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
+        teacher,
+        teacher.transformer.layers[0].mixer.qkv_projection.weights + 2.0,
+    )
+    trace_batch, _ = _make_trace_batch_from_decoder(teacher)
+    config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
+    optimizer = optax.sgd(0.05)
+    training_state = initialize_distill_training_state(student, config)
+    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+
+    step_optimizer_state, step_metrics = trace_distill_train_step(
+        optimizer_state,
+        optimizer,
+        student,
+        trace_batch,
+        config,
+    )
+    grads, grad_metrics = compute_trace_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        trace_batch,
+        config,
+    )
+    applied_optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
+
+    assert jnp.isclose(step_metrics.loss, grad_metrics.loss)
+    assert step_metrics.valid_tokens == grad_metrics.valid_tokens
+
+    step_weights = tuple(
+        parameter.master_weight for parameter in step_optimizer_state.training_state.trainable_parameters
+    )
+    applied_weights = tuple(
+        parameter.master_weight for parameter in applied_optimizer_state.training_state.trainable_parameters
+    )
+    assert len(step_weights) == len(applied_weights)
+    for step_weight, applied_weight in zip(step_weights, applied_weights, strict=True):
+        assert jnp.allclose(step_weight, applied_weight)
 
 
 def test_materialize_returns_module_unchanged_when_nothing_trainable() -> None:

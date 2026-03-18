@@ -36,10 +36,13 @@ __all__ = [
     "DistillTrainingState",
     "OptimizerGroup",
     "TraceDistillBatch",
+    "apply_distill_gradients",
     "compute_distill_batch_metrics",
     "compute_distill_kl_loss",
+    "compute_distill_step_gradients",
     "compute_trace_distill_batch_metrics",
     "compute_trace_distill_kl_loss",
+    "compute_trace_distill_step_gradients",
     "distill_train_step",
     "get_muon_weight_dimension_numbers",
     "get_optimizer_group",
@@ -153,24 +156,22 @@ def _inject_qlora_linear(
         lora_scale=lora_scale,
     )
 
-    down_key, up_key = jax.random.split(key)
     leading_dims = linear.weights.shape[:-2]
     hidden_lora_rank = linear.num_outputs * lora_rank
     max_down_abs_value = 1 / math.sqrt(linear.input_dim)
     lora_down_weights = jax.random.uniform(
-        down_key,
+        key,
         (*leading_dims, linear.input_dim, hidden_lora_rank),
         minval=-max_down_abs_value,
         maxval=max_down_abs_value,
         dtype=qlora_config.activation_precision,
     )
-    up_keys = jax.random.split(up_key, linear.num_outputs)
     lora_up_weights = tuple(
         jnp.zeros(
             (*leading_dims, lora_rank, output_dim),
             dtype=qlora_config.activation_precision,
         )
-        for _, output_dim in zip(up_keys, linear.output_dims, strict=True)
+        for output_dim in linear.output_dims
     )
 
     return QLoRALinear(
@@ -198,21 +199,18 @@ def _inject_qlora_linear_config(
     )
 
 
+def _is_replaceable_quantized_linear(leaf: object) -> bool:
+    return isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
+
+
 def inject_lora_adapters[M: eqx.Module](
     module: M,
     lora_rank: int,
     lora_scale: float,
     key: Key[Array, ""],
 ) -> M:
-    flat_with_path, _ = jtu.tree_flatten_with_path(
-        module,
-        is_leaf=lambda leaf: isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear),
-    )
-    quantized_linears = [
-        (path, leaf)
-        for path, leaf in flat_with_path
-        if isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
-    ]
+    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=_is_replaceable_quantized_linear)
+    quantized_linears = [(path, leaf) for path, leaf in flat_with_path if _is_replaceable_quantized_linear(leaf)]
     if not quantized_linears:
         return module
 
@@ -225,11 +223,7 @@ def inject_lora_adapters[M: eqx.Module](
     def maybe_replace(path: tuple[object, ...], leaf: object) -> object:
         return replacement_by_path.get(path, leaf)
 
-    return jax.tree.map_with_path(
-        maybe_replace,
-        module,
-        is_leaf=lambda leaf: isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear),
-    )
+    return jax.tree.map_with_path(maybe_replace, module, is_leaf=_is_replaceable_quantized_linear)
 
 
 def inject_lora_adapter_configs[C](
@@ -659,6 +653,97 @@ def compute_trace_distill_kl_loss(
     return DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
 
+def _materialize_distill_student(
+    student: Decoder,
+    training_state: DistillTrainingState,
+    config: DistillTrainConfig,
+    *,
+    quantization_key: Key[Array, ""] | None = None,
+    quantization_mode: QuantizationMode | None = None,
+) -> Decoder:
+    materialized_student = materialize_trainable_module(student, training_state, config)
+    if quantization_key is not None and quantization_mode is not None:
+        return stochastically_quantize_module(materialized_student, quantization_mode, quantization_key)
+    return materialized_student
+
+
+@eqx.filter_jit
+def compute_distill_step_gradients(
+    training_state: DistillTrainingState,
+    student: Decoder,
+    teacher: Decoder,
+    batch: DistillBatch,
+    config: DistillTrainConfig,
+    *,
+    quantization_key: Key[Array, ""] | None = None,
+    quantization_mode: QuantizationMode | None = None,
+) -> tuple[tuple[Array, ...], DistillStepMetrics]:
+    current_master_weights = _concrete_master_weights(training_state)
+
+    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
+        current_training_state = _replace_master_weights(training_state, master_weights)
+        materialized_student = _materialize_distill_student(
+            student,
+            current_training_state,
+            config,
+            quantization_key=quantization_key,
+            quantization_mode=quantization_mode,
+        )
+        metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
+        return metrics.loss, metrics
+
+    (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(current_master_weights)
+    return grads, metrics
+
+
+@eqx.filter_jit
+def compute_trace_distill_step_gradients(
+    training_state: DistillTrainingState,
+    student: Decoder,
+    batch: TraceDistillBatch,
+    config: DistillTrainConfig,
+    *,
+    quantization_key: Key[Array, ""] | None = None,
+    quantization_mode: QuantizationMode | None = None,
+) -> tuple[tuple[Array, ...], DistillStepMetrics]:
+    current_master_weights = _concrete_master_weights(training_state)
+
+    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
+        current_training_state = _replace_master_weights(training_state, master_weights)
+        materialized_student = _materialize_distill_student(
+            student,
+            current_training_state,
+            config,
+            quantization_key=quantization_key,
+            quantization_mode=quantization_mode,
+        )
+        metrics = compute_trace_distill_kl_loss(materialized_student, batch)
+        return metrics.loss, metrics
+
+    (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(current_master_weights)
+    return grads, metrics
+
+
+@eqx.filter_jit
+def apply_distill_gradients(
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    grads: tuple[Array, ...],
+) -> DistillOptimizerState:
+    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
+    updates, new_optimizer_state = optimizer.update(
+        grads,
+        optimizer_state.optimizer_state,
+        current_master_weights,
+    )
+    updated_master_weights = optax.apply_updates(current_master_weights, updates)
+    updated_training_state = _replace_master_weights(optimizer_state.training_state, updated_master_weights)
+    return DistillOptimizerState(
+        training_state=updated_training_state,
+        optimizer_state=new_optimizer_state,
+    )
+
+
 @eqx.filter_jit
 def distill_train_step(
     optimizer_state: DistillOptimizerState,
@@ -671,39 +756,16 @@ def distill_train_step(
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
 ) -> tuple[DistillOptimizerState, DistillStepMetrics]:
-    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
-
-    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
-        training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
-        materialized_student = materialize_trainable_module(student, training_state, config)
-        if quantization_key is not None and quantization_mode is not None:
-            materialized_student = stochastically_quantize_module(
-                materialized_student,
-                quantization_mode,
-                quantization_key,
-            )
-        metrics = compute_distill_kl_loss(materialized_student, teacher, batch)
-        return metrics.loss, metrics
-
-    (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-        current_master_weights,
+    grads, metrics = compute_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        teacher,
+        batch,
+        config,
+        quantization_key=quantization_key,
+        quantization_mode=quantization_mode,
     )
-    del loss
-
-    updates, new_optimizer_state = optimizer.update(
-        grads,
-        optimizer_state.optimizer_state,
-        current_master_weights,
-    )
-    updated_master_weights = optax.apply_updates(current_master_weights, updates)
-    updated_training_state = _replace_master_weights(optimizer_state.training_state, updated_master_weights)
-    return (
-        DistillOptimizerState(
-            training_state=updated_training_state,
-            optimizer_state=new_optimizer_state,
-        ),
-        metrics,
-    )
+    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics
 
 
 @eqx.filter_jit
@@ -717,36 +779,12 @@ def trace_distill_train_step(
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
 ) -> tuple[DistillOptimizerState, DistillStepMetrics]:
-    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
-
-    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
-        training_state = _replace_master_weights(optimizer_state.training_state, master_weights)
-        materialized_student = materialize_trainable_module(student, training_state, config)
-        if quantization_key is not None and quantization_mode is not None:
-            materialized_student = stochastically_quantize_module(
-                materialized_student,
-                quantization_mode,
-                quantization_key,
-            )
-        metrics = compute_trace_distill_kl_loss(materialized_student, batch)
-        return metrics.loss, metrics
-
-    (loss, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(
-        current_master_weights,
+    grads, metrics = compute_trace_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        batch,
+        config,
+        quantization_key=quantization_key,
+        quantization_mode=quantization_mode,
     )
-    del loss
-
-    updates, new_optimizer_state = optimizer.update(
-        grads,
-        optimizer_state.optimizer_state,
-        current_master_weights,
-    )
-    updated_master_weights = optax.apply_updates(current_master_weights, updates)
-    updated_training_state = _replace_master_weights(optimizer_state.training_state, updated_master_weights)
-    return (
-        DistillOptimizerState(
-            training_state=updated_training_state,
-            optimizer_state=new_optimizer_state,
-        ),
-        metrics,
-    )
+    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics

@@ -864,7 +864,7 @@ class CliDistillCallbacks(DistillCallbacks):
 
     def loading_models(self) -> None:
         assert self.progress is not None
-        self.loading_task = self.progress.add_task("🧠 [cyan]Loading teacher and student...[/cyan]", total=None)
+        self.loading_task = self.progress.add_task("[cyan]Loading teacher and student...[/cyan]", total=None)
 
     def finished_loading_models(self) -> None:
         assert self.progress is not None
@@ -874,7 +874,7 @@ class CliDistillCallbacks(DistillCallbacks):
 
     def loading_dataset(self) -> None:
         assert self.progress is not None
-        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]", total=None)
+        self.loading_task = self.progress.add_task("[cyan]Loading dataset...[/cyan]", total=None)
 
     def finished_loading_dataset(self) -> None:
         assert self.progress is not None
@@ -882,26 +882,26 @@ class CliDistillCallbacks(DistillCallbacks):
         self.progress.remove_task(self.loading_task)
         self.loading_task = None
         self.training_task = self.progress.add_task(
-            "🧪 [cyan]Distilling...[/cyan]",
+            "[cyan]Distilling...[/cyan]",
             total=self.config.num_steps,
         )
 
     def distillation_progress(self, step: int, num_steps: int) -> None:
         assert self.progress is not None
         if self.training_task is None:
-            self.training_task = self.progress.add_task("🧪 [cyan]Distilling...[/cyan]", total=num_steps)
+            self.training_task = self.progress.add_task("[cyan]Distilling...[/cyan]", total=num_steps)
         self.progress.update(self.training_task, completed=step)
 
     def saving_model(self) -> None:
         assert self.progress is not None
         if self.training_task is not None:
-            self.progress.update(self.training_task, description="💾 [cyan]Saving model...[/cyan]")
+            self.progress.update(self.training_task, description="[cyan]Saving model...[/cyan]")
 
     def finished_saving_model(self, output_model_path: Path) -> None:
         assert self.progress is not None
         if self.training_task is not None:
-            self.progress.update(self.training_task, description="✅ Completed")
-        console.print(f"💾 Distilled model saved to [cyan]{output_model_path}[/cyan]")
+            self.progress.update(self.training_task, description="Completed")
+        console.print(f"Distilled model saved to [cyan]{output_model_path}[/cyan]")
 
     def finished(self, result: DistillResult) -> None:
         table = Table(box=box.ROUNDED)
@@ -980,6 +980,18 @@ def distill(
         float,
         Option(help="Learning rate."),
     ] = 3e-7,
+    warmup_steps: Annotated[
+        int,
+        Option(help="Linearly warm up the learning rate over this many optimizer steps."),
+    ] = 0,
+    gradient_clip_norm: Annotated[
+        float | None,
+        Option(help="Clip gradients by global norm before the optimizer update."),
+    ] = None,
+    gradient_accumulation_steps: Annotated[
+        int,
+        Option(help="Accumulate gradients over this many microbatches per optimizer step."),
+    ] = 1,
     optimizer: Annotated[
         OptimizerName,
         Option(help="Optimizer to use."),
@@ -1042,6 +1054,9 @@ def distill(
             batch_size=batch_size,
             num_steps=num_steps,
             learning_rate=learning_rate,
+            warmup_steps=warmup_steps,
+            gradient_clip_norm=gradient_clip_norm,
+            gradient_accumulation_steps=gradient_accumulation_steps,
             optimizer_name=optimizer,
             quantization_mode=QuantizationMode.from_num_bits(bits),
             lora_rank=lora_rank,

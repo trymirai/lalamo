@@ -2,7 +2,7 @@ import json
 import shutil
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 from itertools import cycle, islice
 from pathlib import Path
@@ -12,7 +12,7 @@ import jax
 import jax.numpy as jnp
 import optax
 from cattrs import Converter
-from jaxtyping import Array, DTypeLike, Int
+from jaxtyping import Array, DTypeLike, Int, Key
 
 from lalamo.common import flatten_parameters
 from lalamo.data import load_hf_parquet, shuffle_dataset
@@ -22,12 +22,15 @@ from lalamo.distillation import (
     DistillBatch,
     DistillOptimizerState,
     DistillParameterSummary,
+    DistillStepMetrics,
     DistillTrainConfig,
     DistillTrainingState,
     TraceDistillBatch,
+    apply_distill_gradients,
     compute_distill_batch_metrics,
+    compute_distill_step_gradients,
     compute_trace_distill_batch_metrics,
-    distill_train_step,
+    compute_trace_distill_step_gradients,
     get_muon_weight_dimension_numbers,
     initialize_distill_optimizer_state,
     initialize_distill_training_state,
@@ -37,7 +40,6 @@ from lalamo.distillation import (
     make_trace_distill_batch,
     materialize_trainable_module,
     summarize_distill_parameters,
-    trace_distill_train_step,
 )
 from lalamo.model_import import ModelMetadata
 from lalamo.models import LanguageModel, LanguageModelConfig
@@ -124,6 +126,9 @@ class DistillConfig:
     batch_size: int = 4
     num_steps: int = 25
     learning_rate: float = 3e-7
+    warmup_steps: int = 0
+    gradient_clip_norm: float | None = None
+    gradient_accumulation_steps: int = 1
     optimizer_name: OptimizerName = OptimizerName.MUON
     quantization_mode: QuantizationMode = QuantizationMode.UINT4
     lora_rank: int | None = None
@@ -151,6 +156,9 @@ class DistillResult:
     num_steps: int
     completed_steps: int
     learning_rate: float
+    warmup_steps: int
+    gradient_clip_norm: float | None
+    gradient_accumulation_steps: int
     seed: int
     optimizer: OptimizerName
     quantization_mode: str
@@ -313,7 +321,7 @@ def _build_lora_student_model(
     lora_rank: int,
     lora_scale: float,
     *,
-    key: jax.Array,
+    key: Key[Array, ""],
 ) -> LanguageModel:
     model_config = inject_lora_adapter_configs(student_model.config.model_config, lora_rank, lora_scale)
     model = inject_lora_adapters(student_model.model, lora_rank, lora_scale, key)
@@ -328,10 +336,22 @@ def _build_lora_student_model(
     )
 
 
-def _load_model_metadata(model_path: Path | str) -> ModelMetadata:
+def _load_model_config_json(model_path: Path | str) -> dict[str, object]:
     model_path = Path(model_path)
     with (model_path / "config.json").open() as config_file:
-        return config_converter.structure(json.load(config_file), ModelMetadata)
+        config_json = json.load(config_file)
+    if not isinstance(config_json, dict):
+        raise TypeError(f"{model_path / 'config.json'} must contain a JSON object")
+    return config_json
+
+
+def _updated_config_json(
+    source_config_json: dict[str, object],
+    updated_model: LanguageModel,
+) -> dict[str, object]:
+    metadata = config_converter.structure(source_config_json, ModelMetadata)
+    updated_metadata = replace(metadata, model_config=updated_model.config)
+    return config_converter.unstructure(updated_metadata, ModelMetadata)
 
 
 def _save_materialized_student(
@@ -344,30 +364,17 @@ def _save_materialized_student(
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    metadata = _load_model_metadata(student_path)
+    source_config_json = _load_model_config_json(student_path)
     updated_model = LanguageModel(
         config=student_model.config,
         model=materialized_student,
         message_processor=student_model.message_processor,
     )
-    updated_metadata = ModelMetadata(
-        toolchain_version=metadata.toolchain_version,
-        vendor=metadata.vendor,
-        family=metadata.family,
-        name=metadata.name,
-        size=metadata.size,
-        quantization=metadata.quantization,
-        repo=metadata.repo,
-        use_cases=metadata.use_cases,
-        model_type=metadata.model_type,
-        model_config=updated_model.config,
-        grammar_start_tokens=metadata.grammar_start_tokens,
-    )
 
     shutil.copy2(student_path / "tokenizer.json", output_path / "tokenizer.json")
 
     with (output_path / "config.json").open("w") as config_file:
-        json.dump(config_converter.unstructure(updated_metadata, ModelMetadata), config_file, indent=4)
+        json.dump(_updated_config_json(source_config_json, updated_model), config_file, indent=4)
     with (output_path / "model.safetensors").open("wb") as weights_file:
         safe_write(weights_file, flatten_parameters(updated_model.export_weights()))
 
@@ -399,19 +406,30 @@ def _build_optimizer(
     name: OptimizerName,
     learning_rate: float,
     training_state: DistillTrainingState,
+    *,
+    warmup_steps: int,
+    gradient_clip_norm: float | None,
 ) -> optax.GradientTransformation:
+    learning_rate_schedule = (
+        learning_rate if warmup_steps <= 0 else optax.linear_schedule(0.0, learning_rate, warmup_steps)
+    )
+
     match name:
         case OptimizerName.ADAMW:
-            return optax.adamw(learning_rate)
+            optimizer = optax.adamw(learning_rate_schedule)
         case OptimizerName.MUON:
-            return optax.contrib.muon(
-                learning_rate=learning_rate,
+            optimizer = optax.contrib.muon(
+                learning_rate=learning_rate_schedule,
                 muon_weight_dimension_numbers=get_muon_weight_dimension_numbers(training_state),
             )
         case OptimizerName.SGD:
-            return optax.sgd(learning_rate)
+            optimizer = optax.sgd(learning_rate_schedule)
         case _:
             raise ValueError(f"Unknown optimizer: {name}")
+
+    if gradient_clip_norm is None:
+        return optimizer
+    return optax.chain(optax.clip_by_global_norm(gradient_clip_norm), optimizer)
 
 
 def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: DTypeLike) -> DTypeLike:
@@ -426,12 +444,62 @@ def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: DTypeLike) -> D
             raise ValueError(f"Unknown compute dtype: {name}")
 
 
+def _accumulate_train_step[BatchT: eqx.Module](
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    microbatches: Sequence[BatchT],
+    train_key: Key[Array, ""],
+    *,
+    stochastic_rounding: bool,
+    compute_step_gradients: Callable[
+        [BatchT, Key[Array, ""] | None],
+        tuple[tuple[Array, ...], DistillStepMetrics],
+    ],
+) -> tuple[DistillOptimizerState, DistillStepMetrics, Key[Array, ""]]:
+    accumulated_grads: tuple[Array, ...] | None = None
+    accumulated_metrics: DistillStepMetrics | None = None
+    total_loss = 0.0
+    total_valid_tokens = 0
+
+    for microbatch in microbatches:
+        train_key, step_key = jax.random.split(train_key)
+        quantization_key = step_key if stochastic_rounding else None
+        grads, metrics = compute_step_gradients(microbatch, quantization_key)
+        accumulated_metrics = metrics
+        valid_tokens = int(metrics.valid_tokens)
+        weighted_grads = tuple(grad * valid_tokens for grad in grads)
+        accumulated_grads = (
+            weighted_grads
+            if accumulated_grads is None
+            else jax.tree.map(lambda total, grad: total + grad, accumulated_grads, weighted_grads)
+        )
+        total_loss += float(metrics.loss) * valid_tokens
+        total_valid_tokens += valid_tokens
+
+    if accumulated_grads is None or accumulated_metrics is None:
+        raise ValueError("Gradient accumulation requires at least one microbatch")
+
+    averaged_grads = tuple(grad / total_valid_tokens for grad in accumulated_grads)
+    accumulated_metrics = DistillStepMetrics(
+        loss=jnp.asarray(total_loss / total_valid_tokens, dtype=jnp.float32),
+        valid_tokens=jnp.asarray(total_valid_tokens, dtype=jnp.int32),
+    )
+    return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), accumulated_metrics, train_key
+
+
 def distill(
     config: DistillConfig,
     *,
     trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
     callbacks_type: Callable[[DistillConfig], DistillCallbacks] = DistillCallbacks,
 ) -> DistillResult:
+    if config.warmup_steps < 0:
+        raise ValueError("warmup_steps must be non-negative")
+    if config.gradient_accumulation_steps < 1:
+        raise ValueError("gradient_accumulation_steps must be at least 1")
+    if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
+        raise ValueError("gradient_clip_norm must be positive when provided")
+
     callbacks = callbacks_type(config)
     callbacks.started()
 
@@ -495,7 +563,13 @@ def distill(
         distill_config,
         trainable_filter=effective_trainable_filter,
     )
-    optimizer = _build_optimizer(config.optimizer_name, config.learning_rate, training_state)
+    optimizer = _build_optimizer(
+        config.optimizer_name,
+        config.learning_rate,
+        training_state,
+        warmup_steps=config.warmup_steps,
+        gradient_clip_norm=config.gradient_clip_norm,
+    )
     optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
     parameter_summary = summarize_distill_parameters(
         iter_parameter_leaves(student_model.model),
@@ -569,52 +643,55 @@ def distill(
     stopped_early = False
 
     with history_path.open("a" if completed_steps > 0 else "w") as history_file:
-        remaining_steps = islice(step_iterator, completed_steps, config.num_steps)
-        for step, batch in enumerate(remaining_steps, start=completed_steps + 1):
-            train_key, step_key = jax.random.split(train_key)
-            quantization_key = step_key if config.stochastic_rounding else None
+        microbatch_iterator = islice(
+            step_iterator,
+            completed_steps * config.gradient_accumulation_steps,
+            None,
+        )
+        for step in range(completed_steps + 1, config.num_steps + 1):
+            microbatches = tuple(next(microbatch_iterator) for _ in range(config.gradient_accumulation_steps))
+            current_training_state = optimizer_state.training_state
 
             if executed_steps == 0:
                 warmup_start = time.perf_counter()
 
             match config.training_mode:
                 case TrainingMode.ONLINE_EXACT:
-                    optimizer_state, _ = distill_train_step(
+                    optimizer_state, train_metrics, train_key = _accumulate_train_step(
                         optimizer_state,
                         optimizer,
-                        student_model.model,
-                        teacher_model.model,
-                        batch,
-                        distill_config,
-                        quantization_key=quantization_key,
-                        quantization_mode=config.quantization_mode,
-                    )
-                    train_metrics = compute_distill_batch_metrics(
-                        materialize_trainable_module(
+                        microbatches,
+                        train_key,
+                        stochastic_rounding=config.stochastic_rounding,
+                        compute_step_gradients=lambda batch,
+                        quantization_key,
+                        training_state=current_training_state: compute_distill_step_gradients(
+                            training_state,
                             student_model.model,
-                            optimizer_state.training_state,
+                            teacher_model.model,
+                            batch,
                             distill_config,
+                            quantization_key=quantization_key,
+                            quantization_mode=config.quantization_mode,
                         ),
-                        teacher_model.model,
-                        batch,
                     )
                 case TrainingMode.TRACE_TOPK:
-                    optimizer_state, _ = trace_distill_train_step(
+                    optimizer_state, train_metrics, train_key = _accumulate_train_step(
                         optimizer_state,
                         optimizer,
-                        student_model.model,
-                        batch,
-                        distill_config,
-                        quantization_key=quantization_key,
-                        quantization_mode=config.quantization_mode,
-                    )
-                    train_metrics = compute_trace_distill_batch_metrics(
-                        materialize_trainable_module(
+                        microbatches,
+                        train_key,
+                        stochastic_rounding=config.stochastic_rounding,
+                        compute_step_gradients=lambda batch,
+                        quantization_key,
+                        training_state=current_training_state: compute_trace_distill_step_gradients(
+                            training_state,
                             student_model.model,
-                            optimizer_state.training_state,
+                            batch,
                             distill_config,
+                            quantization_key=quantization_key,
+                            quantization_mode=config.quantization_mode,
                         ),
-                        batch,
                     )
 
             if executed_steps == 0:
@@ -763,6 +840,9 @@ def distill(
         num_steps=config.num_steps,
         completed_steps=completed_steps,
         learning_rate=config.learning_rate,
+        warmup_steps=config.warmup_steps,
+        gradient_clip_norm=config.gradient_clip_norm,
+        gradient_accumulation_steps=config.gradient_accumulation_steps,
         seed=config.seed,
         optimizer=config.optimizer_name,
         quantization_mode=config.quantization_mode.value,
