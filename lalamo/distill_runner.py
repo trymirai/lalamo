@@ -570,12 +570,13 @@ def distill(
                 )
             train_items = tokenized[: config.train_examples]
             eval_items = tokenized[config.train_examples : config.train_examples + config.eval_examples]
-            fixed_seq_len = config.max_sequence_length if mesh is not None else None
             train_batches = _make_batches(
-                train_items, batch_size=device_batch_size, fixed_sequence_length=fixed_seq_len,
+                train_items, batch_size=device_batch_size,
+                fixed_sequence_length=config.max_sequence_length,
             )
             eval_batches = _make_batches(
-                eval_items, batch_size=device_batch_size, fixed_sequence_length=fixed_seq_len,
+                eval_items, batch_size=device_batch_size,
+                fixed_sequence_length=config.max_sequence_length,
             )
         case TrainingMode.TRACE_TOPK:
             traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
