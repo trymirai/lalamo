@@ -10,11 +10,12 @@ from pathlib import Path
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import optax
 from cattrs import Converter
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, DTypeLike, Int, Key
+from jaxtyping import Array, DTypeLike, Key
 
 from lalamo.common import flatten_parameters
 from lalamo.data import load_hf_parquet, shuffle_dataset
@@ -239,21 +240,21 @@ def _tokenize_conversations(
     *,
     language_model: LanguageModel,
     max_sequence_length: int,
-) -> list[jax.Array]:
-    tokenized_sequences: list[jax.Array] = []
+) -> list[np.ndarray]:
+    tokenized_sequences: list[np.ndarray] = []
 
     for conversation in conversations:
         messages = [message.as_message() for message in conversation]
         token_ids = language_model.message_processor.tokenize_request(messages)
         if len(token_ids) < 2:
             continue
-        tokenized_sequences.append(jnp.array(token_ids[:max_sequence_length], dtype=jnp.int32))
+        tokenized_sequences.append(np.array(token_ids[:max_sequence_length], dtype=np.int32))
 
     return tokenized_sequences
 
 
 def _make_batches(
-    sequences: list[Int[Array, " seq_len"]],
+    sequences: list[np.ndarray],
     *,
     batch_size: int,
     fixed_sequence_length: int | None = None,
@@ -264,14 +265,14 @@ def _make_batches(
         if not batch_sequences:
             continue
 
-        pad_length = fixed_sequence_length or max(sequence.shape[0] for sequence in batch_sequences)
-        padded = jnp.zeros((len(batch_sequences), pad_length), dtype=jnp.int32)
-        lengths = jnp.array([sequence.shape[0] for sequence in batch_sequences], dtype=jnp.int32)
+        pad_length = fixed_sequence_length or max(seq.shape[0] for seq in batch_sequences)
+        padded = np.zeros((len(batch_sequences), pad_length), dtype=np.int32)
+        lengths = np.array([seq.shape[0] for seq in batch_sequences], dtype=np.int32)
 
-        for row, sequence in enumerate(batch_sequences):
-            padded = padded.at[row, : sequence.shape[0]].set(sequence)
+        for row, seq in enumerate(batch_sequences):
+            padded[row, : seq.shape[0]] = seq
 
-        batches.append(DistillBatch(token_ids=padded, lengths_without_padding=lengths))
+        batches.append(DistillBatch(token_ids=jnp.array(padded), lengths_without_padding=jnp.array(lengths)))
 
     return batches
 
