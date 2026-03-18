@@ -58,6 +58,17 @@ from lalamo.common import (
     get_usable_memory_from_bytes,
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.distill_runner import (
+    ComputeDTypeName,
+    DistillCallbacks,
+    DistillConfig,
+    DistillResult,
+    OptimizerName,
+    TrainingMode,
+)
+from lalamo.distill_runner import (
+    distill as _distill,
+)
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -66,6 +77,7 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.quantization import QuantizationMode
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -829,6 +841,221 @@ def generate_replies(
         max_output_length=max_output_length,
         batch_size=batch_size,
         callbacks_type=CliGenerateRepliesCallbacks,
+    )
+
+
+@dataclass
+class CliDistillCallbacks(DistillCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    progress: Progress | None = None
+    loading_task: TaskID | None = None
+    training_task: TaskID | None = None
+
+    def started(self) -> None:
+        self.progress = self.stack.enter_context(
+            Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ),
+        )
+
+    def loading_models(self) -> None:
+        assert self.progress is not None
+        self.loading_task = self.progress.add_task("🧠 [cyan]Loading teacher and student...[/cyan]", total=None)
+
+    def finished_loading_models(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+        self.loading_task = None
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.loading_task = self.progress.add_task("🗂️ [cyan]Loading dataset...[/cyan]", total=None)
+
+    def finished_loading_dataset(self) -> None:
+        assert self.progress is not None
+        assert self.loading_task is not None
+        self.progress.remove_task(self.loading_task)
+        self.loading_task = None
+        self.training_task = self.progress.add_task(
+            "🧪 [cyan]Distilling...[/cyan]",
+            total=self.config.num_steps,
+        )
+
+    def distillation_progress(self, step: int, num_steps: int) -> None:
+        assert self.progress is not None
+        if self.training_task is None:
+            self.training_task = self.progress.add_task("🧪 [cyan]Distilling...[/cyan]", total=num_steps)
+        self.progress.update(self.training_task, completed=step)
+
+    def saving_model(self) -> None:
+        assert self.progress is not None
+        if self.training_task is not None:
+            self.progress.update(self.training_task, description="💾 [cyan]Saving model...[/cyan]")
+
+    def finished_saving_model(self, output_model_path: Path) -> None:
+        assert self.progress is not None
+        if self.training_task is not None:
+            self.progress.update(self.training_task, description="✅ Completed")
+        console.print(f"💾 Distilled model saved to [cyan]{output_model_path}[/cyan]")
+
+    def finished(self, result: DistillResult) -> None:
+        table = Table(box=box.ROUNDED)
+        table.add_column("Metric")
+        table.add_column("Initial", justify="right")
+        table.add_column("Final", justify="right")
+        table.add_row(
+            "KL divergence",
+            f"{result.initial_eval.kl_divergence:.4f}",
+            f"{result.final_eval.kl_divergence:.4f}",
+        )
+        table.add_row(
+            "Top-1 agreement",
+            f"{result.initial_eval.top1_agreement:.4f}",
+            f"{result.final_eval.top1_agreement:.4f}",
+        )
+        table.add_row("Best step", str(result.best_step), "—")
+        console.print(table)
+        self.stack.close()
+
+
+@app.command(help="Distill a quantized model using an unquantized teacher.")
+def distill(
+    teacher_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the teacher model directory.",
+            metavar="TEACHER_PATH",
+        ),
+    ],
+    student_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the student model directory.",
+            metavar="STUDENT_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the training dataset or trace file.",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    output_dir: Annotated[
+        Path,
+        Option(
+            help="Directory for checkpoints, metrics, and the distilled model.",
+        ),
+    ] = DEFAULT_OUTPUT_DIR / "distilled",
+    training_mode: Annotated[
+        TrainingMode,
+        Option(help="Distillation mode to run."),
+    ] = TrainingMode.ONLINE_EXACT,
+    train_examples: Annotated[
+        int,
+        Option(help="Number of examples to use for training."),
+    ] = 256,
+    eval_examples: Annotated[
+        int,
+        Option(help="Number of examples to use for evaluation."),
+    ] = 64,
+    max_sequence_length: Annotated[
+        int,
+        Option(help="Maximum sequence length for tokenized training examples."),
+    ] = 256,
+    batch_size: Annotated[
+        int,
+        Option(help="Batch size."),
+    ] = 4,
+    num_steps: Annotated[
+        int,
+        Option(help="Number of optimization steps."),
+    ] = 25,
+    learning_rate: Annotated[
+        float,
+        Option(help="Learning rate."),
+    ] = 3e-7,
+    optimizer: Annotated[
+        OptimizerName,
+        Option(help="Optimizer to use."),
+    ] = OptimizerName.MUON,
+    bits: Annotated[
+        int,
+        Option(help="Quantization bitness for stochastic rounding."),
+    ] = 4,
+    lora_rank: Annotated[
+        int | None,
+        Option(help="LoRA rank. Omit for full-parameter distillation."),
+    ] = None,
+    lora_scale: Annotated[
+        float,
+        Option(help="LoRA scale."),
+    ] = 1.0,
+    compute_dtype_name: Annotated[
+        ComputeDTypeName,
+        Option(help="Compute dtype for distillation."),
+    ] = ComputeDTypeName.AUTO,
+    eval_every_steps: Annotated[
+        int,
+        Option(help="Evaluate every N steps. Set to 0 to disable periodic eval."),
+    ] = 0,
+    checkpoint_every_steps: Annotated[
+        int,
+        Option(help="Save the latest checkpoint every N steps. Set to 0 to disable periodic checkpoints."),
+    ] = 0,
+    early_stop_patience: Annotated[
+        int,
+        Option(help="Stop after this many evaluations without improvement. Set to 0 to disable."),
+    ] = 0,
+    resume_from: Annotated[
+        Path | None,
+        Option(help="Resume from a checkpoint directory."),
+    ] = None,
+    seed: Annotated[
+        int,
+        Option(help="Random seed."),
+    ] = 0,
+    stochastic_rounding: Annotated[
+        bool,
+        Option(help="Enable stochastic rounding for quantized training leaves."),
+    ] = True,
+    save_checkpoints: Annotated[
+        bool,
+        Option(help="Persist latest and best checkpoints."),
+    ] = True,
+) -> None:
+    _distill(
+        DistillConfig(
+            teacher_path=teacher_path,
+            student_path=student_path,
+            dataset_path=dataset_path,
+            output_dir=output_dir,
+            training_mode=training_mode,
+            train_examples=train_examples,
+            eval_examples=eval_examples,
+            max_sequence_length=max_sequence_length,
+            batch_size=batch_size,
+            num_steps=num_steps,
+            learning_rate=learning_rate,
+            optimizer_name=optimizer,
+            quantization_mode=QuantizationMode.from_num_bits(bits),
+            lora_rank=lora_rank,
+            lora_scale=lora_scale,
+            compute_dtype_name=compute_dtype_name,
+            eval_every_steps=eval_every_steps,
+            checkpoint_every_steps=checkpoint_every_steps,
+            early_stop_patience=early_stop_patience,
+            resume_from=resume_from,
+            seed=seed,
+            stochastic_rounding=stochastic_rounding,
+            save_checkpoints=save_checkpoints,
+        ),
+        callbacks_type=CliDistillCallbacks,
     )
 
 

@@ -1,3 +1,4 @@
+import dataclasses
 import math
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -15,6 +16,13 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.modules.common import ParameterLeafInfo, ParameterNorm, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
+from lalamo.modules.linear import (
+    GroupQuantizedLinear,
+    GroupQuantizedLinearConfig,
+    QLoRALinear,
+    QLoRALinearConfig,
+)
+from lalamo.modules.normalization import Normalization
 from lalamo.quantization import QuantizationMode, stochastic_quantize_weights
 
 __all__ = [
@@ -37,7 +45,10 @@ __all__ = [
     "get_optimizer_group",
     "initialize_distill_optimizer_state",
     "initialize_distill_training_state",
+    "inject_lora_adapter_configs",
+    "inject_lora_adapters",
     "is_leaf_trainable",
+    "lora_trainable_filter",
     "make_trace_distill_batch",
     "materialize_trainable_module",
     "stochastically_quantize_module",
@@ -118,6 +129,131 @@ def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:
     if info.norm == ParameterNorm.SPECTRAL and len(info.shape) == 2:
         return OptimizerGroup.MUON
     return OptimizerGroup.DEFAULT
+
+
+def lora_trainable_filter(info: ParameterLeafInfo) -> bool:
+    return (
+        issubclass(info.owner_type, QLoRALinear)
+        and not info.quantized
+        and info.norm == ParameterNorm.SPECTRAL
+        and len(info.shape) == 2
+    ) or issubclass(info.owner_type, Normalization)
+
+
+def _inject_qlora_linear(
+    linear: GroupQuantizedLinear,
+    lora_rank: int,
+    lora_scale: float,
+    key: Key[Array, ""],
+) -> QLoRALinear:
+    config_arguments = {field.name: getattr(linear.config, field.name) for field in dataclasses.fields(linear.config)}
+    qlora_config = QLoRALinearConfig(
+        **config_arguments,
+        lora_rank=lora_rank,
+        lora_scale=lora_scale,
+    )
+
+    down_key, up_key = jax.random.split(key)
+    leading_dims = linear.weights.shape[:-2]
+    hidden_lora_rank = linear.num_outputs * lora_rank
+    max_down_abs_value = 1 / math.sqrt(linear.input_dim)
+    lora_down_weights = jax.random.uniform(
+        down_key,
+        (*leading_dims, linear.input_dim, hidden_lora_rank),
+        minval=-max_down_abs_value,
+        maxval=max_down_abs_value,
+        dtype=qlora_config.activation_precision,
+    )
+    up_keys = jax.random.split(up_key, linear.num_outputs)
+    lora_up_weights = tuple(
+        jnp.zeros(
+            (*leading_dims, lora_rank, output_dim),
+            dtype=qlora_config.activation_precision,
+        )
+        for _, output_dim in zip(up_keys, linear.output_dims, strict=True)
+    )
+
+    return QLoRALinear(
+        config=qlora_config,
+        output_dims=linear.output_dims,
+        weights=linear.weights,
+        scales=linear.scales,
+        zero_points=linear.zero_points,
+        biases=linear.biases,
+        lora_down_weights=lora_down_weights,
+        lora_up_weights=lora_up_weights,
+    )
+
+
+def _inject_qlora_linear_config(
+    config: GroupQuantizedLinearConfig,
+    lora_rank: int,
+    lora_scale: float,
+) -> QLoRALinearConfig:
+    config_arguments = {field.name: getattr(config, field.name) for field in dataclasses.fields(config)}
+    return QLoRALinearConfig(
+        **config_arguments,
+        lora_rank=lora_rank,
+        lora_scale=lora_scale,
+    )
+
+
+def inject_lora_adapters[M: eqx.Module](
+    module: M,
+    lora_rank: int,
+    lora_scale: float,
+    key: Key[Array, ""],
+) -> M:
+    flat_with_path, _ = jtu.tree_flatten_with_path(
+        module,
+        is_leaf=lambda leaf: isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear),
+    )
+    quantized_linears = [
+        (path, leaf)
+        for path, leaf in flat_with_path
+        if isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
+    ]
+    if not quantized_linears:
+        return module
+
+    keys = jax.random.split(key, len(quantized_linears))
+    replacement_by_path = {
+        path: _inject_qlora_linear(linear, lora_rank, lora_scale, linear_key)
+        for (path, linear), linear_key in zip(quantized_linears, keys, strict=True)
+    }
+
+    def maybe_replace(path: tuple[object, ...], leaf: object) -> object:
+        return replacement_by_path.get(path, leaf)
+
+    return jax.tree.map_with_path(
+        maybe_replace,
+        module,
+        is_leaf=lambda leaf: isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear),
+    )
+
+
+def inject_lora_adapter_configs[C](
+    config: C,
+    lora_rank: int,
+    lora_scale: float,
+) -> C:
+    if isinstance(config, GroupQuantizedLinearConfig) and not isinstance(config, QLoRALinearConfig):
+        return _inject_qlora_linear_config(config, lora_rank, lora_scale)
+    if dataclasses.is_dataclass(config):
+        updated_fields = {
+            field.name: inject_lora_adapter_configs(
+                getattr(config, field.name),
+                lora_rank,
+                lora_scale,
+            )
+            for field in dataclasses.fields(config)
+        }
+        return type(config)(**updated_fields)
+    if isinstance(config, tuple):
+        return tuple(inject_lora_adapter_configs(item, lora_rank, lora_scale) for item in config)
+    if isinstance(config, list):
+        return [inject_lora_adapter_configs(item, lora_rank, lora_scale) for item in config]
+    return config
 
 
 def summarize_distill_parameters(

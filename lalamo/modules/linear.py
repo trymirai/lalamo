@@ -959,31 +959,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> LinearBase:
-        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
-        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
-        hidden_lora_rank = len(output_dims) * self.lora_rank
-        lora_down_weights = dummy_array(
-            (input_dim, hidden_lora_rank),
-            dtype=self.activation_precision,
-        )
-        lora_up_weights = tuple(
-            dummy_array(
-                (self.lora_rank, output_dim),
-                dtype=self.activation_precision,
-            )
-            for output_dim in output_dims
-        )
-
-        return QLoRALinear(
-            config=self,
-            output_dims=output_dims,
-            weights=group_quantized_linear.weights,
-            scales=group_quantized_linear.scales,
-            biases=group_quantized_linear.biases,
-            zero_points=group_quantized_linear.zero_points,
-            lora_down_weights=lora_down_weights,
-            lora_up_weights=lora_up_weights,
-        )
+        return self._empty_general((), input_dim, output_dims, has_biases)
 
     def _empty_general(
         self,
@@ -992,8 +968,23 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> LinearBase:
-        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
-        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
+        weights = dummy_array(
+            (*leading_dims, sum(output_dims), input_dim),
+            dtype=self.activation_precision,
+        )
+        num_groups = input_dim // self.group_size
+        scales = dummy_array(
+            (*leading_dims, sum(output_dims), num_groups),
+            dtype=self.activation_precision,
+        )
+        zero_points = dummy_array(
+            (*leading_dims, sum(output_dims), num_groups),
+            dtype=self.activation_precision,
+        )
+        if has_biases:
+            biases = dummy_array((*leading_dims, sum(output_dims)), dtype=self.activation_precision)
+        else:
+            biases = None
 
         hidden_lora_rank = len(output_dims) * self.lora_rank
         lora_down_weights = dummy_array(
@@ -1011,10 +1002,10 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         return QLoRALinear(
             config=self,
             output_dims=output_dims,
-            weights=group_quantized_linear.weights,
-            scales=group_quantized_linear.scales,
-            biases=group_quantized_linear.biases,
-            zero_points=group_quantized_linear.zero_points,
+            weights=weights,
+            scales=scales,
+            biases=biases,
+            zero_points=zero_points,
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
         )

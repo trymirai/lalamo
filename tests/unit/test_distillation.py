@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -18,7 +20,10 @@ from lalamo.distillation import (
     get_optimizer_group,
     initialize_distill_optimizer_state,
     initialize_distill_training_state,
+    inject_lora_adapter_configs,
+    inject_lora_adapters,
     is_leaf_trainable,
+    lora_trainable_filter,
     make_trace_distill_batch,
     materialize_trainable_module,
     stochastically_quantize_module,
@@ -31,6 +36,7 @@ from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
+    QLoRALinear,
     QLoRALinearConfig,
 )
 from lalamo.modules.token_mixers.convolutions import SeparableCausalConvConfig
@@ -50,6 +56,12 @@ class BufferModule(eqx.Module):
 class FrozenModule(eqx.Module):
     left: jax.Array = field(trainable=False)
     right: jax.Array = field(trainable=False, norm=ParameterNorm.L_INF)
+
+
+@dataclass(frozen=True)
+class LinearConfigWrapper:
+    primary: GroupQuantizedLinearConfig
+    secondary: tuple[GroupQuantizedLinearConfig, ...]
 
 
 def test_iter_parameter_leaves_detects_aliases() -> None:
@@ -121,6 +133,23 @@ def test_q_lora_policy_prefers_adapter_weights() -> None:
     assert is_leaf_trainable(leaves["scales"])
     assert get_optimizer_group(leaves["weights"]) == OptimizerGroup.MUON
     assert get_optimizer_group(leaves["lora_down_weights"]) == OptimizerGroup.MUON
+
+
+def test_q_lora_linear_config_empty_builds_q_lora_linear() -> None:
+    config = QLoRALinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+        lora_rank=2,
+        lora_scale=1.0,
+    )
+
+    layer = config.empty(4, (4,), has_biases=True)
+
+    assert isinstance(layer, QLoRALinear)
+    assert layer.lora_down_weights.shape == (4, 2)
+    assert layer.lora_up_weights[0].shape == (2, 4)
 
 
 def test_quant_aux_is_trainable_by_default() -> None:
@@ -236,6 +265,69 @@ def test_trainable_filter_narrows_to_quantized_only() -> None:
     )
     assert filtered_summary.trainable_parameters < full_summary.trainable_parameters
     assert filtered_summary.total_parameters == full_summary.total_parameters
+
+
+def test_inject_lora_adapters_wraps_group_quantized_linear_without_changing_base_weights() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (3, 5), has_biases=True, key=jax.random.key(21))
+    injected_layer = inject_lora_adapters(layer, 2, 0.5, jax.random.key(22))
+
+    assert isinstance(injected_layer, QLoRALinear)
+    assert injected_layer.config.lora_rank == 2
+    assert injected_layer.config.lora_scale == 0.5
+    assert jnp.array_equal(injected_layer.weights, layer.weights)
+    assert jnp.array_equal(injected_layer.scales, layer.scales)
+    assert injected_layer.lora_down_weights.shape == (4, 4)
+    assert injected_layer.lora_up_weights[0].shape == (2, 3)
+    assert injected_layer.lora_up_weights[1].shape == (2, 5)
+    assert jnp.all(injected_layer.lora_up_weights[0] == 0)
+    assert jnp.all(injected_layer.lora_up_weights[1] == 0)
+
+
+def test_inject_lora_adapter_configs_wraps_group_quantized_linear_configs() -> None:
+    linear_config = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    )
+    config = LinearConfigWrapper(
+        primary=linear_config,
+        secondary=(linear_config,),
+    )
+
+    injected_config = inject_lora_adapter_configs(config, 2, 0.5)
+
+    assert isinstance(injected_config.primary, QLoRALinearConfig)
+    assert isinstance(injected_config.secondary[0], QLoRALinearConfig)
+    assert injected_config.primary.lora_rank == 2
+    assert injected_config.primary.lora_scale == 0.5
+    assert injected_config.primary.weight_quantization_mode == linear_config.weight_quantization_mode
+
+
+def test_lora_trainable_filter_keeps_only_lora_and_auxiliary_leaves() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (4,), has_biases=True, key=jax.random.key(23))
+    injected_layer = inject_lora_adapters(layer, 2, 1.0, jax.random.key(24))
+
+    state = initialize_distill_training_state(
+        injected_layer,
+        DistillTrainConfig(),
+        trainable_filter=lora_trainable_filter,
+    )
+
+    assert {parameter.path for parameter in state.trainable_parameters} == {
+        "lora_down_weights",
+        "lora_up_weights[0]",
+    }
 
 
 def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
