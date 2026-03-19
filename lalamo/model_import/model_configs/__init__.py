@@ -11,6 +11,7 @@ from .huggingface import (
     HFQwen2Config,
     HFQwen3Config,
     HFQwen3NextConfig,
+    HFQwen35Config,
     HFSmolLM3Config,
 )
 
@@ -30,5 +31,6 @@ __all__ = [
     "HFQwen2Config",
     "HFQwen3Config",
     "HFQwen3NextConfig",
+    "HFQwen35Config",
     "HFSmolLM3Config",
 ]

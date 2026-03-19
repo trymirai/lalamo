@@ -182,7 +182,7 @@ def decrease_batchsize_on_oom[T](
                 # to make sure we don't ever miss/duplicate outputs
                 first_batch_completed = True
             break
-        except JaxRuntimeError:
+        except JaxRuntimeError as e:
             if first_batch_completed:
                 raise
             # because OOM's sometimes generate stuff that won't be garbage collected,
@@ -191,7 +191,7 @@ def decrease_batchsize_on_oom[T](
             if new_bs == 1 and effective_batch_size == 1:
                 raise
             warnings.warn(
-                f"OOM detected. Reducing batch size {effective_batch_size} -> {new_bs}.",
+                f"OOM detected ({e}). Reducing batch size {effective_batch_size} -> {new_bs}.",
                 LalamoWarning,
                 stacklevel=3,
             )

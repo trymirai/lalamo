@@ -15,6 +15,8 @@ from .common import (
     config_converter,
     field,
     get_current_sharding_config,
+    pad_and_apply_data_sharding,
+    sharded_field,
 )
 from .decoder import (
     Decoder,
@@ -188,4 +190,6 @@ __all__ = [
     "config_converter",
     "field",
     "get_current_sharding_config",
+    "pad_and_apply_data_sharding",
+    "sharded_field",
 ]

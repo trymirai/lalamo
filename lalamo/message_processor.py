@@ -184,7 +184,7 @@ class MessageProcessor:
             return AssistantMessage(chain_of_thought=None, response=response)
         match = self.output_parser_regex.match(response)
         if match is None:
-            raise ValueError(f"Invalid response format: {response}")
+            return AssistantMessage(chain_of_thought=None, response=response)
         return AssistantMessage(**match.groupdict())
 
     def tokenize_text(self, text: str) -> list[int]:

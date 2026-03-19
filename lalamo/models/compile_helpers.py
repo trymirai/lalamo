@@ -5,18 +5,22 @@ import weakref
 from typing import TYPE_CHECKING
 
 import jax
-import jax.numpy as jnp
 
 from .common import InferenceConfig
 
 if TYPE_CHECKING:
     from jax._src.stages import Compiled
+    from jax.sharding import Sharding
+    from jaxtyping import Array, Int, Key
 
     from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 
 _compile_cache: dict[
     int,
-    dict[tuple[GenerationConfig | None, InferenceConfig, ForwardPassConfig | None], Compiled],
+    dict[
+        tuple[GenerationConfig | None, InferenceConfig | None, ForwardPassConfig | None, Sharding | None],
+        Compiled,
+    ],
 ] = {}
 
 
@@ -30,11 +34,14 @@ def compile_generate_tokens(
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
     forward_pass_config: ForwardPassConfig | None = None,
+    prompt_token_ids: Int[Array, "batch length"],
+    prompt_lengths_without_padding: Int[Array, " batch"],
+    keys: Key[Array, " batch"],
 ) -> Compiled:
     from .language_model import LanguageModel
 
     model_id = id(model)
-    key = (generation_config, inference_config, forward_pass_config)
+    key = (generation_config, inference_config, forward_pass_config, prompt_token_ids.sharding)
     if model_id not in _compile_cache:
         _compile_cache[model_id] = {}
         weakref.finalize(model, _make_weak_finalizer, model_id)
@@ -50,12 +57,9 @@ def compile_generate_tokens(
             jax.jit(generate_tokens_fn)
             .lower(
                 model,
-                prompt_token_ids=jax.ShapeDtypeStruct(
-                    (inference_config.batch_size, inference_config.padded_length),
-                    jnp.int32,
-                ),
-                prompt_lengths_without_padding=jax.ShapeDtypeStruct((inference_config.batch_size,), jnp.int32),
-                keys=jax.ShapeDtypeStruct((inference_config.batch_size,), jax.random.key(0).dtype),
+                prompt_token_ids=prompt_token_ids,
+                prompt_lengths_without_padding=prompt_lengths_without_padding,
+                keys=keys,
             )
             # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
             # 0 - no autotune, gpu shouldn't be touched

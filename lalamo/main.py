@@ -13,7 +13,6 @@ from typing import Annotated
 import jax.profiler
 import requests
 import soundfile as sf
-import thefuzz.process
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
 from click import ParamType
@@ -102,18 +101,8 @@ class ModelParser(ParamType):
         repo_to_model = ModelRegistry.build().repo_to_model
         result = repo_to_model.get(value)
         if result is None:
-            closest_repo = _closest_repo(value, list(repo_to_model))
-            error_message_parts = [
-                f'"{value}".',
-            ]
-            if closest_repo:
-                error_message_parts.append(
-                    f' Perhaps you meant "{closest_repo}"?',
-                )
-            error_message_parts.append(
-                f"\n\nUse the `{SCRIPT_NAME} list-models` command to see the list of currently supported models.",
-            )
-            error_message = "".join(error_message_parts)
+            error_message = f'Model "{value}" not found.'
+            error_message += _suggest_similar_models(value, list(repo_to_model))
             return self.fail(error_message, param, ctx)
         return result
 
@@ -131,27 +120,11 @@ class RemoteModelParser(ParamType):
         repo_to_model = {m.repo_id: m for m in available_models}
         model_spec = repo_to_model.get(value)
         if model_spec is None:
-            closest_repo = _closest_repo(value, list(repo_to_model))
-            if closest_repo:
-                model_spec = repo_to_model[closest_repo]
-
-        if model_spec is None:
-            suggestions = _suggest_similar_models(value, available_models)
             error_message = f'Model "{value}" not found.'
-            if suggestions:
-                error_message += "\n\nDid you mean one of these?\n" + "\n".join(f"  - {s}" for s in suggestions)
+            error_message += _suggest_similar_models(value, list(repo_to_model))
             return self.fail(error_message, param, ctx)
 
         return model_spec
-
-
-def _closest_repo(query: str, repo_ids: list[str], min_score: float = 80) -> str | None:
-    if not repo_ids:
-        return None
-    (closest_match, score), *_ = thefuzz.process.extract(query, repo_ids)
-    if closest_match and score >= min_score:
-        return closest_match
-    return None
 
 
 def _error(message: str) -> None:
@@ -496,7 +469,6 @@ def pull(
             help=(
                 "Model repository ID from the pre-converted catalog. "
                 "Example: [cyan]'meta-llama/Llama-3.2-1B-Instruct'[/cyan]. "
-                "Fuzzy matching is supported for typos and partial names."
             ),
             click_type=RemoteModelParser(),
             show_default=False,
@@ -1383,12 +1355,16 @@ def train(
     ] = 65536,
     num_logits_per_token: Annotated[
         int,
-        Option(help="Top K tokens to keep in ngram hashtable"),
+        Option(help="Top K tokens to keep per ngram bucket"),
     ] = 8,
-    ngram_size: Annotated[
+    max_order: Annotated[
         int,
-        Option(help="Length of ngrams"),
-    ] = 2,
+        Option(help="Maximum n-gram order (backoff from max_order down to 1)"),
+    ] = 4,
+    discount: Annotated[
+        float,
+        Option(help="Kneser-Ney absolute discount parameter"),
+    ] = 0.002,
     subsample_size: Annotated[
         int | None,
         Option(
@@ -1402,7 +1378,8 @@ def train(
         output_path,
         hashtable_size,
         num_logits_per_token,
-        ngram_size,
+        max_order,
+        discount,
         subsample_size,
         CliTrainCallbacks,
     )
