@@ -36,7 +36,6 @@ __all__ = [
     "config_converter",
     "field",
     "find_field_metadata",
-    "find_field_parameter_info",
     "get_current_sharding_config",
     "iter_parameter_leaves",
     "pad_and_apply_data_sharding",
@@ -369,13 +368,6 @@ def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo
         return field_info
 
     return None
-
-
-def find_field_parameter_info(module: eqx.Module, target: object) -> FieldParameterInfo | None:
-    field_info = find_field_metadata(module, target)
-    if field_info is None:
-        return None
-    return _field_parameter_info(field_info)
 
 
 def _is_array_like(leaf: object) -> bool:
