@@ -468,7 +468,8 @@ class TrainCallbacks:
     output_path: Path
     hashtable_size: int
     num_logits_per_token: int
-    ngram_size: int
+    max_order: int
+    discount: float
     subsample_size: int | None
 
     def started(self) -> None:
@@ -492,7 +493,8 @@ def train(
     output_path: Path,
     hashtable_size: int = 65536,
     num_logits_per_token: int = 8,
-    ngram_size: int = 2,
+    max_order: int = 4,
+    discount: float = 0.002,
     subsample_size: int | None = None,
     callbacks_type: Callable[
         [
@@ -501,6 +503,7 @@ def train(
             int,
             int,
             int,
+            float,
             int | None,
         ],
         TrainCallbacks,
@@ -511,7 +514,8 @@ def train(
         output_path,
         hashtable_size,
         num_logits_per_token,
-        ngram_size,
+        max_order,
+        discount,
         subsample_size,
     )
 
@@ -519,13 +523,14 @@ def train(
 
     with open(trace_path, "rb") as trace_fd:
         traces = LalamoCompletion.deserialize_many(trace_fd)
-        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, ngram_size)
+        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, max_order, discount)
 
         def progress_callback(event: SpeculatorTrainingEvent) -> None:
             callbacks.training_progress(event.trained_tokens)
 
         train_speculator(speculator, traces, subsample_size, progress_callback)
 
+    speculator.compress()
     callbacks.finished_training()
 
     callbacks.saving_speculator()

@@ -1130,12 +1130,16 @@ def train(
     ] = 65536,
     num_logits_per_token: Annotated[
         int,
-        Option(help="Top K tokens to keep in ngram hashtable"),
+        Option(help="Top K tokens to keep per ngram bucket"),
     ] = 8,
-    ngram_size: Annotated[
+    max_order: Annotated[
         int,
-        Option(help="Length of ngrams"),
-    ] = 2,
+        Option(help="Maximum n-gram order (backoff from max_order down to 1)"),
+    ] = 4,
+    discount: Annotated[
+        float,
+        Option(help="Kneser-Ney absolute discount parameter"),
+    ] = 0.002,
     subsample_size: Annotated[
         int | None,
         Option(
@@ -1149,7 +1153,8 @@ def train(
         output_path,
         hashtable_size,
         num_logits_per_token,
-        ngram_size,
+        max_order,
+        discount,
         subsample_size,
         CliTrainCallbacks,
     )
