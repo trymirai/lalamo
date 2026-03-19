@@ -2,13 +2,26 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import pytest
 
-from lalamo.distill_runner import CheckpointMetadata, DistillConfig, EvaluationMetrics, OptimizerName, distill
-from lalamo.distillation import DistillParameterSummary, DistillStepMetrics, DistillTrainingState
+from lalamo.distill_runner import (
+    CheckpointMetadata,
+    DistillConfig,
+    EvaluationMetrics,
+    OptimizerName,
+    _accumulate_train_step,
+    distill,
+)
+from lalamo.distillation import (
+    DistillOptimizerState,
+    DistillParameterSummary,
+    DistillStepMetrics,
+    DistillTrainingState,
+)
 from lalamo.quantization import QuantizationMode
 
 
@@ -65,16 +78,53 @@ def _fake_accumulate_train_step(
     )
 
 
+def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
+    optimizer = optax.sgd(1.0)
+    optimizer_state = DistillOptimizerState(
+        training_state=DistillTrainingState(
+            master_weights={"left": jnp.array([1.0, 2.0]), "right": None},
+            muon_weight_dimension_numbers={"left": None, "right": None},
+        ),
+        optimizer_state=optimizer.init({"left": jnp.array([1.0, 2.0]), "right": None}),
+    )
+
+    def compute_step_gradients(
+        _batch: int,
+        _quantization_key: object,
+    ) -> tuple[object, DistillStepMetrics]:
+        return (
+            {"left": jnp.array([2.0, 4.0]), "right": None},
+            DistillStepMetrics(
+                loss=jnp.asarray(0.5, dtype=jnp.float32),
+                valid_tokens=jnp.asarray(2, dtype=jnp.int32),
+            ),
+        )
+
+    updated_state, metrics, _ = _accumulate_train_step(
+        optimizer_state,
+        optimizer,
+        microbatches=(1, 2),
+        train_key=jax.random.key(0),
+        stochastic_rounding=False,
+        compute_step_gradients=compute_step_gradients,
+    )
+
+    assert jnp.allclose(updated_state.training_state.master_weights["left"], jnp.array([-1.0, -2.0]))
+    assert updated_state.training_state.master_weights["right"] is None
+    assert metrics.valid_tokens == 4
+    assert jnp.isclose(metrics.loss, 0.5)
+
+
 def test_distill_skips_best_checkpoint_restore_without_periodic_eval(tmp_path: Path) -> None:
     config = _make_config(tmp_path, eval_every_steps=0, save_checkpoints=True)
-    training_state = DistillTrainingState(trainable_parameters=())
+    training_state = DistillTrainingState(master_weights=(), muon_weight_dimension_numbers=())
     language_models = [_make_language_model(), _make_language_model()]
 
-    def save_checkpoint(checkpoint_dir: Path | str, checkpoint: object, metadata: CheckpointMetadata) -> None:
+    def save_checkpoint(checkpoint_dir: Path, checkpoint: object, metadata: CheckpointMetadata) -> None:
         del checkpoint, metadata
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
-    def fail_load_checkpoint(checkpoint_dir: Path | str, like: object) -> object:
+    def fail_load_checkpoint(checkpoint_dir: Path, like: object) -> object:
         del like
         raise AssertionError(f"Unexpected checkpoint restore from {checkpoint_dir}")
 
@@ -112,15 +162,15 @@ def test_distill_skips_best_checkpoint_restore_without_periodic_eval(tmp_path: P
 
 def test_distill_restores_best_checkpoint_after_periodic_eval(tmp_path: Path) -> None:
     config = _make_config(tmp_path, eval_every_steps=1, save_checkpoints=True)
-    training_state = DistillTrainingState(trainable_parameters=())
+    training_state = DistillTrainingState(master_weights=(), muon_weight_dimension_numbers=())
     restored_paths: list[Path] = []
     language_models = [_make_language_model(), _make_language_model()]
 
-    def save_checkpoint(checkpoint_dir: Path | str, checkpoint: object, metadata: CheckpointMetadata) -> None:
+    def save_checkpoint(checkpoint_dir: Path, checkpoint: object, metadata: CheckpointMetadata) -> None:
         del checkpoint, metadata
         Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
 
-    def load_checkpoint(checkpoint_dir: Path | str, like: object) -> tuple[object, CheckpointMetadata]:
+    def load_checkpoint(checkpoint_dir: Path, like: object) -> tuple[object, CheckpointMetadata]:
         restored_paths.append(Path(checkpoint_dir))
         return like, CheckpointMetadata(step=0, best_eval_kl=1.0, best_step=0, evaluations_without_improvement=1)
 

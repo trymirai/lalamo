@@ -34,7 +34,6 @@ from lalamo.distillation import (
     compute_distill_step_gradients,
     compute_trace_distill_batch_metrics,
     compute_trace_distill_step_gradients,
-    get_muon_weight_dimension_numbers,
     initialize_distill_training_state,
     inject_lora_adapter_configs,
     inject_lora_adapters,
@@ -412,7 +411,7 @@ def _build_optimizer(
         case OptimizerName.MUON:
             optimizer = optax.contrib.muon(
                 learning_rate=learning_rate_schedule,
-                muon_weight_dimension_numbers=get_muon_weight_dimension_numbers(training_state),
+                muon_weight_dimension_numbers=training_state.muon_weight_dimension_numbers,
             )
         case OptimizerName.SGD:
             optimizer = optax.sgd(learning_rate_schedule)
@@ -433,11 +432,11 @@ def _accumulate_train_step[BatchT: eqx.Module](
     stochastic_rounding: bool,
     compute_step_gradients: Callable[
         [BatchT, Key[Array, ""] | None],
-        tuple[tuple[Array, ...], DistillStepMetrics],
+        tuple[object, DistillStepMetrics],
     ],
 ) -> tuple[DistillOptimizerState, DistillStepMetrics, Key[Array, ""]]:
     assert microbatches, "Gradient accumulation requires at least one microbatch"
-    accumulated_grads: tuple[Array, ...] | None = None
+    accumulated_grads: object | None = None
     total_loss = 0.0
     total_valid_tokens = 0
 
@@ -446,7 +445,7 @@ def _accumulate_train_step[BatchT: eqx.Module](
         quantization_key = step_key if stochastic_rounding else None
         grads, metrics = compute_step_gradients(microbatch, quantization_key)
         valid_tokens = int(metrics.valid_tokens)
-        weighted_grads = tuple(grad * valid_tokens for grad in grads)
+        weighted_grads = jax.tree.map(lambda grad, scale=valid_tokens: grad * scale, grads)
         accumulated_grads = (
             weighted_grads
             if accumulated_grads is None
@@ -456,7 +455,7 @@ def _accumulate_train_step[BatchT: eqx.Module](
         total_valid_tokens += valid_tokens
 
     assert accumulated_grads is not None
-    averaged_grads = tuple(grad / total_valid_tokens for grad in accumulated_grads)
+    averaged_grads = jax.tree.map(lambda grad: grad / total_valid_tokens, accumulated_grads)
     step_metrics = DistillStepMetrics(
         loss=jnp.asarray(total_loss / total_valid_tokens, dtype=jnp.float32),
         valid_tokens=jnp.asarray(total_valid_tokens, dtype=jnp.int32),
@@ -599,10 +598,9 @@ def distill(
         warmup_steps=config.warmup_steps,
         gradient_clip_norm=config.gradient_clip_norm,
     )
-    master_weights = tuple(p.master_weight for p in training_state.trainable_parameters)
     optimizer_state = DistillOptimizerState(
         training_state=training_state,
-        optimizer_state=optimizer.init(master_weights),
+        optimizer_state=optimizer.init(training_state.master_weights),
     )
     parameter_summary = summarize_distill_parameters(
         iter_parameter_leaves(student_model.model),
@@ -643,7 +641,11 @@ def distill(
                     f"Resume checkpoint {config.resume_from} is missing sibling best-checkpoint directory",
                 )
 
-    initial_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
+    initial_student = materialize_trainable_module(
+        student_model.model,
+        optimizer_state.training_state.master_weights,
+        distill_config,
+    )
     match config.training_mode:
         case TrainingMode.ONLINE_EXACT:
             initial_eval = _evaluate(initial_student, teacher_model.model, eval_batches)
@@ -748,7 +750,7 @@ def distill(
                 performed_periodic_evaluation = True
                 materialized_student = materialize_trainable_module(
                     student_model.model,
-                    optimizer_state.training_state,
+                    optimizer_state.training_state.master_weights,
                     distill_config,
                 )
                 match config.training_mode:
@@ -848,7 +850,11 @@ def distill(
         )
         optimizer_state = best_checkpoint.optimizer_state
 
-    final_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, distill_config)
+    final_student = materialize_trainable_module(
+        student_model.model,
+        optimizer_state.training_state.master_weights,
+        distill_config,
+    )
     match config.training_mode:
         case TrainingMode.ONLINE_EXACT:
             final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
@@ -860,7 +866,11 @@ def distill(
         master_dtype=distill_config.master_dtype,
         compute_dtype=student_model.model.activation_precision,
     )
-    export_student = materialize_trainable_module(student_model.model, optimizer_state.training_state, export_config)
+    export_student = materialize_trainable_module(
+        student_model.model,
+        optimizer_state.training_state.master_weights,
+        export_config,
+    )
     callbacks.saving_model()
     _save_materialized_student(
         config.student_path,

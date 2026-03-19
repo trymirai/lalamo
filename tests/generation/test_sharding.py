@@ -4,8 +4,6 @@ import textwrap
 
 import pytest
 
-from tests.common import skip_on_gpu
-
 MODELS = [
     "Qwen/Qwen2.5-0.5B-Instruct",
 ]
@@ -13,7 +11,6 @@ MODELS = [
 
 @pytest.mark.parametrize("model", MODELS)
 def test_sharded_forward_passes_match(model: str) -> None:
-    skip_on_gpu("Sharding test forces CPU; incompatible with GPU mesh")
     result = subprocess.run(
         [
             sys.executable,
@@ -71,7 +68,8 @@ def test_sharded_forward_passes_match(model: str) -> None:
             print("all sharding configs passed")
         """),
         ],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
         timeout=600,
     )
