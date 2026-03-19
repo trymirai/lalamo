@@ -101,10 +101,10 @@ class TaggedNGramTable:
     _keys: array = field(default_factory=lambda: array("I"), repr=False)
     _values: array = field(default_factory=lambda: array("f"), repr=False)
     _counts: array = field(default_factory=lambda: array("I"), repr=False)
-    _compressed: list = field(default_factory=lambda: [False], repr=False)
+    _compressed: list[bool] = field(default_factory=lambda: [False], repr=False)
 
     @classmethod
-    def new(cls, hashtable_size: int, ngram_k: int, ngram_n: int, ngram_pad: int = 2**32 - 1) -> Self:
+    def init(cls, hashtable_size: int, ngram_k: int, ngram_n: int, ngram_pad: int = 2**32 - 1) -> Self:
         return cls(
             hashtable_size=hashtable_size,
             ngram_k=ngram_k,
@@ -252,9 +252,9 @@ class NGramSpeculator(Speculator):
     discount: float = 0.002
 
     @classmethod
-    def new(cls, hashtable_size: int, ngram_k: int, max_order: int = 4, discount: float = 0.002) -> Self:
+    def init(cls, hashtable_size: int, ngram_k: int, max_order: int = 4, discount: float = 0.002) -> Self:
         tables = tuple(
-            TaggedNGramTable.new(hashtable_size, ngram_k, n)
+            TaggedNGramTable.init(hashtable_size, ngram_k, n)
             for n in range(1, max_order + 1)
         )
         return cls(max_order, tables, discount)

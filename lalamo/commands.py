@@ -523,7 +523,7 @@ def train(
 
     with open(trace_path, "rb") as trace_fd:
         traces = LalamoCompletion.deserialize_many(trace_fd)
-        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, max_order, discount)
+        speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
 
         def progress_callback(event: SpeculatorTrainingEvent) -> None:
             callbacks.training_progress(event.trained_tokens)
