@@ -114,9 +114,7 @@ class TraceDistillBatch(eqx.Module):
 
 
 def is_leaf_trainable(info: ParameterLeafInfo) -> bool:
-    if info.alias_of is not None:
-        return False
-    return info.trainable
+    return info.alias_of is None and info.trainable
 
 
 def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:

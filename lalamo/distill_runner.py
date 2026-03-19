@@ -240,8 +240,9 @@ def _tokenize_conversations(
     tokenized_sequences: list[np.ndarray] = []
 
     for conversation in conversations:
-        messages = [message.as_message() for message in conversation]
-        token_ids = language_model.message_processor.tokenize_request(messages)
+        token_ids = language_model.message_processor.tokenize_request(
+            [message.as_message() for message in conversation]
+        )
         if len(token_ids) < 2:
             continue
         tokenized_sequences.append(np.array(token_ids[:max_sequence_length], dtype=np.int32))
@@ -258,8 +259,6 @@ def _make_batches(
     batches: list[DistillBatch] = []
     for start in range(0, len(sequences), batch_size):
         batch_sequences = sequences[start : start + batch_size]
-        if not batch_sequences:
-            continue
 
         padded = np.zeros((len(batch_sequences), fixed_sequence_length), dtype=np.int32)
         lengths = np.array([seq.shape[0] for seq in batch_sequences], dtype=np.int32)
