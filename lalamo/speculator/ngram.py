@@ -1,6 +1,6 @@
 import struct
 from array import array
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import chain, repeat, tee
 from math import exp
@@ -35,10 +35,9 @@ def update_probs(probs: dict[int, float], sample: dict[int, float], new_count: i
     for k, v in sample.items():
         probs[k] = probs.get(k, 0.0) + v * inv_n
     if len(probs) > top_k:
-        keep = sorted(probs.items(), key=lambda x: (-x[1], x[0]))[:top_k]
+        keep = dict(sorted(probs.items(), key=lambda x: (-x[1], x[0]))[:top_k])
         probs.clear()
-        for k, v in keep:
-            probs[k] = v
+        probs.update(keep)
     total = sum(probs.values())
     if total > 0:
         inv_total = 1.0 / total
@@ -53,7 +52,9 @@ def seqhash(tokens: Iterable[int], size: int) -> tuple[int, int]:
     return h % size, h // size
 
 
-def _discount_and_interpolate(dist: dict[int, float], lower_dist: dict[int, float], discount: float) -> dict[int, float]:
+def _discount_and_interpolate(
+    dist: dict[int, float], lower_dist: dict[int, float], discount: float,
+) -> dict[int, float]:
     num_nonzero = sum(1 for v in dist.values() if v > 0)
     freed_mass = min(discount * num_nonzero, 0.5)
     smoothed = {k: max(v - discount, 0.0) for k, v in dist.items()}
@@ -78,7 +79,7 @@ def _write_top_k(dist: dict[int, float], keys: array, values: array, idx: int, n
 
 
 class ExactBucket:
-    __slots__ = ('count', 'probs')
+    __slots__ = ("count", "probs")
     def __init__(self) -> None:
         self.count: int = 0
         self.probs: dict[int, float] = {}
@@ -175,6 +176,26 @@ class TaggedNGramTable:
             if v > 0.0
         }
 
+    def exact_dist_for(self, seq: Iterable[int]) -> dict[int, float] | None:
+        """Look up exact (pre-compress) distribution for a context."""
+        key = seqhash(self._context_for(seq), self.hashtable_size)
+        bucket = self._exact_data.get(key)
+        return dict(bucket.probs) if bucket is not None else None
+
+    def apply_smoothing(
+        self, discount: float, lower_order_fn: Callable[[tuple[int, ...]], dict[int, float]],
+    ) -> None:
+        """Re-smooth compressed buckets using lower-order interpolation."""
+        for (idx, tag), bucket in self._exact_data.items():
+            if self._tags[idx] != tag:
+                continue
+            ctx_tokens = self._context_tokens.get((idx, tag))
+            if ctx_tokens is None:
+                continue
+            lower_dist = lower_order_fn(ctx_tokens)
+            smoothed = _discount_and_interpolate(bucket.probs, lower_dist, discount)
+            _write_top_k(smoothed, self._keys, self._values, idx, self.ngram_k)
+
     def serialize(self) -> bytes:
         assert self._compressed[0], "call compress() before serialize()"
         hdr = struct.pack("<4I", self.hashtable_size, self.ngram_k, self.ngram_n, self.ngram_pad)
@@ -249,32 +270,21 @@ class NGramSpeculator(Speculator):
         for order in range(max_lower_order, 0, -1):
             table = self.tables[order - 1]
             shorter_ctx = ctx_tokens[-(order - 1):] if order > 1 else ()
-            key = seqhash(shorter_ctx, table.hashtable_size)
-            bucket = table._exact_data.get(key)
-            if bucket is not None:
-                return dict(bucket.probs)
+            dist = table.exact_dist_for(shorter_ctx)
+            if dist is not None:
+                return dist
         return {}
 
     def compress(self) -> None:
         for table in self.tables:
             table.compress()
 
-        d = self.discount
-        ngram_k = self.tables[0].ngram_k
-
         for order_idx in range(1, len(self.tables)):
             table = self.tables[order_idx]
-
-            for (idx, tag), bucket in table._exact_data.items():
-                if table._tags[idx] != tag:
-                    continue
-                ctx_tokens = table._context_tokens.get((idx, tag))
-                if ctx_tokens is None:
-                    continue
-
-                lower_dist = self._get_best_lower_order_dist(ctx_tokens, order_idx)
-                smoothed = _discount_and_interpolate(bucket.probs, lower_dist, d)
-                _write_top_k(smoothed, table._keys, table._values, idx, ngram_k)
+            table.apply_smoothing(
+                self.discount,
+                lambda ctx, oi=order_idx: self._get_best_lower_order_dist(ctx, oi),
+            )
 
     def probs(self, seq: Iterable[int]) -> dict[int, float]:
         seq = list(seq)
