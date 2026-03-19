@@ -279,10 +279,6 @@ class FieldMetadataInfo:
     owner: eqx.Module
     field: dataclasses.Field
 
-    @property
-    def metadata(self) -> Mapping[str, Any]:
-        return self.field.metadata
-
 
 class ParameterNorm(Enum):
     SPECTRAL = "spectral"
@@ -366,6 +362,7 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
         field_info = _field_metadata_from_path(module, path)
         if field_info is None:
             raise ValueError(f"Field lookup failed for module {module} at {path}")
+        metadata = field_info.field.metadata
 
         leaf_key = id(leaf)
         canonical_path = first_paths.get(leaf_key)
@@ -387,11 +384,11 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
                     field_name=field_info.field.name,
                     shape=tuple(leaf.shape),
                     dtype=jnp.dtype(leaf.dtype),
-                    trainable=field_info.metadata.get("trainable", True),
-                    norm=field_info.metadata.get("norm", ParameterNorm.SPECTRAL),
-                    quantized=field_info.metadata.get("quantized", False),
-                    tensor_sharding=field_info.metadata.get("tensor_sharding"),
-                    min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
+                    trainable=metadata.get("trainable", True),
+                    norm=metadata.get("norm", ParameterNorm.SPECTRAL),
+                    quantized=metadata.get("quantized", False),
+                    tensor_sharding=metadata.get("tensor_sharding"),
+                    min_size_to_shard=metadata.get("min_size_to_shard", 0),
                     alias_of=alias_of,
                 ),
             ),

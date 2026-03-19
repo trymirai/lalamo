@@ -38,13 +38,14 @@ def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo 
 
 
 def _field_sharding_info(field_info: FieldMetadataInfo) -> FieldShardingInfo | None:
-    tensor_sharding = field_info.metadata.get("tensor_sharding")
+    metadata = field_info.field.metadata
+    tensor_sharding = metadata.get("tensor_sharding")
     if tensor_sharding is None:
         return None
     return FieldShardingInfo(
         tensor_sharding,
         sharding_order=getattr(field_info.owner, "sharding_order", None),
-        min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
+        min_size_to_shard=metadata.get("min_size_to_shard", 0),
     )
 
 
