@@ -394,7 +394,7 @@ class FishAudioConfig(ForeignTTSConfig):
         self,
         context_length: int | None,
         activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,  # noqa: ARG002
+        accumulation_precision: DTypeLike,
     ) -> TTSConfig:
         audio_decoder_config = instantiate_dac_config_from_fishaudio_config(
             fish_dac_config=get_default_fishaudio_dac_config(),
