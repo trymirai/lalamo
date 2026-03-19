@@ -32,14 +32,15 @@ __all__ = [
     "ShardingOrder",
     "TensorSharding",
     "apply_data_sharding",
+    "combine_parameter_leaves",
     "config_converter",
     "field",
     "find_field_metadata",
     "find_field_parameter_info",
     "get_current_sharding_config",
     "iter_parameter_leaves",
-    "map_parameter_leaves",
     "pad_and_apply_data_sharding",
+    "partition_parameter_leaves",
     "register_config_union",
     "require_array",
     "require_tree",
@@ -314,6 +315,14 @@ class ParameterLeafInfo:
     alias_of: str | None
 
 
+@dataclass(frozen=True)
+class _ParameterLeafEntry:
+    path: tuple[Any, ...]
+    canonical_path: tuple[Any, ...]
+    leaf: Array | jax.ShapeDtypeStruct
+    info: ParameterLeafInfo
+
+
 def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetadataInfo | None:
     cur: object = module
     owner = module
@@ -373,11 +382,10 @@ def _is_array_like(leaf: object) -> bool:
     return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
-def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
+def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
     flat_with_path, _ = jtu.tree_flatten_with_path(module)
-
-    results: list[ParameterLeafInfo] = []
-    first_paths: dict[int, str] = {}
+    first_paths: dict[int, tuple[Any, ...]] = {}
+    results: list[_ParameterLeafEntry] = []
 
     for path, leaf in flat_with_path:
         if not _is_array_like(leaf):
@@ -389,58 +397,98 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
 
         parameter_info = _field_parameter_info(field_info)
 
-        path_str = keystr(path).lstrip(".")
         leaf_key = id(leaf)
-        alias_of = first_paths.get(leaf_key)
-        if alias_of is None:
-            first_paths[leaf_key] = path_str
+        canonical_path = first_paths.get(leaf_key)
+        if canonical_path is None:
+            canonical_path = path
+            first_paths[leaf_key] = path
+            alias_of = None
+        else:
+            alias_of = keystr(canonical_path).lstrip(".")
 
         results.append(
-            ParameterLeafInfo(
-                path=path_str,
-                owner_type=type(field_info.owner),
-                field_name=field_info.field.name,
-                shape=tuple(leaf.shape),
-                dtype=jnp.dtype(leaf.dtype),
-                trainable=parameter_info.trainable,
-                norm=parameter_info.norm,
-                quantized=parameter_info.quantized,
-                tensor_sharding=parameter_info.tensor_sharding,
-                min_size_to_shard=parameter_info.min_size_to_shard,
-                alias_of=alias_of,
+            _ParameterLeafEntry(
+                path=path,
+                canonical_path=canonical_path,
+                leaf=leaf,
+                info=ParameterLeafInfo(
+                    path=keystr(path).lstrip("."),
+                    owner_type=type(field_info.owner),
+                    field_name=field_info.field.name,
+                    shape=tuple(leaf.shape),
+                    dtype=jnp.dtype(leaf.dtype),
+                    trainable=parameter_info.trainable,
+                    norm=parameter_info.norm,
+                    quantized=parameter_info.quantized,
+                    tensor_sharding=parameter_info.tensor_sharding,
+                    min_size_to_shard=parameter_info.min_size_to_shard,
+                    alias_of=alias_of,
+                ),
             ),
         )
 
     return results
 
 
-def map_parameter_leaves[M: eqx.Module](
+def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
+    return [entry.info for entry in _parameter_leaf_entries(module)]
+
+
+def partition_parameter_leaves[M: eqx.Module, LeafT](
     module: M,
-    mapper: Callable[[Array | jax.ShapeDtypeStruct, ParameterLeafInfo], Array | jax.ShapeDtypeStruct],
+    predicate: Callable[[ParameterLeafInfo], bool],
+    mapper: Callable[[Array | jax.ShapeDtypeStruct, ParameterLeafInfo], LeafT],
 ) -> M:
-    leaf_infos = iter_parameter_leaves(module)
-    if not leaf_infos:
+    entries = _parameter_leaf_entries(module)
+    if not entries:
+        return jax.tree.map(lambda _leaf: None, module)
+
+    entry_by_path = {entry.path: entry for entry in entries}
+    selected_by_canonical_path = {
+        entry.canonical_path: mapper(entry.leaf, entry.info)
+        for entry in entries
+        if entry.info.alias_of is None and predicate(entry.info)
+    }
+
+    def maybe_select(path: tuple[Any, ...], _leaf: object) -> object:
+        entry = entry_by_path.get(path)
+        if entry is None or entry.info.alias_of is not None:
+            return None
+        return selected_by_canonical_path.get(entry.canonical_path)
+
+    return jax.tree.map_with_path(maybe_select, module)
+
+
+def combine_parameter_leaves[M: eqx.Module](
+    module: M,
+    replacements: M,
+) -> M:
+    entries = _parameter_leaf_entries(module)
+    if not entries:
         return module
 
-    flat_with_path, _ = jtu.tree_flatten_with_path(module)
-    leaf_by_path = {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
-    canonical_path_by_path = {info.path: info.alias_of or info.path for info in leaf_infos}
-
-    mapped_by_canonical_path: dict[str, Array | jax.ShapeDtypeStruct] = {}
-    for info in leaf_infos:
-        if info.alias_of is not None:
+    entry_by_path = {entry.path: entry for entry in entries}
+    replacement_by_path = dict(
+        jtu.tree_flatten_with_path(
+            replacements,
+            is_leaf=lambda leaf: leaf is None,
+        )[0]
+    )
+    replacement_by_canonical_path: dict[tuple[Any, ...], object] = {}
+    for entry in entries:
+        replacement = replacement_by_path[entry.path]
+        if replacement is None or entry.info.alias_of is not None:
             continue
-
-        leaf = leaf_by_path[info.path]
-        assert eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
-        mapped_by_canonical_path[info.path] = mapper(leaf, info)
+        replacement_by_canonical_path[entry.canonical_path] = replacement
+    if not replacement_by_canonical_path:
+        return module
 
     def maybe_replace(path: tuple[Any, ...], leaf: object) -> object:
-        path_str = keystr(path).lstrip(".")
-        canonical_path = canonical_path_by_path.get(path_str)
-        if canonical_path is None:
+        entry = entry_by_path.get(path)
+        if entry is None:
             return leaf
-        return mapped_by_canonical_path[canonical_path]
+        replacement = replacement_by_canonical_path.get(entry.canonical_path)
+        return leaf if replacement is None else replacement
 
     return jax.tree.map_with_path(maybe_replace, module)
 

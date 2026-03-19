@@ -10,11 +10,15 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import optax
-from jax.tree_util import keystr
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.data.lalamo_completions import LalamoCompletion
-from lalamo.modules.common import ParameterLeafInfo, ParameterNorm, iter_parameter_leaves, map_parameter_leaves
+from lalamo.modules.common import (
+    ParameterLeafInfo,
+    ParameterNorm,
+    combine_parameter_leaves,
+    partition_parameter_leaves,
+)
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
     GroupQuantizedLinear,
@@ -32,7 +36,6 @@ __all__ = [
     "DistillParameterSummary",
     "DistillStepMetrics",
     "DistillTrainConfig",
-    "DistillTrainableParameter",
     "DistillTrainingState",
     "OptimizerGroup",
     "TraceDistillBatch",
@@ -42,7 +45,6 @@ __all__ = [
     "compute_trace_distill_batch_metrics",
     "compute_trace_distill_step_gradients",
     "distill_train_step",
-    "get_muon_weight_dimension_numbers",
     "get_optimizer_group",
     "initialize_distill_training_state",
     "inject_lora_adapter_configs",
@@ -76,15 +78,9 @@ class OptimizerGroup(StrEnum):
     DEFAULT = "default"
 
 
-class DistillTrainableParameter(eqx.Module):
-    path: str = eqx.field(static=True)
-    alias_paths: tuple[str, ...] = eqx.field(static=True)
-    optimizer_group: OptimizerGroup = eqx.field(static=True)
-    master_weight: Array | jax.ShapeDtypeStruct
-
-
 class DistillTrainingState(eqx.Module):
-    trainable_parameters: tuple[DistillTrainableParameter, ...]
+    master_weights: object
+    muon_weight_dimension_numbers: object
 
 
 class DistillOptimizerState(eqx.Module):
@@ -193,21 +189,22 @@ def inject_lora_adapters[M: eqx.Module](
     lora_scale: float,
     key: Key[Array, ""],
 ) -> M:
-    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=_is_replaceable_quantized_linear)
-    quantized_linears = [(path, leaf) for path, leaf in flat_with_path if _is_replaceable_quantized_linear(leaf)]
+    quantized_linears = [
+        leaf
+        for leaf in jtu.tree_leaves(module, is_leaf=_is_replaceable_quantized_linear)
+        if _is_replaceable_quantized_linear(leaf)
+    ]
     if not quantized_linears:
         return module
 
-    keys = jax.random.split(key, len(quantized_linears))
-    replacement_by_path = {
-        path: _inject_qlora_linear(linear, lora_rank, lora_scale, linear_key)
-        for (path, linear), linear_key in zip(quantized_linears, keys, strict=True)
-    }
-
-    def maybe_replace(path: tuple[object, ...], leaf: object) -> object:
-        return replacement_by_path.get(path, leaf)
-
-    return jax.tree.map_with_path(maybe_replace, module, is_leaf=_is_replaceable_quantized_linear)
+    linear_keys = iter(jax.random.split(key, len(quantized_linears)))
+    return jax.tree.map(
+        lambda leaf: _inject_qlora_linear(leaf, lora_rank, lora_scale, next(linear_keys))
+        if _is_replaceable_quantized_linear(leaf)
+        else leaf,
+        module,
+        is_leaf=_is_replaceable_quantized_linear,
+    )
 
 
 def inject_lora_adapter_configs[C](
@@ -284,63 +281,37 @@ def initialize_distill_training_state(
     trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
 ) -> DistillTrainingState:
     master_dtype = jnp.dtype(config.master_dtype)
-    leaves = iter_parameter_leaves(module)
-    flat_with_path, _ = jtu.tree_flatten_with_path(module)
-    leaf_by_path = {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
-
-    alias_paths: dict[str, list[str]] = defaultdict(list)
-    for info in leaves:
-        canonical_path = info.alias_of or info.path
-        alias_paths[canonical_path].append(info.path)
-
-    trainable_parameters: list[DistillTrainableParameter] = []
-    for info in leaves:
-        if not is_leaf_trainable(info):
-            continue
-        if trainable_filter is not None and not trainable_filter(info):
-            continue
-
-        value = leaf_by_path[info.path]
-        optimizer_group = get_optimizer_group(info)
-        trainable_parameters.append(
-            DistillTrainableParameter(
-                path=info.path,
-                alias_paths=tuple(alias_paths[info.path]),
-                optimizer_group=optimizer_group,
-                master_weight=_cast_array_like(value, master_dtype),
-            ),
-        )
-
-    return DistillTrainingState(trainable_parameters=tuple(trainable_parameters))
-
-
-def get_muon_weight_dimension_numbers(
-    training_state: DistillTrainingState,
-) -> tuple[optax.contrib.MuonDimensionNumbers | None, ...]:
     muon_dims = optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0)
-    return tuple(
-        muon_dims if parameter.optimizer_group == OptimizerGroup.MUON else None
-        for parameter in training_state.trainable_parameters
+
+    def should_train(info: ParameterLeafInfo) -> bool:
+        return is_leaf_trainable(info) and (trainable_filter is None or trainable_filter(info))
+
+    return DistillTrainingState(
+        master_weights=partition_parameter_leaves(
+            module,
+            should_train,
+            lambda leaf, _info: _cast_array_like(leaf, master_dtype),
+        ),
+        muon_weight_dimension_numbers=partition_parameter_leaves(
+            module,
+            should_train,
+            lambda _leaf, info: muon_dims if get_optimizer_group(info) == OptimizerGroup.MUON else None,
+        ),
     )
 
 
 def materialize_trainable_module[M: eqx.Module](
     module: M,
-    state: DistillTrainingState,
+    master_weights: object,
     config: DistillTrainConfig,
 ) -> M:
     compute_dtype = jnp.dtype(config.compute_dtype)
-    compute_weight_by_path = {
-        parameter.path: _cast_array_like(parameter.master_weight, compute_dtype)
-        for parameter in state.trainable_parameters
-    }
-    if not compute_weight_by_path:
-        return module
-
-    return map_parameter_leaves(
-        module,
-        lambda leaf, info: compute_weight_by_path.get(info.path, leaf),
+    compute_weights = jax.tree.map(
+        lambda leaf: None if leaf is None else _cast_array_like(leaf, compute_dtype),
+        master_weights,
+        is_leaf=lambda leaf: leaf is None,
     )
+    return combine_parameter_leaves(module, compute_weights)
 
 
 def stochastically_quantize_module[M: eqx.Module](
@@ -348,51 +319,40 @@ def stochastically_quantize_module[M: eqx.Module](
     quantization_mode: QuantizationMode,
     key: Key[Array, ""],
 ) -> M:
-    leaf_infos = iter_parameter_leaves(module)
-    quantized_infos = [info for info in leaf_infos if info.alias_of is None and info.quantized]
-    if not quantized_infos:
+    quantized_weights = partition_parameter_leaves(
+        module,
+        lambda info: info.quantized,
+        lambda leaf, _info: leaf,
+    )
+    quantized_leaves = [
+        leaf
+        for leaf in jtu.tree_leaves(
+            quantized_weights,
+            is_leaf=lambda leaf: leaf is None,
+        )
+        if leaf is not None
+    ]
+    if not quantized_leaves:
         return module
 
-    quantization_keys = {
-        info.path: k for info, k in zip(quantized_infos, jax.random.split(key, len(quantized_infos)), strict=True)
-    }
-
-    def maybe_quantize(
-        leaf: Array | jax.ShapeDtypeStruct,
-        info: ParameterLeafInfo,
-    ) -> Array | jax.ShapeDtypeStruct:
-        quantization_key = quantization_keys.get(info.path)
-        if quantization_key is None or not eqx.is_array(leaf):
-            return leaf
-
-        stochastic_value = stochastic_quantize_weights(leaf, quantization_mode, quantization_key)
-        return leaf + jax.lax.stop_gradient(stochastic_value - leaf)
-
-    return map_parameter_leaves(
-        module,
-        maybe_quantize,
+    quantization_keys = iter(jax.random.split(key, len(quantized_leaves)))
+    quantized_weights = jax.tree.map(
+        lambda leaf: None
+        if leaf is None
+        else leaf
+        + jax.lax.stop_gradient(
+            stochastic_quantize_weights(leaf, quantization_mode, next(quantization_keys)) - leaf,
+        ),
+        quantized_weights,
+        is_leaf=lambda leaf: leaf is None,
     )
+    return combine_parameter_leaves(module, quantized_weights)
 
 
 def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> Array | jax.ShapeDtypeStruct:
     if eqx.is_array(value):
         return value.astype(dtype)
     return jax.ShapeDtypeStruct(value.shape, dtype)
-
-
-def _concrete_master_weights(state: DistillTrainingState) -> tuple[Array, ...]:
-    return tuple(parameter.master_weight for parameter in state.trainable_parameters)
-
-
-def _replace_master_weights(
-    state: DistillTrainingState,
-    master_weights: Sequence[Array],
-) -> DistillTrainingState:
-    trainable_parameters = tuple(
-        eqx.tree_at(lambda p: p.master_weight, parameter, mw)
-        for parameter, mw in zip(state.trainable_parameters, master_weights, strict=True)
-    )
-    return DistillTrainingState(trainable_parameters=trainable_parameters)
 
 
 def _token_positions(token_ids: Int[Array, "batch tokens"]) -> Int[Array, "batch tokens"]:
@@ -575,12 +535,9 @@ def compute_distill_step_gradients(
     *,
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
-) -> tuple[tuple[Array, ...], DistillStepMetrics]:
-    current_master_weights = _concrete_master_weights(training_state)
-
-    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
-        current_training_state = _replace_master_weights(training_state, master_weights)
-        materialized_student = materialize_trainable_module(student, current_training_state, config)
+) -> tuple[object, DistillStepMetrics]:
+    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillStepMetrics]:
+        materialized_student = materialize_trainable_module(student, master_weights, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
                 materialized_student,
@@ -590,7 +547,7 @@ def compute_distill_step_gradients(
         metrics = compute_distill_batch_metrics(materialized_student, teacher, batch)
         return metrics.loss, DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
-    (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(current_master_weights)
+    (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(training_state.master_weights)
     return grads, metrics
 
 
@@ -603,12 +560,9 @@ def compute_trace_distill_step_gradients(
     *,
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
-) -> tuple[tuple[Array, ...], DistillStepMetrics]:
-    current_master_weights = _concrete_master_weights(training_state)
-
-    def loss_fn(master_weights: tuple[Array, ...]) -> tuple[Float[Array, ""], DistillStepMetrics]:
-        current_training_state = _replace_master_weights(training_state, master_weights)
-        materialized_student = materialize_trainable_module(student, current_training_state, config)
+) -> tuple[object, DistillStepMetrics]:
+    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillStepMetrics]:
+        materialized_student = materialize_trainable_module(student, master_weights, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
                 materialized_student,
@@ -618,7 +572,7 @@ def compute_trace_distill_step_gradients(
         metrics = compute_trace_distill_batch_metrics(materialized_student, batch)
         return metrics.loss, DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
-    (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(current_master_weights)
+    (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(training_state.master_weights)
     return grads, metrics
 
 
@@ -626,18 +580,19 @@ def compute_trace_distill_step_gradients(
 def apply_distill_gradients(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
-    grads: tuple[Array, ...],
+    grads: object,
 ) -> DistillOptimizerState:
-    current_master_weights = _concrete_master_weights(optimizer_state.training_state)
     updates, new_optimizer_state = optimizer.update(
         grads,
         optimizer_state.optimizer_state,
-        current_master_weights,
+        optimizer_state.training_state.master_weights,
     )
-    updated_master_weights = optax.apply_updates(current_master_weights, updates)
-    updated_training_state = _replace_master_weights(optimizer_state.training_state, updated_master_weights)
+    updated_master_weights = optax.apply_updates(optimizer_state.training_state.master_weights, updates)
     return DistillOptimizerState(
-        training_state=updated_training_state,
+        training_state=DistillTrainingState(
+            master_weights=updated_master_weights,
+            muon_weight_dimension_numbers=optimizer_state.training_state.muon_weight_dimension_numbers,
+        ),
         optimizer_state=new_optimizer_state,
     )
 

@@ -12,11 +12,12 @@ from .common import (
     ShardingOrder,
     TensorSharding,
     apply_data_sharding,
+    combine_parameter_leaves,
     config_converter,
     field,
     get_current_sharding_config,
-    map_parameter_leaves,
     pad_and_apply_data_sharding,
+    partition_parameter_leaves,
     sharded_field,
 )
 from .decoder import (
@@ -188,10 +189,11 @@ __all__ = [
     "VocoderConfig",
     "YARNRoPEConfig",
     "apply_data_sharding",
+    "combine_parameter_leaves",
     "config_converter",
     "field",
     "get_current_sharding_config",
-    "map_parameter_leaves",
     "pad_and_apply_data_sharding",
+    "partition_parameter_leaves",
     "sharded_field",
 ]

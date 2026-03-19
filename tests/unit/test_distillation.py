@@ -3,7 +3,9 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 import optax
+from jax.tree_util import keystr
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
@@ -19,7 +21,6 @@ from lalamo.distillation import (
     compute_trace_distill_batch_metrics,
     compute_trace_distill_step_gradients,
     distill_train_step,
-    get_muon_weight_dimension_numbers,
     get_optimizer_group,
     initialize_distill_training_state,
     inject_lora_adapter_configs,
@@ -33,7 +34,13 @@ from lalamo.distillation import (
     trace_distill_train_step,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.modules.common import ParameterNorm, field, iter_parameter_leaves, map_parameter_leaves
+from lalamo.modules.common import (
+    ParameterNorm,
+    combine_parameter_leaves,
+    field,
+    iter_parameter_leaves,
+    partition_parameter_leaves,
+)
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
@@ -70,12 +77,22 @@ def _make_optimizer_state(
     training_state: DistillTrainingState,
     optimizer: optax.GradientTransformation,
 ) -> DistillOptimizerState:
-    master_weights = tuple(parameter.master_weight for parameter in training_state.trainable_parameters)
-    assert all(eqx.is_array(weight) for weight in master_weights)
     return DistillOptimizerState(
         training_state=training_state,
-        optimizer_state=optimizer.init(master_weights),
+        optimizer_state=optimizer.init(training_state.master_weights),
     )
+
+
+def _leaf_by_path(tree: object) -> dict[str, object]:
+    flat_with_path, _ = jtu.tree_flatten_with_path(
+        tree,
+        is_leaf=lambda leaf: leaf is None or isinstance(leaf, optax.contrib.MuonDimensionNumbers),
+    )
+    return {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
+
+
+def _selected_leaf_by_path(tree: object) -> dict[str, object]:
+    return {path: leaf for path, leaf in _leaf_by_path(tree).items() if leaf is not None}
 
 
 def test_iter_parameter_leaves_detects_aliases() -> None:
@@ -111,15 +128,13 @@ def test_initialize_distill_training_state_dedupes_alias_masters() -> None:
         DistillTrainConfig(compute_dtype=jnp.bfloat16),
     )
 
-    assert len(state.trainable_parameters) == 1
-    trainable_parameter = state.trainable_parameters[0]
-    assert trainable_parameter.path == "left"
-    assert trainable_parameter.alias_paths == ("left", "right")
-    assert trainable_parameter.master_weight.dtype == jnp.float32
+    master_weights = _selected_leaf_by_path(state.master_weights)
+    assert set(master_weights) == {"left"}
+    assert master_weights["left"].dtype == jnp.float32
 
     materialized = materialize_trainable_module(
         module,
-        state,
+        state.master_weights,
         DistillTrainConfig(compute_dtype=jnp.bfloat16),
     )
     materialized_leaves = iter_parameter_leaves(materialized)
@@ -189,11 +204,11 @@ def test_materialize_trainable_module_casts_only_trainable_leaves() -> None:
 
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.bfloat16)
     state = initialize_distill_training_state(module, config)
-    materialized = materialize_trainable_module(module, state, config)
+    materialized = materialize_trainable_module(module, state.master_weights, config)
 
-    assert len(state.trainable_parameters) == 1
-    assert state.trainable_parameters[0].path == "parameter"
-    assert state.trainable_parameters[0].master_weight.dtype == jnp.float32
+    master_weights = _selected_leaf_by_path(state.master_weights)
+    assert set(master_weights) == {"parameter"}
+    assert master_weights["parameter"].dtype == jnp.float32
     assert materialized.parameter.dtype == jnp.bfloat16
     assert materialized.buffer.dtype == jnp.float32
 
@@ -213,7 +228,7 @@ def test_stochastically_quantize_module_quantizes_quantized_weights() -> None:
 
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     state = initialize_distill_training_state(layer, config)
-    materialized = materialize_trainable_module(layer, state, config)
+    materialized = materialize_trainable_module(layer, state.master_weights, config)
     first = stochastically_quantize_module(materialized, QuantizationMode.UINT4, jax.random.key(0))
     second = stochastically_quantize_module(materialized, QuantizationMode.UINT4, jax.random.key(0))
 
@@ -232,16 +247,13 @@ def test_initialize_distill_training_state_tracks_quant_aux_paths() -> None:
     config = DistillTrainConfig()
     state = initialize_distill_training_state(layer, config)
 
-    assert {parameter.path for parameter in state.trainable_parameters} == {
+    assert set(_selected_leaf_by_path(state.master_weights)) == {
         "biases",
         "scales",
         "weights",
         "zero_points",
     }
-    assert {parameter.optimizer_group for parameter in state.trainable_parameters} == {
-        OptimizerGroup.DEFAULT,
-        OptimizerGroup.MUON,
-    }
+    assert set(_selected_leaf_by_path(state.muon_weight_dimension_numbers)) == {"weights"}
 
 
 def test_trainable_filter_narrows_to_quantized_only() -> None:
@@ -260,13 +272,13 @@ def test_trainable_filter_narrows_to_quantized_only() -> None:
         trainable_filter=lambda info: info.quantized,
     )
 
-    assert {p.path for p in full_state.trainable_parameters} == {
+    assert set(_selected_leaf_by_path(full_state.master_weights)) == {
         "biases",
         "scales",
         "weights",
         "zero_points",
     }
-    assert {p.path for p in filtered_state.trainable_parameters} == {"weights"}
+    assert set(_selected_leaf_by_path(filtered_state.master_weights)) == {"weights"}
 
     full_summary = summarize_distill_parameters(
         iter_parameter_leaves(layer),
@@ -338,13 +350,13 @@ def test_lora_trainable_filter_keeps_only_lora_and_auxiliary_leaves() -> None:
         trainable_filter=lora_trainable_filter,
     )
 
-    assert {parameter.path for parameter in state.trainable_parameters} == {
+    assert set(_selected_leaf_by_path(state.master_weights)) == {
         "lora_down_weights",
         "lora_up_weights[0]",
     }
 
 
-def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
+def test_muon_weight_dimension_numbers_match_optimizer_groups() -> None:
     layer = GroupQuantizedLinearConfig(
         group_size=2,
         weight_quantization_mode=QuantizationMode.UINT4,
@@ -357,19 +369,13 @@ def test_get_muon_weight_dimension_numbers_matches_optimizer_groups() -> None:
         DistillTrainConfig(),
     )
 
-    assert {parameter.path for parameter in state.trainable_parameters} == {
+    assert set(_selected_leaf_by_path(state.master_weights)) == {
         "biases",
         "scales",
         "weights",
         "zero_points",
     }
-    dimension_numbers_by_path = dict(
-        zip(
-            (parameter.path for parameter in state.trainable_parameters),
-            get_muon_weight_dimension_numbers(state),
-            strict=True,
-        ),
-    )
+    dimension_numbers_by_path = _leaf_by_path(state.muon_weight_dimension_numbers)
     assert dimension_numbers_by_path["weights"] == optax.contrib.MuonDimensionNumbers(
         reduction_axis=1,
         output_axis=0,
@@ -390,7 +396,7 @@ def test_separable_causal_conv_weights_do_not_use_muon() -> None:
 
     assert is_leaf_trainable(leaves["weights"])
     assert get_optimizer_group(leaves["weights"]) == OptimizerGroup.DEFAULT
-    assert get_muon_weight_dimension_numbers(state) == (None, None)
+    assert all(value is None for value in _leaf_by_path(state.muon_weight_dimension_numbers).values())
 
 
 def test_iter_parameter_leaves_defaults_non_static_arrays_to_trainable_spectral() -> None:
@@ -575,7 +581,7 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
     optimizer_state = _make_optimizer_state(training_state, optimizer)
 
     initial_metrics = compute_distill_batch_metrics(
-        materialize_trainable_module(student, optimizer_state.training_state, config),
+        materialize_trainable_module(student, optimizer_state.training_state.master_weights, config),
         teacher,
         batch,
     )
@@ -591,7 +597,7 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
         )
 
     final_metrics = compute_distill_batch_metrics(
-        materialize_trainable_module(student, optimizer_state.training_state, config),
+        materialize_trainable_module(student, optimizer_state.training_state.master_weights, config),
         teacher,
         batch,
     )
@@ -636,14 +642,12 @@ def test_applying_distill_step_gradients_matches_distill_train_step() -> None:
     assert jnp.isclose(step_metrics.loss, grad_metrics.loss)
     assert step_metrics.valid_tokens == grad_metrics.valid_tokens
 
-    step_weights = tuple(
-        parameter.master_weight for parameter in step_optimizer_state.training_state.trainable_parameters
-    )
-    applied_weights = tuple(
-        parameter.master_weight for parameter in applied_optimizer_state.training_state.trainable_parameters
-    )
-    assert len(step_weights) == len(applied_weights)
-    for step_weight, applied_weight in zip(step_weights, applied_weights, strict=True):
+    step_weights = _selected_leaf_by_path(step_optimizer_state.training_state.master_weights)
+    applied_weights = _selected_leaf_by_path(applied_optimizer_state.training_state.master_weights)
+    assert set(step_weights) == set(applied_weights)
+    for path in step_weights:
+        step_weight = step_weights[path]
+        applied_weight = applied_weights[path]
         assert jnp.allclose(step_weight, applied_weight)
 
 
@@ -661,7 +665,7 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
     optimizer_state = _make_optimizer_state(training_state, optimizer)
 
     initial_metrics = compute_trace_distill_batch_metrics(
-        materialize_trainable_module(student, optimizer_state.training_state, config),
+        materialize_trainable_module(student, optimizer_state.training_state.master_weights, config),
         trace_batch,
     )
 
@@ -675,7 +679,7 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
         )
 
     final_metrics = compute_trace_distill_batch_metrics(
-        materialize_trainable_module(student, optimizer_state.training_state, config),
+        materialize_trainable_module(student, optimizer_state.training_state.master_weights, config),
         trace_batch,
     )
 
@@ -714,14 +718,12 @@ def test_applying_trace_distill_step_gradients_matches_trace_distill_train_step(
     assert jnp.isclose(step_metrics.loss, grad_metrics.loss)
     assert step_metrics.valid_tokens == grad_metrics.valid_tokens
 
-    step_weights = tuple(
-        parameter.master_weight for parameter in step_optimizer_state.training_state.trainable_parameters
-    )
-    applied_weights = tuple(
-        parameter.master_weight for parameter in applied_optimizer_state.training_state.trainable_parameters
-    )
-    assert len(step_weights) == len(applied_weights)
-    for step_weight, applied_weight in zip(step_weights, applied_weights, strict=True):
+    step_weights = _selected_leaf_by_path(step_optimizer_state.training_state.master_weights)
+    applied_weights = _selected_leaf_by_path(applied_optimizer_state.training_state.master_weights)
+    assert set(step_weights) == set(applied_weights)
+    for path in step_weights:
+        step_weight = step_weights[path]
+        applied_weight = applied_weights[path]
         assert jnp.allclose(step_weight, applied_weight)
 
 
@@ -733,9 +735,9 @@ def test_materialize_returns_module_unchanged_when_nothing_trainable() -> None:
 
     config = DistillTrainConfig()
     state = initialize_distill_training_state(module, config)
-    materialized = materialize_trainable_module(module, state, config)
+    materialized = materialize_trainable_module(module, state.master_weights, config)
 
-    assert len(state.trainable_parameters) == 0
+    assert not _selected_leaf_by_path(state.master_weights)
     assert materialized is module
 
 
@@ -745,22 +747,39 @@ def test_materialize_preserves_alias_identity() -> None:
 
     config = DistillTrainConfig(compute_dtype=jnp.bfloat16)
     state = initialize_distill_training_state(module, config)
-    materialized = materialize_trainable_module(module, state, config)
+    materialized = materialize_trainable_module(module, state.master_weights, config)
 
     assert materialized.left is materialized.right
 
 
-def test_map_parameter_leaves_preserves_alias_identity() -> None:
+def test_partition_parameter_leaves_masks_aliases() -> None:
     shared = jnp.ones((2, 2), dtype=jnp.float32)
     module = AliasModule(left=shared, right=shared)
 
-    mapped = map_parameter_leaves(
+    partitioned = partition_parameter_leaves(
         module,
+        lambda _info: True,
         lambda leaf, _info: leaf.astype(jnp.bfloat16),
     )
 
-    assert mapped.left is mapped.right
-    assert mapped.left.dtype == jnp.bfloat16
+    partitioned_leaves = _leaf_by_path(partitioned)
+    assert partitioned_leaves["left"].dtype == jnp.bfloat16
+    assert partitioned_leaves["right"] is None
+
+
+def test_combine_parameter_leaves_restores_alias_identity() -> None:
+    shared = jnp.ones((2, 2), dtype=jnp.float32)
+    module = AliasModule(left=shared, right=shared)
+    partitioned = partition_parameter_leaves(
+        module,
+        lambda _info: True,
+        lambda leaf, _info: leaf.astype(jnp.bfloat16),
+    )
+
+    combined = combine_parameter_leaves(module, partitioned)
+
+    assert combined.left is combined.right
+    assert combined.left.dtype == jnp.bfloat16
 
 
 def test_master_weights_are_independent_copies() -> None:
@@ -774,9 +793,10 @@ def test_master_weights_are_independent_copies() -> None:
     config = DistillTrainConfig(master_dtype=jnp.float32)
     state = initialize_distill_training_state(layer, config)
 
-    assert state.trainable_parameters[0].master_weight.dtype == jnp.float32
+    master_weights = _selected_leaf_by_path(state.master_weights)
+    assert master_weights["weights"].dtype == jnp.float32
     assert layer.weights.dtype == jnp.bfloat16
-    assert state.trainable_parameters[0].master_weight is not layer.weights
+    assert master_weights["weights"] is not layer.weights
 
 
 def test_full_pipeline_on_llama_decoder() -> None:
@@ -790,16 +810,19 @@ def test_full_pipeline_on_llama_decoder() -> None:
 
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.bfloat16)
     state = initialize_distill_training_state(decoder, config)
-    materialized = materialize_trainable_module(decoder, state, config)
+    materialized = materialize_trainable_module(decoder, state.master_weights, config)
 
     original_leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(decoder)}
     materialized_leaves = {leaf.path: leaf for leaf in iter_parameter_leaves(materialized)}
 
-    trainable_paths = set()
-    for parameter in state.trainable_parameters:
-        assert parameter.master_weight.dtype == jnp.float32
-        for path in parameter.alias_paths:
-            trainable_paths.add(path)
+    selected_paths = set(_selected_leaf_by_path(state.master_weights))
+    trainable_paths = {
+        leaf.path
+        for leaf in original_leaves.values()
+        if leaf.path in selected_paths or leaf.alias_of in selected_paths
+    }
+    for master_weight in _selected_leaf_by_path(state.master_weights).values():
+        assert master_weight.dtype == jnp.float32
 
     for path, leaf in materialized_leaves.items():
         if path in trainable_paths:
@@ -825,7 +848,7 @@ def test_full_pipeline_round_trip_preserves_values() -> None:
 
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.bfloat16)
     state = initialize_distill_training_state(layer, config)
-    materialized = materialize_trainable_module(layer, state, config)
+    materialized = materialize_trainable_module(layer, state.master_weights, config)
 
     assert jnp.allclose(
         materialized.weights,
