@@ -301,9 +301,6 @@ def initialize_distill_training_state(
             continue
 
         value = leaf_by_path[info.path]
-        if not (eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)):
-            raise TypeError(f"Trainable leaf {info.path} must be array-like, got {type(value)}")
-
         optimizer_group = get_optimizer_group(info)
         trainable_parameters.append(
             DistillTrainableParameter(
@@ -320,25 +317,11 @@ def initialize_distill_training_state(
 def get_muon_weight_dimension_numbers(
     training_state: DistillTrainingState,
 ) -> tuple[optax.contrib.MuonDimensionNumbers | None, ...]:
-    result: list[optax.contrib.MuonDimensionNumbers | None] = []
-
-    for parameter in training_state.trainable_parameters:
-        if parameter.optimizer_group != OptimizerGroup.MUON:
-            result.append(None)
-            continue
-
-        ndim = len(parameter.master_weight.shape)
-        if ndim != 2:
-            raise ValueError(f"Muon parameters must have rank 2, got {parameter.path} with {ndim}")
-
-        result.append(
-            optax.contrib.MuonDimensionNumbers(
-                reduction_axis=1,
-                output_axis=0,
-            ),
-        )
-
-    return tuple(result)
+    muon_dims = optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0)
+    return tuple(
+        muon_dims if parameter.optimizer_group == OptimizerGroup.MUON else None
+        for parameter in training_state.trainable_parameters
+    )
 
 
 def materialize_trainable_module[M: eqx.Module](
@@ -398,12 +381,7 @@ def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> A
 
 
 def _concrete_master_weights(state: DistillTrainingState) -> tuple[Array, ...]:
-    result: list[Array] = []
-    for parameter in state.trainable_parameters:
-        if not eqx.is_array(parameter.master_weight):
-            raise TypeError(f"Optimizer state requires concrete arrays, got {type(parameter.master_weight)}")
-        result.append(parameter.master_weight)
-    return tuple(result)
+    return tuple(parameter.master_weight for parameter in state.trainable_parameters)
 
 
 def _replace_master_weights(
@@ -609,12 +587,8 @@ def compute_distill_step_gradients(
                 quantization_mode,
                 quantization_key,
             )
-        batch_metrics = compute_distill_batch_metrics(materialized_student, teacher, batch)
-        step_metrics = DistillStepMetrics(
-            loss=batch_metrics.loss,
-            valid_tokens=batch_metrics.valid_tokens,
-        )
-        return step_metrics.loss, step_metrics
+        metrics = compute_distill_batch_metrics(materialized_student, teacher, batch)
+        return metrics.loss, DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
     (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(current_master_weights)
     return grads, metrics
@@ -641,12 +615,8 @@ def compute_trace_distill_step_gradients(
                 quantization_mode,
                 quantization_key,
             )
-        batch_metrics = compute_trace_distill_batch_metrics(materialized_student, batch)
-        step_metrics = DistillStepMetrics(
-            loss=batch_metrics.loss,
-            valid_tokens=batch_metrics.valid_tokens,
-        )
-        return step_metrics.loss, step_metrics
+        metrics = compute_trace_distill_batch_metrics(materialized_student, batch)
+        return metrics.loss, DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
 
     (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(current_master_weights)
     return grads, metrics

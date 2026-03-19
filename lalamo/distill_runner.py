@@ -214,8 +214,7 @@ class DistillCallbacks:
         pass
 
 
-def _load_conversations(dataset_path: Path | str, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
-    dataset_path = Path(dataset_path)
+def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
     dataframe = shuffle_dataset(load_hf_parquet(dataset_path), seed=seed)
     if "conversation" in dataframe.columns:
         column_name = "conversation"
@@ -228,8 +227,7 @@ def _load_conversations(dataset_path: Path | str, *, num_examples: int, seed: in
     return [[HFMessage.from_dict(message) for message in conversation] for conversation in conversations]
 
 
-def _load_traces(dataset_path: Path | str, *, num_examples: int) -> list[LalamoCompletion]:
-    dataset_path = Path(dataset_path)
+def _load_traces(dataset_path: Path, *, num_examples: int) -> list[LalamoCompletion]:
     with dataset_path.open("rb") as trace_fd:
         return list(islice(LalamoCompletion.deserialize_many(trace_fd), num_examples))
 
@@ -256,7 +254,7 @@ def _make_batches(
     sequences: list[np.ndarray],
     *,
     batch_size: int,
-    fixed_sequence_length: int | None = None,
+    fixed_sequence_length: int,
 ) -> list[DistillBatch]:
     batches: list[DistillBatch] = []
     for start in range(0, len(sequences), batch_size):
@@ -264,8 +262,7 @@ def _make_batches(
         if not batch_sequences:
             continue
 
-        pad_length = fixed_sequence_length or max(seq.shape[0] for seq in batch_sequences)
-        padded = np.zeros((len(batch_sequences), pad_length), dtype=np.int32)
+        padded = np.zeros((len(batch_sequences), fixed_sequence_length), dtype=np.int32)
         lengths = np.array([seq.shape[0] for seq in batch_sequences], dtype=np.int32)
 
         for row, seq in enumerate(batch_sequences):
@@ -345,19 +342,16 @@ def _build_lora_student_model(
 
 
 def _save_materialized_student(
-    student_path: Path | str,
-    output_path: Path | str,
+    student_path: Path,
+    output_path: Path,
     student_model: LanguageModel,
     materialized_student: Decoder,
 ) -> None:
-    student_path = Path(student_path)
-    output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
     with (student_path / "config.json").open() as config_file:
         source_config_json = json.load(config_file)
-    if not isinstance(source_config_json, dict):
-        raise TypeError(f"{student_path / 'config.json'} must contain a JSON object")
+    assert isinstance(source_config_json, dict)
 
     updated_model = LanguageModel(
         config=student_model.config,
@@ -380,11 +374,10 @@ def _save_materialized_student(
 
 
 def _save_checkpoint(
-    checkpoint_dir: Path | str,
+    checkpoint_dir: Path,
     checkpoint: ExperimentCheckpoint,
     metadata: CheckpointMetadata,
 ) -> None:
-    checkpoint_dir = Path(checkpoint_dir)
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
     eqx.tree_serialise_leaves(checkpoint_dir / "state.eqx", checkpoint)
     with (checkpoint_dir / "metadata.json").open("w") as metadata_file:
@@ -392,10 +385,9 @@ def _save_checkpoint(
 
 
 def _load_checkpoint(
-    checkpoint_dir: Path | str,
+    checkpoint_dir: Path,
     like: ExperimentCheckpoint,
 ) -> tuple[ExperimentCheckpoint, CheckpointMetadata]:
-    checkpoint_dir = Path(checkpoint_dir)
     checkpoint = eqx.tree_deserialise_leaves(checkpoint_dir / "state.eqx", like)
     with (checkpoint_dir / "metadata.json").open() as metadata_file:
         metadata = _CHECKPOINT_CONVERTER.structure(json.load(metadata_file), CheckpointMetadata)
@@ -444,8 +436,8 @@ def _accumulate_train_step[BatchT: eqx.Module](
         tuple[tuple[Array, ...], DistillStepMetrics],
     ],
 ) -> tuple[DistillOptimizerState, DistillStepMetrics, Key[Array, ""]]:
+    assert microbatches, "Gradient accumulation requires at least one microbatch"
     accumulated_grads: tuple[Array, ...] | None = None
-    accumulated_metrics: DistillStepMetrics | None = None
     total_loss = 0.0
     total_valid_tokens = 0
 
@@ -453,7 +445,6 @@ def _accumulate_train_step[BatchT: eqx.Module](
         train_key, step_key = jax.random.split(train_key)
         quantization_key = step_key if stochastic_rounding else None
         grads, metrics = compute_step_gradients(microbatch, quantization_key)
-        accumulated_metrics = metrics
         valid_tokens = int(metrics.valid_tokens)
         weighted_grads = tuple(grad * valid_tokens for grad in grads)
         accumulated_grads = (
@@ -464,15 +455,13 @@ def _accumulate_train_step[BatchT: eqx.Module](
         total_loss += float(metrics.loss) * valid_tokens
         total_valid_tokens += valid_tokens
 
-    if accumulated_grads is None or accumulated_metrics is None:
-        raise ValueError("Gradient accumulation requires at least one microbatch")
-
+    assert accumulated_grads is not None
     averaged_grads = tuple(grad / total_valid_tokens for grad in accumulated_grads)
-    accumulated_metrics = DistillStepMetrics(
+    step_metrics = DistillStepMetrics(
         loss=jnp.asarray(total_loss / total_valid_tokens, dtype=jnp.float32),
         valid_tokens=jnp.asarray(total_valid_tokens, dtype=jnp.int32),
     )
-    return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), accumulated_metrics, train_key
+    return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
 
 
 def _setup_device_mesh(num_devices: int) -> Mesh | None:
@@ -610,16 +599,10 @@ def distill(
         warmup_steps=config.warmup_steps,
         gradient_clip_norm=config.gradient_clip_norm,
     )
-    master_weights: list[Array] = []
-    for parameter in training_state.trainable_parameters:
-        if not eqx.is_array(parameter.master_weight):
-            raise TypeError(
-                f"Optimizer state requires concrete arrays, got {type(parameter.master_weight)}",
-            )
-        master_weights.append(parameter.master_weight)
+    master_weights = tuple(p.master_weight for p in training_state.trainable_parameters)
     optimizer_state = DistillOptimizerState(
         training_state=training_state,
-        optimizer_state=optimizer.init(tuple(master_weights)),
+        optimizer_state=optimizer.init(master_weights),
     )
     parameter_summary = summarize_distill_parameters(
         iter_parameter_leaves(student_model.model),
