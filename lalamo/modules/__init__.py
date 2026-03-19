@@ -15,6 +15,7 @@ from .common import (
     config_converter,
     field,
     get_current_sharding_config,
+    map_parameter_leaves,
     pad_and_apply_data_sharding,
     sharded_field,
 )
@@ -190,6 +191,7 @@ __all__ = [
     "config_converter",
     "field",
     "get_current_sharding_config",
+    "map_parameter_leaves",
     "pad_and_apply_data_sharding",
     "sharded_field",
 ]

@@ -6,7 +6,7 @@ from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
-from typing import Any, Generic, Self, TypeVar
+from typing import Any, Self
 
 import equinox as eqx
 import jax
@@ -38,6 +38,7 @@ __all__ = [
     "find_field_parameter_info",
     "get_current_sharding_config",
     "iter_parameter_leaves",
+    "map_parameter_leaves",
     "pad_and_apply_data_sharding",
     "register_config_union",
     "require_array",
@@ -57,11 +58,8 @@ class ForwardPassMode(Enum):
     SINGLE_TOKEN = "single_token"
 
 
-ConfigT_co = TypeVar("ConfigT_co", covariant=True)
-
-
-class LalamoModule(eqx.Module, Generic[ConfigT_co]):
-    config: ConfigT_co = eqx.field(static=True)
+class LalamoModule[ConfigT](eqx.Module):
+    config: ConfigT = eqx.field(static=True)
 
     @property
     @abstractmethod
@@ -414,6 +412,37 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
         )
 
     return results
+
+
+def map_parameter_leaves[M: eqx.Module](
+    module: M,
+    mapper: Callable[[Array | jax.ShapeDtypeStruct, ParameterLeafInfo], Array | jax.ShapeDtypeStruct],
+) -> M:
+    leaf_infos = iter_parameter_leaves(module)
+    if not leaf_infos:
+        return module
+
+    flat_with_path, _ = jtu.tree_flatten_with_path(module)
+    leaf_by_path = {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
+    canonical_path_by_path = {info.path: info.alias_of or info.path for info in leaf_infos}
+
+    mapped_by_canonical_path: dict[str, Array | jax.ShapeDtypeStruct] = {}
+    for info in leaf_infos:
+        if info.alias_of is not None:
+            continue
+
+        leaf = leaf_by_path[info.path]
+        assert eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
+        mapped_by_canonical_path[info.path] = mapper(leaf, info)
+
+    def maybe_replace(path: tuple[Any, ...], leaf: object) -> object:
+        path_str = keystr(path).lstrip(".")
+        canonical_path = canonical_path_by_path.get(path_str)
+        if canonical_path is None:
+            return leaf
+        return mapped_by_canonical_path[canonical_path]
+
+    return jax.tree.map_with_path(maybe_replace, module)
 
 
 def field(

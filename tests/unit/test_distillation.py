@@ -8,20 +8,19 @@ import optax
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
     DistillBatch,
+    DistillOptimizerState,
     DistillTrainConfig,
+    DistillTrainingState,
     OptimizerGroup,
     TraceDistillBatch,
     apply_distill_gradients,
     compute_distill_batch_metrics,
-    compute_distill_kl_loss,
     compute_distill_step_gradients,
     compute_trace_distill_batch_metrics,
-    compute_trace_distill_kl_loss,
     compute_trace_distill_step_gradients,
     distill_train_step,
     get_muon_weight_dimension_numbers,
     get_optimizer_group,
-    initialize_distill_optimizer_state,
     initialize_distill_training_state,
     inject_lora_adapter_configs,
     inject_lora_adapters,
@@ -34,7 +33,7 @@ from lalamo.distillation import (
     trace_distill_train_step,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.modules.common import ParameterNorm, field, iter_parameter_leaves
+from lalamo.modules.common import ParameterNorm, field, iter_parameter_leaves, map_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
@@ -65,6 +64,18 @@ class FrozenModule(eqx.Module):
 class LinearConfigWrapper:
     primary: GroupQuantizedLinearConfig
     secondary: tuple[GroupQuantizedLinearConfig, ...]
+
+
+def _make_optimizer_state(
+    training_state: DistillTrainingState,
+    optimizer: optax.GradientTransformation,
+) -> DistillOptimizerState:
+    master_weights = tuple(parameter.master_weight for parameter in training_state.trainable_parameters)
+    assert all(eqx.is_array(weight) for weight in master_weights)
+    return DistillOptimizerState(
+        training_state=training_state,
+        optimizer_state=optimizer.init(master_weights),
+    )
 
 
 def test_iter_parameter_leaves_detects_aliases() -> None:
@@ -449,14 +460,14 @@ def test_llama_decoder_marks_rope_tables_frozen() -> None:
     assert leaves["transformer.global_rope.sines"].norm == ParameterNorm.L_INF
 
 
-def test_compute_distill_kl_loss_is_zero_for_matching_decoders() -> None:
+def test_compute_distill_batch_metrics_has_zero_loss_for_matching_decoders() -> None:
     decoder = _make_tiny_llama_decoder(key=jax.random.key(9))
     batch = DistillBatch(
         token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
         lengths_without_padding=jnp.array([6], dtype=jnp.int32),
     )
 
-    metrics = compute_distill_kl_loss(decoder, decoder, batch)
+    metrics = compute_distill_batch_metrics(decoder, decoder, batch)
 
     assert metrics.valid_tokens == 5
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
@@ -527,10 +538,10 @@ def _make_trace_batch_from_decoder(decoder: Decoder) -> tuple[TraceDistillBatch,
     return make_trace_distill_batch(traces, pad_token_id=0), token_ids
 
 
-def test_compute_trace_distill_kl_loss_is_zero_for_matching_decoder() -> None:
+def test_compute_trace_distill_batch_metrics_has_zero_loss_for_matching_decoder() -> None:
     decoder = _make_tiny_llama_decoder(key=jax.random.key(13))
     trace_batch, _ = _make_trace_batch_from_decoder(decoder)
-    metrics = compute_trace_distill_kl_loss(decoder, trace_batch)
+    metrics = compute_trace_distill_batch_metrics(decoder, trace_batch)
 
     assert metrics.valid_tokens == 2
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
@@ -561,9 +572,9 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     optimizer = optax.sgd(0.05)
     training_state = initialize_distill_training_state(student, config)
-    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+    optimizer_state = _make_optimizer_state(training_state, optimizer)
 
-    initial_metrics = compute_distill_kl_loss(
+    initial_metrics = compute_distill_batch_metrics(
         materialize_trainable_module(student, optimizer_state.training_state, config),
         teacher,
         batch,
@@ -579,7 +590,7 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
             config,
         )
 
-    final_metrics = compute_distill_kl_loss(
+    final_metrics = compute_distill_batch_metrics(
         materialize_trainable_module(student, optimizer_state.training_state, config),
         teacher,
         batch,
@@ -603,7 +614,7 @@ def test_applying_distill_step_gradients_matches_distill_train_step() -> None:
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     optimizer = optax.sgd(0.05)
     training_state = initialize_distill_training_state(student, config)
-    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+    optimizer_state = _make_optimizer_state(training_state, optimizer)
 
     step_optimizer_state, step_metrics = distill_train_step(
         optimizer_state,
@@ -647,9 +658,9 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     optimizer = optax.sgd(0.05)
     training_state = initialize_distill_training_state(student, config)
-    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+    optimizer_state = _make_optimizer_state(training_state, optimizer)
 
-    initial_metrics = compute_trace_distill_kl_loss(
+    initial_metrics = compute_trace_distill_batch_metrics(
         materialize_trainable_module(student, optimizer_state.training_state, config),
         trace_batch,
     )
@@ -663,7 +674,7 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
             config,
         )
 
-    final_metrics = compute_trace_distill_kl_loss(
+    final_metrics = compute_trace_distill_batch_metrics(
         materialize_trainable_module(student, optimizer_state.training_state, config),
         trace_batch,
     )
@@ -683,7 +694,7 @@ def test_applying_trace_distill_step_gradients_matches_trace_distill_train_step(
     config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.float32)
     optimizer = optax.sgd(0.05)
     training_state = initialize_distill_training_state(student, config)
-    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+    optimizer_state = _make_optimizer_state(training_state, optimizer)
 
     step_optimizer_state, step_metrics = trace_distill_train_step(
         optimizer_state,
@@ -737,6 +748,19 @@ def test_materialize_preserves_alias_identity() -> None:
     materialized = materialize_trainable_module(module, state, config)
 
     assert materialized.left is materialized.right
+
+
+def test_map_parameter_leaves_preserves_alias_identity() -> None:
+    shared = jnp.ones((2, 2), dtype=jnp.float32)
+    module = AliasModule(left=shared, right=shared)
+
+    mapped = map_parameter_leaves(
+        module,
+        lambda leaf, _info: leaf.astype(jnp.bfloat16),
+    )
+
+    assert mapped.left is mapped.right
+    assert mapped.left.dtype == jnp.bfloat16
 
 
 def test_master_weights_are_independent_copies() -> None:
