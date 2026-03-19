@@ -2,7 +2,7 @@ import dataclasses
 import math
 from collections import defaultdict
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 
 import equinox as eqx
@@ -588,10 +588,11 @@ def apply_distill_gradients(
         optimizer_state.training_state.master_weights,
     )
     updated_master_weights = optax.apply_updates(optimizer_state.training_state.master_weights, updates)
-    return DistillOptimizerState(
-        training_state=DistillTrainingState(
+    return replace(
+        optimizer_state,
+        training_state=replace(
+            optimizer_state.training_state,
             master_weights=updated_master_weights,
-            muon_weight_dimension_numbers=optimizer_state.training_state.muon_weight_dimension_numbers,
         ),
         optimizer_state=new_optimizer_state,
     )

@@ -22,7 +22,6 @@ from lalamo.common import ParameterTree, require_array, require_tree
 __all__ = [
     "DummyUnionMember",
     "FieldMetadataInfo",
-    "FieldParameterInfo",
     "ForwardPassMode",
     "LalamoModule",
     "ParameterLeafInfo",
@@ -291,15 +290,6 @@ class ParameterNorm(Enum):
 
 
 @dataclass(frozen=True)
-class FieldParameterInfo:
-    trainable: bool
-    norm: ParameterNorm
-    quantized: bool
-    tensor_sharding: TensorSharding | None
-    min_size_to_shard: int
-
-
-@dataclass(frozen=True)
 class ParameterLeafInfo:
     path: str
     owner_type: type[eqx.Module]
@@ -346,16 +336,6 @@ def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> Fiel
     return FieldMetadataInfo(owner=owner, field=owner_field)
 
 
-def _field_parameter_info(field_info: FieldMetadataInfo) -> FieldParameterInfo:
-    return FieldParameterInfo(
-        trainable=field_info.metadata.get("trainable", True),
-        norm=field_info.metadata.get("norm", ParameterNorm.SPECTRAL),
-        quantized=field_info.metadata.get("quantized", False),
-        tensor_sharding=field_info.metadata.get("tensor_sharding"),
-        min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
-    )
-
-
 def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo | None:
     flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda value: value is target)
 
@@ -387,8 +367,6 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
         if field_info is None:
             raise ValueError(f"Field lookup failed for module {module} at {path}")
 
-        parameter_info = _field_parameter_info(field_info)
-
         leaf_key = id(leaf)
         canonical_path = first_paths.get(leaf_key)
         if canonical_path is None:
@@ -409,11 +387,11 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
                     field_name=field_info.field.name,
                     shape=tuple(leaf.shape),
                     dtype=jnp.dtype(leaf.dtype),
-                    trainable=parameter_info.trainable,
-                    norm=parameter_info.norm,
-                    quantized=parameter_info.quantized,
-                    tensor_sharding=parameter_info.tensor_sharding,
-                    min_size_to_shard=parameter_info.min_size_to_shard,
+                    trainable=field_info.metadata.get("trainable", True),
+                    norm=field_info.metadata.get("norm", ParameterNorm.SPECTRAL),
+                    quantized=field_info.metadata.get("quantized", False),
+                    tensor_sharding=field_info.metadata.get("tensor_sharding"),
+                    min_size_to_shard=field_info.metadata.get("min_size_to_shard", 0),
                     alias_of=alias_of,
                 ),
             ),

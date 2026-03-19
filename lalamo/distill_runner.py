@@ -327,16 +327,13 @@ def _build_lora_student_model(
     *,
     key: Key[Array, ""],
 ) -> LanguageModel:
-    model_config = inject_lora_adapter_configs(student_model.config.model_config, lora_rank, lora_scale)
-    model = inject_lora_adapters(student_model.model, lora_rank, lora_scale, key)
-    return LanguageModel(
-        config=LanguageModelConfig(
-            model_config=model_config,
-            message_processor_config=student_model.config.message_processor_config,
-            generation_config=student_model.config.generation_config,
+    return replace(
+        student_model,
+        config=replace(
+            student_model.config,
+            model_config=inject_lora_adapter_configs(student_model.config.model_config, lora_rank, lora_scale),
         ),
-        model=model,
-        message_processor=student_model.message_processor,
+        model=inject_lora_adapters(student_model.model, lora_rank, lora_scale, key),
     )
 
 
@@ -352,11 +349,7 @@ def _save_materialized_student(
         source_config_json = json.load(config_file)
     assert isinstance(source_config_json, dict)
 
-    updated_model = LanguageModel(
-        config=student_model.config,
-        model=materialized_student,
-        message_processor=student_model.message_processor,
-    )
+    updated_model = replace(student_model, model=materialized_student)
     metadata = config_converter.structure(source_config_json, ModelMetadata)
     updated_metadata = replace(metadata, model_config=updated_model.config)
 
