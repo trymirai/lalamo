@@ -67,14 +67,14 @@ def _write_top_k(dist: dict[int, float], keys: array, values: array, idx: int, n
     total = sum(v for _, v in top)
     if total <= 0:
         return
-    k_start = idx * ngram_k
-    # Clear all slots first to avoid stale values when top-k shrinks
-    for i in range(ngram_k):
-        keys[k_start + i] = 0
-        values[k_start + i] = 0.0
+    new_keys = array("I", repeat(0, ngram_k))
+    new_values = array("f", repeat(0.0, ngram_k))
     for i, (token_id, prob) in enumerate(top):
-        keys[k_start + i] = token_id
-        values[k_start + i] = prob / total
+        new_keys[i] = token_id
+        new_values[i] = prob / total
+    k_start = idx * ngram_k
+    memoryview(keys)[k_start:k_start + ngram_k] = new_keys
+    memoryview(values)[k_start:k_start + ngram_k] = new_values
 
 
 class ExactBucket:
