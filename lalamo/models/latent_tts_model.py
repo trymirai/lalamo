@@ -35,7 +35,7 @@ __all__ = [
 class LatentTTSGeneratorConfig:
     latent_tts_config: LatentTTSConfig
     message_processor_config: TTSMessageProcessorConfig
-    generation_config: LatentTTSGenerationConfig = LatentTTSGenerationConfig()
+    generation_config: LatentTTSGenerationConfig
 
 
 class LatentTTSGenerator(eqx.Module):
@@ -90,7 +90,8 @@ class LatentTTSGenerator(eqx.Module):
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
 
-        return LatentTTSGenerator(
+        generator_cls = config.latent_tts_config.generator_class()
+        return generator_cls(
             config=config,
             latent_tts_model=model,
             message_processor=message_processor,

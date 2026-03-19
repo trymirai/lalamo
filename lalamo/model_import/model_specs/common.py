@@ -175,6 +175,7 @@ class ModelSpec:
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
     grammar_start_tokens: tuple[str, ...] = tuple()
+    local_dir: Path | None = None
 
     @classmethod
     def from_json(cls, json_data: dict) -> "ModelSpec":

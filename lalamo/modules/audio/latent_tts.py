@@ -1,7 +1,9 @@
+import dataclasses
 from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
+from cattrs.gen import make_dict_structure_fn
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from lalamo.modules.common import LalamoModule, config_converter
@@ -16,7 +18,7 @@ class LatentTTSOutputs:
 
 @dataclass(frozen=True)
 class LatentTTSGenerationConfig:
-    n_timesteps: int = 8
+    n_timesteps: int
     temperature: float = 1.0
     length_scale: float = 1.0
     guidance_scale: float = 0.0
@@ -58,20 +60,28 @@ class LatentTTSConfig(RegistryABC):
     @abstractmethod
     def samplerate(self) -> int: ...
 
+    def generator_class(self) -> type:
+        from lalamo.models.latent_tts_model import LatentTTSGenerator
+
+        return LatentTTSGenerator
+
 
 def _unstructure_latent_tts_config(obj: LatentTTSConfig) -> dict:
-    return {
-        "type": obj.__class__.__name__,
-        **config_converter.unstructure(obj, type(obj)),
-    }
+    fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+    return {"type": obj.__class__.__name__, **fields}
 
 
 def _structure_latent_tts_config(data: dict, _type: type) -> LatentTTSConfig:
+    from lalamo.model_registry import ModelRegistry
+
+    ModelRegistry.build()
+
     new_data = dict(data)
     type_name = new_data.pop("type")
     name_to_type = {t.__name__: t for t in LatentTTSConfig.__descendants__()}
     target_type = name_to_type[type_name]
-    return config_converter.structure(new_data, target_type)
+    structure_fn = make_dict_structure_fn(target_type, config_converter)
+    return structure_fn(new_data, target_type)
 
 
 config_converter.register_structure_hook(LatentTTSConfig, _structure_latent_tts_config)

@@ -168,23 +168,20 @@ def _instantiate_tokenizer_from_model_spec(
     model_spec: ModelSpec,
     output_dir: Path | str | None = None,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    local_dir: Path | None = None,
 ) -> Tokenizer:
-    if model_spec.vendor == "NVIDIA" and model_spec.family == "nanocodec":
-        # NOTE: once text decoder for Nanocodec is implemented - proper Tokenizer will hopefully become available
-        tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
-    else:
-        assert isinstance(model_spec.configs.tokenizer, FileSpec)
-        tokenizer_file = download_file(model_spec.configs.tokenizer, model_spec.repo, output_dir, progress_callback)
-        tokenizer = Tokenizer.from_file(str(tokenizer_file))
+    effective_local_dir = local_dir or model_spec.local_dir
     match model_spec.configs.tokenizer:
         case None:
-            tokenizer = Tokenizer.from_str(dummy_char_level_tokenizer_config())
+            return Tokenizer.from_str(dummy_char_level_tokenizer_config())
         case FileSpec() as file_spec:
-            tokenizer_file = download_file(file_spec, model_spec.repo, output_dir, progress_callback)
-            tokenizer = Tokenizer.from_file(str(tokenizer_file))
+            if effective_local_dir is not None:
+                tokenizer_file = effective_local_dir / file_spec.filename
+            else:
+                tokenizer_file = download_file(file_spec, model_spec.repo, output_dir, progress_callback)
+            return Tokenizer.from_file(str(tokenizer_file))
         case str() as tokenizer_string:
-            tokenizer = Tokenizer.from_str(tokenizer_string)
-    return tokenizer
+            return Tokenizer.from_str(tokenizer_string)
 
 
 def import_message_processor(
@@ -298,11 +295,27 @@ def _unpack_nemo_model(nemo_model_path: Path) -> Iterator[tuple[list[Path], Path
         yield (weights_paths, config_path)
 
 
+_WEIGHTS_EXTENSIONS: dict[WeightsType, str] = {
+    WeightsType.SAFETENSORS: ".safetensors",
+    WeightsType.TORCH: ".pth",
+    WeightsType.NEMO: ".nemo",
+}
+
+
 @contextmanager
 def _download_weights_and_config_files(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    local_dir: Path | None = None,
 ) -> Iterator[tuple[list[Path], Path, list[Path]]]:
+    effective_local_dir = local_dir or model_spec.local_dir
+    if effective_local_dir is not None:
+        config_path = effective_local_dir / model_spec.configs.model_config.filename
+        ext = _WEIGHTS_EXTENSIONS[model_spec.weights_type]
+        weights_paths = sorted(effective_local_dir.glob(f"*{ext}"))
+        yield (weights_paths, config_path, [])
+        return
+
     if model_spec.weights_type == WeightsType.NEMO:
         (nemo_model_file,) = download_weights(model_spec, progress_callback=progress_callback)
         with _unpack_nemo_model(nemo_model_file) as nemo_file_contents:
@@ -538,16 +551,18 @@ def _import_latent_tts_model(
     precision: DTypeLike | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
+    local_dir: Path | None = None,
 ) -> tuple[LatentTTSGenerator, LatentTTSGeneratorConfig]:
     with _download_weights_and_config_files(
         model_spec,
         progress_callback=progress_callback,
+        local_dir=local_dir,
     ) as (model_weights_paths, config_path, extra_config_paths):
         foreign_config = model_spec.config_type.from_json(config_path, extra_config_paths)
         if precision is None:
             precision = foreign_config.default_precision
 
-        tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, None, progress_callback)
+        tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, None, progress_callback, local_dir=local_dir)
 
         latent_tts_model = _load_main_processing_module(
             model_spec,
@@ -576,9 +591,13 @@ def _import_latent_tts_model(
         metadata_dict={},
     )
 
+    if not hasattr(latent_tts_config, "default_generation_config"):
+        raise ValueError(f"{type(latent_tts_config).__name__} must implement default_generation_config()")
+    generation_config = latent_tts_config.default_generation_config()
     generator_config = LatentTTSGeneratorConfig(
         latent_tts_config=latent_tts_config,
         message_processor_config=message_processor.config,
+        generation_config=generation_config,
     )
 
     generator = LatentTTSGenerator(
@@ -598,7 +617,11 @@ def import_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     sharding_config: ShardingConfig | None = None,
+    local_dir: Path | str | None = None,
 ) -> ImportResults:
+    if isinstance(local_dir, str):
+        local_dir = Path(local_dir)
+
     if isinstance(model_spec, str):
         try:
             model_spec = ModelRegistry.build().repo_to_model[model_spec]
@@ -638,6 +661,7 @@ def import_model(
                     precision=precision,
                     accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
+                    local_dir=local_dir,
                 )
 
     metadata = ModelMetadata(

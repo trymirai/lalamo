@@ -11,6 +11,7 @@ from itertools import islice
 from pathlib import Path
 from typing import Annotated
 
+import jax.numpy as jnp
 import jax.profiler
 import requests
 import soundfile as sf
@@ -72,6 +73,7 @@ from lalamo.models import (
     Qwen3TTSGenerator,
 )
 from lalamo.models.common import BatchSizesComputedEvent
+from lalamo.audio.tts_message_processor import VoicePrompt
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -402,6 +404,12 @@ def tts(
             show_default="Default style from the model",
         ),
     ] = None,
+    reference: Annotated[
+        Path | None,
+        Option(
+            help="Path to reference audio file for voice cloning (WAV format).",
+        ),
+    ] = None,
 ) -> None:
     if output_file is None:
         output_file = Path.cwd() / "generated_speech.wav"
@@ -412,6 +420,14 @@ def tts(
         raise Exit(1)
 
     console.print(f"🤖 Loading model from specified path: {model_path}.")
+
+    voice_prompt: VoicePrompt | None = None
+    if reference is not None:
+        ref_audio, ref_sr = sf.read(str(reference), dtype="float32")
+        if ref_audio.ndim > 1:
+            ref_audio = ref_audio.mean(axis=1)
+        voice_prompt = VoicePrompt(content=jnp.array(ref_audio), sampling_rate=ref_sr)
+        console.print(f"🎤 Loaded reference audio from {reference} ({ref_sr}Hz, {len(ref_audio) / ref_sr:.1f}s)")
 
     model: TTSGenerator | LatentTTSGenerator
     if _is_latent_tts_model(model_path):
@@ -434,7 +450,7 @@ def tts(
         if user_text == "":
             continue
 
-        user_message = TTSMessage(content=user_text, speaker_id=speaker_id, style=style)
+        user_message = TTSMessage(content=user_text, speaker_id=speaker_id, style=style, voice_prompt=voice_prompt)
 
         tts_result = model.generate_speech([user_message])
 
