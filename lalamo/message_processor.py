@@ -185,7 +185,11 @@ class MessageProcessor:
         match = self.output_parser_regex.match(response)
         if match is None:
             return AssistantMessage(chain_of_thought=None, response=response)
-        return AssistantMessage(**match.groupdict())
+        groups = match.groupdict()
+        for key in groups:
+            if groups[key] is None and AssistantMessage.__dataclass_fields__[key].type is str:
+                groups[key] = ""
+        return AssistantMessage(**groups)
 
     def tokenize_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids
@@ -218,7 +222,7 @@ class MessageProcessor:
             all_fields = AssistantMessage.__dataclass_fields__
             # NOTE: str type annotations are assumed to be required
             required_fields = {
-                k: v for k, v in all_fields.items() if isinstance(v.type, str) or v.type == (v.type | None)
+                k: v for k, v in all_fields.items() if isinstance(v.type, str) or v.type != (v.type | None)
             }
             named_groups = self.output_parser_regex.groupindex
             invalid_groups = set(named_groups) - set(all_fields)

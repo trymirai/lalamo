@@ -53,7 +53,9 @@ def seqhash(tokens: Iterable[int], size: int) -> tuple[int, int]:
 
 
 def _discount_and_interpolate(
-    dist: dict[int, float], lower_dist: dict[int, float], discount: float,
+    dist: dict[int, float],
+    lower_dist: dict[int, float],
+    discount: float,
 ) -> dict[int, float]:
     num_nonzero = sum(1 for v in dist.values() if v > 0)
     freed_mass = min(discount * num_nonzero, 0.5)
@@ -74,12 +76,13 @@ def _write_top_k(dist: dict[int, float], keys: array, values: array, idx: int, n
         new_keys[i] = token_id
         new_values[i] = prob / total
     k_start = idx * ngram_k
-    memoryview(keys)[k_start:k_start + ngram_k] = new_keys
-    memoryview(values)[k_start:k_start + ngram_k] = new_values
+    memoryview(keys)[k_start : k_start + ngram_k] = new_keys
+    memoryview(values)[k_start : k_start + ngram_k] = new_values
 
 
 class ExactBucket:
     __slots__ = ("count", "probs")
+
     def __init__(self) -> None:
         self.count: int = 0
         self.probs: dict[int, float] = {}
@@ -170,11 +173,7 @@ class TaggedNGramTable:
 
         k_start = idx * self.ngram_k
         k_end = k_start + self.ngram_k
-        return {
-            k: v
-            for k, v in zip(self._keys[k_start:k_end], self._values[k_start:k_end], strict=True)
-            if v > 0.0
-        }
+        return {k: v for k, v in zip(self._keys[k_start:k_end], self._values[k_start:k_end], strict=True) if v > 0.0}
 
     def exact_dist_for(self, seq: Iterable[int]) -> dict[int, float] | None:
         """Look up exact (pre-compress) distribution for a context."""
@@ -183,7 +182,9 @@ class TaggedNGramTable:
         return dict(bucket.probs) if bucket is not None else None
 
     def apply_smoothing(
-        self, discount: float, lower_order_fn: Callable[[tuple[int, ...]], dict[int, float]],
+        self,
+        discount: float,
+        lower_order_fn: Callable[[tuple[int, ...]], dict[int, float]],
     ) -> None:
         """Re-smooth compressed buckets using lower-order interpolation."""
         for (idx, tag), bucket in self._exact_data.items():
@@ -207,18 +208,18 @@ class TaggedNGramTable:
         hashtable_size, ngram_k, ngram_n, ngram_pad = struct.unpack("<4I", blob[:offset])
 
         tag_len = 8 * hashtable_size
-        tags = array("Q", blob[offset:offset + tag_len])
+        tags = array("Q", blob[offset : offset + tag_len])
         offset += tag_len
 
         kv_len = 4 * ngram_k * hashtable_size
-        keys = array("I", blob[offset:offset + kv_len])
+        keys = array("I", blob[offset : offset + kv_len])
         offset += kv_len
 
-        values = array("f", blob[offset:offset + kv_len])
+        values = array("f", blob[offset : offset + kv_len])
         offset += kv_len
 
         count_len = 4 * hashtable_size
-        counts = array("I", blob[offset:offset + count_len])
+        counts = array("I", blob[offset : offset + count_len])
         offset += count_len
 
         instance = cls(
@@ -238,9 +239,9 @@ class TaggedNGramTable:
 def _deserialize_tagged_tables(blob: bytes, offset: int, max_order: int) -> tuple[list[TaggedNGramTable], int]:
     tables: list[TaggedNGramTable] = []
     for _ in range(max_order):
-        length, = struct.unpack("<Q", blob[offset:offset + 8])
+        (length,) = struct.unpack("<Q", blob[offset : offset + 8])
         offset += 8
-        tables.append(TaggedNGramTable.deserialize(blob[offset:offset + length]))
+        tables.append(TaggedNGramTable.deserialize(blob[offset : offset + length]))
         offset += length
     return tables, offset
 
@@ -253,10 +254,7 @@ class NGramSpeculator(Speculator):
 
     @classmethod
     def init(cls, hashtable_size: int, ngram_k: int, max_order: int = 4, discount: float = 0.002) -> Self:
-        tables = tuple(
-            TaggedNGramTable.init(hashtable_size, ngram_k, n)
-            for n in range(1, max_order + 1)
-        )
+        tables = tuple(TaggedNGramTable.init(hashtable_size, ngram_k, n) for n in range(1, max_order + 1))
         return cls(max_order, tables, discount)
 
     def train(self, token_ids: Iterable[int], token_logits: Iterable[dict[int, float]]) -> None:
@@ -269,7 +267,7 @@ class NGramSpeculator(Speculator):
         """Find the highest available lower-order distribution for backoff."""
         for order in range(max_lower_order, 0, -1):
             table = self.tables[order - 1]
-            shorter_ctx = ctx_tokens[-(order - 1):] if order > 1 else ()
+            shorter_ctx = ctx_tokens[-(order - 1) :] if order > 1 else ()
             dist = table.exact_dist_for(shorter_ctx)
             if dist is not None:
                 return dist
@@ -305,7 +303,7 @@ class NGramSpeculator(Speculator):
     @classmethod
     def deserialize(cls, blob: bytes) -> Self:
         offset = 0
-        max_order, discount = struct.unpack("<If", blob[offset:offset + 8])
+        max_order, discount = struct.unpack("<If", blob[offset : offset + 8])
         offset += 8
         tables, _ = _deserialize_tagged_tables(blob, offset, max_order)
         return cls(max_order, tuple(tables), discount)
