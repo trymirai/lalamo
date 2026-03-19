@@ -140,12 +140,8 @@ def _inject_qlora_linear(
     lora_scale: float,
     key: Key[Array, ""],
 ) -> QLoRALinear:
-    config_arguments = {field.name: getattr(linear.config, field.name) for field in dataclasses.fields(linear.config)}
-    qlora_config = QLoRALinearConfig(
-        **config_arguments,
-        lora_rank=lora_rank,
-        lora_scale=lora_scale,
-    )
+    qlora_config = inject_lora_adapter_configs(linear.config, lora_rank, lora_scale)
+    assert isinstance(qlora_config, QLoRALinearConfig)
 
     leading_dims = linear.weights.shape[:-2]
     hidden_lora_rank = linear.num_outputs * lora_rank
@@ -218,15 +214,17 @@ def inject_lora_adapter_configs[C](
             lora_scale=lora_scale,
         )
     if dataclasses.is_dataclass(config):
-        updated_fields = {
-            field.name: inject_lora_adapter_configs(
-                getattr(config, field.name),
-                lora_rank,
-                lora_scale,
-            )
-            for field in dataclasses.fields(config)
-        }
-        return type(config)(**updated_fields)
+        return dataclasses.replace(
+            config,
+            **{
+                field.name: inject_lora_adapter_configs(
+                    getattr(config, field.name),
+                    lora_rank,
+                    lora_scale,
+                )
+                for field in dataclasses.fields(config)
+            },
+        )
     if isinstance(config, tuple):
         return tuple(inject_lora_adapter_configs(item, lora_rank, lora_scale) for item in config)
     if isinstance(config, list):
