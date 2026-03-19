@@ -15,7 +15,7 @@ import optax
 from cattrs import Converter
 from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
-from jaxtyping import Array, DTypeLike, Key
+from jaxtyping import Array, Key
 
 from lalamo.common import flatten_parameters
 from lalamo.data import load_hf_parquet, shuffle_dataset
@@ -35,7 +35,6 @@ from lalamo.distillation import (
     compute_trace_distill_batch_metrics,
     compute_trace_distill_step_gradients,
     get_muon_weight_dimension_numbers,
-    initialize_distill_optimizer_state,
     initialize_distill_training_state,
     inject_lora_adapter_configs,
     inject_lora_adapters,
@@ -345,24 +344,6 @@ def _build_lora_student_model(
     )
 
 
-def _load_model_config_json(model_path: Path | str) -> dict[str, object]:
-    model_path = Path(model_path)
-    with (model_path / "config.json").open() as config_file:
-        config_json = json.load(config_file)
-    if not isinstance(config_json, dict):
-        raise TypeError(f"{model_path / 'config.json'} must contain a JSON object")
-    return config_json
-
-
-def _updated_config_json(
-    source_config_json: dict[str, object],
-    updated_model: LanguageModel,
-) -> dict[str, object]:
-    metadata = config_converter.structure(source_config_json, ModelMetadata)
-    updated_metadata = replace(metadata, model_config=updated_model.config)
-    return config_converter.unstructure(updated_metadata, ModelMetadata)
-
-
 def _save_materialized_student(
     student_path: Path | str,
     output_path: Path | str,
@@ -373,17 +354,27 @@ def _save_materialized_student(
     output_path = Path(output_path)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    source_config_json = _load_model_config_json(student_path)
+    with (student_path / "config.json").open() as config_file:
+        source_config_json = json.load(config_file)
+    if not isinstance(source_config_json, dict):
+        raise TypeError(f"{student_path / 'config.json'} must contain a JSON object")
+
     updated_model = LanguageModel(
         config=student_model.config,
         model=materialized_student,
         message_processor=student_model.message_processor,
     )
+    metadata = config_converter.structure(source_config_json, ModelMetadata)
+    updated_metadata = replace(metadata, model_config=updated_model.config)
 
     shutil.copy2(student_path / "tokenizer.json", output_path / "tokenizer.json")
 
     with (output_path / "config.json").open("w") as config_file:
-        json.dump(_updated_config_json(source_config_json, updated_model), config_file, indent=4)
+        json.dump(
+            config_converter.unstructure(updated_metadata, ModelMetadata),
+            config_file,
+            indent=4,
+        )
     with (output_path / "model.safetensors").open("wb") as weights_file:
         safe_write(weights_file, flatten_parameters(updated_model.export_weights()))
 
@@ -441,18 +432,6 @@ def _build_optimizer(
     return optax.chain(optax.clip_by_global_norm(gradient_clip_norm), optimizer)
 
 
-def _resolve_compute_dtype(name: ComputeDTypeName, native_dtype: DTypeLike) -> DTypeLike:
-    match name:
-        case ComputeDTypeName.AUTO:
-            return native_dtype
-        case ComputeDTypeName.BFLOAT16:
-            return jnp.bfloat16
-        case ComputeDTypeName.FLOAT32:
-            return jnp.float32
-        case _:
-            raise ValueError(f"Unknown compute dtype: {name}")
-
-
 def _accumulate_train_step[BatchT: eqx.Module](
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
@@ -503,14 +482,6 @@ def _setup_device_mesh(num_devices: int) -> Mesh | None:
     if len(devices) < num_devices:
         raise ValueError(f"Requested {num_devices} devices but only {len(devices)} available")
     return Mesh(devices, axis_names=("batch",))
-
-
-def _shard_batch[B: eqx.Module](batch: B, mesh: Mesh) -> B:
-    return eqx.filter_shard(batch, NamedSharding(mesh, P("batch")))
-
-
-def _replicate[M: eqx.Module](module: M, mesh: Mesh) -> M:
-    return eqx.filter_shard(module, NamedSharding(mesh, P()))
 
 
 def distill(
@@ -571,11 +542,13 @@ def distill(
             train_items = tokenized[: config.train_examples]
             eval_items = tokenized[config.train_examples : config.train_examples + config.eval_examples]
             train_batches = _make_batches(
-                train_items, batch_size=device_batch_size,
+                train_items,
+                batch_size=device_batch_size,
                 fixed_sequence_length=config.max_sequence_length,
             )
             eval_batches = _make_batches(
-                eval_items, batch_size=device_batch_size,
+                eval_items,
+                batch_size=device_batch_size,
                 fixed_sequence_length=config.max_sequence_length,
             )
         case TrainingMode.TRACE_TOPK:
@@ -592,13 +565,38 @@ def distill(
     callbacks.finished_loading_dataset()
 
     if mesh is not None:
-        is_shardable = lambda b: b.token_ids.shape[0] % config.num_devices == 0  # noqa: E731
-        train_batches = [_shard_batch(b, mesh) for b in train_batches if is_shardable(b)]
-        eval_batches = [_shard_batch(b, mesh) for b in eval_batches if is_shardable(b)]
+        batch_sharding = NamedSharding(mesh, P("batch"))
+        train_batches = [
+            eqx.filter_shard(batch, batch_sharding)
+            for batch in train_batches
+            if batch.token_ids.shape[0] % config.num_devices == 0
+        ]
+        eval_batches = [
+            eqx.filter_shard(batch, batch_sharding)
+            for batch in eval_batches
+            if batch.token_ids.shape[0] % config.num_devices == 0
+        ]
+        if not train_batches:
+            raise ValueError(
+                "No train batches remain after data sharding; use more train examples or fewer devices",
+            )
+        if not eval_batches:
+            raise ValueError(
+                "No eval batches remain after data sharding; use more eval examples or fewer devices",
+            )
 
+    match config.compute_dtype_name:
+        case ComputeDTypeName.AUTO:
+            compute_dtype = student_model.model.activation_precision
+        case ComputeDTypeName.BFLOAT16:
+            compute_dtype = jnp.bfloat16
+        case ComputeDTypeName.FLOAT32:
+            compute_dtype = jnp.float32
+        case _:
+            raise ValueError(f"Unknown compute dtype: {config.compute_dtype_name}")
     distill_config = DistillTrainConfig(
         master_dtype=jnp.float32,
-        compute_dtype=_resolve_compute_dtype(config.compute_dtype_name, student_model.model.activation_precision),
+        compute_dtype=compute_dtype,
     )
     training_state = initialize_distill_training_state(
         student_model.model,
@@ -612,7 +610,17 @@ def distill(
         warmup_steps=config.warmup_steps,
         gradient_clip_norm=config.gradient_clip_norm,
     )
-    optimizer_state = initialize_distill_optimizer_state(training_state, optimizer)
+    master_weights: list[Array] = []
+    for parameter in training_state.trainable_parameters:
+        if not eqx.is_array(parameter.master_weight):
+            raise TypeError(
+                f"Optimizer state requires concrete arrays, got {type(parameter.master_weight)}",
+            )
+        master_weights.append(parameter.master_weight)
+    optimizer_state = DistillOptimizerState(
+        training_state=training_state,
+        optimizer_state=optimizer.init(tuple(master_weights)),
+    )
     parameter_summary = summarize_distill_parameters(
         iter_parameter_leaves(student_model.model),
         distill_config,
@@ -620,9 +628,10 @@ def distill(
     )
 
     if mesh is not None:
-        student_model = _replicate(student_model, mesh)
-        teacher_model = _replicate(teacher_model, mesh)
-        optimizer_state = _replicate(optimizer_state, mesh)
+        replicated_sharding = NamedSharding(mesh, P())
+        student_model = eqx.filter_shard(student_model, replicated_sharding)
+        teacher_model = eqx.filter_shard(teacher_model, replicated_sharding)
+        optimizer_state = eqx.filter_shard(optimizer_state, replicated_sharding)
 
     train_key = jax.random.key(config.seed)
     completed_steps = 0
@@ -688,6 +697,7 @@ def distill(
     start_time: float | None = None
     executed_steps = 0
     stopped_early = False
+    performed_periodic_evaluation = False
 
     with history_path.open("a" if completed_steps > 0 else "w") as history_file:
         microbatch_iterator = islice(
@@ -752,6 +762,7 @@ def distill(
             )
 
             if config.eval_every_steps > 0 and step % config.eval_every_steps == 0:
+                performed_periodic_evaluation = True
                 materialized_student = materialize_trainable_module(
                     student_model.model,
                     optimizer_state.training_state,
@@ -840,6 +851,7 @@ def distill(
     should_restore_best_checkpoint = (
         config.save_checkpoints
         and best_checkpoint_dir.exists()
+        and performed_periodic_evaluation
         and best_step is not None
         and best_step != completed_steps
     )
