@@ -72,6 +72,10 @@ class NestedAliasModule(eqx.Module):
     blocks: tuple[AliasModule, ...]
 
 
+class DictAliasModule(eqx.Module):
+    blocks: dict[str, AliasModule]
+
+
 @dataclass(frozen=True)
 class LinearConfigWrapper:
     primary: GroupQuantizedLinearConfig
@@ -799,6 +803,33 @@ def test_combine_parameter_leaves_restores_alias_identity() -> None:
 
     assert combined.left is combined.right
     assert combined.left.dtype == jnp.bfloat16
+
+
+def test_partition_parameter_leaves_handles_dict_fields() -> None:
+    first = jnp.ones((2, 2), dtype=jnp.float32)
+    second = jnp.full((2, 2), 2.0, dtype=jnp.float32)
+    module = DictAliasModule(
+        blocks={
+            "b": AliasModule(left=first, right=first),
+            "a": AliasModule(left=second, right=second),
+        },
+    )
+
+    partitioned = partition_parameter_leaves(
+        module,
+        lambda _info: True,
+        lambda leaf, _info: leaf.astype(jnp.bfloat16),
+    )
+
+    partitioned_leaves = _leaf_by_path(partitioned)
+    assert partitioned_leaves["blocks['a'].left"].dtype == jnp.bfloat16
+    assert partitioned_leaves["blocks['a'].right"] is None
+    assert partitioned_leaves["blocks['b'].left"].dtype == jnp.bfloat16
+    assert partitioned_leaves["blocks['b'].right"] is None
+
+    combined = combine_parameter_leaves(module, partitioned)
+    assert combined.blocks["a"].left is combined.blocks["a"].right
+    assert combined.blocks["b"].left is combined.blocks["b"].right
 
 
 def test_master_weights_are_independent_copies() -> None:

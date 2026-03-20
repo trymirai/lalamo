@@ -30,7 +30,6 @@ __all__ = [
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
-    "apply_data_sharding",
     "combine_parameter_leaves",
     "config_converter",
     "field",
@@ -42,7 +41,6 @@ __all__ = [
     "register_config_union",
     "require_array",
     "require_tree",
-    "sharded_field",
 ]
 
 
@@ -302,9 +300,8 @@ class ParameterLeafInfo:
 
 @dataclass(frozen=True)
 class _ParameterLeafEntry:
-    path: tuple[Any, ...]
-    canonical_path: tuple[Any, ...]
     leaf: Array | jax.ShapeDtypeStruct
+    canonical_index: int
     info: ParameterLeafInfo
 
 
@@ -336,7 +333,8 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
                 visit(item, owner=owner, field=field, path=(*path, jtu.SequenceKey(index)))
             return
         if isinstance(value, dict):
-            for key, item in value.items():
+            for key in sorted(value):
+                item = value[key]
                 visit(item, owner=owner, field=field, path=(*path, jtu.DictKey(key)))
             return
         entries.append(_FieldValueEntry(path=path, value=value, owner=owner, field=field))
@@ -364,7 +362,7 @@ def _is_array_like(leaf: object) -> bool:
 
 
 def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
-    first_paths: dict[int, tuple[Any, ...]] = {}
+    canonical_by_leaf_id: dict[int, tuple[int, str]] = {}
     results: list[_ParameterLeafEntry] = []
 
     for entry in _field_value_entries(module):
@@ -373,23 +371,23 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
 
         leaf = entry.value
         metadata = entry.field.metadata
+        path = keystr(entry.path).lstrip(".")
 
         leaf_key = id(leaf)
-        canonical_path = first_paths.get(leaf_key)
-        if canonical_path is None:
-            canonical_path = entry.path
-            first_paths[leaf_key] = entry.path
+        canonical_entry = canonical_by_leaf_id.get(leaf_key)
+        if canonical_entry is None:
+            canonical_index = len(canonical_by_leaf_id)
+            canonical_by_leaf_id[leaf_key] = (canonical_index, path)
             alias_of = None
         else:
-            alias_of = keystr(canonical_path).lstrip(".")
+            canonical_index, alias_of = canonical_entry
 
         results.append(
             _ParameterLeafEntry(
-                path=entry.path,
-                canonical_path=canonical_path,
                 leaf=leaf,
+                canonical_index=canonical_index,
                 info=ParameterLeafInfo(
-                    path=keystr(entry.path).lstrip("."),
+                    path=path,
                     owner_type=type(entry.owner),
                     field_name=entry.field.name,
                     shape=tuple(leaf.shape),
@@ -417,23 +415,29 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
     mapper: Callable[[Array | jax.ShapeDtypeStruct, ParameterLeafInfo], LeafT],
 ) -> M:
     entries = _parameter_leaf_entries(module)
+    flat_leaves, treedef = jtu.tree_flatten(module, is_leaf=lambda leaf: leaf is None)
     if not entries:
-        return jax.tree.map(lambda _leaf: None, module)
+        return jtu.tree_unflatten(treedef, [None] * len(flat_leaves))
 
-    entry_by_path = {entry.path: entry for entry in entries}
-    selected_by_canonical_path = {
-        entry.canonical_path: mapper(entry.leaf, entry.info)
-        for entry in entries
-        if entry.info.alias_of is None and predicate(entry.info)
-    }
+    selected_by_canonical_index: list[LeafT | None] = [None] * (max(entry.canonical_index for entry in entries) + 1)
+    for entry in entries:
+        if entry.info.alias_of is not None or not predicate(entry.info):
+            continue
+        selected_by_canonical_index[entry.canonical_index] = mapper(entry.leaf, entry.info)
 
-    def maybe_select(path: tuple[Any, ...], _leaf: object) -> object:
-        entry = entry_by_path.get(path)
-        if entry is None or entry.info.alias_of is not None:
-            return None
-        return selected_by_canonical_path.get(entry.canonical_path)
+    entry_iterator = iter(entries)
+    partitioned_leaves: list[object] = []
+    for leaf in flat_leaves:
+        if not _is_array_like(leaf):
+            partitioned_leaves.append(None)
+            continue
+        entry = next(entry_iterator)
+        partitioned_leaves.append(
+            None if entry.info.alias_of is not None else selected_by_canonical_index[entry.canonical_index],
+        )
 
-    return jax.tree.map_with_path(maybe_select, module)
+    assert next(entry_iterator, None) is None
+    return jtu.tree_unflatten(treedef, partitioned_leaves)
 
 
 def combine_parameter_leaves[M: eqx.Module](
@@ -444,30 +448,38 @@ def combine_parameter_leaves[M: eqx.Module](
     if not entries:
         return module
 
-    entry_by_path = {entry.path: entry for entry in entries}
-    replacement_by_path = dict(
-        jtu.tree_flatten_with_path(
-            replacements,
-            is_leaf=lambda leaf: leaf is None,
-        )[0]
+    flat_leaves, treedef = jtu.tree_flatten(module, is_leaf=lambda leaf: leaf is None)
+    replacement_leaves, replacement_treedef = jtu.tree_flatten(replacements, is_leaf=lambda leaf: leaf is None)
+    assert replacement_treedef == treedef
+
+    replacement_by_canonical_index: list[object | None] = [None] * (
+        max(entry.canonical_index for entry in entries) + 1
     )
-    replacement_by_canonical_path: dict[tuple[Any, ...], object] = {}
-    for entry in entries:
-        replacement = replacement_by_path[entry.path]
+    entry_iterator = iter(entries)
+    for leaf, replacement in zip(flat_leaves, replacement_leaves, strict=True):
+        if not _is_array_like(leaf):
+            continue
+        entry = next(entry_iterator)
         if replacement is None or entry.info.alias_of is not None:
             continue
-        replacement_by_canonical_path[entry.canonical_path] = replacement
-    if not replacement_by_canonical_path:
+        replacement_by_canonical_index[entry.canonical_index] = replacement
+
+    assert next(entry_iterator, None) is None
+    if all(replacement is None for replacement in replacement_by_canonical_index):
         return module
 
-    def maybe_replace(path: tuple[Any, ...], leaf: object) -> object:
-        entry = entry_by_path.get(path)
-        if entry is None:
-            return leaf
-        replacement = replacement_by_canonical_path.get(entry.canonical_path)
-        return leaf if replacement is None else replacement
+    entry_iterator = iter(entries)
+    combined_leaves: list[object] = []
+    for leaf in flat_leaves:
+        if not _is_array_like(leaf):
+            combined_leaves.append(leaf)
+            continue
+        entry = next(entry_iterator)
+        replacement = replacement_by_canonical_index[entry.canonical_index]
+        combined_leaves.append(leaf if replacement is None else replacement)
 
-    return jax.tree.map_with_path(maybe_replace, module)
+    assert next(entry_iterator, None) is None
+    return jtu.tree_unflatten(treedef, combined_leaves)
 
 
 def field(
@@ -492,25 +504,6 @@ def field(
         converter=converter,
         static=static,
         metadata=merged_metadata,
-        **kwargs,
-    )
-
-
-def sharded_field(
-    tensor_sharding: TensorSharding | None = None,
-    min_size_to_shard: int = 2**18,
-    *,
-    converter: Callable[[Any], Any] | None = None,
-    static: bool = False,
-    metadata: Mapping[str, Any] | None = None,
-    **kwargs: Any,  # noqa: ANN401
-) -> Any:  # noqa: ANN401
-    return field(
-        tensor_sharding=tensor_sharding,
-        min_size_to_shard=min_size_to_shard,
-        converter=converter,
-        static=static,
-        metadata=metadata,
         **kwargs,
     )
 
@@ -544,10 +537,6 @@ def pad_and_apply_data_sharding[T](value: T, *, sharding_config: ShardingConfig 
         lambda leaf: shard_batch_axis(leaf, sharding_config, batch_axis=batch_axis) if eqx.is_array(leaf) else leaf,
         value,
     )
-
-
-def apply_data_sharding[T](value: T, *, sharding_config: ShardingConfig | None, batch_axis: int) -> T:
-    return pad_and_apply_data_sharding(value, sharding_config=sharding_config, batch_axis=batch_axis)
 
 
 @dataclass
