@@ -46,7 +46,9 @@ def _load_examples(path: Path | str = Path(__file__).parent / "prompt_spec.toml"
     ] + [
         FewShotExample(
             output=e["output"],
-            verdict=CoherenceVerdict(coherent=False, score=e["score"], summary=e["summary"], issues=tuple(e["issues"])),
+            verdict=CoherenceVerdict(
+                coherent=False, score=e["score"], summary=e["summary"], issues=tuple(e["issues"])
+            ),
         )
         for e in data.get("incoherent", [])
     ]
@@ -174,5 +176,7 @@ def judge(
             return _parse_verdict(content)
         except Exception as e:
             last_error = e
-            log.warning("Judge returned unparseable response (attempt %d/%d): %s", attempt + 1, max_retries, content[:200])
+            log.warning(
+                "Judge returned unparseable response (attempt %d/%d): %s", attempt + 1, max_retries, content[:200]
+            )
     raise last_error  # type: ignore[misc]

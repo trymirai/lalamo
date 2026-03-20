@@ -35,6 +35,7 @@ def _gpu_tolerance() -> Generator[None]:
     else:
         yield
 
+
 RunLalamo = Callable[..., str]
 ConvertModel = Callable[[str], Path]
 
@@ -47,9 +48,7 @@ HF_MODEL_SPECS: tuple[ModelSpec, ...] = tuple(
 )
 
 HF_LANGUAGE_MODEL_REPOS: tuple[str, ...] = tuple(
-    spec.repo
-    for spec in HF_MODEL_SPECS
-    if spec.model_type == ModelType.LANGUAGE_MODEL
+    spec.repo for spec in HF_MODEL_SPECS if spec.model_type == ModelType.LANGUAGE_MODEL
 )
 
 

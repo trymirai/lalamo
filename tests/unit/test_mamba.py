@@ -173,11 +173,11 @@ def test_fused_ssd_preserves_causality(chunk_size: int) -> None:
 
     result = fused_ssd_intra_chunk(a_cumsum, cb, x)
 
-    x_modified = x.at[0, chunk_size // 2:, :, :, :].set(1000.0)
+    x_modified = x.at[0, chunk_size // 2 :, :, :, :].set(1000.0)
     result_modified = fused_ssd_intra_chunk(a_cumsum, cb, x_modified)
 
     assert_close(
-        result=result_modified[0, :chunk_size // 2, :, :, :],
-        reference=result[0, :chunk_size // 2, :, :, :],
+        result=result_modified[0, : chunk_size // 2, :, :, :],
+        reference=result[0, : chunk_size // 2, :, :, :],
         operation_name="causality check - first half unchanged",
     )
