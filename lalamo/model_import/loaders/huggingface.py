@@ -139,22 +139,6 @@ AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros"
 MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
 
 
-def _build_qkv_gate_reorder(
-    q_len: int,
-    k_len: int,
-    v_len: int,
-    q_perm: Array,
-    q_output_dim: int,
-) -> Array:
-    if q_perm.shape[0] != q_len:
-        raise ValueError(f"q_perm length {q_perm.shape[0]} does not match q_proj length {q_len}.")
-    q_indices = q_perm[:q_output_dim]
-    gate_indices = q_perm[q_output_dim:]
-    k_indices = jnp.arange(k_len, dtype=jnp.int32) + q_len
-    v_indices = jnp.arange(v_len, dtype=jnp.int32) + q_len + k_len
-    return jnp.concatenate([q_indices, k_indices, v_indices, gate_indices], axis=0)
-
-
 def _fuse_quantized_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
@@ -544,6 +528,19 @@ def load_rmsnorm(
     return load_parameters(lambda m: (m.scales,), module, (scales,))
 
 
+def _split_q_gate_weight(
+    q_proj_weight: Array,
+    num_heads: int,
+    head_dim: int,
+) -> tuple[Array, Array]:
+    """Split interleaved q_proj [2*num_heads*head_dim, model_dim] into Q and Gate."""
+    model_dim = q_proj_weight.shape[1]
+    reshaped = q_proj_weight.reshape(num_heads, 2 * head_dim, model_dim)
+    q_weight = reshaped[:, :head_dim, :].reshape(num_heads * head_dim, model_dim)
+    gate_weight = reshaped[:, head_dim:, :].reshape(num_heads * head_dim, model_dim)
+    return q_weight, gate_weight
+
+
 def load_attention(
     module: Attention,
     weights_dict: Mapping[str, Array],
@@ -559,25 +556,28 @@ def load_attention(
         raise NotImplementedError("Can't determine attention output projection name")
 
     if module.config.has_gate:
-        q_output_dim, k_output_dim, v_output_dim = module.qkv_projection.output_dims[:3]
-        q_len = q_output_dim * 2
         head_dim = module.head_dim
         num_heads = module.num_heads
+
+        q_proj_weight = weights_dict[path / "q_proj" / "weight"]
         if reorder_q_proj_gate:
-            base = jnp.arange(num_heads, dtype=jnp.int32) * (2 * head_dim)
-            q = base[:, None] + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
-            gate = base[:, None] + head_dim + jnp.arange(head_dim, dtype=jnp.int32)[None, :]
-            q_perm = jnp.concatenate([q.reshape(-1), gate.reshape(-1)], axis=0)
+            q_weight, gate_weight = _split_q_gate_weight(q_proj_weight, num_heads, head_dim)
         else:
-            q_perm = jnp.arange(q_len, dtype=jnp.int32)
-        reorder_perm = _build_qkv_gate_reorder(q_len, k_output_dim, v_output_dim, q_perm, q_output_dim)
+            q_dim = num_heads * head_dim
+            q_weight = q_proj_weight[:q_dim]
+            gate_weight = q_proj_weight[q_dim:]
 
         qkv_projection = load_linear(
             module.qkv_projection,
-            weights_dict,
+            {**weights_dict, path / "q_proj" / "weight": q_weight},
             path,
             sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
-            reorder=reorder_perm,
+        )
+
+        gate_projection = load_parameters(
+            lambda m: (m.weights, m.biases),
+            module.gate_projection,
+            (gate_weight, None),
         )
     else:
         qkv_projection = load_linear(
@@ -586,6 +586,7 @@ def load_attention(
             path,
             sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
         )
+        gate_projection = None
 
     out_projection = load_linear(module.out_projection, weights_dict, path / o_proj_name)
 
@@ -622,13 +623,14 @@ def load_attention(
     return load_parameters(
         lambda m: (
             m.qkv_projection,
+            m.gate_projection,
             m.out_projection,
             m.query_norm,
             m.key_norm,
             m.sinks,
         ),
         module,
-        (qkv_projection, out_projection, query_norm, key_norm, sinks),
+        (qkv_projection, gate_projection, out_projection, query_norm, key_norm, sinks),
     )
 
 

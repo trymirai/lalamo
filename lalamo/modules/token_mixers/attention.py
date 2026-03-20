@@ -112,15 +112,13 @@ class AttentionConfig(TokenMixerConfigBase):
         *,
         key: PRNGKeyArray,
     ) -> "Attention":
-        qkv_key, out_key = jax.random.split(key)
+        qkv_key, out_key, gate_key = jax.random.split(key, 3)
         q_output_dim = self.num_heads * self.head_dim
         output_dims = (
             q_output_dim,
             self.num_groups * self.head_dim,
             self.num_groups * self.head_dim,
         )
-        if self.has_gate:
-            output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.random_init(
             input_dim=model_dim,
             output_dims=output_dims,
@@ -133,6 +131,16 @@ class AttentionConfig(TokenMixerConfigBase):
             has_biases=self.has_out_biases,
             key=out_key,
         )
+
+        if self.has_gate:
+            gate_projection = self.qkv_projection_config.random_init(
+                input_dim=model_dim,
+                output_dims=(q_output_dim,),
+                has_biases=False,
+                key=gate_key,
+            )
+        else:
+            gate_projection = None
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.init(
@@ -156,6 +164,7 @@ class AttentionConfig(TokenMixerConfigBase):
         return Attention(
             self,
             qkv_projection=qkv_projection,
+            gate_projection=gate_projection,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
@@ -179,8 +188,6 @@ class AttentionConfig(TokenMixerConfigBase):
             self.num_groups * self.head_dim,
             self.num_groups * self.head_dim,
         )
-        if self.has_gate:
-            output_dims = (*output_dims, q_output_dim)
         qkv_projection = self.qkv_projection_config.empty(
             input_dim=model_dim,
             output_dims=output_dims,
@@ -191,6 +198,15 @@ class AttentionConfig(TokenMixerConfigBase):
             (model_dim,),
             has_biases=self.has_out_biases,
         )
+
+        if self.has_gate:
+            gate_projection = self.qkv_projection_config.empty(
+                input_dim=model_dim,
+                output_dims=(q_output_dim,),
+                has_biases=False,
+            )
+        else:
+            gate_projection = None
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.empty(
@@ -214,6 +230,7 @@ class AttentionConfig(TokenMixerConfigBase):
         return Attention(
             self,
             qkv_projection=qkv_projection,
+            gate_projection=gate_projection,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
@@ -230,6 +247,7 @@ class AttentionConfig(TokenMixerConfigBase):
 
 class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     qkv_projection: LinearBase
+    gate_projection: LinearBase | None
     out_projection: LinearBase
 
     query_norm: Normalization | None
@@ -312,11 +330,11 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" got {self.out_projection.input_dim}",
             )
         output_dims = self.qkv_projection.output_dims
-        if len(output_dims) not in (3, 4):
+        if len(output_dims) != 3:
             raise ValueError(
-                f"QKV projection must have 3 (qkv) or 4 (qkvz) output dims, got {len(output_dims)}",
+                f"QKV projection must have 3 output dims, got {len(output_dims)}",
             )
-        q_output_dim, k_output_dim, v_output_dim = output_dims[:3]
+        q_output_dim, k_output_dim, v_output_dim = output_dims
         expected_q = self.num_heads * self.head_dim
         if q_output_dim != expected_q:
             raise ValueError(
@@ -335,15 +353,15 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" got {v_output_dim}",
             )
         if self.config.has_gate:
-            if len(output_dims) != 4:
-                raise ValueError("QKVZ projection must have 4 output dims when has_gate is enabled.")
-            gate_output_dim = output_dims[3]
+            if self.gate_projection is None:
+                raise ValueError("gate_projection must be provided when has_gate is enabled.")
+            gate_output_dim = self.gate_projection.output_dims[0]
             if gate_output_dim != expected_q:
                 raise ValueError(
                     f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
                 )
-        elif len(output_dims) != 3:
-            raise ValueError("QKV projection must have 3 output dims when has_gate is disabled.")
+        elif self.gate_projection is not None:
+            raise ValueError("gate_projection must be None when has_gate is disabled.")
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:
@@ -360,10 +378,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
     ) -> AttentionResult:
-        if self.config.has_gate:
-            queries, keys, values, gate = vmap(self.qkv_projection, in_axes=0)(inputs)
+        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
+        if self.gate_projection is not None:
+            (gate,) = vmap(self.gate_projection, in_axes=0)(inputs)
         else:
-            queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
             gate = None
 
         queries = rearrange(
