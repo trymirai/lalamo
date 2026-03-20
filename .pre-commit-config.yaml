@@ -17,10 +17,10 @@ repos:
     rev: v0.15.0
     hooks:
       - id: ruff-check
-        args: [lalamo]
+        args: [.]
         pass_filenames: false
       - id: ruff-format
-        args: [lalamo]
+        args: [.]
         pass_filenames: false
 
   - repo: https://github.com/crate-ci/typos
@@ -40,5 +40,5 @@ repos:
       - id: ty-check
         name: ty check
         language: system
-        entry: ty check lalamo
-        pass_filenames: false
+        entry: ty check
+        types: [python]
