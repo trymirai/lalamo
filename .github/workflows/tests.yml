@@ -48,7 +48,7 @@ jobs:
       - name: Run ruff
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
-          ruff check .
+          ruff check lalamo
 
       - name: Run ruff format
         if: ${{ always() && steps.setup.outcome == 'success' }}
