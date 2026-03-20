@@ -429,28 +429,28 @@ def _accumulate_train_step[BatchT: eqx.Module](
 ) -> tuple[DistillOptimizerState, DistillStepMetrics, Key[Array, ""]]:
     assert microbatches, "Gradient accumulation requires at least one microbatch"
     accumulated_grads: object | None = None
-    total_loss = 0.0
-    total_valid_tokens = 0
+    total_loss = jnp.asarray(0.0, dtype=jnp.float32)
+    total_valid_tokens = jnp.asarray(0, dtype=jnp.int32)
 
     for microbatch in microbatches:
         train_key, step_key = jax.random.split(train_key)
         quantization_key = step_key if stochastic_rounding else None
         grads, metrics = compute_step_gradients(microbatch, quantization_key)
-        valid_tokens = int(metrics.valid_tokens)
+        valid_tokens = metrics.valid_tokens
         weighted_grads = jax.tree.map(lambda grad, scale=valid_tokens: grad * scale, grads)
         accumulated_grads = (
             weighted_grads
             if accumulated_grads is None
             else jax.tree.map(lambda total, grad: total + grad, accumulated_grads, weighted_grads)
         )
-        total_loss += float(metrics.loss) * valid_tokens
-        total_valid_tokens += valid_tokens
+        total_loss = total_loss + metrics.loss * valid_tokens.astype(jnp.float32)
+        total_valid_tokens = total_valid_tokens + valid_tokens
 
     assert accumulated_grads is not None
     averaged_grads = jax.tree.map(lambda grad: grad / total_valid_tokens, accumulated_grads)
     step_metrics = DistillStepMetrics(
-        loss=jnp.asarray(total_loss / total_valid_tokens, dtype=jnp.float32),
-        valid_tokens=jnp.asarray(total_valid_tokens, dtype=jnp.int32),
+        loss=total_loss / total_valid_tokens.astype(jnp.float32),
+        valid_tokens=total_valid_tokens,
     )
     return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
 
