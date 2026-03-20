@@ -140,8 +140,7 @@ def _inject_qlora_linear(
     lora_scale: float,
     key: Key[Array, ""],
 ) -> QLoRALinear:
-    qlora_config = inject_lora_adapter_configs(linear.config, lora_rank, lora_scale)
-    assert isinstance(qlora_config, QLoRALinearConfig)
+    qlora_config = _make_qlora_config(linear.config, lora_rank, lora_scale)
 
     leading_dims = linear.weights.shape[:-2]
     hidden_lora_rank = linear.num_outputs * lora_rank
@@ -177,6 +176,37 @@ def _is_replaceable_quantized_linear(leaf: object) -> bool:
     return isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
 
 
+def _make_qlora_config(
+    config: GroupQuantizedLinearConfig,
+    lora_rank: int,
+    lora_scale: float,
+) -> QLoRALinearConfig:
+    return QLoRALinearConfig(
+        **{field.name: getattr(config, field.name) for field in dataclasses.fields(config)},
+        lora_rank=lora_rank,
+        lora_scale=lora_scale,
+    )
+
+
+def _rewrite_config_tree[C](config: C, rewrite: Callable[[object], object]) -> C:
+    rewritten = rewrite(config)
+    if rewritten is not config:
+        return rewritten
+    if dataclasses.is_dataclass(config):
+        return dataclasses.replace(
+            config,
+            **{
+                field.name: _rewrite_config_tree(getattr(config, field.name), rewrite)
+                for field in dataclasses.fields(config)
+            },
+        )
+    if isinstance(config, tuple):
+        return tuple(_rewrite_config_tree(item, rewrite) for item in config)
+    if isinstance(config, list):
+        return [_rewrite_config_tree(item, rewrite) for item in config]
+    return config
+
+
 def inject_lora_adapters[M: eqx.Module](
     module: M,
     lora_rank: int,
@@ -206,30 +236,12 @@ def inject_lora_adapter_configs[C](
     lora_rank: int,
     lora_scale: float,
 ) -> C:
-    if isinstance(config, GroupQuantizedLinearConfig) and not isinstance(config, QLoRALinearConfig):
-        config_arguments = {field.name: getattr(config, field.name) for field in dataclasses.fields(config)}
-        return QLoRALinearConfig(
-            **config_arguments,
-            lora_rank=lora_rank,
-            lora_scale=lora_scale,
-        )
-    if dataclasses.is_dataclass(config):
-        return dataclasses.replace(
-            config,
-            **{
-                field.name: inject_lora_adapter_configs(
-                    getattr(config, field.name),
-                    lora_rank,
-                    lora_scale,
-                )
-                for field in dataclasses.fields(config)
-            },
-        )
-    if isinstance(config, tuple):
-        return tuple(inject_lora_adapter_configs(item, lora_rank, lora_scale) for item in config)
-    if isinstance(config, list):
-        return [inject_lora_adapter_configs(item, lora_rank, lora_scale) for item in config]
-    return config
+    return _rewrite_config_tree(
+        config,
+        lambda node: _make_qlora_config(node, lora_rank, lora_scale)
+        if isinstance(node, GroupQuantizedLinearConfig) and not isinstance(node, QLoRALinearConfig)
+        else node,
+    )
 
 
 def summarize_distill_parameters(

@@ -38,6 +38,7 @@ from lalamo.modules.common import (
     ParameterNorm,
     combine_parameter_leaves,
     field,
+    find_field_metadata,
     iter_parameter_leaves,
     partition_parameter_leaves,
 )
@@ -67,10 +68,15 @@ class FrozenModule(eqx.Module):
     right: jax.Array = field(trainable=False, norm=ParameterNorm.L_INF)
 
 
+class NestedAliasModule(eqx.Module):
+    blocks: tuple[AliasModule, ...]
+
+
 @dataclass(frozen=True)
 class LinearConfigWrapper:
     primary: GroupQuantizedLinearConfig
     secondary: tuple[GroupQuantizedLinearConfig, ...]
+    tertiary: list[GroupQuantizedLinearConfig]
 
 
 def _make_optimizer_state(
@@ -142,6 +148,17 @@ def test_initialize_distill_training_state_dedupes_alias_masters() -> None:
     assert materialized.left.dtype == jnp.bfloat16
     assert materialized.right.dtype == jnp.bfloat16
     assert materialized_leaves[1].alias_of == "left"
+
+
+def test_find_field_metadata_tracks_nested_container_fields() -> None:
+    shared = jnp.ones((2, 2), dtype=jnp.float32)
+    module = NestedAliasModule(blocks=(AliasModule(left=shared, right=shared),))
+
+    field_info = find_field_metadata(module, module.blocks[0].left)
+
+    assert field_info is not None
+    assert field_info.owner is module.blocks[0]
+    assert field_info.field.name == "left"
 
 
 def test_q_lora_policy_prefers_adapter_weights() -> None:
@@ -324,12 +341,14 @@ def test_inject_lora_adapter_configs_wraps_group_quantized_linear_configs() -> N
     config = LinearConfigWrapper(
         primary=linear_config,
         secondary=(linear_config,),
+        tertiary=[linear_config],
     )
 
     injected_config = inject_lora_adapter_configs(config, 2, 0.5)
 
     assert isinstance(injected_config.primary, QLoRALinearConfig)
     assert isinstance(injected_config.secondary[0], QLoRALinearConfig)
+    assert isinstance(injected_config.tertiary[0], QLoRALinearConfig)
     assert injected_config.primary.lora_rank == 2
     assert injected_config.primary.lora_scale == 0.5
     assert injected_config.primary.weight_quantization_mode == linear_config.weight_quantization_mode

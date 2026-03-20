@@ -308,41 +308,54 @@ class _ParameterLeafEntry:
     info: ParameterLeafInfo
 
 
-def _field_metadata_from_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetadataInfo | None:
-    cur: object = module
-    owner = module
-    owner_field: dataclasses.Field | None = None
+@dataclass(frozen=True)
+class _FieldValueEntry:
+    path: tuple[Any, ...]
+    value: object
+    owner: eqx.Module
+    field: dataclasses.Field
 
-    for key in path:
-        if isinstance(key, jtu.GetAttrKey):
-            assert isinstance(cur, eqx.Module)
-            owner = cur
-            owner_field = next((field for field in dataclasses.fields(cur) if field.name == key.name), None)
-            cur = getattr(cur, key.name)
-        elif isinstance(key, jtu.SequenceKey):
-            cur = cur[key.idx]  # type: ignore[index]
-        elif isinstance(key, jtu.DictKey):
-            cur = cur[key.key]  # type: ignore[index]
-        else:
-            raise TypeError(f"Unexpected key type: at {path}, key {key}")
 
-    if owner_field is None:
-        return None
+def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
+    entries: list[_FieldValueEntry] = []
 
-    return FieldMetadataInfo(owner=owner, field=owner_field)
+    def visit(value: object, *, owner: eqx.Module, field: dataclasses.Field, path: tuple[Any, ...]) -> None:
+        if field.metadata.get("static", False):
+            return
+        if isinstance(value, eqx.Module):
+            for child_field in dataclasses.fields(value):
+                visit(
+                    getattr(value, child_field.name),
+                    owner=value,
+                    field=child_field,
+                    path=(*path, jtu.GetAttrKey(child_field.name)),
+                )
+            return
+        if isinstance(value, tuple | list):
+            for index, item in enumerate(value):
+                visit(item, owner=owner, field=field, path=(*path, jtu.SequenceKey(index)))
+            return
+        if isinstance(value, dict):
+            for key, item in value.items():
+                visit(item, owner=owner, field=field, path=(*path, jtu.DictKey(key)))
+            return
+        entries.append(_FieldValueEntry(path=path, value=value, owner=owner, field=field))
+
+    for field in dataclasses.fields(module):
+        visit(
+            getattr(module, field.name),
+            owner=module,
+            field=field,
+            path=(jtu.GetAttrKey(field.name),),
+        )
+    return entries
 
 
 def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo | None:
-    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda value: value is target)
-
-    for path, leaf in flat_with_path:
-        if leaf is not target:
+    for entry in _field_value_entries(module):
+        if entry.value is not target:
             continue
-        field_info = _field_metadata_from_path(module, path)
-        if field_info is None:
-            raise ValueError(f"Field lookup failed for module {module} at {path}")
-        return field_info
-
+        return FieldMetadataInfo(owner=entry.owner, field=entry.field)
     return None
 
 
@@ -351,37 +364,34 @@ def _is_array_like(leaf: object) -> bool:
 
 
 def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
-    flat_with_path, _ = jtu.tree_flatten_with_path(module)
     first_paths: dict[int, tuple[Any, ...]] = {}
     results: list[_ParameterLeafEntry] = []
 
-    for path, leaf in flat_with_path:
-        if not _is_array_like(leaf):
+    for entry in _field_value_entries(module):
+        if not _is_array_like(entry.value):
             continue
 
-        field_info = _field_metadata_from_path(module, path)
-        if field_info is None:
-            raise ValueError(f"Field lookup failed for module {module} at {path}")
-        metadata = field_info.field.metadata
+        leaf = entry.value
+        metadata = entry.field.metadata
 
         leaf_key = id(leaf)
         canonical_path = first_paths.get(leaf_key)
         if canonical_path is None:
-            canonical_path = path
-            first_paths[leaf_key] = path
+            canonical_path = entry.path
+            first_paths[leaf_key] = entry.path
             alias_of = None
         else:
             alias_of = keystr(canonical_path).lstrip(".")
 
         results.append(
             _ParameterLeafEntry(
-                path=path,
+                path=entry.path,
                 canonical_path=canonical_path,
                 leaf=leaf,
                 info=ParameterLeafInfo(
-                    path=keystr(path).lstrip("."),
-                    owner_type=type(field_info.owner),
-                    field_name=field_info.field.name,
+                    path=keystr(entry.path).lstrip("."),
+                    owner_type=type(entry.owner),
+                    field_name=entry.field.name,
                     shape=tuple(leaf.shape),
                     dtype=jnp.dtype(leaf.dtype),
                     trainable=metadata.get("trainable", True),
