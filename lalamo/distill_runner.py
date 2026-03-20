@@ -91,6 +91,17 @@ class EvaluationMetrics:
     valid_tokens: int
 
 
+type DistillBatchLike = DistillBatch | TraceDistillBatch
+
+
+@dataclass(frozen=True)
+class LoadedDistillBatches:
+    train_examples: int
+    eval_examples: int
+    train_batches: list[DistillBatchLike]
+    eval_batches: list[DistillBatchLike]
+
+
 @dataclass(frozen=True)
 class DistillConfigSnapshot:
     master_dtype: str
@@ -284,6 +295,111 @@ def _make_trace_batches(
     ]
 
 
+def _load_online_exact_batches(
+    config: DistillConfig,
+    student_model: LanguageModel,
+    *,
+    device_batch_size: int,
+) -> LoadedDistillBatches:
+    conversations = _load_conversations(
+        config.dataset_path,
+        num_examples=config.train_examples + config.eval_examples,
+        seed=config.seed,
+    )
+    tokenized = _tokenize_conversations(
+        conversations,
+        language_model=student_model,
+        max_sequence_length=config.max_sequence_length,
+    )
+    requested_examples = config.train_examples + config.eval_examples
+    if len(tokenized) < requested_examples:
+        raise ValueError(
+            f"Requested {requested_examples} usable sequences, got {len(tokenized)} from {config.dataset_path}",
+        )
+
+    return LoadedDistillBatches(
+        train_examples=config.train_examples,
+        eval_examples=config.eval_examples,
+        train_batches=_make_batches(
+            tokenized[: config.train_examples],
+            batch_size=device_batch_size,
+            fixed_sequence_length=config.max_sequence_length,
+        ),
+        eval_batches=_make_batches(
+            tokenized[config.train_examples : requested_examples],
+            batch_size=device_batch_size,
+            fixed_sequence_length=config.max_sequence_length,
+        ),
+    )
+
+
+def _load_trace_topk_batches(
+    config: DistillConfig,
+    *,
+    device_batch_size: int,
+) -> LoadedDistillBatches:
+    traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
+    requested_examples = config.train_examples + config.eval_examples
+    if len(traces) < requested_examples:
+        raise ValueError(f"Requested {requested_examples} traces, got {len(traces)} from {config.dataset_path}")
+
+    return LoadedDistillBatches(
+        train_examples=config.train_examples,
+        eval_examples=config.eval_examples,
+        train_batches=_make_trace_batches(
+            traces[: config.train_examples],
+            batch_size=device_batch_size,
+            pad_token_id=0,
+        ),
+        eval_batches=_make_trace_batches(
+            traces[config.train_examples : requested_examples],
+            batch_size=device_batch_size,
+            pad_token_id=0,
+        ),
+    )
+
+
+def _load_distill_batches(
+    config: DistillConfig,
+    student_model: LanguageModel,
+    *,
+    device_batch_size: int,
+) -> LoadedDistillBatches:
+    match config.training_mode:
+        case TrainingMode.ONLINE_EXACT:
+            return _load_online_exact_batches(config, student_model, device_batch_size=device_batch_size)
+        case TrainingMode.TRACE_TOPK:
+            return _load_trace_topk_batches(config, device_batch_size=device_batch_size)
+
+
+def _shard_distill_batches(
+    dataset: LoadedDistillBatches,
+    mesh: Mesh | None,
+    *,
+    num_devices: int,
+) -> LoadedDistillBatches:
+    if mesh is None:
+        return dataset
+
+    batch_sharding = NamedSharding(mesh, P("batch"))
+    train_batches = [
+        eqx.filter_shard(batch, batch_sharding)
+        for batch in dataset.train_batches
+        if batch.token_ids.shape[0] % num_devices == 0
+    ]
+    eval_batches = [
+        eqx.filter_shard(batch, batch_sharding)
+        for batch in dataset.eval_batches
+        if batch.token_ids.shape[0] % num_devices == 0
+    ]
+    if not train_batches:
+        raise ValueError("No train batches remain after data sharding; use more train examples or fewer devices")
+    if not eval_batches:
+        raise ValueError("No eval batches remain after data sharding; use more eval examples or fewer devices")
+
+    return replace(dataset, train_batches=train_batches, eval_batches=eval_batches)
+
+
 def _evaluate_with[BatchT](
     batches: list[BatchT],
     compute_batch_metrics: Callable[[BatchT], DistillBatchMetrics],
@@ -475,6 +591,7 @@ def distill(
     callbacks = callbacks_type(config)
     callbacks.started()
 
+    # Models
     callbacks.loading_models()
     teacher_model = LanguageModelConfig.load_model(config.teacher_path)
     student_model = LanguageModelConfig.load_model(config.student_path)
@@ -491,70 +608,18 @@ def distill(
         if effective_trainable_filter is None:
             effective_trainable_filter = lora_trainable_filter
 
+    # Dataset
     callbacks.loading_dataset()
-    match config.training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            conversations = _load_conversations(
-                config.dataset_path,
-                num_examples=config.train_examples + config.eval_examples,
-                seed=config.seed,
-            )
-            tokenized = _tokenize_conversations(
-                conversations,
-                language_model=student_model,
-                max_sequence_length=config.max_sequence_length,
-            )
-            if len(tokenized) < config.train_examples + config.eval_examples:
-                raise ValueError(
-                    f"Requested {config.train_examples + config.eval_examples} usable sequences, "
-                    f"got {len(tokenized)} from {config.dataset_path}",
-                )
-            train_items = tokenized[: config.train_examples]
-            eval_items = tokenized[config.train_examples : config.train_examples + config.eval_examples]
-            train_batches = _make_batches(
-                train_items,
-                batch_size=device_batch_size,
-                fixed_sequence_length=config.max_sequence_length,
-            )
-            eval_batches = _make_batches(
-                eval_items,
-                batch_size=device_batch_size,
-                fixed_sequence_length=config.max_sequence_length,
-            )
-        case TrainingMode.TRACE_TOPK:
-            traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
-            if len(traces) < config.train_examples + config.eval_examples:
-                raise ValueError(
-                    f"Requested {config.train_examples + config.eval_examples} traces, "
-                    f"got {len(traces)} from {config.dataset_path}",
-                )
-            train_items = traces[: config.train_examples]
-            eval_items = traces[config.train_examples : config.train_examples + config.eval_examples]
-            train_batches = _make_trace_batches(train_items, batch_size=device_batch_size, pad_token_id=0)
-            eval_batches = _make_trace_batches(eval_items, batch_size=device_batch_size, pad_token_id=0)
+    dataset = _load_distill_batches(
+        config,
+        student_model,
+        device_batch_size=device_batch_size,
+    )
     callbacks.finished_loading_dataset()
 
-    if mesh is not None:
-        batch_sharding = NamedSharding(mesh, P("batch"))
-        train_batches = [
-            eqx.filter_shard(batch, batch_sharding)
-            for batch in train_batches
-            if batch.token_ids.shape[0] % config.num_devices == 0
-        ]
-        eval_batches = [
-            eqx.filter_shard(batch, batch_sharding)
-            for batch in eval_batches
-            if batch.token_ids.shape[0] % config.num_devices == 0
-        ]
-        if not train_batches:
-            raise ValueError(
-                "No train batches remain after data sharding; use more train examples or fewer devices",
-            )
-        if not eval_batches:
-            raise ValueError(
-                "No eval batches remain after data sharding; use more eval examples or fewer devices",
-            )
+    dataset = _shard_distill_batches(dataset, mesh, num_devices=config.num_devices)
 
+    # Training state
     match config.compute_dtype_name:
         case ComputeDTypeName.AUTO:
             compute_dtype = student_model.model.activation_precision
@@ -564,6 +629,7 @@ def distill(
             compute_dtype = jnp.float32
         case _:
             raise ValueError(f"Unknown compute dtype: {config.compute_dtype_name}")
+
     distill_config = DistillTrainConfig(
         master_dtype=jnp.float32,
         compute_dtype=compute_dtype,
@@ -596,6 +662,7 @@ def distill(
         teacher_model = eqx.filter_shard(teacher_model, replicated_sharding)
         optimizer_state = eqx.filter_shard(optimizer_state, replicated_sharding)
 
+    # Checkpoint state
     train_key = jax.random.key(config.seed)
     completed_steps = 0
     best_eval_kl: float | None = None
@@ -623,22 +690,27 @@ def distill(
                     f"Resume checkpoint {config.resume_from} is missing sibling best-checkpoint directory",
                 )
 
+    # Initial evaluation
     initial_student = materialize_trainable_module(
         student_model.model,
         optimizer_state.training_state.master_weights,
         distill_config,
     )
-    match config.training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            initial_eval = _evaluate_with(
-                eval_batches,
-                partial(compute_distill_batch_metrics, initial_student, teacher_model.model),
-            )
-        case TrainingMode.TRACE_TOPK:
-            initial_eval = _evaluate_with(
-                eval_batches,
-                partial(compute_trace_distill_batch_metrics, initial_student),
-            )
+
+    def evaluate_model(student: Decoder) -> EvaluationMetrics:
+        match config.training_mode:
+            case TrainingMode.ONLINE_EXACT:
+                return _evaluate_with(
+                    dataset.eval_batches,
+                    partial(compute_distill_batch_metrics, student, teacher_model.model),
+                )
+            case TrainingMode.TRACE_TOPK:
+                return _evaluate_with(
+                    dataset.eval_batches,
+                    partial(compute_trace_distill_batch_metrics, student),
+                )
+
+    initial_eval = evaluate_model(initial_student)
 
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
@@ -665,13 +737,14 @@ def distill(
                 ),
             )
     history_path = config.output_dir / "history.jsonl"
-    step_iterator = cycle(train_batches)
+    step_iterator = cycle(dataset.train_batches)
     compilation_seconds = 0.0
     start_time: float | None = None
     executed_steps = 0
     stopped_early = False
     performed_periodic_evaluation = False
 
+    # Training loop
     with history_path.open("a" if completed_steps > 0 else "w") as history_file:
         microbatch_iterator = islice(
             step_iterator,
@@ -741,21 +814,7 @@ def distill(
                     optimizer_state.training_state.master_weights,
                     distill_config,
                 )
-                match config.training_mode:
-                    case TrainingMode.ONLINE_EXACT:
-                        eval_metrics = _evaluate_with(
-                            eval_batches,
-                            partial(
-                                compute_distill_batch_metrics,
-                                materialized_student,
-                                teacher_model.model,
-                            ),
-                        )
-                    case TrainingMode.TRACE_TOPK:
-                        eval_metrics = _evaluate_with(
-                            eval_batches,
-                            partial(compute_trace_distill_batch_metrics, materialized_student),
-                        )
+                eval_metrics = evaluate_model(materialized_student)
 
                 history_entry = HistoryEntry(
                     step=step,
@@ -848,22 +907,13 @@ def distill(
         )
         optimizer_state = best_checkpoint.optimizer_state
 
+    # Final evaluation and export
     final_student = materialize_trainable_module(
         student_model.model,
         optimizer_state.training_state.master_weights,
         distill_config,
     )
-    match config.training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            final_eval = _evaluate_with(
-                eval_batches,
-                partial(compute_distill_batch_metrics, final_student, teacher_model.model),
-            )
-        case TrainingMode.TRACE_TOPK:
-            final_eval = _evaluate_with(
-                eval_batches,
-                partial(compute_trace_distill_batch_metrics, final_student),
-            )
+    final_eval = evaluate_model(final_student)
 
     model_output_path = config.output_dir / "student-distilled"
     export_config = DistillTrainConfig(
@@ -889,8 +939,8 @@ def distill(
         student_path=str(config.student_path),
         dataset_path=str(config.dataset_path),
         training_mode=config.training_mode,
-        train_examples=len(train_items),
-        eval_examples=len(eval_items),
+        train_examples=dataset.train_examples,
+        eval_examples=dataset.eval_examples,
         max_sequence_length=config.max_sequence_length,
         batch_size=config.batch_size,
         num_steps=config.num_steps,

@@ -6,7 +6,6 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
-from jax._src.api import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
 
 from lalamo.utils import MapDictValues, MapSequence
@@ -32,7 +31,7 @@ class LalamoWarning(UserWarning):
     """Custom warning class for Lalamo-specific warnings."""
 
 
-type ArrayLike = Array | ShapeDtypeStruct
+type ArrayLike = Array | jax.ShapeDtypeStruct
 
 
 type ParameterTree[ArrayType: ArrayLike] = (
@@ -46,7 +45,7 @@ def require_array[ArrayType: ArrayLike](value: ArrayType | ParameterTree[ArrayTy
 
 
 def require_tree[ArrayType: ArrayLike](value: ArrayType | ParameterTree[ArrayType]) -> ParameterTree[ArrayType]:
-    assert not isinstance(value, (Array, ShapeDtypeStruct))
+    assert not isinstance(value, (jax.Array, jax.ShapeDtypeStruct))
     return value
 
 
@@ -60,7 +59,7 @@ def require_mapping[ArrayType: ArrayLike](
 def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
     if isinstance(shape, int):
         shape = (shape,)
-    return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype))
+    return cast("Array", jax.ShapeDtypeStruct(shape=shape, dtype=dtype))
 
 
 def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[ArrayType]) -> dict[str, ArrayType]:
@@ -70,7 +69,7 @@ def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[Ar
     for key, value in nested_parameters.items():
         value = cast("ArrayType | ParameterTree[ArrayType]", value)
         key_path = ParameterPath(key)
-        if isinstance(value, (Array, ShapeDtypeStruct)):
+        if isinstance(value, (jax.Array, jax.ShapeDtypeStruct)):
             result[key_path] = cast("ArrayType", value)
         else:
             update: dict[str, ArrayType] = {
@@ -122,7 +121,7 @@ def _recursive_map_dict[ArrayType: ArrayLike](
 def unflatten_parameters[ArrayType: ArrayLike](flat_parameters: Mapping[str, ArrayType]) -> ParameterTree[ArrayType]:
     unflattened_keys = _unflatten_keys({k: k for k in flat_parameters})
     result = _recursive_map_dict(unflattened_keys, flat_parameters)
-    assert not isinstance(result, (Array, ShapeDtypeStruct))
+    assert not isinstance(result, (jax.Array, jax.ShapeDtypeStruct))
     return result
 
 

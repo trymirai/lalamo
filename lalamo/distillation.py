@@ -213,12 +213,28 @@ def inject_lora_adapters[M: eqx.Module](
     if not quantized_linears:
         return module
 
-    linear_keys = iter(jax.random.split(key, len(quantized_linears)))
+    flat_module, treedef = jtu.tree_flatten(module, is_leaf=_is_replaceable_quantized_linear)
+    split_keys = tuple(jax.random.split(key, len(quantized_linears)))
+    key_index = 0
+    lora_key_leaves: list[Key[Array, ""] | None] = []
+    for leaf in flat_module:
+        if not _is_replaceable_quantized_linear(leaf):
+            lora_key_leaves.append(None)
+            continue
+        lora_key_leaves.append(split_keys[key_index])
+        key_index += 1
+    lora_keys = jtu.tree_unflatten(
+        treedef,
+        lora_key_leaves,
+    )
+    assert key_index == len(split_keys)
+
     return jax.tree.map(
-        lambda leaf: _inject_qlora_linear(leaf, lora_rank, lora_scale, next(linear_keys))
-        if _is_replaceable_quantized_linear(leaf)
-        else leaf,
+        lambda leaf, lora_key: leaf
+        if lora_key is None
+        else _inject_qlora_linear(leaf, lora_rank, lora_scale, lora_key),
         module,
+        lora_keys,
         is_leaf=_is_replaceable_quantized_linear,
     )
 
@@ -336,12 +352,20 @@ def stochastically_quantize_module[M: eqx.Module](
         return module
 
     flat_quantized_weights, treedef = jtu.tree_flatten(quantized_weights, is_leaf=lambda leaf: leaf is None)
-    split_keys = iter(jax.random.split(key, len(quantized_leaves)))
+    split_keys = tuple(jax.random.split(key, len(quantized_leaves)))
+    key_index = 0
+    quantization_key_leaves: list[Key[Array, ""] | None] = []
+    for leaf in flat_quantized_weights:
+        if leaf is None:
+            quantization_key_leaves.append(None)
+            continue
+        quantization_key_leaves.append(split_keys[key_index])
+        key_index += 1
     quantization_keys = jtu.tree_unflatten(
         treedef,
-        [None if leaf is None else next(split_keys) for leaf in flat_quantized_weights],
+        quantization_key_leaves,
     )
-    assert next(split_keys, None) is None
+    assert key_index == len(split_keys)
     quantized_weights = jax.tree.map(
         lambda leaf, quantization_key: None
         if leaf is None

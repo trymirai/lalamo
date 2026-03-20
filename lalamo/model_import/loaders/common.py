@@ -3,16 +3,19 @@ from collections.abc import Callable, Iterable
 import equinox as eqx
 import jax
 import jax.sharding as shd
-from jax._src.api import ShapeDtypeStruct
 from jax.tree import leaves_with_path
 from jax.tree_util import keystr
-from jaxtyping import Array, PyTree
+from jaxtyping import PyTree
 
 from lalamo.modules.common import find_field_metadata, get_current_sharding_config
 
 __all__ = [
     "load_parameters",
 ]
+
+
+def _is_array_like(value: object) -> bool:
+    return eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)
 
 
 def load_parameters[M: eqx.Module](
@@ -34,7 +37,7 @@ def load_parameters[M: eqx.Module](
     casted_new_values = []
 
     for old_value, incoming_value in zip(old_values, new_values, strict=True):
-        if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(incoming_value, Array):
+        if _is_array_like(old_value) and eqx.is_array(incoming_value):
             if old_value.shape != incoming_value.shape:
                 raise ValueError(
                     f"Expected parameter {module}.{leaf_name(old_value)} to have shape {old_value.shape},"
