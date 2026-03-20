@@ -208,7 +208,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         inputs: Float[Array, "batch seq"],
     ) -> Float[Array, "batch seq dim"]:
         """
-        Forward pass: dequantize batch of input indices vectors to continous representation.
+        Forward pass: dequantize batch of input indices vectors to continuous representation.
         """
         return jax.vmap(self.decode, in_axes=0)(inputs)
 

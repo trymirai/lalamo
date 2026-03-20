@@ -40,5 +40,5 @@ repos:
       - id: ty-check
         name: ty check
         language: system
-        entry: ty check
-        types: [python]
+        entry: ty check lalamo
+        pass_filenames: false
