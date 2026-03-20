@@ -481,6 +481,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             "qkv_projection": self.qkv_projection.export_weights(),
             "out_projection": self.out_projection.export_weights(),
         }
+        if self.gate_projection is not None:
+            result["gate_projection"] = self.gate_projection.export_weights()
         if self.query_norm is not None:
             result["query_norm"] = self.query_norm.export_weights()
         if self.key_norm is not None:
@@ -495,6 +497,9 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return replace(
             self,
             qkv_projection=self.qkv_projection.import_weights(require_tree(weights["qkv_projection"])),
+            gate_projection=self.gate_projection.import_weights(require_tree(weights["gate_projection"]))
+            if self.gate_projection
+            else None,
             out_projection=self.out_projection.import_weights(require_tree(weights["out_projection"])),
             query_norm=self.query_norm.import_weights(require_tree(weights["query_norm"]))
             if self.query_norm
