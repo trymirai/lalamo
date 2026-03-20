@@ -2,6 +2,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -14,6 +15,7 @@ from lalamo.distill_runner import (
     EvaluationMetrics,
     OptimizerName,
     _accumulate_train_step,
+    _build_optimizer,
     distill,
 )
 from lalamo.distillation import (
@@ -23,6 +25,13 @@ from lalamo.distillation import (
     DistillTrainingState,
 )
 from lalamo.quantization import QuantizationMode
+
+
+class _CallableWeights(eqx.Module):
+    leaf: jax.Array | optax.contrib.MuonDimensionNumbers | None
+
+    def __call__(self, token_positions: object) -> object:
+        return token_positions
 
 
 def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
@@ -113,6 +122,26 @@ def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
     assert updated_state.training_state.master_weights["right"] is None
     assert metrics.valid_tokens == 4
     assert jnp.isclose(metrics.loss, 0.5)
+
+
+def test_build_optimizer_muon_does_not_call_callable_training_state_tree() -> None:
+    training_state = DistillTrainingState(
+        master_weights=_CallableWeights(jnp.ones((2, 2), dtype=jnp.float32)),
+        muon_weight_dimension_numbers=_CallableWeights(
+            optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0),
+        ),
+    )
+
+    optimizer = _build_optimizer(
+        OptimizerName.MUON,
+        1e-3,
+        training_state,
+        warmup_steps=0,
+        gradient_clip_norm=None,
+    )
+    optimizer_state = optimizer.init(training_state.master_weights)
+
+    assert optimizer_state is not None
 
 
 def test_distill_skips_best_checkpoint_restore_without_periodic_eval(tmp_path: Path) -> None:

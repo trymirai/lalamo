@@ -403,7 +403,7 @@ def _build_optimizer(
         case OptimizerName.MUON:
             optimizer = optax.contrib.muon(
                 learning_rate=learning_rate_schedule,
-                muon_weight_dimension_numbers=training_state.muon_weight_dimension_numbers,
+                muon_weight_dimension_numbers=lambda _params: training_state.muon_weight_dimension_numbers,
             )
         case OptimizerName.SGD:
             optimizer = optax.sgd(learning_rate_schedule)
