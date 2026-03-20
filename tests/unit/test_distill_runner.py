@@ -19,9 +19,9 @@ from lalamo.distill_runner import (
     distill,
 )
 from lalamo.distillation import (
+    DistillBatchMetrics,
     DistillOptimizerState,
     DistillParameterSummary,
-    DistillStepMetrics,
     DistillTrainingState,
 )
 from lalamo.quantization import QuantizationMode
@@ -75,13 +75,14 @@ def _fake_accumulate_train_step(
     *,
     stochastic_rounding: bool,
     compute_step_gradients: object,
-) -> tuple[object, DistillStepMetrics, object]:
+) -> tuple[object, DistillBatchMetrics, object]:
     del optimizer, microbatches, stochastic_rounding, compute_step_gradients
     return (
         optimizer_state,
-        DistillStepMetrics(
+        DistillBatchMetrics(
             loss=jnp.asarray(0.1, dtype=jnp.float32),
             valid_tokens=jnp.asarray(2, dtype=jnp.int32),
+            top1_matches=jnp.asarray(0, dtype=jnp.int32),
         ),
         train_key,
     )
@@ -100,12 +101,13 @@ def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
     def compute_step_gradients(
         _batch: int,
         _quantization_key: object,
-    ) -> tuple[object, DistillStepMetrics]:
+    ) -> tuple[object, DistillBatchMetrics]:
         return (
             {"left": jnp.array([2.0, 4.0]), "right": None},
-            DistillStepMetrics(
+            DistillBatchMetrics(
                 loss=jnp.asarray(0.5, dtype=jnp.float32),
                 valid_tokens=jnp.asarray(2, dtype=jnp.int32),
+                top1_matches=jnp.asarray(1, dtype=jnp.int32),
             ),
         )
 
@@ -122,6 +124,7 @@ def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
     assert updated_state.training_state.master_weights["right"] is None
     assert metrics.valid_tokens == 4
     assert jnp.isclose(metrics.loss, 0.5)
+    assert metrics.top1_matches == 2
 
 
 def test_build_optimizer_muon_does_not_call_callable_training_state_tree() -> None:
@@ -172,7 +175,7 @@ def test_distill_skips_best_checkpoint_restore_without_periodic_eval(tmp_path: P
         patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
         patch("lalamo.distill_runner.materialize_trainable_module", return_value=SimpleNamespace()),
         patch(
-            "lalamo.distill_runner._evaluate",
+            "lalamo.distill_runner._evaluate_with",
             side_effect=[
                 EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
                 EvaluationMetrics(kl_divergence=0.5, top1_agreement=0.0, valid_tokens=1),
@@ -218,7 +221,7 @@ def test_distill_restores_best_checkpoint_after_periodic_eval(tmp_path: Path) ->
         patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
         patch("lalamo.distill_runner.materialize_trainable_module", return_value=SimpleNamespace()),
         patch(
-            "lalamo.distill_runner._evaluate",
+            "lalamo.distill_runner._evaluate_with",
             side_effect=[
                 EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
                 EvaluationMetrics(kl_divergence=2.0, top1_agreement=0.0, valid_tokens=1),

@@ -34,7 +34,6 @@ __all__ = [
     "DistillBatchMetrics",
     "DistillOptimizerState",
     "DistillParameterSummary",
-    "DistillStepMetrics",
     "DistillTrainConfig",
     "DistillTrainingState",
     "OptimizerGroup",
@@ -44,7 +43,6 @@ __all__ = [
     "compute_distill_step_gradients",
     "compute_trace_distill_batch_metrics",
     "compute_trace_distill_step_gradients",
-    "distill_train_step",
     "get_optimizer_group",
     "initialize_distill_training_state",
     "inject_lora_adapter_configs",
@@ -55,7 +53,6 @@ __all__ = [
     "materialize_trainable_module",
     "stochastically_quantize_module",
     "summarize_distill_parameters",
-    "trace_distill_train_step",
 ]
 
 
@@ -91,11 +88,6 @@ class DistillOptimizerState(eqx.Module):
 class DistillBatch(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
     lengths_without_padding: Int[Array, " batch"] | None = None
-
-
-class DistillStepMetrics(eqx.Module):
-    loss: Float[Array, ""]
-    valid_tokens: Int[Array, ""]
 
 
 class DistillBatchMetrics(eqx.Module):
@@ -343,15 +335,22 @@ def stochastically_quantize_module[M: eqx.Module](
     if not quantized_leaves:
         return module
 
-    quantization_keys = iter(jax.random.split(key, len(quantized_leaves)))
+    flat_quantized_weights, treedef = jtu.tree_flatten(quantized_weights, is_leaf=lambda leaf: leaf is None)
+    split_keys = iter(jax.random.split(key, len(quantized_leaves)))
+    quantization_keys = jtu.tree_unflatten(
+        treedef,
+        [None if leaf is None else next(split_keys) for leaf in flat_quantized_weights],
+    )
+    assert next(split_keys, None) is None
     quantized_weights = jax.tree.map(
-        lambda leaf: None
+        lambda leaf, quantization_key: None
         if leaf is None
         else leaf
         + jax.lax.stop_gradient(
-            stochastic_quantize_weights(leaf, quantization_mode, next(quantization_keys)) - leaf,
+            stochastic_quantize_weights(leaf, quantization_mode, quantization_key) - leaf,
         ),
         quantized_weights,
+        quantization_keys,
         is_leaf=lambda leaf: leaf is None,
     )
     return combine_parameter_leaves(module, quantized_weights)
@@ -543,8 +542,8 @@ def compute_distill_step_gradients(
     *,
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
-) -> tuple[object, DistillStepMetrics]:
-    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillStepMetrics]:
+) -> tuple[object, DistillBatchMetrics]:
+    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillBatchMetrics]:
         materialized_student = materialize_trainable_module(student, master_weights, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
@@ -553,7 +552,7 @@ def compute_distill_step_gradients(
                 quantization_key,
             )
         metrics = compute_distill_batch_metrics(materialized_student, teacher, batch)
-        return metrics.loss, DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
+        return metrics.loss, metrics
 
     (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(training_state.master_weights)
     return grads, metrics
@@ -568,8 +567,8 @@ def compute_trace_distill_step_gradients(
     *,
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
-) -> tuple[object, DistillStepMetrics]:
-    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillStepMetrics]:
+) -> tuple[object, DistillBatchMetrics]:
+    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillBatchMetrics]:
         materialized_student = materialize_trainable_module(student, master_weights, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
@@ -578,7 +577,7 @@ def compute_trace_distill_step_gradients(
                 quantization_key,
             )
         metrics = compute_trace_distill_batch_metrics(materialized_student, batch)
-        return metrics.loss, DistillStepMetrics(loss=metrics.loss, valid_tokens=metrics.valid_tokens)
+        return metrics.loss, metrics
 
     (_, metrics), grads = eqx.filter_value_and_grad(loss_fn, has_aux=True)(training_state.master_weights)
     return grads, metrics
@@ -604,49 +603,3 @@ def apply_distill_gradients(
         ),
         optimizer_state=new_optimizer_state,
     )
-
-
-@eqx.filter_jit
-def distill_train_step(
-    optimizer_state: DistillOptimizerState,
-    optimizer: optax.GradientTransformation,
-    student: Decoder,
-    teacher: Decoder,
-    batch: DistillBatch,
-    config: DistillTrainConfig,
-    *,
-    quantization_key: Key[Array, ""] | None = None,
-    quantization_mode: QuantizationMode | None = None,
-) -> tuple[DistillOptimizerState, DistillStepMetrics]:
-    grads, metrics = compute_distill_step_gradients(
-        optimizer_state.training_state,
-        student,
-        teacher,
-        batch,
-        config,
-        quantization_key=quantization_key,
-        quantization_mode=quantization_mode,
-    )
-    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics
-
-
-@eqx.filter_jit
-def trace_distill_train_step(
-    optimizer_state: DistillOptimizerState,
-    optimizer: optax.GradientTransformation,
-    student: Decoder,
-    batch: TraceDistillBatch,
-    config: DistillTrainConfig,
-    *,
-    quantization_key: Key[Array, ""] | None = None,
-    quantization_mode: QuantizationMode | None = None,
-) -> tuple[DistillOptimizerState, DistillStepMetrics]:
-    grads, metrics = compute_trace_distill_step_gradients(
-        optimizer_state.training_state,
-        student,
-        batch,
-        config,
-        quantization_key=quantization_key,
-        quantization_mode=quantization_mode,
-    )
-    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics

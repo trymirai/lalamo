@@ -10,6 +10,7 @@ from jax.tree_util import keystr
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
     DistillBatch,
+    DistillBatchMetrics,
     DistillOptimizerState,
     DistillTrainConfig,
     DistillTrainingState,
@@ -20,7 +21,6 @@ from lalamo.distillation import (
     compute_distill_step_gradients,
     compute_trace_distill_batch_metrics,
     compute_trace_distill_step_gradients,
-    distill_train_step,
     get_optimizer_group,
     initialize_distill_training_state,
     inject_lora_adapter_configs,
@@ -31,7 +31,6 @@ from lalamo.distillation import (
     materialize_trainable_module,
     stochastically_quantize_module,
     summarize_distill_parameters,
-    trace_distill_train_step,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.modules.common import (
@@ -91,6 +90,40 @@ def _make_optimizer_state(
         training_state=training_state,
         optimizer_state=optimizer.init(training_state.master_weights),
     )
+
+
+def _run_distill_step(
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    student: Decoder,
+    teacher: Decoder,
+    batch: DistillBatch,
+    config: DistillTrainConfig,
+) -> tuple[DistillOptimizerState, DistillBatchMetrics]:
+    grads, metrics = compute_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        teacher,
+        batch,
+        config,
+    )
+    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics
+
+
+def _run_trace_distill_step(
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    student: Decoder,
+    batch: TraceDistillBatch,
+    config: DistillTrainConfig,
+) -> tuple[DistillOptimizerState, DistillBatchMetrics]:
+    grads, metrics = compute_trace_distill_step_gradients(
+        optimizer_state.training_state,
+        student,
+        batch,
+        config,
+    )
+    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics
 
 
 def _leaf_by_path(tree: object) -> dict[str, object]:
@@ -587,7 +620,7 @@ def test_compute_trace_distill_batch_metrics_counts_all_matching_top1_tokens() -
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
-def test_distill_train_step_reduces_tiny_llama_loss() -> None:
+def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(10))
     student = eqx.tree_at(
         lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
@@ -610,7 +643,7 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
     )
 
     for _ in range(20):
-        optimizer_state, _ = distill_train_step(
+        optimizer_state, _ = _run_distill_step(
             optimizer_state,
             optimizer,
             student,
@@ -629,7 +662,7 @@ def test_distill_train_step_reduces_tiny_llama_loss() -> None:
     assert final_metrics.loss < initial_metrics.loss * 0.5
 
 
-def test_applying_distill_step_gradients_matches_distill_train_step() -> None:
+def test_applying_distill_step_gradients_matches_helper_step_update() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(17))
     student = eqx.tree_at(
         lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
@@ -645,7 +678,7 @@ def test_applying_distill_step_gradients_matches_distill_train_step() -> None:
     training_state = initialize_distill_training_state(student, config)
     optimizer_state = _make_optimizer_state(training_state, optimizer)
 
-    step_optimizer_state, step_metrics = distill_train_step(
+    step_optimizer_state, step_metrics = _run_distill_step(
         optimizer_state,
         optimizer,
         student,
@@ -674,7 +707,7 @@ def test_applying_distill_step_gradients_matches_distill_train_step() -> None:
         assert jnp.allclose(step_weight, applied_weight)
 
 
-def test_trace_distill_train_step_reduces_trace_loss() -> None:
+def test_repeated_trace_distill_step_gradients_reduce_trace_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(16))
     student = eqx.tree_at(
         lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
@@ -693,7 +726,7 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
     )
 
     for _ in range(20):
-        optimizer_state, _ = trace_distill_train_step(
+        optimizer_state, _ = _run_trace_distill_step(
             optimizer_state,
             optimizer,
             student,
@@ -710,7 +743,7 @@ def test_trace_distill_train_step_reduces_trace_loss() -> None:
     assert final_metrics.loss < initial_metrics.loss
 
 
-def test_applying_trace_distill_step_gradients_matches_trace_distill_train_step() -> None:
+def test_applying_trace_distill_step_gradients_matches_helper_step_update() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(18))
     student = eqx.tree_at(
         lambda decoder: decoder.transformer.layers[0].mixer.qkv_projection.weights,
@@ -723,7 +756,7 @@ def test_applying_trace_distill_step_gradients_matches_trace_distill_train_step(
     training_state = initialize_distill_training_state(student, config)
     optimizer_state = _make_optimizer_state(training_state, optimizer)
 
-    step_optimizer_state, step_metrics = trace_distill_train_step(
+    step_optimizer_state, step_metrics = _run_trace_distill_step(
         optimizer_state,
         optimizer,
         student,

@@ -4,6 +4,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
+from functools import partial
 from itertools import cycle, islice
 from pathlib import Path
 
@@ -23,9 +24,9 @@ from lalamo.data.huggingface_message import HFMessage
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
     DistillBatch,
+    DistillBatchMetrics,
     DistillOptimizerState,
     DistillParameterSummary,
-    DistillStepMetrics,
     DistillTrainConfig,
     DistillTrainingState,
     TraceDistillBatch,
@@ -283,31 +284,16 @@ def _make_trace_batches(
     ]
 
 
-def _evaluate(student: Decoder, teacher: Decoder, batches: list[DistillBatch]) -> EvaluationMetrics:
+def _evaluate_with[BatchT](
+    batches: list[BatchT],
+    compute_batch_metrics: Callable[[BatchT], DistillBatchMetrics],
+) -> EvaluationMetrics:
     total_kl = 0.0
     total_valid_tokens = 0
     total_matches = 0
 
     for batch in batches:
-        batch_metrics = compute_distill_batch_metrics(student, teacher, batch)
-        total_kl += float(batch_metrics.loss) * int(batch_metrics.valid_tokens)
-        total_valid_tokens += int(batch_metrics.valid_tokens)
-        total_matches += int(batch_metrics.top1_matches)
-
-    return EvaluationMetrics(
-        kl_divergence=total_kl / total_valid_tokens,
-        top1_agreement=total_matches / total_valid_tokens,
-        valid_tokens=total_valid_tokens,
-    )
-
-
-def _evaluate_trace(student: Decoder, batches: list[TraceDistillBatch]) -> EvaluationMetrics:
-    total_kl = 0.0
-    total_valid_tokens = 0
-    total_matches = 0
-
-    for batch in batches:
-        batch_metrics = compute_trace_distill_batch_metrics(student, batch)
+        batch_metrics = compute_batch_metrics(batch)
         total_kl += float(batch_metrics.loss) * int(batch_metrics.valid_tokens)
         total_valid_tokens += int(batch_metrics.valid_tokens)
         total_matches += int(batch_metrics.top1_matches)
@@ -346,7 +332,8 @@ def _save_materialized_student(
 
     with (student_path / "config.json").open() as config_file:
         source_config_json = json.load(config_file)
-    assert isinstance(source_config_json, dict)
+    if not isinstance(source_config_json, dict):
+        raise TypeError(f"{student_path / 'config.json'} must contain a JSON object")
 
     updated_model = replace(student_model, model=materialized_student)
     metadata = config_converter.structure(source_config_json, ModelMetadata)
@@ -424,13 +411,14 @@ def _accumulate_train_step[BatchT: eqx.Module](
     stochastic_rounding: bool,
     compute_step_gradients: Callable[
         [BatchT, Key[Array, ""] | None],
-        tuple[object, DistillStepMetrics],
+        tuple[object, DistillBatchMetrics],
     ],
-) -> tuple[DistillOptimizerState, DistillStepMetrics, Key[Array, ""]]:
+) -> tuple[DistillOptimizerState, DistillBatchMetrics, Key[Array, ""]]:
     assert microbatches, "Gradient accumulation requires at least one microbatch"
     accumulated_grads: object | None = None
     total_loss = jnp.asarray(0.0, dtype=jnp.float32)
     total_valid_tokens = jnp.asarray(0, dtype=jnp.int32)
+    total_top1_matches = jnp.asarray(0, dtype=jnp.int32)
 
     for microbatch in microbatches:
         train_key, step_key = jax.random.split(train_key)
@@ -445,12 +433,14 @@ def _accumulate_train_step[BatchT: eqx.Module](
         )
         total_loss = total_loss + metrics.loss * valid_tokens.astype(jnp.float32)
         total_valid_tokens = total_valid_tokens + valid_tokens
+        total_top1_matches = total_top1_matches + metrics.top1_matches
 
     assert accumulated_grads is not None
     averaged_grads = jax.tree.map(lambda grad: grad / total_valid_tokens, accumulated_grads)
-    step_metrics = DistillStepMetrics(
+    step_metrics = DistillBatchMetrics(
         loss=total_loss / total_valid_tokens.astype(jnp.float32),
         valid_tokens=total_valid_tokens,
+        top1_matches=total_top1_matches,
     )
     return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
 
@@ -640,9 +630,15 @@ def distill(
     )
     match config.training_mode:
         case TrainingMode.ONLINE_EXACT:
-            initial_eval = _evaluate(initial_student, teacher_model.model, eval_batches)
+            initial_eval = _evaluate_with(
+                eval_batches,
+                partial(compute_distill_batch_metrics, initial_student, teacher_model.model),
+            )
         case TrainingMode.TRACE_TOPK:
-            initial_eval = _evaluate_trace(initial_student, eval_batches)
+            initial_eval = _evaluate_with(
+                eval_batches,
+                partial(compute_trace_distill_batch_metrics, initial_student),
+            )
 
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
@@ -747,9 +743,19 @@ def distill(
                 )
                 match config.training_mode:
                     case TrainingMode.ONLINE_EXACT:
-                        eval_metrics = _evaluate(materialized_student, teacher_model.model, eval_batches)
+                        eval_metrics = _evaluate_with(
+                            eval_batches,
+                            partial(
+                                compute_distill_batch_metrics,
+                                materialized_student,
+                                teacher_model.model,
+                            ),
+                        )
                     case TrainingMode.TRACE_TOPK:
-                        eval_metrics = _evaluate_trace(materialized_student, eval_batches)
+                        eval_metrics = _evaluate_with(
+                            eval_batches,
+                            partial(compute_trace_distill_batch_metrics, materialized_student),
+                        )
 
                 history_entry = HistoryEntry(
                     step=step,
@@ -849,9 +855,15 @@ def distill(
     )
     match config.training_mode:
         case TrainingMode.ONLINE_EXACT:
-            final_eval = _evaluate(final_student, teacher_model.model, eval_batches)
+            final_eval = _evaluate_with(
+                eval_batches,
+                partial(compute_distill_batch_metrics, final_student, teacher_model.model),
+            )
         case TrainingMode.TRACE_TOPK:
-            final_eval = _evaluate_trace(final_student, eval_batches)
+            final_eval = _evaluate_with(
+                eval_batches,
+                partial(compute_trace_distill_batch_metrics, final_student),
+            )
 
     model_output_path = config.output_dir / "student-distilled"
     export_config = DistillTrainConfig(
