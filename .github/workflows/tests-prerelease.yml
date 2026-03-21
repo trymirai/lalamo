@@ -74,7 +74,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: 'ubuntu-latest'
+            runner: '["ubuntu-latest"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]'
           - python: py313
