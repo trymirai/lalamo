@@ -125,7 +125,10 @@ class TTSGenerator(eqx.Module):
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
-        text_tokens = self.tokenize_text(messages)
+        messages_list = list(messages)
+        if len(messages_list) != 1:
+            raise ValueError(f"Expected exactly 1 message, got {len(messages_list)}")
+        text_tokens = self.tokenize_text(messages_list)
 
         semantic_tokens = self.decode_text(
             text_tokens,
@@ -204,6 +207,8 @@ class FishAudioTTSGenerator(TTSGenerator):
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
         messages_list = list(messages)
+        if len(messages_list) != 1:
+            raise ValueError(f"Expected exactly 1 message, got {len(messages_list)}")
         first_message = messages_list[0]
 
         text_tokens = self.tokenize_text(messages_list)
@@ -278,6 +283,8 @@ class Qwen3TTSGenerator(TTSGenerator):
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
         messages_list = list(messages)
+        if len(messages_list) != 1:
+            raise ValueError(f"Expected exactly 1 message, got {len(messages_list)}")
         first_message = messages_list[0]
         speaker_id = first_message.speaker_id if first_message.speaker_id is not None else self.default_speaker_id()
 
