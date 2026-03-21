@@ -58,6 +58,19 @@ TTS_SPECS: tuple[ModelSpec, ...] = tuple(
     spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL
 )
 
+_CORE_LLM_REPOS: frozenset[str] = frozenset({
+    "Qwen/Qwen2.5-0.5B-Instruct",
+    "mlx-community/LFM2-2.6B-Exp-8bit",
+    "google/gemma-3-1b-it",
+    "meta-llama/Llama-3.2-1B-Instruct",
+    "cartesia-ai/Llamba-1B",
+    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
+})
+
+CORE_LLM_SPECS: tuple[ModelSpec, ...] = tuple(
+    spec for spec in LLM_SPECS if spec.repo in _CORE_LLM_REPOS
+)
+
 
 def strip_ansi_escape(text: str) -> str:
     return ANSI_ESCAPE_REGEX.sub("", text)
@@ -110,4 +123,9 @@ def llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
 
 @pytest.fixture(params=TTS_SPECS, ids=[spec.repo for spec in TTS_SPECS])
 def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
+    return request.param
+
+
+@pytest.fixture(params=CORE_LLM_SPECS, ids=[spec.repo for spec in CORE_LLM_SPECS])
+def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param

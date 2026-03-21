@@ -57,7 +57,7 @@ def resource_slots(
         for lock in locks:
             lock.acquire()
     else:
-        locks[worker_index].acquire()
+        locks[worker_index % NUM_SLOTS].acquire()
 
     yield
 

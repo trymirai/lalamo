@@ -3,25 +3,17 @@ import re
 import jax.numpy as jnp
 import pytest
 
+from lalamo.model_import.model_specs.common import ModelSpec
 from lalamo.message_processor import UserMessage
 from lalamo.models import LanguageModel
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
 from tests.conftest import ConvertModel
 
-MODEL_LIST = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
-    "mlx-community/LFM2-2.6B-Exp-8bit",
-    "google/gemma-3-1b-it",
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "cartesia-ai/Llamba-1B",
-    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
-]
 
-
-@pytest.fixture(params=MODEL_LIST)
-def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(request.param)
+@pytest.fixture
+def language_model(core_llm_spec: ModelSpec, convert_model: ConvertModel) -> LanguageModel:
+    model_dir = convert_model(core_llm_spec.repo)
     return LanguageModelConfig.load_model(model_dir)
 
 
