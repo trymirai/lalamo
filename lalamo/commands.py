@@ -10,6 +10,7 @@ from pathlib import Path
 
 import polars as pl
 import requests
+import thefuzz.fuzz
 import thefuzz.process
 from jaxtyping import DTypeLike
 
@@ -32,6 +33,7 @@ from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
+from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
@@ -70,10 +72,12 @@ def _download_file(url: str, dest_path: Path) -> None:
                 f.write(chunk)
 
 
-def _suggest_similar_models(query: str, available_models: list[RegistryModel], limit: int = 3) -> list[str]:
-    repo_ids = [m.repo_id for m in available_models]
-    matches = thefuzz.process.extract(query, repo_ids, limit=limit)
-    return [match[0] for match in matches if match[1] >= 50]
+def _suggest_similar_models(query: str, repo_ids: list[str], limit: int = 3, min_score: int = 70) -> str:
+    ranked_matches = thefuzz.process.extract(query, repo_ids, limit=limit, scorer=thefuzz.fuzz.ratio)
+    similar_repos = [repo for repo, score in ranked_matches if score >= min_score]
+    if not similar_repos:
+        return ""
+    return "\n\nDid you mean one of these?\n" + "\n".join(f"  - {repo}" for repo in similar_repos)
 
 
 def pull(
@@ -468,7 +472,8 @@ class TrainCallbacks:
     output_path: Path
     hashtable_size: int
     num_logits_per_token: int
-    ngram_size: int
+    max_order: int
+    discount: float
     subsample_size: int | None
 
     def started(self) -> None:
@@ -492,7 +497,8 @@ def train(
     output_path: Path,
     hashtable_size: int = 65536,
     num_logits_per_token: int = 8,
-    ngram_size: int = 2,
+    max_order: int = 4,
+    discount: float = 0.002,
     subsample_size: int | None = None,
     callbacks_type: Callable[
         [
@@ -501,6 +507,7 @@ def train(
             int,
             int,
             int,
+            float,
             int | None,
         ],
         TrainCallbacks,
@@ -511,7 +518,8 @@ def train(
         output_path,
         hashtable_size,
         num_logits_per_token,
-        ngram_size,
+        max_order,
+        discount,
         subsample_size,
     )
 
@@ -519,13 +527,14 @@ def train(
 
     with open(trace_path, "rb") as trace_fd:
         traces = LalamoCompletion.deserialize_many(trace_fd)
-        speculator = NGramSpeculator.new(hashtable_size, num_logits_per_token, ngram_size)
+        speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
 
         def progress_callback(event: SpeculatorTrainingEvent) -> None:
             callbacks.training_progress(event.trained_tokens)
 
         train_speculator(speculator, traces, subsample_size, progress_callback)
 
+    speculator.compress()
     callbacks.finished_training()
 
     callbacks.saving_speculator()
@@ -609,6 +618,8 @@ def generate_replies(
 
     ``callbacks_type`` is used internally (cli) for progress visualisation.
     """
+    sharding_config = ShardingConfig.build()
+
     # figure out max_vram if neither batch_size nor max_vram is set
     if max_vram is None and batch_size is None:
         max_vram = get_default_device_bytes()
@@ -630,7 +641,8 @@ def generate_replies(
     )
 
     callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
+    with use_sharding(sharding_config):
+        model = LanguageModelConfig.load_model(model_path)
     callbacks.finished_loading_model()
 
     callbacks.loading_dataset()
@@ -666,18 +678,19 @@ def generate_replies(
             stop_token_ids=model.config.generation_config.stop_token_ids,
         )
 
-    replies: list[tuple[int, AssistantMessage]] = []
-    for rows_processed, (idx, reply) in enumerate(
-        model.reply_many(
-            dataset,
-            generation_config=generation_config,
-            inference_config=inference_config,
-            vram_bytes=max_vram,
-            batch_sizes_callback=callbacks.batch_sizes_computed,
-        ),
-    ):
-        replies.append((idx, reply))
-        callbacks.generation_progress(rows_processed)
+    with use_sharding(sharding_config):
+        replies: list[tuple[int, AssistantMessage]] = []
+        for rows_processed, (idx, reply) in enumerate(
+            model.reply_many(
+                dataset,
+                generation_config=generation_config,
+                inference_config=inference_config,
+                vram_bytes=max_vram,
+                batch_sizes_callback=callbacks.batch_sizes_computed,
+            ),
+        ):
+            replies.append((idx, reply))
+            callbacks.generation_progress(rows_processed)
 
     # Sort by original index to restore input order
     replies.sort(key=lambda x: x[0])

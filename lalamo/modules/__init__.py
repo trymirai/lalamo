@@ -12,9 +12,9 @@ from .common import (
     ShardingConfig,
     ShardingOrder,
     TensorSharding,
-    apply_data_sharding,
     config_converter,
     get_current_sharding_config,
+    pad_and_apply_data_sharding,
     sharded_field,
 )
 from .decoder import (
@@ -189,8 +189,8 @@ __all__ = [
     "Vocoder",
     "VocoderConfig",
     "YARNRoPEConfig",
-    "apply_data_sharding",
     "config_converter",
     "get_current_sharding_config",
+    "pad_and_apply_data_sharding",
     "sharded_field",
 ]
