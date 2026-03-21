@@ -100,7 +100,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         ],
     )
 
-    generation_config = GenerationConfig(top_k=1)
+    generation_config = GenerationConfig(temperature=0)
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
         generation_config=generation_config,
@@ -128,7 +128,7 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
     token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
 
-    generation_config = GenerationConfig(top_k=1)
+    generation_config = GenerationConfig(temperature=0)
 
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],
