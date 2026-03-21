@@ -105,7 +105,7 @@ jobs:
 
   tracer:
     name: Tracer
-    runs-on: ubuntu-latest # gpu is quite a bit faster than cpu, TODO: why does lalamo-k8s fail?
+    runs-on: [gpu]
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
