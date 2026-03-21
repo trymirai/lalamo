@@ -91,7 +91,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
 
     def __post_init__(self) -> None:
         if len(self.label2id) != len(self.id2label):
-            raise ValueError("Legnth of label2id and id2label is expected to be the same")
+            raise ValueError("Length of label2id and id2label is expected to be the same")
 
     def calculate_sliding_windows(self, num_layers: int, global_attn_every_n_layers: int) -> tuple[None, ...]:
         result: list[Any] = [None] * num_layers

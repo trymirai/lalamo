@@ -29,7 +29,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
             assert jax.device_count() == 8, f"expected 8 devices, got {{jax.device_count()}}"
 
             from lalamo import ShardingConfig, import_model
-            from lalamo.modules import apply_data_sharding
+            from lalamo.modules import pad_and_apply_data_sharding
             from tests.common import assert_close
 
             SHARDING_CONFIGS = [
@@ -56,7 +56,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
             for sharding_config in SHARDING_CONFIGS:
                 print(f"testing {{sharding_config}}...")
                 decoder = import_model(MODEL, sharding_config=sharding_config, precision=jnp.float32).model.model
-                sharded_token_ids, sharded_token_positions = apply_data_sharding(
+                sharded_token_ids, sharded_token_positions = pad_and_apply_data_sharding(
                     (token_ids, token_positions), sharding_config=sharding_config, batch_axis=0,
                 )
                 decoder_result = decoder(sharded_token_ids, sharded_token_positions, return_updated_state=True)

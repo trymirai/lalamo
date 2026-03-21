@@ -21,7 +21,8 @@ from lalamo.modules import (
     LalamoModule,
     ShardingConfig,
     State,
-    apply_data_sharding,
+    get_current_sharding_config,
+    pad_and_apply_data_sharding,
 )
 from lalamo.sampling import SamplingPolicy, make_policy
 
@@ -358,27 +359,34 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         forward_pass_config: ForwardPassConfig | None,
         sharding_config: ShardingConfig | None,
     ) -> Iterator[GenerationResults]:
+        if sharding_config is None:
+            sharding_config = get_current_sharding_config()
+
         assert inference_config.batch_size is not None
         batch_size = inference_config.batch_size
 
         padded_token_ids = pad_sequences(batch, (batch_size, inference_config.padded_length), dtype=jnp.int32)
 
-        lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
-        padded_lengths = jnp.pad(lengths, (0, batch_size - len(batch)))
+        padded_lengths = jnp.array([len(tokens) for tokens in batch], dtype=jnp.int32)
+        padded_lengths = jnp.pad(padded_lengths, (0, batch_size - len(batch)))
 
         padded_keys = pad_keys_to_size(batch_keys, batch_size)
 
-        padded_token_ids, padded_lengths, padded_keys = apply_data_sharding(
+        padded_token_ids, padded_lengths, padded_keys = pad_and_apply_data_sharding(
             (padded_token_ids, padded_lengths, padded_keys),
             sharding_config=sharding_config,
             batch_axis=0,
         )
 
+        sharded_inference_config = replace(inference_config, batch_size=padded_token_ids.shape[0])
         generate_tokens_fn = compile_generate_tokens(
             self,
             generation_config,
-            inference_config,
+            sharded_inference_config,
             forward_pass_config=forward_pass_config,
+            prompt_token_ids=padded_token_ids,
+            prompt_lengths_without_padding=padded_lengths,
+            keys=padded_keys,
         )
         results = generate_tokens_fn(
             self,
@@ -439,12 +447,32 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        sharding_config: ShardingConfig | None = None,
     ) -> int:
+        if sharding_config is None:
+            sharding_config = get_current_sharding_config()
+
+        assert inference_config.batch_size is not None
+        batch_size = inference_config.batch_size
+
+        dummy_token_ids = jnp.zeros((batch_size, inference_config.padded_length), dtype=jnp.int32)
+        dummy_lengths = jnp.zeros((batch_size,), dtype=jnp.int32)
+        dummy_keys = jax.random.split(jax.random.key(0), num=batch_size)
+
+        dummy_token_ids, dummy_lengths, dummy_keys = pad_and_apply_data_sharding(
+            (dummy_token_ids, dummy_lengths, dummy_keys),
+            sharding_config=sharding_config,
+            batch_axis=0,
+        )
+
         memory_analysis = compile_generate_tokens(
             self,
             generation_config=generation_config,
-            inference_config=inference_config,
+            inference_config=replace(inference_config, batch_size=dummy_token_ids.shape[0]),
             forward_pass_config=forward_pass_config,
+            prompt_token_ids=dummy_token_ids,
+            prompt_lengths_without_padding=dummy_lengths,
+            keys=dummy_keys,
         ).memory_analysis()
 
         assert hasattr(memory_analysis, "argument_size_in_bytes")
@@ -473,10 +501,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
+        if sharding_config is None:
+            sharding_config = get_current_sharding_config()
+
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)[None, :]
         keys = key[None, ...] if key is not None else None
-        token_ids, keys = apply_data_sharding(
+        token_ids, keys = pad_and_apply_data_sharding(
             (token_ids, keys),
             sharding_config=sharding_config,
             batch_axis=0,
@@ -486,7 +517,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             forward_pass_config=forward_pass_config,
             keys=keys,
-        ).token_ids.squeeze(0)
+        ).token_ids[0]
         trimmed_ids = self._trim_at_eos(response_ids.tolist())
         response_text = self.message_processor.detokenize(trimmed_ids)
         return self.message_processor.parse_response(response_text)
@@ -538,6 +569,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             batch_size_per_bucket = estimate_batchsizes_from_vram(
                 lambda config: self.estimate_memory_consumption(
                     inference_config=config,
+                    sharding_config=sharding_config,
                 ),
                 sorted_lengths,
                 vram_bytes,  # type: ignore
