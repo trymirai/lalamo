@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 
 from lalamo.commands import convert
 from lalamo.main import app
-from lalamo.model_import.model_configs.huggingface import HuggingFaceLMConfig
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
@@ -40,17 +39,17 @@ ConvertModel = Callable[[str], Path]
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
-HF_MODEL_SPECS: tuple[ModelSpec, ...] = tuple(
-    spec
-    for spec in ModelRegistry.build(allow_third_party_plugins=False).models
-    if issubclass(spec.config_type, HuggingFaceLMConfig)
+ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
+
+LLM_SPECS: tuple[ModelSpec, ...] = tuple(
+    spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.LANGUAGE_MODEL
 )
 
-HF_LANGUAGE_MODEL_REPOS: tuple[str, ...] = tuple(
-    spec.repo
-    for spec in HF_MODEL_SPECS
-    if spec.model_type == ModelType.LANGUAGE_MODEL
+TTS_SPECS: tuple[ModelSpec, ...] = tuple(
+    spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL
 )
+
+HF_LANGUAGE_MODEL_REPOS: tuple[str, ...] = tuple(spec.repo for spec in LLM_SPECS)
 
 
 def strip_ansi_escape(text: str) -> str:
@@ -92,6 +91,16 @@ def convert_model(
     return _convert
 
 
-@pytest.fixture(params=HF_MODEL_SPECS, ids=[spec.repo for spec in HF_MODEL_SPECS])
-def hf_model_spec(request: pytest.FixtureRequest) -> ModelSpec:
+@pytest.fixture(params=ALL_MODEL_SPECS, ids=[spec.repo for spec in ALL_MODEL_SPECS])
+def all_model_specs(request: pytest.FixtureRequest) -> ModelSpec:
+    return request.param
+
+
+@pytest.fixture(params=LLM_SPECS, ids=[spec.repo for spec in LLM_SPECS])
+def llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
+    return request.param
+
+
+@pytest.fixture(params=TTS_SPECS, ids=[spec.repo for spec in TTS_SPECS])
+def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param

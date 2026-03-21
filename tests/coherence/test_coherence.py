@@ -51,12 +51,7 @@ SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
 
 @pytest.fixture(params=HF_LANGUAGE_MODEL_REPOS)
 def converted_model_path(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
-    try:
-        return convert_model(request.param)
-    except (JaxRuntimeError, ValueError) as e:
-        if not (isinstance(e, JaxRuntimeError) or "RESOURCE_EXHAUSTED" in str(e)):
-            raise
-        pytest.skip(f"Model too large to fit in GPU memory during conversion: {e}")
+    return convert_model(request.param)
 
 
 def _generate_replies(
@@ -82,10 +77,6 @@ def _generate_replies(
         ],
         terminal_width=240,
     )
-    if result.exception is not None and (
-        isinstance(result.exception, JaxRuntimeError) or "RESOURCE_EXHAUSTED" in str(result.exception)
-    ):
-        pytest.skip(f"Model too large to fit in GPU memory during generation: {result.exception}")
     assert result.exit_code == 0, (
         f"generate-replies failed (exit {result.exit_code}).\n"
         f"--- output ---\n{result.output}\n"
@@ -98,8 +89,7 @@ def test_model_coherent_and_stops(
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     api_key = os.getenv("OPENROUTER_API_KEY")
-    if not api_key:
-        pytest.skip("Set OPENROUTER_API_KEY to run coherence tests.")
+    assert api_key is not None
 
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
@@ -136,15 +126,12 @@ def test_model_coherent_and_stops(
     assert coherence_output, "Model produced empty output for coherence prompt"
     log.info("Coherence output:\n%s", coherence_output)
 
-    try:
-        verdict = judge(
-            api_key=api_key,
-            model=judge_model,
-            candidate_output=coherence_output,
-            timeout=60,
-        )
-    except Exception as e:
-        pytest.skip(f"Judge failed: {e}")
+    verdict = judge(
+        api_key=api_key,
+        model=judge_model,
+        candidate_output=coherence_output,
+        timeout=60,
+    )
 
     log.info(
         "Judge verdict: coherent=%s, score=%.2f, issues=%s, summary=%s",
@@ -187,16 +174,13 @@ def test_model_coherent_and_stops(
             )
             continue
 
-        try:
-            qa_verdict = judge(
-                api_key=api_key,
-                model=judge_model,
-                candidate_output=response,
-                task_prompt=question,
-                timeout=60,
-            )
-        except Exception as e:
-            pytest.skip(f"Judge failed: {e}")
+        qa_verdict = judge(
+            api_key=api_key,
+            model=judge_model,
+            candidate_output=response,
+            task_prompt=question,
+            timeout=60,
+        )
         log.info(
             "QA judge for %r: coherent=%s, score=%.2f, issues=%s",
             question,

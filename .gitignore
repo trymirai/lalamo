@@ -54,4 +54,4 @@ _tmp
 
 # Git worktrees
 .worktrees/
-
+!.github
