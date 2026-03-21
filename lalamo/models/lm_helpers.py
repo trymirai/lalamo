@@ -1,6 +1,11 @@
+import json
+import os
+import subprocess
+import sys
 import warnings
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from pathlib import Path
 
 import jax
 import jax.numpy as jnp
@@ -22,6 +27,7 @@ __all__ = [
     "merge_small_buckets",
     "pad_keys_to_size",
     "pad_sequences",
+    "run_memory_probes_parallel",
 ]
 
 
@@ -138,11 +144,119 @@ def pad_keys_to_size(keys: Iterable, size: int, *, seed: int = 0) -> jnp.ndarray
     return jnp.concatenate([jnp.array(keys_list), dummy_keys])
 
 
-_PROBE_BATCH_SIZES = (8, 32)
+_PROBE_BS_LOW = 4
+_MIN_PROBE_SEQ_LEN = 512
+
+
+def _launch_probe(
+    model_path: Path | str,
+    probe: MemoryProbe,
+    max_output_length: int,
+    num_logits_to_return: int | None,
+) -> subprocess.Popen[bytes]:
+    num_logits_arg = str(num_logits_to_return) if num_logits_to_return is not None else "none"
+    return subprocess.Popen(
+        [
+            sys.executable, "-m", "lalamo.models._memory_probe_worker",
+            str(model_path), str(probe.batch_size), str(probe.seq_len),
+            str(max_output_length), num_logits_arg,
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+
+def _collect_probe(proc: subprocess.Popen[bytes]) -> int | None:
+    """Collect result from a probe subprocess. Returns memory_bytes or None on failure."""
+    stdout, stderr = proc.communicate()
+    if proc.returncode != 0:
+        stderr_text = stderr.decode()
+        if "resource_exhausted" in stderr_text.lower() or "out of memory" in stderr_text.lower():
+            return None
+        raise RuntimeError(f"Memory probe worker failed (exit {proc.returncode}): {stderr_text[-500:]}")
+    return json.loads(stdout.decode())["memory_bytes"]
+
+
+def _run_probes_sequential(
+    model_path: Path | str,
+    probes: list[MemoryProbe],
+    max_output_length: int,
+    num_logits_to_return: int | None,
+    progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
+) -> list[int]:
+    from lalamo.models import LanguageModelConfig
+    from lalamo.models.common import InferenceConfig
+
+    model = LanguageModelConfig.load_model(model_path)
+    measured: list[int] = []
+    for i, probe in enumerate(probes):
+        if progress is not None:
+            progress(BatchSizeEstimatingEvent(i, len(probes)))
+        config = InferenceConfig(
+            max_output_length=max_output_length,
+            padded_length=probe.seq_len,
+            num_top_logits_to_return=num_logits_to_return,
+            batch_size=probe.batch_size,
+        )
+        measured.append(model.estimate_memory_consumption(inference_config=config))
+    return measured
+
+
+def run_memory_probes_parallel(
+    model_path: Path | str,
+    probes: list[MemoryProbe],
+    max_output_length: int,
+    num_logits_to_return: int | None,
+    progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
+    max_concurrent: int = 2,
+) -> list[int]:
+    """Run memory probes in parallel GPU subprocesses (waves of max_concurrent).
+
+    Falls back to sequential in-process compilation if any subprocess fails with OOM.
+    """
+    measured: list[int] = []
+    probe_idx = 0
+
+    for wave_start in range(0, len(probes), max_concurrent):
+        wave = probes[wave_start : wave_start + max_concurrent]
+        procs: list[subprocess.Popen[bytes]] = []
+        for probe in wave:
+            if progress is not None:
+                progress(BatchSizeEstimatingEvent(probe_idx, len(probes)))
+            procs.append(_launch_probe(model_path, probe, max_output_length, num_logits_to_return))
+            probe_idx += 1
+
+        for proc in procs:
+            result = _collect_probe(proc)
+            if result is None:
+                # OOM in subprocess — kill remaining, fall back to sequential
+                for p in procs:
+                    p.kill()
+                    p.wait()
+                warnings.warn(
+                    "Parallel memory probe failed (GPU OOM in subprocess). "
+                    "Falling back to sequential in-process compilation.",
+                    LalamoWarning,
+                    stacklevel=2,
+                )
+                return _run_probes_sequential(
+                    model_path, probes, max_output_length, num_logits_to_return, progress,
+                )
+            measured.append(result)
+
+    return measured
+
+
+def _estimate_bs_high(mem_at_bs_low: int, bs_low: int, usable_memory: int) -> int:
+    """From a single probe at bs_low, estimate the batch size that would use ~80% of usable memory."""
+    per_sample = mem_at_bs_low / bs_low
+    if per_sample <= 0:
+        return bs_low * 2
+    return max(bs_low * 2, int(usable_memory * 0.8 / per_sample))
 
 
 def estimate_batchsizes_from_vram(
-    memory_consumption_callback: Callable[[InferenceConfig], int],
+    model_path: Path | str,
     sorted_lengths: list[int],
     vram_bytes: int,
     inference_config: InferenceConfig,
@@ -152,24 +266,36 @@ def estimate_batchsizes_from_vram(
     assert len(sorted_lengths) > 0
     usable_memory = get_usable_memory_from_bytes(vram_bytes)
 
-    len_short, len_long = sorted_lengths[0], sorted_lengths[-1]
-    probe_lengths = (len_short,) if len_short == len_long else (len_short, len_long)
-    probes = [MemoryProbe(bs, sl) for bs in _PROBE_BATCH_SIZES for sl in probe_lengths]
+    len_short = max(sorted_lengths[0], _MIN_PROBE_SEQ_LEN)
+    len_long = max(sorted_lengths[-1], _MIN_PROBE_SEQ_LEN)
+    probe_lengths = [len_short] if len_short == len_long else [len_short, len_long]
 
-    measured: list[int] = []
-    for i, probe in enumerate(probes):
-        if progress is not None:
-            progress(BatchSizeEstimatingEvent(i, len(probes)))
-        config = InferenceConfig(
-            max_output_length=inference_config.max_output_length,
-            padded_length=probe.seq_len,
-            num_top_logits_to_return=inference_config.num_top_logits_to_return,
-            batch_size=probe.batch_size,
-        )
-        measured.append(memory_consumption_callback(config))
+    max_out = inference_config.max_output_length
+    num_logits = inference_config.num_top_logits_to_return
+
+    # Wave 1: probe at small batch size to measure per-sample cost
+    wave1_probes = [MemoryProbe(_PROBE_BS_LOW, sl) for sl in probe_lengths]
+    wave1_measured = run_memory_probes_parallel(
+        model_path, wave1_probes, max_out, num_logits, progress,
+    )
+
+    # Pick bs_high per seq_len based on wave 1 results
+    bs_high_per_len = {
+        probe.seq_len: _estimate_bs_high(mem, _PROBE_BS_LOW, usable_memory)
+        for probe, mem in zip(wave1_probes, wave1_measured)
+    }
+
+    # Wave 2: probe near the estimated operating point
+    wave2_probes = [MemoryProbe(bs_high_per_len[sl], sl) for sl in probe_lengths]
+    wave2_measured = run_memory_probes_parallel(
+        model_path, wave2_probes, max_out, num_logits, progress,
+    )
+
+    all_probes = wave1_probes + wave2_probes
+    all_measured = wave1_measured + wave2_measured
 
     predictor = MemoryPredictor()
-    predictor.fit(probes, measured)
+    predictor.fit(all_probes, all_measured)
     return {sl: predictor.max_batch_size(sl, usable_memory) for sl in sorted_lengths}
 
 

@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
@@ -532,6 +533,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         vram_bytes: int | None = None,
+        model_path: Path | str | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
     ) -> Iterator[tuple[int, AssistantMessage]]:
         messages = list(messages)  # eagerly load the dataset into RAM
@@ -566,11 +568,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if inference_config.batch_size is not None:
             batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
         else:
+            assert model_path is not None, "model_path is required when vram_bytes is set"
             batch_size_per_bucket = estimate_batchsizes_from_vram(
-                lambda config: self.estimate_memory_consumption(
-                    inference_config=config,
-                    sharding_config=sharding_config,
-                ),
+                model_path,
                 sorted_lengths,
                 vram_bytes,  # type: ignore
                 inference_config,
@@ -589,6 +589,24 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 for padded_length in sorted(buckets.keys())
             )
             batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
+
+        # Precompile all bucket configs in parallel before starting inference.
+        # XLA's .compile() releases the GIL, so threading gives near-linear speedup.
+        precompile_configs = [
+            replace(inference_config, batch_size=batch_size_per_bucket[pl], padded_length=pl)
+            for pl in sorted(buckets.keys())
+        ]
+
+        def _precompile(ic: InferenceConfig) -> None:
+            self.estimate_memory_consumption(
+                generation_config=generation_config,
+                inference_config=ic,
+                forward_pass_config=forward_pass_config,
+                sharding_config=sharding_config,
+            )
+
+        with ThreadPoolExecutor(max_workers=len(precompile_configs)) as pool:
+            list(pool.map(_precompile, precompile_configs))
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):

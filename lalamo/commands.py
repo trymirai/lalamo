@@ -31,7 +31,7 @@ from lalamo.model_import.common import (
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.models import GenerationConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
-from lalamo.models.lm_helpers import MemoryPredictor, MemoryProbe
+from lalamo.models.lm_helpers import estimate_batchsizes_from_vram
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
@@ -311,12 +311,6 @@ class EstimateBatchsizeCallbacks:
     num_logits_per_token: int
     mem: int
 
-    def loading_model(self) -> None:
-        pass
-
-    def finished_loading_model(self) -> None:
-        pass
-
     def estimating_batchsize(self, num_done: int, num_total: int) -> None:
         pass
 
@@ -343,25 +337,18 @@ def estimate_batchsize(
 ) -> int:
     callbacks = callbacks_type(model_path, max_input_length, max_output_length, num_logits_per_token, mem)
 
-    callbacks.loading_model()
-    model = LanguageModelConfig.load_model(model_path)
-    callbacks.finished_loading_model()
-
-    probes = [MemoryProbe(bs, max_input_length) for bs in (8, 32)]
-    measured: list[int] = []
-    for i, probe in enumerate(probes):
-        callbacks.estimating_batchsize(i, len(probes))
-        config = InferenceConfig(
-            max_output_length=max_output_length,
-            padded_length=probe.seq_len,
-            num_top_logits_to_return=num_logits_per_token,
-            batch_size=probe.batch_size,
-        )
-        measured.append(model.estimate_memory_consumption(inference_config=config))
-
-    predictor = MemoryPredictor()
-    predictor.fit(probes, measured)
-    bs = predictor.max_batch_size(max_input_length, mem)
+    inference_config = InferenceConfig(
+        max_output_length=max_output_length,
+        num_top_logits_to_return=num_logits_per_token,
+    )
+    batch_sizes = estimate_batchsizes_from_vram(
+        model_path,
+        [max_input_length],
+        mem,
+        inference_config,
+        lambda event: callbacks.estimating_batchsize(event.num_compilations_done, event.num_compilations_total),
+    )
+    bs = batch_sizes[max_input_length]
 
     callbacks.finished_estimating_batchsize(bs)
     return bs
@@ -687,6 +674,7 @@ def generate_replies(
                 generation_config=generation_config,
                 inference_config=inference_config,
                 vram_bytes=max_vram,
+                model_path=model_path,
                 batch_sizes_callback=callbacks.batch_sizes_computed,
             ),
         ):
