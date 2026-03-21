@@ -2,6 +2,8 @@ name: "Convert (n2hmem32)"
 
 on:
   workflow_dispatch:
+  pull_request:
+    types: [labeled]
 
 permissions:
   contents: read
@@ -17,6 +19,7 @@ jobs:
   convert:
     name: Convert (Qwen3-Next-80B-A3B)
     runs-on: [github-n2hmem32]
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'ci-n2hmem32-test' }}
 
     steps:
       - uses: actions/checkout@v6

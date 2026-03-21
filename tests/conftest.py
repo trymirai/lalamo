@@ -13,6 +13,7 @@ from lalamo.main import app
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
+from tests.resource_slots import resource_slots
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
@@ -24,6 +25,14 @@ jax.config.update("jax_default_matmul_precision", "default")
 
 GPU_ATOL = 1e-3
 GPU_RTOL = 0.03
+
+
+@pytest.fixture(autouse=True)
+def _resource_slots(
+    request: pytest.FixtureRequest,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> Generator[None]:
+    yield from resource_slots(request, tmp_path_factory)
 
 
 @pytest.fixture(autouse=True)
@@ -48,8 +57,6 @@ LLM_SPECS: tuple[ModelSpec, ...] = tuple(
 TTS_SPECS: tuple[ModelSpec, ...] = tuple(
     spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL
 )
-
-HF_LANGUAGE_MODEL_REPOS: tuple[str, ...] = tuple(spec.repo for spec in LLM_SPECS)
 
 
 def strip_ansi_escape(text: str) -> str:

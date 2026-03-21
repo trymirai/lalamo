@@ -10,7 +10,8 @@ from tokenizers import Tokenizer
 from typer.testing import CliRunner
 
 from lalamo.main import app
-from tests.conftest import HF_LANGUAGE_MODEL_REPOS, ConvertModel
+from lalamo.model_import.model_specs.common import ModelSpec
+from tests.conftest import ConvertModel
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
 
@@ -49,9 +50,9 @@ SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-@pytest.fixture(params=HF_LANGUAGE_MODEL_REPOS)
-def converted_model_path(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
-    return convert_model(request.param)
+@pytest.fixture
+def converted_model_path(llm_spec: ModelSpec, convert_model: ConvertModel) -> Path:
+    return convert_model(llm_spec.repo)
 
 
 def _generate_replies(
@@ -85,6 +86,7 @@ def _generate_replies(
 
 
 def test_model_coherent_and_stops(
+    llm_spec: ModelSpec,
     converted_model_path: Path,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
@@ -93,9 +95,8 @@ def test_model_coherent_and_stops(
 
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
-    repo = converted_model_path.name.replace("__", "/", 1)
-    is_bad = repo in BAD_MODELS
-    max_tokens = MAX_TOKENS * 4 if repo in THINKING_MODELS else MAX_TOKENS
+    is_bad = llm_spec.repo in BAD_MODELS
+    max_tokens = MAX_TOKENS * 4 if llm_spec.repo in THINKING_MODELS else MAX_TOKENS
 
     work_dir = tmp_path_factory.mktemp("coherence")
     dataset_path = work_dir / "dataset.parquet"
