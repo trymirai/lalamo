@@ -28,7 +28,7 @@ jobs:
 
   conversion:
     name: Model Conversion
-    runs-on: [lalamo-k8s]
+    runs-on: [gpu]
     needs: [config]
     if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
 
