@@ -72,7 +72,7 @@ jobs:
 
   generation:
     name: Generation
-    runs-on: [lalamo-k8s]
+    runs-on: [ubuntu-latest]
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
