@@ -72,7 +72,7 @@ jobs:
 
   generation:
     name: Generation
-    runs-on: [github-n2hmem16]
+    runs-on: [cpu]
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
