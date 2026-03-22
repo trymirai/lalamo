@@ -77,7 +77,7 @@ jobs:
 
   generation:
     name: Generation
-    runs-on: [lalamo-k8s]
+    runs-on: [cpu]
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -90,11 +90,11 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest -n=auto tests/generation
+          pytest tests/generation
 
   audio:
     name: Audio Models
-    runs-on: [cpu] # prefer cpu, lalamo-k8s does not have correct cache setup, gpu is flaky
+    runs-on: ubuntu-latest # prefer cpu, gpu is flaky
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -110,7 +110,7 @@ jobs:
 
   tracer:
     name: Tracer
-    runs-on: [gpu] # gpu is quite a bit faster than cpu, TODO: why does lalamo-k8s fail?
+    runs-on: gpu
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -140,7 +140,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["lalamo-k8s"]'
+            runner: '["ubuntu-latest"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]' # gpu only :(
 
