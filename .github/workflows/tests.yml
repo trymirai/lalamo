@@ -72,7 +72,7 @@ jobs:
 
   generation:
     name: Generation
-    runs-on: [cpu]
+    runs-on: github-n2hmem16
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
@@ -105,7 +105,7 @@ jobs:
 
   tracer:
     name: Tracer
-    runs-on: [github-n2hmem16]
+    runs-on: gpu
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
