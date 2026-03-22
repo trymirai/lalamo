@@ -7,7 +7,7 @@ import pytest
 from tests.common import skip_on_gpu
 
 MODELS = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen3-0.6B",
 ]
 
 
