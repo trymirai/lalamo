@@ -7,7 +7,7 @@ from tokenizers import Tokenizer
 
 from tests.conftest import RunLalamo
 
-PULL_MODEL_REPO = "Qwen/Qwen3-0.6B"
+PULL_MODEL_REPO = "google/gemma-3-1b-it"
 MATH_PROMPT = "What is 2 + 2? Reply with a single number, nothing else."
 YES_NO_PROMPT = "Are apples fruits? Answer with one word: yes or no."
 MAX_RESPONSE_TOKENS = 30

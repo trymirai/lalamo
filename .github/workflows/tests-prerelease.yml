@@ -55,7 +55,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["ubuntu-latest"]'
+            runner: '["cpu"]' # ubuntu-latest does not have enough RAM (?) to run these
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]'
           - python: py313
