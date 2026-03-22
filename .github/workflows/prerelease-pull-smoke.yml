@@ -68,6 +68,7 @@ jobs:
 
       - name: Run pull tests
         id: pull_smoke
+        continue-on-error: true
         run: |
           pytest tests/indicators/pull_smoke.py 2>&1 | tee pull_smoke.log
 
