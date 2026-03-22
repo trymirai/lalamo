@@ -16,9 +16,9 @@ from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 
 
-def test_logit_processing(hf_model_spec: ModelSpec) -> None:
+def test_logit_processing(llm_spec: ModelSpec) -> None:
     # TODO: lalamo should do greedy for do_sample=False
-    generation_config = hf_model_spec.configs.generation_config
+    generation_config = llm_spec.configs.generation_config
 
     if isinstance(generation_config, GenerationConfig):
         generation_config_dict = asdict(generation_config)
@@ -29,7 +29,7 @@ def test_logit_processing(hf_model_spec: ModelSpec) -> None:
             {**asdict(lalamo_hf_generation_config), "do_sample": True},
         )
     elif isinstance(generation_config, FileSpec):
-        hf_generation_config_file = download_file(generation_config, hf_model_spec.repo)
+        hf_generation_config_file = download_file(generation_config, llm_spec.repo)
         hf_generation_config_dict = json.loads(hf_generation_config_file.read_text())
         hf_generation_config = TransformersGenerationConfig.from_dict({**hf_generation_config_dict, "do_sample": True})
         lalamo_hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)

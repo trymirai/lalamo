@@ -1,0 +1,27 @@
+name: "Convert (n2hmem32) w/ max memory"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  convert:
+    name: Convert (Qwen3-Next-80B-A3B)
+    runs-on: [github-n2hmem32]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+
+      - name: Convert model
+        run: |
+          lalamo convert "Qwen/Qwen3-Next-80B-A3B-Instruct"

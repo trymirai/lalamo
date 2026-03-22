@@ -38,7 +38,8 @@ class TemperaturePolicy(SamplingPolicy):
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         if self.temperature == 0.0:
-            return jnp.where(logits == jnp.max(logits), 1.0, -jnp.inf)
+            best = jnp.argmax(logits)
+            return jnp.where(jnp.arange(logits.shape[0]) == best, 1.0, -jnp.inf)
         return logits / self.temperature
 
 
