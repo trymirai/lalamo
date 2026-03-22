@@ -60,7 +60,7 @@ TTS_SPECS: tuple[ModelSpec, ...] = tuple(
 
 _CORE_LLM_REPOS: frozenset[str] = frozenset({
     "Qwen/Qwen2.5-0.5B-Instruct",
-    "mlx-community/LFM2-2.6B-Exp-8bit",
+    "LiquidAI/LFM2-700M",
     "google/gemma-3-1b-it",
     "meta-llama/Llama-3.2-1B-Instruct",
     "cartesia-ai/Llamba-1B",
