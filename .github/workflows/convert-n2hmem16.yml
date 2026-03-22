@@ -19,7 +19,6 @@ jobs:
   convert:
     name: Convert (Qwen3-0.6B)
     runs-on: [github-n2hmem16]
-    if: ${{ github.event_name == 'workflow_dispatch' || github.event.label.name == 'ci-n2hmem16-test' }}
 
     steps:
       - uses: actions/checkout@v6
