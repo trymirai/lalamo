@@ -3,7 +3,7 @@ name: "Convert (n2hmem16)"
 on:
   workflow_dispatch:
   pull_request:
-    types: [labeled]
+    types: [opened, reopened, ready_for_review, synchronize, closed, labeled]
 
 permissions:
   contents: read
