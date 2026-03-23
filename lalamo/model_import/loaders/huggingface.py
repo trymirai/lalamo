@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -528,17 +528,38 @@ def load_rmsnorm(
     return load_parameters(lambda m: (m.scales,), module, (scales,))
 
 
-def _split_q_gate_weight(
-    q_proj_weight: Array,
+def _split_q_gate_tensor(
+    tensor: Array,
     num_heads: int,
     head_dim: int,
 ) -> tuple[Array, Array]:
-    """Split interleaved q_proj [2*num_heads*head_dim, model_dim] into Q and Gate."""
-    model_dim = q_proj_weight.shape[1]
-    reshaped = q_proj_weight.reshape(num_heads, 2 * head_dim, model_dim)
-    q_weight = reshaped[:, :head_dim, :].reshape(num_heads * head_dim, model_dim)
-    gate_weight = reshaped[:, head_dim:, :].reshape(num_heads * head_dim, model_dim)
-    return q_weight, gate_weight
+    """Split interleaved q_proj tensor [2*num_heads*head_dim, ...] into Q and Gate."""
+    rest = tensor.shape[1:]
+    reshaped = tensor.reshape(num_heads, 2 * head_dim, *rest)
+    q = reshaped[:, :head_dim].reshape(num_heads * head_dim, *rest)
+    gate = reshaped[:, head_dim:].reshape(num_heads * head_dim, *rest)
+    return q, gate
+
+
+def _extract_gate_weights(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    split_fn: Callable[[Array], tuple[Array, Array]],
+) -> tuple[dict[ParameterPath, Array], dict[ParameterPath, Array]]:
+    """Split q_proj tensors into Q overrides and gate weights."""
+    q_proj_prefix = str(path / "q_proj") + "."
+    gate_path = path / "gate_projection"
+    q_overrides: dict[ParameterPath, Array] = {}
+    gate_weights: dict[ParameterPath, Array] = {}
+    for key in weights_dict:
+        str_key = str(key)
+        if not str_key.startswith(q_proj_prefix):
+            continue
+        suffix = str_key[len(q_proj_prefix) :]
+        q_part, gate_part = split_fn(weights_dict[key])
+        q_overrides[ParameterPath(str_key)] = q_part
+        gate_weights[gate_path / suffix] = gate_part
+    return q_overrides, gate_weights
 
 
 def load_attention(
@@ -556,28 +577,31 @@ def load_attention(
         raise NotImplementedError("Can't determine attention output projection name")
 
     if module.config.has_gate:
-        head_dim = module.head_dim
-        num_heads = module.num_heads
+        num_heads, head_dim = module.num_heads, module.head_dim
 
-        q_proj_weight = weights_dict[path / "q_proj" / "weight"]
         if reorder_q_proj_gate:
-            q_weight, gate_weight = _split_q_gate_weight(q_proj_weight, num_heads, head_dim)
+
+            def split_fn(t: Array) -> tuple[Array, Array]:
+                return _split_q_gate_tensor(t, num_heads, head_dim)
         else:
             q_dim = num_heads * head_dim
-            q_weight = q_proj_weight[:q_dim]
-            gate_weight = q_proj_weight[q_dim:]
+
+            def split_fn(t: Array) -> tuple[Array, Array]:
+                return t[:q_dim], t[q_dim:]
+
+        q_overrides, gate_weights = _extract_gate_weights(weights_dict, path, split_fn)
 
         qkv_projection = load_linear(
             module.qkv_projection,
-            {**weights_dict, path / "q_proj" / "weight": q_weight},
+            {**weights_dict, **q_overrides},
             path,
             sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
         )
 
-        gate_projection = load_parameters(
-            lambda m: (m.weights, m.biases),
+        gate_projection = load_linear(
             module.gate_projection,
-            (gate_weight, None),
+            gate_weights,
+            path / "gate_projection",
         )
     else:
         qkv_projection = load_linear(
