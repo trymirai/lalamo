@@ -19,8 +19,8 @@ from .huggingface import (
 __all__ = [
     "ForeignClassifierConfig",
     "ForeignConfig",
-    "ForeignLatentTTSConfig",
     "ForeignLMConfig",
+    "ForeignLatentTTSConfig",
     "ForeignTTSConfig",
     "HFGPTOssConfig",
     "HFGemma2Config",

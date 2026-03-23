@@ -1,5 +1,5 @@
 import dataclasses
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
@@ -9,10 +9,9 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.common import LalamoModule, config_converter
+from lalamo.registry_abc import RegistryABC
 
 from .audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
-from .text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
-from .vocoders import Vocoder, VocoderConfig
 
 # Side-effect imports: ensure concrete configs register with RegistryABC
 from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig as _DescriptAudioCodecConfig  # noqa: F401
@@ -21,19 +20,21 @@ from .nanocodec.audio_decoding import NanoCodecConfig as _NanoCodecConfig  # noq
 from .nanocodec.stub_text_decoder import StubTextDecoderConfig as _StubTextDecoderConfig  # noqa: F401
 from .qwen3_tts.qwen3_tts_audio_decoding import Qwen3TTSAudioDecoderConfig as _Qwen3TTSAudioDecoderConfig  # noqa: F401
 from .qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoderConfig as _Qwen3TTSTextDecoderConfig  # noqa: F401
+from .text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
+from .vocoders import Vocoder, VocoderConfig
 
 
-def _registry_unstructure(base_cls: type):
+def _registry_unstructure(base_cls: type) -> Callable[[object], dict | None]:  # noqa: ARG001
     def unstructure(obj: object) -> dict | None:
         if obj is None:
             return None
-        fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
-        return {"type": obj.__class__.__name__, **fields}
+        fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}  # type: ignore[arg-type]
+        return {"type": type(obj).__name__, **fields}
 
     return unstructure
 
 
-def _registry_structure(base_cls: type):
+def _registry_structure(base_cls: type[RegistryABC]) -> Callable[[dict | None, type], object]:
     def structure(data: dict | None, _type: type) -> object:
         if data is None:
             return None

@@ -30,19 +30,19 @@ class LatentTTSModel[ConfigT](LalamoModule[ConfigT]):
     def samplerate(self) -> int: ...
 
     @abstractmethod
-    def encode(self, *args: Any, **kwargs: Any) -> Any: ...
+    def encode(self, *args: Any, **kwargs: Any) -> Any: ...  # noqa: ANN401
 
     @abstractmethod
     def predict(
         self,
-        encoded: Any,
+        encoded: Any,  # noqa: ANN401
         *,
         key: PRNGKeyArray,
         generation_config: LatentTTSGenerationConfig,
-    ) -> Any: ...
+    ) -> Any: ...  # noqa: ANN401
 
     @abstractmethod
-    def decode(self, predicted: Any) -> LatentTTSOutputs: ...
+    def decode(self, predicted: Any) -> LatentTTSOutputs: ...  # noqa: ANN401
 
 
 class LatentTTSConfig(RegistryABC):
@@ -67,8 +67,8 @@ class LatentTTSConfig(RegistryABC):
 
 
 def _unstructure_latent_tts_config(obj: LatentTTSConfig) -> dict:
-    fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
-    return {"type": obj.__class__.__name__, **fields}
+    fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}  # type: ignore[arg-type]
+    return {"type": type(obj).__name__, **fields}
 
 
 def _structure_latent_tts_config(data: dict, _type: type) -> LatentTTSConfig:

@@ -35,6 +35,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
+from lalamo.audio.tts_message_processor import VoicePrompt
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
@@ -71,7 +72,6 @@ from lalamo.models import (
     TTSGenerator,
 )
 from lalamo.models.common import BatchSizesComputedEvent
-from lalamo.audio.tts_message_processor import VoicePrompt
 from lalamo.models.tts_model import TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator

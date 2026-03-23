@@ -33,7 +33,7 @@ class TTSTextDecoderConfigBase(RegistryABC):
     def default_style(self) -> str | None:
         return None
 
-    def format_instruction(self, style: str) -> str | None:
+    def format_instruction(self, style: str) -> str | None:  # noqa: ARG002
         return None
 
 

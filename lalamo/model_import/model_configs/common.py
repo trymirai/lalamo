@@ -13,7 +13,7 @@ from lalamo.modules.audio.latent_tts import LatentTTSConfig
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 
-__all__ = ["ForeignClassifierConfig", "ForeignLatentTTSConfig", "ForeignLMConfig"]
+__all__ = ["ForeignClassifierConfig", "ForeignLMConfig", "ForeignLatentTTSConfig"]
 
 SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig | LatentTTSConfig
 
