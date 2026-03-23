@@ -18,11 +18,6 @@ def _assert_has_london_and_yes(texts: list[str]) -> None:
     assert "yes" in joined, f"Expected 'yes' in {texts!r}"
 
 
-@pytest.fixture(scope="session", params=MODELS, ids=str)
-def converted_model_dir(request: pytest.FixtureRequest, convert_model: ConvertModel) -> Path:
-    return convert_model(request.param)
-
-
 @pytest.fixture
 def qa_dataset_path(tmp_path: Path) -> Path:
     dataset_path = tmp_path / "dataset.parquet"
@@ -37,7 +32,9 @@ def qa_dataset_path(tmp_path: Path) -> Path:
     return dataset_path
 
 
-def test_convert(converted_model_dir: Path) -> None:
+@pytest.mark.parametrize("model_repo", MODELS)
+def test_convert(convert_model: ConvertModel, model_repo: str) -> None:
+    converted_model_dir = convert_model(model_repo)
     assert (converted_model_dir / "model.safetensors").exists() or any(converted_model_dir.glob("model*.safetensors"))
     assert (converted_model_dir / "config.json").exists()
     assert (converted_model_dir / "tokenizer.json").exists()
@@ -66,13 +63,16 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo, model_registry: M
         pytest.param(["--vram-gb", "6"], id="vram"),
     ],
 )
+@pytest.mark.parametrize("model_repo", MODELS)
 def test_generate_replies(
-    converted_model_dir: Path,
+    convert_model: ConvertModel,
+    model_repo: str,
     qa_dataset_path: Path,
     tmp_path: Path,
     run_lalamo: RunLalamo,
     extra_args: list[str],
 ) -> None:
+    converted_model_dir = convert_model(model_repo)
     output_path = tmp_path / "replies.parquet"
 
     run_lalamo(
@@ -87,10 +87,13 @@ def test_generate_replies(
     _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
 
 
+@pytest.mark.parametrize("model_repo", MODELS)
 def test_chat(
-    converted_model_dir: Path,
+    convert_model: ConvertModel,
+    model_repo: str,
     run_lalamo: RunLalamo,
 ) -> None:
+    converted_model_dir = convert_model(model_repo)
     capital_output = run_lalamo("chat", str(converted_model_dir), "--message", CAPITAL_PROMPT)
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
 
@@ -98,12 +101,15 @@ def test_chat(
     assert "yes" in apples_output.lower(), f"Expected 'yes' in {apples_output!r}"
 
 
+@pytest.mark.parametrize("model_repo", MODELS)
 def test_collect_traces_answers(
-    converted_model_dir: Path,
+    convert_model: ConvertModel,
+    model_repo: str,
     qa_dataset_path: Path,
     tmp_path: Path,
     run_lalamo: RunLalamo,
 ) -> None:
+    converted_model_dir = convert_model(model_repo)
     trace_path = tmp_path / "traces.bin"
 
     run_lalamo(
