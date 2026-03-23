@@ -545,12 +545,12 @@ def _extract_gate_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     split_fn: Callable[[Array], tuple[Array, Array]],
-) -> tuple[dict[ParameterPath, Array], dict[ParameterPath, Array]]:
+) -> tuple[dict[str, Array], dict[str, Array]]:
     """Split q_proj tensors into Q overrides and gate weights."""
     q_proj_prefix = str(path / "q_proj") + "."
     gate_path = path / "gate_projection"
-    q_overrides: dict[ParameterPath, Array] = {}
-    gate_weights: dict[ParameterPath, Array] = {}
+    q_overrides: dict[str, Array] = {}
+    gate_weights: dict[str, Array] = {}
     for key in weights_dict:
         str_key = str(key)
         if not str_key.startswith(q_proj_prefix):
@@ -598,6 +598,7 @@ def load_attention(
             sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
         )
 
+        assert module.gate_projection is not None
         gate_projection = load_linear(
             module.gate_projection,
             gate_weights,
