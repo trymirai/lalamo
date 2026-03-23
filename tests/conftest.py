@@ -52,7 +52,46 @@ def _gpu_tolerance() -> Generator[None]:
 
 
 RunLalamo = Callable[..., str]
-ConvertModel = Callable[[str], Path]
+
+
+class ConvertModel:
+    """Callable that converts a HuggingFace model to lalamo format.
+
+    Pass ``cached=True`` to reuse a session-scoped conversion instead of
+    re-converting every time.  Uncached conversions are cleaned up after
+    each test; cached ones persist until the session ends.
+    """
+
+    def __init__(
+        self,
+        registry: ModelRegistry,
+        cache: dict[str, Path],
+        cache_dirs: list[Path],
+    ) -> None:
+        self._registry = registry
+        self._cache = cache
+        self._cache_dirs = cache_dirs
+        self._local_dirs: list[Path] = []
+
+    def __call__(self, repo: str, *, cached: bool = False) -> Path:
+        if cached:
+            if repo not in self._cache:
+                output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
+                convert(self._registry.repo_to_model[repo], output_dir)
+                self._cache[repo] = output_dir
+                self._cache_dirs.append(output_dir.parent)
+            return self._cache[repo]
+
+        output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
+        convert(self._registry.repo_to_model[repo], output_dir)
+        self._local_dirs.append(output_dir.parent)
+        return output_dir
+
+    def cleanup_local(self) -> None:
+        for d in self._local_dirs:
+            shutil.rmtree(d, ignore_errors=True)
+        self._local_dirs.clear()
+
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
@@ -93,23 +132,26 @@ def model_registry() -> ModelRegistry:
     return ModelRegistry.build(allow_third_party_plugins=False)
 
 
+@pytest.fixture(scope="session")
+def _convert_model_cache(
+    model_registry: ModelRegistry,
+) -> Generator[tuple[dict[str, Path], list[Path]], None, None]:
+    cache: dict[str, Path] = {}
+    cache_dirs: list[Path] = []
+    yield cache, cache_dirs
+    for d in cache_dirs:
+        shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.fixture
 def convert_model(
     model_registry: ModelRegistry,
+    _convert_model_cache: tuple[dict[str, Path], list[Path]],
 ) -> Generator[ConvertModel, None, None]:
-    # Function-scoped cleanup is mandatory: without it the suite accumulates 2TB+ of converted weights.
-    output_dirs: list[Path] = []
-
-    def _convert(repo: str) -> Path:
-        output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
-        convert(model_registry.repo_to_model[repo], output_dir)
-        output_dirs.append(output_dir.parent)
-        return output_dir
-
-    yield _convert
-
-    for d in output_dirs:
-        shutil.rmtree(d, ignore_errors=True)
+    cache, cache_dirs = _convert_model_cache
+    cm = ConvertModel(model_registry, cache, cache_dirs)
+    yield cm
+    cm.cleanup_local()
 
 
 @pytest.fixture(params=TTS_SPECS, ids=[spec.repo for spec in TTS_SPECS])

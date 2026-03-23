@@ -34,7 +34,7 @@ def qa_dataset_path(tmp_path: Path) -> Path:
 
 @pytest.mark.parametrize("model_repo", MODELS)
 def test_convert(convert_model: ConvertModel, model_repo: str) -> None:
-    converted_model_dir = convert_model(model_repo)
+    converted_model_dir = convert_model(model_repo, cached=True)
     assert (converted_model_dir / "model.safetensors").exists() or any(converted_model_dir.glob("model*.safetensors"))
     assert (converted_model_dir / "config.json").exists()
     assert (converted_model_dir / "tokenizer.json").exists()
@@ -72,7 +72,7 @@ def test_generate_replies(
     run_lalamo: RunLalamo,
     extra_args: list[str],
 ) -> None:
-    converted_model_dir = convert_model(model_repo)
+    converted_model_dir = convert_model(model_repo, cached=True)
     output_path = tmp_path / "replies.parquet"
 
     run_lalamo(
@@ -93,7 +93,7 @@ def test_chat(
     model_repo: str,
     run_lalamo: RunLalamo,
 ) -> None:
-    converted_model_dir = convert_model(model_repo)
+    converted_model_dir = convert_model(model_repo, cached=True)
     capital_output = run_lalamo("chat", str(converted_model_dir), "--message", CAPITAL_PROMPT)
     assert "london" in capital_output.lower(), f"Expected 'london' in {capital_output!r}"
 
@@ -109,7 +109,7 @@ def test_collect_traces_answers(
     tmp_path: Path,
     run_lalamo: RunLalamo,
 ) -> None:
-    converted_model_dir = convert_model(model_repo)
+    converted_model_dir = convert_model(model_repo, cached=True)
     trace_path = tmp_path / "traces.bin"
 
     run_lalamo(

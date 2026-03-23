@@ -84,7 +84,7 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("Qwen/Qwen2.5-Coder-14B-Instruct", ModelTier.EXTRA),
     ("Qwen/Qwen2.5-Coder-32B-Instruct", ModelTier.EXTRA),
     # Qwen3
-    ("Qwen/Qwen3-0.6B", ModelTier.CORE),
+    ("Qwen/Qwen3-0.6B", ModelTier.STANDARD),
     ("Qwen/Qwen3-0.6B-MLX-4bit", ModelTier.STANDARD),
     ("Qwen/Qwen3-1.7B", ModelTier.STANDARD),
     ("Qwen/Qwen3-8B", ModelTier.STANDARD),
