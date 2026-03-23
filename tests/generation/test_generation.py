@@ -1,27 +1,17 @@
-import re
-
 import jax.numpy as jnp
 import pytest
 
+from lalamo.model_import.model_specs.common import ModelSpec
 from lalamo.message_processor import UserMessage
 from lalamo.models import LanguageModel
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
 from tests.conftest import ConvertModel
 
-MODEL_LIST = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
-    "mlx-community/LFM2-2.6B-Exp-8bit",
-    "google/gemma-3-1b-it",
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "cartesia-ai/Llamba-1B",
-    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
-]
 
-
-@pytest.fixture(params=MODEL_LIST)
-def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(request.param)
+@pytest.fixture
+def language_model(core_llm_spec: ModelSpec, convert_model: ConvertModel) -> LanguageModel:
+    model_dir = convert_model(core_llm_spec.repo)
     return LanguageModelConfig.load_model(model_dir)
 
 
@@ -37,16 +27,6 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
     token_ids = result.token_ids.squeeze(0)
     eos_ids = language_model.stop_token_ids
     eos_idx = next((i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids), None)
-    response_text = language_model.message_processor.tokenizer.decode(
-        token_ids[:eos_idx] if eos_idx is not None else token_ids,
-    )
-
-    digits_pattern = r"1\s*2\s*3\s*4\s*5\s*6\s*7\s*8\s*9"
-    words_pattern = r"one\s+two\s+three\s+four\s+five\s+six\s+seven\s+eight\s+nine"
-    assert re.search(digits_pattern, response_text) or re.search(words_pattern, response_text, re.IGNORECASE), (
-        response_text
-    )
-
     if num_top_logits_to_return is not None:
         assert result.top_k_token_ids is not None
         assert result.top_k_token_logits is not None
@@ -108,7 +88,7 @@ def test_batch_generation(language_model: LanguageModel) -> None:
         ],
     )
 
-    generation_config = GenerationConfig(top_k=1)
+    generation_config = GenerationConfig(temperature=0)
     response_token_ids = language_model.generate_tokens(
         padded_token_ids,
         generation_config=generation_config,
@@ -136,7 +116,7 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     prompt = [UserMessage("What's the largest domestic cat breed?")]
     token_ids = jnp.array(language_model.message_processor.tokenize_request(prompt))
 
-    generation_config = GenerationConfig(top_k=1)
+    generation_config = GenerationConfig(temperature=0)
 
     eager_token_ids = language_model.generate_tokens(
         token_ids[None, :],

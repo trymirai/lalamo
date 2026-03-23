@@ -61,3 +61,5 @@ _tmp
 # Git worktrees
 .worktrees/
 
+# preserve github folder
+!.github
