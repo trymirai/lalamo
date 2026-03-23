@@ -81,19 +81,19 @@ def _generate_replies(
 
 
 def test_model_coherent_and_stops(
-    llm_spec: ModelSpec,
+    standard_llm_spec: ModelSpec,
     convert_model: ConvertModel,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    converted_model_path = convert_model(llm_spec.repo)
+    converted_model_path = convert_model(standard_llm_spec.repo)
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
 
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
-    is_bad = llm_spec.repo in BAD_MODELS
-    max_tokens = MAX_TOKENS * 4 if llm_spec.repo in THINKING_MODELS else MAX_TOKENS
+    is_bad = standard_llm_spec.repo in BAD_MODELS
+    max_tokens = MAX_TOKENS * 4 if standard_llm_spec.repo in THINKING_MODELS else MAX_TOKENS
 
     work_dir = tmp_path_factory.mktemp("coherence")
     dataset_path = work_dir / "dataset.parquet"

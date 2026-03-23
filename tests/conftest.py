@@ -15,6 +15,7 @@ from lalamo.main import app
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
+from tests.model_test_tiers import TIER_BY_REPO, ModelTier
 from tests.resource_slots import resource_slots
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
@@ -27,6 +28,10 @@ jax.config.update("jax_default_matmul_precision", "default")
 
 GPU_ATOL = 1e-3
 GPU_RTOL = 0.03
+
+
+def _specs_up_to_tier(specs: tuple[ModelSpec, ...], tier: ModelTier) -> tuple[ModelSpec, ...]:
+    return tuple(spec for spec in specs if TIER_BY_REPO.get(spec.repo, ModelTier.EXTRA) <= tier)
 
 
 @pytest.fixture(autouse=True)
@@ -60,18 +65,9 @@ TTS_SPECS: tuple[ModelSpec, ...] = tuple(
     spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL
 )
 
-_CORE_LLM_REPOS: frozenset[str] = frozenset({
-    "Qwen/Qwen2.5-0.5B-Instruct",
-    "LiquidAI/LFM2-700M",
-    "google/gemma-3-1b-it",
-    "meta-llama/Llama-3.2-1B-Instruct",
-    "cartesia-ai/Llamba-1B",
-    "mlx-community/Qwen3.5-0.8B-MLX-4bit",
-})
-
-CORE_LLM_SPECS: tuple[ModelSpec, ...] = tuple(
-    spec for spec in LLM_SPECS if spec.repo in _CORE_LLM_REPOS
-)
+CORE_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.CORE)
+STANDARD_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.STANDARD)
+EXTRA_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.EXTRA)
 
 
 def strip_ansi_escape(text: str) -> str:
@@ -118,16 +114,6 @@ def convert_model(
         shutil.rmtree(d, ignore_errors=True)
 
 
-@pytest.fixture(params=ALL_MODEL_SPECS, ids=[spec.repo for spec in ALL_MODEL_SPECS])
-def all_model_specs(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-@pytest.fixture(params=LLM_SPECS, ids=[spec.repo for spec in LLM_SPECS])
-def llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
 @pytest.fixture(params=TTS_SPECS, ids=[spec.repo for spec in TTS_SPECS])
 def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
@@ -135,4 +121,14 @@ def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
 
 @pytest.fixture(params=CORE_LLM_SPECS, ids=[spec.repo for spec in CORE_LLM_SPECS])
 def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
+    return request.param
+
+
+@pytest.fixture(params=STANDARD_LLM_SPECS, ids=[spec.repo for spec in STANDARD_LLM_SPECS])
+def standard_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
+    return request.param
+
+
+@pytest.fixture(params=EXTRA_LLM_SPECS, ids=[spec.repo for spec in EXTRA_LLM_SPECS])
+def extra_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
