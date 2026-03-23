@@ -535,7 +535,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         vram_bytes: int | None = None,
         model_path: Path | str | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
+        precompilation_workers: int = 2,
     ) -> Iterator[tuple[int, AssistantMessage]]:
+        if sharding_config is None:
+            sharding_config = get_current_sharding_config()
+
         messages = list(messages)  # eagerly load the dataset into RAM
 
         if keys is None:
@@ -605,7 +609,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 sharding_config=sharding_config,
             )
 
-        with ThreadPoolExecutor(max_workers=len(precompile_configs)) as pool:
+        with ThreadPoolExecutor(max_workers=precompilation_workers) as pool:
             list(pool.map(_precompile, precompile_configs))
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen

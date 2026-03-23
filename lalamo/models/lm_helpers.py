@@ -62,10 +62,10 @@ class MemoryPredictor:
         a, b, c, d = self._coefficients
         return int(a + b * batch_size + c * seq_len + d * batch_size * seq_len)
 
-    def max_batch_size(self, seq_len: int, memory_budget: int, *, safety_margin: float = 0.9) -> int:
+    def max_batch_size(self, seq_len: int, memory_budget: int) -> int:
         assert self._coefficients is not None
         a, b, c, d = self._coefficients
-        numerator = memory_budget * safety_margin - a - c * seq_len
+        numerator = memory_budget - a - c * seq_len
         denominator = b + d * seq_len
         if denominator <= 0:
             return 1
@@ -208,7 +208,7 @@ def run_memory_probes_parallel(
     max_output_length: int,
     num_logits_to_return: int | None,
     progress: Callable[[BatchSizeEstimatingEvent], None] | None = None,
-    max_concurrent: int = 2,
+    max_concurrent: int = 4,
 ) -> list[int]:
     """Run memory probes in parallel GPU subprocesses (waves of max_concurrent).
 
