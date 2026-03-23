@@ -533,7 +533,6 @@ def _split_q_gate_tensor(
     num_heads: int,
     head_dim: int,
 ) -> tuple[Array, Array]:
-    """Split interleaved q_proj tensor [2*num_heads*head_dim, ...] into Q and Gate."""
     rest = tensor.shape[1:]
     reshaped = tensor.reshape(num_heads, 2 * head_dim, *rest)
     q = reshaped[:, :head_dim].reshape(num_heads * head_dim, *rest)
