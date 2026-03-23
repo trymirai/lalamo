@@ -61,6 +61,7 @@ __all__ = ["FishAudioConfig"]
 def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
     config: Mapping[Any, Any],
     precision: DTypeLike,
+    accumulation_precision: DTypeLike,
     window_size: int,
     input_dim: int,
 ) -> TransformerConfig:
@@ -76,7 +77,7 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
 
     norm_config_pre = NormalizationConfig(
         scale_precision=precision,
-        accumulation_precision=precision,
+        accumulation_precision=accumulation_precision,
         epsilon=config["norm_eps"],
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -145,9 +146,9 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
 
 def instantiate_dac_config_from_fishaudio_config(
     fish_dac_config: Mapping[Any, Any],
+    precision: DTypeLike,
+    accumulation_precision: DTypeLike,
 ) -> DescriptAudioCodecConfig:
-    precision = jnp.float32
-
     samplerate = fish_dac_config["sample_rate"]
     fish_quantizer_config = fish_dac_config["quantizer"]
 
@@ -167,23 +168,23 @@ def instantiate_dac_config_from_fishaudio_config(
     semantic_codebook_size = fish_quantizer_config["semantic_codebook_size"]
 
     convnext_config = ConvNeXtBlockConfig(
-        precision=jnp.float32,
+        precision=precision,
         activation=GELU(approximate=False),
-        dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        dwconv_config=CausalConv1dConfig(precision=precision, has_biases=True),
         norm_config=NormalizationConfig(
-            scale_precision=jnp.float32,
-            accumulation_precision=jnp.float32,
+            scale_precision=precision,
+            accumulation_precision=accumulation_precision,
             epsilon=1e-6,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        pwconv_config=FullPrecisionLinearConfig(precision=precision),
     )
     upsampling_block_config = UpsamplingBlockConfig(
-        precision=jnp.float32,
-        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        precision=precision,
+        trans_conv_config=CausalTransposeConv1dConfig(precision=precision, has_biases=True),
         convnext_config=convnext_config,
     )
     num_blocks = len(downsample_factor)
@@ -194,21 +195,22 @@ def instantiate_dac_config_from_fishaudio_config(
     post_module_config = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         post_module_transformer_foreign,
         precision,
+        accumulation_precision,
         window_size=post_module_config_dict["window_size"],
         input_dim=post_module_config_dict["input_dim"],
     )
 
     vq_config = VectorQuantizeConfig(
-        precision=jnp.float32,
+        precision=precision,
         codebook_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
-            precision=jnp.float32,
+            precision=precision,
         ),
-        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        out_proj_config=FullPrecisionLinearConfig(precision=precision),
     )
     lalamo_rvq_config = ResidualVectorQuantizeConfig(
-        precision=jnp.float32,
+        precision=precision,
         vq_config=vq_config,
     )
 
@@ -220,22 +222,22 @@ def instantiate_dac_config_from_fishaudio_config(
         upsampler_config=upsampler_config,
     )
     res_unit_config = ResidualUnitConfig(
-        precision=jnp.float32,
-        snake_config=Snake1dConfig(precision=jnp.float32),
-        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
+        precision=precision,
+        snake_config=Snake1dConfig(precision=precision),
+        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
         causal=True,
     )
     decoder_block_config = DACDecoderBlockConfig(
-        precision=jnp.float32,
-        snake_config=Snake1dConfig(precision=jnp.float32),
-        trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
+        precision=precision,
+        snake_config=Snake1dConfig(precision=precision),
+        trans_conv_config=CausalTransposeConv1dConfig(precision=precision, has_biases=True),
         res_unit_config=res_unit_config,
         causal=True,
     )
     decoder_config = DACDecoderConfig(
-        precision=jnp.float32,
-        conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
-        snake_config=Snake1dConfig(precision=jnp.float32),
+        precision=precision,
+        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        snake_config=Snake1dConfig(precision=precision),
         decoder_block_config=decoder_block_config,
         causal=True,
     )
@@ -300,6 +302,7 @@ class FishAudioConfig(ForeignTTSConfig):
     def extract_textual_transformer_configs(
         self,
         precision: DTypeLike,
+        accumulation_precision: DTypeLike,
         fast_module: bool = False,
     ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
         n_layer = self.n_fast_layer if fast_module else self.n_layer
@@ -319,7 +322,7 @@ class FishAudioConfig(ForeignTTSConfig):
 
         norm_config = NormalizationConfig(
             scale_precision=precision,
-            accumulation_precision=precision,
+            accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -391,18 +394,22 @@ class FishAudioConfig(ForeignTTSConfig):
         self,
         context_length: int | None,
         activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,  # noqa: ARG002
+        accumulation_precision: DTypeLike,
     ) -> TTSConfig:
         audio_decoder_config = instantiate_dac_config_from_fishaudio_config(
             fish_dac_config=get_default_fishaudio_dac_config(),
+            precision=activation_precision,
+            accumulation_precision=accumulation_precision,
         )
 
         slow_transformer_cfg, slow_readout_cfg = self.extract_textual_transformer_configs(
             precision=activation_precision,
+            accumulation_precision=accumulation_precision,
             fast_module=False,
         )
         fast_transformer_cfg, fast_readout_cfg = self.extract_textual_transformer_configs(
             precision=activation_precision,
+            accumulation_precision=accumulation_precision,
             fast_module=True,
         )
         slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=activation_precision)
