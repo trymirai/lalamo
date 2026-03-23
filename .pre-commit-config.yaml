@@ -13,16 +13,6 @@ repos:
       - id: no-commit-to-branch
         args: [--branch, main, --branch, master]
 
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.0
-    hooks:
-      - id: ruff-check
-        args: [lalamo]
-        pass_filenames: false
-      - id: ruff-format
-        args: [lalamo]
-        pass_filenames: false
-
   - repo: https://github.com/crate-ci/typos
     rev: v1.43.3
     hooks:
@@ -37,6 +27,16 @@ repos:
 
   - repo: local
     hooks:
+      - id: ruff-check
+        name: ruff check
+        language: system
+        entry: ruff check lalamo
+        pass_filenames: false
+      - id: ruff-format
+        name: ruff format
+        language: system
+        entry: ruff format .
+        pass_filenames: false
       - id: ty-check
         name: ty check
         language: system

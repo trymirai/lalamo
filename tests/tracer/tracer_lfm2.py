@@ -59,7 +59,7 @@ class LFM2DecoderTracer(
         hidden_states: Tensor,
         position_embeddings: tuple[Tensor, Tensor] | None,
     ) -> Tensor:
-        attention_mask = _build_hf_attention_mask(hidden_states, attention) # type: ignore
+        attention_mask = _build_hf_attention_mask(hidden_states, attention)  # type: ignore
 
         if isinstance(attention, Lfm2Attention):
             assert position_embeddings is not None
@@ -88,7 +88,7 @@ class LFM2DecoderTracer(
     ) -> Tensor:
         torch_outputs, *_ = layer.forward(
             hidden_states=hidden_states,
-            position_embeddings=position_embeddings, # type: ignore
+            position_embeddings=position_embeddings,  # type: ignore
         )
 
         return torch_outputs
@@ -108,7 +108,7 @@ class LFM2DecoderTracer(
         return layer.feed_forward
 
     def iterate_layers(self) -> Iterable[Lfm2DecoderLayer]:
-        return self.hf_model.model.layers # type: ignore
+        return self.hf_model.model.layers  # type: ignore
 
     def output_norm(self) -> Lfm2RMSNorm:
         return self.hf_model.model.embedding_norm

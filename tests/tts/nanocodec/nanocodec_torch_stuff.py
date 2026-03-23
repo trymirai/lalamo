@@ -966,6 +966,7 @@ class CausalHiFiGANDecoder(torch.nn.Module):
             self.res_layers,
             self.up_sample_conv_layers,
             self.up_sample_rates,
+            strict=False,
         ):
             audio_len = audio_len * up_sample_rate
             out = act(out)

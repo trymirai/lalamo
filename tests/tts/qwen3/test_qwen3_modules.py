@@ -70,10 +70,13 @@ def test_causal_transpose_conv1d_matches_torch() -> None:
     torch_conv = TorchCausalTransConvNet(in_channels, out_channels, kernel_size, stride)
 
     lalamo_conv = CausalTransposeConv1dConfig(
-        precision=jnp.float32, has_biases=True,
+        precision=jnp.float32,
+        has_biases=True,
     ).empty(
-        in_channels=in_channels, out_channels=out_channels,
-        kernel_size=kernel_size, stride=stride,
+        in_channels=in_channels,
+        out_channels=out_channels,
+        kernel_size=kernel_size,
+        stride=stride,
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_conv.state_dict())
@@ -98,7 +101,9 @@ def test_residual_unit_matches_torch() -> None:
     snake_config = SnakeBetaConfig(precision=jnp.float32)
     conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     lalamo_unit = ResidualUnitConfig(
-        precision=jnp.float32, snake_config=snake_config, conv_config=conv_config,
+        precision=jnp.float32,
+        snake_config=snake_config,
+        conv_config=conv_config,
     ).empty(dim, ResidualUnitSpatialParams(dilation=dilation))
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_unit.state_dict())

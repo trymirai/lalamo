@@ -177,5 +177,11 @@ ignore = [
 
 [tool.typos.default.extend-words]
 ba = "ba"
-pard = "PARD"
+PARD = "PARD"
+pard = "pard"
 nothink = "nothink"
+
+[tool.typos.default.extend-identifiers]
+ba = "ba"
+PARD = "PARD"
+pard = "pard"

@@ -685,7 +685,10 @@ def test_convnext_block_matches_pytorch() -> None:
         linear_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
     lalamo_block = lalamo_config.empty(
-        dim=dim, kernel_size=kernel_size, dilation=dilation, mlp_ratio=mlp_ratio,
+        dim=dim,
+        kernel_size=kernel_size,
+        dilation=dilation,
+        mlp_ratio=mlp_ratio,
     )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_block.state_dict(), prefix="block")
@@ -1290,6 +1293,7 @@ def test_audio_transformer_inference() -> None:
     transformer_cfg = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         post_module_transformer_foreign,
         precision,
+        accumulation_precision=precision,
         window_size=post_module_config_dict["window_size"],
         input_dim=post_module_config_dict["input_dim"],
     )

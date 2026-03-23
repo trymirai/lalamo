@@ -26,9 +26,9 @@ jobs:
   config:
     uses: ./.github/workflows/config.yml
 
-  conversion:
-    name: Model Conversion
-    runs-on: [lalamo-k8s]
+  conversion-and-coherence:
+    name: Conversion & Coherence
+    runs-on: [github-n2hmem32]
     needs: [config]
     if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
 
@@ -40,26 +40,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/conversion
-
-  coherence:
-    name: Coherence
-    runs-on: [cpu]
-    needs: [config]
-    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-          cuda: 'true'
-
-      - name: Run pytest
-        env:
-          LALAMO_COHERENCE_FULL_COVERAGE: "1"
-        run: |
-          pytest tests/coherence
+          pytest tests/conversion tests/coherence -n 4
 
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
@@ -74,7 +55,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["lalamo-k8s"]'
+            runner: '["ubuntu-latest"]'
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]'
           - python: py313
