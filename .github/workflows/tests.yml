@@ -89,7 +89,7 @@ jobs:
 
   audio:
     name: Audio Models
-    runs-on: ubuntu-latest # prefer cpu, gpu is flaky
+    runs-on: [cpu] # prefer cpu, gpu is flaky
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 
