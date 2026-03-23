@@ -357,7 +357,7 @@ def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo
     return None
 
 
-def _is_array_like(leaf: object) -> bool:
+def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
     return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
@@ -366,7 +366,7 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
     results: list[_ParameterLeafEntry] = []
 
     for entry in _field_value_entries(module):
-        if not _is_array_like(entry.value):
+        if not _is_leaf_array(entry.value):
             continue
 
         leaf = entry.value
@@ -428,7 +428,7 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
     entry_iterator = iter(entries)
     partitioned_leaves: list[object] = []
     for leaf in flat_leaves:
-        if not _is_array_like(leaf):
+        if not _is_leaf_array(leaf):
             partitioned_leaves.append(None)
             continue
         entry = next(entry_iterator)
@@ -444,6 +444,9 @@ def combine_parameter_leaves[M: eqx.Module](
     module: M,
     replacements: M,
 ) -> M:
+    # Can't use eqx.combine: partition sets alias positions to None, so combine
+    # would fall back to the stale original leaf there. We resolve aliases to
+    # their canonical replacement instead.
     entries = _parameter_leaf_entries(module)
     if not entries:
         return module
@@ -457,7 +460,7 @@ def combine_parameter_leaves[M: eqx.Module](
     )
     entry_iterator = iter(entries)
     for leaf, replacement in zip(flat_leaves, replacement_leaves, strict=True):
-        if not _is_array_like(leaf):
+        if not _is_leaf_array(leaf):
             continue
         entry = next(entry_iterator)
         if replacement is None or entry.info.alias_of is not None:
@@ -471,7 +474,7 @@ def combine_parameter_leaves[M: eqx.Module](
     entry_iterator = iter(entries)
     combined_leaves: list[object] = []
     for leaf in flat_leaves:
-        if not _is_array_like(leaf):
+        if not _is_leaf_array(leaf):
             combined_leaves.append(leaf)
             continue
         entry = next(entry_iterator)

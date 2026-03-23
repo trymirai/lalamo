@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -7,15 +8,54 @@ from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import PyTree
 
-from lalamo.modules.common import find_field_metadata, get_current_sharding_config
+from lalamo.modules.common import (
+    FieldMetadataInfo,
+    ShardingConfig,
+    find_field_metadata,
+    get_current_sharding_config,
+)
 
 __all__ = [
     "load_parameters",
 ]
 
 
-def _is_array_like(value: object) -> bool:
+def _is_leaf_array(value: Any) -> bool:  # noqa: ANN401
     return eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)
+
+
+def _apply_parameter_sharding(
+    array: jax.Array,
+    field_info: FieldMetadataInfo,
+    sharding_config: ShardingConfig,
+) -> jax.Array:
+    metadata = field_info.field.metadata
+    tensor_sharding = metadata.get("tensor_sharding")
+    min_size_to_shard = metadata.get("min_size_to_shard", 0)
+    if tensor_sharding is None or array.size < min_size_to_shard:
+        return array
+
+    parts: list[str | None] = [None] * array.ndim
+    sharding_order = getattr(field_info.owner, "sharding_order", None)
+
+    tp_dim: int | None = None
+    for dim in tensor_sharding.dims_to_try(sharding_order):
+        if dim < array.ndim and array.shape[dim] % sharding_config.tensor_axis_size == 0:
+            parts[dim] = sharding_config.tensor_axis_name
+            tp_dim = dim
+            break
+
+    if sharding_config.fsdp:
+        for dim in tensor_sharding.axes:
+            if (
+                dim != tp_dim
+                and dim < array.ndim
+                and array.shape[dim] % sharding_config.data_axis_size == 0
+            ):
+                parts[dim] = sharding_config.data_axis_name
+                break
+
+    return jax.device_put(array, sharding_config.make_sharding(shd.PartitionSpec(*parts)))
 
 
 def load_parameters[M: eqx.Module](
@@ -37,7 +77,7 @@ def load_parameters[M: eqx.Module](
     casted_new_values = []
 
     for old_value, incoming_value in zip(old_values, new_values, strict=True):
-        if _is_array_like(old_value) and eqx.is_array(incoming_value):
+        if _is_leaf_array(old_value) and eqx.is_array(incoming_value):
             if old_value.shape != incoming_value.shape:
                 raise ValueError(
                     f"Expected parameter {module}.{leaf_name(old_value)} to have shape {old_value.shape},"
@@ -52,37 +92,7 @@ def load_parameters[M: eqx.Module](
             if sharding_config is not None:
                 field_info = find_field_metadata(module, old_value)
                 if field_info is not None:
-                    metadata = field_info.field.metadata
-                    tensor_sharding = metadata.get("tensor_sharding")
-                    min_size_to_shard = metadata.get("min_size_to_shard", 0)
-                    if tensor_sharding is not None and loaded_value.size >= min_size_to_shard:
-                        parts: list[str | None] = [None] * loaded_value.ndim
-                        sharding_order = getattr(field_info.owner, "sharding_order", None)
-
-                        tp_dim: int | None = None
-                        for dim in tensor_sharding.dims_to_try(sharding_order):
-                            if (
-                                dim < loaded_value.ndim
-                                and loaded_value.shape[dim] % sharding_config.tensor_axis_size == 0
-                            ):
-                                parts[dim] = sharding_config.tensor_axis_name
-                                tp_dim = dim
-                                break
-
-                        if sharding_config.fsdp:
-                            for dim in tensor_sharding.axes:
-                                if (
-                                    dim != tp_dim
-                                    and dim < loaded_value.ndim
-                                    and loaded_value.shape[dim] % sharding_config.data_axis_size == 0
-                                ):
-                                    parts[dim] = sharding_config.data_axis_name
-                                    break
-
-                        loaded_value = jax.device_put(
-                            loaded_value,
-                            sharding_config.make_sharding(shd.PartitionSpec(*parts)),
-                        )
+                    loaded_value = _apply_parameter_sharding(loaded_value, field_info, sharding_config)
             casted_new_values.append(loaded_value)
             continue
         if type(old_value) is not type(incoming_value):

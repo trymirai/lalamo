@@ -2,8 +2,9 @@ import functools
 import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import Any, cast
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
@@ -32,6 +33,10 @@ class LalamoWarning(UserWarning):
 
 
 type ArrayLike = Array | jax.ShapeDtypeStruct
+
+
+def _is_leaf_array(value: Any) -> bool:  # noqa: ANN401
+    return eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)
 
 
 type ParameterTree[ArrayType: ArrayLike] = (
@@ -69,7 +74,7 @@ def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[Ar
     for key, value in nested_parameters.items():
         value = cast("ArrayType | ParameterTree[ArrayType]", value)
         key_path = ParameterPath(key)
-        if isinstance(value, (jax.Array, jax.ShapeDtypeStruct)):
+        if _is_leaf_array(value):
             result[key_path] = cast("ArrayType", value)
         else:
             update: dict[str, ArrayType] = {
