@@ -50,6 +50,7 @@ def _gpu_tolerance() -> Generator[None]:
     else:
         yield
 
+
 RunLalamo = Callable[..., str]
 ConvertModel = Callable[[str], Path]
 
@@ -60,10 +61,7 @@ ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_p
 LLM_SPECS: tuple[ModelSpec, ...] = tuple(
     spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.LANGUAGE_MODEL
 )
-
-TTS_SPECS: tuple[ModelSpec, ...] = tuple(
-    spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL
-)
+TTS_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL)
 
 CORE_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.CORE)
 STANDARD_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.STANDARD)

@@ -8,22 +8,24 @@ from xdist import get_xdist_worker_id
 
 from lalamo.model_import.model_specs.common import ModelSpec
 
-LARGE_MODELS: frozenset[str] = frozenset({
-    "google/gemma-3-27b-it",
-    "mlx-community/gemma-3-27b-it-4bit",
-    "mlx-community/gemma-3-27b-it-8bit",
-    "Qwen/Qwen2.5-32B-Instruct",
-    "Qwen/Qwen2.5-Coder-32B-Instruct",
-    "Qwen/Qwen3-32B",
-    "Qwen/Qwen3-32B-AWQ",
-    "Qwen/Qwen3-Next-80B-A3B-Instruct",
-    "Qwen/Qwen3.5-27B",
-    "mlx-community/Qwen3.5-27B-MLX-4bit",
-    "mlx-community/Qwen3.5-27B-MLX-8bit",
-    "mistral-community/Codestral-22B-v0.1",
-    "mistralai/Devstral-Small-2505",
-    "RekaAI/reka-flash-3.1",
-})
+LARGE_MODELS: frozenset[str] = frozenset(
+    {
+        "google/gemma-3-27b-it",
+        "mlx-community/gemma-3-27b-it-4bit",
+        "mlx-community/gemma-3-27b-it-8bit",
+        "Qwen/Qwen2.5-32B-Instruct",
+        "Qwen/Qwen2.5-Coder-32B-Instruct",
+        "Qwen/Qwen3-32B",
+        "Qwen/Qwen3-32B-AWQ",
+        "Qwen/Qwen3-Next-80B-A3B-Instruct",
+        "Qwen/Qwen3.5-27B",
+        "mlx-community/Qwen3.5-27B-MLX-4bit",
+        "mlx-community/Qwen3.5-27B-MLX-8bit",
+        "mistral-community/Codestral-22B-v0.1",
+        "mistralai/Devstral-Small-2505",
+        "RekaAI/reka-flash-3.1",
+    }
+)
 
 NUM_SLOTS = 4
 

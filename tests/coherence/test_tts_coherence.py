@@ -31,8 +31,6 @@ def test_fishaudio_coherence(convert_model: ConvertModel, tmp_path: Path) -> Non
 
         missing = [kw for kw in expected_keywords if kw not in transcription.lower()]
         if missing:
-            failures.append(
-                f"Phrase {text!r}: transcription {transcription!r} missing keywords {missing}"
-            )
+            failures.append(f"Phrase {text!r}: transcription {transcription!r} missing keywords {missing}")
 
     assert not failures, "\n".join(failures)

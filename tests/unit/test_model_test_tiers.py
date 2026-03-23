@@ -10,14 +10,12 @@ def _registry_repos() -> frozenset[str]:
 def test_every_registry_model_has_a_tier() -> None:
     missing = _registry_repos() - TIER_BY_REPO.keys()
     assert not missing, (
-        f"Models in the registry without a tier assignment: {sorted(missing)}\n"
-        "Add them to tests/model_test_tiers.py."
+        f"Models in the registry without a tier assignment: {sorted(missing)}\nAdd them to tests/model_test_tiers.py."
     )
 
 
 def test_no_stale_tier_entries() -> None:
     stale = TIER_BY_REPO.keys() - _registry_repos()
     assert not stale, (
-        f"Tier entries for models not in the registry: {sorted(stale)}\n"
-        "Remove them from tests/model_test_tiers.py."
+        f"Tier entries for models not in the registry: {sorted(stale)}\nRemove them from tests/model_test_tiers.py."
     )

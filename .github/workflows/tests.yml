@@ -50,6 +50,11 @@ jobs:
         run: |
           ruff check lalamo
 
+      - name: Run ruff format
+        if: ${{ always() && steps.setup.outcome == 'success' }}
+        run: |
+          ruff format --check .
+
       - name: Check that uv.lock is up-to-date
         if: ${{ always() && steps.setup.outcome == 'success' }}
         run: |
@@ -89,7 +94,7 @@ jobs:
 
   audio:
     name: Audio Models
-    runs-on: ubuntu-latest # prefer cpu, gpu is flaky
+    runs-on: [cpu] # prefer cpu, gpu is flaky
     needs: [unit, config]
     if: ${{ needs.config.outputs.run-tests == 'true' }}
 

@@ -98,7 +98,11 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
 
     # Load Lalamo DAC using fishaudio_loaders directly
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict())
-    audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(get_default_fishaudio_dac_config())
+    audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(
+        get_default_fishaudio_dac_config(),
+        precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+    )
     lalamo_dac = audio_decoder_cfg.empty()
     lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
 
