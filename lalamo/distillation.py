@@ -4,6 +4,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
+from typing import Any
 
 import equinox as eqx
 import jax
@@ -76,8 +77,8 @@ class OptimizerGroup(StrEnum):
 
 
 class DistillTrainingState(eqx.Module):
-    master_weights: object
-    muon_weight_dimension_numbers: object
+    master_weights: Any
+    muon_weight_dimension_numbers: Any
 
 
 class DistillOptimizerState(eqx.Module):
@@ -164,7 +165,7 @@ def _inject_qlora_linear(
     )
 
 
-def _is_replaceable_quantized_linear(leaf: object) -> bool:
+def _is_replaceable_quantized_linear(leaf: Any) -> bool:  # noqa: ANN401
     return isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
 
 
@@ -180,7 +181,7 @@ def _make_qlora_config(
     )
 
 
-def _rewrite_config_tree[C](config: C, rewrite: Callable[[object], object]) -> C:
+def _rewrite_config_tree[C](config: C, rewrite: Callable[[Any], Any]) -> C:
     rewritten = rewrite(config)
     if rewritten is not config:
         return rewritten
@@ -318,7 +319,7 @@ def initialize_distill_training_state(
 
 def materialize_trainable_module[M: eqx.Module](
     module: M,
-    master_weights: object,
+    master_weights: Any,  # noqa: ANN401
     config: DistillTrainConfig,
 ) -> M:
     compute_dtype = jnp.dtype(config.compute_dtype)
@@ -566,8 +567,8 @@ def compute_distill_step_gradients(
     *,
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
-) -> tuple[object, DistillBatchMetrics]:
-    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillBatchMetrics]:
+) -> tuple[Any, DistillBatchMetrics]:
+    def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
         materialized_student = materialize_trainable_module(student, master_weights, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
@@ -591,8 +592,8 @@ def compute_trace_distill_step_gradients(
     *,
     quantization_key: Key[Array, ""] | None = None,
     quantization_mode: QuantizationMode | None = None,
-) -> tuple[object, DistillBatchMetrics]:
-    def loss_fn(master_weights: object) -> tuple[Float[Array, ""], DistillBatchMetrics]:
+) -> tuple[Any, DistillBatchMetrics]:
+    def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
         materialized_student = materialize_trainable_module(student, master_weights, config)
         if quantization_key is not None and quantization_mode is not None:
             materialized_student = stochastically_quantize_module(
@@ -611,7 +612,7 @@ def compute_trace_distill_step_gradients(
 def apply_distill_gradients(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
-    grads: object,
+    grads: Any,  # noqa: ANN401
 ) -> DistillOptimizerState:
     updates, new_optimizer_state = optimizer.update(
         grads,

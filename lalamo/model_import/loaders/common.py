@@ -68,7 +68,7 @@ def load_parameters[M: eqx.Module](
     sharding_config = get_current_sharding_config()
     module_leaves = tuple(leaves_with_path(module))
 
-    def leaf_name(target: object) -> str:
+    def leaf_name(target: Any) -> str:  # noqa: ANN401
         for path, value in module_leaves:
             if value is target:
                 return f"~{keystr(path)}"

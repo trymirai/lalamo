@@ -15,45 +15,44 @@ class QuantizationMode(Enum):
 
     @classmethod
     def from_num_bits(cls, num_bits: int) -> "QuantizationMode":
-        bit_to_mode = {
-            4: cls.UINT4,
-            8: cls.UINT8,
-        }
-        if num_bits not in bit_to_mode:
-            raise ValueError(f"No quantization mode defined for {num_bits} bits")
-        return bit_to_mode[num_bits]
+        match num_bits:
+            case 4:
+                return cls.UINT4
+            case 8:
+                return cls.UINT8
+            case _:
+                raise ValueError(f"No quantization mode defined for {num_bits} bits")
 
     @property
     def range(self) -> tuple[int, int]:
-        return MODE_TO_RANGE[self]
+        match self:
+            case QuantizationMode.UINT4:
+                return (0, 15)
+            case QuantizationMode.INT8:
+                return (-128, 127)
+            case QuantizationMode.UINT8:
+                return (0, 255)
 
     @property
     def dtype(self) -> DTypeLike:
-        value_to_dtype = {
-            QuantizationMode.UINT4: jnp.uint4,
-            QuantizationMode.INT8: jnp.int8,
-            QuantizationMode.UINT8: jnp.uint8,
-        }
-        return value_to_dtype[self]
+        match self:
+            case QuantizationMode.UINT4:
+                return jnp.uint4
+            case QuantizationMode.INT8:
+                return jnp.int8
+            case QuantizationMode.UINT8:
+                return jnp.uint8
 
     @property
     def bits(self) -> int:
-        value_to_bits = {
-            QuantizationMode.UINT4: 4,
-            QuantizationMode.INT8: 8,
-            QuantizationMode.UINT8: 8,
-        }
-        return value_to_bits[self]
+        match self:
+            case QuantizationMode.UINT4:
+                return 4
+            case QuantizationMode.INT8 | QuantizationMode.UINT8:
+                return 8
 
     def __str__(self) -> str:
         return self.value
-
-
-MODE_TO_RANGE = {
-    QuantizationMode.UINT4: (0, 15),
-    QuantizationMode.INT8: (-128, 127),
-    QuantizationMode.UINT8: (0, 255),
-}
 
 
 def _quantize_weights_primal(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:

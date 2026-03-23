@@ -8,7 +8,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
@@ -84,7 +84,7 @@ class LinearConfigBase(ABC):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase: ...
 
     @abstractmethod
@@ -95,7 +95,7 @@ class LinearConfigBase(ABC):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase: ...
 
     @abstractmethod
@@ -126,7 +126,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "FullPrecisionLinear":
         scale = 1 / math.sqrt(input_dim)
         weights = jax.random.uniform(
@@ -156,7 +156,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         subkeys = jax.random.split(key, mixture_size)
         return eqx.filter_vmap(lambda key: self.random_init(input_dim, output_dims, has_biases, key=key))(subkeys)
@@ -332,7 +332,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         min_val, max_val = self.weight_quantization_mode.range
         weights = jax.random.uniform(
@@ -371,7 +371,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         subkeys = jax.random.split(key, mixture_size)
         return eqx.filter_vmap(lambda key: self.random_init(input_dim, output_dims, has_biases, key=key))(subkeys)
@@ -488,7 +488,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *w_num_components, w_output_dim, _ = self.weights.shape
@@ -501,7 +501,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         if self.scales.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Scale dtype ({self.scales.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *s_num_components, s_output_dim, s_num_groups = self.scales.shape
@@ -524,7 +524,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         if self.zero_points.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Zero point dtype ({self.zero_points.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *zp_num_components, zp_output_dim, zp_num_groups = self.zero_points.shape
@@ -621,7 +621,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         min_val, max_val = self.weight_quantization_mode.range
         weights = jax.random.uniform(
@@ -660,7 +660,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         subkeys = jax.random.split(key, mixture_size)
         return eqx.filter_vmap(lambda key: self.random_init(input_dim, output_dims, has_biases, key=key))(subkeys)
@@ -765,7 +765,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *w_num_components, w_output_dim, _ = self.weights.shape
@@ -778,7 +778,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         if self.scales.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Scale dtype ({self.scales.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *s_num_components, s_output_dim, s_num_groups = self.scales.shape
@@ -801,7 +801,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         if self.deq_biases.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Dequantization bias dtype ({self.deq_biases.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *zp_num_components, zp_output_dim, zp_num_groups = self.deq_biases.shape
@@ -899,7 +899,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         base_key, derived_key = jax.random.split(key)
         group_quantized_linear = super().random_init(input_dim, output_dims, has_biases, key=base_key)
@@ -948,7 +948,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> LinearBase:
         subkeys = jax.random.split(key, mixture_size)
         return eqx.filter_vmap(lambda k: self.random_init(input_dim, output_dims, has_biases, key=k))(subkeys)

@@ -113,7 +113,7 @@ def register_config_union(union_type: UnionType) -> None:
     union_members = union_type.__args__
     name_to_type = {m.__name__: m for m in union_members}
 
-    def unstructure(obj: object) -> dict | None:
+    def unstructure(obj: Any) -> dict | None:  # noqa: ANN401
         if obj is None:
             return None
         return {
@@ -308,7 +308,7 @@ class _ParameterLeafEntry:
 @dataclass(frozen=True)
 class _FieldValueEntry:
     path: tuple[Any, ...]
-    value: object
+    value: Any
     owner: eqx.Module
     field: dataclasses.Field
 
@@ -316,7 +316,7 @@ class _FieldValueEntry:
 def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
     entries: list[_FieldValueEntry] = []
 
-    def visit(value: object, *, owner: eqx.Module, field: dataclasses.Field, path: tuple[Any, ...]) -> None:
+    def visit(value: Any, *, owner: eqx.Module, field: dataclasses.Field, path: tuple[Any, ...]) -> None:  # noqa: ANN401
         if field.metadata.get("static", False):
             return
         if isinstance(value, eqx.Module):
@@ -349,7 +349,7 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
     return entries
 
 
-def find_field_metadata(module: eqx.Module, target: object) -> FieldMetadataInfo | None:
+def find_field_metadata(module: eqx.Module, target: Any) -> FieldMetadataInfo | None:  # noqa: ANN401
     for entry in _field_value_entries(module):
         if entry.value is not target:
             continue
@@ -444,9 +444,6 @@ def combine_parameter_leaves[M: eqx.Module](
     module: M,
     replacements: M,
 ) -> M:
-    # Can't use eqx.combine: partition sets alias positions to None, so combine
-    # would fall back to the stale original leaf there. We resolve aliases to
-    # their canonical replacement instead.
     entries = _parameter_leaf_entries(module)
     if not entries:
         return module
