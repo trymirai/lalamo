@@ -14,7 +14,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
-from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.audio.text_decoder import TTSDecodingContext, TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
@@ -44,16 +44,11 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
         self,
         text_tokens: Int[Array, "batch sequence"],
         *,
-        speaker: str | None = None,  # noqa: ARG002
+        context: TTSDecodingContext,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
-        key: PRNGKeyArray | None = None,
-        language: str = "auto",  # noqa: ARG002
-        instruction_tokens: Int[Array, "batch sequence"] | None = None,  # noqa: ARG002
+        key: PRNGKeyArray,
     ) -> Int[Array, "batch num_codebooks tokens"]:
         """Generate random codebook indices with length derived from input tokens."""
-        if key is None:
-            key = jax.random.PRNGKey(self.seed)
-
         batch_size = text_tokens.shape[0]
         output_length = text_tokens.shape[1]
 

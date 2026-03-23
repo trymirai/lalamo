@@ -1,39 +1,60 @@
+import dataclasses
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
 import jax
+from cattrs.gen import make_dict_structure_fn
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.common import LalamoModule, register_config_union
-from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.modules.common import LalamoModule, config_converter
 
-from .audio_decoder import TTSAudioDecoder
-from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
-from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig
-from .nanocodec.audio_decoding import NanoCodecConfig
-from .nanocodec.stub_text_decoder import StubTextDecoderConfig
-from .qwen3_tts.qwen3_tts_audio_decoding import Qwen3TTSAudioDecoderConfig
-from .qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoderConfig
-from .text_decoder import TTSTextDecoder
+from .audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from .text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from .vocoders import Vocoder, VocoderConfig
 
-DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = make_policy(temperature=0.3, top_p=0.9)
-DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
+# Side-effect imports: ensure concrete configs register with RegistryABC
+from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig as _DescriptAudioCodecConfig  # noqa: F401
+from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig as _FishAudioTextDecoderConfig  # noqa: F401
+from .nanocodec.audio_decoding import NanoCodecConfig as _NanoCodecConfig  # noqa: F401
+from .nanocodec.stub_text_decoder import StubTextDecoderConfig as _StubTextDecoderConfig  # noqa: F401
+from .qwen3_tts.qwen3_tts_audio_decoding import Qwen3TTSAudioDecoderConfig as _Qwen3TTSAudioDecoderConfig  # noqa: F401
+from .qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoderConfig as _Qwen3TTSTextDecoderConfig  # noqa: F401
 
 
-TTSAudioDecoderConfig = DescriptAudioCodecConfig | NanoCodecConfig | Qwen3TTSAudioDecoderConfig
-register_config_union(TTSAudioDecoderConfig)
+def _registry_unstructure(base_cls: type):
+    def unstructure(obj: object) -> dict | None:
+        if obj is None:
+            return None
+        fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}
+        return {"type": obj.__class__.__name__, **fields}
 
-TTSTextDecoderConfig = FishAudioTextDecoderConfig | Qwen3TTSTextDecoderConfig | StubTextDecoderConfig
-register_config_union(TTSTextDecoderConfig)
+    return unstructure
+
+
+def _registry_structure(base_cls: type):
+    def structure(data: dict | None, _type: type) -> object:
+        if data is None:
+            return None
+        new_data = dict(data)
+        type_name = new_data.pop("type")
+        name_to_type = {t.__name__: t for t in base_cls.__descendants__()}
+        target_type = name_to_type[type_name]
+        return make_dict_structure_fn(target_type, config_converter)(new_data, target_type)
+
+    return structure
+
+
+for _base in (TTSTextDecoderConfigBase, TTSAudioDecoderConfigBase):
+    config_converter.register_unstructure_hook(_base, _registry_unstructure(_base))
+    config_converter.register_structure_hook(_base, _registry_structure(_base))
 
 
 @dataclass(frozen=True)
 class TTSConfig:
-    text_decoder_config: TTSTextDecoderConfig
-    audio_decoder_config: TTSAudioDecoderConfig
+    text_decoder_config: TTSTextDecoderConfigBase
+    audio_decoder_config: TTSAudioDecoderConfigBase
     vocoder_config: VocoderConfig
 
     activation_precision: DTypeLike

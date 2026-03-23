@@ -25,19 +25,15 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
-    FishAudioTTSGenerator,
     GenerationConfig,
     LanguageModel,
     LanguageModelConfig,
     LatentTTSGenerator,
     LatentTTSGeneratorConfig,
-    Qwen3TTSGenerator,
     TTSGenerator,
     TTSGeneratorConfig,
 )
 from lalamo.modules import Classifier, Decoder, LalamoModule, LatentTTSModel, TTSModel
-from lalamo.modules.audio.fishaudio import FishAudioTextDecoder
-from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
@@ -534,12 +530,7 @@ def _import_tts_model(
         ),
         message_processor_config=message_processor.config,
     )
-    if isinstance(tts_model.text_decoder, Qwen3TTSTextDecoder):
-        tts_generator = Qwen3TTSGenerator(tts_generator_config, tts_model, message_processor)
-    elif isinstance(tts_model.text_decoder, FishAudioTextDecoder):
-        tts_generator = FishAudioTTSGenerator(tts_generator_config, tts_model, message_processor)
-    else:
-        tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
+    tts_generator = TTSGenerator(tts_generator_config, tts_model, message_processor)
 
     return (tts_generator, tts_generator_config)
 

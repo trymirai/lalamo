@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import SiLU
-from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.audio.text_decoder import TTSDecodingContext, TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -152,6 +152,20 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     im_start_token_id: int | None = None
     assistant_token_id: int | None = None
     im_end_token_id: int | None = None
+
+    @property
+    def default_speaker_id(self) -> str | None:
+        if not self.spk_id:
+            return None
+        first, *_ = self.spk_id
+        return first
+
+    @property
+    def default_style(self) -> str | None:
+        return None
+
+    def format_instruction(self, style: str) -> str:
+        return f"<|im_start|>user\n{style}<|im_end|>\n"
 
     def empty(self) -> "Qwen3TTSTextDecoder":
         codec_embedding = self.codec_embedding_config.empty(
@@ -487,11 +501,9 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         *,
-        speaker: str | None = None,
+        context: TTSDecodingContext,
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray | None = None,
-        language: str = "auto",
-        instruction_tokens: Int[Array, "batch tokens"] | None = None,
+        key: PRNGKeyArray,
     ) -> Int[Array, "codebooks tokens"]:
         if text_tokens.ndim != 2:
             raise ValueError(f"text_tokens must be rank 2, got {text_tokens.shape}")
@@ -501,9 +513,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
 
         if sampling_policy is None:
             sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
-        if key is None:
-            raise ValueError("key is required")
 
+        speaker = context.speaker
         if speaker is not None:
             speaker_codec_id = self.config.spk_id.get(speaker)
             if speaker_codec_id is None:
@@ -514,19 +525,19 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             raise ValueError(f"speaker is required. Available speakers: {available}")
         else:
             speaker_codec_id = None
-        if language == "auto":
+        if context.language == "auto":
             language_codec_id = None
         else:
-            language_codec_id = self.config.codec_language_id.get(language)
+            language_codec_id = self.config.codec_language_id.get(context.language)
             if language_codec_id is None:
                 available = ", ".join(sorted(self.config.codec_language_id.keys()))
-                raise ValueError(f"Unknown language {language!r}. Available languages: {available}")
+                raise ValueError(f"Unknown language {context.language!r}. Available languages: {available}")
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(
             text_tokens,
             speaker_codec_id=speaker_codec_id,
             language_codec_id=language_codec_id,
-            instruction_tokens=instruction_tokens,
+            instruction_tokens=context.instruction_tokens,
         )
         generated_step_codes: list[Array] = []
 

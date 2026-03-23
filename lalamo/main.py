@@ -66,14 +66,13 @@ from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
     ClassifierModelConfig,
-    FishAudioTTSGenerator,
     LanguageModelConfig,
     LatentTTSGenerator,
-    Qwen3TTSGenerator,
+    TTSGenerator,
 )
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.audio.tts_message_processor import VoicePrompt
-from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.models.tts_model import TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -408,11 +407,11 @@ def tts(
     else:
         model = TTSGenerator.load_model(model_path)
 
-    if isinstance(model, (FishAudioTTSGenerator, Qwen3TTSGenerator)):
+    if isinstance(model, TTSGenerator):
         if speaker_id is None:
-            speaker_id = model.default_speaker_id()
+            speaker_id = model.default_speaker_id
         if style is None:
-            style = model.default_style()
+            style = model.default_style
 
     _stop_word = "/stop"
     while True:

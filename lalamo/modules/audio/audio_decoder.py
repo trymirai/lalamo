@@ -1,4 +1,4 @@
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Self
 
@@ -6,10 +6,11 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
+from lalamo.registry_abc import RegistryABC
 
 
 @dataclass(frozen=True)
-class TTSAudioDecoderConfigBase(ABC):
+class TTSAudioDecoderConfigBase(RegistryABC):
     @abstractmethod
     def empty(self) -> "TTSAudioDecoder": ...
 
