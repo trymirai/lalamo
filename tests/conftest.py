@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -97,18 +99,22 @@ def model_registry() -> ModelRegistry:
     return ModelRegistry.build(allow_third_party_plugins=False)
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture
 def convert_model(
     model_registry: ModelRegistry,
-    tmp_path_factory: pytest.TempPathFactory,
-) -> ConvertModel:
+) -> Generator[ConvertModel, None, None]:
+    output_dirs: list[Path] = []
+
     def _convert(repo: str) -> Path:
-        output_dir = tmp_path_factory.getbasetemp() / "converted_models" / repo.replace("/", "__")
-        if not (output_dir / "config.json").exists():
-            convert(model_registry.repo_to_model[repo], output_dir)
+        output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
+        convert(model_registry.repo_to_model[repo], output_dir)
+        output_dirs.append(output_dir.parent)
         return output_dir
 
-    return _convert
+    yield _convert
+
+    for d in output_dirs:
+        shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture(params=ALL_MODEL_SPECS, ids=[spec.repo for spec in ALL_MODEL_SPECS])

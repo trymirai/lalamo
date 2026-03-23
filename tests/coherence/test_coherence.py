@@ -50,11 +50,6 @@ SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 
-@pytest.fixture
-def converted_model_path(llm_spec: ModelSpec, convert_model: ConvertModel) -> Path:
-    return convert_model(llm_spec.repo)
-
-
 def _generate_replies(
     converted_model_path: Path,
     dataset_path: Path,
@@ -87,9 +82,11 @@ def _generate_replies(
 
 def test_model_coherent_and_stops(
     llm_spec: ModelSpec,
-    converted_model_path: Path,
+    convert_model: ConvertModel,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
+    converted_model_path = convert_model(llm_spec.repo)
+
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
 
