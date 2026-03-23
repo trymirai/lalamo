@@ -40,7 +40,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/conversion tests/coherence -n 4
+          pytest tests/conversion tests/coherence
 
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
