@@ -1,4 +1,4 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 import jax.numpy as jnp
@@ -543,11 +543,14 @@ def _split_q_gate_tensor(
 def _extract_gate_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-    split_fn: Callable[[Array], tuple[Array, Array]],
+    num_heads: int,
+    head_dim: int,
+    *,
+    interleaved: bool,
 ) -> tuple[dict[str, Array], dict[str, Array]]:
-    """Split q_proj tensors into Q overrides and gate weights."""
     q_proj_prefix = str(path / "q_proj") + "."
     gate_path = path / "gate_projection"
+    q_dim = num_heads * head_dim
     q_overrides: dict[str, Array] = {}
     gate_weights: dict[str, Array] = {}
     for key in weights_dict:
@@ -555,7 +558,11 @@ def _extract_gate_weights(
         if not str_key.startswith(q_proj_prefix):
             continue
         suffix = str_key[len(q_proj_prefix) :]
-        q_part, gate_part = split_fn(weights_dict[key])
+        tensor = weights_dict[key]
+        if interleaved:
+            q_part, gate_part = _split_q_gate_tensor(tensor, num_heads, head_dim)
+        else:
+            q_part, gate_part = tensor[:q_dim], tensor[q_dim:]
         q_overrides[ParameterPath(str_key)] = q_part
         gate_weights[gate_path / suffix] = gate_part
     return q_overrides, gate_weights
@@ -575,20 +582,15 @@ def load_attention(
     else:
         raise NotImplementedError("Can't determine attention output projection name")
 
-    if module.config.has_gate:
+    if module.gate_projection is not None:
         num_heads, head_dim = module.num_heads, module.head_dim
-
-        if reorder_q_proj_gate:
-
-            def split_fn(t: Array) -> tuple[Array, Array]:
-                return _split_q_gate_tensor(t, num_heads, head_dim)
-        else:
-            q_dim = num_heads * head_dim
-
-            def split_fn(t: Array) -> tuple[Array, Array]:
-                return t[:q_dim], t[q_dim:]
-
-        q_overrides, gate_weights = _extract_gate_weights(weights_dict, path, split_fn)
+        q_overrides, gate_weights = _extract_gate_weights(
+            weights_dict,
+            path,
+            num_heads,
+            head_dim,
+            interleaved=reorder_q_proj_gate,
+        )
 
         qkv_projection = load_linear(
             module.qkv_projection,
@@ -597,7 +599,6 @@ def load_attention(
             sublayers_to_fuse=["q_proj", "k_proj", "v_proj"],
         )
 
-        assert module.gate_projection is not None
         gate_projection = load_linear(
             module.gate_projection,
             gate_weights,

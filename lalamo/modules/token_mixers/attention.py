@@ -95,7 +95,7 @@ class AttentionConfig(TokenMixerConfigBase):
     has_sinks: bool
     has_qkv_biases: bool
     has_out_biases: bool
-    has_gate: bool = False
+    gate_projection_config: LinearConfig | None = None
     use_rope: bool = True
     # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
     partial_rope_dim: int | None = None
@@ -132,8 +132,8 @@ class AttentionConfig(TokenMixerConfigBase):
             key=out_key,
         )
 
-        if self.has_gate:
-            gate_projection = self.qkv_projection_config.random_init(
+        if self.gate_projection_config is not None:
+            gate_projection = self.gate_projection_config.random_init(
                 input_dim=model_dim,
                 output_dims=(q_output_dim,),
                 has_biases=False,
@@ -199,8 +199,8 @@ class AttentionConfig(TokenMixerConfigBase):
             has_biases=self.has_out_biases,
         )
 
-        if self.has_gate:
-            gate_projection = self.qkv_projection_config.empty(
+        if self.gate_projection_config is not None:
+            gate_projection = self.gate_projection_config.empty(
                 input_dim=model_dim,
                 output_dims=(q_output_dim,),
                 has_biases=False,
@@ -352,16 +352,16 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
                 f" got {v_output_dim}",
             )
-        if self.config.has_gate:
+        if self.config.gate_projection_config is not None:
             if self.gate_projection is None:
-                raise ValueError("gate_projection must be provided when has_gate is enabled.")
+                raise ValueError("gate_projection must be provided when gate_projection_config is set.")
             gate_output_dim = self.gate_projection.output_dims[0]
             if gate_output_dim != expected_q:
                 raise ValueError(
                     f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
                 )
         elif self.gate_projection is not None:
-            raise ValueError("gate_projection must be None when has_gate is disabled.")
+            raise ValueError("gate_projection must be None when gate_projection_config is not set.")
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:

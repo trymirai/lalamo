@@ -20,7 +20,7 @@ def test_gated_attention_export_import_roundtrip() -> None:
         has_sinks=False,
         has_qkv_biases=False,
         has_out_biases=False,
-        has_gate=True,
+        gate_projection_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
     model_dim = 16
     attn = config.random_init(model_dim=model_dim, key=jax.random.key(0))
