@@ -15,8 +15,7 @@ from lalamo.main import app
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
-from tests.model_test_tiers import TIER_BY_REPO, ModelTier
-from tests.resource_slots import resource_slots
+from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
@@ -34,12 +33,15 @@ def _specs_up_to_tier(specs: tuple[ModelSpec, ...], tier: ModelTier) -> tuple[Mo
     return tuple(spec for spec in specs if TIER_BY_REPO.get(spec.repo, ModelTier.EXTRA) <= tier)
 
 
-@pytest.fixture(autouse=True)
-def _resource_slots(
-    request: pytest.FixtureRequest,
-    tmp_path_factory: pytest.TempPathFactory,
-) -> Generator[None]:
-    yield from resource_slots(request, tmp_path_factory)
+_SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
+    ModelSize.SMALL: pytest.mark.small_model,
+    ModelSize.MEDIUM: pytest.mark.medium_model,
+    ModelSize.LARGE: pytest.mark.large_model,
+}
+
+
+def _mark_by_size(specs: tuple[ModelSpec, ...]) -> list[ModelSpec | pytest.param]:
+    return [pytest.param(s, marks=_SIZE_MARKS[model_size(s)]) for s in specs]
 
 
 @pytest.fixture(autouse=True)
@@ -154,21 +156,21 @@ def convert_model(
     cm.cleanup_local()
 
 
-@pytest.fixture(params=TTS_SPECS, ids=[spec.repo for spec in TTS_SPECS])
+@pytest.fixture(params=_mark_by_size(TTS_SPECS), ids=[spec.repo for spec in TTS_SPECS])
 def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=CORE_LLM_SPECS, ids=[spec.repo for spec in CORE_LLM_SPECS])
+@pytest.fixture(params=_mark_by_size(CORE_LLM_SPECS), ids=[spec.repo for spec in CORE_LLM_SPECS])
 def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=STANDARD_LLM_SPECS, ids=[spec.repo for spec in STANDARD_LLM_SPECS])
+@pytest.fixture(params=_mark_by_size(STANDARD_LLM_SPECS), ids=[spec.repo for spec in STANDARD_LLM_SPECS])
 def standard_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=EXTRA_LLM_SPECS, ids=[spec.repo for spec in EXTRA_LLM_SPECS])
+@pytest.fixture(params=_mark_by_size(EXTRA_LLM_SPECS), ids=[spec.repo for spec in EXTRA_LLM_SPECS])
 def extra_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param

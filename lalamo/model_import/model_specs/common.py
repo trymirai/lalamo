@@ -4,6 +4,7 @@ from collections.abc import (
     Mapping,
 )
 from contextlib import contextmanager
+import re
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
 from pathlib import Path
@@ -173,6 +174,16 @@ class ModelSpec:
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
     grammar_start_tokens: tuple[str, ...] = tuple()
+
+    _PARAM_UNITS: ClassVar[dict[str, int]] = {"B": 1_000_000_000, "M": 1_000_000, "K": 1_000}
+    _PARAM_RE: ClassVar[re.Pattern[str]] = re.compile(r"([0-9]*\.?[0-9]+)\s*([BMK])")
+
+    @property
+    def num_params(self) -> int | None:
+        match = self._PARAM_RE.fullmatch(self.size.strip())
+        if match is None:
+            return None
+        return int(float(match.group(1)) * self._PARAM_UNITS[match.group(2)])
 
     @classmethod
     def from_json(cls, json_data: dict) -> "ModelSpec":

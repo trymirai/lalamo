@@ -2,11 +2,30 @@ from __future__ import annotations
 
 from enum import IntEnum
 
+from lalamo.model_import.model_specs.common import ModelSpec
+
 
 class ModelTier(IntEnum):
     CORE = 0
     STANDARD = 1
     EXTRA = 2
+
+
+class ModelSize(IntEnum):
+    SMALL = 0  # < 10B params
+    MEDIUM = 1  # 10B–40B params
+    LARGE = 2  # > 40B params
+
+
+def model_size(spec: ModelSpec) -> ModelSize:
+    params = spec.num_params
+    if params is None:
+        return ModelSize.MEDIUM
+    if params < 10_000_000_000:
+        return ModelSize.SMALL
+    if params <= 40_000_000_000:
+        return ModelSize.MEDIUM
+    return ModelSize.LARGE
 
 
 MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
