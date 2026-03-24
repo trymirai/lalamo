@@ -35,7 +35,6 @@ def _specs_up_to_tier(specs: tuple[ModelSpec, ...], tier: ModelTier) -> tuple[Mo
 
 _SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
     ModelSize.SMALL: pytest.mark.small_model,
-    ModelSize.MEDIUM: pytest.mark.medium_model,
     ModelSize.LARGE: pytest.mark.large_model,
 }
 

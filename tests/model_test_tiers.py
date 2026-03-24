@@ -13,18 +13,15 @@ class ModelTier(IntEnum):
 
 class ModelSize(IntEnum):
     SMALL = 0  # < 10B params
-    MEDIUM = 1  # 10B–40B params
-    LARGE = 2  # > 40B params
+    LARGE = 1  # >= 10B params
 
 
 def model_size(spec: ModelSpec) -> ModelSize:
     params = spec.num_params
     if params is None:
-        return ModelSize.MEDIUM
+        return ModelSize.LARGE
     if params < 10_000_000_000:
         return ModelSize.SMALL
-    if params <= 40_000_000_000:
-        return ModelSize.MEDIUM
     return ModelSize.LARGE
 
 

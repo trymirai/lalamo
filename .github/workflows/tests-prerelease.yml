@@ -28,22 +28,6 @@ jobs:
 
   coherence-small:
     name: "Coherence (small)"
-    runs-on: [cpu]
-    needs: [config]
-    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
-
-    steps:
-      - uses: actions/checkout@v6
-      - uses: ./.github/actions/setup
-        with:
-          dev: 'true'
-
-      - name: Run pytest
-        run: |
-          pytest tests/coherence -n=4 -m small_model
-
-  coherence-medium:
-    name: "Coherence (medium)"
     runs-on: [github-n2hmem32]
     needs: [config]
     if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
@@ -56,7 +40,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/coherence -n=2 -m medium_model
+          pytest tests/coherence -n=8 -m small_model
 
   coherence-large:
     name: "Coherence (large)"
@@ -72,7 +56,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/coherence -m large_model
+          pytest tests/coherence -n=2 -m large_model
 
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
