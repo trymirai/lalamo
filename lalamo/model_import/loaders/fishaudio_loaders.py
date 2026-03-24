@@ -25,12 +25,10 @@ from lalamo.modules import (
     TransformerLayer,
 )
 from lalamo.modules.audio.common_modules import (
-    ConvNeXtBlock,
     DACDecoder,
     DecoderBlock,
     ResidualUnit,
     Snake1d,
-    UpsamplingBlock,
 )
 from lalamo.modules.audio.fishaudio import DescriptAudioCodec, FishAudioTextDecoder
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
@@ -47,11 +45,15 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     VectorQuantize,
 )
 
+from .audio_loaders import (
+    load_convnext_block,  # noqa: F401 - re-exported for tests
+    load_dac_decoder,
+    load_upsampling_block,
+)
 from .common import load_parameters
 from .huggingface import load_rmsnorm, load_tied_embedding
 from .nanocodec_loaders import (
     load_causal_conv1d,
-    load_causal_transpose_conv1d,
     load_snake1d,
 )
 from .torch_utils import fuse_weight_norm_conv1d_as_linear
@@ -489,124 +491,6 @@ def load_residual_vector_quantize(
     )
 
 
-def load_convnext_block(
-    module: ConvNeXtBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> ConvNeXtBlock:
-    """Loads a ConvNeXtBlock module from weights.
-
-    Expected weight structure at path:
-        - gamma
-        - dwconv.conv.weight
-        - dwconv.conv.bias
-        - norm.weight
-        - norm.bias
-        - pwconv1.weight
-        - pwconv1.bias
-        - pwconv2.weight
-        - pwconv2.bias
-
-    Args:
-        module: The ConvNeXtBlock module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        ConvNeXtBlock module with loaded weights.
-    """
-
-    # Load depthwise conv
-    # PyTorch conv weights are (out_channels, in_channels/groups, kernel_size)
-    dwconv_weight = weights_dict[path / "dwconv" / "conv" / "weight"]
-    dwconv_bias = weights_dict[path / "dwconv" / "conv" / "bias"]
-    depthwise_conv = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.depthwise_conv,
-        (dwconv_weight, dwconv_bias),
-    )
-
-    # Load norm (LayerNorm with weight and bias)
-    norm_weight = weights_dict[path / "norm" / "weight"]
-    norm_bias = weights_dict[path / "norm" / "bias"]
-    norm = load_parameters(
-        lambda m: (m.scales, m.biases),
-        module.norm,
-        (norm_weight, norm_bias),
-    )
-
-    # Load pointwise conv 1 (Linear layer)
-    # PyTorch Linear weight is (out_features, in_features)
-    pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
-    pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    pointwise_conv1 = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.pointwise_conv1,
-        (pwconv1_weight, pwconv1_bias),
-    )
-
-    # Load pointwise conv 2 (Linear layer), fusing layer scaling if present
-    pwconv2_weight = weights_dict[path / "pwconv2" / "weight"]
-    pwconv2_bias = weights_dict[path / "pwconv2" / "bias"]
-    layer_scale_path = path / "gamma"
-    if layer_scale_path in weights_dict:
-        layer_scale = weights_dict[layer_scale_path]
-        pwconv2_weight = pwconv2_weight * layer_scale[:, None]
-        pwconv2_bias = pwconv2_bias * layer_scale
-    pointwise_conv2 = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.pointwise_conv2,
-        (pwconv2_weight, pwconv2_bias),
-    )
-
-    return load_parameters(
-        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv1, m.pointwise_conv2),
-        module,
-        (depthwise_conv, norm, pointwise_conv1, pointwise_conv2),
-    )
-
-
-def load_upsampling_block(
-    module: UpsamplingBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> UpsamplingBlock:
-    """Loads an UpsamplingBlock module from weights.
-
-    Expected weight structure at path:
-        - 0.conv.weight (transpose conv)
-        - 0.conv.bias
-        - 1.gamma (ConvNeXt LayerScale)
-        - 1.dwconv.conv.weight
-        - 1.dwconv.conv.bias
-        - 1.norm.weight
-        - 1.norm.bias
-        - 1.pwconv1.weight
-        - 1.pwconv1.bias
-        - 1.pwconv2.weight
-        - 1.pwconv2.bias
-
-    Args:
-        module: The UpsamplingBlock module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        UpsamplingBlock module with loaded weights.
-    """
-    # Load transpose conv (at index 0)
-    trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "0" / "conv")
-
-    # Load ConvNeXt block (at index 1)
-    convnext = load_convnext_block(module.convnext, weights_dict, path / "1")
-
-    return load_parameters(
-        lambda m: (m.trans_conv, m.convnext),
-        module,
-        (trans_conv, convnext),
-    )
-
-
 def load_upsampler(
     module: Upsampler,
     weights_dict: Mapping[str, Array],
@@ -769,35 +653,14 @@ def load_audio_decoder_block(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> DecoderBlock:
-    """Loads a DecoderBlock module from weights.
+    from .audio_loaders import load_decoder_block
 
-    Expected weight structure at path (PyTorch block is nn.Sequential):
-        - block.0.alpha (Snake1d)
-        - block.1.conv.parametrizations.weight.original0/1, block.1.conv.bias (CausalWNConvTranspose1d)
-        - block.2.block.0..3 (ResidualUnit, dilation=1)
-        - block.3.block.0..3 (ResidualUnit, dilation=3)
-        - block.4.block.0..3 (ResidualUnit, dilation=9)
-
-    Args:
-        module: The DecoderBlock module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Base path for this module's weights.
-
-    Returns:
-        DecoderBlock module with loaded weights.
-    """
-    assert isinstance(module.snake, Snake1d)
-    snake = load_snake1d(module.snake, weights_dict, path / "block" / "0")
-    trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "block" / "1" / "conv")
-    residual_units = tuple(
-        load_residual_unit(unit, weights_dict, path / "block" / (i + 2))
-        for i, unit in enumerate(module.residual_units)
-    )
-
-    return load_parameters(
-        lambda m: (m.snake, m.trans_conv, m.residual_units),
+    return load_decoder_block(
         module,
-        (snake, trans_conv, residual_units),
+        weights_dict,
+        path,
+        load_activation=load_snake1d,
+        load_residual=load_residual_unit,
     )
 
 
@@ -806,64 +669,13 @@ def load_audio_decoder(
     weights_dict: Mapping[str, Array],
     path: ParameterPath | None = None,
 ) -> DACDecoder:
-    """Loads an AudioDecoder module from weights.
-
-    This function handles the complete loading of the DAC-style audio decoder, including:
-    - first_conv: CausalConv1d with weight normalization
-    - decoder_blocks: Multiple AudioDecoderBlock instances
-    - final_snake: Snake1d activation
-    - final_conv: CausalConv1d with weight normalization
-
-    The PyTorch Decoder stores layers in a single nn.Sequential `model`:
-        - model.0: First conv (CausalWNConv1d)
-        - model.1 to model.N: DecoderBlocks
-        - model.N+1: Final Snake1d
-        - model.N+2: Final conv (CausalWNConv1d)
-        - model.N+3: Tanh (no weights)
-
-    Expected weight structure (parametrized format):
-        model.0.conv.parametrizations.weight.original0/1, model.0.conv.bias
-        model.1.block.0.alpha (Snake1d in first DecoderBlock)
-        model.1.block.1.conv.parametrizations.weight.original0/1, ... (TransposeConv in first DecoderBlock)
-        model.1.block.2.block.0..3 (ResidualUnit in first DecoderBlock)
-        ...
-        model.N+1.alpha (Final Snake1d)
-        model.N+2.conv.parametrizations.weight.original0/1, model.N+2.conv.bias
-
-    Args:
-        module: The AudioDecoder module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-        path: Optional base path. If None, uses root path.
-
-    Returns:
-        AudioDecoder module with loaded weights.
-    """
-    if path is None:
-        path = ParameterPath()
-
-    # model.0 is the first conv
-    first_conv = load_causal_conv1d(module.first_conv, weights_dict, path / "model" / "0" / "conv")
-
-    # model.1 to model.N are decoder blocks
-    num_blocks = len(module.decoder_blocks)
-    decoder_blocks = tuple(
-        load_audio_decoder_block(block, weights_dict, path / "model" / (i + 1))
-        for i, block in enumerate(module.decoder_blocks)
-    )
-
-    # model.N+1 is final snake (where N = num_blocks)
-    final_snake_idx = num_blocks + 1
-    assert isinstance(module.final_snake, Snake1d)
-    final_snake = load_snake1d(module.final_snake, weights_dict, path / "model" / final_snake_idx)
-
-    # model.N+2 is final conv
-    final_conv_idx = num_blocks + 2
-    final_conv = load_causal_conv1d(module.final_conv, weights_dict, path / "model" / final_conv_idx / "conv")
-
-    return load_parameters(
-        lambda m: (m.first_conv, m.decoder_blocks, m.final_snake, m.final_conv),
+    base = ParameterPath() if path is None else path
+    return load_dac_decoder(
         module,
-        (first_conv, decoder_blocks, final_snake, final_conv),
+        weights_dict,
+        base / "model",
+        load_activation=load_snake1d,
+        load_residual=load_residual_unit,
     )
 
 

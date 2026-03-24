@@ -398,7 +398,7 @@ def tts(
         ref_audio, ref_sr = sf.read(str(reference), dtype="float32")
         if ref_audio.ndim > 1:
             ref_audio = ref_audio.mean(axis=1)
-        voice_prompt = VoicePrompt(content=jnp.array(ref_audio), sampling_rate=ref_sr)
+        voice_prompt = VoicePrompt(waveform=jnp.array(ref_audio), sampling_rate=ref_sr)
         console.print(f"🎤 Loaded reference audio from {reference} ({ref_sr}Hz, {len(ref_audio) / ref_sr:.1f}s)")
 
     model: TTSGenerator | LatentTTSGenerator

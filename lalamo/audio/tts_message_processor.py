@@ -10,7 +10,7 @@ from tokenizers import Tokenizer
 
 @dataclass(frozen=True)
 class VoicePrompt:
-    content: Float[Array, "*"]
+    waveform: Float[Array, "*"]
     sampling_rate: int
 
 

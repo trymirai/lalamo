@@ -1,3 +1,4 @@
+import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -61,8 +62,10 @@ class HFQwen35Config(HuggingFaceLMConfig):
     quantization_config: QuantizationConfigType | None = None
 
     @classmethod
-    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
-        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:  # noqa: ARG003
+        json_path = Path(json_path)
+        with open(json_path) as f:
+            config = json.load(f)
         # Multimodal configs nest text model params under text_config;
         # top-level keys override text_config on conflict.
         text_config = config.pop("text_config", {})

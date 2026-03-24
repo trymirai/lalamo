@@ -165,9 +165,6 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     tts_pad_token_id: int | None = None
     tts_bos_token_id: int | None = None
     tts_eos_token_id: int | None = None
-    assistant_token_id: int | None = None
-    im_start_token_id: int | None = None
-    im_end_token_id: int | None = None
 
     def to_tts_config(
         self,
@@ -365,7 +362,6 @@ def _build_audio_decoder_config(
             use_bias=True,
         ),
         linear_config=linear_config,
-        gamma_init=1e-6,
     )
     quantizer_config = Qwen3TTSSplitResidualVectorQuantizerConfig(
         precision=precision,
@@ -522,7 +518,4 @@ def _build_text_decoder_config(
         tts_pad_token_id=top.tts_pad_token_id,
         spk_id=talker.spk_id,
         codec_language_id=talker.codec_language_id,
-        im_start_token_id=top.im_start_token_id,
-        assistant_token_id=top.assistant_token_id,
-        im_end_token_id=top.im_end_token_id,
     )

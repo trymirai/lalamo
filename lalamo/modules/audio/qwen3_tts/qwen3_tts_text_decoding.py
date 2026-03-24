@@ -149,9 +149,6 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     tts_pad_token_id: int
     spk_id: Mapping[str, int]
     codec_language_id: Mapping[str, int]
-    im_start_token_id: int | None = None
-    assistant_token_id: int | None = None
-    im_end_token_id: int | None = None
 
     @property
     def default_speaker_id(self) -> str | None:
@@ -383,26 +380,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         role_length = min(3, text_length)
         role_hidden = text_hidden[:, :role_length, :]
 
-        # Qwen3-TTS chat formatting appends "<|im_end|>\\n<|im_start|>assistant\\n" (5 tokens).
-        # When that exact suffix is present, strip it from the text content slice used for speech generation.
-        content_end = text_length
-        if (
-            self.config.im_start_token_id is not None
-            and self.config.assistant_token_id is not None
-            and self.config.im_end_token_id is not None
-            and text_length >= 8
-        ):
-            im_end_idx = text_tokens[0, text_length - 5]
-            im_start_idx = text_tokens[0, text_length - 3]
-            assistant_idx = text_tokens[0, text_length - 2]
-            if (
-                int(im_end_idx) == self.config.im_end_token_id
-                and int(im_start_idx) == self.config.im_start_token_id
-                and int(assistant_idx) == self.config.assistant_token_id
-            ):
-                content_end = text_length - 5
-
-        content_hidden = text_hidden[:, role_length:content_end, :]
+        content_hidden = text_hidden[:, role_length:, :]
         content_length = int(content_hidden.shape[1])
         first_text_hidden = content_hidden[:, :1, :] if content_length > 0 else tts_pad_embed
         trailing_text_hidden_core = (

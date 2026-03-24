@@ -6,12 +6,8 @@ from jaxtyping import Array
 from lalamo.common import ParameterPath
 from lalamo.modules import FullPrecisionLinear, Transformer
 from lalamo.modules.audio.common_modules import (
-    ConvNeXtBlock,
-    DACDecoder,
-    DecoderBlock,
     ResidualUnit,
     SnakeBeta,
-    UpsamplingBlock,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
     Qwen3TTSAudioDecoder,
@@ -27,20 +23,16 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
 
+from .audio_loaders import load_dac_decoder, load_upsampling_block
 from .common import load_parameters
 from .huggingface import load_attention, load_mlp, load_transformer_layer
-from .nanocodec_loaders import (
-    load_causal_conv1d,
-    load_causal_transpose_conv1d,
-)
+from .nanocodec_loaders import load_causal_conv1d
 
 __all__ = [
     "load_qwen3_tts_audio_decoder",
-    "load_qwen3_tts_convnext_block",
-    "load_qwen3_tts_dac_decoder",
-    "load_qwen3_tts_decoder_block",
     "load_qwen3_tts_pre_transformer",
     "load_qwen3_tts_residual_unit",
+    "load_qwen3_tts_snake_beta",
     "load_qwen3_tts_split_rvq",
     "load_qwen3_tts_text_decoder",
     "load_qwen3_tts_vector_quantization",
@@ -62,45 +54,6 @@ def load_qwen3_tts_snake_beta(
     )
 
 
-def load_qwen3_tts_convnext_block(
-    module: ConvNeXtBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> ConvNeXtBlock:
-    depthwise_conv = load_causal_conv1d(module.depthwise_conv, weights_dict, path / "dwconv" / "conv")
-    norm = load_parameters(
-        lambda m: (m.scales, m.biases),
-        module.norm,
-        (
-            weights_dict[path / "norm" / "weight"],
-            weights_dict[path / "norm" / "bias"],
-        ),
-    )
-    pointwise_conv1 = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.pointwise_conv1,
-        (
-            weights_dict[path / "pwconv1" / "weight"],
-            weights_dict[path / "pwconv1" / "bias"],
-        ),
-    )
-    pointwise_conv2 = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.pointwise_conv2,
-        (
-            weights_dict[path / "pwconv2" / "weight"],
-            weights_dict[path / "pwconv2" / "bias"],
-        ),
-    )
-    gamma = weights_dict[path / "gamma"]
-
-    return load_parameters(
-        lambda m: (m.depthwise_conv, m.norm, m.pointwise_conv1, m.pointwise_conv2, m.gamma),
-        module,
-        (depthwise_conv, norm, pointwise_conv1, pointwise_conv2, gamma),
-    )
-
-
 def load_qwen3_tts_residual_unit(
     module: ResidualUnit,
     weights_dict: Mapping[str, Array],
@@ -116,35 +69,6 @@ def load_qwen3_tts_residual_unit(
         lambda m: (m.act1, m.conv1, m.act2, m.conv2),
         module,
         (act1, conv1, act2, conv2),
-    )
-
-
-def load_qwen3_tts_decoder_block(
-    module: DecoderBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> DecoderBlock:
-    assert isinstance(module.snake, SnakeBeta)
-    snake = load_qwen3_tts_snake_beta(module.snake, weights_dict, path / "block" / "0")
-    trans_conv = load_causal_transpose_conv1d(
-        module.trans_conv,
-        weights_dict,
-        path / "block" / "1" / "conv",
-    )
-
-    residual_units = tuple(
-        load_qwen3_tts_residual_unit(
-            residual_unit,
-            weights_dict,
-            path / "block" / (idx + 2),
-        )
-        for idx, residual_unit in enumerate(module.residual_units)
-    )
-
-    return load_parameters(
-        lambda m: (m.snake, m.trans_conv, m.residual_units),
-        module,
-        (snake, trans_conv, residual_units),
     )
 
 
@@ -350,20 +274,6 @@ def load_qwen3_tts_pre_transformer(
     )
 
 
-def load_qwen3_tts_upsample_block(
-    module: UpsamplingBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> UpsamplingBlock:
-    trans_conv = load_causal_transpose_conv1d(module.trans_conv, weights_dict, path / "0" / "conv")
-    convnext = load_qwen3_tts_convnext_block(module.convnext, weights_dict, path / "1")
-    return load_parameters(
-        lambda m: (m.trans_conv, m.convnext),
-        module,
-        (trans_conv, convnext),
-    )
-
-
 def _load_qwen3_tts_transformer(
     module: Transformer,
     weights_dict: Mapping[str, Array],
@@ -517,43 +427,6 @@ def load_qwen3_tts_text_decoder(
     )
 
 
-def load_qwen3_tts_dac_decoder(
-    module: DACDecoder,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> DACDecoder:
-    first_conv = load_causal_conv1d(module.first_conv, weights_dict, path / "0" / "conv")
-
-    num_blocks = len(module.decoder_blocks)
-    decoder_blocks = tuple(
-        load_qwen3_tts_decoder_block(
-            decoder_block,
-            weights_dict,
-            path / (idx + 1),
-        )
-        for idx, decoder_block in enumerate(module.decoder_blocks)
-    )
-
-    assert isinstance(module.final_snake, SnakeBeta)
-    final_snake = load_qwen3_tts_snake_beta(
-        module.final_snake,
-        weights_dict,
-        path / (num_blocks + 1),
-    )
-
-    final_conv = load_causal_conv1d(
-        module.final_conv,
-        weights_dict,
-        path / (num_blocks + 2) / "conv",
-    )
-
-    return load_parameters(
-        lambda m: (m.first_conv, m.decoder_blocks, m.final_snake, m.final_conv),
-        module,
-        (first_conv, decoder_blocks, final_snake, final_conv),
-    )
-
-
 def load_qwen3_tts_audio_decoder(
     module: Qwen3TTSAudioDecoder,
     weights_dict: Mapping[str, Array],
@@ -570,15 +443,17 @@ def load_qwen3_tts_audio_decoder(
     )
 
     upsample_blocks = tuple(
-        load_qwen3_tts_upsample_block(
-            upsample_block,
-            weights_dict,
-            base_path / "upsample" / idx,
-        )
+        load_upsampling_block(upsample_block, weights_dict, base_path / "upsample" / idx)
         for idx, upsample_block in enumerate(module.upsample_blocks)
     )
 
-    dac_decoder = load_qwen3_tts_dac_decoder(module.dac_decoder, weights_dict, base_path / "decoder")
+    dac_decoder = load_dac_decoder(
+        module.dac_decoder,
+        weights_dict,
+        base_path / "decoder",
+        load_activation=load_qwen3_tts_snake_beta,
+        load_residual=load_qwen3_tts_residual_unit,
+    )
 
     return load_parameters(
         lambda m: (
