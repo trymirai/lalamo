@@ -31,7 +31,7 @@ cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
 tpu = ["jax[tpu]>=0.8.1"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
-fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
+fishaudio = ["torch>=2.8.0", "transformers>=4.57.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
 nanocodec = ["torch>=2.8.0"]
 qwen3-tts = ["qwen-tts>=0.1.1"]
 
@@ -52,13 +52,14 @@ dev = [
     "torch>=2.8.0",
     "torchaudio>=2.8.0",
     "torchao>=0.7.0",
-    "transformers>=5.2.0",
+    "transformers>=4.57.0",
     "twine>=6.1.0",
     "ruff>=0.14.0",
     "ty>=0.0.4",
     "pytest-xdist>=3.8.0",
     "hypothesis>=6.150.0",
     "fish-speech",
+    "qwen-tts>=0.1.1",
     "bidict>=0.23.1",
     "tiktoken>=0.12.0",
     "omegaconf>=2.3.0",

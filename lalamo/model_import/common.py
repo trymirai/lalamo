@@ -578,7 +578,7 @@ def _import_latent_tts_model(
     latent_tts_config = foreign_config.to_lalamo_config(
         context_length=context_length,
         activation_precision=precision,
-        accumulation_precision=precision,
+        accumulation_precision=accumulation_precision,
         metadata_dict={},
     )
 

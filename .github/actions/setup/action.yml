@@ -10,6 +10,10 @@ inputs:
     description: "Install with development dependencies"
     required: false
     default: 'false'
+  extras:
+    description: "Space-separated list of extras to install (e.g. 'qwen3-tts')"
+    required: false
+    default: ''
   install-dependencies:
     description: "Install Python and project dependencies"
     required: false
@@ -27,7 +31,12 @@ runs:
       with:
         enable-cache: ${{ inputs.install-dependencies == 'true' }}
 
-    - run: uv sync --frozen ${{ inputs.dev == 'true' && '--dev' || '--no-dev' }} ${{ inputs.cuda == 'true' && '--extra cuda' || '' }}
+    - run: |
+        EXTRAS_ARGS=""
+        for extra in ${{ inputs.cuda == 'true' && 'cuda' || '' }} ${{ inputs.extras }}; do
+          EXTRAS_ARGS="$EXTRAS_ARGS --extra $extra"
+        done
+        uv sync --frozen ${{ inputs.dev == 'true' && '--dev' || '--no-dev' }} $EXTRAS_ARGS
       if: ${{ inputs.install-dependencies == 'true' }}
       shell: bash
 
