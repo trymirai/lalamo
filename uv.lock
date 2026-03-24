@@ -2087,7 +2087,7 @@ dev = [
     { name = "pytest", specifier = ">=8.3.4" },
     { name = "pytest-env", specifier = ">=1.1.5" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "qwen-tts", git = "https://github.com/trymirai/Qwen3-TTS.git?tag=9374a1a" },
+    { name = "qwen-tts", git = "https://github.com/trymirai/Qwen3-TTS.git?tag=cab8d85" },
     { name = "ruff", specifier = ">=0.14.0" },
     { name = "tiktoken", specifier = ">=0.12.0" },
     { name = "torch", marker = "platform_machine != 'x86_64' or sys_platform != 'linux'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
@@ -4135,7 +4135,7 @@ wheels = [
 [[package]]
 name = "qwen-tts"
 version = "0.1.1"
-source = { git = "https://github.com/trymirai/Qwen3-TTS.git?tag=9374a1a#9374a1aa0c90d929f9690180787d7368c1ad7b0b" }
+source = { git = "https://github.com/trymirai/Qwen3-TTS.git?tag=cab8d85#cab8d853b52a9ece359e6ed0817db1bdfd105b90" }
 dependencies = [
     { name = "accelerate" },
     { name = "einops" },

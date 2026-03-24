@@ -111,7 +111,7 @@ torchaudio = [
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-mlx" }
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
-qwen-tts = { git="https://github.com/trymirai/Qwen3-TTS.git", tag="9374a1a" }
+qwen-tts = { git="https://github.com/trymirai/Qwen3-TTS.git", tag="cab8d85" }
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
