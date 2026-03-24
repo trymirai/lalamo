@@ -114,7 +114,7 @@ fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030"
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
 # addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
-addopts = ["--dist=worksteal"]
+addopts = ["--dist=load"]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
