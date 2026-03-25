@@ -63,6 +63,8 @@ class ConvertModel:
     each test; cached ones persist until the session ends.
     """
 
+    _hf_cache_root: Path = Path.home() / ".cache" / "huggingface" / "hub"
+
     def __init__(
         self,
         registry: ModelRegistry,
@@ -73,6 +75,7 @@ class ConvertModel:
         self._cache = cache
         self._cache_dirs = cache_dirs
         self._local_dirs: list[Path] = []
+        self._downloaded_repos: list[str] = []
 
     def __call__(self, repo: str, *, cached: bool = False) -> Path:
         if cached:
@@ -81,17 +84,24 @@ class ConvertModel:
                 convert(self._registry.repo_to_model[repo], output_dir)
                 self._cache[repo] = output_dir
                 self._cache_dirs.append(output_dir.parent)
+            self._downloaded_repos.append(repo)
             return self._cache[repo]
 
         output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
         convert(self._registry.repo_to_model[repo], output_dir)
         self._local_dirs.append(output_dir.parent)
+        self._downloaded_repos.append(repo)
         return output_dir
 
     def cleanup_local(self) -> None:
         for d in self._local_dirs:
             shutil.rmtree(d, ignore_errors=True)
         self._local_dirs.clear()
+
+        for repo in self._downloaded_repos:
+            hf_dir = self._hf_cache_root / f"models--{repo.replace('/', '--')}"
+            shutil.rmtree(hf_dir, ignore_errors=True)
+        self._downloaded_repos.clear()
 
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
