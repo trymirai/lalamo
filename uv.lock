@@ -2061,7 +2061,7 @@ requires-dist = [
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'nanocodec'", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cu129" },
     { name = "torch", marker = "(platform_machine != 'x86_64' and extra == 'fishaudio') or (sys_platform != 'linux' and extra == 'fishaudio')", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
     { name = "torch", marker = "(platform_machine != 'x86_64' and extra == 'nanocodec') or (sys_platform != 'linux' and extra == 'nanocodec')", specifier = ">=2.8.0", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "transformers", marker = "extra == 'fishaudio'", specifier = ">=4.57.0" },
+    { name = "transformers", marker = "extra == 'fishaudio'", specifier = ">=5.2.0" },
     { name = "typer", specifier = ">=0.15.1" },
     { name = "xxhash", specifier = ">=3.5.0" },
 ]
