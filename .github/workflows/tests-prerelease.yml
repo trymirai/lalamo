@@ -40,7 +40,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/coherence -n 2 -m small_model
+          pytest tests/coherence -m small_model -v
 
   coherence-large:
     name: "Coherence (large)"
@@ -56,7 +56,7 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/coherence -n 2 -m large_model
+          pytest tests/coherence -m large_model -v
 
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
