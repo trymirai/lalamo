@@ -1167,8 +1167,10 @@ def test_audio_decoder_matches_pytorch() -> None:
         lalamo_output = lalamo_decoder(test_input_jax)
 
     # Compare
+    # DACDecoder no longer includes tanh (it was moved to model-specific callers
+    # like FishAudioDacCodec), but PyTorch's Decoder still has nn.Tanh() built in.
     torch_output_jax = torch_to_jax(torch_output)
-    lalamo_output_nct = lalamo_output.transpose(0, 2, 1)
+    lalamo_output_nct = jnp.tanh(lalamo_output).transpose(0, 2, 1)
 
     assert torch_output_jax.shape == lalamo_output_nct.shape, (
         f"Shape mismatch: PyTorch {torch_output_jax.shape} vs Lalamo {lalamo_output_nct.shape}"
