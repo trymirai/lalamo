@@ -19,8 +19,8 @@ log = logging.getLogger(__name__)
 
 _runner = CliRunner()
 
-COHERENCE_MAX_TOKENS = 512
-QA_MAX_TOKENS = 1024
+COHERENCE_MAX_TOKENS = 128
+QA_MAX_TOKENS = 128
 
 QA_QUESTION = "What color is beetroot?"
 QA_PATTERN = re.compile(r"\b(purple|red|dark\s*red|deep\s*red|maroon|crimson|magenta)\b", re.IGNORECASE)
