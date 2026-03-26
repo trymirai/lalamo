@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 
 from tests.conftest import strip_ansi_escape
 
@@ -152,7 +152,7 @@ def judge(
     for attempt in range(max_retries):
         temperature = 0.0 if attempt == 0 else 0.5
         try:
-            resp = requests.post(
+            resp = httpx.post(
                 OPENROUTER_ENDPOINT,
                 headers={
                     "Authorization": f"Bearer {api_key}",

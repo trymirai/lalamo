@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 import polars as pl
@@ -85,7 +86,9 @@ def test_model_coherent_and_stops(
     convert_model: ConvertModel,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
+    t0 = time.monotonic()
     converted_model_path = convert_model(standard_llm_spec.repo)
+    log.info("Model conversion took %.1fs for %s", time.monotonic() - t0, standard_llm_spec.repo)
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
@@ -110,7 +113,9 @@ def test_model_coherent_and_stops(
     ).write_parquet(dataset_path)
 
     batch_size = 1 + len(SIMPLE_QA) * n_repeats
+    t0 = time.monotonic()
     _generate_replies(converted_model_path, dataset_path, output_path, batch_size=batch_size, max_tokens=max_tokens)
+    log.info("Token generation took %.1fs for %s", time.monotonic() - t0, standard_llm_spec.repo)
 
     responses = pl.read_parquet(output_path).get_column("response").to_list()
     assert len(responses) == batch_size
