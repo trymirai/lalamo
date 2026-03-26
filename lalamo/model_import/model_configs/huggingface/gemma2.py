@@ -8,7 +8,7 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     NormalizationConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -81,7 +81,7 @@ class HFGemma2Config(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
         )
-        linear_config = FullPrecisionLinearConfig(
+        linear_config = LinearConfig(
             precision=activation_precision,
         )
         mlp_config = DenseMLPConfig(

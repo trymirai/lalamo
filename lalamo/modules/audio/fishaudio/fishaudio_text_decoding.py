@@ -15,7 +15,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, 
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
-from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import vmap_twice
@@ -33,14 +33,14 @@ class FishAudioTextDecoderResult:
 class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
     slow_embeddings_config: TiedEmbeddingConfig
     slow_model_config: TransformerConfig
-    slow_readout_config: FullPrecisionLinearConfig
+    slow_readout_config: LinearConfig
 
     fast_embeddings_config: TiedEmbeddingConfig
     fast_model_config: TransformerConfig
-    fast_readout_config: FullPrecisionLinearConfig
+    fast_readout_config: LinearConfig
 
     codebook_embeddings_config: TiedEmbeddingConfig
-    fast_model_projection_config: FullPrecisionLinearConfig | None
+    fast_model_projection_config: LinearConfig | None
 
     semantic_token_begin_id: int
     semantic_token_end_id: int
@@ -164,14 +164,14 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
 class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
-    readout_slow: FullPrecisionLinear
+    readout_slow: Linear
 
     embeddings_fast: TiedEmbedding
     transformer_fast: Transformer
-    readout_fast: FullPrecisionLinear
+    readout_fast: Linear
 
     codebook_embeddings: TiedEmbedding
-    fast_model_projection: FullPrecisionLinear | Identity
+    fast_model_projection: Linear | Identity
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -208,7 +208,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             fast_model_projection=self.fast_model_projection.import_weights(
                 require_tree(weights["fast_model_projection"]),
             )
-            if isinstance(self.fast_model_projection, FullPrecisionLinear)
+            if isinstance(self.fast_model_projection, Linear)
             else Identity(),
         )
 

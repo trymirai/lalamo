@@ -8,11 +8,11 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    GroupQuantizedLinearConfig,
+    LinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
+    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -21,7 +21,6 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
@@ -122,22 +121,22 @@ class HFQwen3Config(HuggingFaceLMConfig):
             subtract_mean=False,
         )
         if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig(
+            linear_config = LinearConfig(
                 precision=activation_precision,
             )
         elif isinstance(self.quantization_config, MLXQuantizationConfig):
-            linear_config = MLXQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.MLX,
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=self.quantization_config.bits,
             )
         else:
-            linear_config = GroupQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.AWQ,
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=self.quantization_config.bits,
             )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,

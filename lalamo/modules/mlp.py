@@ -23,7 +23,7 @@ from .common import (
     ShardingOrder,
     register_config_union,
 )
-from .linear import LinearBase, LinearConfig
+from .linear import Linear, LinearConfig
 
 __all__ = [
     "DenseMLP",
@@ -88,7 +88,7 @@ class DenseMLPConfig(MLPConfigBase):
     up_clipping: tuple[float | None, float | None] | None
 
     @staticmethod
-    def _with_sharding_order(projection: LinearBase, order: ShardingOrder) -> LinearBase:
+    def _with_sharding_order(projection: Linear, order: ShardingOrder) -> Linear:
         return replace(projection, sharding_order=order)
 
     def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
@@ -199,8 +199,8 @@ class DenseMLPConfig(MLPConfigBase):
 
 
 class DenseMLP(MLPBase[DenseMLPConfig]):
-    up_projection: LinearBase
-    down_projection: LinearBase
+    up_projection: Linear
+    down_projection: Linear
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -408,9 +408,9 @@ class MixtureOfExpertsConfig(ABC):
 
 
 class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
-    router: LinearBase
+    router: Linear
     experts: DenseMLP
-    gate: LinearBase | None
+    gate: Linear | None
 
     @property
     def mixture_size(self) -> int:

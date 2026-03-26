@@ -7,7 +7,7 @@ from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
 from lalamo.modules import (
     DeltaNetAttentionConfig,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     NormalizationConfig,
     SeparableCausalConvConfig,
     UpcastMode,
@@ -51,7 +51,7 @@ def _make_lalamo_delta_net(hf_config: Any):
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
         subtract_mean=False,
     )
-    linear_config = FullPrecisionLinearConfig(precision=precision)
+    linear_config = LinearConfig(precision=precision)
     config = DeltaNetAttentionConfig(
         in_proj_config=linear_config,
         conv_config=SeparableCausalConvConfig(precision=precision, has_biases=False),

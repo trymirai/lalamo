@@ -10,7 +10,7 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array, require_mapping
 from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
-from lalamo.modules.linear import LinearBase, LinearConfig
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import apply_soft_capping
@@ -246,9 +246,9 @@ class AttentionConfig(TokenMixerConfigBase):
 
 
 class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
-    qkv_projection: LinearBase
-    gate_projection: LinearBase | None
-    out_projection: LinearBase
+    qkv_projection: Linear
+    gate_projection: Linear | None
+    out_projection: Linear
 
     query_norm: Normalization | None
     key_norm: Normalization | None

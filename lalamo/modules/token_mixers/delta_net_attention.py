@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 from lalamo.modules.common import PositionalEmbeddingSelector
-from lalamo.modules.linear import LinearBase, LinearConfig
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
@@ -154,9 +154,9 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
 
 
 class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
-    in_proj: LinearBase
+    in_proj: Linear
     conv: SeparableCausalConv
-    out_proj: LinearBase
+    out_proj: Linear
     norm: Normalization
     dt_bias: Float[Array, " heads"]
     a_log: Float[Array, " heads"]

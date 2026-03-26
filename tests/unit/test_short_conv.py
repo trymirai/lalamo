@@ -4,7 +4,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 
 from lalamo.modules import (
-    FullPrecisionLinearConfig,
+    LinearConfig,
     SeparableCausalConvConfig,
     ShortConv,
     ShortConvConfig,
@@ -15,9 +15,9 @@ from tests.common import assert_close
 def make_short_conv() -> ShortConv:
     precision = jnp.float32
     config = ShortConvConfig(
-        in_projection_config=FullPrecisionLinearConfig(precision=precision),
+        in_projection_config=LinearConfig(precision=precision),
         conv_config=SeparableCausalConvConfig(precision=precision, has_biases=True),
-        out_projection_config=FullPrecisionLinearConfig(precision=precision),
+        out_projection_config=LinearConfig(precision=precision),
         kernel_size=3,
     )
     model_dim = 4

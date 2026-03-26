@@ -11,11 +11,11 @@ from lalamo.modules import (
     DecoderConfig,
     DeltaNetAttentionConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    GroupQuantizedLinearConfig,
+    LinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
+    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -24,7 +24,6 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.modules.linear import MLXQuantizedLinearConfig
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
@@ -143,22 +142,22 @@ class HFQwen35Config(HuggingFaceLMConfig):
         )
 
         if quantization is None:
-            linear_config = FullPrecisionLinearConfig(
+            linear_config = LinearConfig(
                 precision=activation_precision,
             )
         elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = MLXQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.MLX,
                 group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=quantization.bits,
             )
         else:
-            linear_config = GroupQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.AWQ,
                 group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=quantization.bits,
             )
 
         partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]

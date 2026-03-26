@@ -19,7 +19,7 @@ from lalamo.modules.audio.common_modules import (
 )
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
-from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
 
@@ -45,7 +45,7 @@ class ConvNeXtBlockConfig:
     activation: Activation
     dwconv_config: CausalConv1dConfig
     norm_config: NormalizationConfig
-    pwconv_config: FullPrecisionLinearConfig
+    pwconv_config: LinearConfig
 
     def random_init(
         self,
@@ -127,8 +127,8 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
 
     depthwise_conv: CausalConv1d
     norm: Normalization
-    pointwise_conv_step1: FullPrecisionLinear
-    pointwise_conv_step2: FullPrecisionLinear
+    pointwise_conv_step1: Linear
+    pointwise_conv_step2: Linear
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -402,7 +402,7 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
 class VectorQuantizeConfig:
     precision: DTypeLike
     codebook_config: TiedEmbeddingConfig
-    out_proj_config: FullPrecisionLinearConfig
+    out_proj_config: LinearConfig
 
     def empty(
         self,
@@ -418,7 +418,7 @@ class VectorQuantizeConfig:
             output_dims=(input_dim,),
             has_biases=True,
         )
-        assert isinstance(out_proj, FullPrecisionLinear)
+        assert isinstance(out_proj, Linear)
 
         return VectorQuantize(
             config=self,
@@ -444,7 +444,7 @@ class VectorQuantizeConfig:
             has_biases=True,
             key=proj_key,
         )
-        assert isinstance(out_proj, FullPrecisionLinear)
+        assert isinstance(out_proj, Linear)
 
         return VectorQuantize(
             config=self,
@@ -462,7 +462,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
     """
 
     codebook: TiedEmbedding
-    out_proj: FullPrecisionLinear
+    out_proj: Linear
 
     @property
     def activation_precision(self) -> DTypeLike:

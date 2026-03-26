@@ -8,7 +8,7 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     NormalizationConfig,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -83,7 +83,7 @@ class HFMistralConfig(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        linear_config = FullPrecisionLinearConfig(
+        linear_config = LinearConfig(
             precision=activation_precision,
         )
 

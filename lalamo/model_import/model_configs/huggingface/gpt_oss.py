@@ -8,7 +8,7 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     MixtureOfExpertsConfig,
     NormalizationConfig,
     SoftmaxRouting,
@@ -126,7 +126,7 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
         )
 
         # Linear layers
-        linear_config = FullPrecisionLinearConfig(precision=activation_precision)
+        linear_config = LinearConfig(precision=activation_precision)
 
         # Experts (MoE) scaffold
         # Router: linear with bias; Experts: DenseMLP with SiLU(alpha=1.702) and value/gate clipping

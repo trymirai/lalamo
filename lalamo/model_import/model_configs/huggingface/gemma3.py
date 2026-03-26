@@ -7,13 +7,13 @@ from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     DecoderConfig,
-    MLXQuantizedLinearConfig,
+    LinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
+    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
 )
 from lalamo.modules.activations import GELU
-from lalamo.modules.linear import FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLPConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
@@ -152,13 +152,13 @@ class HFGemma3TextConfigRaw:
         )
 
         if quantization is None:
-            linear_config = FullPrecisionLinearConfig(precision=activation_precision)
+            linear_config = LinearConfig(precision=activation_precision)
         elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = MLXQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.MLX,
                 group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=quantization.bits,
             )
         else:
             raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")

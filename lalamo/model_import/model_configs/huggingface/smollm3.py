@@ -8,12 +8,11 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    GroupQuantizedLinearConfig,
-    MLXQuantizedLinearConfig,
+    LinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
     MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
+    QuantFormat,
     SiLU,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -116,22 +115,22 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
         )
 
         if quantization is None:
-            linear_config = FullPrecisionLinearConfig(
+            linear_config = LinearConfig(
                 precision=activation_precision,
             )
         elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = MLXQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.MLX,
                 group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=quantization.bits,
             )
         else:
-            linear_config = GroupQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.AWQ,
                 group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=quantization.bits,
             )
 
         layer_head_dim = self.hidden_size // self.num_attention_heads

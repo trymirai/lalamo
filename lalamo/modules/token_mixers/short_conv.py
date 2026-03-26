@@ -7,7 +7,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.common import PositionalEmbeddingSelector
-from lalamo.modules.linear import LinearBase, LinearConfig
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
@@ -92,9 +92,9 @@ class ShortConvConfig(TokenMixerConfigBase):
 
 
 class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
-    in_projection: LinearBase
+    in_projection: Linear
     conv: SeparableCausalConv
-    out_projection: LinearBase
+    out_projection: Linear
 
     @property
     def activation_precision(self) -> DTypeLike:
