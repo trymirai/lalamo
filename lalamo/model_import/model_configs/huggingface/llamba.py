@@ -7,12 +7,12 @@ from jaxtyping import DTypeLike
 from lalamo.modules import (
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
     Identity,
+    LinearConfig,
     Mamba2Config,
-    MLXQuantizedLinearConfig,
     MLXSemiQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
+    QuantFormat,
     SeparableCausalConvConfig,
     SiLU,
     TiedEmbeddingConfig,
@@ -104,16 +104,14 @@ class HFLlambaConfig(HuggingFaceLMConfig):
         )
 
         if metadata_dict and "quantization_kwargs.group_size" in metadata_dict:
-            linear_config = MLXQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.MLX,
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"]),
-                ),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=int(metadata_dict["quantization_kwargs.bits"]),
             )
         else:
-            linear_config = FullPrecisionLinearConfig(
+            linear_config = LinearConfig(
                 precision=activation_precision,
             )
 

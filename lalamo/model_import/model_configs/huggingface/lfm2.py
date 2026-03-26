@@ -9,10 +9,10 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
-    MLXQuantizedLinearConfig,
+    LinearConfig,
     MLXQuantizedTiedEmbeddingConfig,
     NormalizationConfig,
+    QuantFormat,
     SeparableCausalConvConfig,
     ShortConvConfig,
     SiLU,
@@ -152,13 +152,13 @@ class HFLFM2Config(HuggingFaceLMConfig):
         )
 
         if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig(activation_precision)
+            linear_config = LinearConfig(activation_precision)
         else:
-            linear_config = MLXQuantizedLinearConfig(
+            linear_config = LinearConfig(
+                precision=activation_precision,
+                quant_format=QuantFormat.MLX,
                 group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-                activation_precision=activation_precision,
+                bits=self.quantization_config.bits,
             )
 
         block_norm_config = NormalizationConfig(

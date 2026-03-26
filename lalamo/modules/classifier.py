@@ -21,7 +21,7 @@ from lalamo.modules.utils import vmap_twice
 
 from .common import ForwardPassMode, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
-from .linear import LinearBase, LinearConfig
+from .linear import Linear, LinearConfig
 from .rope import PositionalEmbeddings
 from .transformer_layer import TransformerLayerResult
 
@@ -89,10 +89,10 @@ class PredictionHeadConfig:
 
 
 class PredictionHead(LalamoModule[PredictionHeadConfig]):
-    dense: LinearBase
+    dense: Linear
     activation: Activation
     norm: Normalization
-    readout: LinearBase
+    readout: Linear
 
     def __call__(self, inner_features: Float[Array, "batch channels"]) -> Float[Array, "batch logits"]:
         return vmap(self.call_unbatched)(inner_features)

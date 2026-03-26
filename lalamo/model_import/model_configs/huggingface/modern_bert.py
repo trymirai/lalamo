@@ -9,7 +9,7 @@ from lalamo.modules import (
     AttentionConfig,
     ClassifierConfig,
     DenseMLPConfig,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     NormalizationConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -144,7 +144,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
-        linear_config = FullPrecisionLinearConfig(
+        linear_config = LinearConfig(
             precision=activation_precision,
         )
         activation = activation_from_str(self.hidden_activation)
@@ -198,7 +198,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             context_length=context_length or self.max_position_embeddings,
         )
 
-        prediction_head_dense_config = FullPrecisionLinearConfig(
+        prediction_head_dense_config = LinearConfig(
             precision=activation_precision,
         )
         prediction_head_norm_config = NormalizationConfig(
@@ -210,7 +210,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             subtract_mean=True,
         )
         prediction_head_activation = activation_from_str(self.classifier_activation)
-        prediction_head_readout_config = FullPrecisionLinearConfig(
+        prediction_head_readout_config = LinearConfig(
             precision=activation_precision,
         )
         prediction_head_config = PredictionHeadConfig(

@@ -12,13 +12,15 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float
 from tokenizers import Tokenizer
 
+import equinox as eqx
+
+from lalamo.arrays import FullPrecisionArray
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
     DenseMLP,
-    FullPrecisionLinear,
     Identity,
-    LinearBase,
+    Linear,
     MLPBase,
     Normalization,
     Transformer,
@@ -137,12 +139,12 @@ def _fuse_full_precision_weights(
 
 
 def load_linear_and_fuse_scaling(
-    module: LinearBase,
+    module: Linear,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None = None,
     scaling_to_fuse: Array | None = None,
-) -> LinearBase:
+) -> Linear:
     """Load linear layer directly or fuse several sum-matrices into one linear layer.
     Additionally fuse final result with scaling weights that would follow after the layer.
     Args:
@@ -155,7 +157,7 @@ def load_linear_and_fuse_scaling(
     Returns:
         Linear layer with weights loaded into it
     """
-    assert isinstance(module, FullPrecisionLinear)
+    assert isinstance(module, Linear)
     if not module.has_biases:
         if sublayers_to_fuse:
             paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse]
@@ -180,7 +182,9 @@ def load_linear_and_fuse_scaling(
         if bias is not None:
             bias = bias * scaling_to_fuse
 
-    return load_parameters(lambda m: (m.weights, m.biases), module, (weights, bias))
+    base = FullPrecisionArray(data=weights.astype(module.activation_precision))
+    new_weights = base
+    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias), is_leaf=lambda x: x is None)
 
 
 def load_transformer_block(
@@ -201,21 +205,19 @@ def load_transformer_block(
             path / "wqkv",
             sublayers_to_fuse=None,
         )
-        assert isinstance(qkv_projection, FullPrecisionLinear)
+        assert isinstance(qkv_projection, Linear)
 
         # Permute QKV weights from interleaved RoPE format to rotate-half format
         permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
-            qkv_projection.weights,
+            qkv_projection.weights.value,
             num_heads=attn_module.num_heads,
             num_groups=attn_module.num_groups,
             head_dim=attn_module.head_dim,
         )
-        qkv_projection = load_parameters(
-            lambda m: (m.weights,),
-            qkv_projection,
-            (permuted_qkv_weights,),
-        )
-        assert isinstance(qkv_projection, FullPrecisionLinear)
+        base = FullPrecisionArray(data=permuted_qkv_weights.astype(qkv_projection.activation_precision))
+        new_weights = base
+        qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
+        assert isinstance(qkv_projection, Linear)
 
         out_projection = load_linear_and_fuse_scaling(
             attn_module.out_projection,
@@ -385,10 +387,10 @@ def load_transformer_block(
 
 def load_fish_audio_text_decoding_modules(
     transformer: Transformer,
-    output: FullPrecisionLinear,
+    output: Linear,
     weights_dict: Mapping[str, Array],
     fast: bool = False,
-) -> tuple[Transformer, FullPrecisionLinear]:
+) -> tuple[Transformer, Linear]:
     transformer = load_transformer_block(transformer, weights_dict=weights_dict, fast=fast)
 
     base_path = ParameterPath()
@@ -436,14 +438,14 @@ def load_vector_quantize(
 
     # Load out_proj with weight norm fusion
     # The original is a Conv1d with kernel_size=1, so weight shape is (out, in, 1)
-    # Our FullPrecisionLinear expects (out, in), so we remove the kernel dimension
+    # Our Linear expects (out, in), so we remove the kernel dimension
     out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
     # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
-    out_proj = load_parameters(
-        lambda m: (m.weights, m.biases),
-        module.out_proj,
-        (out_proj_weight, out_proj_bias),
+    base = FullPrecisionArray(data=out_proj_weight.astype(module.out_proj.activation_precision))
+    new_weights = base
+    out_proj = eqx.tree_at(
+        lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias), is_leaf=lambda x: x is None
     )
 
     return load_parameters(
@@ -536,10 +538,13 @@ def load_convnext_block(
     # PyTorch Linear weight is (out_features, in_features)
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    pointwise_conv_step1 = load_parameters(
+    base1 = FullPrecisionArray(data=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision))
+    new_weights1 = CompositeArray.from_quant(base1)
+    pointwise_conv_step1 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step1,
-        (pwconv1_weight, pwconv1_bias),
+        (new_weights1, pwconv1_bias),
+        is_leaf=lambda x: x is None,
     )
 
     # Load pointwise conv 2 (Linear layer), fusing layer scaling if present
@@ -550,10 +555,13 @@ def load_convnext_block(
         layer_scale = weights_dict[layer_scale_path]
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
-    pointwise_conv_step2 = load_parameters(
+    base2 = FullPrecisionArray(data=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision))
+    new_weights2 = CompositeArray.from_quant(base2)
+    pointwise_conv_step2 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step2,
-        (pwconv2_weight, pwconv2_bias),
+        (new_weights2, pwconv2_bias),
+        is_leaf=lambda x: x is None,
     )
 
     return load_parameters(
@@ -905,13 +913,13 @@ def load_fishaudio_text_decoder(
         basepath / "codebook_embeddings",
     )
 
-    if isinstance(module.fast_model_projection, FullPrecisionLinear):
+    if isinstance(module.fast_model_projection, Linear):
         fast_model_projection = load_linear_and_fuse_scaling(
             module.fast_model_projection,
             weights_dict,
             basepath / "fast_project_in",
         )
-        assert isinstance(fast_model_projection, FullPrecisionLinear)
+        assert isinstance(fast_model_projection, Linear)
     else:
         fast_model_projection = Identity()
 

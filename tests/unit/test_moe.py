@@ -5,7 +5,7 @@ from lalamo.modules import (
     GELU,
     DenseMLPConfig,
     ForwardPassMode,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     MixtureOfExpertsConfig,
     SoftmaxRouting,
 )
@@ -20,8 +20,8 @@ def test_moe_prefill_vs_decode_match() -> None:
     num_active_routed_experts = 2
 
     # Build Mixture-of-Experts config with full-precision linear layers
-    router_config = FullPrecisionLinearConfig(precision=jnp.float32)
-    expert_linear_config = FullPrecisionLinearConfig(precision=jnp.float32)
+    router_config = LinearConfig(precision=jnp.float32)
+    expert_linear_config = LinearConfig(precision=jnp.float32)
     expert_config = DenseMLPConfig(
         linear_config=expert_linear_config,
         activation=GELU(),

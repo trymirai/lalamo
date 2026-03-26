@@ -61,7 +61,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     VectorQuantizeConfig,
 )
 from lalamo.modules.embedding import TiedEmbeddingConfig
-from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
@@ -154,7 +154,7 @@ def test_vector_quantize_decode_code() -> None:
             logit_soft_cap=None,
             precision=jnp.float32,
         ),
-        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        out_proj_config=LinearConfig(precision=jnp.float32),
     )
     lalamo_vq = lalamo_vq_config.empty(
         input_dim=input_dim,
@@ -212,7 +212,7 @@ def test_residual_vector_quantize_from_codes() -> None:
             logit_soft_cap=None,
             precision=jnp.float32,
         ),
-        out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        out_proj_config=LinearConfig(precision=jnp.float32),
     )
     lalamo_rvq_config = ResidualVectorQuantizeConfig(
         precision=jnp.float32,
@@ -682,7 +682,7 @@ def test_convnext_block_matches_pytorch() -> None:
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        pwconv_config=LinearConfig(precision=jnp.float32),
     )
     spatial_params = ConvNeXtSpatialParams(
         mlp_ratio=mlp_ratio,
@@ -765,7 +765,7 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        pwconv_config=LinearConfig(precision=jnp.float32),
     )
     lalamo_config = UpsamplingBlockConfig(
         precision=jnp.float32,
@@ -887,7 +887,7 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=jnp.float32),
+        pwconv_config=LinearConfig(precision=jnp.float32),
     )
     upsampling_block_config = UpsamplingBlockConfig(
         precision=jnp.float32,

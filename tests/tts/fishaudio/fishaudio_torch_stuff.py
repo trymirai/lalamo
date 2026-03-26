@@ -30,7 +30,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import FishAudioText
 from lalamo.modules.audio.text_to_speech import TTSConfig, TTSModel
 from lalamo.modules.audio.vocoders import NoopVocoder, VocoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
-from lalamo.modules.linear import FullPrecisionLinearConfig
+from lalamo.modules.linear import LinearConfig
 from lalamo.modules.torch_interop import torch_to_jax
 
 from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
@@ -58,7 +58,7 @@ def from_fish_audio_config(
     if fish_audio_cfg.dim == fish_audio_cfg.fast_dim:
         fast_model_projection_config = None
     else:
-        fast_model_projection_config = FullPrecisionLinearConfig(precision)
+        fast_model_projection_config = LinearConfig(precision)
 
     assert fish_audio_cfg.fast_dim is not None
     return FishAudioTextDecoderConfig(
@@ -112,8 +112,8 @@ class ConfigMapping:
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         config: BaseModelArgs,
         precision: DTypeLike,
-    ) -> tuple[TransformerConfig, FullPrecisionLinearConfig]:
-        rope_config = UnscaledRoPEConfig(
+    ) -> tuple[TransformerConfig, LinearConfig]:
+        global_rope_config = UnscaledRoPEConfig(
             precision=precision,
             base=config.rope_base,
             max_sequence_length=config.max_seq_len,
@@ -129,8 +129,8 @@ class ConfigMapping:
             subtract_mean=False,
         )
 
-        qkv_projection_config = FullPrecisionLinearConfig(precision=precision)
-        out_projection_config = FullPrecisionLinearConfig(precision=precision)
+        qkv_projection_config = LinearConfig(precision=precision)
+        out_projection_config = LinearConfig(precision=precision)
         mixer_config = AttentionConfig(
             qkv_projection_config=qkv_projection_config,
             out_projection_config=out_projection_config,
@@ -148,7 +148,7 @@ class ConfigMapping:
             has_out_biases=False,
         )
 
-        mlp_linear_config = FullPrecisionLinearConfig(precision=precision)
+        mlp_linear_config = LinearConfig(precision=precision)
         mlp_use_up_biases = False
         mlp_use_down_biases = False
         mlp_config = DenseMLPConfig(
@@ -185,7 +185,7 @@ class ConfigMapping:
             hidden_dim=hidden_dim,
             context_length=context_length,
         )
-        linear_out_cfg = FullPrecisionLinearConfig(precision=precision)
+        linear_out_cfg = LinearConfig(precision=precision)
 
         return (transformer_cfg, linear_out_cfg)
 
