@@ -232,7 +232,7 @@ def test_q_lora_linear_config_empty_builds_q_lora_linear() -> None:
 
     assert isinstance(layer, QLoRALinear)
     assert layer.lora_down_weights.shape == (4, 2)
-    assert layer.lora_up_weights[0].shape == (2, 4)
+    assert layer.lora_up_weights.shape == (2, 4)
 
 
 def test_quant_aux_is_trainable_by_default() -> None:
@@ -361,11 +361,9 @@ def test_inject_lora_adapters_wraps_group_quantized_linear_without_changing_base
     assert injected_layer.config.lora_scale == 0.5
     assert jnp.array_equal(injected_layer.weights, layer.weights)
     assert jnp.array_equal(injected_layer.scales, layer.scales)
-    assert injected_layer.lora_down_weights.shape == (4, 4)
-    assert injected_layer.lora_up_weights[0].shape == (2, 3)
-    assert injected_layer.lora_up_weights[1].shape == (2, 5)
-    assert jnp.all(injected_layer.lora_up_weights[0] == 0)
-    assert jnp.all(injected_layer.lora_up_weights[1] == 0)
+    assert injected_layer.lora_down_weights.shape == (4, 2)
+    assert injected_layer.lora_up_weights.shape == (2, 8)
+    assert jnp.all(injected_layer.lora_up_weights == 0)
 
 
 def test_inject_lora_adapter_configs_wraps_group_quantized_linear_configs() -> None:
@@ -408,8 +406,83 @@ def test_lora_trainable_filter_keeps_only_lora_and_auxiliary_leaves() -> None:
 
     assert set(_selected_leaf_by_path(state.master_weights)) == {
         "lora_down_weights",
-        "lora_up_weights[0]",
+        "lora_up_weights",
     }
+
+
+def test_q_lora_import_weights_uses_kernel_ready_orientation() -> None:
+    config = QLoRALinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+        lora_rank=2,
+        lora_scale=1.0,
+    )
+    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(26))
+    exported_weights = layer.export_weights()
+
+    assert isinstance(exported_weights, dict)
+    assert exported_weights["down_weights"].shape == (2, 4)
+    assert exported_weights["up_weights"].shape == (8, 2)
+    assert jnp.array_equal(exported_weights["down_weights"], jnp.swapaxes(layer.lora_down_weights, -2, -1))
+    assert jnp.array_equal(exported_weights["up_weights"], jnp.swapaxes(layer.lora_up_weights, -2, -1))
+
+    imported_layer = layer.import_weights(exported_weights)
+
+    assert jnp.array_equal(imported_layer.lora_down_weights, layer.lora_down_weights)
+    assert jnp.array_equal(imported_layer.lora_up_weights, layer.lora_up_weights)
+
+
+def test_q_lora_linear_uses_single_fused_lora_path() -> None:
+    config = QLoRALinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+        lora_rank=2,
+        lora_scale=0.5,
+    )
+    layer = config.random_init(4, (2, 1), has_biases=True, key=jax.random.key(27))
+    layer = eqx.tree_at(
+        lambda current_layer: (
+            current_layer.weights,
+            current_layer.zero_points,
+            current_layer.scales,
+            current_layer.biases,
+            current_layer.lora_down_weights,
+            current_layer.lora_up_weights,
+        ),
+        layer,
+        (
+            jnp.zeros_like(layer.weights),
+            jnp.zeros_like(layer.zero_points),
+            jnp.ones_like(layer.scales),
+            jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32),
+            jnp.array(
+                [
+                    [1.0, 0.0],
+                    [0.0, 1.0],
+                    [1.0, 1.0],
+                    [0.0, 0.0],
+                ],
+                dtype=jnp.float32,
+            ),
+            jnp.array(
+                [
+                    [1.0, 2.0, 3.0],
+                    [4.0, 5.0, 6.0],
+                ],
+                dtype=jnp.float32,
+            ),
+        ),
+    )
+
+    outputs = layer(jnp.array([1.0, 2.0, 3.0, 4.0], dtype=jnp.float32))
+
+    assert len(outputs) == 2
+    assert jnp.allclose(outputs[0], jnp.array([13.0, 18.5], dtype=jnp.float32))
+    assert jnp.allclose(outputs[1], jnp.array([24.0], dtype=jnp.float32))
 
 
 def test_muon_weight_dimension_numbers_match_optimizer_groups() -> None:

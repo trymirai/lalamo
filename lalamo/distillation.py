@@ -136,21 +136,17 @@ def _inject_qlora_linear(
     qlora_config = _make_qlora_config(linear.config, lora_rank, lora_scale)
 
     leading_dims = linear.weights.shape[:-2]
-    hidden_lora_rank = linear.num_outputs * lora_rank
     max_down_abs_value = 1 / math.sqrt(linear.input_dim)
     lora_down_weights = jax.random.uniform(
         key,
-        (*leading_dims, linear.input_dim, hidden_lora_rank),
+        (*leading_dims, linear.input_dim, lora_rank),
         minval=-max_down_abs_value,
         maxval=max_down_abs_value,
         dtype=qlora_config.activation_precision,
     )
-    lora_up_weights = tuple(
-        jnp.zeros(
-            (*leading_dims, lora_rank, output_dim),
-            dtype=qlora_config.activation_precision,
-        )
-        for output_dim in linear.output_dims
+    lora_up_weights = jnp.zeros(
+        (*leading_dims, lora_rank, sum(linear.output_dims)),
+        dtype=qlora_config.activation_precision,
     )
 
     return QLoRALinear(
