@@ -1118,7 +1118,7 @@ def distill(
             eval_examples=recipe_defaults.eval_examples,
             max_sequence_length=recipe_defaults.max_sequence_length,
             batch_size=recipe_defaults.batch_size,
-            num_steps=steps or recipe_defaults.num_steps,
+            num_steps=recipe_defaults.num_steps if steps is None else steps,
             learning_rate=recipe_defaults.learning_rate,
             warmup_steps=recipe_defaults.warmup_steps,
             gradient_clip_norm=recipe_defaults.gradient_clip_norm,
