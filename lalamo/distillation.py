@@ -139,13 +139,13 @@ def _inject_qlora_linear(
     max_down_abs_value = 1 / math.sqrt(linear.input_dim)
     lora_down_weights = jax.random.uniform(
         key,
-        (*leading_dims, linear.input_dim, lora_rank),
+        (*leading_dims, lora_rank, linear.input_dim),
         minval=-max_down_abs_value,
         maxval=max_down_abs_value,
         dtype=qlora_config.activation_precision,
     )
     lora_up_weights = jnp.zeros(
-        (*leading_dims, lora_rank, sum(linear.output_dims)),
+        (*leading_dims, sum(linear.output_dims), lora_rank),
         dtype=qlora_config.activation_precision,
     )
 

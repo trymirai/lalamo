@@ -909,7 +909,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         max_down_abs_value = 1 / math.sqrt(input_dim)
         lora_down_weights = jax.random.uniform(
             down_key,
-            (input_dim, self.lora_rank),
+            (self.lora_rank, input_dim),
             minval=-max_down_abs_value,
             maxval=max_down_abs_value,
             dtype=self.activation_precision,
@@ -918,7 +918,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         max_up_abs_value = 1 / math.sqrt(self.lora_rank)
         lora_up_weights = jax.random.uniform(
             up_key,
-            (self.lora_rank, sum(output_dims)),
+            (sum(output_dims), self.lora_rank),
             minval=-max_up_abs_value,
             maxval=max_up_abs_value,
             dtype=self.activation_precision,
@@ -982,11 +982,11 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             biases = None
 
         lora_down_weights = dummy_array(
-            (*leading_dims, input_dim, self.lora_rank),
+            (*leading_dims, self.lora_rank, input_dim),
             dtype=self.activation_precision,
         )
         lora_up_weights = dummy_array(
-            (*leading_dims, self.lora_rank, sum(output_dims)),
+            (*leading_dims, sum(output_dims), self.lora_rank),
             dtype=self.activation_precision,
         )
 
@@ -1012,16 +1012,16 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
 
 
 class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
-    lora_down_weights: Float[Array, "*components in_channels lora_channels"] = field(
+    lora_down_weights: Float[Array, "*components lora_channels in_channels"] = field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
-            axes_names=(ShardingOrder.INPUT, ShardingOrder.OUTPUT),
+            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
-    lora_up_weights: Float[Array, "*components lora_channels total_out_channels"] = field(
+    lora_up_weights: Float[Array, "*components total_out_channels lora_channels"] = field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
-            axes_names=(ShardingOrder.INPUT, ShardingOrder.OUTPUT),
+            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
         ),
     )
 
@@ -1033,7 +1033,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 f" specified activation precision ({self.config.activation_precision}).",
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *ld_num_components, lora_down_input_dim, lora_down_output_dim = self.lora_down_weights.shape
+        *ld_num_components, lora_down_output_dim, lora_down_input_dim = self.lora_down_weights.shape
         if lora_down_output_dim != self.config.lora_rank:
             raise ValueError(
                 f"Number of output channels in LORA down weights ({lora_down_output_dim}) is not"
@@ -1056,7 +1056,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 f" ({self.config.activation_precision}).",
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *lu_num_components, lora_up_input_dim, lora_up_output_dim = self.lora_up_weights.shape
+        *lu_num_components, lora_up_output_dim, lora_up_input_dim = self.lora_up_weights.shape
         if lora_up_output_dim != sum(self.output_dims):
             raise ValueError(
                 f"Number of output channels in LORA up weights ({lora_up_output_dim}) is not"
@@ -1081,7 +1081,8 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
         joint_q_out = self._apply_weights(inputs)
-        joint_lora_out = (inputs @ self.lora_down_weights) @ self.lora_up_weights
+        lora_hidden = jnp.dot(self.lora_down_weights, inputs)
+        joint_lora_out = jnp.dot(self.lora_up_weights, lora_hidden)
         joint_out = joint_q_out + self.config.lora_scale * joint_lora_out
         if self.biases is not None:
             joint_out = joint_out + self.biases
@@ -1090,8 +1091,8 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     def export_weights(self) -> ParameterTree:
         quantized_linear_weights: dict[str, ParameterTree] = super().export_weights()  # type: ignore
         return dict(
-            down_weights=jnp.swapaxes(self.lora_down_weights, -2, -1),
-            up_weights=jnp.swapaxes(self.lora_up_weights, -2, -1),
+            down_weights=self.lora_down_weights,
+            up_weights=self.lora_up_weights,
             **quantized_linear_weights,
         )
 
@@ -1101,12 +1102,10 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
         weights = require_mapping(weights)
-        down_weights = require_array(weights["down_weights"])
-        up_weights = require_array(weights["up_weights"])
         result = replace(
             base,
-            lora_down_weights=jnp.swapaxes(down_weights, -2, -1),
-            lora_up_weights=jnp.swapaxes(up_weights, -2, -1),
+            lora_down_weights=require_array(weights["down_weights"]),
+            lora_up_weights=require_array(weights["up_weights"]),
         )
         return result
 
