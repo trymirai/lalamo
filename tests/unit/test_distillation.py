@@ -231,8 +231,8 @@ def test_q_lora_linear_config_empty_builds_q_lora_linear() -> None:
     layer = config.empty(4, (4,), has_biases=True)
 
     assert isinstance(layer, QLoRALinear)
-    assert layer.lora_down_weights.shape == (4, 2)
-    assert layer.lora_up_weights.shape == (2, 4)
+    assert layer.lora_down_weights.shape == (2, 4)
+    assert layer.lora_up_weights.shape == (4, 2)
 
 
 def test_quant_aux_is_trainable_by_default() -> None:
@@ -361,8 +361,8 @@ def test_inject_lora_adapters_wraps_group_quantized_linear_without_changing_base
     assert injected_layer.config.lora_scale == 0.5
     assert jnp.array_equal(injected_layer.weights, layer.weights)
     assert jnp.array_equal(injected_layer.scales, layer.scales)
-    assert injected_layer.lora_down_weights.shape == (4, 2)
-    assert injected_layer.lora_up_weights.shape == (2, 8)
+    assert injected_layer.lora_down_weights.shape == (2, 4)
+    assert injected_layer.lora_up_weights.shape == (8, 2)
     assert jnp.all(injected_layer.lora_up_weights == 0)
 
 
@@ -410,7 +410,7 @@ def test_lora_trainable_filter_keeps_only_lora_and_auxiliary_leaves() -> None:
     }
 
 
-def test_q_lora_import_weights_uses_kernel_ready_orientation() -> None:
+def test_q_lora_import_weights_round_trips_without_transpose() -> None:
     config = QLoRALinearConfig(
         group_size=2,
         weight_quantization_mode=QuantizationMode.UINT4,
@@ -425,8 +425,8 @@ def test_q_lora_import_weights_uses_kernel_ready_orientation() -> None:
     assert isinstance(exported_weights, dict)
     assert exported_weights["down_weights"].shape == (2, 4)
     assert exported_weights["up_weights"].shape == (8, 2)
-    assert jnp.array_equal(exported_weights["down_weights"], jnp.swapaxes(layer.lora_down_weights, -2, -1))
-    assert jnp.array_equal(exported_weights["up_weights"], jnp.swapaxes(layer.lora_up_weights, -2, -1))
+    assert jnp.array_equal(exported_weights["down_weights"], layer.lora_down_weights)
+    assert jnp.array_equal(exported_weights["up_weights"], layer.lora_up_weights)
 
     imported_layer = layer.import_weights(exported_weights)
 
@@ -461,17 +461,16 @@ def test_q_lora_linear_uses_single_fused_lora_path() -> None:
             jnp.array([1.0, 2.0, 3.0], dtype=jnp.float32),
             jnp.array(
                 [
-                    [1.0, 0.0],
-                    [0.0, 1.0],
-                    [1.0, 1.0],
-                    [0.0, 0.0],
+                    [1.0, 0.0, 1.0, 0.0],
+                    [0.0, 1.0, 1.0, 0.0],
                 ],
                 dtype=jnp.float32,
             ),
             jnp.array(
                 [
-                    [1.0, 2.0, 3.0],
-                    [4.0, 5.0, 6.0],
+                    [1.0, 4.0],
+                    [2.0, 5.0],
+                    [3.0, 6.0],
                 ],
                 dtype=jnp.float32,
             ),
