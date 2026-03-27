@@ -9,7 +9,12 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import SiLU
-from lalamo.modules.audio.text_decoder import TTSDecodingContext, TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.audio.text_decoder import (
+    CodebookCodes,
+    TTSDecodingContext,
+    TTSTextDecoder,
+    TTSTextDecoderConfigBase,
+)
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -135,6 +140,7 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     predictor_hidden_size: int
     predictor_vocab_size: int
     num_code_groups: int
+    n_q_semantic: int
     max_new_tokens: int
 
     codec_bos_id: int
@@ -149,17 +155,6 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     tts_pad_token_id: int
     spk_id: Mapping[str, int]
     codec_language_id: Mapping[str, int]
-
-    @property
-    def default_speaker_id(self) -> str | None:
-        if not self.spk_id:
-            return None
-        first, *_ = self.spk_id
-        return first
-
-    @property
-    def default_style(self) -> str | None:
-        return None
 
     def format_instruction(self, style: str) -> str:
         return f"<|im_start|>user\n{style}<|im_end|>\n"
@@ -482,7 +477,7 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         context: TTSDecodingContext,
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray,
-    ) -> Int[Array, "codebooks tokens"]:
+    ) -> CodebookCodes:
         if text_tokens.ndim != 2:
             raise ValueError(f"text_tokens must be rank 2, got {text_tokens.shape}")
         batch_size, _ = text_tokens.shape
@@ -585,9 +580,19 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             talker_state = talker_result.updated_state
 
         if not generated_step_codes:
-            return jnp.zeros((self.config.num_code_groups, 0), dtype=jnp.int32)
+            n_q_sem = self.config.n_q_semantic
+            n_q_aco = self.config.num_code_groups - n_q_sem
+            return CodebookCodes(
+                semantic=jnp.zeros((n_q_sem, 0), dtype=jnp.int32),
+                acoustic=jnp.zeros((n_q_aco, 0), dtype=jnp.int32),
+            )
 
-        return jnp.stack(generated_step_codes, axis=1).astype(jnp.int32)
+        all_codes = jnp.stack(generated_step_codes, axis=1).astype(jnp.int32)
+        n_q_sem = self.config.n_q_semantic
+        return CodebookCodes(
+            semantic=all_codes[:n_q_sem, :],
+            acoustic=all_codes[n_q_sem:, :],
+        )
 
     def export_weights(self) -> ParameterTree[Array]:
         if self.talker_to_predictor_projection is None:

@@ -47,8 +47,8 @@ class TTSGenerator(eqx.Module):
     message_processor: TTSMessageProcessor = eqx.field(static=True)
 
     @property
-    def default_speaker_id(self) -> str | None:
-        return self.tts_model.text_decoder.config.default_speaker_id
+    def default_speaker(self) -> str | None:
+        return self.tts_model.text_decoder.config.default_speaker
 
     @property
     def default_style(self) -> str | None:
@@ -77,15 +77,6 @@ class TTSGenerator(eqx.Module):
             encoding=AudioEncoding.PCM,
         )
 
-    def _tokenize_instruction(self, style: str | None) -> Int[Array, "batch tokens"] | None:
-        if style is None:
-            return None
-        instruction_text = self.tts_model.text_decoder.config.format_instruction(style)
-        if instruction_text is None:
-            return None
-        token_ids = self.message_processor.tokenize_text(instruction_text)
-        return jnp.asarray(token_ids)[None, :]
-
     def generate_speech(
         self,
         messages: Iterable[TTSMessage],
@@ -95,29 +86,37 @@ class TTSGenerator(eqx.Module):
         messages_list = list(messages)
         if len(messages_list) != 1:
             raise ValueError(f"Expected exactly 1 message, got {len(messages_list)}")
-        msg = messages_list[0]
+        message = messages_list[0]
 
-        cfg = self.tts_model.text_decoder.config
-        speaker = msg.speaker_id if msg.speaker_id is not None else cfg.default_speaker_id
-        style = msg.style if msg.style is not None else cfg.default_style
+        config = self.tts_model.text_decoder.config
+        speaker = message.speaker_id if message.speaker_id is not None else config.default_speaker
+        style = message.style if message.style is not None else config.default_style
+        language = message.language if message.language is not None else config.default_language
+
+        instruction_text = config.format_instruction(style) if style is not None else None
+        instruction_tokens = (
+            jnp.asarray(self.message_processor.tokenize_text(instruction_text))[None, :]
+            if instruction_text is not None
+            else None
+        )
 
         context = TTSDecodingContext(
             speaker=speaker,
-            language=msg.language or "auto",
-            instruction_tokens=self._tokenize_instruction(style),
+            language=language,
+            instruction_tokens=instruction_tokens,
         )
 
         text_tokens = self.tokenize_text(messages_list)
         random_key = random_key if random_key is not None else jax.random.key(123)
 
-        semantic_tokens = self.tts_model.text_decoder.decode_utterance(
+        codes = self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             context=context,
             sampling_policy=sampling_policy,
             key=random_key,
         )
 
-        audio_features = self.tts_model.audio_decoder.audio_from_codes(semantic_tokens)
+        audio_features = self.tts_model.audio_decoder.audio_from_codes(codes)
         audio_waveform = self.tts_model.vocoder(audio_features)
 
         return TTSGenerationResult(
@@ -134,7 +133,7 @@ class TTSGenerator(eqx.Module):
 
         config = config_converter.structure(config_json["model_config"], TTSGeneratorConfig)
         assert isinstance(config, TTSGeneratorConfig)
-        with Path(path / "model.safetensors").open("rb") as fd:
+        with (path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
             weights = unflatten_parameters(weights_dict)
             model = config.tts_config.empty().import_weights(weights)

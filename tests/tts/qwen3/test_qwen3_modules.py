@@ -31,7 +31,7 @@ from lalamo.modules.audio.common_modules import (
     SnakeBetaConfig,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
-    Qwen3TTSEuclideanCodebookConfig,
+    EuclideanCodebookConfig,
 )
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
 
@@ -127,7 +127,7 @@ def test_euclidean_codebook_decode_matches_torch() -> None:
     torch_codebook.cluster_usage.data = torch.from_numpy(random_normal(codebook_size, seed=20).clip(0.1))
     torch_codebook.embedding_sum.data = torch.from_numpy(random_normal(codebook_size, dim, seed=21))
 
-    lalamo_codebook = Qwen3TTSEuclideanCodebookConfig(precision=jnp.float32).empty(dim, codebook_size)
+    lalamo_codebook = EuclideanCodebookConfig(precision=jnp.float32).empty(dim, codebook_size)
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_codebook.state_dict())
     lalamo_codebook = load_qwen3_tts_euclidean_codebook(lalamo_codebook, weights_dict, ParameterPath())
 

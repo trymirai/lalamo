@@ -1,24 +1,15 @@
-from collections.abc import (
-    Callable,
-    Iterator,
-    Mapping,
-)
-from contextlib import contextmanager
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
-from pathlib import Path
 from typing import Any, ClassVar, cast, get_args, get_origin
 
 import cattrs
-import jax.numpy as jnp
-from jaxtyping import DTypeLike
 
-from lalamo.common import cast_if_float
 from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
-from lalamo.safetensors import safe_read
-from lalamo.utils import MapDictValues
+
+from .origins import FileSpec, HuggingFaceOrigin, Origin
 
 __all__ = [
     "ConfigMap",
@@ -27,7 +18,6 @@ __all__ = [
     "ModelSpec",
     "ModelType",
     "UseCase",
-    "WeightsType",
     "awq_model_spec",
     "build_quantized_models",
 ]
@@ -40,40 +30,8 @@ class ModelType(StrEnum):
     LATENT_TTS_MODEL = "latent_tts_model"
 
 
-class WeightsType(Enum):
-    SAFETENSORS = "safetensors"
-    TORCH = "torch"
-    NEMO = "nemo"
-
-    @contextmanager
-    def load(
-        self,
-        filename: Path | str,
-        float_dtype: DTypeLike,
-    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        if self == WeightsType.SAFETENSORS:
-            with Path(filename).open("rb") as fd:
-                (metadata_dict, weights_dict) = safe_read(fd)
-                yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights_dict), metadata_dict or {}
-        else:
-            # NOTE: this path also includes Nemo models, because we expect the model to be downloaded and
-            # extracted. After that toch checkpoint contained in the model will later be processed here.
-            import torch
-
-            from lalamo.modules.torch_interop import torch_to_jax
-
-            torch_weights = torch.load(filename, map_location="cpu", weights_only=True)
-            yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
-
-
 class UseCase(Enum):
     CODE = "code"
-
-
-@dataclass(frozen=True)
-class FileSpec:
-    filename: str
-    repo: str | None = None
 
 
 @dataclass(frozen=True)
@@ -85,7 +43,7 @@ class JSONFieldSpec:
 @dataclass(frozen=True)
 class ConfigMap:
     model_config: FileSpec = field(default=FileSpec("config.json"))
-    tokenizer: FileSpec | str | None = field(default=FileSpec("tokenizer.json"))
+    tokenizer: FileSpec | None = field(default=FileSpec("tokenizer.json"))
     tokenizer_config: FileSpec = field(default=FileSpec("tokenizer_config.json"))
     generation_config: FileSpec | GenerationConfig | None = field(default=FileSpec("generation_config.json"))
     chat_template: FileSpec | JSONFieldSpec | str | None = None
@@ -120,7 +78,7 @@ def _unstructure_foreign_config_factory(t: object, c: cattrs.Converter) -> Calla
     return _hook
 
 
-def _structure_file_spec_or_str(value: object, _type: object) -> FileSpec | str | None:
+def _structure_system_prompt(value: object, _type: object) -> FileSpec | str | None:
     if value is None:
         return None
     if isinstance(value, str):
@@ -129,7 +87,7 @@ def _structure_file_spec_or_str(value: object, _type: object) -> FileSpec | str 
         value = cast("dict[Any, Any]", value)
         if "filename" in value:
             return FileSpec(**value)
-    raise ValueError(f"Invalid FileSpec | str | None value: {value}")
+    raise ValueError(f"Invalid system_prompt value: {value}")
 
 
 def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFieldSpec | str | None:
@@ -149,6 +107,23 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
     raise ValueError(f"Invalid chat_template value: {value}")
 
 
+def _structure_origin(value: object, _type: object) -> Origin:
+    if isinstance(value, Origin):
+        return value
+    if isinstance(value, str):
+        return HuggingFaceOrigin(repo=value)
+    if isinstance(value, dict):
+        value = cast("dict[Any, Any]", value)
+        return HuggingFaceOrigin(repo=value["repo"])
+    raise ValueError(f"Invalid origin value: {value}")
+
+
+def _unstructure_origin(value: Origin) -> dict:
+    if isinstance(value, HuggingFaceOrigin):
+        return {"repo": value.repo}
+    return {"description": value.description}
+
+
 @dataclass(frozen=True)
 class ModelSpec:
     _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
@@ -156,13 +131,15 @@ class ModelSpec:
     _converter.register_structure_hook_factory(_is_foreign_config_type, _structure_foreign_config_factory)
     _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
     _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
-    _converter.register_structure_hook(FileSpec | str | None, _structure_file_spec_or_str)
+    _converter.register_structure_hook(FileSpec | str | None, _structure_system_prompt)
+    _converter.register_structure_hook(Origin, _structure_origin)
+    _converter.register_unstructure_hook(HuggingFaceOrigin, _unstructure_origin)
 
     vendor: str
     family: str
     name: str
     size: str
-    repo: str
+    source: Origin
     config_type: type[ForeignConfig]
     quantization: QuantizationMode | None = None
     output_parser_regex: str | None = None
@@ -170,12 +147,10 @@ class ModelSpec:
     user_role_name: str = "user"
     assistant_role_name: str = "assistant"
     tool_role_name: str = "tool"
-    weights_type: WeightsType = WeightsType.SAFETENSORS
     model_type: ModelType = ModelType.LANGUAGE_MODEL
     configs: ConfigMap = field(default=ConfigMap())
     use_cases: tuple[UseCase, ...] = tuple()
     grammar_start_tokens: tuple[str, ...] = tuple()
-    local_dir: Path | None = None
 
     @classmethod
     def from_json(cls, json_data: dict) -> "ModelSpec":
@@ -187,7 +162,7 @@ class ModelSpec:
 
 def awq_model_spec(
     model_spec: ModelSpec,
-    repo: str,
+    source: Origin,
     quantization: QuantizationMode = QuantizationMode.UINT4,
 ) -> ModelSpec:
     return ModelSpec(
@@ -196,10 +171,9 @@ def awq_model_spec(
         name=f"{model_spec.name}-AWQ",
         size=model_spec.size,
         quantization=quantization,
-        repo=repo,
+        source=source,
         config_type=model_spec.config_type,
         configs=model_spec.configs,
-        weights_type=model_spec.weights_type,
         use_cases=model_spec.use_cases,
         grammar_start_tokens=model_spec.grammar_start_tokens,
     )
@@ -218,9 +192,11 @@ def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
 
     quantized_model_specs: list[ModelSpec] = []
     for model_spec in model_specs:
-        if model_spec.repo not in quantization_compatible_repos:
+        if not isinstance(model_spec.source, HuggingFaceOrigin):
             continue
-        quantized_repo = "trymirai/{}-AWQ".format(model_spec.repo.split("/")[-1])
-        quantized_model_spec = awq_model_spec(model_spec, quantized_repo)
+        if model_spec.source.repo not in quantization_compatible_repos:
+            continue
+        quantized_source = HuggingFaceOrigin(repo="trymirai/{}-AWQ".format(model_spec.source.repo.split("/")[-1]))
+        quantized_model_spec = awq_model_spec(model_spec, quantized_source)
         quantized_model_specs.append(quantized_model_spec)
     return quantized_model_specs

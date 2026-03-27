@@ -24,7 +24,7 @@ from lalamo.message_processor import (
     UserMessage,
 )
 from lalamo.model_import import ModelSpec, import_model
-from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
+from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase
 from lalamo.models import ClassifierModel, LanguageModel
 from lalamo.modules.common import ShardingConfig, pad_and_apply_data_sharding
 from lalamo.quantization import QuantizationMode
@@ -60,7 +60,6 @@ __all__ = [
     "TrainCallbacks",
     "UseCase",
     "UserMessage",
-    "WeightsType",
     "collect_traces",
     "convert",
     "estimate_batchsize",

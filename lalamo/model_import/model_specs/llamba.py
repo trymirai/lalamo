@@ -2,6 +2,7 @@ from lalamo.model_import.model_configs import HFLlambaConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec
+from .origins import HuggingFaceOrigin
 
 __all__ = ["LLAMBA_MODELS"]
 
@@ -12,7 +13,7 @@ LLAMBA_MODELS = [
         name="Llamba-1B",
         size="1B",
         quantization=None,
-        repo="cartesia-ai/Llamba-1B",
+        source=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B"),
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "meta-llama/Llama-3.2-1B-Instruct"),
@@ -27,7 +28,7 @@ LLAMBA_MODELS = [
         name="Llamba-1B-4bit-mlx",
         size="1B",
         quantization=QuantizationMode.UINT4,
-        repo="cartesia-ai/Llamba-1B-4bit-mlx",
+        source=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B-4bit-mlx"),
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             model_config=FileSpec("config.json", "cartesia-ai/Llamba-1B"),

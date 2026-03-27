@@ -14,7 +14,12 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
-from lalamo.modules.audio.text_decoder import TTSDecodingContext, TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.audio.text_decoder import (
+    CodebookCodes,
+    TTSDecodingContext,
+    TTSTextDecoder,
+    TTSTextDecoderConfigBase,
+)
 from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
@@ -47,17 +52,29 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
         context: TTSDecodingContext,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
         key: PRNGKeyArray,
-    ) -> Int[Array, "batch num_codebooks tokens"]:
+    ) -> CodebookCodes:
         """Generate random codebook indices with length derived from input tokens."""
         batch_size = text_tokens.shape[0]
         output_length = text_tokens.shape[1]
+        n_sem = 1
+        n_aco = self.config.num_codebooks - n_sem
 
-        return jax.random.randint(
-            key,
-            shape=(batch_size, self.config.num_codebooks, output_length),
-            minval=0,
-            maxval=self.config.codebook_size,
-            dtype=jnp.int32,
+        key_sem, key_aco = jax.random.split(key)
+        return CodebookCodes(
+            semantic=jax.random.randint(
+                key_sem,
+                shape=(batch_size, n_sem, output_length),
+                minval=0,
+                maxval=self.config.codebook_size,
+                dtype=jnp.int32,
+            ),
+            acoustic=jax.random.randint(
+                key_aco,
+                shape=(batch_size, n_aco, output_length),
+                minval=0,
+                maxval=self.config.codebook_size,
+                dtype=jnp.int32,
+            ),
         )
 
     def export_weights(self) -> ParameterTree[Array]:

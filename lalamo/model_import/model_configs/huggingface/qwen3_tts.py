@@ -47,11 +47,9 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
     Qwen3TTSPreTransformerLayerConfig,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
-    Qwen3TTSEuclideanCodebookConfig,
-    Qwen3TTSResidualVectorQuantizationConfig,
-    Qwen3TTSResidualVectorQuantizerConfig,
-    Qwen3TTSSplitResidualVectorQuantizerConfig,
-    Qwen3TTSVectorQuantizationConfig,
+    EuclideanCodebookConfig,
+    ResidualVectorQuantizerConfig,
+    VectorQuantizationConfig,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import (
     Qwen3TTSTextDecoder,
@@ -201,6 +199,7 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
                 activation_precision,
                 self.talker_config,
                 self,
+                dc,
                 context_length,
             )
 
@@ -288,7 +287,7 @@ def _clamp_context(context_length: int | None, max_pos: int) -> int:
 def _build_audio_decoder_config(
     precision: DTypeLike,
     dc: Qwen3TTSTokenizer12HzDecoderConfig,
-    top: Qwen3TTSTokenizer12HzConfig,
+    top_level_config: Qwen3TTSTokenizer12HzConfig,
 ) -> Qwen3TTSAudioDecoderConfig:
     linear_config = FullPrecisionLinearConfig(precision=precision)
     norm_config = NormalizationConfig(
@@ -363,20 +362,14 @@ def _build_audio_decoder_config(
         ),
         linear_config=linear_config,
     )
-    quantizer_config = Qwen3TTSSplitResidualVectorQuantizerConfig(
+    quantizer_config = ResidualVectorQuantizerConfig(
         precision=precision,
-        residual_vector_quantizer_config=Qwen3TTSResidualVectorQuantizerConfig(
+        vector_quantization_config=VectorQuantizationConfig(
             precision=precision,
-            rvq_config=Qwen3TTSResidualVectorQuantizationConfig(
-                precision=precision,
-                vector_quantization_config=Qwen3TTSVectorQuantizationConfig(
-                    precision=precision,
-                    codebook_config=Qwen3TTSEuclideanCodebookConfig(precision=precision),
-                    project_out_config=linear_config,
-                ),
-            ),
-            output_projection_config=linear_config,
+            codebook_config=EuclideanCodebookConfig(precision=precision),
+            project_out_config=linear_config,
         ),
+        output_projection_config=linear_config,
         n_q_semantic=dc.num_semantic_quantizers,
     )
 
@@ -408,8 +401,8 @@ def _build_audio_decoder_config(
             snake_config=snake_config,
             decoder_block_config=decoder_block_config,
         ),
-        samplerate=top.output_sample_rate,
-        decode_upsample_rate=top.decode_upsample_rate,
+        samplerate=top_level_config.output_sample_rate,
+        decode_upsample_rate=top_level_config.decode_upsample_rate,
         num_quantizers=dc.num_quantizers,
         codebook_size=dc.codebook_size,
         codebook_dim=dc.codebook_dim,
@@ -425,7 +418,8 @@ def _build_audio_decoder_config(
 def _build_text_decoder_config(
     precision: DTypeLike,
     talker: Qwen3TTSTalkerConfig,
-    top: Qwen3TTSTokenizer12HzConfig,
+    top_level_config: Qwen3TTSTokenizer12HzConfig,
+    decoder_config: Qwen3TTSTokenizer12HzDecoderConfig,
     context_length: int | None,
 ) -> Qwen3TTSTextDecoderConfig:
     predictor = talker.code_predictor_config
@@ -443,9 +437,9 @@ def _build_text_decoder_config(
             f"Predictor attention dropout is not implemented; expected 0.0, got {predictor.attention_dropout}.",
         )
 
-    assert top.tts_pad_token_id is not None, "tts_pad_token_id is required for talker config"
-    assert top.tts_bos_token_id is not None, "tts_bos_token_id is required for talker config"
-    assert top.tts_eos_token_id is not None, "tts_eos_token_id is required for talker config"
+    assert top_level_config.tts_pad_token_id is not None, "tts_pad_token_id is required for talker config"
+    assert top_level_config.tts_bos_token_id is not None, "tts_bos_token_id is required for talker config"
+    assert top_level_config.tts_eos_token_id is not None, "tts_eos_token_id is required for talker config"
 
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
@@ -490,7 +484,10 @@ def _build_text_decoder_config(
         ),
     )
 
+    first_speaker, *_ = talker.spk_id if talker.spk_id else (None,)
+
     return Qwen3TTSTextDecoderConfig(
+        default_speaker=first_speaker,
         precision=precision,
         codec_embedding_config=embedding_config,
         text_embedding_config=embedding_config,
@@ -505,6 +502,7 @@ def _build_text_decoder_config(
         predictor_hidden_size=predictor.hidden_size,
         predictor_vocab_size=predictor.vocab_size,
         num_code_groups=talker.num_code_groups,
+        n_q_semantic=decoder_config.num_semantic_quantizers,
         max_new_tokens=_clamp_context(context_length, talker.max_position_embeddings),
         codec_bos_id=talker.codec_bos_id,
         codec_eos_token_id=talker.codec_eos_token_id,
@@ -513,9 +511,9 @@ def _build_text_decoder_config(
         codec_nothink_id=talker.codec_nothink_id,
         codec_think_bos_id=talker.codec_think_bos_id,
         codec_think_eos_id=talker.codec_think_eos_id,
-        tts_bos_token_id=top.tts_bos_token_id,
-        tts_eos_token_id=top.tts_eos_token_id,
-        tts_pad_token_id=top.tts_pad_token_id,
+        tts_bos_token_id=top_level_config.tts_bos_token_id,
+        tts_eos_token_id=top_level_config.tts_eos_token_id,
+        tts_pad_token_id=top_level_config.tts_pad_token_id,
         spk_id=talker.spk_id,
         codec_language_id=talker.codec_language_id,
     )

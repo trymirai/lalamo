@@ -1,13 +1,18 @@
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Self
+from typing import NamedTuple, Self
 
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 from lalamo.sampling import SamplingPolicy
+
+
+class CodebookCodes(NamedTuple):
+    semantic: Int[Array, "..."]
+    acoustic: Int[Array, "..."]
 
 
 @dataclass(frozen=True)
@@ -17,21 +22,17 @@ class TTSDecodingContext:
     instruction_tokens: Array | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class TTSTextDecoderConfigBase(RegistryABC):
+    default_speaker: str | None = None
+    default_style: str | None = None
+    default_language: str = "auto"
+
     @abstractmethod
     def empty(self) -> "TTSTextDecoder": ...
 
     @abstractmethod
     def random_init(self, *, key: PRNGKeyArray) -> "TTSTextDecoder": ...
-
-    @property
-    def default_speaker_id(self) -> str | None:
-        return None
-
-    @property
-    def default_style(self) -> str | None:
-        return None
 
     def format_instruction(self, style: str) -> str | None:  # noqa: ARG002
         return None
@@ -59,4 +60,4 @@ class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
         context: TTSDecodingContext,
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray,
-    ) -> Array: ...
+    ) -> CodebookCodes: ...

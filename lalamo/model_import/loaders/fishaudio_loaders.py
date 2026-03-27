@@ -523,88 +523,27 @@ def load_upsampler(
 def load_downsample_rvq(
     module: DownsampleResidualVectorQuantize,
     weights_dict: Mapping[str, Array],
-    path: ParameterPath | None = None,
+    path: ParameterPath,
 ) -> DownsampleResidualVectorQuantize:
-    """Loads a DownsampleResidualVectorQuantize module from weights.
-
-    This function handles the complete loading of the audio decoder module, including:
-    - semantic_quantizer: ResidualVectorQuantize with weight-normalized projections
-    - quantizer: ResidualVectorQuantize with weight-normalized projections
-    - upsample: Upsampler with transpose convolutions and ConvNeXt blocks
-    - post_module: Transformer for post-processing
-
-    Weight normalization is fused using PyTorch's remove_weight_norm internally.
-
-    Expected weight structure:
-        semantic_quantizer:
-            - semantic_quantizer.quantizers.0.in_proj.weight_g/weight_v/bias
-            - semantic_quantizer.quantizers.0.out_proj.weight_g/weight_v/bias
-            - semantic_quantizer.quantizers.0.codebook.weight
-            - ... (for each quantizer)
-
-        quantizer:
-            - quantizer.quantizers.0.in_proj.weight_g/weight_v/bias
-            - quantizer.quantizers.0.out_proj.weight_g/weight_v/bias
-            - quantizer.quantizers.0.codebook.weight
-            - ... (for each quantizer)
-
-        upsample (UpsamplingBlocks):
-            - upsample.0.0.conv.weight (transpose conv)
-            - upsample.0.0.conv.bias
-            - upsample.0.1.gamma (ConvNeXt LayerScale)
-            - upsample.0.1.dwconv.conv.weight
-            - upsample.0.1.dwconv.conv.bias
-            - upsample.0.1.norm.weight
-            - upsample.0.1.norm.bias
-            - upsample.0.1.pwconv1.weight
-            - upsample.0.1.pwconv1.bias
-            - upsample.0.1.pwconv2.weight
-            - upsample.0.1.pwconv2.bias
-            - ... (for each upsampling block)
-
-        post_module (Transformer):
-            - [SKIP] post_module.freqs_cis (generated internally, not loaded)
-            - [SKIP] post_module.causal_mask (generated internally, not loaded)
-            - post_module.layers.0.attention.wqkv.weight
-            - post_module.layers.0.attention.wo.weight
-            - post_module.layers.0.feed_forward.w1.weight
-            - post_module.layers.0.feed_forward.w3.weight
-            - post_module.layers.0.feed_forward.w2.weight
-            - post_module.layers.0.ffn_norm.weight
-            - post_module.layers.0.attention_norm.weight
-            - post_module.layers.0.attention_layer_scale.gamma
-            - post_module.layers.0.ffn_layer_scale.gamma
-            - ... (for each layer)
-            - post_module.norm.weight
-
-    Args:
-        module: The DownsampleResidualVectorQuantize module to load weights into.
-        weights_dict: Dictionary mapping parameter paths to weight arrays.
-
-    Returns:
-        DownsampleResidualVectorQuantize module with loaded weights.
-    """
-    base_path = ParameterPath() if path is None else path
-
     semantic_quantizer = load_residual_vector_quantize(
         module.semantic_quantizer,
         weights_dict,
-        base_path / "semantic_quantizer",
+        path / "semantic_quantizer",
     )
 
     quantizer = load_residual_vector_quantize(
         module.quantizer,
         weights_dict,
-        base_path / "quantizer",
+        path / "quantizer",
     )
 
     upsampler = load_upsampler(
         module.upsampler,
         weights_dict,
-        base_path / "upsample",
+        path / "upsample",
     )
 
-    post_module = load_transformer_block(module.post_module, weights_dict, fast=False, path=base_path / "post_module")
+    post_module = load_transformer_block(module.post_module, weights_dict, fast=False, path=path / "post_module")
 
     return load_parameters(
         lambda m: (m.semantic_quantizer, m.quantizer, m.upsampler, m.post_module),
@@ -667,13 +606,12 @@ def load_audio_decoder_block(
 def load_audio_decoder(
     module: DACDecoder,
     weights_dict: Mapping[str, Array],
-    path: ParameterPath | None = None,
+    path: ParameterPath,
 ) -> DACDecoder:
-    base = ParameterPath() if path is None else path
     return load_dac_decoder(
         module,
         weights_dict,
-        base / "model",
+        path / "model",
         load_activation=load_snake1d,
         load_residual=load_residual_unit,
     )

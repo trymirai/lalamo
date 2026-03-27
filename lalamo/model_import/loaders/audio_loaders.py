@@ -1,11 +1,3 @@
-"""Shared loaders for TTS audio modules.
-
-Generic loaders for ConvNeXtBlock, UpsamplingBlock, DecoderBlock, and DACDecoder.
-Model-specific loaders pass activation and residual-unit callbacks to
-customize behavior per model family (similar to how LLM loaders parameterize
-path names in load_huggingface_decoder).
-"""
-
 from collections.abc import Callable, Mapping
 
 from jaxtyping import Array
@@ -37,7 +29,6 @@ def load_convnext_block(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> ConvNeXtBlock:
-    """Load ConvNeXtBlock, fusing gamma (LayerScale) into pwconv2 if present."""
     depthwise_conv = load_causal_conv1d(module.depthwise_conv, weights_dict, path / "dwconv" / "conv")
     norm = load_parameters(
         lambda m: (m.scales, m.biases),

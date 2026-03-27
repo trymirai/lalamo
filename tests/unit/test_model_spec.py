@@ -1,5 +1,6 @@
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.model_import.model_specs.common import ModelSpec, WeightsType
+from lalamo.model_import.model_specs.common import ModelSpec
+from lalamo.model_import.model_specs.origins import HuggingFaceOrigin
 
 EXAMPLE_JSON = {
     "vendor": "Meta",
@@ -7,14 +8,13 @@ EXAMPLE_JSON = {
     "name": "Llama-3.2-1B-Instruct",
     "size": "1B",
     "quantization": None,
-    "repo": "meta-llama/Llama-3.2-1B-Instruct",
+    "source": {"repo": "meta-llama/Llama-3.2-1B-Instruct"},
     "config_type": "HFLlamaConfig",
     "output_parser_regex": None,
     "system_role_name": "system",
     "user_role_name": "user",
     "assistant_role_name": "assistant",
     "tool_role_name": "tool",
-    "weights_type": "safetensors",
     "use_cases": [],
 }
 
@@ -26,14 +26,14 @@ def test_deserialization() -> None:
     assert model_spec.name == "Llama-3.2-1B-Instruct"
     assert model_spec.size == "1B"
     assert model_spec.quantization is None
-    assert model_spec.repo == "meta-llama/Llama-3.2-1B-Instruct"
+    assert isinstance(model_spec.source, HuggingFaceOrigin)
+    assert model_spec.source.repo == "meta-llama/Llama-3.2-1B-Instruct"
     assert model_spec.config_type is HFLlamaConfig
     assert model_spec.output_parser_regex is None
     assert model_spec.system_role_name == "system"
     assert model_spec.user_role_name == "user"
     assert model_spec.assistant_role_name == "assistant"
     assert model_spec.tool_role_name == "tool"
-    assert model_spec.weights_type == WeightsType.SAFETENSORS
     assert model_spec.use_cases == ()
 
 
@@ -44,7 +44,7 @@ def test_consistency() -> None:
         name="Llama-3.2-1B-Instruct",
         size="1B",
         quantization=None,
-        repo="meta-llama/Llama-3.2-1B-Instruct",
+        source=HuggingFaceOrigin(repo="meta-llama/Llama-3.2-1B-Instruct"),
         config_type=HFLlamaConfig,
         use_cases=tuple(),
     )

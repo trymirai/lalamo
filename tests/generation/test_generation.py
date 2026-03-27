@@ -11,7 +11,7 @@ from tests.conftest import ConvertModel
 
 @pytest.fixture
 def language_model(core_llm_spec: ModelSpec, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(core_llm_spec.repo)
+    model_dir = convert_model(core_llm_spec.source.description)
     return LanguageModelConfig.load_model(model_dir)
 
 

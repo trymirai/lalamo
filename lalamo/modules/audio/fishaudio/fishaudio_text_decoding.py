@@ -12,7 +12,12 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
-from lalamo.modules.audio.text_decoder import TTSDecodingContext, TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.audio.text_decoder import (
+    CodebookCodes,
+    TTSDecodingContext,
+    TTSTextDecoder,
+    TTSTextDecoderConfigBase,
+)
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
@@ -58,14 +63,6 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
 
     short_logits_size: int = SHORT_LOGITS_SIZE
     repeat_window_size: int = REPEAT_WINDOW_SIZE
-
-    @property
-    def default_speaker_id(self) -> str:
-        return "speaker:0"
-
-    @property
-    def default_style(self) -> str:
-        return "interleave"
 
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
@@ -308,7 +305,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         context: TTSDecodingContext,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray,
-    ) -> Int[Array, "num_codebooks tokens"]:
+    ) -> CodebookCodes:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
         generation loop. Processing text tokens through the slow transformer and generating
@@ -359,8 +356,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
         if first_codes[0, 0] == self.config.im_end_token_id:
-            codes = seq[1:, prompt_length : prompt_length + 1]
-            return codes
+            all_codes = seq[1:, prompt_length : prompt_length + 1]
+            return CodebookCodes(semantic=all_codes[:1, :], acoustic=all_codes[1:, :])
 
         cur_token = first_codes
         generated_count = 1
@@ -403,10 +400,10 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             cur_token = next_codes
 
         # Extract codebook codes (exclude text token row and prompt, exclude last token which is end token)
-        codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
-        assert jnp.all(codes >= 0), "Negative code found"
+        all_codes = seq[1:, prompt_length : prompt_length + generated_count - 1]
+        assert jnp.all(all_codes >= 0), "Negative code found"
 
-        return codes
+        return CodebookCodes(semantic=all_codes[:1, :], acoustic=all_codes[1:, :])
 
 
 def decode_next_token(

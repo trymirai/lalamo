@@ -62,6 +62,8 @@ def from_fish_audio_config(
 
     assert fish_audio_cfg.fast_dim is not None
     return FishAudioTextDecoderConfig(
+        default_speaker="speaker:0",
+        default_style="interleave",
         slow_embeddings_config=slow_embedding_cfg,
         slow_model_config=slow_transformer_cfg,
         slow_readout_config=slow_readout_cfg,

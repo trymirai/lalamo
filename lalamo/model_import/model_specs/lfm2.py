@@ -5,6 +5,7 @@ from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec
+from .origins import HuggingFaceOrigin
 
 __all__ = ["LFM2_MODELS"]
 
@@ -24,7 +25,7 @@ _LFM20_MODELS = [
         family="LFM2",
         name=_lfm_repo("LFM2", size, variant, quantization)[1],
         size=size,
-        repo="/".join(_lfm_repo("LFM2", size, variant, quantization)),
+        source=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2", size, variant, quantization))),
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(
@@ -46,7 +47,7 @@ _LFM25_MODELS = [
         family="LFM2.5",
         name=_lfm_repo("LFM2.5", size, variant, quantization)[1],
         size=size,
-        repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization)),
+        source=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization))),
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(

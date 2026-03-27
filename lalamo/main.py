@@ -409,7 +409,7 @@ def tts(
 
     if isinstance(model, TTSGenerator):
         if speaker_id is None:
-            speaker_id = model.default_speaker_id
+            speaker_id = model.default_speaker
         if style is None:
             style = model.default_style
 
@@ -689,7 +689,7 @@ def list_models(
 
     if plain:
         for spec in sorted_specs:
-            console.print(spec.repo)
+            console.print(spec.source.description)
         return
 
     table = Table(
@@ -709,7 +709,7 @@ def list_models(
             spec.family,
             spec.size,
             str(spec.quantization),
-            spec.repo,
+            spec.source.description,
         )
     console.print(table)
 

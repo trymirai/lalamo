@@ -67,7 +67,7 @@ _CORE_LLM_REPOS: frozenset[str] = frozenset(
     }
 )
 
-CORE_LLM_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in LLM_SPECS if spec.repo in _CORE_LLM_REPOS)
+CORE_LLM_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in LLM_SPECS if spec.source.description in _CORE_LLM_REPOS)
 
 
 def strip_ansi_escape(text: str) -> str:
@@ -109,21 +109,21 @@ def convert_model(
     return _convert
 
 
-@pytest.fixture(params=ALL_MODEL_SPECS, ids=[spec.repo for spec in ALL_MODEL_SPECS])
+@pytest.fixture(params=ALL_MODEL_SPECS, ids=[spec.source.description for spec in ALL_MODEL_SPECS])
 def all_model_specs(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=LLM_SPECS, ids=[spec.repo for spec in LLM_SPECS])
+@pytest.fixture(params=LLM_SPECS, ids=[spec.source.description for spec in LLM_SPECS])
 def llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=TTS_SPECS, ids=[spec.repo for spec in TTS_SPECS])
+@pytest.fixture(params=TTS_SPECS, ids=[spec.source.description for spec in TTS_SPECS])
 def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=CORE_LLM_SPECS, ids=[spec.repo for spec in CORE_LLM_SPECS])
+@pytest.fixture(params=CORE_LLM_SPECS, ids=[spec.source.description for spec in CORE_LLM_SPECS])
 def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param

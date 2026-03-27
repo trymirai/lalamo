@@ -15,11 +15,9 @@ from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
     Qwen3TTSPreTransformerLayer,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
-    Qwen3TTSEuclideanCodebook,
-    Qwen3TTSResidualVectorQuantization,
-    Qwen3TTSResidualVectorQuantizer,
-    Qwen3TTSSplitResidualVectorQuantizer,
-    Qwen3TTSVectorQuantization,
+    EuclideanCodebook,
+    ResidualVectorQuantizer,
+    VectorQuantization,
 )
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_text_decoding import Qwen3TTSTextDecoder
 
@@ -32,8 +30,8 @@ __all__ = [
     "load_qwen3_tts_audio_decoder",
     "load_qwen3_tts_pre_transformer",
     "load_qwen3_tts_residual_unit",
+    "load_qwen3_tts_residual_vector_quantizer",
     "load_qwen3_tts_snake_beta",
-    "load_qwen3_tts_split_rvq",
     "load_qwen3_tts_text_decoder",
     "load_qwen3_tts_vector_quantization",
 ]
@@ -73,10 +71,10 @@ def load_qwen3_tts_residual_unit(
 
 
 def load_qwen3_tts_euclidean_codebook(
-    module: Qwen3TTSEuclideanCodebook,
+    module: EuclideanCodebook,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> Qwen3TTSEuclideanCodebook:
+) -> EuclideanCodebook:
     return load_parameters(
         lambda m: (m.cluster_usage, m.embedding_sum),
         module,
@@ -88,10 +86,10 @@ def load_qwen3_tts_euclidean_codebook(
 
 
 def load_qwen3_tts_vector_quantization(
-    module: Qwen3TTSVectorQuantization,
+    module: VectorQuantization,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> Qwen3TTSVectorQuantization:
+) -> VectorQuantization:
     codebook = load_qwen3_tts_euclidean_codebook(module.codebook, weights_dict, path / "_codebook")
 
     if module.project_out is not None:
@@ -113,24 +111,14 @@ def load_qwen3_tts_vector_quantization(
     )
 
 
-def load_qwen3_tts_residual_vector_quantization(
-    module: Qwen3TTSResidualVectorQuantization,
+def _load_vq_layers(
+    layers: tuple[VectorQuantization, ...],
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> Qwen3TTSResidualVectorQuantization:
-    layers = tuple(
-        load_qwen3_tts_vector_quantization(
-            layer,
-            weights_dict,
-            path / "layers" / idx,
-        )
-        for idx, layer in enumerate(module.layers)
-    )
-
-    return load_parameters(
-        lambda m: (m.layers,),
-        module,
-        (layers,),
+) -> tuple[VectorQuantization, ...]:
+    return tuple(
+        load_qwen3_tts_vector_quantization(layer, weights_dict, path / "layers" / idx)
+        for idx, layer in enumerate(layers)
     )
 
 
@@ -149,39 +137,26 @@ def _load_rvq_output_projection_linear(
 
 
 def load_qwen3_tts_residual_vector_quantizer(
-    module: Qwen3TTSResidualVectorQuantizer,
+    module: ResidualVectorQuantizer,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> Qwen3TTSResidualVectorQuantizer:
-    rvq = load_qwen3_tts_residual_vector_quantization(module.rvq, weights_dict, path / "vq")
-
-    if module.output_projection is None:
-        output_projection = None
-    else:
-        output_projection = _load_rvq_output_projection_linear(
-            module.output_projection,
-            weights_dict,
-            path / "output_proj",
-        )
-
-    return load_parameters(
-        lambda m: (m.rvq, m.output_projection),
-        module,
-        (rvq, output_projection),
+) -> ResidualVectorQuantizer:
+    semantic_layers = _load_vq_layers(module.semantic_layers, weights_dict, path / "rvq_first" / "vq")
+    acoustic_layers = _load_vq_layers(module.acoustic_layers, weights_dict, path / "rvq_rest" / "vq")
+    semantic_projection = _load_rvq_output_projection_linear(
+        module.semantic_projection,
+        weights_dict,
+        path / "rvq_first" / "output_proj",
     )
-
-
-def load_qwen3_tts_split_rvq(
-    module: Qwen3TTSSplitResidualVectorQuantizer,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> Qwen3TTSSplitResidualVectorQuantizer:
-    rvq_first = load_qwen3_tts_residual_vector_quantizer(module.rvq_first, weights_dict, path / "rvq_first")
-    rvq_rest = load_qwen3_tts_residual_vector_quantizer(module.rvq_rest, weights_dict, path / "rvq_rest")
+    acoustic_projection = _load_rvq_output_projection_linear(
+        module.acoustic_projection,
+        weights_dict,
+        path / "rvq_rest" / "output_proj",
+    )
     return load_parameters(
-        lambda m: (m.rvq_first, m.rvq_rest),
+        lambda m: (m.semantic_layers, m.acoustic_layers, m.semantic_projection, m.acoustic_projection),
         module,
-        (rvq_first, rvq_rest),
+        (semantic_layers, acoustic_layers, semantic_projection, acoustic_projection),
     )
 
 
@@ -434,7 +409,7 @@ def load_qwen3_tts_audio_decoder(
 ) -> Qwen3TTSAudioDecoder:
     base_path = ParameterPath() if path is None else path
 
-    quantizer = load_qwen3_tts_split_rvq(module.quantizer, weights_dict, base_path / "quantizer")
+    quantizer = load_qwen3_tts_residual_vector_quantizer(module.quantizer, weights_dict, base_path / "quantizer")
     pre_conv = load_causal_conv1d(module.pre_conv, weights_dict, base_path / "pre_conv" / "conv")
     pre_transformer = load_qwen3_tts_pre_transformer(
         module.pre_transformer,

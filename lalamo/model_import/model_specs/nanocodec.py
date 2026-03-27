@@ -1,6 +1,7 @@
 from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
 
-from .common import ConfigMap, FileSpec, ModelSpec, ModelType, WeightsType
+from .common import ConfigMap, FileSpec, ModelSpec, ModelType
+from .origins import NemoOrigin
 
 __all__ = ["NANOCODEC_TTS_MODELS"]
 
@@ -18,9 +19,8 @@ NANOCODEC_TTS_MODELS = [
         name=NEMO_NANOCODEC_MODEL_ID,
         size="0.1B",
         quantization=None,
-        repo=f"nvidia/{NEMO_NANOCODEC_MODEL_ID}",
+        source=NemoOrigin(repo=f"nvidia/{NEMO_NANOCODEC_MODEL_ID}"),
         config_type=NanoCodecForeignConfig,
-        weights_type=WeightsType.NEMO,
         configs=ConfigMap(
             model_config=FileSpec(f"{NEMO_NANOCODEC_MODEL_ID}.nemo"),
             chat_template=NANOCODEC_CHAT_TEMPLATE,

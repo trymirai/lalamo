@@ -8,7 +8,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_mapping, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
@@ -23,6 +23,7 @@ from lalamo.modules.audio.common_modules import (
     UpsamplingBlock,
     UpsamplingBlockConfig,
 )
+from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
@@ -31,8 +32,8 @@ from lalamo.modules.rope import RoPE, UnscaledRoPEConfig
 from lalamo.modules.token_mixers import Attention, AttentionConfig
 
 from .qwen3_tts_modules import (
-    Qwen3TTSSplitResidualVectorQuantizer,
-    Qwen3TTSSplitResidualVectorQuantizerConfig,
+    ResidualVectorQuantizer,
+    ResidualVectorQuantizerConfig,
 )
 
 __all__ = [
@@ -292,7 +293,7 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
 class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
     precision: DTypeLike
 
-    quantizer_config: Qwen3TTSSplitResidualVectorQuantizerConfig
+    quantizer_config: ResidualVectorQuantizerConfig
     pre_conv_config: Conv1dConfig
     pre_transformer_config: Qwen3TTSPreTransformerConfig
     upsample_block_config: UpsamplingBlockConfig
@@ -326,7 +327,6 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
             dimension=self.codebook_dim // 2,
             n_q=self.num_quantizers,
             bins=self.codebook_size,
-            input_dimension=self.codebook_dim,
             output_dimension=self.codebook_dim,
         )
 
@@ -381,7 +381,6 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
             dimension=self.codebook_dim // 2,
             n_q=self.num_quantizers,
             bins=self.codebook_size,
-            input_dimension=self.codebook_dim,
             output_dimension=self.codebook_dim,
             key=quantizer_key,
         )
@@ -434,7 +433,7 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
 class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
     total_upsample: int
 
-    quantizer: Qwen3TTSSplitResidualVectorQuantizer
+    quantizer: ResidualVectorQuantizer
     pre_conv: Conv1d
     pre_transformer: Qwen3TTSPreTransformer
     upsample_blocks: tuple[UpsamplingBlock, ...]
@@ -451,15 +450,9 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
 
     def __call__(
         self,
-        codes: Int[Array, "batch codebooks tokens"],
+        codes: CodebookCodes,
     ) -> Float[Array, "batch samples 1"]:
-        _, num_codebooks, _ = codes.shape
-        if num_codebooks != self.config.num_quantizers:
-            raise ValueError(
-                f"Expected {self.config.num_quantizers} codebooks, got {num_codebooks}",
-            )
-
-        hidden = self.quantizer.decode(codes)
+        hidden = self.quantizer.decode(codes.semantic, codes.acoustic)
         hidden = rearrange(hidden, "batch channels tokens -> batch tokens channels")
         hidden = self.pre_conv(hidden)
         hidden = self.pre_transformer(hidden)
@@ -473,7 +466,7 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
 
     def chunked_decode(
         self,
-        codes: Int[Array, "batch codebooks tokens"],
+        codes: CodebookCodes,
         chunk_size: int | None = None,
         left_context_size: int | None = None,
     ) -> Float[Array, "batch samples 1"]:
@@ -482,12 +475,15 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
 
         wav_chunks: list[Float[Array, "batch samples 1"]] = []
         start_index = 0
-        total_tokens = int(codes.shape[-1])
+        total_tokens = int(codes.semantic.shape[-1])
 
         while start_index < total_tokens:
             end_index = min(start_index + chunk_size, total_tokens)
             context_size = left_context_size if start_index - left_context_size > 0 else start_index
-            codes_chunk = codes[..., start_index - context_size : end_index]
+            codes_chunk = CodebookCodes(
+                semantic=codes.semantic[..., start_index - context_size : end_index],
+                acoustic=codes.acoustic[..., start_index - context_size : end_index],
+            )
             wav_chunk = self(codes_chunk)
             wav_chunks.append(wav_chunk[:, context_size * self.total_upsample :, :])
             start_index = end_index
@@ -496,12 +492,15 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
 
     def audio_from_codes(
         self,
-        indices: Int[Array, "batch codebooks tokens"] | Int[Array, "codebooks tokens"],
+        codes: CodebookCodes,
     ) -> Float[Array, " samples"]:
-        if indices.ndim == 2:
-            indices = rearrange(indices, "codebooks tokens -> 1 codebooks tokens")
+        if codes.semantic.ndim == 2:
+            codes = CodebookCodes(
+                semantic=rearrange(codes.semantic, "codebooks tokens -> 1 codebooks tokens"),
+                acoustic=rearrange(codes.acoustic, "codebooks tokens -> 1 codebooks tokens"),
+            )
 
-        wav = self.chunked_decode(indices)
+        wav = self.chunked_decode(codes)
         (first_wav,) = wav
         return jnp.squeeze(first_wav, axis=-1)
 
