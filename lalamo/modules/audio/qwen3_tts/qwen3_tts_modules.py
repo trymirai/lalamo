@@ -185,7 +185,7 @@ class VectorQuantization(LalamoModule[VectorQuantizationConfig]):
         )
 
 
-def _decode_group(
+def decode_group(
     layers: tuple[VectorQuantization, ...],
     codes: Int[Array, "batch num_quantizers tokens"],
 ) -> Float[Array, "batch channels tokens"]:
@@ -198,35 +198,13 @@ def _decode_group(
     return quantized
 
 
-def _apply_projection(
+def apply_projection(
     quantized: Float[Array, "batch channels tokens"],
     projection: FullPrecisionLinear,
 ) -> Float[Array, "batch channels tokens"]:
     quantized_nsc = rearrange(quantized, "batch channels tokens -> batch tokens channels")
     (quantized_nsc,) = vmap(vmap(projection))(quantized_nsc)
     return rearrange(quantized_nsc, "batch tokens channels -> batch channels tokens")
-
-
-def _make_layers(
-    vq_config: VectorQuantizationConfig,
-    num_quantizers: int,
-    dim: int,
-    codebook_size: int,
-) -> tuple[VectorQuantization, ...]:
-    return tuple(
-        vq_config.empty(dim=dim, codebook_size=codebook_size, codebook_dim=dim) for _ in range(num_quantizers)
-    )
-
-
-def _make_layers_random(
-    vq_config: VectorQuantizationConfig,
-    num_quantizers: int,
-    dim: int,
-    codebook_size: int,
-    key: PRNGKeyArray,
-) -> tuple[VectorQuantization, ...]:
-    keys = jax.random.split(key, num_quantizers)
-    return tuple(vq_config.random_init(dim=dim, codebook_size=codebook_size, codebook_dim=dim, key=k) for k in keys)
 
 
 @dataclass(frozen=True)
@@ -247,8 +225,13 @@ class ResidualVectorQuantizerConfig:
             raise ValueError(f"n_q must be > n_q_semantic ({self.n_q_semantic}), got {n_q}")
 
         vq = self.vector_quantization_config
-        semantic_layers = _make_layers(vq, self.n_q_semantic, dimension, bins)
-        acoustic_layers = _make_layers(vq, n_q - self.n_q_semantic, dimension, bins)
+        semantic_layers = tuple(
+            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(self.n_q_semantic)
+        )
+        acoustic_layers = tuple(
+            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension)
+            for _ in range(n_q - self.n_q_semantic)
+        )
         semantic_projection = self.output_projection_config.empty(
             input_dim=dimension,
             output_dims=(output_dimension,),
@@ -282,8 +265,14 @@ class ResidualVectorQuantizerConfig:
 
         key_sem, key_aco, key_sem_proj, key_aco_proj = jax.random.split(key, 4)
         vq = self.vector_quantization_config
-        semantic_layers = _make_layers_random(vq, self.n_q_semantic, dimension, bins, key_sem)
-        acoustic_layers = _make_layers_random(vq, n_q - self.n_q_semantic, dimension, bins, key_aco)
+        sem_keys = jax.random.split(key_sem, self.n_q_semantic)
+        semantic_layers = tuple(
+            vq.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k) for k in sem_keys
+        )
+        aco_keys = jax.random.split(key_aco, n_q - self.n_q_semantic)
+        acoustic_layers = tuple(
+            vq.random_init(dim=dimension, codebook_size=bins, codebook_dim=dimension, key=k) for k in aco_keys
+        )
         semantic_projection = self.output_projection_config.random_init(
             input_dim=dimension,
             output_dims=(output_dimension,),
@@ -325,10 +314,10 @@ class ResidualVectorQuantizer(LalamoModule[ResidualVectorQuantizerConfig]):
         semantic_codes: Int[Array, "batch n_q_semantic tokens"],
         acoustic_codes: Int[Array, "batch n_q_acoustic tokens"],
     ) -> Float[Array, "batch channels tokens"]:
-        quant_semantic = _decode_group(self.semantic_layers, semantic_codes)
-        quant_semantic = _apply_projection(quant_semantic, self.semantic_projection)
-        quant_acoustic = _decode_group(self.acoustic_layers, acoustic_codes)
-        quant_acoustic = _apply_projection(quant_acoustic, self.acoustic_projection)
+        quant_semantic = decode_group(self.semantic_layers, semantic_codes)
+        quant_semantic = apply_projection(quant_semantic, self.semantic_projection)
+        quant_acoustic = decode_group(self.acoustic_layers, acoustic_codes)
+        quant_acoustic = apply_projection(quant_acoustic, self.acoustic_projection)
         return quant_semantic + quant_acoustic
 
     def export_weights(self) -> ParameterTree[Array]:

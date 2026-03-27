@@ -19,9 +19,9 @@ class LatentTTSOutputs:
 @dataclass(frozen=True)
 class LatentTTSGenerationConfig:
     n_timesteps: int
-    temperature: float = 1.0
-    length_scale: float = 1.0
-    guidance_scale: float = 0.0
+    temperature: float
+    length_scale: float
+    guidance_scale: float
 
 
 class LatentTTSModel[ConfigT](LalamoModule[ConfigT]):
@@ -46,13 +46,6 @@ class LatentTTSModel[ConfigT](LalamoModule[ConfigT]):
 
 
 class LatentTTSConfig(RegistryABC):
-    """Base for latent TTS model configs.
-
-    Subclasses must be frozen dataclasses that implement ``empty()`` and ``samplerate``.
-    They are automatically discovered via the ``RegistryABC`` mechanism, allowing
-    plugins to register new latent TTS model types.
-    """
-
     @abstractmethod
     def empty(self) -> LatentTTSModel: ...
 

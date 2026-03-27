@@ -587,36 +587,6 @@ def load_residual_unit(
     )
 
 
-def load_audio_decoder_block(
-    module: DecoderBlock,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> DecoderBlock:
-    from .audio_loaders import load_decoder_block
-
-    return load_decoder_block(
-        module,
-        weights_dict,
-        path,
-        load_activation=load_snake1d,
-        load_residual=load_residual_unit,
-    )
-
-
-def load_audio_decoder(
-    module: DACDecoder,
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> DACDecoder:
-    return load_dac_decoder(
-        module,
-        weights_dict,
-        path / "model",
-        load_activation=load_snake1d,
-        load_residual=load_residual_unit,
-    )
-
-
 def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
     loaded_quantizer = load_downsample_rvq(dac_module.quantizer, state_dict, path=ParameterPath("quantizer"))
     loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))

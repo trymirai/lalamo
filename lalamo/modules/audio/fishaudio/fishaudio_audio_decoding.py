@@ -220,8 +220,8 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
         codes: CodebookCodes,
     ) -> Float[Array, "batch audio_samples 1"]:
         indices = jnp.concatenate([codes.semantic, codes.acoustic], axis=1)
-        z = self.quantizer.decode(indices)
-        audio = self.decoder(z)
+        quantized = self.quantizer.decode(indices)
+        audio = self.decoder(quantized)
         return jnp.tanh(audio)
 
     def export_weights(self) -> ParameterTree[Array]:

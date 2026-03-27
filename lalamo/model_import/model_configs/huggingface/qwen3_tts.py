@@ -39,8 +39,6 @@ from lalamo.modules.audio.common_modules import (
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
-    QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
-    QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
     Qwen3TTSAudioDecoder,
     Qwen3TTSAudioDecoderConfig,
     Qwen3TTSPreTransformerConfig,
@@ -410,8 +408,6 @@ def _build_audio_decoder_config(
         upsample_rates=dc.upsample_rates,
         upsampling_ratios=dc.upsampling_ratios,
         decoder_dim=dc.decoder_dim,
-        chunk_size=QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
-        left_context_size=QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
     )
 
 

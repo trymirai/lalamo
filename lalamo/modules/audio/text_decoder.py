@@ -18,15 +18,15 @@ class CodebookCodes(NamedTuple):
 @dataclass(frozen=True)
 class TTSDecodingContext:
     speaker: str | None = None
-    language: str = "auto"
-    instruction_tokens: Array | None = None
+    language: str | None = None
+    instruction_tokens: Int[Array, "batch tokens"] | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
 class TTSTextDecoderConfigBase(RegistryABC):
     default_speaker: str | None = None
     default_style: str | None = None
-    default_language: str = "auto"
+    default_language: str | None = None
 
     @abstractmethod
     def empty(self) -> "TTSTextDecoder": ...

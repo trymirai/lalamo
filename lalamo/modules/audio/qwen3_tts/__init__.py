@@ -10,8 +10,6 @@ from lalamo.modules.audio.common_modules import (
 )
 
 from .qwen3_tts_audio_decoding import (
-    QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT,
-    QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT,
     Qwen3TTSAudioDecoder,
     Qwen3TTSAudioDecoderConfig,
 )
@@ -29,8 +27,6 @@ from .qwen3_tts_text_decoding import (
 )
 
 __all__ = [
-    "QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT",
-    "QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT",
     "DecoderBlock",
     "DecoderBlockConfig",
     "EuclideanCodebook",

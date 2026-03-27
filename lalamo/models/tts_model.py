@@ -89,9 +89,9 @@ class TTSGenerator(eqx.Module):
         message = messages_list[0]
 
         config = self.tts_model.text_decoder.config
-        speaker = message.speaker_id if message.speaker_id is not None else config.default_speaker
-        style = message.style if message.style is not None else config.default_style
-        language = message.language if message.language is not None else config.default_language
+        speaker = message.speaker_id or config.default_speaker
+        style = message.style or config.default_style
+        language = message.language or config.default_language
 
         instruction_text = config.format_instruction(style) if style is not None else None
         instruction_tokens = (

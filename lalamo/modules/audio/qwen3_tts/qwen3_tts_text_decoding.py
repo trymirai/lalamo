@@ -37,7 +37,6 @@ def _sample_token_ids(
     sampling_policy: SamplingPolicy,
     key: PRNGKeyArray,
 ) -> Int[Array, " batch"]:
-    logits = logits.astype(jnp.float32)
     processed_logits = vmap(sampling_policy.process_logits)(logits)
     sample_keys = jax.random.split(key, logits.shape[0])
     return jax.vmap(lambda k, row: jax.random.categorical(k, row))(sample_keys, processed_logits).astype(jnp.int32)
@@ -487,24 +486,10 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         if sampling_policy is None:
             sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
 
-        speaker = context.speaker
-        if speaker is not None:
-            speaker_codec_id = self.config.spk_id.get(speaker)
-            if speaker_codec_id is None:
-                available = ", ".join(sorted(self.config.spk_id.keys()))
-                raise ValueError(f"Unknown speaker {speaker!r}. Available speakers: {available}")
-        elif self.config.spk_id:
-            available = ", ".join(sorted(self.config.spk_id.keys()))
-            raise ValueError(f"speaker is required. Available speakers: {available}")
-        else:
-            speaker_codec_id = None
-        if context.language == "auto":
-            language_codec_id = None
-        else:
-            language_codec_id = self.config.codec_language_id.get(context.language)
-            if language_codec_id is None:
-                available = ", ".join(sorted(self.config.codec_language_id.keys()))
-                raise ValueError(f"Unknown language {context.language!r}. Available languages: {available}")
+        speaker_codec_id = self.config.spk_id.get(context.speaker) if context.speaker is not None else None
+        language_codec_id = (
+            self.config.codec_language_id.get(context.language) if context.language is not None else None
+        )
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(
             text_tokens,
@@ -578,14 +563,6 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
             )
             talker_hidden = talker_result.outputs
             talker_state = talker_result.updated_state
-
-        if not generated_step_codes:
-            n_q_sem = self.config.n_q_semantic
-            n_q_aco = self.config.num_code_groups - n_q_sem
-            return CodebookCodes(
-                semantic=jnp.zeros((n_q_sem, 0), dtype=jnp.int32),
-                acoustic=jnp.zeros((n_q_aco, 0), dtype=jnp.int32),
-            )
 
         all_codes = jnp.stack(generated_step_codes, axis=1).astype(jnp.int32)
         n_q_sem = self.config.n_q_semantic

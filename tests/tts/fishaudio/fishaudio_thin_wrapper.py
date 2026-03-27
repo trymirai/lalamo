@@ -542,7 +542,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
         speaker: str | None = None,  # noqa: ARG002
         sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,  # noqa: ARG002
-        language: str = "auto",  # noqa: ARG002
+        language: str | None = None,  # noqa: ARG002
         instruction_tokens: Int[Array, "batch tokens"] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)

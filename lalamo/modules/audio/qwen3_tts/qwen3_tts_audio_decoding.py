@@ -37,8 +37,6 @@ from .qwen3_tts_modules import (
 )
 
 __all__ = [
-    "QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT",
-    "QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT",
     "Qwen3TTSAudioDecoder",
     "Qwen3TTSAudioDecoderConfig",
     "Qwen3TTSPreTransformer",
@@ -46,9 +44,6 @@ __all__ = [
     "Qwen3TTSPreTransformerLayer",
     "Qwen3TTSPreTransformerLayerConfig",
 ]
-
-QWEN3_TTS_AUDIO_DECODER_CHUNK_SIZE_DEFAULT = 300
-QWEN3_TTS_AUDIO_DECODER_LEFT_CONTEXT_SIZE_DEFAULT = 25
 
 
 @dataclass(frozen=True)
@@ -140,7 +135,7 @@ class Qwen3TTSPreTransformerLayer(LalamoModule[Qwen3TTSPreTransformerLayerConfig
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         return replace(
             self,
             self_attn=self.self_attn.import_weights(require_tree(weights["self_attn"])),
@@ -274,9 +269,8 @@ class Qwen3TTSPreTransformer(LalamoModule[Qwen3TTSPreTransformerConfig]):
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
+        weights = require_mapping(weights)
         layers_weights = weights["layers"]
-        assert isinstance(layers_weights, Sequence)
         return replace(
             self,
             input_projection=self.input_projection.import_weights(require_tree(weights["input_projection"])),
@@ -310,9 +304,6 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
     upsample_rates: tuple[int, ...]
     upsampling_ratios: tuple[int, ...]
     decoder_dim: int
-
-    chunk_size: int
-    left_context_size: int
 
     def _dac_spatial_params(self) -> DACDecoderSpatialParams:
         return DACDecoderSpatialParams(
@@ -467,11 +458,9 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
     def chunked_decode(
         self,
         codes: CodebookCodes,
-        chunk_size: int | None = None,
-        left_context_size: int | None = None,
+        chunk_size: int = 300,
+        left_context_size: int = 25,
     ) -> Float[Array, "batch samples 1"]:
-        chunk_size = self.config.chunk_size if chunk_size is None else chunk_size
-        left_context_size = self.config.left_context_size if left_context_size is None else left_context_size
 
         wav_chunks: list[Float[Array, "batch samples 1"]] = []
         start_index = 0

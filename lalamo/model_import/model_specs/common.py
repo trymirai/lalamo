@@ -51,7 +51,7 @@ class ConfigMap:
     extra_configs: tuple[FileSpec, ...] = ()
 
 
-def _is_foreign_config_type(t: object) -> bool:
+def _is_foreign_config_type(t: Any) -> bool:
     origin = get_origin(t)
     args = get_args(t)
     return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
