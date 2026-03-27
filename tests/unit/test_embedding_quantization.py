@@ -1,4 +1,5 @@
 import jax.numpy as jnp
+from einops import rearrange
 
 from lalamo.modules import TiedEmbeddingConfig, quantize_tied_embedding_to_mlx
 from lalamo.quantization import QuantizationMode
@@ -59,7 +60,15 @@ def test_quantize_tied_embedding_to_mlx_reconstructs_two_value_groups_exactly() 
         embedding_quantization_mode=QuantizationMode.UINT8,
     )
 
-    reconstructed_weights = quantized_embedding._prepare_input_weights()
+    grouped_weights = rearrange(
+        quantized_embedding.int_weights.astype(quantized_embedding.activation_precision),
+        "vocab (groups elements) -> vocab groups elements",
+        elements=quantized_embedding.config.group_size,
+    )
+    reconstructed_weights = rearrange(
+        grouped_weights * quantized_embedding.scales[:, :, None] + quantized_embedding.biases[:, :, None],
+        "vocab groups elements -> vocab (groups elements)",
+    )
 
     assert jnp.allclose(reconstructed_weights, original_weights, atol=1e-6)
 
