@@ -33,6 +33,7 @@ __all__ = [
     "TiedEmbeddingConfig",
     "UntiedEmbedding",
     "UntiedEmbeddingConfig",
+    "quantize_tied_embedding_to_mlx",
 ]
 
 
@@ -149,6 +150,92 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     ) -> Self:
         weights = require_mapping(weights)
         return replace(self, weights=weights["weights"])
+
+
+def quantize_tied_embedding_to_mlx(
+    embedding: TiedEmbedding,
+    *,
+    group_size: int,
+    embedding_quantization_mode: QuantizationMode,
+    activation_quantization_mode: QuantizationMode | None = None,
+    activation_precision: DTypeLike | None = None,
+    num_iterations: int = 1,
+    epsilon: float = 1e-5,
+) -> "MLXQuantizedTiedEmbedding":
+    if num_iterations <= 0:
+        raise ValueError(f"Expected num_iterations to be positive, got {num_iterations}.")
+    if epsilon <= 0:
+        raise ValueError(f"Expected epsilon to be positive, got {epsilon}.")
+    if embedding.model_dim % group_size != 0:
+        raise ValueError(
+            f"Embedding dimension {embedding.model_dim} is not divisible by group_size {group_size}.",
+        )
+
+    target_activation_precision = jnp.dtype(
+        embedding.activation_precision if activation_precision is None else activation_precision,
+    )
+    quantization_min, quantization_max = map(float, embedding_quantization_mode.range)
+    grouped_weights = rearrange(
+        embedding.weights.astype(jnp.float32),
+        "vocabulary (groups group_channels) -> vocabulary groups group_channels",
+        group_channels=group_size,
+    )
+
+    group_min = grouped_weights.min(axis=-1)
+    group_max = grouped_weights.max(axis=-1)
+    group_span = group_max - group_min
+
+    scales = group_span / (quantization_max - quantization_min)
+    biases = group_min - quantization_min * scales
+
+    is_constant_group = group_span < 1e-20
+    group_mean = grouped_weights.mean(axis=-1)
+    scales = jnp.where(is_constant_group, 1.0, scales)
+    biases = jnp.where(is_constant_group, group_mean, biases)
+
+    scales = jnp.maximum(scales, epsilon)
+
+    def quantize(w: Array, s: Array, b: Array) -> Array:
+        return jnp.clip(jnp.round((w - b[..., None]) / s[..., None]), quantization_min, quantization_max)
+
+    for _ in range(num_iterations):
+        quantized_grouped_weights = quantize(grouped_weights, scales, biases)
+
+        quantized_mean = jnp.mean(quantized_grouped_weights, axis=-1)
+        weights_mean = jnp.mean(grouped_weights, axis=-1)
+        centered_quantized_weights = quantized_grouped_weights - quantized_mean[..., None]
+        centered_weights = grouped_weights - weights_mean[..., None]
+        denominator = jnp.sum(centered_quantized_weights * centered_quantized_weights, axis=-1)
+        numerator = jnp.sum(centered_weights * centered_quantized_weights, axis=-1)
+
+        refined_scales = jnp.where(denominator > 0.0, numerator / denominator, scales)
+        refined_scales = jnp.maximum(refined_scales, epsilon)
+        refined_biases = weights_mean - refined_scales * quantized_mean
+
+        scales = jnp.where(is_constant_group, scales, refined_scales)
+        biases = jnp.where(is_constant_group, biases, refined_biases)
+
+    quantized_grouped_weights = quantize(grouped_weights, scales, biases)
+
+    quantized_weights = rearrange(
+        quantized_grouped_weights,
+        "vocabulary groups group_channels -> vocabulary (groups group_channels)",
+    )
+    quantized_config = MLXQuantizedTiedEmbeddingConfig(
+        input_scale=embedding.config.input_scale,
+        logit_soft_cap=embedding.config.logit_soft_cap,
+        group_size=group_size,
+        embedding_quantization_mode=embedding_quantization_mode,
+        activation_quantization_mode=activation_quantization_mode,
+        activation_precision=target_activation_precision,
+    )
+
+    return MLXQuantizedTiedEmbedding(
+        config=quantized_config,
+        weights=quantized_weights.astype(target_activation_precision),
+        scales=scales.astype(target_activation_precision),
+        biases=biases.astype(target_activation_precision),
+    )
 
 
 @dataclass(frozen=True)

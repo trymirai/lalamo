@@ -18,6 +18,7 @@ from jax.tree_util import keystr
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree, require_array, require_tree
+from lalamo.quantization import QuantizationMode
 
 __all__ = [
     "DummyUnionMember",
@@ -293,6 +294,7 @@ class ParameterLeafInfo:
     trainable: bool
     norm: ParameterNorm
     quantized: bool
+    quantization_mode: QuantizationMode | None
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
     alias_of: str | None
@@ -361,6 +363,28 @@ def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
     return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
+def _infer_quantization_mode(owner: eqx.Module, field_name: str) -> QuantizationMode | None:
+    config = getattr(owner, "config", None)
+    if config is None:
+        return None
+
+    if field_name in {"weights", "zero_points"}:
+        weight_mode = getattr(config, "weight_quantization_mode", None)
+        if isinstance(weight_mode, QuantizationMode):
+            return weight_mode
+
+        embedding_mode = getattr(config, "embedding_quantization_mode", None)
+        if isinstance(embedding_mode, QuantizationMode):
+            return embedding_mode
+
+    if field_name in {"input_weights", "output_weights"}:
+        embedding_mode = getattr(config, "embedding_quantization_mode", None)
+        if isinstance(embedding_mode, QuantizationMode):
+            return embedding_mode
+
+    return None
+
+
 def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
     canonical_by_leaf_id: dict[int, tuple[int, str]] = {}
     results: list[_ParameterLeafEntry] = []
@@ -395,6 +419,7 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
                     trainable=metadata.get("trainable", True),
                     norm=metadata.get("norm", ParameterNorm.SPECTRAL),
                     quantized=metadata.get("quantized", False),
+                    quantization_mode=_infer_quantization_mode(entry.owner, entry.field.name),
                     tensor_sharding=metadata.get("tensor_sharding"),
                     min_size_to_shard=metadata.get("min_size_to_shard", 0),
                     alias_of=alias_of,

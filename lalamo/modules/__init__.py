@@ -36,6 +36,7 @@ from .embedding import (
     TiedEmbeddingConfig,
     UntiedEmbedding,
     UntiedEmbeddingConfig,
+    quantize_tied_embedding_to_mlx,
 )
 from .linear import (
     FullPrecisionLinear,
@@ -188,4 +189,5 @@ __all__ = [
     "field",
     "get_current_sharding_config",
     "pad_and_apply_data_sharding",
+    "quantize_tied_embedding_to_mlx",
 ]
