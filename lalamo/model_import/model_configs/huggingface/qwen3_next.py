@@ -235,7 +235,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     is_causal=True,
                     scale=None,
                     sliding_window_size=None,
-                    has_gate=True,
+                    gate_projection_config=linear_config,
                     partial_rope_dim=int(self.head_dim * self.partial_rotary_factor),
                 )
 
