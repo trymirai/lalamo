@@ -182,11 +182,11 @@ def import_message_processor(
 def _resolve_weights_and_config(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[list[Path], Path, list[Path]]:
+) -> tuple[list[Path], Path, tuple[Path, ...]]:
     source = model_spec.source
     weights_paths = source.resolve_weights(progress_callback)
     config_path = source.resolve_file(model_spec.configs.model_config, progress_callback)
-    extra_config_paths = [source.resolve_file(ec, progress_callback) for ec in model_spec.configs.extra_configs]
+    extra_config_paths = tuple(source.resolve_file(ec, progress_callback) for ec in model_spec.configs.extra_configs)
     return (weights_paths, config_path, extra_config_paths)
 
 
