@@ -148,3 +148,5 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
 )
 
 TIER_BY_REPO: dict[str, ModelTier] = dict(MODEL_TIERS)
+
+COHERENCE_TTS_REPOS: tuple[str, ...] = ("fishaudio/s1-mini",)

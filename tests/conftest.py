@@ -15,7 +15,7 @@ from lalamo.main import app
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
-from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
+from tests.model_test_tiers import COHERENCE_TTS_REPOS, TIER_BY_REPO, ModelSize, ModelTier, model_size
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
@@ -113,6 +113,8 @@ LLM_SPECS: tuple[ModelSpec, ...] = tuple(
 )
 TTS_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL)
 
+COHERENCE_TTS_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in TTS_SPECS if spec.repo in COHERENCE_TTS_REPOS)
+
 CORE_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.CORE)
 STANDARD_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.STANDARD)
 EXTRA_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.EXTRA)
@@ -167,6 +169,11 @@ def convert_model(
 
 @pytest.fixture(params=_mark_by_size(TTS_SPECS), ids=[spec.repo for spec in TTS_SPECS])
 def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
+    return request.param
+
+
+@pytest.fixture(params=COHERENCE_TTS_SPECS, ids=[spec.repo for spec in COHERENCE_TTS_SPECS])
+def coherence_tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 

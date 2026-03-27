@@ -58,6 +58,22 @@ jobs:
         run: |
           pytest tests/coherence -m large_model -vs
 
+  tts-coherence:
+    name: "TTS Coherence"
+    runs-on: [github-n2hmem16]
+    needs: [config]
+    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest tests/coherence/test_tts_coherence.py -vs
+
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
     runs-on: ${{ fromJSON(matrix.runner) }}
