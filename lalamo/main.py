@@ -1,9 +1,12 @@
+import dataclasses
+import json
 import random
 import re
 import shutil
 import sys
 from contextlib import ExitStack
 from dataclasses import dataclass, field
+from enum import StrEnum
 from functools import partial
 from importlib.util import find_spec
 from itertools import islice
@@ -76,6 +79,7 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.modules import config_converter
 from lalamo.quantization import QuantizationMode
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
@@ -895,8 +899,252 @@ class CliDistillCallbacks(DistillCallbacks):
         self.stack.close()
 
 
-@app.command(help="Distill a quantized model using an unquantized teacher.")
+class DistillRecipe(StrEnum):
+    SMOKE = "smoke"
+    FULL_MUON = "full-muon"
+    QLORA = "qlora"
+    SPINQUANT_QLORA = "spinquant-qlora"
+
+
+@dataclass(frozen=True)
+class DistillRecipeDefaults:
+    training_mode: TrainingMode
+    train_examples: int
+    eval_examples: int
+    max_sequence_length: int
+    batch_size: int
+    num_steps: int
+    learning_rate: float
+    warmup_steps: int
+    gradient_clip_norm: float | None
+    gradient_accumulation_steps: int
+    optimizer_name: OptimizerName
+    lora_rank: int | None
+    lora_scale: float
+    compute_dtype_name: ComputeDTypeName
+    eval_every_steps: int
+    checkpoint_every_steps: int
+    early_stop_patience: int
+    stochastic_rounding: bool
+    save_checkpoints: bool
+
+
+_DISTILL_RECIPES = {
+    DistillRecipe.SMOKE: DistillRecipeDefaults(
+        training_mode=TrainingMode.ONLINE_EXACT,
+        train_examples=16,
+        eval_examples=8,
+        max_sequence_length=128,
+        batch_size=2,
+        num_steps=5,
+        learning_rate=3e-7,
+        warmup_steps=0,
+        gradient_clip_norm=None,
+        gradient_accumulation_steps=1,
+        optimizer_name=OptimizerName.MUON,
+        lora_rank=None,
+        lora_scale=1.0,
+        compute_dtype_name=ComputeDTypeName.AUTO,
+        eval_every_steps=1,
+        checkpoint_every_steps=0,
+        early_stop_patience=0,
+        stochastic_rounding=True,
+        save_checkpoints=False,
+    ),
+    DistillRecipe.FULL_MUON: DistillRecipeDefaults(
+        training_mode=TrainingMode.ONLINE_EXACT,
+        train_examples=256,
+        eval_examples=64,
+        max_sequence_length=256,
+        batch_size=4,
+        num_steps=25,
+        learning_rate=3e-7,
+        warmup_steps=0,
+        gradient_clip_norm=None,
+        gradient_accumulation_steps=1,
+        optimizer_name=OptimizerName.MUON,
+        lora_rank=None,
+        lora_scale=1.0,
+        compute_dtype_name=ComputeDTypeName.AUTO,
+        eval_every_steps=0,
+        checkpoint_every_steps=0,
+        early_stop_patience=0,
+        stochastic_rounding=True,
+        save_checkpoints=True,
+    ),
+    DistillRecipe.QLORA: DistillRecipeDefaults(
+        training_mode=TrainingMode.ONLINE_EXACT,
+        train_examples=256,
+        eval_examples=64,
+        max_sequence_length=256,
+        batch_size=4,
+        num_steps=25,
+        learning_rate=3e-5,
+        warmup_steps=0,
+        gradient_clip_norm=None,
+        gradient_accumulation_steps=1,
+        optimizer_name=OptimizerName.ADAMW,
+        lora_rank=32,
+        lora_scale=1.0,
+        compute_dtype_name=ComputeDTypeName.AUTO,
+        eval_every_steps=0,
+        checkpoint_every_steps=0,
+        early_stop_patience=0,
+        stochastic_rounding=True,
+        save_checkpoints=True,
+    ),
+    DistillRecipe.SPINQUANT_QLORA: DistillRecipeDefaults(
+        training_mode=TrainingMode.ONLINE_EXACT,
+        train_examples=256,
+        eval_examples=64,
+        max_sequence_length=256,
+        batch_size=4,
+        num_steps=25,
+        learning_rate=3e-5,
+        warmup_steps=0,
+        gradient_clip_norm=None,
+        gradient_accumulation_steps=1,
+        optimizer_name=OptimizerName.ADAMW,
+        lora_rank=32,
+        lora_scale=1.0,
+        compute_dtype_name=ComputeDTypeName.AUTO,
+        eval_every_steps=0,
+        checkpoint_every_steps=0,
+        early_stop_patience=0,
+        stochastic_rounding=True,
+        save_checkpoints=True,
+    ),
+}
+
+
+def _iter_quantization_modes(value: object) -> set[QuantizationMode]:
+    quantization_modes: set[QuantizationMode] = set()
+    if dataclasses.is_dataclass(value):
+        for config_field in dataclasses.fields(value):
+            field_value = getattr(value, config_field.name)
+            if config_field.name in {"weight_quantization_mode", "embedding_quantization_mode"}:
+                if isinstance(field_value, QuantizationMode):
+                    quantization_modes.add(field_value)
+                continue
+            quantization_modes.update(_iter_quantization_modes(field_value))
+    elif isinstance(value, tuple | list):
+        for item in value:
+            quantization_modes.update(_iter_quantization_modes(item))
+    elif isinstance(value, dict):
+        for item in value.values():
+            quantization_modes.update(_iter_quantization_modes(item))
+    return quantization_modes
+
+
+def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
+    with (student_path / "config.json").open() as config_file:
+        config_json = json.load(config_file)
+    model_config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
+    quantization_modes = _iter_quantization_modes(model_config.model_config)
+    if not quantization_modes:
+        raise BadParameter("Student model does not appear to be quantized", param_hint="student_path")
+    if len(quantization_modes) > 1:
+        raise BadParameter(
+            "Recipe-driven distill currently supports a single quantization bitness per student model;"
+            " use `distill-advanced` for mixed-bit models",
+            param_hint="student_path",
+        )
+    return next(iter(quantization_modes))
+
+
+def _default_distill_output_dir(student_path: Path, recipe: DistillRecipe) -> Path:
+    return DEFAULT_OUTPUT_DIR / "distilled" / f"{student_path.name}-{recipe.value}"
+
+
+def _run_distill_cli(config: DistillConfig) -> None:
+    _distill(config, callbacks_type=CliDistillCallbacks)
+
+
+@app.command(help="Distill a quantized model using a recipe-driven setup.")
 def distill(
+    teacher_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the teacher model directory.",
+            metavar="TEACHER_PATH",
+        ),
+    ],
+    student_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the student model directory.",
+            metavar="STUDENT_PATH",
+        ),
+    ],
+    dataset_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the training dataset.",
+            metavar="DATASET_PATH",
+        ),
+    ],
+    recipe: Annotated[
+        DistillRecipe,
+        Option(help="Named distillation recipe."),
+    ] = DistillRecipe.FULL_MUON,
+    steps: Annotated[
+        int | None,
+        Option(help="Override the recipe step count."),
+    ] = None,
+    devices: Annotated[
+        int,
+        Option(help="Number of devices for data-parallel training."),
+    ] = 1,
+    output_dir: Annotated[
+        Path | None,
+        Option(help="Directory for checkpoints, metrics, and the distilled model."),
+    ] = None,
+    seed: Annotated[
+        int,
+        Option(help="Random seed."),
+    ] = 0,
+) -> None:
+    recipe_defaults = _DISTILL_RECIPES[recipe]
+    quantization_mode = _infer_student_quantization_mode(student_path)
+    resolved_output_dir = output_dir or _default_distill_output_dir(student_path, recipe)
+    _run_distill_cli(
+        DistillConfig(
+            teacher_path=teacher_path,
+            student_path=student_path,
+            dataset_path=dataset_path,
+            output_dir=resolved_output_dir,
+            training_mode=recipe_defaults.training_mode,
+            train_examples=recipe_defaults.train_examples,
+            eval_examples=recipe_defaults.eval_examples,
+            max_sequence_length=recipe_defaults.max_sequence_length,
+            batch_size=recipe_defaults.batch_size,
+            num_steps=steps or recipe_defaults.num_steps,
+            learning_rate=recipe_defaults.learning_rate,
+            warmup_steps=recipe_defaults.warmup_steps,
+            gradient_clip_norm=recipe_defaults.gradient_clip_norm,
+            gradient_accumulation_steps=recipe_defaults.gradient_accumulation_steps,
+            optimizer_name=recipe_defaults.optimizer_name,
+            quantization_mode=quantization_mode,
+            lora_rank=recipe_defaults.lora_rank,
+            lora_scale=recipe_defaults.lora_scale,
+            compute_dtype_name=recipe_defaults.compute_dtype_name,
+            eval_every_steps=recipe_defaults.eval_every_steps,
+            checkpoint_every_steps=recipe_defaults.checkpoint_every_steps,
+            early_stop_patience=recipe_defaults.early_stop_patience,
+            resume_from=None,
+            num_devices=devices,
+            seed=seed,
+            stochastic_rounding=recipe_defaults.stochastic_rounding,
+            save_checkpoints=recipe_defaults.save_checkpoints,
+        ),
+    )
+
+
+@app.command(
+    name="distill-advanced",
+    help="Distill a quantized model using an unquantized teacher with full control over all tuning knobs.",
+)
+def distill_advanced(
     teacher_path: Annotated[
         Path,
         Argument(
@@ -1022,7 +1270,7 @@ def distill(
     except ValueError as exc:
         raise BadParameter("--bits must be 4 or 8") from exc
 
-    _distill(
+    _run_distill_cli(
         DistillConfig(
             teacher_path=teacher_path,
             student_path=student_path,
@@ -1052,7 +1300,6 @@ def distill(
             stochastic_rounding=stochastic_rounding,
             save_checkpoints=save_checkpoints,
         ),
-        callbacks_type=CliDistillCallbacks,
     )
 
 
