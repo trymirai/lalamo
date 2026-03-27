@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import shutil
 import time
@@ -225,7 +226,7 @@ class DistillCallbacks:
         pass
 
 
-def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> list[list[HFMessage]]:
+def _load_conversations(dataset_path: Path, *, num_examples: int | None, seed: int) -> list[list[HFMessage]]:
     dataframe = shuffle_dataset(load_hf_parquet(dataset_path), seed=seed)
     if "conversation" in dataframe.columns:
         column_name = "conversation"
@@ -234,13 +235,84 @@ def _load_conversations(dataset_path: Path, *, num_examples: int, seed: int) -> 
     else:
         raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
 
-    conversations = dataframe.get_column(column_name).to_list()[:num_examples]
+    conversations = dataframe.get_column(column_name).to_list()
+    if num_examples is not None:
+        conversations = conversations[:num_examples]
     return [[HFMessage.from_dict(message) for message in conversation] for conversation in conversations]
 
 
-def _load_traces(dataset_path: Path, *, num_examples: int) -> list[LalamoCompletion]:
+def _load_traces(dataset_path: Path, *, num_examples: int | None) -> list[LalamoCompletion]:
     with dataset_path.open("rb") as trace_fd:
-        return list(islice(LalamoCompletion.deserialize_many(trace_fd), num_examples))
+        traces = LalamoCompletion.deserialize_many(trace_fd)
+        if num_examples is None:
+            return list(traces)
+        return list(islice(traces, num_examples))
+
+
+def _has_tokenizer_compatibility(
+    student_model: LanguageModel,
+    teacher_model: LanguageModel,
+) -> bool:
+    return (
+        student_model.config.message_processor_config == teacher_model.config.message_processor_config
+        and student_model.message_processor.tokenizer.to_str() == teacher_model.message_processor.tokenizer.to_str()
+        and student_model.model.vocab_size == teacher_model.model.vocab_size
+    )
+
+
+def _iter_quantization_modes(config: object) -> set[QuantizationMode]:
+    quantization_modes: set[QuantizationMode] = set()
+
+    def visit(value: object) -> None:
+        if dataclasses.is_dataclass(value):
+            for config_field in dataclasses.fields(value):
+                field_value = getattr(value, config_field.name)
+                if config_field.name in {"weight_quantization_mode", "embedding_quantization_mode"}:
+                    if isinstance(field_value, QuantizationMode):
+                        quantization_modes.add(field_value)
+                    continue
+                visit(field_value)
+            return
+        if isinstance(value, tuple | list):
+            for item in value:
+                visit(item)
+            return
+        if isinstance(value, dict):
+            for item in value.values():
+                visit(item)
+
+    visit(config)
+    return quantization_modes
+
+
+def _validate_distill_models(
+    student_model: LanguageModel,
+    teacher_model: LanguageModel,
+    *,
+    quantization_mode: QuantizationMode,
+) -> None:
+    if not _has_tokenizer_compatibility(student_model, teacher_model):
+        raise ValueError("Teacher and student must use identical tokenizers and message processor configs")
+
+    student_quantization_modes = _iter_quantization_modes(student_model.config.model_config)
+    if len(student_quantization_modes) > 1:
+        raise ValueError(
+            "Distillation currently supports a single quantization bitness per student model;"
+            f" got {sorted(mode.value for mode in student_quantization_modes)}",
+        )
+    if student_quantization_modes and quantization_mode not in student_quantization_modes:
+        raise ValueError(
+            f"Requested stochastic rounding mode {quantization_mode.value} does not match the student model"
+            f" quantization mode {next(iter(student_quantization_modes)).value}",
+        )
+
+
+def _is_usable_trace(trace: LalamoCompletion) -> bool:
+    return (
+        bool(trace.prefix_token_ids)
+        and bool(trace.completion_token_ids)
+        and all(bool(token_logits) for token_logits in trace.completion_token_logits)
+    )
 
 
 def _tokenize_conversations(
@@ -303,7 +375,7 @@ def _load_online_exact_batches(
 ) -> LoadedDistillBatches:
     conversations = _load_conversations(
         config.dataset_path,
-        num_examples=config.train_examples + config.eval_examples,
+        num_examples=None,
         seed=config.seed,
     )
     tokenized = _tokenize_conversations(
@@ -338,21 +410,26 @@ def _load_trace_topk_batches(
     *,
     device_batch_size: int,
 ) -> LoadedDistillBatches:
-    traces = _load_traces(config.dataset_path, num_examples=config.train_examples + config.eval_examples)
+    all_traces = _load_traces(config.dataset_path, num_examples=None)
+    traces = [trace for trace in all_traces if _is_usable_trace(trace)]
     requested_examples = config.train_examples + config.eval_examples
     if len(traces) < requested_examples:
-        raise ValueError(f"Requested {requested_examples} traces, got {len(traces)} from {config.dataset_path}")
+        raise ValueError(
+            f"Requested {requested_examples} usable traces, got {len(traces)} from {config.dataset_path}",
+        )
+    shuffled_indices = np.random.default_rng(config.seed).permutation(len(traces))[:requested_examples]
+    selected_traces = [traces[index] for index in shuffled_indices]
 
     return LoadedDistillBatches(
         train_examples=config.train_examples,
         eval_examples=config.eval_examples,
         train_batches=_make_trace_batches(
-            traces[: config.train_examples],
+            selected_traces[: config.train_examples],
             batch_size=device_batch_size,
             pad_token_id=0,
         ),
         eval_batches=_make_trace_batches(
-            traces[config.train_examples : requested_examples],
+            selected_traces[config.train_examples : requested_examples],
             batch_size=device_batch_size,
             pad_token_id=0,
         ),
@@ -397,7 +474,13 @@ def _shard_distill_batches(
     if not eval_batches:
         raise ValueError("No eval batches remain after data sharding; use more eval examples or fewer devices")
 
-    return replace(dataset, train_batches=train_batches, eval_batches=eval_batches)
+    return replace(
+        dataset,
+        train_examples=sum(int(batch.token_ids.shape[0]) for batch in train_batches),
+        eval_examples=sum(int(batch.token_ids.shape[0]) for batch in eval_batches),
+        train_batches=train_batches,
+        eval_batches=eval_batches,
+    )
 
 
 def _evaluate_with[BatchT](
@@ -413,6 +496,9 @@ def _evaluate_with[BatchT](
         total_kl += float(batch_metrics.loss) * int(batch_metrics.valid_tokens)
         total_valid_tokens += int(batch_metrics.valid_tokens)
         total_matches += int(batch_metrics.top1_matches)
+
+    if total_valid_tokens == 0:
+        raise ValueError("Evaluation produced zero valid tokens")
 
     return EvaluationMetrics(
         kl_divergence=total_kl / total_valid_tokens,
@@ -578,6 +664,16 @@ def distill(
 ) -> DistillResult:
     if config.warmup_steps < 0:
         raise ValueError("warmup_steps must be non-negative")
+    if config.batch_size < 1:
+        raise ValueError("batch_size must be at least 1")
+    if config.train_examples < 1:
+        raise ValueError("train_examples must be at least 1")
+    if config.eval_examples < 1:
+        raise ValueError("eval_examples must be at least 1")
+    if config.max_sequence_length < 2:
+        raise ValueError("max_sequence_length must be at least 2")
+    if config.num_steps < 1:
+        raise ValueError("num_steps must be at least 1")
     if config.gradient_accumulation_steps < 1:
         raise ValueError("gradient_accumulation_steps must be at least 1")
     if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
@@ -607,6 +703,12 @@ def distill(
         )
         if effective_trainable_filter is None:
             effective_trainable_filter = lora_trainable_filter
+
+    _validate_distill_models(
+        student_model,
+        teacher_model,
+        quantization_mode=config.quantization_mode,
+    )
 
     # Dataset
     callbacks.loading_dataset()

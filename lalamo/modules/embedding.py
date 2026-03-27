@@ -639,7 +639,7 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
+    input_weights: Float[Array, "vocabulary channels"] = field()
     output_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
     output_scales: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
     output_biases: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)

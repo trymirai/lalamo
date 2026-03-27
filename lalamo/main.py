@@ -13,9 +13,9 @@ from typing import Annotated
 import jax.profiler
 import requests
 import soundfile as sf
+from click import BadParameter, ParamType
 from click import Context as ClickContext
 from click import Parameter as ClickParameter
-from click import ParamType
 from rich import box
 from rich.console import Console
 from rich.live import Live
@@ -1017,6 +1017,11 @@ def distill(
         Option(help="Persist latest and best checkpoints."),
     ] = True,
 ) -> None:
+    try:
+        quantization_mode = QuantizationMode.from_num_bits(bits)
+    except ValueError as exc:
+        raise BadParameter("--bits must be 4 or 8") from exc
+
     _distill(
         DistillConfig(
             teacher_path=teacher_path,
@@ -1034,7 +1039,7 @@ def distill(
             gradient_clip_norm=gradient_clip_norm,
             gradient_accumulation_steps=gradient_accumulation_steps,
             optimizer_name=optimizer,
-            quantization_mode=QuantizationMode.from_num_bits(bits),
+            quantization_mode=quantization_mode,
             lora_rank=lora_rank,
             lora_scale=lora_scale,
             compute_dtype_name=compute_dtype_name,

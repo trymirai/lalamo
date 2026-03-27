@@ -5,6 +5,7 @@ import jax
 import jax.numpy as jnp
 import jax.tree_util as jtu
 import optax
+import pytest
 from jax.tree_util import keystr
 
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -42,6 +43,7 @@ from lalamo.modules.common import (
     partition_parameter_leaves,
 )
 from lalamo.modules.decoder import Decoder
+from lalamo.modules.embedding import MLXSemiQuantizedUntiedEmbeddingConfig
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
@@ -650,6 +652,32 @@ def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("prefix_token_ids", "completion_token_ids", "completion_token_logits", "error_message"),
+    [
+        ([], [3], [{3: 0.5}], "non-empty prefixes"),
+        ([1], [], [], "non-empty completions"),
+        ([1], [3], [{}], "non-empty top-k support"),
+    ],
+)
+def test_make_trace_distill_batch_rejects_invalid_traces(
+    prefix_token_ids: list[int],
+    completion_token_ids: list[int],
+    completion_token_logits: list[dict[int, float]],
+    error_message: str,
+) -> None:
+    traces = (
+        LalamoCompletion(
+            prefix_token_ids=prefix_token_ids,
+            completion_token_ids=completion_token_ids,
+            completion_token_logits=completion_token_logits,
+        ),
+    )
+
+    with pytest.raises(ValueError, match=error_message):
+        make_trace_distill_batch(traces, pad_token_id=0)
+
+
 def _make_trace_batch_from_decoder(decoder: Decoder) -> tuple[TraceDistillBatch, jax.Array]:
     token_ids = jnp.array([[1, 2, 3, 4, 5]], dtype=jnp.int32)
     decoder_logits = decoder(
@@ -690,6 +718,20 @@ def test_compute_trace_distill_batch_metrics_counts_all_matching_top1_tokens() -
     assert metrics.valid_tokens == 2
     assert metrics.top1_matches == 2
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
+
+
+def test_mlxsq_untied_embedding_keeps_input_lookup_weights_unquantized() -> None:
+    embedding = MLXSemiQuantizedUntiedEmbeddingConfig(
+        group_size=2,
+        embedding_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).empty(vocab_size=8, model_dim=4)
+
+    leaves = {leaf.field_name: leaf for leaf in iter_parameter_leaves(embedding)}
+
+    assert leaves["input_weights"].quantized is False
+    assert leaves["output_weights"].quantized is True
 
 
 def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:

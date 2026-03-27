@@ -1,3 +1,4 @@
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -34,6 +35,17 @@ class _CallableWeights(eqx.Module):
         return token_positions
 
 
+@dataclass(frozen=True)
+class _StubModelConfig:
+    weight_quantization_mode: QuantizationMode
+
+
+@dataclass(frozen=True)
+class _StubLanguageModelConfig:
+    model_config: _StubModelConfig
+    message_processor_config: str = "default"
+
+
 def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
     config_arguments = {
         "teacher_path": tmp_path / "teacher",
@@ -51,10 +63,22 @@ def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
     return DistillConfig(**config_arguments)
 
 
-def _make_language_model() -> SimpleNamespace:
+def _make_language_model(
+    *,
+    tokenizer_signature: str = "shared-tokenizer",
+    quantization_mode: QuantizationMode = QuantizationMode.UINT4,
+    message_processor_config: str = "default",
+) -> SimpleNamespace:
     return SimpleNamespace(
-        model=SimpleNamespace(activation_precision=jnp.float32),
-        message_processor=SimpleNamespace(tokenize_request=lambda _messages: [1, 2, 3]),
+        config=_StubLanguageModelConfig(
+            model_config=_StubModelConfig(weight_quantization_mode=quantization_mode),
+            message_processor_config=message_processor_config,
+        ),
+        model=SimpleNamespace(activation_precision=jnp.float32, vocab_size=32),
+        message_processor=SimpleNamespace(
+            tokenize_request=lambda _messages: [1, 2, 3],
+            tokenizer=SimpleNamespace(to_str=lambda: tokenizer_signature),
+        ),
     )
 
 
@@ -261,3 +285,71 @@ def test_distill_fails_when_sharding_filters_every_batch(tmp_path: Path) -> None
         ),
     ):
         distill(config)
+
+
+def test_distill_rejects_mismatched_tokenizers(tmp_path: Path) -> None:
+    config = _make_config(tmp_path)
+    language_models = [
+        _make_language_model(tokenizer_signature="teacher"),
+        _make_language_model(tokenizer_signature="student"),
+    ]
+
+    with (
+        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=language_models),
+        pytest.raises(ValueError, match="identical tokenizers"),
+    ):
+        distill(config)
+
+
+def test_distill_rejects_quantization_mode_mismatch(tmp_path: Path) -> None:
+    config = _make_config(tmp_path, quantization_mode=QuantizationMode.UINT4)
+    language_models = [
+        _make_language_model(quantization_mode=QuantizationMode.UINT8),
+        _make_language_model(quantization_mode=QuantizationMode.UINT8),
+    ]
+
+    with (
+        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=language_models),
+        pytest.raises(ValueError, match="does not match the student model quantization mode"),
+    ):
+        distill(config)
+
+
+def test_distill_uses_later_usable_sequences(tmp_path: Path) -> None:
+    config = _make_config(tmp_path, train_examples=2, eval_examples=1)
+    training_state = DistillTrainingState(master_weights=(), muon_weight_dimension_numbers=())
+    language_models = [_make_language_model(), _make_language_model()]
+    tokenized_sequences = [
+        np.array([1], dtype=np.int32),
+        np.array([1, 2, 3], dtype=np.int32),
+        np.array([4, 5, 6], dtype=np.int32),
+        np.array([7, 8, 9], dtype=np.int32),
+    ]
+
+    def load_conversations(_dataset_path: Path, *, num_examples: int | None, seed: int) -> list[object]:
+        del seed
+        assert num_examples is None
+        return [object()] * 4
+
+    with (
+        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=language_models),
+        patch("lalamo.distill_runner._load_conversations", side_effect=load_conversations),
+        patch("lalamo.distill_runner._tokenize_conversations", return_value=tokenized_sequences),
+        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=training_state),
+        patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner.materialize_trainable_module", return_value=SimpleNamespace()),
+        patch(
+            "lalamo.distill_runner._evaluate_with",
+            side_effect=[
+                EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
+                EvaluationMetrics(kl_divergence=0.5, top1_agreement=0.0, valid_tokens=1),
+            ],
+        ),
+        patch("lalamo.distill_runner._accumulate_train_step", side_effect=_fake_accumulate_train_step),
+        patch("lalamo.distill_runner._save_materialized_student"),
+    ):
+        result = distill(config)
+
+    assert result.train_examples == 2
+    assert result.eval_examples == 1
