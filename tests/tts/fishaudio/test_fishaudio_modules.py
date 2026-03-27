@@ -76,7 +76,7 @@ _testlog = logging.getLogger("tts_test_logger")
 
 
 def test_fishaudio_text_tokenization(fish_audio_local_model_path: Path) -> None:
-    model_spec = next(filter(lambda model: model.repo == "fishaudio/s1-mini", FISHAUDIO_TTS_MODELS))
+    model_spec = next(filter(lambda model: model.source.description == "fishaudio/s1-mini", FISHAUDIO_TTS_MODELS))
     assert isinstance(model_spec.configs.tokenizer, FileSpec)
     tokenizer_path = fish_audio_local_model_path / model_spec.configs.tokenizer.filename
     tokenizer_special_tokens_path = fish_audio_local_model_path / "special_tokens.json"
