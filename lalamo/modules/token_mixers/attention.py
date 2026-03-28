@@ -65,7 +65,7 @@ def deterministic_dot_product_attention(
 
     num_tiles = (source_len + pad_len) // tile_size
 
-    queries_heads_first = rearrange(queries, "queries heads hidden -> heads queries hidden")
+    queries = rearrange(queries, "queries heads hidden -> heads queries hidden")
     key_tiles = rearrange(
         keys, "(tiles tokens) heads hidden -> tiles heads tokens hidden", tiles=num_tiles, tokens=tile_size
     )
@@ -89,10 +89,8 @@ def deterministic_dot_product_attention(
         running_max, running_sum, running_output = carry
         key_tile, value_tile, mask_tile, bias_tile = tile_data
 
-        scores = einsum(
-            queries_heads_first, key_tile, "heads queries hidden, heads tokens hidden -> heads queries tokens"
-        )
-        scores = scores * scale + bias_tile
+        scores = einsum(queries, key_tile, "heads queries hidden, heads tokens hidden -> heads queries tokens")
+        scores = scale * scores + bias_tile
         scores = jnp.where(mask_tile, scores, jnp.array(float("-inf"), dtype=scores.dtype))
         if logit_soft_cap is not None:
             scores = apply_soft_capping(scores, logit_soft_cap)
