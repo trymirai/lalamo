@@ -1,7 +1,7 @@
 import json
 import tarfile
 import tempfile
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -13,6 +13,7 @@ import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
 from lalamo.common import cast_if_float
+from lalamo.registry_abc import RegistryABC
 from lalamo.safetensors import safe_read
 from lalamo.utils import MapDictValues
 
@@ -44,7 +45,7 @@ type StatusEvent = (
 )
 
 
-class Origin(ABC):
+class Origin(RegistryABC):
     @abstractmethod
     def resolve_file(
         self,
@@ -106,19 +107,6 @@ def _load_safetensors(
         yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights), metadata or {}
 
 
-@contextmanager
-def _load_torch(
-    path: Path,
-    float_dtype: DTypeLike,
-) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-    import torch
-
-    from lalamo.modules.torch_interop import torch_to_jax
-
-    torch_weights = torch.load(path, map_location="cpu", weights_only=True)
-    yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
-
-
 @dataclass(frozen=True)
 class HuggingFaceOrigin(Origin):
     repo: str
@@ -163,47 +151,23 @@ class HuggingFaceTorchOrigin(Origin):
         path: Path,
         float_dtype: DTypeLike,
     ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        with _load_torch(path, float_dtype) as result:
-            yield result
+        import torch
+
+        from lalamo.modules.torch_interop import torch_to_jax
+
+        torch_weights = torch.load(path, map_location="cpu", weights_only=True)
+        yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
 
     @property
     def description(self) -> str:
         return self.repo
 
 
-@dataclass(frozen=True)
-class LocalOrigin(Origin):
-    path: Path
-
-    def resolve_file(
-        self,
-        file_spec: FileSpec,
-        progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
-    ) -> Path:
-        return self.path / file_spec.filename
-
-    def resolve_weights(self, progress_callback: Callable[[StatusEvent], None] | None = None) -> list[Path]:  # noqa: ARG002
-        return sorted(self.path.glob("*.safetensors"))
-
-    @contextmanager
-    def load_weights(
-        self,
-        path: Path,
-        float_dtype: DTypeLike,
-    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        with _load_safetensors(path, float_dtype) as result:
-            yield result
-
-    @property
-    def description(self) -> str:
-        return str(self.path)
-
-
 class NemoOrigin(Origin):
     """NVIDIA NeMo models: .nemo tar archives from HuggingFace containing torch checkpoints."""
 
     def __init__(self, repo: str) -> None:
-        self._repo = repo
+        self.repo = repo
         self._extracted: tuple[list[Path], Path] | None = None
 
     def _ensure_extracted(
@@ -215,7 +179,7 @@ class NemoOrigin(Origin):
 
         import yaml
 
-        nemo_files = _hf_resolve_weights(self._repo, ".nemo", progress_callback)
+        nemo_files = _hf_resolve_weights(self.repo, ".nemo", progress_callback)
         (nemo_path,) = nemo_files
 
         tmpdir = Path(tempfile.mkdtemp())
@@ -244,7 +208,7 @@ class NemoOrigin(Origin):
         if file_spec.filename.endswith(".nemo"):
             _, config_path = self._ensure_extracted(progress_callback)
             return config_path
-        return _hf_resolve_file(self._repo, file_spec, progress_callback)
+        return _hf_resolve_file(self.repo, file_spec, progress_callback)
 
     def resolve_weights(self, progress_callback: Callable[[StatusEvent], None] | None = None) -> list[Path]:
         weights, _ = self._ensure_extracted(progress_callback)
@@ -256,9 +220,13 @@ class NemoOrigin(Origin):
         path: Path,
         float_dtype: DTypeLike,
     ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        with _load_torch(path, float_dtype) as result:
-            yield result
+        import torch
+
+        from lalamo.modules.torch_interop import torch_to_jax
+
+        torch_weights = torch.load(path, map_location="cpu", weights_only=True)
+        yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
 
     @property
     def description(self) -> str:
-        return self._repo
+        return self.repo

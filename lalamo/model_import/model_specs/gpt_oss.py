@@ -12,7 +12,7 @@ GPT_OSS_MODELS = [
         name="GPT-OSS-20B",
         size="20B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="openai/gpt-oss-20b"),
+        origin=HuggingFaceOrigin(repo="openai/gpt-oss-20b"),
         config_type=HFGPTOssConfig,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),

@@ -29,7 +29,7 @@ def test_logit_processing(llm_spec: ModelSpec) -> None:
             {**asdict(lalamo_hf_generation_config), "do_sample": True},
         )
     elif isinstance(generation_config, FileSpec):
-        hf_generation_config_file = llm_spec.source.resolve_file(generation_config)
+        hf_generation_config_file = llm_spec.origin.resolve_file(generation_config)
         hf_generation_config_dict = json.loads(hf_generation_config_file.read_text())
         hf_generation_config = TransformersGenerationConfig.from_dict({**hf_generation_config_dict, "do_sample": True})
         lalamo_hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)

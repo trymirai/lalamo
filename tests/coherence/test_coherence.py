@@ -52,7 +52,7 @@ SIMPLE_QA: list[tuple[str, re.Pattern[str]]] = [
 
 @pytest.fixture
 def converted_model_path(llm_spec: ModelSpec, convert_model: ConvertModel) -> Path:
-    return convert_model(llm_spec.source.description)
+    return convert_model(llm_spec.origin.description)
 
 
 def _generate_replies(
@@ -95,8 +95,8 @@ def test_model_coherent_and_stops(
 
     judge_model = os.getenv("COHERENCE_JUDGE_MODEL", DEFAULT_JUDGE_MODEL)
 
-    is_bad = llm_spec.source.description in BAD_MODELS
-    max_tokens = MAX_TOKENS * 4 if llm_spec.source.description in THINKING_MODELS else MAX_TOKENS
+    is_bad = llm_spec.origin.description in BAD_MODELS
+    max_tokens = MAX_TOKENS * 4 if llm_spec.origin.description in THINKING_MODELS else MAX_TOKENS
 
     work_dir = tmp_path_factory.mktemp("coherence")
     dataset_path = work_dir / "dataset.parquet"

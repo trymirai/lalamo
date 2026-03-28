@@ -13,7 +13,7 @@ PLEIAS_MODELS = [
         name="Pleias-RAG-1B",
         size="1B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="PleIAs/Pleias-RAG-1B"),
+        origin=HuggingFaceOrigin(repo="PleIAs/Pleias-RAG-1B"),
         config_type=HFLlamaConfig,
     ),
 ]

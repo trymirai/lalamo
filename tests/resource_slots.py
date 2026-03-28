@@ -35,7 +35,7 @@ def _get_repo(request: pytest.FixtureRequest) -> str | None:
         return None
     for param in request.node.callspec.params.values():
         if isinstance(param, ModelSpec):
-            return param.source.description
+            return param.origin.description
     return None
 
 

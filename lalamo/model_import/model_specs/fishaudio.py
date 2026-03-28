@@ -16,7 +16,7 @@ FISHAUDIO_TTS_MODELS = [
         name="s1-mini",
         size="0.8B",
         quantization=None,
-        source=HuggingFaceTorchOrigin(repo="fishaudio/s1-mini"),
+        origin=HuggingFaceTorchOrigin(repo="fishaudio/s1-mini"),
         config_type=FishAudioConfig,
         configs=ConfigMap(
             chat_template=DIRECT_CHAT_TEMPLATE,

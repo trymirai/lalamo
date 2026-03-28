@@ -60,4 +60,4 @@ class ModelRegistry:
         if allow_third_party_plugins:
             models += load_third_party_specs("lalamo_plugins.specs.v1")
 
-        return ModelRegistry(models, {model.source.description: model for model in models})
+        return ModelRegistry(models, {model.origin.description: model for model in models})

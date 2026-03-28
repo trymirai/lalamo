@@ -25,8 +25,6 @@ from lalamo.modules import (
     TransformerLayer,
 )
 from lalamo.modules.audio.common_modules import (
-    DACDecoder,
-    DecoderBlock,
     ResidualUnit,
     Snake1d,
 )
@@ -589,7 +587,13 @@ def load_residual_unit(
 
 def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mapping[str, Any]) -> DescriptAudioCodec:
     loaded_quantizer = load_downsample_rvq(dac_module.quantizer, state_dict, path=ParameterPath("quantizer"))
-    loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))
+    loaded_decoder = load_dac_decoder(
+        dac_module.decoder,
+        state_dict,
+        ParameterPath("decoder"),
+        load_activation=load_snake1d,
+        load_residual=load_residual_unit,
+    )
 
     return DescriptAudioCodec(
         config=dac_module.config,
@@ -674,7 +678,13 @@ def load_fishaudio_audio_decoder(
     base_path: ParameterPath,
 ) -> DescriptAudioCodec:
     loaded_quantizer = load_downsample_rvq(module.quantizer, weights_dict, base_path / "quantizer")
-    loaded_decoder = load_audio_decoder(module.decoder, weights_dict, base_path / "decoder")
+    loaded_decoder = load_dac_decoder(
+        module.decoder,
+        weights_dict,
+        base_path / "decoder",
+        load_activation=load_snake1d,
+        load_residual=load_residual_unit,
+    )
 
     return load_parameters(lambda m: (m.quantizer, m.decoder), module, (loaded_quantizer, loaded_decoder))
 

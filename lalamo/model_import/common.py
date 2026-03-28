@@ -100,7 +100,7 @@ def _instantiate_tokenizer_from_model_spec(
         case None:
             return Tokenizer.from_str(dummy_char_level_tokenizer_config())
         case FileSpec() as file_spec:
-            tokenizer_file = model_spec.source.resolve_file(file_spec, progress_callback)
+            tokenizer_file = model_spec.origin.resolve_file(file_spec, progress_callback)
             return Tokenizer.from_file(str(tokenizer_file))
 
 
@@ -108,18 +108,18 @@ def import_message_processor(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> MessageProcessor:
-    tokenizer_config_file = model_spec.source.resolve_file(model_spec.configs.tokenizer_config, progress_callback)
+    tokenizer_config_file = model_spec.origin.resolve_file(model_spec.configs.tokenizer_config, progress_callback)
     tokenizer_config = HFTokenizerConfig.from_json(tokenizer_config_file)
 
     if tokenizer_config.chat_template is None:
         match model_spec.configs.chat_template:
             case JSONFieldSpec(file_spec, field_name):
-                json_file = model_spec.source.resolve_file(file_spec, progress_callback)
+                json_file = model_spec.origin.resolve_file(file_spec, progress_callback)
                 with open(json_file) as file:
                     json_dict = json.load(file)
                 prompt_template = json_dict[field_name]
             case FileSpec(_) as file_spec:
-                chat_template_file = model_spec.source.resolve_file(file_spec, progress_callback)
+                chat_template_file = model_spec.origin.resolve_file(file_spec, progress_callback)
                 prompt_template = chat_template_file.read_text()
             case str() as template_string:
                 prompt_template = template_string
@@ -143,7 +143,7 @@ def import_message_processor(
     eos_token = getattr(tokenizer_config, "eos_token", None)
 
     if eos_token is None or bos_token is None:
-        foreign_decoder_config_file = model_spec.source.resolve_file(
+        foreign_decoder_config_file = model_spec.origin.resolve_file(
             model_spec.configs.model_config, progress_callback
         )
         with open(foreign_decoder_config_file) as foreign_decoder_file:
@@ -159,7 +159,7 @@ def import_message_processor(
     system_prompt_text = None
     match model_spec.configs.system_prompt:
         case FileSpec(_) as file_spec:
-            system_prompt_file = model_spec.source.resolve_file(file_spec, progress_callback)
+            system_prompt_file = model_spec.origin.resolve_file(file_spec, progress_callback)
             system_prompt_text = system_prompt_file.read_text()
         case str() as sp:
             system_prompt_text = sp
@@ -183,10 +183,10 @@ def _resolve_weights_and_config(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[list[Path], Path, tuple[Path, ...]]:
-    source = model_spec.source
-    weights_paths = source.resolve_weights(progress_callback)
-    config_path = source.resolve_file(model_spec.configs.model_config, progress_callback)
-    extra_config_paths = tuple(source.resolve_file(ec, progress_callback) for ec in model_spec.configs.extra_configs)
+    origin = model_spec.origin
+    weights_paths = origin.resolve_weights(progress_callback)
+    config_path = origin.resolve_file(model_spec.configs.model_config, progress_callback)
+    extra_config_paths = tuple(origin.resolve_file(ec, progress_callback) for ec in model_spec.configs.extra_configs)
     return (weights_paths, config_path, extra_config_paths)
 
 
@@ -204,7 +204,7 @@ def _load_main_processing_module(
         metadata_shards = []
         for weights_path in weights_paths:
             weights_shard, metadata_shard = stack.enter_context(
-                model_spec.source.load_weights(weights_path, precision)
+                model_spec.origin.load_weights(weights_path, precision)
             )
             weights_shards.append(weights_shard)
             metadata_shards.append(metadata_shard)
@@ -262,7 +262,7 @@ def _import_language_model(
         stop_token_ids = merge_token_ids(candidate_generation_config.stop_token_ids, stop_token_ids)
         generation_config = replace(candidate_generation_config, stop_token_ids=stop_token_ids)
     elif isinstance(model_spec.configs.generation_config, FileSpec):
-        hf_generation_config_file = model_spec.source.resolve_file(model_spec.configs.generation_config)
+        hf_generation_config_file = model_spec.origin.resolve_file(model_spec.configs.generation_config)
         hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
         stop_token_ids = merge_token_ids(stop_token_ids, hf_generation_config.eos_token_id)
         generation_config = _policy_from_hf_config(hf_generation_config, stop_token_ids=stop_token_ids)
@@ -334,8 +334,8 @@ def _import_tts_model(
         from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
 
         assert isinstance(model_spec.configs.tokenizer, FileSpec)
-        tokenizer_path = model_spec.source.resolve_file(model_spec.configs.tokenizer, progress_callback)
-        tokenizer_special_tokens_path = model_spec.source.resolve_file(
+        tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
+        tokenizer_special_tokens_path = model_spec.origin.resolve_file(
             FileSpec(filename="special_tokens.json"), progress_callback
         )
         tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
@@ -500,7 +500,7 @@ def import_model(
         name=model_spec.name,
         size=model_spec.size,
         quantization=model_spec.quantization,
-        source_description=model_spec.source.description,
+        source_description=model_spec.origin.description,
         use_cases=model_spec.use_cases,
         model_type=model_spec.model_type,
         model_config=config,

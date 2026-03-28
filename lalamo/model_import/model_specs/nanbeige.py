@@ -11,7 +11,7 @@ NANBEIGE41 = [
         family="Nanbeige-4.1",
         name="Nanbeige4.1-3B",
         size="3B",
-        source=HuggingFaceOrigin(repo="Nanbeige/Nanbeige4.1-3B"),
+        origin=HuggingFaceOrigin(repo="Nanbeige/Nanbeige4.1-3B"),
         config_type=HFLlamaConfig,
         use_cases=tuple(),
     ),

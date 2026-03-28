@@ -12,7 +12,7 @@ MIRAI_CLASSIFIER_MODELS = [
         name="ModernBERT-Chat-Moderation",
         size="0.15B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="trymirai/chat-moderation-router"),
+        origin=HuggingFaceOrigin(repo="trymirai/chat-moderation-router"),
         config_type=ModernBERTConfig,
         use_cases=tuple(),
         model_type=ModelType("classifier_model"),

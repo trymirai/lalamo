@@ -1,3 +1,4 @@
+import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
@@ -9,7 +10,7 @@ from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 
-from .origins import FileSpec, HuggingFaceOrigin, Origin
+from .origins import FileSpec, Origin
 
 __all__ = [
     "ConfigMap",
@@ -51,7 +52,7 @@ class ConfigMap:
     extra_configs: tuple[FileSpec, ...] = ()
 
 
-def _is_foreign_config_type(t: Any) -> bool:
+def _is_foreign_config_type(t: object) -> bool:
     origin = get_origin(t)
     args = get_args(t)
     return origin is type and len(args) == 1 and isinstance(args[0], type) and issubclass(args[0], ForeignConfig)
@@ -107,21 +108,18 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
     raise ValueError(f"Invalid chat_template value: {value}")
 
 
-def _structure_origin(value: object, _type: object) -> Origin:
-    if isinstance(value, Origin):
-        return value
-    if isinstance(value, str):
-        return HuggingFaceOrigin(repo=value)
-    if isinstance(value, dict):
-        value = cast("dict[Any, Any]", value)
-        return HuggingFaceOrigin(repo=value["repo"])
-    raise ValueError(f"Invalid origin value: {value}")
+def _structure_origin(data: object, _type: object) -> Origin:
+    if isinstance(data, Origin):
+        return data
+    data = dict(cast("dict[Any, Any]", data))
+    type_name = data.pop("type")
+    name_to_type = {t.__name__: t for t in Origin.__descendants__()}
+    return name_to_type[type_name](**data)
 
 
-def _unstructure_origin(value: Origin) -> dict:
-    if isinstance(value, HuggingFaceOrigin):
-        return {"repo": value.repo}
-    return {"description": value.description}
+def _unstructure_origin(obj: Origin) -> dict:
+    fields = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}  # type: ignore[arg-type]
+    return {"type": type(obj).__name__, **fields}
 
 
 @dataclass(frozen=True)
@@ -133,13 +131,13 @@ class ModelSpec:
     _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
     _converter.register_structure_hook(FileSpec | str | None, _structure_system_prompt)
     _converter.register_structure_hook(Origin, _structure_origin)
-    _converter.register_unstructure_hook(HuggingFaceOrigin, _unstructure_origin)
+    _converter.register_unstructure_hook(Origin, _unstructure_origin)
 
     vendor: str
     family: str
     name: str
     size: str
-    source: Origin
+    origin: Origin
     config_type: type[ForeignConfig]
     quantization: QuantizationMode | None = None
     output_parser_regex: str | None = None
@@ -162,7 +160,7 @@ class ModelSpec:
 
 def awq_model_spec(
     model_spec: ModelSpec,
-    source: Origin,
+    origin: Origin,
     quantization: QuantizationMode = QuantizationMode.UINT4,
 ) -> ModelSpec:
     return ModelSpec(
@@ -171,7 +169,7 @@ def awq_model_spec(
         name=f"{model_spec.name}-AWQ",
         size=model_spec.size,
         quantization=quantization,
-        source=source,
+        origin=origin,
         config_type=model_spec.config_type,
         configs=model_spec.configs,
         use_cases=model_spec.use_cases,
@@ -180,6 +178,8 @@ def awq_model_spec(
 
 
 def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
+    from .origins import HuggingFaceOrigin
+
     quantization_compatible_repos: list[str] = [
         "Qwen/Qwen2.5-3B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",
@@ -192,11 +192,11 @@ def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
 
     quantized_model_specs: list[ModelSpec] = []
     for model_spec in model_specs:
-        if not isinstance(model_spec.source, HuggingFaceOrigin):
+        if not isinstance(model_spec.origin, HuggingFaceOrigin):
             continue
-        if model_spec.source.repo not in quantization_compatible_repos:
+        if model_spec.origin.repo not in quantization_compatible_repos:
             continue
-        quantized_source = HuggingFaceOrigin(repo="trymirai/{}-AWQ".format(model_spec.source.repo.split("/")[-1]))
-        quantized_model_spec = awq_model_spec(model_spec, quantized_source)
+        quantized_origin = HuggingFaceOrigin(repo="trymirai/{}-AWQ".format(model_spec.origin.repo.split("/")[-1]))
+        quantized_model_spec = awq_model_spec(model_spec, quantized_origin)
         quantized_model_specs.append(quantized_model_spec)
     return quantized_model_specs

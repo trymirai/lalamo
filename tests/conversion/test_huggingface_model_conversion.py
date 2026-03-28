@@ -7,7 +7,7 @@ from tests.conftest import ConvertModel
 
 
 def test_model_conversion(all_model_specs: ModelSpec, convert_model: ConvertModel) -> None:
-    converted_path = convert_model(all_model_specs.source.description)
+    converted_path = convert_model(all_model_specs.origin.description)
 
     match all_model_specs.model_type:
         case ModelType.LANGUAGE_MODEL:

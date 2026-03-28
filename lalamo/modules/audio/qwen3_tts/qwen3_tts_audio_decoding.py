@@ -1,5 +1,5 @@
 import math
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from functools import partial
 from typing import Self
@@ -461,7 +461,6 @@ class Qwen3TTSAudioDecoder(TTSAudioDecoder[Qwen3TTSAudioDecoderConfig]):
         chunk_size: int = 300,
         left_context_size: int = 25,
     ) -> Float[Array, "batch samples 1"]:
-
         wav_chunks: list[Float[Array, "batch samples 1"]] = []
         start_index = 0
         total_tokens = int(codes.semantic.shape[-1])

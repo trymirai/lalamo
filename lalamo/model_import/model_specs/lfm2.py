@@ -25,7 +25,7 @@ _LFM20_MODELS = [
         family="LFM2",
         name=_lfm_repo("LFM2", size, variant, quantization)[1],
         size=size,
-        source=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2", size, variant, quantization))),
+        origin=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2", size, variant, quantization))),
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(
@@ -47,7 +47,7 @@ _LFM25_MODELS = [
         family="LFM2.5",
         name=_lfm_repo("LFM2.5", size, variant, quantization)[1],
         size=size,
-        source=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization))),
+        origin=HuggingFaceOrigin(repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization))),
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(

@@ -12,7 +12,7 @@ RNJ_MODELS = [
         name="Rnj-1-Instruct",
         size="8B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="EssentialAI/rnj-1-instruct"),
+        origin=HuggingFaceOrigin(repo="EssentialAI/rnj-1-instruct"),
         config_type=HFGemma3TextConfig,
     ),
 ]

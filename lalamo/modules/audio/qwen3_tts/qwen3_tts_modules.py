@@ -229,8 +229,7 @@ class ResidualVectorQuantizerConfig:
             vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(self.n_q_semantic)
         )
         acoustic_layers = tuple(
-            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension)
-            for _ in range(n_q - self.n_q_semantic)
+            vq.empty(dim=dimension, codebook_size=bins, codebook_dim=dimension) for _ in range(n_q - self.n_q_semantic)
         )
         semantic_projection = self.output_projection_config.empty(
             input_dim=dimension,

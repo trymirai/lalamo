@@ -12,7 +12,7 @@ POLARIS_MODELS = [
         name="Polaris-4B-Preview",
         size="4B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="POLARIS-Project/Polaris-4B-Preview"),
+        origin=HuggingFaceOrigin(repo="POLARIS-Project/Polaris-4B-Preview"),
         config_type=HFQwen3Config,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),

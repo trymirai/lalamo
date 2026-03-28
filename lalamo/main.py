@@ -61,7 +61,7 @@ from lalamo.common import (
 )
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import ModelSpec
+from lalamo.model_import import ModelSpec, ModelType
 from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
@@ -121,15 +121,6 @@ class RemoteModelParser(ParamType):
             return self.fail(error_message, param, ctx)
 
         return model_spec
-
-
-def _is_latent_tts_model(model_path: Path) -> bool:
-    config_path = model_path / "config.json"
-    if not config_path.exists():
-        return False
-    with open(config_path) as f:
-        config_json = json.load(f)
-    return config_json.get("model_type") == "latent_tts_model"
 
 
 def _error(message: str) -> None:
@@ -401,17 +392,16 @@ def tts(
         voice_prompt = VoicePrompt(waveform=jnp.array(ref_audio), sampling_rate=ref_sr)
         console.print(f"🎤 Loaded reference audio from {reference} ({ref_sr}Hz, {len(ref_audio) / ref_sr:.1f}s)")
 
+    config_json = json.loads((model_path / "config.json").read_text())
+    model_type = ModelType(config_json["model_type"])
     model: TTSGenerator | LatentTTSGenerator
-    if _is_latent_tts_model(model_path):
-        model = LatentTTSGenerator.load_model(model_path)
-    else:
-        model = TTSGenerator.load_model(model_path)
-
-    if isinstance(model, TTSGenerator):
-        if speaker_id is None:
-            speaker_id = model.default_speaker
-        if style is None:
-            style = model.default_style
+    match model_type:
+        case ModelType.TTS_MODEL:
+            model = TTSGenerator.load_model(model_path)
+        case ModelType.LATENT_TTS_MODEL:
+            model = LatentTTSGenerator.load_model(model_path)
+        case _:
+            raise ValueError(f"Expected a TTS model, got: {model_type}")
 
     _stop_word = "/stop"
     while True:
@@ -689,7 +679,7 @@ def list_models(
 
     if plain:
         for spec in sorted_specs:
-            console.print(spec.source.description)
+            console.print(spec.origin.description)
         return
 
     table = Table(
@@ -709,7 +699,7 @@ def list_models(
             spec.family,
             spec.size,
             str(spec.quantization),
-            spec.source.description,
+            spec.origin.description,
         )
     console.print(table)
 

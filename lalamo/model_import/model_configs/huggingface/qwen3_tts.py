@@ -480,10 +480,9 @@ def _build_text_decoder_config(
         ),
     )
 
-    first_speaker, *_ = talker.spk_id if talker.spk_id else (None,)
-
     return Qwen3TTSTextDecoderConfig(
-        default_speaker=first_speaker,
+        default_speaker="aiden",
+        default_language="english",
         precision=precision,
         codec_embedding_config=embedding_config,
         text_embedding_config=embedding_config,
@@ -510,6 +509,6 @@ def _build_text_decoder_config(
         tts_bos_token_id=top_level_config.tts_bos_token_id,
         tts_eos_token_id=top_level_config.tts_eos_token_id,
         tts_pad_token_id=top_level_config.tts_pad_token_id,
-        spk_id=talker.spk_id,
-        codec_language_id=talker.codec_language_id,
+        speaker_id=talker.spk_id,
+        language_id=talker.codec_language_id,
     )

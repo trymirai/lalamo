@@ -13,7 +13,7 @@ LLAMBA_MODELS = [
         name="Llamba-1B",
         size="1B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B"),
+        origin=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B"),
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "meta-llama/Llama-3.2-1B-Instruct"),
@@ -28,7 +28,7 @@ LLAMBA_MODELS = [
         name="Llamba-1B-4bit-mlx",
         size="1B",
         quantization=QuantizationMode.UINT4,
-        source=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B-4bit-mlx"),
+        origin=HuggingFaceOrigin(repo="cartesia-ai/Llamba-1B-4bit-mlx"),
         config_type=HFLlambaConfig,
         configs=ConfigMap(
             model_config=FileSpec("config.json", "cartesia-ai/Llamba-1B"),

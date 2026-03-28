@@ -12,7 +12,7 @@ REKA_MODELS = [
         name="Reka-Flash-3.1",
         size="21B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="RekaAI/reka-flash-3.1"),
+        origin=HuggingFaceOrigin(repo="RekaAI/reka-flash-3.1"),
         config_type=HFLlamaConfig,
         user_role_name="human",
         use_cases=tuple(),

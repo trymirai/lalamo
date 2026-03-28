@@ -19,7 +19,7 @@ NANOCODEC_TTS_MODELS = [
         name=NEMO_NANOCODEC_MODEL_ID,
         size="0.1B",
         quantization=None,
-        source=NemoOrigin(repo=f"nvidia/{NEMO_NANOCODEC_MODEL_ID}"),
+        origin=NemoOrigin(repo=f"nvidia/{NEMO_NANOCODEC_MODEL_ID}"),
         config_type=NanoCodecForeignConfig,
         configs=ConfigMap(
             model_config=FileSpec(f"{NEMO_NANOCODEC_MODEL_ID}.nemo"),

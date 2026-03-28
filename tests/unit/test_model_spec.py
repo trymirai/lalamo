@@ -26,8 +26,8 @@ def test_deserialization() -> None:
     assert model_spec.name == "Llama-3.2-1B-Instruct"
     assert model_spec.size == "1B"
     assert model_spec.quantization is None
-    assert isinstance(model_spec.source, HuggingFaceOrigin)
-    assert model_spec.source.repo == "meta-llama/Llama-3.2-1B-Instruct"
+    assert isinstance(model_spec.origin, HuggingFaceOrigin)
+    assert model_spec.origin.repo == "meta-llama/Llama-3.2-1B-Instruct"
     assert model_spec.config_type is HFLlamaConfig
     assert model_spec.output_parser_regex is None
     assert model_spec.system_role_name == "system"
@@ -44,7 +44,7 @@ def test_consistency() -> None:
         name="Llama-3.2-1B-Instruct",
         size="1B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="meta-llama/Llama-3.2-1B-Instruct"),
+        origin=HuggingFaceOrigin(repo="meta-llama/Llama-3.2-1B-Instruct"),
         config_type=HFLlamaConfig,
         use_cases=tuple(),
     )

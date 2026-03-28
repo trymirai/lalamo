@@ -20,7 +20,7 @@ CODESTRAL = [
         name="Codestral-22B-v0.1",
         size="22B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="mistral-community/Codestral-22B-v0.1"),
+        origin=HuggingFaceOrigin(repo="mistral-community/Codestral-22B-v0.1"),
         config_type=HFMistralConfig,
         use_cases=(UseCase.CODE,),
         configs=ConfigMap(
@@ -40,7 +40,7 @@ DEVSTRAL = [
         name="Devstral-Small-2505",
         size="24B",
         quantization=None,
-        source=HuggingFaceOrigin(repo="mistralai/Devstral-Small-2505"),
+        origin=HuggingFaceOrigin(repo="mistralai/Devstral-Small-2505"),
         config_type=HFMistralConfig,
         configs=ConfigMap(
             tokenizer=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer.json"),

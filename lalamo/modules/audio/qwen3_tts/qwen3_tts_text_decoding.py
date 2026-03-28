@@ -152,8 +152,8 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     tts_bos_token_id: int
     tts_eos_token_id: int
     tts_pad_token_id: int
-    spk_id: Mapping[str, int]
-    codec_language_id: Mapping[str, int]
+    speaker_id: Mapping[str, int]
+    language_id: Mapping[str, int]
 
     def format_instruction(self, style: str) -> str:
         return f"<|im_start|>user\n{style}<|im_end|>\n"
@@ -486,10 +486,8 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         if sampling_policy is None:
             sampling_policy = make_policy(temperature=0.9, top_p=1.0, top_k=50)
 
-        speaker_codec_id = self.config.spk_id.get(context.speaker) if context.speaker is not None else None
-        language_codec_id = (
-            self.config.codec_language_id.get(context.language) if context.language is not None else None
-        )
+        speaker_codec_id = self.config.speaker_id.get(context.speaker) if context.speaker is not None else None
+        language_codec_id = self.config.language_id.get(context.language) if context.language is not None else None
 
         talker_prompt, trailing_text_hidden, tts_pad_embed = self._build_talker_prompt(
             text_tokens,

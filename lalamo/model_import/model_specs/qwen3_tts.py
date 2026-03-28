@@ -17,7 +17,7 @@ def _qwen3_tts_model(*, name: str, size: str, repo: str) -> ModelSpec:
         name=name,
         size=size,
         quantization=None,
-        source=HuggingFaceOrigin(repo=repo),
+        origin=HuggingFaceOrigin(repo=repo),
         config_type=Qwen3TTSTokenizer12HzConfig,
         configs=ConfigMap(
             model_config=FileSpec("config.json"),

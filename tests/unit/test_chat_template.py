@@ -42,7 +42,7 @@ class TestModelSpecWithChatTemplate:
             family="Test",
             name="Test",
             size="1B",
-            source=HuggingFaceOrigin(repo="test/test"),
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=DIRECT_TEMPLATE),
         )
@@ -54,7 +54,7 @@ class TestModelSpecWithChatTemplate:
             family="Test",
             name="Test",
             size="1B",
-            source=HuggingFaceOrigin(repo="test/test"),
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
         )
@@ -67,7 +67,7 @@ class TestModelSpecWithChatTemplate:
             family="Test",
             name="Test",
             size="1B",
-            source=HuggingFaceOrigin(repo="test/test"),
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=JSONFieldSpec(FileSpec("tokenizer_config.json"), "chat_template")),
         )
@@ -82,7 +82,7 @@ class TestModelSpecJsonSerialization:
             family="Test",
             name="Test",
             size="1B",
-            source=HuggingFaceOrigin(repo="test/test"),
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=DIRECT_TEMPLATE),
         )
@@ -96,7 +96,7 @@ class TestModelSpecJsonSerialization:
             family="Test",
             name="Test",
             size="1B",
-            source=HuggingFaceOrigin(repo="test/test"),
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
         )
@@ -111,7 +111,7 @@ class TestModelSpecJsonSerialization:
             family="Test",
             name="Test",
             size="1B",
-            source=HuggingFaceOrigin(repo="test/test"),
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=JSONFieldSpec(FileSpec("config.json"), "chat_template")),
         )

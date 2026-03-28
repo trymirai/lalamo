@@ -5,7 +5,7 @@ from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_lfm2 import LFM2DecoderTracer
 
 MODEL_LIST = [
-    ModelTestSpec(model.source.description, DType.FLOAT32) for model in LFM2_MODELS if model.quantization is None
+    ModelTestSpec(model.origin.description, DType.FLOAT32) for model in LFM2_MODELS if model.quantization is None
 ]
 
 

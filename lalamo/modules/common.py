@@ -92,20 +92,13 @@ def _str_to_dtype(dtype_str: str) -> jnp.dtype:
 config_converter = Converter()
 
 
-def _is_dtype_type(t: type) -> bool:
-    try:
-        return t is DTypeLike or issubclass(t, jnp.dtype) or t is type(jnp.float32)
-    except TypeError:
-        return False
-
-
 config_converter.register_unstructure_hook_func(
-    _is_dtype_type,
+    lambda t: t in [jnp.dtype, DTypeLike],
     _dtype_to_str,
 )
 
 config_converter.register_structure_hook_func(
-    _is_dtype_type,
+    lambda t: t in [jnp.dtype, DTypeLike],
     lambda s, _: _str_to_dtype(s),
 )
 
