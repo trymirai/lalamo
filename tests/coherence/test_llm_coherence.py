@@ -59,9 +59,9 @@ def test_model_coherent_and_stops(
     convert_model: ConvertModel,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
-    t0 = time.monotonic()
+    start_time = time.monotonic()
     converted_model_path = convert_model(standard_llm_spec.repo)
-    log.info("Model conversion took %.1fs for %s", time.monotonic() - t0, standard_llm_spec.repo)
+    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, standard_llm_spec.repo)
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
@@ -69,7 +69,7 @@ def test_model_coherent_and_stops(
 
     work_dir = tmp_path_factory.mktemp("coherence")
 
-    t0 = time.monotonic()
+    start_time = time.monotonic()
     coherence_output = _generate_single(
         converted_model_path,
         work_dir,
@@ -77,7 +77,7 @@ def test_model_coherent_and_stops(
         max_tokens=COHERENCE_MAX_TOKENS,
         tag="coherence",
     )
-    log.info("Coherence generation took %.1fs for %s", time.monotonic() - t0, standard_llm_spec.repo)
+    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, standard_llm_spec.repo)
 
     assert coherence_output, "Model produced empty output for coherence prompt"
     log.info("Coherence output:\n%s", coherence_output)

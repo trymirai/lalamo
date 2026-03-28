@@ -28,19 +28,33 @@ jax.config.update("jax_default_matmul_precision", "default")
 GPU_ATOL = 1e-3
 GPU_RTOL = 0.03
 
-
-def _specs_up_to_tier(specs: tuple[ModelSpec, ...], tier: ModelTier) -> tuple[ModelSpec, ...]:
-    return tuple(spec for spec in specs if TIER_BY_REPO.get(spec.repo, ModelTier.EXTRA) <= tier)
+ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
 
 
-_SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
+def filter_specs(
+    *,
+    model_type: ModelType | None = None,
+    max_tier: ModelTier | None = None,
+    repos: frozenset[str] | None = None,
+) -> tuple[ModelSpec, ...]:
+    specs = ALL_MODEL_SPECS
+    if model_type is not None:
+        specs = tuple(spec for spec in specs if spec.model_type == model_type)
+    if max_tier is not None:
+        specs = tuple(spec for spec in specs if TIER_BY_REPO.get(spec.repo, ModelTier.EXTRA) <= max_tier)
+    if repos is not None:
+        specs = tuple(spec for spec in specs if spec.repo in repos)
+    return specs
+
+
+SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
     ModelSize.SMALL: pytest.mark.small_model,
     ModelSize.LARGE: pytest.mark.large_model,
 }
 
 
-def _mark_by_size(specs: tuple[ModelSpec, ...]) -> list[ModelSpec | pytest.param]:
-    return [pytest.param(s, marks=_SIZE_MARKS[model_size(s)]) for s in specs]
+def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[ModelSpec | pytest.param]:
+    return [pytest.param(spec, marks=SIZE_MARKS[model_size(spec)]) for spec in specs]
 
 
 @pytest.fixture(autouse=True)
@@ -82,25 +96,12 @@ class ConvertModel:
         return output_dir
 
     def cleanup_local(self) -> None:
-        for d in self._local_dirs:
-            shutil.rmtree(d, ignore_errors=True)
+        for local_dir in self._local_dirs:
+            shutil.rmtree(local_dir, ignore_errors=True)
         self._local_dirs.clear()
 
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-
-ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
-
-LLM_SPECS: tuple[ModelSpec, ...] = tuple(
-    spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.LANGUAGE_MODEL
-)
-TTS_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL)
-
-COHERENCE_TTS_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in TTS_SPECS if spec.repo in COHERENCE_TTS_REPOS)
-
-CORE_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.CORE)
-STANDARD_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.STANDARD)
-EXTRA_LLM_SPECS: tuple[ModelSpec, ...] = _specs_up_to_tier(LLM_SPECS, ModelTier.EXTRA)
 
 
 def strip_ansi_escape(text: str) -> str:
@@ -135,8 +136,8 @@ def _convert_model_cache(
     cache: dict[str, Path] = {}
     cache_dirs: list[Path] = []
     yield cache, cache_dirs
-    for d in cache_dirs:
-        shutil.rmtree(d, ignore_errors=True)
+    for cache_dir in cache_dirs:
+        shutil.rmtree(cache_dir, ignore_errors=True)
 
 
 @pytest.fixture
@@ -145,31 +146,46 @@ def convert_model(
     _convert_model_cache: tuple[dict[str, Path], list[Path]],
 ) -> Generator[ConvertModel, None, None]:
     cache, cache_dirs = _convert_model_cache
-    cm = ConvertModel(model_registry, cache, cache_dirs)
-    yield cm
-    cm.cleanup_local()
+    converter = ConvertModel(model_registry, cache, cache_dirs)
+    yield converter
+    converter.cleanup_local()
 
 
-@pytest.fixture(params=_mark_by_size(TTS_SPECS), ids=[spec.repo for spec in TTS_SPECS])
+tts_specs = filter_specs(model_type=ModelType.TTS_MODEL)
+
+
+@pytest.fixture(params=mark_by_size(tts_specs), ids=[spec.repo for spec in tts_specs])
 def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=COHERENCE_TTS_SPECS, ids=[spec.repo for spec in COHERENCE_TTS_SPECS])
+coherence_tts_specs = filter_specs(model_type=ModelType.TTS_MODEL, repos=frozenset(COHERENCE_TTS_REPOS))
+
+
+@pytest.fixture(params=coherence_tts_specs, ids=[spec.repo for spec in coherence_tts_specs])
 def coherence_tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=_mark_by_size(CORE_LLM_SPECS), ids=[spec.repo for spec in CORE_LLM_SPECS])
+core_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
+
+
+@pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.repo for spec in core_llm_specs])
 def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=_mark_by_size(STANDARD_LLM_SPECS), ids=[spec.repo for spec in STANDARD_LLM_SPECS])
+standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
+
+
+@pytest.fixture(params=mark_by_size(standard_llm_specs), ids=[spec.repo for spec in standard_llm_specs])
 def standard_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
 
 
-@pytest.fixture(params=_mark_by_size(EXTRA_LLM_SPECS), ids=[spec.repo for spec in EXTRA_LLM_SPECS])
+extra_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.EXTRA)
+
+
+@pytest.fixture(params=mark_by_size(extra_llm_specs), ids=[spec.repo for spec in extra_llm_specs])
 def extra_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
     return request.param
