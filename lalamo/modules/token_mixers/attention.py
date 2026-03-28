@@ -32,45 +32,89 @@ def _repeat_kv(
     return jnp.repeat(keys_or_values, group_size, axis=1)
 
 
-def _soft_capped_attention_kernel(
+def deterministic_dot_product_attention(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
     values: Float[Array, "src_tokens groups head_channels"],
-    mask: Bool[Array, "dst_tokens src_tokens"] | None,
-    scale: float | None,
-    logit_soft_cap: float,
+    mask: Bool[Array, "dst_tokens src_tokens"] | None = None,
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None = None,
+    scale: float | None = None,
+    logit_soft_cap: float | None = None,
+    tile_size: int = 128,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
-    _, num_heads, head_dim = queries.shape
-    _, num_groups, _ = keys.shape
+    query_len, num_heads, head_dim = queries.shape
+    source_len, num_groups, _ = keys.shape
+
     group_size = num_heads // num_groups
-    keys = _repeat_kv(keys, group_size)
-    values = _repeat_kv(values, group_size)
-    queries_head_first = rearrange(queries, "dst_tokens heads channels -> heads dst_tokens channels")
-    keys_head_first = rearrange(keys, "src_tokens heads channels -> heads src_tokens channels")
-    attention_logits = einsum(
-        queries_head_first,
-        keys_head_first,
-        "heads dst_tokens channels, heads src_tokens channels -> heads dst_tokens src_tokens",
-    )
-    if mask is not None:
-        attention_logits = jnp.where(
-            mask,
-            attention_logits,
-            jnp.array(float("-inf"), dtype=attention_logits.dtype),
-        )
 
     if scale is None:
-        scale_val = head_dim**-0.5
-    else:
-        scale_val = float(scale)
-    attention_logits = attention_logits * scale_val
-    attention_logits = apply_soft_capping(attention_logits, logit_soft_cap)
-    attention_weights = jax.nn.softmax(attention_logits, axis=-1)
-    return einsum(
-        attention_weights,
-        values,
-        "heads dst_tokens src_tokens, src_tokens heads channels -> dst_tokens heads channels",
+        scale = head_dim**-0.5
+    if bias is None:
+        bias = jnp.zeros((num_heads, query_len, source_len), dtype=queries.dtype)
+    if mask is None:
+        mask = jnp.ones((query_len, source_len), dtype=jnp.bool_)
+
+    keys = _repeat_kv(keys, group_size)
+    values = _repeat_kv(values, group_size)
+
+    remainder = source_len % tile_size
+    pad_len = (tile_size - remainder) if remainder != 0 else 0
+
+    keys = jnp.pad(keys, [(0, pad_len), (0, 0), (0, 0)])
+    values = jnp.pad(values, [(0, pad_len), (0, 0), (0, 0)])
+
+    num_tiles = (source_len + pad_len) // tile_size
+
+    queries_heads_first = rearrange(queries, "queries heads hidden -> heads queries hidden")
+    key_tiles = rearrange(
+        keys, "(tiles tokens) heads hidden -> tiles heads tokens hidden", tiles=num_tiles, tokens=tile_size
     )
+    value_tiles = rearrange(
+        values, "(tiles tokens) heads hidden -> tiles heads tokens hidden", tiles=num_tiles, tokens=tile_size
+    )
+    mask_tiles = rearrange(
+        jnp.pad(mask, [(0, 0), (0, pad_len)], constant_values=False),
+        "queries (tiles tokens) -> tiles queries tokens",
+        tiles=num_tiles,
+        tokens=tile_size,
+    )
+    bias_tiles = rearrange(
+        jnp.pad(bias, [(0, 0), (0, 0), (0, pad_len)]),
+        "heads queries (tiles tokens) -> tiles heads queries tokens",
+        tiles=num_tiles,
+        tokens=tile_size,
+    )
+
+    def scan_step(carry: tuple, tile_data: tuple) -> tuple:
+        running_max, running_sum, running_output = carry
+        key_tile, value_tile, mask_tile, bias_tile = tile_data
+
+        scores = einsum(
+            queries_heads_first, key_tile, "heads queries hidden, heads tokens hidden -> heads queries tokens"
+        )
+        scores = scores * scale + bias_tile
+        scores = jnp.where(mask_tile, scores, jnp.array(float("-inf"), dtype=scores.dtype))
+        if logit_soft_cap is not None:
+            scores = apply_soft_capping(scores, logit_soft_cap)
+
+        new_max = jnp.maximum(running_max, jnp.max(scores, axis=-1))
+        correction = jnp.exp(running_max - new_max)
+        exp_scores = jnp.exp(scores - new_max[..., None])
+
+        new_sum = correction * running_sum + jnp.sum(exp_scores, axis=-1)
+        new_output = correction[..., None] * running_output + einsum(
+            exp_scores, value_tile, "heads queries tokens, heads tokens hidden -> heads queries hidden"
+        )
+        return (new_max, new_sum, new_output), None
+
+    init = (
+        jnp.full((num_heads, query_len), float("-inf"), dtype=queries.dtype),
+        jnp.zeros((num_heads, query_len), dtype=queries.dtype),
+        jnp.zeros((num_heads, query_len, head_dim), dtype=queries.dtype),
+    )
+    (_, final_sum, final_output), _ = jax.lax.scan(scan_step, init, (key_tiles, value_tiles, mask_tiles, bias_tiles))
+
+    return rearrange(final_output / final_sum[..., None], "heads queries hidden -> queries heads hidden")
 
 
 AttentionResult = TokenMixerResult[KVCacheLayer]
@@ -431,24 +475,15 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             sink_bias = None
 
-        if self.config.logit_soft_cap is not None:
-            attention_output = _soft_capped_attention_kernel(
-                queries,
-                updated_state.keys,
-                updated_state.values,
-                mask=mask,
-                scale=self.scale,
-                logit_soft_cap=self.config.logit_soft_cap,
-            )
-        else:
-            attention_output = jax.nn.dot_product_attention(
-                queries,
-                updated_state.keys,
-                updated_state.values,
-                bias=sink_bias,
-                mask=mask,
-                scale=self.scale,
-            )
+        attention_output = deterministic_dot_product_attention(
+            queries,
+            updated_state.keys,
+            updated_state.values,
+            mask=mask,
+            bias=sink_bias,
+            scale=self.scale,
+            logit_soft_cap=self.config.logit_soft_cap,
+        )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",
