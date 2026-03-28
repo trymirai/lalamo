@@ -49,8 +49,6 @@ def deterministic_dot_product_attention(
 
     if scale is None:
         scale = head_dim**-0.5
-    if bias is None:
-        bias = jnp.zeros((num_heads, query_len, source_len), dtype=queries.dtype)
     if mask is None:
         mask = jnp.ones((query_len, source_len), dtype=jnp.bool_)
 
@@ -78,26 +76,34 @@ def deterministic_dot_product_attention(
         tiles=num_tiles,
         tokens=tile_size,
     )
-    bias_tiles = rearrange(
-        jnp.pad(bias, [(0, 0), (0, 0), (0, pad_len)]),
-        "heads queries (tiles tokens) -> tiles heads queries tokens",
-        tiles=num_tiles,
-        tokens=tile_size,
-    )
+    if bias is not None:
+        bias_tiles = (
+            rearrange(
+                jnp.pad(bias, [(0, 0), (0, 0), (0, pad_len)]),
+                "heads queries (tiles tokens) -> tiles heads queries tokens",
+                tiles=num_tiles,
+                tokens=tile_size,
+            ),
+        )
+    else:
+        bias_tiles = ()
 
     def scan_step(carry: tuple, tile_data: tuple) -> tuple:
         running_max, running_sum, running_output = carry
-        key_tile, value_tile, mask_tile, bias_tile = tile_data
+        key_tile, value_tile, mask_tile, *bias_tile = tile_data
 
         scores = einsum(queries, key_tile, "heads queries hidden, heads tokens hidden -> heads queries tokens")
-        scores = scale * scores + bias_tile
+        scores = scale * scores
+        if bias_tile:
+            scores = scores + bias_tile[0]
         scores = jnp.where(mask_tile, scores, jnp.array(float("-inf"), dtype=scores.dtype))
         if logit_soft_cap is not None:
             scores = apply_soft_capping(scores, logit_soft_cap)
 
         new_max = jnp.maximum(running_max, jnp.max(scores, axis=-1))
-        correction = jnp.exp(running_max - new_max)
-        exp_scores = jnp.exp(scores - new_max[..., None])
+        safe_new_max = jnp.where(jnp.isneginf(new_max), 0.0, new_max)
+        correction = jnp.exp(running_max - safe_new_max)
+        exp_scores = jnp.exp(scores - safe_new_max[..., None])
 
         new_sum = correction * running_sum + jnp.sum(exp_scores, axis=-1)
         new_output = correction[..., None] * running_output + einsum(
@@ -110,7 +116,7 @@ def deterministic_dot_product_attention(
         jnp.zeros((num_heads, query_len), dtype=queries.dtype),
         jnp.zeros((num_heads, query_len, head_dim), dtype=queries.dtype),
     )
-    (_, final_sum, final_output), _ = jax.lax.scan(scan_step, init, (key_tiles, value_tiles, mask_tiles, bias_tiles))
+    (_, final_sum, final_output), _ = jax.lax.scan(scan_step, init, (key_tiles, value_tiles, mask_tiles, *bias_tiles))
 
     return rearrange(final_output / final_sum[..., None], "heads queries hidden -> queries heads hidden")
 
