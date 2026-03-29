@@ -127,7 +127,7 @@ class TestModelSpecJsonSerialization:
             "family": "Test",
             "name": "Test",
             "size": "1B",
-            "source": {"repo": "test/test"},
+            "origin": {"type": "HuggingFaceOrigin", "repo": "test/test"},
             "config_type": "HFLlamaConfig",
             "configs": {
                 "chat_template": DIRECT_TEMPLATE,
@@ -142,7 +142,7 @@ class TestModelSpecJsonSerialization:
             "family": "Test",
             "name": "Test",
             "size": "1B",
-            "source": {"repo": "test/test"},
+            "origin": {"type": "HuggingFaceOrigin", "repo": "test/test"},
             "config_type": "HFLlamaConfig",
             "configs": {
                 "chat_template": {"filename": "chat_template.jinja"},
@@ -158,7 +158,7 @@ class TestModelSpecJsonSerialization:
             "family": "Test",
             "name": "Test",
             "size": "1B",
-            "source": {"repo": "test/test"},
+            "origin": {"type": "HuggingFaceOrigin", "repo": "test/test"},
             "config_type": "HFLlamaConfig",
             "configs": {
                 "chat_template": {

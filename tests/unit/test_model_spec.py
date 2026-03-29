@@ -8,7 +8,7 @@ EXAMPLE_JSON = {
     "name": "Llama-3.2-1B-Instruct",
     "size": "1B",
     "quantization": None,
-    "source": {"repo": "meta-llama/Llama-3.2-1B-Instruct"},
+    "origin": {"type": "HuggingFaceOrigin", "repo": "meta-llama/Llama-3.2-1B-Instruct"},
     "config_type": "HFLlamaConfig",
     "output_parser_regex": None,
     "system_role_name": "system",
