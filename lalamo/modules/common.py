@@ -102,6 +102,16 @@ config_converter.register_structure_hook_func(
     lambda s, _: _str_to_dtype(s),
 )
 
+config_converter.register_unstructure_hook_func(
+    lambda t: t == (DTypeLike | None),
+    lambda v: None if v is None else _dtype_to_str(v),
+)
+
+config_converter.register_structure_hook_func(
+    lambda t: t == (DTypeLike | None),
+    lambda s, _: None if s is None else _str_to_dtype(s),
+)
+
 
 def register_config_union(union_type: UnionType) -> None:
     union_members = union_type.__args__
