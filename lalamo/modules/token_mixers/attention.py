@@ -90,13 +90,19 @@ def deterministic_dot_product_attention(
     else:
         bias_tiles = ()
 
-    # Upcast softmax accumulation to avoid precision loss from bfloat16 exp/sum across tiles.
+    # Upcast queries once outside the scan to avoid repeated casts and ensure the dot product runs in float32.
+    queries = queries.astype(accumulation_dtype)
+
     def scan_step(carry: tuple, tile_data: tuple) -> tuple:
         running_max, running_sum, running_output = carry
         key_tile, value_tile, mask_tile, *bias_tile = tile_data
 
-        scores = einsum(queries, key_tile, "heads queries hidden, heads tokens hidden -> heads queries tokens")
-        scores = (scale * scores).astype(accumulation_dtype)
+        scores = einsum(
+            queries,
+            key_tile.astype(accumulation_dtype),
+            "heads queries hidden, heads tokens hidden -> heads queries tokens",
+        )
+        scores = scale * scores
         if bias_tile:
             scores = scores + bias_tile[0]
         scores = jnp.where(mask_tile, scores, jnp.array(float("-inf"), dtype=accumulation_dtype))
