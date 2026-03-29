@@ -471,7 +471,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
             queries = apply_positional_embeddings(queries)
-            keys = apply_positional_embeddings(keys)
+            keys = apply_positional_embeddings(keys).astype(self.activation_precision)
 
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
