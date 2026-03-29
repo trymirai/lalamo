@@ -43,7 +43,8 @@ def deterministic_dot_product_attention(
     tile_size: int = 128,
     upcast_dtype: DTypeLike | None = None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
-    accumulation_dtype = upcast_dtype or queries.dtype
+    original_dtype = queries.dtype
+    accumulation_dtype = upcast_dtype or original_dtype
     query_len, num_heads, head_dim = queries.shape
     source_len, num_groups, _ = keys.shape
 
@@ -130,7 +131,7 @@ def deterministic_dot_product_attention(
     (_, final_sum, final_output), _ = jax.lax.scan(scan_step, init, (key_tiles, value_tiles, mask_tiles, *bias_tiles))
 
     result = final_output / final_sum[..., None]
-    return rearrange(result, "heads queries hidden -> queries heads hidden").astype(queries.dtype)
+    return rearrange(result, "heads queries hidden -> queries heads hidden").astype(original_dtype)
 
 
 AttentionResult = TokenMixerResult[KVCacheLayer]
@@ -471,7 +472,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)
             queries = apply_positional_embeddings(queries)
-            keys = apply_positional_embeddings(keys).astype(self.activation_precision)
+            keys = apply_positional_embeddings(keys)
+
+        keys = keys.astype(self.activation_precision)
+        values = values.astype(self.activation_precision)
 
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
