@@ -160,6 +160,7 @@ class AttentionConfig(TokenMixerConfigBase):
     use_rope: bool = True
     # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
     partial_rope_dim: int | None = None
+    attention_upcast_dtype: DTypeLike | None = jnp.float32
 
     @property
     def rope_dim(self) -> int | None:
@@ -503,7 +504,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             bias=sink_bias,
             scale=self.scale,
             logit_soft_cap=self.config.logit_soft_cap,
-            upcast_dtype=jnp.float32,
+            upcast_dtype=self.config.attention_upcast_dtype,
         )
         attention_output = rearrange(
             attention_output,

@@ -41,9 +41,10 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     pytorch_tts_generator = FishAudioFromTorch.build_foreign_fish_audio_tts_generator(fish_audio_local_model_path)
     assert isinstance(pytorch_tts_generator.tts_model.text_decoder, FishAudioTextDecoder_Foreign)
     fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
+    fish_model = fish_model.float()
 
     # Create Lalamo text decoder config from PyTorch model config
-    precision = jnp.bfloat16
+    precision = jnp.float32
     lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer, precision)
 
     # Convert PyTorch weights to JAX and load into Lalamo text decoder
