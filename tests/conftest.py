@@ -15,7 +15,7 @@ from lalamo.main import app
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
-from tests.model_test_tiers import COHERENCE_TTS_REPOS, TIER_BY_REPO, ModelSize, ModelTier, model_size
+from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
@@ -70,15 +70,9 @@ RunLalamo = Callable[..., str]
 
 
 class ConvertModel:
-    def __init__(
-        self,
-        registry: ModelRegistry,
-        cache: dict[str, Path],
-        cache_dirs: list[Path],
-    ) -> None:
+    def __init__(self, registry: ModelRegistry, cache: dict[str, Path]) -> None:
         self._registry = registry
         self._cache = cache
-        self._cache_dirs = cache_dirs
         self._local_dirs: list[Path] = []
 
     def __call__(self, repo: str, *, cached: bool = False) -> Path:
@@ -87,7 +81,6 @@ class ConvertModel:
                 output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
                 convert(self._registry.repo_to_model[repo], output_dir)
                 self._cache[repo] = output_dir
-                self._cache_dirs.append(output_dir.parent)
             return self._cache[repo]
 
         output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
@@ -130,62 +123,18 @@ def model_registry() -> ModelRegistry:
 
 
 @pytest.fixture(scope="session")
-def _convert_model_cache(
-    model_registry: ModelRegistry,
-) -> Generator[tuple[dict[str, Path], list[Path]], None, None]:
+def _convert_model_cache() -> Generator[dict[str, Path], None, None]:
     cache: dict[str, Path] = {}
-    cache_dirs: list[Path] = []
-    yield cache, cache_dirs
-    for cache_dir in cache_dirs:
-        shutil.rmtree(cache_dir, ignore_errors=True)
+    yield cache
+    for output_dir in cache.values():
+        shutil.rmtree(output_dir.parent, ignore_errors=True)
 
 
 @pytest.fixture
 def convert_model(
     model_registry: ModelRegistry,
-    _convert_model_cache: tuple[dict[str, Path], list[Path]],
+    _convert_model_cache: dict[str, Path],
 ) -> Generator[ConvertModel, None, None]:
-    cache, cache_dirs = _convert_model_cache
-    converter = ConvertModel(model_registry, cache, cache_dirs)
+    converter = ConvertModel(model_registry, _convert_model_cache)
     yield converter
     converter.cleanup_local()
-
-
-tts_specs = filter_specs(model_type=ModelType.TTS_MODEL)
-
-
-@pytest.fixture(params=mark_by_size(tts_specs), ids=[spec.repo for spec in tts_specs])
-def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-coherence_tts_specs = filter_specs(model_type=ModelType.TTS_MODEL, repos=frozenset(COHERENCE_TTS_REPOS))
-
-
-@pytest.fixture(params=coherence_tts_specs, ids=[spec.repo for spec in coherence_tts_specs])
-def coherence_tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-core_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
-
-
-@pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.repo for spec in core_llm_specs])
-def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
-
-
-@pytest.fixture(params=mark_by_size(standard_llm_specs), ids=[spec.repo for spec in standard_llm_specs])
-def standard_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-extra_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.EXTRA)
-
-
-@pytest.fixture(params=mark_by_size(extra_llm_specs), ids=[spec.repo for spec in extra_llm_specs])
-def extra_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param

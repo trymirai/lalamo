@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import re
 from enum import IntEnum
 
 from lalamo.model_import.model_specs.common import ModelSpec
+from tests.helpers import unsi
+
+PARAM_UNITS = ("", "K", "M", "B")
 
 
 class ModelTier(IntEnum):
@@ -16,8 +20,16 @@ class ModelSize(IntEnum):
     LARGE = 1  # >= 10B params
 
 
+def num_params(size: str) -> int | None:
+    normalized = re.sub(r"([0-9.]+)\s*([A-Z])", r"\1 \2", size.strip())
+    try:
+        return unsi(normalized, base=1000, units=PARAM_UNITS)
+    except (ValueError, IndexError):
+        return None
+
+
 def model_size(spec: ModelSpec) -> ModelSize:
-    params = spec.num_params
+    params = num_params(spec.size)
     if params is None:
         return ModelSize.LARGE
     if params < 10_000_000_000:

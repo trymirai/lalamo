@@ -8,10 +8,13 @@ import pytest
 from typer.testing import CliRunner
 
 from lalamo.main import app
-from lalamo.model_import.model_specs.common import ModelSpec
-from tests.conftest import ConvertModel
+from lalamo.model_import.model_specs.common import ModelSpec, ModelType
+from tests.conftest import ConvertModel, filter_specs, mark_by_size
+from tests.model_test_tiers import ModelTier
 
 from .common import DEFAULT_JUDGE_MODEL, TASK_PROMPT, judge
+
+standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
 
 log = logging.getLogger(__name__)
 
@@ -54,14 +57,15 @@ def _generate_single(
     return pl.read_parquet(output_path).get_column("response").to_list()[0]
 
 
+@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.repo for s in standard_llm_specs])
 def test_model_coherent_and_stops(
-    standard_llm_spec: ModelSpec,
+    spec: ModelSpec,
     convert_model: ConvertModel,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     start_time = time.monotonic()
-    converted_model_path = convert_model(standard_llm_spec.repo)
-    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, standard_llm_spec.repo)
+    converted_model_path = convert_model(spec.repo)
+    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, spec.repo)
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
@@ -77,7 +81,7 @@ def test_model_coherent_and_stops(
         max_tokens=COHERENCE_MAX_TOKENS,
         tag="coherence",
     )
-    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, standard_llm_spec.repo)
+    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, spec.repo)
 
     assert coherence_output, "Model produced empty output for coherence prompt"
     log.info("Coherence output:\n%s", coherence_output)

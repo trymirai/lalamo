@@ -1,17 +1,20 @@
 import jax.numpy as jnp
 import pytest
 
-from lalamo.model_import.model_specs.common import ModelSpec
+from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.message_processor import UserMessage
 from lalamo.models import LanguageModel
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
-from tests.conftest import ConvertModel
+from tests.conftest import ConvertModel, filter_specs, mark_by_size
+from tests.model_test_tiers import ModelTier
+
+core_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.CORE)
 
 
-@pytest.fixture
-def language_model(core_llm_spec: ModelSpec, convert_model: ConvertModel) -> LanguageModel:
-    model_dir = convert_model(core_llm_spec.repo)
+@pytest.fixture(params=mark_by_size(core_llm_specs), ids=[spec.repo for spec in core_llm_specs])
+def language_model(request: pytest.FixtureRequest, convert_model: ConvertModel) -> LanguageModel:
+    model_dir = convert_model(request.param.repo)
     return LanguageModelConfig.load_model(model_dir)
 
 

@@ -4,21 +4,27 @@ from typing import cast
 
 import jax
 import jax.numpy as jnp
+import pytest
 import torch
 from transformers import GenerationConfig as TransformersGenerationConfig
 from transformers.generation.utils import GenerationMixin
 
 from lalamo.model_import.common import FileSpec, download_file
 from lalamo.model_import.huggingface_generation_config import HFGenerationConfig, _policy_from_hf_config
-from lalamo.model_import.model_specs.common import ModelSpec
+from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
+from tests.conftest import filter_specs, mark_by_size
+from tests.model_test_tiers import ModelTier
+
+standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
 
 
-def test_logit_processing(standard_llm_spec: ModelSpec) -> None:
+@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.repo for s in standard_llm_specs])
+def test_logit_processing(spec: ModelSpec) -> None:
     # TODO: lalamo should do greedy for do_sample=False
-    generation_config = standard_llm_spec.configs.generation_config
+    generation_config = spec.configs.generation_config
 
     if isinstance(generation_config, GenerationConfig):
         generation_config_dict = asdict(generation_config)
@@ -29,7 +35,7 @@ def test_logit_processing(standard_llm_spec: ModelSpec) -> None:
             {**asdict(lalamo_hf_generation_config), "do_sample": True},
         )
     elif isinstance(generation_config, FileSpec):
-        hf_generation_config_file = download_file(generation_config, standard_llm_spec.repo)
+        hf_generation_config_file = download_file(generation_config, spec.repo)
         hf_generation_config_dict = json.loads(hf_generation_config_file.read_text())
         hf_generation_config = TransformersGenerationConfig.from_dict({**hf_generation_config_dict, "do_sample": True})
         lalamo_hf_generation_config = HFGenerationConfig.from_json(hf_generation_config_file)
