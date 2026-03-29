@@ -41,7 +41,9 @@ def deterministic_dot_product_attention(
     scale: float | None = None,
     logit_soft_cap: float | None = None,
     tile_size: int = 128,
+    upcast_dtype: DTypeLike | None = None,
 ) -> Float[Array, "dst_tokens heads head_channels"]:
+    accumulation_dtype = upcast_dtype or queries.dtype
     query_len, num_heads, head_dim = queries.shape
     source_len, num_groups, _ = keys.shape
 
@@ -88,15 +90,16 @@ def deterministic_dot_product_attention(
     else:
         bias_tiles = ()
 
+    # Upcast softmax accumulation to avoid precision loss from bfloat16 exp/sum across tiles.
     def scan_step(carry: tuple, tile_data: tuple) -> tuple:
         running_max, running_sum, running_output = carry
         key_tile, value_tile, mask_tile, *bias_tile = tile_data
 
         scores = einsum(queries, key_tile, "heads queries hidden, heads tokens hidden -> heads queries tokens")
-        scores = scale * scores
+        scores = (scale * scores).astype(accumulation_dtype)
         if bias_tile:
             scores = scores + bias_tile[0]
-        scores = jnp.where(mask_tile, scores, jnp.array(float("-inf"), dtype=scores.dtype))
+        scores = jnp.where(mask_tile, scores, jnp.array(float("-inf"), dtype=accumulation_dtype))
         if logit_soft_cap is not None:
             scores = apply_soft_capping(scores, logit_soft_cap)
 
@@ -107,18 +110,21 @@ def deterministic_dot_product_attention(
 
         new_sum = correction * running_sum + jnp.sum(exp_scores, axis=-1)
         new_output = correction[..., None] * running_output + einsum(
-            exp_scores, value_tile, "heads queries tokens, heads tokens hidden -> heads queries hidden"
+            exp_scores,
+            value_tile.astype(accumulation_dtype),
+            "heads queries tokens, heads tokens hidden -> heads queries hidden",
         )
         return (new_max, new_sum, new_output), None
 
     init = (
-        jnp.full((num_heads, query_len), float("-inf"), dtype=queries.dtype),
-        jnp.zeros((num_heads, query_len), dtype=queries.dtype),
-        jnp.zeros((num_heads, query_len, head_dim), dtype=queries.dtype),
+        jnp.full((num_heads, query_len), float("-inf"), dtype=accumulation_dtype),
+        jnp.zeros((num_heads, query_len), dtype=accumulation_dtype),
+        jnp.zeros((num_heads, query_len, head_dim), dtype=accumulation_dtype),
     )
     (_, final_sum, final_output), _ = jax.lax.scan(scan_step, init, (key_tiles, value_tiles, mask_tiles, *bias_tiles))
 
-    return rearrange(final_output / final_sum[..., None], "heads queries hidden -> queries heads hidden")
+    result = final_output / final_sum[..., None]
+    return rearrange(result, "heads queries hidden -> queries heads hidden").astype(queries.dtype)
 
 
 AttentionResult = TokenMixerResult[KVCacheLayer]
@@ -487,6 +493,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             bias=sink_bias,
             scale=self.scale,
             logit_soft_cap=self.config.logit_soft_cap,
+            upcast_dtype=jnp.float32,
         )
         attention_output = rearrange(
             attention_output,
