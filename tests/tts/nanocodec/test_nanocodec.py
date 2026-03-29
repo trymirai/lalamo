@@ -439,7 +439,7 @@ def test_nanocodec_model_spec_loading() -> None:
     with StubTextDecoder + NanoCodec audio decoder, then runs generate_speech.
     """
 
-    message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
+    message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style=None)
 
     generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", precision=jnp.float32)
 

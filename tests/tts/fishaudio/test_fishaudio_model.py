@@ -16,6 +16,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     load_fishaudio_text_decoder,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
 from tests.common import assert_close, skip_on_gpu
@@ -122,7 +123,8 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     z_fish = fish_dac.quantizer.decode(test_codes_torch)  # (batch, latent_dim, tokens_upsampled)
     audio_fish = fish_dac.decoder(z_fish)  # (batch, 1, audio_samples)
     # Run Lalamo DAC inference
-    audio_lalamo = lalamo_dac(test_codes_jax)  # (batch, audio_samples, 1) - NTC format
+    codes = CodebookCodes(semantic=test_codes_jax[:, :1, :], acoustic=test_codes_jax[:, 1:, :])
+    audio_lalamo = lalamo_dac(codes)  # (batch, audio_samples, 1) - NTC format
 
     # Convert for comparison (both to NTC format)
     audio_fish_ntc = torch_to_jax(audio_fish).transpose(0, 2, 1)  # NCT -> NTC

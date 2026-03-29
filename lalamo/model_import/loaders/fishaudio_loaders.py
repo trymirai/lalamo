@@ -590,7 +590,7 @@ def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mappin
     loaded_decoder = load_dac_decoder(
         dac_module.decoder,
         state_dict,
-        ParameterPath("decoder"),
+        ParameterPath("decoder") / "model",
         load_activation=load_snake1d,
         load_residual=load_residual_unit,
     )
@@ -681,7 +681,7 @@ def load_fishaudio_audio_decoder(
     loaded_decoder = load_dac_decoder(
         module.decoder,
         weights_dict,
-        base_path / "decoder",
+        base_path / "decoder" / "model",
         load_activation=load_snake1d,
         load_residual=load_residual_unit,
     )

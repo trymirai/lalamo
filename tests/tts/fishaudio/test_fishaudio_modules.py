@@ -19,11 +19,10 @@ from jax import vmap
 
 from lalamo import FileSpec
 from lalamo.common import ParameterPath
-from lalamo.model_import.loaders.audio_loaders import load_decoder_block
+from lalamo.model_import.loaders.audio_loaders import load_dac_decoder, load_decoder_block
 from lalamo.model_import.loaders.fishaudio_loaders import (
     _permute_for_rope_rotate_half,
     load_convnext_block,
-    load_fishaudio_audio_decoder,
     load_residual_unit,
     load_residual_vector_quantize,
     load_snake1d,
@@ -1161,7 +1160,13 @@ def test_audio_decoder_matches_pytorch() -> None:
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder.state_dict(), prefix="decoder")
 
     with jax.disable_jit():
-        lalamo_decoder = load_fishaudio_audio_decoder(lalamo_decoder, weights_dict, ParameterPath("decoder"))
+        lalamo_decoder = load_dac_decoder(
+            lalamo_decoder,
+            weights_dict,
+            ParameterPath("decoder") / "model",
+            load_activation=load_snake1d,
+            load_residual=load_residual_unit,
+        )
 
         # Create test input
         torch.manual_seed(42)
