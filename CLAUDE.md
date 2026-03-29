@@ -37,6 +37,7 @@ The rules below are CRITICAL. Each rule should be respected. Rules can only be o
 - AI Assistant avoids extensive mocking and stubbing.
 - AI Assistant focuses on testing core functionality, and does not test minor details such as property accessors.
 - AI Assistant avoids boilerplate in the testing code, and tries to come up with the right generic abstractions.
+- AI Assistant should run the tests via `uv run pytest -m fast -n=auto` after finishing any non-trivial changes.
 
 # Python coding rules:
 - Never use pip to manage dependencies. Instead use uv commands, such as `uv add`.

@@ -6,7 +6,7 @@ import pytest
 from lalamo.model_registry import ModelRegistry
 from tests.conftest import ConvertModel, RunLalamo, strip_ansi_escape
 
-MODELS = ["google/gemma-3-1b-it"]
+MODELS = ["google/gemma-3-1b-it", "mlx-community/LFM2-350M-8bit"]
 
 CAPITAL_PROMPT = "What's the capital of the United Kingdom? No thinking, answer right away."
 APPLES_PROMPT = "Are apples fruits? Answer only yes or no, without thinking, answer right away."
@@ -32,6 +32,7 @@ def qa_dataset_path(tmp_path: Path) -> Path:
     return dataset_path
 
 
+@pytest.mark.fast
 @pytest.mark.parametrize("model_repo", MODELS)
 def test_convert(convert_model: ConvertModel, model_repo: str) -> None:
     converted_model_dir = convert_model(model_repo, cached=True)
@@ -56,13 +57,7 @@ def test_list_models_plain_and_no_plain(run_lalamo: RunLalamo, model_registry: M
     assert local_repos.issubset(set(fancy_repos))
 
 
-@pytest.mark.parametrize(
-    "extra_args",
-    [
-        pytest.param(["--batch-size", "2"], id="batch-size"),
-        pytest.param(["--vram-gb", "6"], id="vram"),
-    ],
-)
+@pytest.mark.fast
 @pytest.mark.parametrize("model_repo", MODELS)
 def test_generate_replies(
     convert_model: ConvertModel,
@@ -70,7 +65,6 @@ def test_generate_replies(
     qa_dataset_path: Path,
     tmp_path: Path,
     run_lalamo: RunLalamo,
-    extra_args: list[str],
 ) -> None:
     converted_model_dir = convert_model(model_repo, cached=True)
     output_path = tmp_path / "replies.parquet"
@@ -81,7 +75,36 @@ def test_generate_replies(
         str(qa_dataset_path),
         "--output-path",
         str(output_path),
-        *extra_args,
+        "--batch-size",
+        "2",
+        "--max-output-length",
+        "64",
+    )
+
+    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
+
+
+@pytest.mark.parametrize("model_repo", MODELS)
+def test_generate_replies_with_vram(
+    convert_model: ConvertModel,
+    model_repo: str,
+    qa_dataset_path: Path,
+    tmp_path: Path,
+    run_lalamo: RunLalamo,
+) -> None:
+    converted_model_dir = convert_model(model_repo, cached=True)
+    output_path = tmp_path / "replies.parquet"
+
+    run_lalamo(
+        "generate-replies",
+        str(converted_model_dir),
+        str(qa_dataset_path),
+        "--output-path",
+        str(output_path),
+        "--vram-gb",
+        "6",
+        "--max-output-length",
+        "64",
     )
 
     _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
