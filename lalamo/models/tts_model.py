@@ -128,7 +128,7 @@ class TTSGenerator(eqx.Module):
     def load_model(cls, path: Path | str) -> "TTSGenerator":
         if isinstance(path, str):
             path = Path(path)
-        with open(path / "config.json") as config_file:
+        with (path / "config.json").open() as config_file:
             config_json = json.load(config_file)
 
         config = config_converter.structure(config_json["model_config"], TTSGeneratorConfig)

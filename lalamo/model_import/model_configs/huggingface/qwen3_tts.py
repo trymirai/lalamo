@@ -37,7 +37,6 @@ from lalamo.modules.audio.common_modules import (
     SnakeBetaConfig,
     UpsamplingBlockConfig,
 )
-from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder, StubTextDecoderConfig
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_audio_decoding import (
     Qwen3TTSAudioDecoder,
     Qwen3TTSAudioDecoderConfig,
@@ -100,7 +99,6 @@ class Qwen3TTSTalkerCodePredictorConfig:
     hidden_size: int
     intermediate_size: int
     max_position_embeddings: int
-    max_window_layers: int
     num_attention_heads: int
     num_code_groups: int
     num_hidden_layers: int
@@ -108,7 +106,6 @@ class Qwen3TTSTalkerCodePredictorConfig:
     rms_norm_eps: float
     rope_theta: float
     sliding_window: int | None
-    use_sliding_window: bool
     vocab_size: int
     layer_types: tuple[str, ...] | None = None
 
@@ -138,7 +135,6 @@ class Qwen3TTSTalkerConfig:
     sliding_window: int | None
     text_hidden_size: int
     text_vocab_size: int
-    use_sliding_window: bool
     vocab_size: int
     code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
     spk_id: dict[str, int]
@@ -157,10 +153,10 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     model_type: str
     output_sample_rate: int
 
-    talker_config: Qwen3TTSTalkerConfig | None = None
-    tts_pad_token_id: int | None = None
-    tts_bos_token_id: int | None = None
-    tts_eos_token_id: int | None = None
+    talker_config: Qwen3TTSTalkerConfig
+    tts_pad_token_id: int
+    tts_bos_token_id: int
+    tts_eos_token_id: int
 
     def to_tts_config(
         self,
@@ -168,6 +164,8 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
+        assert context_length is not None, "context_length is required for Qwen3-TTS"
+
         dc = self.decoder_config
         assert dc.hidden_act == "silu", (
             f"Only `hidden_act=silu` is supported for Qwen3-TTS decoder, got {dc.hidden_act!r}."
@@ -185,21 +183,13 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         )
 
         audio_decoder_config = _build_audio_decoder_config(activation_precision, dc, self)
-
-        if self.talker_config is None:
-            text_decoder_config = StubTextDecoderConfig(
-                num_codebooks=self.encoder_valid_num_quantizers,
-                codebook_size=dc.codebook_size,
-                precision=activation_precision,
-            )
-        else:
-            text_decoder_config = _build_text_decoder_config(
-                activation_precision,
-                self.talker_config,
-                self,
-                dc,
-                context_length,
-            )
+        text_decoder_config = _build_text_decoder_config(
+            activation_precision,
+            self.talker_config,
+            self,
+            dc,
+            context_length,
+        )
 
         return TTSConfig(
             text_decoder_config=text_decoder_config,
@@ -215,17 +205,12 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     ) -> LalamoModule:
         assert isinstance(model, TTSModel)
         assert isinstance(model.audio_decoder, Qwen3TTSAudioDecoder)
+        assert isinstance(model.text_decoder, Qwen3TTSTextDecoder)
 
-        decoder_path = _detect_decoder_path(weights_dict)
-        loaded_audio_decoder = load_qwen3_tts_audio_decoder(model.audio_decoder, weights_dict, decoder_path)
-
-        if isinstance(model.text_decoder, Qwen3TTSTextDecoder):
-            talker_path = _detect_talker_path(weights_dict)
-            loaded_text_decoder = load_qwen3_tts_text_decoder(model.text_decoder, weights_dict, talker_path)
-        elif isinstance(model.text_decoder, StubTextDecoder):
-            loaded_text_decoder = model.text_decoder
-        else:
-            raise TypeError(f"Unsupported Qwen3-TTS text decoder type: {type(model.text_decoder)!r}")
+        loaded_audio_decoder = load_qwen3_tts_audio_decoder(
+            model.audio_decoder, weights_dict, ParameterPath("decoder")
+        )
+        loaded_text_decoder = load_qwen3_tts_text_decoder(model.text_decoder, weights_dict, ParameterPath(""))
 
         return load_parameters(
             lambda m: (m.text_decoder, m.audio_decoder),
@@ -241,45 +226,13 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
 def _build_sliding_window_sizes(
     *,
     num_hidden_layers: int,
-    use_sliding_window: bool,
     sliding_window: int | None,
-    max_window_layers: int | None = None,
-    layer_types: tuple[str, ...] | None = None,
+    layer_types: tuple[str, ...],
 ) -> tuple[int | None, ...]:
-    if layer_types is not None:
-        if len(layer_types) != num_hidden_layers:
-            raise ValueError(
-                f"layer_types length {len(layer_types)} does not match num_hidden_layers={num_hidden_layers}",
-            )
-        return tuple(sliding_window if layer_type == "sliding_attention" else None for layer_type in layer_types)
-
-    if not use_sliding_window:
-        return tuple(None for _ in range(num_hidden_layers))
-
-    if max_window_layers is None:
-        return tuple(sliding_window for _ in range(num_hidden_layers))
-
-    return tuple(sliding_window if layer_idx >= max_window_layers else None for layer_idx in range(num_hidden_layers))
-
-
-def _detect_decoder_path(weights_dict: Mapping[str, Array]) -> ParameterPath:
-    path = ParameterPath("decoder")
-    assert path / "pre_transformer" / "input_proj" / "weight" in weights_dict, (
-        f"Expected decoder weights under 'decoder.*' prefix. First keys: {sorted(weights_dict)[:8]}"
+    assert len(layer_types) == num_hidden_layers, (
+        f"layer_types length {len(layer_types)} does not match num_hidden_layers={num_hidden_layers}"
     )
-    return path
-
-
-def _detect_talker_path(weights_dict: Mapping[str, Array]) -> ParameterPath:
-    path = ParameterPath("")
-    assert path / "talker" / "model" / "codec_embedding" / "weight" in weights_dict, (
-        f"Expected talker weights under 'talker.*' prefix. First keys: {sorted(weights_dict)[:8]}"
-    )
-    return path
-
-
-def _clamp_context(context_length: int | None, max_pos: int) -> int:
-    return min(context_length, max_pos) if context_length else max_pos
+    return tuple(sliding_window if lt == "sliding_attention" else None for lt in layer_types)
 
 
 def _build_audio_decoder_config(
@@ -416,7 +369,7 @@ def _build_text_decoder_config(
     talker: Qwen3TTSTalkerConfig,
     top_level_config: Qwen3TTSTokenizer12HzConfig,
     decoder_config: Qwen3TTSTokenizer12HzDecoderConfig,
-    context_length: int | None,
+    context_length: int,
 ) -> Qwen3TTSTextDecoderConfig:
     predictor = talker.code_predictor_config
 
@@ -433,12 +386,11 @@ def _build_text_decoder_config(
             f"Predictor attention dropout is not implemented; expected 0.0, got {predictor.attention_dropout}.",
         )
 
-    assert top_level_config.tts_pad_token_id is not None, "tts_pad_token_id is required for talker config"
-    assert top_level_config.tts_bos_token_id is not None, "tts_bos_token_id is required for talker config"
-    assert top_level_config.tts_eos_token_id is not None, "tts_eos_token_id is required for talker config"
-
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+
+    assert talker.layer_types is not None, "talker.layer_types is required for Qwen3-TTS"
+    assert predictor.layer_types is not None, "predictor.layer_types is required for Qwen3-TTS"
 
     talker_transformer_config = build_transformer_config(
         precision=precision,
@@ -448,13 +400,12 @@ def _build_text_decoder_config(
         num_attention_heads=talker.num_attention_heads,
         num_key_value_heads=talker.num_key_value_heads,
         head_dim=talker.head_dim,
-        max_position_embeddings=_clamp_context(context_length, talker.max_position_embeddings),
+        max_position_embeddings=min(context_length, talker.max_position_embeddings),
         rope_theta=talker.rope_theta,
         rms_norm_eps=talker.rms_norm_eps,
         attention_bias=talker.attention_bias,
         sliding_window_sizes=_build_sliding_window_sizes(
             num_hidden_layers=talker.num_hidden_layers,
-            use_sliding_window=talker.use_sliding_window,
             sliding_window=talker.sliding_window,
             layer_types=talker.layer_types,
         ),
@@ -467,15 +418,13 @@ def _build_text_decoder_config(
         num_attention_heads=predictor.num_attention_heads,
         num_key_value_heads=predictor.num_key_value_heads,
         head_dim=predictor.head_dim,
-        max_position_embeddings=_clamp_context(context_length, predictor.max_position_embeddings),
+        max_position_embeddings=min(context_length, predictor.max_position_embeddings),
         rope_theta=predictor.rope_theta,
         rms_norm_eps=predictor.rms_norm_eps,
         attention_bias=predictor.attention_bias,
         sliding_window_sizes=_build_sliding_window_sizes(
             num_hidden_layers=predictor.num_hidden_layers,
-            use_sliding_window=predictor.use_sliding_window,
             sliding_window=predictor.sliding_window,
-            max_window_layers=predictor.max_window_layers,
             layer_types=predictor.layer_types,
         ),
     )
@@ -498,7 +447,7 @@ def _build_text_decoder_config(
         predictor_vocab_size=predictor.vocab_size,
         num_code_groups=talker.num_code_groups,
         n_q_semantic=decoder_config.num_semantic_quantizers,
-        max_new_tokens=_clamp_context(context_length, talker.max_position_embeddings),
+        max_new_tokens=min(context_length, talker.max_position_embeddings),
         codec_bos_id=talker.codec_bos_id,
         codec_eos_token_id=talker.codec_eos_token_id,
         codec_pad_id=talker.codec_pad_id,

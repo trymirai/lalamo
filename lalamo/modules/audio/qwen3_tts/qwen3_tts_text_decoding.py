@@ -155,7 +155,8 @@ class Qwen3TTSTextDecoderConfig(TTSTextDecoderConfigBase):
     speaker_id: Mapping[str, int]
     language_id: Mapping[str, int]
 
-    def format_instruction(self, style: str) -> str:
+    @classmethod
+    def format_instruction(cls, style: str) -> str:
         return f"<|im_start|>user\n{style}<|im_end|>\n"
 
     def empty(self) -> "Qwen3TTSTextDecoder":

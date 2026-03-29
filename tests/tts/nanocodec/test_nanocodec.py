@@ -17,6 +17,7 @@ from lalamo.modules.audio.common_modules import (
     Snake1dConfig,
 )
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
+from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
     DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
@@ -417,8 +418,6 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
 
     # Lalamo forward using audio_from_codes
     tokens_jax = jnp.array(tokens_np)
-    from lalamo.modules.audio.text_decoder import CodebookCodes
-
     codes = CodebookCodes(semantic=tokens_jax[:1, :], acoustic=tokens_jax[1:, :])
     audio_lalamo = lalamo_model.audio_from_codes(codes)
 

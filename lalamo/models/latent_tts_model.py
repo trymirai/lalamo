@@ -76,7 +76,7 @@ class LatentTTSGenerator(eqx.Module):
         if isinstance(path, str):
             path = Path(path)
 
-        with open(path / "config.json") as config_file:
+        with (path / "config.json").open() as config_file:
             config_json = json.load(config_file)
 
         config = config_converter.structure(config_json["model_config"], LatentTTSGeneratorConfig)
@@ -90,8 +90,7 @@ class LatentTTSGenerator(eqx.Module):
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
 
-        generator_cls = config.latent_tts_config.generator_class()
-        return generator_cls(
+        return cls(
             config=config,
             latent_tts_model=model,
             message_processor=message_processor,

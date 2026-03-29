@@ -80,10 +80,10 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
     def load_model(cls, path: Path | str) -> LalamoModule[Self]:
         if isinstance(path, str):
             path = Path(path)
-        with open(path / "config.json") as config_file:
+        with (path / "config.json").open() as config_file:
             config_json = json.load(config_file)
         config = config_converter.structure(config_json["model_config"], cls)
-        with Path(path / "model.safetensors").open("rb") as fd:
+        with (path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
             weights = unflatten_parameters(weights_dict)
             model = config.model_config.empty().import_weights(weights)  # type: ignore

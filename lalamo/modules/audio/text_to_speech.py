@@ -16,6 +16,7 @@ from .audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 # Side-effect imports: ensure concrete configs register with RegistryABC
 from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig as _DescriptAudioCodecConfig  # noqa: F401
 from .fishaudio.fishaudio_text_decoding import FishAudioTextDecoderConfig as _FishAudioTextDecoderConfig  # noqa: F401
+from .latent_tts import LatentTTSConfig
 from .nanocodec.audio_decoding import NanoCodecConfig as _NanoCodecConfig  # noqa: F401
 from .nanocodec.stub_text_decoder import StubTextDecoderConfig as _StubTextDecoderConfig  # noqa: F401
 from .qwen3_tts.qwen3_tts_audio_decoding import Qwen3TTSAudioDecoderConfig as _Qwen3TTSAudioDecoderConfig  # noqa: F401
@@ -47,7 +48,7 @@ def _registry_structure(base_cls: type[RegistryABC]) -> Callable[[dict | None, t
     return structure
 
 
-for _base in (TTSTextDecoderConfigBase, TTSAudioDecoderConfigBase):
+for _base in (TTSTextDecoderConfigBase, TTSAudioDecoderConfigBase, LatentTTSConfig):
     config_converter.register_unstructure_hook(_base, _registry_unstructure(_base))
     config_converter.register_structure_hook(_base, _registry_structure(_base))
 
@@ -87,6 +88,7 @@ class TTSModel(LalamoModule[TTSConfig]):
         return {
             "text_decoder": self.text_decoder.export_weights(),
             "audio_decoder": self.audio_decoder.export_weights(),
+            "vocoder": self.vocoder.export_weights(),
         }
 
     def import_weights(
@@ -98,4 +100,5 @@ class TTSModel(LalamoModule[TTSConfig]):
             self,
             text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
             audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
+            vocoder=self.vocoder.import_weights(require_tree(weights["vocoder"])),
         )

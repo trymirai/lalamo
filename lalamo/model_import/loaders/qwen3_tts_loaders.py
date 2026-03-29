@@ -111,17 +111,6 @@ def load_qwen3_tts_vector_quantization(
     )
 
 
-def _load_vq_layers(
-    layers: tuple[VectorQuantization, ...],
-    weights_dict: Mapping[str, Array],
-    path: ParameterPath,
-) -> tuple[VectorQuantization, ...]:
-    return tuple(
-        load_qwen3_tts_vector_quantization(layer, weights_dict, path / "layers" / idx)
-        for idx, layer in enumerate(layers)
-    )
-
-
 def _load_rvq_output_projection_linear(
     module: FullPrecisionLinear,
     weights_dict: Mapping[str, Array],
@@ -141,8 +130,14 @@ def load_qwen3_tts_residual_vector_quantizer(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
 ) -> ResidualVectorQuantizer:
-    semantic_layers = _load_vq_layers(module.semantic_layers, weights_dict, path / "rvq_first" / "vq")
-    acoustic_layers = _load_vq_layers(module.acoustic_layers, weights_dict, path / "rvq_rest" / "vq")
+    semantic_layers = tuple(
+        load_qwen3_tts_vector_quantization(layer, weights_dict, path / "rvq_first" / "vq" / "layers" / idx)
+        for idx, layer in enumerate(module.semantic_layers)
+    )
+    acoustic_layers = tuple(
+        load_qwen3_tts_vector_quantization(layer, weights_dict, path / "rvq_rest" / "vq" / "layers" / idx)
+        for idx, layer in enumerate(module.acoustic_layers)
+    )
     semantic_projection = _load_rvq_output_projection_linear(
         module.semantic_projection,
         weights_dict,

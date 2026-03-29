@@ -29,10 +29,10 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
 
     @classmethod
     def _read_and_merge_configs(cls, json_path: Path, extra_config_paths: Sequence[Path]) -> dict:
-        with open(json_path) as f:
+        with json_path.open() as f:
             config = json.load(f)
         for extra_path in extra_config_paths:
-            with open(extra_path) as f:
+            with extra_path.open() as f:
                 config = {**json.load(f), **config}
         return config
 

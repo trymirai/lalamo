@@ -34,8 +34,9 @@ class TTSTextDecoderConfigBase(RegistryABC):
     @abstractmethod
     def random_init(self, *, key: PRNGKeyArray) -> "TTSTextDecoder": ...
 
-    def format_instruction(self, style: str) -> str | None:  # noqa: ARG002
-        return None
+    @classmethod
+    def format_instruction(cls, style: str) -> str:
+        raise NotImplementedError(f"{cls.__name__} does not support instruction formatting")
 
 
 class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
