@@ -5,6 +5,7 @@ from typing import NamedTuple, Self
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
+from lalamo.modules.forward_pass_config import MixerForwardPassConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
@@ -63,6 +64,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

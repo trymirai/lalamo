@@ -16,7 +16,7 @@ from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
-    DecoderForwardPassConfig,
+    ForwardPassConfig,
     ForwardPassMode,
     LalamoModule,
     ShardingConfig,
@@ -52,9 +52,6 @@ __all__ = [
 
 
 _COMPILED_PROMPT_LENGTHS = [256 * 2**i for i in range(12)]
-
-
-type ForwardPassConfig = DecoderForwardPassConfig
 
 
 class PrefillResults(NamedTuple):
@@ -192,7 +189,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
@@ -217,7 +214,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 return_updated_state=True,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=forward_pass_config,
+                forward_pass_config=forward_pass_config.decoder,
             )
             assert decoder_outputs.updated_state is not None
 
@@ -241,7 +238,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         num_top_logits_to_return: int | None = None,
         *,
         keys: Key[Array, " batch"] | None = None,
@@ -308,7 +305,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     state.state,
                     return_updated_state=True,
                     forward_pass_mode=forward_pass_mode,
-                    forward_pass_config=forward_pass_config,
+                    forward_pass_config=forward_pass_config.decoder,
                 )
                 assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
@@ -356,7 +353,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         *,
         generation_config: GenerationConfig | None,
         inference_config: InferenceConfig,
-        forward_pass_config: ForwardPassConfig | None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None,
     ) -> Iterator[GenerationResults]:
         if sharding_config is None:
@@ -407,7 +404,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
@@ -446,7 +443,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
     ) -> int:
         if sharding_config is None:
@@ -497,7 +494,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
@@ -528,7 +525,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         vram_bytes: int | None = None,
@@ -617,7 +614,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[str]:
@@ -643,7 +640,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
@@ -695,7 +692,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 state.state,
                 return_updated_state=True,
                 forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-                forward_pass_config=forward_pass_config,
+                forward_pass_config=forward_pass_config.decoder,
             )
             assert decoder_outputs.updated_state is not None, "updated_state should not be None"
             state = DecodingState(

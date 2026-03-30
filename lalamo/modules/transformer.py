@@ -12,13 +12,13 @@ from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
+from .forward_pass_config import TransformerForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
 from .transformer_layer import (
     TransformerLayer,
     TransformerLayerConfig,
-    TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
 
@@ -27,9 +27,6 @@ __all__ = [
     "TransformerConfig",
     "TransformerResult",
 ]
-
-
-type TransformerForwardPassConfig = TransformerLayerForwardPassConfig
 
 
 class TransformerResult(eqx.Module):
@@ -178,7 +175,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
-        forward_pass_config: TransformerForwardPassConfig | None,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -222,7 +219,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
-                forward_pass_config=forward_pass_config,
+                forward_pass_config=forward_pass_config.layer,
             )
             inner_features = layer_result.outputs
             layer_results.append(layer_result)

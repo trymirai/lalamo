@@ -23,6 +23,7 @@ from .common import (
     ShardingOrder,
     register_config_union,
 )
+from .forward_pass_config import MLPForwardPassConfig
 from .linear import LinearBase, LinearConfig
 
 __all__ = [
@@ -30,7 +31,6 @@ __all__ = [
     "DenseMLPConfig",
     "MLPBase",
     "MLPConfig",
-    "MLPForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "RoutingFunction",
@@ -39,11 +39,6 @@ __all__ = [
 
 
 _SENTINEL = 2**31 - 1
-
-
-@dataclass(frozen=True)
-class MLPForwardPassConfig:
-    moe_chunk_size_ratio: float = 0.2
 
 
 class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
@@ -65,7 +60,7 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -241,7 +236,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig | None = None,  # noqa: ARG002
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, "batch suffix_tokens channels"]:
         return vmap_twice(self.call_unbatched)(inputs)
 
@@ -465,7 +460,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_mode:
             case ForwardPassMode.MULTI_TOKEN:
@@ -525,9 +520,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:

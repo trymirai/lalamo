@@ -1,5 +1,5 @@
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Literal, Self
 
 import equinox as eqx
 import jax
@@ -10,6 +10,11 @@ from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array, require_mapping
 from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
+from lalamo.modules.forward_pass_config import (
+    AttentionForwardPassConfig,
+    AttentionImplementation,
+    MixerForwardPassConfig,
+)
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -32,7 +37,7 @@ def _repeat_kv(
     return jnp.repeat(keys_or_values, group_size, axis=1)
 
 
-def deterministic_dot_product_attention(
+def stable_reduction_attention(
     queries: Float[Array, "dst_tokens heads head_channels"],
     keys: Float[Array, "src_tokens groups head_channels"],
     values: Float[Array, "src_tokens groups head_channels"],
@@ -134,6 +139,107 @@ def deterministic_dot_product_attention(
     return rearrange(result, "heads queries hidden -> queries heads hidden").astype(original_dtype)
 
 
+def _standard_attention(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    mask: Bool[Array, "dst_tokens src_tokens"] | None = None,
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None = None,
+    scale: float | None = None,
+    logit_soft_cap: float | None = None,
+    upcast_dtype: DTypeLike | None = None,
+    implementation: Literal["xla", "cudnn"] | None = None,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    if logit_soft_cap is not None:
+        raise ValueError("logit_soft_cap is not supported with standard/cudnn attention implementations")
+
+    original_dtype = queries.dtype
+    _, num_heads, head_dim = queries.shape
+    _, num_groups, _ = keys.shape
+    group_size = num_heads // num_groups
+
+    if scale is None:
+        scale = head_dim**-0.5
+
+    keys = _repeat_kv(keys, group_size)
+    values = _repeat_kv(values, group_size)
+
+    # jax.nn.dot_product_attention expects (batch heads tokens channels) but we don't have batch here
+    q = rearrange(queries, "tokens heads hidden -> heads tokens hidden")
+    k = rearrange(keys, "tokens heads hidden -> heads tokens hidden")
+    v = rearrange(values, "tokens heads hidden -> heads tokens hidden")
+
+    if upcast_dtype is not None:
+        q = q.astype(upcast_dtype)
+        k = k.astype(upcast_dtype)
+        v = v.astype(upcast_dtype)
+
+    if mask is not None:
+        attn_mask = rearrange(mask, "dst src -> 1 dst src")
+    else:
+        attn_mask = None
+
+    result = jax.nn.dot_product_attention(
+        q,
+        k,
+        v,
+        bias=bias,
+        mask=attn_mask,
+        scale=scale,
+        implementation=implementation,
+    )
+    return rearrange(result, "heads tokens hidden -> tokens heads hidden").astype(original_dtype)
+
+
+def _dispatch_attention(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+    scale: float | None,
+    logit_soft_cap: float | None,
+    forward_pass_config: AttentionForwardPassConfig,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    match forward_pass_config.implementation:
+        case AttentionImplementation.STABLE_REDUCTION:
+            return stable_reduction_attention(
+                queries,
+                keys,
+                values,
+                mask=mask,
+                bias=bias,
+                scale=scale,
+                logit_soft_cap=logit_soft_cap,
+                upcast_dtype=forward_pass_config.upcast_dtype,
+            )
+        case AttentionImplementation.STANDARD:
+            return _standard_attention(
+                queries,
+                keys,
+                values,
+                mask=mask,
+                bias=bias,
+                scale=scale,
+                logit_soft_cap=logit_soft_cap,
+                upcast_dtype=forward_pass_config.upcast_dtype,
+            )
+        case AttentionImplementation.CUDNN:
+            return _standard_attention(
+                queries,
+                keys,
+                values,
+                mask=mask,
+                bias=bias,
+                scale=scale,
+                logit_soft_cap=logit_soft_cap,
+                upcast_dtype=forward_pass_config.upcast_dtype,
+                implementation="cudnn",
+            )
+        case AttentionImplementation.TOKAMAX:
+            raise NotImplementedError("Tokamax attention is not yet implemented")
+
+
 AttentionResult = TokenMixerResult[KVCacheLayer]
 
 
@@ -160,7 +266,6 @@ class AttentionConfig(TokenMixerConfigBase):
     use_rope: bool = True
     # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
     partial_rope_dim: int | None = None
-    attention_upcast_dtype: DTypeLike | None = jnp.float32
 
     @property
     def rope_dim(self) -> int | None:
@@ -439,6 +544,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = AttentionForwardPassConfig(),  # noqa: B008
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
@@ -496,7 +602,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             sink_bias = None
 
-        attention_output = deterministic_dot_product_attention(
+        attention_output = _dispatch_attention(
             queries,
             updated_state.keys,
             updated_state.values,
@@ -504,7 +610,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             bias=sink_bias,
             scale=self.scale,
             logit_soft_cap=self.config.logit_soft_cap,
-            upcast_dtype=self.config.attention_upcast_dtype,
+            forward_pass_config=forward_pass_config,
         )
         attention_output = rearrange(
             attention_output,

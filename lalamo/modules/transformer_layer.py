@@ -11,7 +11,8 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree, require_mapping, require_tree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
-from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
+from .forward_pass_config import TransformerLayerForwardPassConfig
+from .mlp import MLPBase, MLPConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
@@ -24,9 +25,6 @@ __all__ = [
     "TransformerLayerForwardPassConfig",
     "TransformerLayerResult",
 ]
-
-
-type TransformerLayerForwardPassConfig = MLPForwardPassConfig
 
 
 class TransformerLayerActivationTrace(eqx.Module):
@@ -212,7 +210,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+        forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),  # noqa: B008
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -225,7 +223,11 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_inputs = inputs
 
         batched_mixer_fn = vmap(
-            partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace),
+            partial(
+                self.mixer,
+                return_updated_state=return_updated_state or return_activation_trace,
+                forward_pass_config=forward_pass_config.mixer,
+            ),
         )
         mixer_outputs, updated_state = batched_mixer_fn(
             normalized_mixer_inputs,
@@ -246,7 +248,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             forward_pass_mode=forward_pass_mode,
-            forward_pass_config=forward_pass_config,
+            forward_pass_config=forward_pass_config.mlp,
         )
         if self.post_mlp_norm is not None:
             normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)

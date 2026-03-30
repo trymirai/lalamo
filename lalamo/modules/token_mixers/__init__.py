@@ -1,4 +1,9 @@
 from lalamo.modules.common import register_config_union
+from lalamo.modules.forward_pass_config import (
+    AttentionForwardPassConfig,
+    AttentionImplementation,
+    MixerForwardPassConfig,
+)
 
 from .attention import Attention, AttentionConfig, AttentionResult
 from .common import TokenMixerBase, TokenMixerResult
@@ -23,6 +28,8 @@ register_config_union(TokenMixerConfig)
 __all__ = [
     "Attention",
     "AttentionConfig",
+    "AttentionForwardPassConfig",
+    "AttentionImplementation",
     "AttentionResult",
     "DeltaNetAttention",
     "DeltaNetAttentionConfig",
@@ -32,6 +39,7 @@ __all__ = [
     "Mamba2",
     "Mamba2Config",
     "Mamba2Result",
+    "MixerForwardPassConfig",
     "SSMStateLayer",
     "SeparableCausalConv",
     "SeparableCausalConvConfig",

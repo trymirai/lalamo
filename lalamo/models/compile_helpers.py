@@ -6,6 +6,8 @@ from typing import TYPE_CHECKING
 
 import jax
 
+from lalamo.modules.forward_pass_config import ForwardPassConfig
+
 from .common import InferenceConfig
 
 if TYPE_CHECKING:
@@ -13,7 +15,7 @@ if TYPE_CHECKING:
     from jax.sharding import Sharding
     from jaxtyping import Array, Int, Key
 
-    from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
+    from .language_model import GenerationConfig, LanguageModel
 
 _compile_cache: dict[
     int,
@@ -33,7 +35,7 @@ def compile_generate_tokens(
     generation_config: GenerationConfig | None = None,
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
-    forward_pass_config: ForwardPassConfig | None = None,
+    forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],
@@ -53,6 +55,12 @@ def compile_generate_tokens(
             num_top_logits_to_return=inference_config.num_top_logits_to_return,
             forward_pass_config=forward_pass_config,
         )
+        compiler_options: dict[str, str | bool] = {
+            "xla_gpu_autotune_level": str(forward_pass_config.xla_autotune_level),
+        }
+        if forward_pass_config.deterministic_ops:
+            compiler_options["xla_gpu_deterministic_ops"] = "true"
+
         _compile_cache[model_id][key] = (
             jax.jit(generate_tokens_fn)
             .lower(
@@ -61,11 +69,6 @@ def compile_generate_tokens(
                 prompt_lengths_without_padding=prompt_lengths_without_padding,
                 keys=keys,
             )
-            # the autotune levels are (according to https://guides.lw1.at/all-xla-options/#--xla_gpu_autotune_level)
-            # 0 - no autotune, gpu shouldn't be touched
-            # 1 - basic level, gpu should be touched veeery little
-            # 2,3 - gpu touched more and more
-            # 4 (default) - gpu might allocate more memory than the run would require!
-            .compile(compiler_options={"xla_gpu_autotune_level": "0"})
+            .compile(compiler_options=compiler_options)
         )
     return _compile_cache[model_id][key]

@@ -20,7 +20,6 @@ from .decoder import (
     Decoder,
     DecoderActivationTrace,
     DecoderConfig,
-    DecoderForwardPassConfig,
     DecoderResult,
 )
 from .embedding import (
@@ -36,6 +35,16 @@ from .embedding import (
     TiedEmbeddingConfig,
     UntiedEmbedding,
     UntiedEmbeddingConfig,
+)
+from .forward_pass_config import (
+    AttentionForwardPassConfig,
+    AttentionImplementation,
+    DecoderForwardPassConfig,
+    ForwardPassConfig,
+    MixerForwardPassConfig,
+    MLPForwardPassConfig,
+    TransformerForwardPassConfig,
+    TransformerLayerForwardPassConfig,
 )
 from .linear import (
     FullPrecisionLinear,
@@ -56,7 +65,6 @@ from .mlp import (
     MixtureOfExpertsConfig,
     MLPBase,
     MLPConfig,
-    MLPForwardPassConfig,
     RoutingFunction,
     SoftmaxRouting,
 )
@@ -92,7 +100,6 @@ from .transformer_layer import (
     TransformerLayer,
     TransformerLayerActivationTrace,
     TransformerLayerConfig,
-    TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
 
@@ -101,6 +108,8 @@ __all__ = [
     "Activation",
     "Attention",
     "AttentionConfig",
+    "AttentionForwardPassConfig",
+    "AttentionImplementation",
     "Classifier",
     "ClassifierConfig",
     "Decoder",
@@ -115,6 +124,7 @@ __all__ = [
     "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
+    "ForwardPassConfig",
     "ForwardPassMode",
     "FullPrecisionLinear",
     "FullPrecisionLinearConfig",
@@ -140,6 +150,7 @@ __all__ = [
     "MLXSemiQuantizedUntiedEmbeddingConfig",
     "Mamba2",
     "Mamba2Config",
+    "MixerForwardPassConfig",
     "MixtureOfExperts",
     "MixtureOfExpertsConfig",
     "NoopVocoder",
@@ -172,6 +183,7 @@ __all__ = [
     "TiedEmbeddingConfig",
     "Transformer",
     "TransformerConfig",
+    "TransformerForwardPassConfig",
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
