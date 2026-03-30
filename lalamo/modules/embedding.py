@@ -1,6 +1,5 @@
 from abc import abstractmethod
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -8,9 +7,9 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
+from lalamo.common import dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.utils import jax_uint4_to_packed_uint8
 
 from .common import (
     LalamoModule,
@@ -138,16 +137,6 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
 
-    def export_weights(self) -> ParameterTree:
-        return {"weights": self.weights}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        weights = require_mapping(weights)
-        return replace(self, weights=weights["weights"])
-
 
 @dataclass(frozen=True)
 class UntiedEmbeddingConfig(EmbeddingConfigBase):
@@ -228,23 +217,6 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.output_weights
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "input_weights": self.input_weights,
-            "output_weights": self.output_weights,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            input_weights=weights["input_weights"],
-            output_weights=weights["output_weights"],
-        )
 
 
 @dataclass(frozen=True)
@@ -338,25 +310,6 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "weights": self.int_weights,
-            "scales": self.scales,
-            "biases": self.biases,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        unpacked_weights = require_array(weights["weights"])
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-        return replace(
-            self,
-            weights=unpacked_weights.astype(self.weights.dtype),
-            scales=require_array(weights["scales"]),
-            biases=require_array(weights["biases"]),
-        )
 
 
 @dataclass(frozen=True)
@@ -485,33 +438,6 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
 
-    def export_weights(self) -> ParameterTree:
-        return {
-            "input_weights": self.int_input_weights,
-            "input_scales": self.input_scales,
-            "input_biases": self.input_biases,
-            "output_weights": self.int_output_weights,
-            "output_scales": self.output_scales,
-            "output_biases": self.output_biases,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        unpacked_input_weights = require_array(weights["input_weights"])
-        unpacked_output_weights = require_array(weights["output_weights"])
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
-        return replace(
-            self,
-            input_weights=unpacked_input_weights.astype(self.input_weights.dtype),
-            input_scales=require_array(weights["input_scales"]),
-            input_biases=require_array(weights["input_biases"]),
-            output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=require_array(weights["output_scales"]),
-            output_biases=require_array(weights["output_biases"]),
-        )
-
 
 @dataclass(frozen=True)
 class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
@@ -609,27 +535,6 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         return super().readout(x)
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "input_weights": self.input_weights,
-            "output_weights": self.int_output_weights,
-            "output_scales": self.output_scales,
-            "output_biases": self.output_biases,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        unpacked_output_weights = require_array(weights["output_weights"])
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
-        return replace(
-            self,
-            input_weights=require_array(weights["input_weights"]),
-            output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=require_array(weights["output_scales"]),
-            output_biases=require_array(weights["output_biases"]),
-        )
 
 
 EmbeddingConfig = (

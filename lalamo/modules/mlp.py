@@ -1,9 +1,8 @@
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from functools import partial
-from typing import Self, cast
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -12,7 +11,6 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.utils import vmap_twice
 
 from .activations import Activation
@@ -281,20 +279,6 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
 
         # Expert mixtures are indexed by expert id on axis 0.
         return jax.tree_util.tree_map(slice_leaf, self)
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "up_projection": self.up_projection.export_weights(),
-            "down_projection": self.down_projection.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            up_projection=self.up_projection.import_weights(require_tree(weights["up_projection"])),
-            down_projection=self.down_projection.import_weights(require_tree(weights["down_projection"])),
-        )
 
 
 class RoutingMap(eqx.Module):
@@ -619,36 +603,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             expert_result,
             "(batch suffix_tokens) channels -> batch suffix_tokens channels",
             batch=batch_size,
-        )
-
-    def export_weights(
-        self,
-    ) -> ParameterTree[Array]:
-        result: dict[str, ParameterTree[Array]] = {
-            "router": self.router.export_weights(),
-            "experts": self.experts.export_weights(),
-        }
-
-        if self.gate is not None:
-            result["gate"] = self.gate.export_weights()
-
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        mapping_weights = cast("Mapping[str, Array | ParameterTree[Array]]", weights)
-
-        gate = None
-        if "gate" in mapping_weights:
-            if self.gate is None:
-                raise ValueError("Cannot import gate weights without configured gating.")
-            gate = self.gate.import_weights(require_tree(mapping_weights["gate"]))
-
-        return replace(
-            self,
-            router=self.router.import_weights(require_tree(mapping_weights["router"])),
-            experts=self.experts.import_weights(require_tree(mapping_weights["experts"])),
-            gate=gate,
         )
 
 

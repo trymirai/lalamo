@@ -1,12 +1,11 @@
-from dataclasses import dataclass, replace
-from typing import Any, Self
+from dataclasses import dataclass
+from typing import Any
 
 import jax
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -176,41 +175,6 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return self.config.precision
-
-    def export_weights(self) -> ParameterTree:
-        if isinstance(self.fast_model_projection, Identity):
-            fast_model_proj_weighs = {}
-        else:
-            fast_model_proj_weighs = self.fast_model_projection.export_weights()
-
-        return {
-            "embeddings_slow": self.embeddings_slow.export_weights(),
-            "embeddings_fast": self.embeddings_fast.export_weights(),
-            "transformer_slow": self.transformer_slow.export_weights(),
-            "transformer_fast": self.transformer_fast.export_weights(),
-            "readout_slow": self.readout_slow.export_weights(),
-            "readout_fast": self.readout_fast.export_weights(),
-            "codebook_embeddings": self.codebook_embeddings.export_weights(),
-            "fast_model_projection": fast_model_proj_weighs,
-        }
-
-    def import_weights(self, weights: ParameterTree) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            embeddings_slow=self.embeddings_slow.import_weights(require_tree(weights["embeddings_slow"])),
-            embeddings_fast=self.embeddings_fast.import_weights(require_tree(weights["embeddings_fast"])),
-            transformer_slow=self.transformer_slow.import_weights(require_tree(weights["transformer_slow"])),
-            transformer_fast=self.transformer_fast.import_weights(require_tree(weights["transformer_fast"])),
-            readout_slow=self.readout_slow.import_weights(require_tree(weights["readout_slow"])),
-            readout_fast=self.readout_fast.import_weights(require_tree(weights["readout_fast"])),
-            codebook_embeddings=self.codebook_embeddings.import_weights(require_tree(weights["codebook_embeddings"])),
-            fast_model_projection=self.fast_model_projection.import_weights(
-                require_tree(weights["fast_model_projection"]),
-            )
-            if isinstance(self.fast_model_projection, FullPrecisionLinear)
-            else Identity(),
-        )
 
     @property
     def semantic_begin_id(self) -> int:

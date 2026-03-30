@@ -1,5 +1,5 @@
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import NamedTuple
 
 import jax
@@ -7,7 +7,7 @@ import jax.numpy as jnp
 from einops import einsum
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
+from lalamo.common import dummy_array
 from lalamo.modules.common import LalamoModule
 
 __all__ = [
@@ -154,17 +154,3 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
             output = output + self.biases
         new_state = jnp.concatenate([state[1:], token[None, :]], axis=0)
         return output, new_state
-
-    def export_weights(self) -> ParameterTree:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "SeparableCausalConv":
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            weights=require_array(weights["weights"]),
-            biases=require_array(weights["biases"]) if self.biases is not None else None,
-        )

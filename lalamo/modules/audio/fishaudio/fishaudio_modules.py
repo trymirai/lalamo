@@ -1,13 +1,10 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import jax
 from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -155,34 +152,6 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
 
         return x
 
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, ParameterTree[Array]] = {
-            "dwconv": self.depthwise_conv.export_weights(),
-            "norm": self.norm.export_weights(),
-            "pwconv1": self.pointwise_conv_step1.export_weights(),
-            "pwconv2": self.pointwise_conv_step2.export_weights(),
-        }
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "ConvNeXtBlock":
-        assert isinstance(weights, Mapping)
-        dwconv_weights = weights["dwconv"]
-        norm_weights = weights["norm"]
-        pwconv1_weights = weights["pwconv1"]
-        pwconv2_weights = weights["pwconv2"]
-        assert isinstance(dwconv_weights, Mapping)
-        assert isinstance(norm_weights, Mapping)
-        assert isinstance(pwconv1_weights, Mapping)
-        assert isinstance(pwconv2_weights, Mapping)
-
-        return replace(
-            self,
-            depthwise_conv=self.depthwise_conv.import_weights(require_tree(dwconv_weights)),
-            norm=self.norm.import_weights(require_tree(norm_weights)),
-            pointwise_conv_step1=self.pointwise_conv_step1.import_weights(require_tree(pwconv1_weights)),
-            pointwise_conv_step2=self.pointwise_conv_step2.import_weights(require_tree(pwconv2_weights)),
-        )
-
 
 @dataclass(frozen=True)
 class TransposeConvSpatialParams:
@@ -286,25 +255,6 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
 
         return x
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "trans_conv": self.trans_conv.export_weights(),
-            "convnext": self.convnext.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "UpsamplingBlock":
-        assert isinstance(weights, Mapping)
-        trans_conv_weights = weights["trans_conv"]
-        convnext_weights = weights["convnext"]
-        assert isinstance(trans_conv_weights, Mapping)
-        assert isinstance(convnext_weights, Mapping)
-
-        return replace(
-            self,
-            trans_conv=self.trans_conv.import_weights(require_tree(trans_conv_weights)),
-            convnext=self.convnext.import_weights(require_tree(convnext_weights)),
-        )
-
 
 @dataclass(frozen=True)
 class UpsamplerConfig:
@@ -381,21 +331,6 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
         for block in self.blocks:
             x = block(x)
         return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "blocks": [block.export_weights() for block in self.blocks],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "Upsampler":
-        assert isinstance(weights, Mapping)
-        block_weights = weights["blocks"]
-        new_blocks = []
-        for block, w in zip(self.blocks, block_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_blocks.append(block.import_weights(w))
-
-        return replace(self, blocks=tuple(new_blocks))
 
 
 @dataclass(frozen=True)
@@ -480,24 +415,6 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
         z_p = self.codebook.embed(embed_id)
         (z_q,) = vmap(self.out_proj)(z_p)
         return z_q
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "codebook": self.codebook.export_weights(),
-            "out_proj": self.out_proj.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        codebook_weights = weights["codebook"]
-        out_proj_weights = weights["out_proj"]
-        assert isinstance(codebook_weights, Mapping)
-        assert isinstance(out_proj_weights, Mapping)
-        return replace(
-            self,
-            codebook=self.codebook.import_weights(require_tree(codebook_weights)),
-            out_proj=self.out_proj.import_weights(require_tree(out_proj_weights)),
-        )
 
 
 @dataclass(frozen=True)
@@ -584,20 +501,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
 
     def __call__(self, codes: Int[Array, "batch n_codebooks tokens"]) -> Float[Array, "batch tokens code_size"]:
         return vmap(self.from_codes)(codes)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizers": [q.export_weights() for q in self.quantizers],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        quantizer_weights = weights["quantizers"]
-        new_quantizers = []
-        for q, w in zip(self.quantizers, quantizer_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_quantizers.append(q.import_weights(w))
-        return replace(self, quantizers=tuple(new_quantizers))
 
 
 @dataclass(frozen=True)
@@ -748,35 +651,6 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
         indices: Int[Array, "batch n_codebooks tokens"],
     ) -> Float[Array, "batch upsampled_tokens channels"]:
         return self.decode(indices)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "semantic_quantizer": self.semantic_quantizer.export_weights(),
-            "quantizer": self.quantizer.export_weights(),
-            "post_module": self.post_module.export_weights(),
-            "upsampler": self.upsampler.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree) -> Self:
-        assert isinstance(weights, Mapping)
-
-        semantic_quantizer_weights = weights["semantic_quantizer"]
-        quantizer_weights = weights["quantizer"]
-        post_module_weights = weights["post_module"]
-        upsampler_weights = weights["upsampler"]
-
-        assert isinstance(semantic_quantizer_weights, Mapping)
-        assert isinstance(quantizer_weights, Mapping)
-        assert isinstance(post_module_weights, Mapping)
-        assert isinstance(upsampler_weights, Mapping)
-
-        return replace(
-            self,
-            semantic_quantizer=self.semantic_quantizer.import_weights(semantic_quantizer_weights),
-            quantizer=self.quantizer.import_weights(quantizer_weights),
-            post_module=self.post_module.import_weights(post_module_weights),
-            upsampler=self.upsampler.import_weights(upsampler_weights),
-        )
 
 
 @dataclass(frozen=True)
@@ -929,33 +803,6 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
 
         return x + y
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "snake1": self.snake1.export_weights(),
-            "conv1": self.conv1.export_weights(),
-            "snake2": self.snake2.export_weights(),
-            "conv2": self.conv2.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree) -> "ResidualUnit":
-        assert isinstance(weights, Mapping)
-        snake1_weights = weights["snake1"]
-        conv1_weights = weights["conv1"]
-        snake2_weights = weights["snake2"]
-        conv2_weights = weights["conv2"]
-        assert isinstance(snake1_weights, Mapping)
-        assert isinstance(conv1_weights, Mapping)
-        assert isinstance(snake2_weights, Mapping)
-        assert isinstance(conv2_weights, Mapping)
-
-        return replace(
-            self,
-            snake1=self.snake1.import_weights(snake1_weights),
-            conv1=self.conv1.import_weights(conv1_weights),
-            snake2=self.snake2.import_weights(snake2_weights),
-            conv2=self.conv2.import_weights(conv2_weights),
-        )
-
 
 @dataclass(frozen=True)
 class AudioDecoderBlockSpatialParams:
@@ -1080,38 +927,6 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
         x = self.res_unit2(x)
         x = self.res_unit3(x)
         return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "snake": self.snake.export_weights(),
-            "trans_conv": self.trans_conv.export_weights(),
-            "res_unit1": self.res_unit1.export_weights(),
-            "res_unit2": self.res_unit2.export_weights(),
-            "res_unit3": self.res_unit3.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "DACDecoderBlock":
-        assert isinstance(weights, Mapping)
-        snake_weights = weights["snake"]
-        trans_conv_weights = weights["trans_conv"]
-        res_unit1_weights = weights["res_unit1"]
-        res_unit2_weights = weights["res_unit2"]
-        res_unit3_weights = weights["res_unit3"]
-
-        assert isinstance(snake_weights, Mapping)
-        assert isinstance(trans_conv_weights, Mapping)
-        assert isinstance(res_unit1_weights, Mapping)
-        assert isinstance(res_unit2_weights, Mapping)
-        assert isinstance(res_unit3_weights, Mapping)
-
-        return replace(
-            self,
-            snake=self.snake.import_weights(require_tree(snake_weights)),
-            trans_conv=self.trans_conv.import_weights(require_tree(trans_conv_weights)),
-            res_unit1=self.res_unit1.import_weights(require_tree(res_unit1_weights)),
-            res_unit2=self.res_unit2.import_weights(require_tree(res_unit2_weights)),
-            res_unit3=self.res_unit3.import_weights(require_tree(res_unit3_weights)),
-        )
 
 
 @dataclass(frozen=True)
@@ -1301,36 +1116,3 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
         x = jnp.tanh(x)
 
         return x
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "first_conv": self.first_conv.export_weights(),
-            "decoder_blocks": [block.export_weights() for block in self.decoder_blocks],
-            "final_snake": self.final_snake.export_weights(),
-            "final_conv": self.final_conv.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "DACDecoder":
-        assert isinstance(weights, Mapping)
-
-        first_conv_weights = weights["first_conv"]
-        block_weights = weights["decoder_blocks"]
-        final_snake_weights = weights["final_snake"]
-        final_conv_weights = weights["final_conv"]
-
-        assert isinstance(first_conv_weights, Mapping)
-        assert isinstance(final_snake_weights, Mapping)
-        assert isinstance(final_conv_weights, Mapping)
-
-        new_blocks = []
-        for block, w in zip(self.decoder_blocks, block_weights, strict=True):
-            assert isinstance(w, Mapping)
-            new_blocks.append(block.import_weights(w))
-
-        return replace(
-            self,
-            first_conv=self.first_conv.import_weights(require_tree(first_conv_weights)),
-            decoder_blocks=tuple(new_blocks),
-            final_snake=self.final_snake.import_weights(require_tree(final_snake_weights)),
-            final_conv=self.final_conv.import_weights(require_tree(final_conv_weights)),
-        )

@@ -1,13 +1,11 @@
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
+from lalamo.common import ParameterTree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
@@ -240,36 +238,3 @@ class Transformer(LalamoModule[TransformerConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            layers=[layer.export_weights() for layer in self.layers],
-            output_norm=self.output_norm.export_weights(),
-        )
-        if self.global_rope:
-            result["global_rope"] = self.global_rope.export_weights()
-        if self.local_rope:
-            result["local_rope"] = self.local_rope.export_weights()
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        assert isinstance(weights["layers"], Sequence)
-        if self.global_rope:
-            global_rope = self.global_rope.import_weights(require_tree(weights["global_rope"]))
-        else:
-            global_rope = None
-        if self.local_rope:
-            local_rope = self.local_rope.import_weights(require_tree(weights["local_rope"]))
-        else:
-            local_rope = None
-        layers = [
-            layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
-        ]
-        return replace(
-            self,
-            global_rope=global_rope,
-            layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
-            local_rope=local_rope,
-        )

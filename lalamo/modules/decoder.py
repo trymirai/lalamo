@@ -1,12 +1,11 @@
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
+from lalamo.common import ParameterTree
 
 from .common import (
     ForwardPassMode,
@@ -192,17 +191,3 @@ class Decoder(LalamoModule[DecoderConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         return self.transformer.init_static_state(batch_size, capacity)
-
-    def export_weights(self) -> ParameterTree:
-        return dict(
-            embedding=self.embedding.export_weights(),
-            transformer=self.transformer.export_weights(),
-        )
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
-            transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
-        )

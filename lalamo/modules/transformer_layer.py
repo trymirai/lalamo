@@ -1,6 +1,5 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from functools import partial
-from typing import Self
 
 import equinox as eqx
 import jax
@@ -8,7 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
+from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
@@ -281,47 +280,4 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return jax.tree.map(
             lambda array: jnp.repeat(array[None, ...], batch_size, axis=0),
             self.mixer.init_static_state(capacity),
-        )
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            mixer=self.mixer.export_weights(),
-            mlp=self.mlp.export_weights(),
-        )
-        if self.pre_mixer_norm is not None:
-            result["pre_mixer_norm"] = self.pre_mixer_norm.export_weights()
-        if self.post_mixer_norm is not None:
-            result["post_mixer_norm"] = self.post_mixer_norm.export_weights()
-        if self.post_mlp_norm is not None:
-            result["post_mlp_norm"] = self.post_mlp_norm.export_weights()
-        if self.pre_mlp_norm is not None:
-            result["pre_mlp_norm"] = self.pre_mlp_norm.export_weights()
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        if self.post_mixer_norm is not None:
-            post_mixer_norm = self.post_mixer_norm.import_weights(require_tree(weights["post_mixer_norm"]))
-        else:
-            post_mixer_norm = None
-        if self.post_mlp_norm is not None:
-            post_mlp_norm = self.post_mlp_norm.import_weights(require_tree(weights["post_mlp_norm"]))
-        else:
-            post_mlp_norm = None
-        if self.pre_mixer_norm is not None:
-            pre_mixer_norm = self.pre_mixer_norm.import_weights(require_tree(weights["pre_mixer_norm"]))
-        else:
-            pre_mixer_norm = None
-        if self.pre_mlp_norm is not None:
-            pre_mlp_norm = self.pre_mlp_norm.import_weights(require_tree(weights["pre_mlp_norm"]))
-        else:
-            pre_mlp_norm = None
-        return replace(
-            self,
-            pre_mixer_norm=pre_mixer_norm,
-            mixer=self.mixer.import_weights(require_tree(weights["mixer"])),
-            post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=pre_mlp_norm,
-            mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
-            post_mlp_norm=post_mlp_norm,
         )

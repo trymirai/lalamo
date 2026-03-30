@@ -12,7 +12,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
+from lalamo.common import DTypeLike
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
@@ -85,8 +85,7 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         config = config_converter.structure(config_json["model_config"], cls)
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.model_config.empty().import_weights(weights)  # type: ignore
+            model = config.model_config.empty().from_uzu(weights_dict)  # type: ignore
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return config.init(model, message_processor)
@@ -100,16 +99,13 @@ class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     def activation_precision(self) -> DTypeLike:
         return self.model.activation_precision
 
-    def export_weights(self) -> ParameterTree:
-        return self.model.export_weights()  # type: ignore
+    def to_uzu(self) -> dict[str, Array]:
+        return self.model.to_uzu()
 
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
+    def from_uzu(self, weights: dict[str, Array], prefix: str = "") -> Self:
         return replace(
             self,
-            model=self.model.import_weights(weights),  # type: ignore
+            model=self.model.from_uzu(weights, prefix=prefix),
         )
 
     def record_trace(self, messages: Iterable[Message] | None = None) -> ClassifierResult | DecoderResult:

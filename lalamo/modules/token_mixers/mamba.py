@@ -1,5 +1,4 @@
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -8,7 +7,7 @@ from einops import einsum, rearrange
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
+from lalamo.common import dummy_array
 from lalamo.modules.activations import Activation
 from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
@@ -612,24 +611,4 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             self.config.conv_dim,
             (self.num_heads, self.head_dim, self.state_dim),
             self.activation_precision,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "in_projection": self.in_projection.export_weights(),
-            "out_projection": self.out_projection.export_weights(),
-            "conv": self.conv.export_weights(),
-            "skip_connection_weight": self.skip_connection_weight,
-            "gate_bias": self.gate_bias,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            in_projection=self.in_projection.import_weights(require_tree(weights["in_projection"])),
-            out_projection=self.out_projection.import_weights(require_tree(weights["out_projection"])),
-            conv=self.conv.import_weights(require_tree(weights["conv"])),
-            skip_connection_weight=require_array(weights["skip_connection_weight"]),
-            gate_bias=require_array(weights["gate_bias"]),
         )

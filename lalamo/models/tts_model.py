@@ -36,8 +36,6 @@ from lalamo.modules.audio.text_to_speech import (
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
 
-from .common import ParameterTree, unflatten_parameters
-
 __all__ = ["TTSGenerationResult", "TTSGenerator", "TTSGeneratorConfig"]
 
 
@@ -63,12 +61,16 @@ class TTSGenerator(eqx.Module):
     def activation_precision(self) -> DTypeLike:
         return self.tts_model.text_decoder.activation_precision
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "text_decoder": self.tts_model.text_decoder.export_weights(),
-            "audio_decoder": self.tts_model.audio_decoder.export_weights(),
-            "vocoder": self.tts_model.vocoder.export_weights(),
-        }
+    def to_uzu(self) -> dict[str, Array]:
+        result: dict[str, Array] = {}
+        for prefix, sub in [
+            ("text_decoder", self.tts_model.text_decoder),
+            ("audio_decoder", self.tts_model.audio_decoder),
+            ("vocoder", self.tts_model.vocoder),
+        ]:
+            for key, array in sub.to_uzu().items():
+                result[f"{prefix}.{key}"] = array
+        return result
 
     def tokenize_text(self, messages: Iterable[TTSMessage]) -> Int[Array, " batch tokens"]:
         text_tokens = self.message_processor.tokenize_request(messages)
@@ -138,8 +140,7 @@ class TTSGenerator(eqx.Module):
         assert isinstance(config, TTSGeneratorConfig)
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.tts_config.empty().import_weights(weights)
+            model = config.tts_config.empty().from_uzu(weights_dict)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
         return TTSGenerator(

@@ -223,7 +223,7 @@ def convert(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-    weights = flatten_parameters(model.export_weights())
+    weights = model.to_uzu()
     del model
 
     with Path(output_dir / "model.safetensors").open("wb") as fd:

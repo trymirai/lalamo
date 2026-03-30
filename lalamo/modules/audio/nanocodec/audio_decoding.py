@@ -1,11 +1,8 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import jax
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
 
 from .nanocodec_modules import (
@@ -115,27 +112,6 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
         audio = self.decoder(z)
 
         return audio
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizer": self.quantizer.export_weights(),
-            "decoder": self.decoder.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-
-        quantizer_weights = weights["quantizer"]
-        decoder_weights = weights["decoder"]
-
-        assert isinstance(quantizer_weights, Mapping)
-        assert isinstance(decoder_weights, Mapping)
-
-        return replace(
-            self,
-            quantizer=self.quantizer.import_weights(require_tree(quantizer_weights)),
-            decoder=self.decoder.import_weights(require_tree(decoder_weights)),
-        )
 
     def audio_from_codes(self, indices: Array) -> Array:
         """Convenience method to decode a single sequence of codes to audio.

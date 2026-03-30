@@ -1,8 +1,7 @@
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -10,9 +9,9 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
+from lalamo.common import dummy_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.utils import jax_uint4_to_packed_uint8
 
 from .common import (
     LalamoModule,
@@ -271,24 +270,6 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(weights=self.weights)
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        weights = require_mapping(weights)
-        result = replace(
-            self,
-            weights=weights["weights"],
-            biases=weights["biases"] if self.has_biases else None,
-        )
-        return result
 
 
 @dataclass(frozen=True)
@@ -580,32 +561,6 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         )
         return result
 
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            weights=self.int_weights,
-            zero_points=self.int_zero_points,
-            scales=self.scales,
-        )
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        unpacked_weights = require_array(weights["weights"])
-        unpacked_zero_points = require_array(weights["zero_points"])
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-            unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
-        result = replace(
-            self,
-            weights=unpacked_weights.astype(self.weights.dtype),
-            scales=require_array(weights["scales"]),
-            zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
-            biases=require_array(weights["biases"]) if self.has_biases else None,
-        )
-        return result
-
 
 class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
     pass
@@ -855,30 +810,6 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         )
         return result
 
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            weights=self.int_weights,
-            scales=self.scales,
-            deq_biases=self.deq_biases,
-        )
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        unpacked_weights = require_array(weights["weights"])
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
-            unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-        result = replace(
-            self,
-            weights=unpacked_weights.astype(self.weights.dtype),
-            scales=require_array(weights["scales"]),
-            deq_biases=require_array(weights["deq_biases"]),
-            biases=require_array(weights["biases"]) if self.has_biases else None,
-        )
-        return result
-
 
 class MLXQuantizedLinear(MLXQuantizedLinearBase[MLXQuantizedLinearConfig]):
     pass
@@ -1118,28 +1049,6 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
             results.append(result)
 
         return tuple(results)
-
-    def export_weights(self) -> ParameterTree:
-        quantized_linear_weights: dict[str, ParameterTree] = super().export_weights()  # type: ignore
-        return dict(
-            down_weights=self.lora_down_weights,
-            up_weights=self.lora_up_weights,
-            **quantized_linear_weights,
-        )
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> "QLoRALinear":
-        base = super().import_weights(weights)
-        weights = require_mapping(weights)
-        assert isinstance(weights["up_weights"], Sequence)
-        result = replace(
-            base,
-            lora_down_weights=weights["down_weights"],
-            lora_up_weights=tuple(up_weights for up_weights in weights["up_weights"]),
-        )
-        return result
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig

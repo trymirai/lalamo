@@ -1,7 +1,6 @@
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
 
 import torch
 from fish_speech.models.dac.modded_dac import DAC
@@ -21,7 +20,6 @@ from omegaconf import DictConfig
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 
-from lalamo.common import ParameterTree
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
@@ -374,15 +372,6 @@ class FishAudioAudioDecoder_Foreign(TTSAudioDecoder[FishAudioAudioDecoderConfig_
         assert isinstance(semantic_quantizer, ResidualVectorQuantize)
         return torch_to_jax(semantic_quantizer.quantizers[0].codebook.weight.dtype)
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],  # noqa: ARG002
-    ) -> Self:
-        return self
-
     def __call__(self, rvq_codes: Int[Array, " codes tokens"]) -> Array:
         device = self.dac_model.device
         indices = jax_to_torch(rvq_codes).to(device).long()
@@ -471,15 +460,6 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
     @property
     def activation_precision(self) -> DTypeLike:
         return torch_to_jax(self.fish_model.embeddings.weight.dtype)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],  # noqa: ARG002
-    ) -> Self:
-        return self
 
     def __call__(
         self,

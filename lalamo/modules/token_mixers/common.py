@@ -1,10 +1,10 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
+from lalamo.modules.common import LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
@@ -67,12 +67,3 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
 
     @abstractmethod
     def init_static_state(self, capacity: int) -> StateLayerT: ...
-
-    @abstractmethod
-    def export_weights(self) -> ParameterTree: ...
-
-    @abstractmethod
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self: ...

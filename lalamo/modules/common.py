@@ -32,6 +32,7 @@ __all__ = [
     "require_array",
     "require_tree",
     "sharded_field",
+    "stringify_path",
 ]
 
 
@@ -49,6 +50,21 @@ class ForwardPassMode(Enum):
 ConfigT_co = TypeVar("ConfigT_co", covariant=True)
 
 
+def stringify_path(path: tuple[Any, ...]) -> str:
+    parts: list[str] = []
+    for key in path:
+        match key:
+            case jax.tree_util.GetAttrKey(name):
+                parts.append(name)
+            case jax.tree_util.SequenceKey(idx):
+                parts.append(str(idx))
+            case jax.tree_util.DictKey(key=k):
+                parts.append(str(k))
+            case _:
+                parts.append(str(key))
+    return ".".join(parts)
+
+
 class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = eqx.field(static=True)
 
@@ -56,14 +72,35 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
 
-    @abstractmethod
-    def export_weights(self) -> ParameterTree[Array]: ...
+    def to_uzu(self) -> dict[str, Array]:
+        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(
+            self,
+            is_leaf=lambda x: isinstance(x, LalamoModule) and x is not self,
+        )
+        result: dict[str, Array] = {}
+        for path, leaf in flat_with_path:
+            key = stringify_path(path)
+            if isinstance(leaf, LalamoModule):
+                for sub_key, array in leaf.to_uzu().items():
+                    result[f"{key}.{sub_key}"] = array
+            else:
+                result[key] = leaf
+        return result
 
-    @abstractmethod
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self: ...
+    def from_uzu(self, weights: dict[str, Array], prefix: str = "") -> Self:
+        def restore(path: tuple[object, ...], leaf: object) -> object:
+            key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
+            if isinstance(leaf, LalamoModule):
+                return leaf.from_uzu(weights, prefix=key)
+            if key in weights:
+                return weights[key]
+            return leaf
+
+        return jax.tree_util.tree_map_with_path(
+            restore,
+            self,
+            is_leaf=lambda x: isinstance(x, LalamoModule) and x is not self,
+        )
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:
