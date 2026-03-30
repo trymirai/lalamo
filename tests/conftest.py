@@ -79,21 +79,23 @@ RunLalamo = Callable[..., str]
 
 
 class ConvertModel:
-    def __init__(self, registry: ModelRegistry, cache: dict[str, Path]) -> None:
+    def __init__(self, registry: ModelRegistry) -> None:
         self._registry = registry
-        self._cache = cache
+        self._cache: dict[str, Path] = {}
         self._local_dirs: list[Path] = []
+
+    def _convert(self, repo: str) -> Path:
+        output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
+        convert(self._registry.repo_to_model[repo], output_dir)
+        return output_dir
 
     def __call__(self, repo: str, *, cached: bool = False) -> Path:
         if cached:
             if repo not in self._cache:
-                output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
-                convert(self._registry.repo_to_model[repo], output_dir)
-                self._cache[repo] = output_dir
+                self._cache[repo] = self._convert(repo)
             return self._cache[repo]
 
-        output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
-        convert(self._registry.repo_to_model[repo], output_dir)
+        output_dir = self._convert(repo)
         self._local_dirs.append(output_dir.parent)
         return output_dir
 
@@ -101,6 +103,12 @@ class ConvertModel:
         for local_dir in self._local_dirs:
             shutil.rmtree(local_dir, ignore_errors=True)
         self._local_dirs.clear()
+
+    def cleanup_all(self) -> None:
+        self.cleanup_local()
+        for output_dir in self._cache.values():
+            shutil.rmtree(output_dir.parent, ignore_errors=True)
+        self._cache.clear()
 
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
@@ -132,18 +140,13 @@ def model_registry() -> ModelRegistry:
 
 
 @pytest.fixture(scope="session")
-def _convert_model_cache() -> Generator[dict[str, Path], None, None]:
-    cache: dict[str, Path] = {}
-    yield cache
-    for output_dir in cache.values():
-        shutil.rmtree(output_dir.parent, ignore_errors=True)
+def _convert_model_session(model_registry: ModelRegistry) -> Generator[ConvertModel, None, None]:
+    converter = ConvertModel(model_registry)
+    yield converter
+    converter.cleanup_all()
 
 
 @pytest.fixture
-def convert_model(
-    model_registry: ModelRegistry,
-    _convert_model_cache: dict[str, Path],
-) -> Generator[ConvertModel, None, None]:
-    converter = ConvertModel(model_registry, _convert_model_cache)
-    yield converter
-    converter.cleanup_local()
+def convert_model(_convert_model_session: ConvertModel) -> Generator[ConvertModel, None, None]:
+    yield _convert_model_session
+    _convert_model_session.cleanup_local()
