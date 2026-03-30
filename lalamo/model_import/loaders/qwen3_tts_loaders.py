@@ -284,59 +284,57 @@ def _load_qwen3_tts_transformer(
 def load_qwen3_tts_text_decoder(
     module: Qwen3TTSTextDecoder,
     weights_dict: Mapping[str, Array],
-    path: ParameterPath | None = None,
+    path: ParameterPath,
 ) -> Qwen3TTSTextDecoder:
-    base_path = ParameterPath() if path is None else path
-
     codec_embedding = load_parameters(
         lambda m: (m.weights,),
         module.codec_embedding,
-        (weights_dict[base_path / "talker" / "model" / "codec_embedding" / "weight"],),
+        (weights_dict[path / "talker" / "model" / "codec_embedding" / "weight"],),
     )
     text_embedding = load_parameters(
         lambda m: (m.weights,),
         module.text_embedding,
-        (weights_dict[base_path / "talker" / "model" / "text_embedding" / "weight"],),
+        (weights_dict[path / "talker" / "model" / "text_embedding" / "weight"],),
     )
 
     text_projection_fc1 = load_parameters(
         lambda m: (m.weights, m.biases),
         module.text_projection_fc1,
         (
-            weights_dict[base_path / "talker" / "text_projection" / "linear_fc1" / "weight"],
-            weights_dict[base_path / "talker" / "text_projection" / "linear_fc1" / "bias"],
+            weights_dict[path / "talker" / "text_projection" / "linear_fc1" / "weight"],
+            weights_dict[path / "talker" / "text_projection" / "linear_fc1" / "bias"],
         ),
     )
     text_projection_fc2 = load_parameters(
         lambda m: (m.weights, m.biases),
         module.text_projection_fc2,
         (
-            weights_dict[base_path / "talker" / "text_projection" / "linear_fc2" / "weight"],
-            weights_dict[base_path / "talker" / "text_projection" / "linear_fc2" / "bias"],
+            weights_dict[path / "talker" / "text_projection" / "linear_fc2" / "weight"],
+            weights_dict[path / "talker" / "text_projection" / "linear_fc2" / "bias"],
         ),
     )
 
     talker_transformer = _load_qwen3_tts_transformer(
         module.talker_transformer,
         weights_dict,
-        base_path / "talker" / "model",
+        path / "talker" / "model",
     )
     codec_head = load_parameters(
         lambda m: (m.weights, m.biases),
         module.codec_head,
-        (weights_dict[base_path / "talker" / "codec_head" / "weight"], None),
+        (weights_dict[path / "talker" / "codec_head" / "weight"], None),
     )
 
     predictor_transformer = _load_qwen3_tts_transformer(
         module.predictor_transformer,
         weights_dict,
-        base_path / "talker" / "code_predictor" / "model",
+        path / "talker" / "code_predictor" / "model",
     )
     predictor_embeddings = tuple(
         load_parameters(
             lambda m: (m.weights,),
             embedding,
-            (weights_dict[base_path / "talker" / "code_predictor" / "model" / "codec_embedding" / idx / "weight"],),
+            (weights_dict[path / "talker" / "code_predictor" / "model" / "codec_embedding" / idx / "weight"],),
         )
         for idx, embedding in enumerate(module.predictor_embeddings)
     )
@@ -345,7 +343,7 @@ def load_qwen3_tts_text_decoder(
             lambda m: (m.weights, m.biases),
             head,
             (
-                weights_dict[base_path / "talker" / "code_predictor" / "lm_head" / idx / "weight"],
+                weights_dict[path / "talker" / "code_predictor" / "lm_head" / idx / "weight"],
                 None,
             ),
         )
@@ -355,7 +353,7 @@ def load_qwen3_tts_text_decoder(
     if module.talker_to_predictor_projection is None:
         talker_to_predictor_projection = None
     else:
-        projection_path = base_path / "talker" / "code_predictor" / "small_to_mtp_projection"
+        projection_path = path / "talker" / "code_predictor" / "small_to_mtp_projection"
         if projection_path / "weight" in weights_dict:
             talker_to_predictor_projection = load_parameters(
                 lambda m: (m.weights, m.biases),
@@ -400,27 +398,25 @@ def load_qwen3_tts_text_decoder(
 def load_qwen3_tts_audio_decoder(
     module: Qwen3TTSAudioDecoder,
     weights_dict: Mapping[str, Array],
-    path: ParameterPath | None = None,
+    path: ParameterPath,
 ) -> Qwen3TTSAudioDecoder:
-    base_path = ParameterPath() if path is None else path
-
-    quantizer = load_qwen3_tts_residual_vector_quantizer(module.quantizer, weights_dict, base_path / "quantizer")
-    pre_conv = load_causal_conv1d(module.pre_conv, weights_dict, base_path / "pre_conv" / "conv")
+    quantizer = load_qwen3_tts_residual_vector_quantizer(module.quantizer, weights_dict, path / "quantizer")
+    pre_conv = load_causal_conv1d(module.pre_conv, weights_dict, path / "pre_conv" / "conv")
     pre_transformer = load_qwen3_tts_pre_transformer(
         module.pre_transformer,
         weights_dict,
-        base_path / "pre_transformer",
+        path / "pre_transformer",
     )
 
     upsample_blocks = tuple(
-        load_upsampling_block(upsample_block, weights_dict, base_path / "upsample" / idx)
+        load_upsampling_block(upsample_block, weights_dict, path / "upsample" / idx)
         for idx, upsample_block in enumerate(module.upsample_blocks)
     )
 
     dac_decoder = load_dac_decoder(
         module.dac_decoder,
         weights_dict,
-        base_path / "decoder",
+        path / "decoder",
         load_activation=load_qwen3_tts_snake_beta,
         load_residual=load_qwen3_tts_residual_unit,
     )

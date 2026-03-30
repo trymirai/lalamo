@@ -107,7 +107,7 @@ class Qwen3TTSTalkerCodePredictorConfig:
     rope_theta: float
     sliding_window: int | None
     vocab_size: int
-    layer_types: tuple[str, ...] | None = None
+    layer_types: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -139,7 +139,7 @@ class Qwen3TTSTalkerConfig:
     code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
     spk_id: dict[str, int]
     codec_language_id: dict[str, int]
-    layer_types: tuple[str, ...] | None = None
+    layer_types: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -164,31 +164,30 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
-        assert context_length is not None, "context_length is required for Qwen3-TTS"
+        effective_context_length = context_length or self.talker_config.max_position_embeddings
 
-        dc = self.decoder_config
-        assert dc.hidden_act == "silu", (
-            f"Only `hidden_act=silu` is supported for Qwen3-TTS decoder, got {dc.hidden_act!r}."
+        assert self.decoder_config.hidden_act == "silu", (
+            f"Only `hidden_act=silu` is supported for Qwen3-TTS decoder, got {self.decoder_config.hidden_act!r}."
         )
-        assert self.encoder_valid_num_quantizers == dc.num_quantizers, (
+        assert self.encoder_valid_num_quantizers == self.decoder_config.num_quantizers, (
             f"Mismatch between top-level and decoder quantizer counts:"
             f" encoder_valid_num_quantizers={self.encoder_valid_num_quantizers},"
-            f" decoder.num_quantizers={dc.num_quantizers}."
+            f" decoder.num_quantizers={self.decoder_config.num_quantizers}."
         )
-        upsample_rate = math.prod((*dc.upsample_rates, *dc.upsampling_ratios))
+        upsample_rate = math.prod((*self.decoder_config.upsample_rates, *self.decoder_config.upsampling_ratios))
         assert self.decode_upsample_rate == upsample_rate, (
             f"decode_upsample_rate does not match decoder upsampling factors:"
             f" decode_upsample_rate={self.decode_upsample_rate},"
             f" product(upsample_rates, upsampling_ratios)={upsample_rate}."
         )
 
-        audio_decoder_config = _build_audio_decoder_config(activation_precision, dc, self)
+        audio_decoder_config = _build_audio_decoder_config(activation_precision, self.decoder_config, self)
         text_decoder_config = _build_text_decoder_config(
             activation_precision,
             self.talker_config,
             self,
-            dc,
-            context_length,
+            self.decoder_config,
+            effective_context_length,
         )
 
         return TTSConfig(
@@ -221,18 +220,6 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     @property
     def default_precision(self) -> DTypeLike:
         return jnp.dtype(self.encoder_config.dtype)
-
-
-def _build_sliding_window_sizes(
-    *,
-    num_hidden_layers: int,
-    sliding_window: int | None,
-    layer_types: tuple[str, ...],
-) -> tuple[int | None, ...]:
-    assert len(layer_types) == num_hidden_layers, (
-        f"layer_types length {len(layer_types)} does not match num_hidden_layers={num_hidden_layers}"
-    )
-    return tuple(sliding_window if lt == "sliding_attention" else None for lt in layer_types)
 
 
 def _build_audio_decoder_config(
@@ -377,20 +364,8 @@ def _build_text_decoder_config(
         raise ValueError(f"Only talker hidden_act=silu is supported, got {talker.hidden_act!r}.")
     if predictor.hidden_act != "silu":
         raise ValueError(f"Only predictor hidden_act=silu is supported, got {predictor.hidden_act!r}.")
-    if talker.attention_dropout != 0.0:
-        raise ValueError(
-            f"Talker attention dropout is not implemented; expected 0.0, got {talker.attention_dropout}.",
-        )
-    if predictor.attention_dropout != 0.0:
-        raise ValueError(
-            f"Predictor attention dropout is not implemented; expected 0.0, got {predictor.attention_dropout}.",
-        )
-
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-
-    assert talker.layer_types is not None, "talker.layer_types is required for Qwen3-TTS"
-    assert predictor.layer_types is not None, "predictor.layer_types is required for Qwen3-TTS"
 
     talker_transformer_config = build_transformer_config(
         precision=precision,
@@ -404,10 +379,8 @@ def _build_text_decoder_config(
         rope_theta=talker.rope_theta,
         rms_norm_eps=talker.rms_norm_eps,
         attention_bias=talker.attention_bias,
-        sliding_window_sizes=_build_sliding_window_sizes(
-            num_hidden_layers=talker.num_hidden_layers,
-            sliding_window=talker.sliding_window,
-            layer_types=talker.layer_types,
+        sliding_window_sizes=tuple(
+            talker.sliding_window if lt == "sliding_attention" else None for lt in talker.layer_types
         ),
     )
     predictor_transformer_config = build_transformer_config(
@@ -422,10 +395,8 @@ def _build_text_decoder_config(
         rope_theta=predictor.rope_theta,
         rms_norm_eps=predictor.rms_norm_eps,
         attention_bias=predictor.attention_bias,
-        sliding_window_sizes=_build_sliding_window_sizes(
-            num_hidden_layers=predictor.num_hidden_layers,
-            sliding_window=predictor.sliding_window,
-            layer_types=predictor.layer_types,
+        sliding_window_sizes=tuple(
+            predictor.sliding_window if lt == "sliding_attention" else None for lt in predictor.layer_types
         ),
     )
 

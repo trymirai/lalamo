@@ -10,7 +10,7 @@ from lalamo.model_import.model_configs import ForeignConfig
 from lalamo.models.language_model import GenerationConfig
 from lalamo.quantization import QuantizationMode
 
-from .origins import FileSpec, Origin
+from .origins import FileSpec, HuggingFaceOrigin, Origin
 
 __all__ = [
     "ConfigMap",
@@ -178,8 +178,6 @@ def awq_model_spec(
 
 
 def build_quantized_models(model_specs: list[ModelSpec]) -> list[ModelSpec]:
-    from .origins import HuggingFaceOrigin
-
     quantization_compatible_repos: list[str] = [
         "Qwen/Qwen2.5-3B-Instruct",
         "Qwen/Qwen2.5-7B-Instruct",
