@@ -4,16 +4,13 @@ Generates random integer codes instead of real text-to-semantic decoding.
 This is a placeholder until a real text decoder is implemented for NanoCodec.
 """
 
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.sampling import SamplingPolicy
 
@@ -59,15 +56,4 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
             minval=0,
             maxval=self.config.codebook_size,
             dtype=jnp.int32,
-        )
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {"seed": jnp.array(self.seed)}
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["seed"], Array)
-        return replace(
-            self,
-            seed=weights["seed"],
         )

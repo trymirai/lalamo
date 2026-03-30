@@ -1,13 +1,12 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from enum import Enum
-from typing import Self
 
 import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree, dummy_array, require_mapping
+from lalamo.common import dummy_array
 
 from .common import LalamoModule
 
@@ -97,22 +96,3 @@ class Normalization(LalamoModule[NormalizationConfig]):
             assert self.biases is not None
             result += self.biases
         return result.astype(inputs.dtype)
-
-    def export_weights(self) -> ParameterTree:
-        result = {"scales": self.scales}
-        if self.config.use_bias:
-            assert self.biases is not None
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        weights = require_mapping(weights)
-        if self.config.use_bias:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(self, scales=weights["scales"], biases=biases)

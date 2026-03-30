@@ -297,7 +297,7 @@ def test_causal_conv1d_matches_pytorch() -> None:
         "weights": torch_to_jax(torch_weights),
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
 
     # Create test input: PyTorch uses (batch, channels, sequence)
     torch.manual_seed(42)
@@ -363,7 +363,7 @@ def test_causal_conv1d_with_dilation() -> None:
         "weights": torch_to_jax(torch_weights),
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
 
     torch.manual_seed(123)
     test_input_torch = torch.randn(batch_size, in_channels, seq_length)
@@ -418,7 +418,7 @@ def test_causal_conv1d_grouped() -> None:
         "weights": torch_to_jax(torch_weights),
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
 
     torch.manual_seed(456)
     test_input_torch = torch.randn(batch_size, channels, seq_length)
@@ -482,7 +482,7 @@ def test_causal_transpose_conv1d_matches_pytorch() -> None:
         "weights": jax_weights,
         "biases": torch_to_jax(torch_biases),
     }
-    lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+    lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
 
     # Create test input: PyTorch uses (batch, channels, sequence)
     torch.manual_seed(42)
@@ -549,7 +549,7 @@ def test_causal_transpose_conv1d_various_strides() -> None:
             "weights": jax_weights,
             "biases": torch_to_jax(torch_biases),
         }
-        lalamo_conv = lalamo_conv.import_weights(lalamo_weights)
+        lalamo_conv = lalamo_conv.from_uzu(lalamo_weights)
 
         torch.manual_seed(42)
         test_input_torch = torch.randn(batch_size, in_channels, seq_length)
@@ -597,7 +597,7 @@ def test_causal_conv_transpose_roundtrip() -> None:
     lalamo_trans = trans_config.empty(channels, channels, kernel_size, stride=stride)
 
     # Load weights
-    lalamo_conv = lalamo_conv.import_weights(
+    lalamo_conv = lalamo_conv.from_uzu(
         {
             "weights": torch_to_jax(torch_conv.conv.weight.detach()),
             "biases": torch_to_jax(torch_conv.conv.bias.detach()),
@@ -609,7 +609,7 @@ def test_causal_conv_transpose_roundtrip() -> None:
         out_channels=channels,
         groups=1,
     )
-    lalamo_trans = lalamo_trans.import_weights(
+    lalamo_trans = lalamo_trans.from_uzu(
         {
             "weights": jax_trans_weights,
             "biases": torch_to_jax(torch_trans.conv.bias.detach()),

@@ -1,5 +1,4 @@
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -8,9 +7,9 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import dummy_array, require_mapping
-from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
-from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.common import dummy_array
+from lalamo.modules.common import PositionalEmbeddingSelector
+from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import apply_soft_capping
@@ -468,36 +467,4 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             self.num_groups,
             self.head_dim,
             self.activation_precision,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = {
-            "qkv_projection": self.qkv_projection.export_weights(),
-            "out_projection": self.out_projection.export_weights(),
-        }
-        if self.gate_projection is not None:
-            result["gate_projection"] = self.gate_projection.export_weights()
-        if self.query_norm is not None:
-            result["query_norm"] = self.query_norm.export_weights()
-        if self.key_norm is not None:
-            result["key_norm"] = self.key_norm.export_weights()
-        if self.sinks is not None:
-            assert isinstance(self.sinks, Array)
-            result["sinks"] = self.sinks
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            qkv_projection=self.qkv_projection.import_weights(require_tree(weights["qkv_projection"])),
-            gate_projection=self.gate_projection.import_weights(require_tree(weights["gate_projection"]))
-            if self.gate_projection
-            else None,
-            out_projection=self.out_projection.import_weights(require_tree(weights["out_projection"])),
-            query_norm=self.query_norm.import_weights(require_tree(weights["query_norm"]))
-            if self.query_norm
-            else None,
-            key_norm=self.key_norm.import_weights(require_tree(weights["key_norm"])) if self.key_norm else None,
-            sinks=require_array(weights["sinks"]) if self.sinks is not None else None,
         )

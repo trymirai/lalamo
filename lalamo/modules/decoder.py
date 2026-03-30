@@ -1,5 +1,4 @@
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -8,7 +7,7 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
+from lalamo.common import ParameterTree
 
 from .common import (
     ForwardPassMode,
@@ -297,25 +296,3 @@ class Decoder(LalamoModule[DecoderConfig]):
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
         return self.transformer.init_static_state(batch_size, capacity)
-
-    def export_weights(self) -> ParameterTree:
-        result = dict(
-            embedding=self.embedding.export_weights(),
-            transformer=self.transformer.export_weights(),
-        )
-        if self.per_layer_embedding is not None:
-            result["per_layer_embedding"] = self.per_layer_embedding.export_weights()
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        if self.per_layer_embedding is not None:
-            per_layer_embedding = self.per_layer_embedding.import_weights(require_tree(weights["per_layer_embedding"]))
-        else:
-            per_layer_embedding = None
-        return replace(
-            self,
-            embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
-            transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
-            per_layer_embedding=per_layer_embedding,
-        )

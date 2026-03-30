@@ -1,13 +1,12 @@
-from collections.abc import Sequence
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
+from lalamo.common import ParameterTree
+from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
 from .common import ForwardPassMode, LalamoModule
@@ -220,22 +219,4 @@ class Transformer(LalamoModule[TransformerConfig]):
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return State(self.layers[i].init_static_state(batch_size, capacity) for i in self.source_layer_indices)
-
-    def export_weights(self) -> ParameterTree:
-        return dict(
-            layers=[layer.export_weights() for layer in self.layers],
-            output_norm=self.output_norm.export_weights(),
-        )
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        assert isinstance(weights["layers"], Sequence)
-        layers = [
-            layer.import_weights(require_tree(lw)) for layer, lw in zip(self.layers, weights["layers"], strict=True)
-        ]
-        return replace(
-            self,
-            layers=tuple(layers),
-            output_norm=self.output_norm.import_weights(require_tree(weights["output_norm"])),
-        )
+        return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)

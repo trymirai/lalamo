@@ -1,5 +1,4 @@
-from dataclasses import dataclass, replace
-from typing import NamedTuple, Self
+from dataclasses import dataclass
 
 import einops
 import equinox as eqx
@@ -8,7 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
+from lalamo.common import dummy_array
 from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
@@ -529,26 +528,4 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             self.conv_dim,
             (self.num_heads, self.value_head_dim, self.head_dim),
             self.activation_precision,
-        )
-
-    def export_weights(self) -> ParameterTree:
-        return {
-            "in_proj": self.in_proj.export_weights(),
-            "conv": self.conv.export_weights(),
-            "out_proj": self.out_proj.export_weights(),
-            "norm": self.norm.export_weights(),
-            "dt_bias": self.dt_bias,
-            "a_log": self.a_log,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = require_mapping(weights)
-        return replace(
-            self,
-            in_proj=self.in_proj.import_weights(require_tree(weights["in_proj"])),
-            conv=self.conv.import_weights(require_tree(weights["conv"])),
-            out_proj=self.out_proj.import_weights(require_tree(weights["out_proj"])),
-            norm=self.norm.import_weights(require_tree(weights["norm"])),
-            dt_bias=require_array(weights["dt_bias"]),
-            a_log=require_array(weights["a_log"]),
         )

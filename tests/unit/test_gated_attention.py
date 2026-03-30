@@ -25,6 +25,6 @@ def test_gated_attention_export_import_roundtrip() -> None:
     model_dim = 16
     attn = config.random_init(model_dim=model_dim, key=jax.random.key(0))
     target = config.random_init(model_dim=model_dim, key=jax.random.key(1))
-    imported = target.import_weights(attn.export_weights())
+    imported = target.from_uzu(attn.to_uzu())
     assert imported.gate_projection is not None
     assert jnp.array_equal(attn.gate_projection.weights.value, imported.gate_projection.weights.value)

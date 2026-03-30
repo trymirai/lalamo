@@ -1,7 +1,5 @@
 import math
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
@@ -9,7 +7,7 @@ import jax.numpy as jnp
 from jax import lax
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array
+from lalamo.common import dummy_array
 from lalamo.modules.common import LalamoModule
 
 
@@ -157,26 +155,6 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
 
         return output
 
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=weights["weights"],
-            biases=biases,
-        )
-
 
 @dataclass(frozen=True)
 class CausalTransposeConv1dConfig:
@@ -317,26 +295,6 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
 
         return output
 
-    def export_weights(self) -> ParameterTree[Array]:
-        result: dict[str, Array] = {"weights": self.weights}
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["weights"], Array)
-        if self.biases is not None:
-            assert isinstance(weights["biases"], Array)
-            biases = weights["biases"]
-        else:
-            biases = None
-        return replace(
-            self,
-            weights=weights["weights"],
-            biases=biases,
-        )
-
 
 @dataclass(frozen=True)
 class Snake1dConfig:
@@ -374,11 +332,3 @@ class Snake1d(LalamoModule[Snake1dConfig]):
         alpha = self.alpha[None, None, :]
         # Snake activation: x + (1/alpha) * sin^2(alpha * x)
         return x + jnp.reciprocal(alpha + 1e-9) * jnp.square(jnp.sin(alpha * x))
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {"alpha": self.alpha}
-
-    def import_weights(self, weights: ParameterTree[Array]) -> "Snake1d":
-        assert isinstance(weights, Mapping)
-        assert isinstance(weights["alpha"], Array)
-        return replace(self, alpha=weights["alpha"])

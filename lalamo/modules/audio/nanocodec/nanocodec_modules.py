@@ -4,16 +4,13 @@ Reference: https://github.com/NVIDIA-NeMo/NeMo/blob/v2.3.0/nemo/collections/tts/
 Reference: Mentzer et al., Finite Scalar Quantization: VQ-VAE Made Simple (https://arxiv.org/abs/2309.15505v1)
 """
 
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_array, require_tree
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
@@ -212,20 +209,6 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         """
         return jax.vmap(self.decode, in_axes=0)(inputs)
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "num_levels_buffer": self.num_levels_buffer,
-            "dim_base_index": self.dim_base_index,
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(
-            self,
-            num_levels_buffer=require_array(weights["num_levels_buffer"]),
-            dim_base_index=require_array(weights["dim_base_index"]),
-        )
-
 
 @dataclass(frozen=True)
 class GroupFiniteScalarQuantizerConfig:
@@ -326,21 +309,6 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
     ) -> Float[Array, "batch seq channels"]:
         return self.decode(inputs)
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "quantizers": [q.export_weights() for q in self.quantizers],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        quantizer_weights = weights["quantizers"]
-        assert isinstance(quantizer_weights, Sequence)
-
-        new_quantizers = tuple(
-            q.import_weights(require_tree(w)) for q, w in zip(self.quantizers, quantizer_weights, strict=True)
-        )
-        return replace(self, quantizers=new_quantizers)
-
 
 @dataclass(frozen=True)
 class HalfSnakeConfig:
@@ -406,15 +374,6 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
         # Concatenate along channel dimension
         return jnp.concatenate([snake_out, lrelu_out], axis=2)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {"snake": self.snake.export_weights()}
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        snake_weights = require_tree(weights["snake"])
-        new_snake = self.snake.import_weights(snake_weights)
-        return replace(self, snake=new_snake)
 
 
 @dataclass(frozen=True)
@@ -530,30 +489,6 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
         # Residual connection
         return x + res
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "input_activation": self.input_activation.export_weights(),
-            "skip_activation": self.skip_activation.export_weights(),
-            "input_conv": self.input_conv.export_weights(),
-            "skip_conv": self.skip_conv.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-
-        input_act_weights = weights["input_activation"]
-        skip_act_weights = weights["skip_activation"]
-        input_conv_weights = weights["input_conv"]
-        skip_conv_weights = weights["skip_conv"]
-
-        return replace(
-            self,
-            input_activation=self.input_activation.import_weights(require_tree(input_act_weights)),
-            skip_activation=self.skip_activation.import_weights(require_tree(skip_act_weights)),
-            input_conv=self.input_conv.import_weights(require_tree(input_conv_weights)),
-            skip_conv=self.skip_conv.import_weights(require_tree(skip_conv_weights)),
-        )
-
 
 @dataclass(frozen=True)
 class HiFiGANResBlockConfig:
@@ -630,21 +565,6 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
             out = res_block(out)
         return out
 
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "res_blocks": [block.export_weights() for block in self.res_blocks],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        block_weights = weights["res_blocks"]
-        assert isinstance(block_weights, Sequence)
-
-        new_blocks = tuple(
-            block.import_weights(require_tree(w)) for block, w in zip(self.res_blocks, block_weights, strict=True)
-        )
-        return replace(self, res_blocks=new_blocks)
-
 
 @dataclass(frozen=True)
 class HiFiGANResLayerConfig:
@@ -720,21 +640,6 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
     ) -> Float[Array, "batch sequence channels"]:
         residuals = jnp.stack([res_block(x) for res_block in self.res_blocks], axis=0)
         return jnp.mean(residuals, axis=0)
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "res_blocks": [block.export_weights() for block in self.res_blocks],
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-        block_weights = weights["res_blocks"]
-        assert isinstance(block_weights, Sequence)
-
-        new_blocks = tuple(
-            block.import_weights(require_tree(w)) for block, w in zip(self.res_blocks, block_weights, strict=True)
-        )
-        return replace(self, res_blocks=new_blocks)
 
 
 @dataclass(frozen=True)
@@ -950,48 +855,3 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
         audio = audio[:, :, 0]  # [B, T_audio]
 
         return audio
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "pre_conv": self.pre_conv.export_weights(),
-            "activations": [act.export_weights() for act in self.activations],
-            "upsample_convs": [conv.export_weights() for conv in self.upsample_convs],
-            "res_layers": [layer.export_weights() for layer in self.res_layers],
-            "post_activation": self.post_activation.export_weights(),
-            "post_conv": self.post_conv.export_weights(),
-        }
-
-    def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        assert isinstance(weights, Mapping)
-
-        pre_conv_weights = require_tree(weights["pre_conv"])
-        activations_weights = weights["activations"]
-        upsample_convs_weights = weights["upsample_convs"]
-        res_layers_weights = weights["res_layers"]
-        post_activation_weights = require_tree(weights["post_activation"])
-        post_conv_weights = require_tree(weights["post_conv"])
-
-        assert isinstance(activations_weights, Sequence)
-        assert isinstance(upsample_convs_weights, Sequence)
-        assert isinstance(res_layers_weights, Sequence)
-
-        new_activations = tuple(
-            act.import_weights(require_tree(w)) for act, w in zip(self.activations, activations_weights, strict=True)
-        )
-        new_upsample_convs = tuple(
-            conv.import_weights(require_tree(w))
-            for conv, w in zip(self.upsample_convs, upsample_convs_weights, strict=True)
-        )
-        new_res_layers = tuple(
-            layer.import_weights(require_tree(w)) for layer, w in zip(self.res_layers, res_layers_weights, strict=True)
-        )
-
-        return replace(
-            self,
-            pre_conv=self.pre_conv.import_weights(pre_conv_weights),
-            activations=new_activations,
-            upsample_convs=new_upsample_convs,
-            res_layers=new_res_layers,
-            post_activation=self.post_activation.import_weights(post_activation_weights),
-            post_conv=self.post_conv.import_weights(post_conv_weights),
-        )

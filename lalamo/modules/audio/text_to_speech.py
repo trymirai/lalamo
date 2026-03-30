@@ -1,11 +1,8 @@
-from collections.abc import Mapping
-from dataclasses import dataclass, replace
-from typing import Self
+from dataclasses import dataclass
 
 import jax
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from jaxtyping import DTypeLike, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.common import LalamoModule, register_config_union
 from lalamo.sampling import CompositePolicy, SamplingPolicy, TemperaturePolicy, TopPPolicy
 
@@ -58,17 +55,3 @@ class TTSModel(LalamoModule[TTSConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return TTSConfig.activation_precision
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {}
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> Self:
-        assert isinstance(weights, Mapping)
-        return replace(
-            self,
-            text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
-            audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
-        )

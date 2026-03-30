@@ -16,13 +16,13 @@
 # limitations under the License.
 
 import math
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 
 import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree, require_mapping
+from lalamo.common import ParameterTree
 
 from .common import LalamoModule, register_config_union
 
@@ -162,19 +162,6 @@ class RoPE(LalamoModule[RoPEConfigBase]):
             cosines=self.cosines[timesteps],
             sines=self.sines[timesteps],
         )
-
-    def export_weights(self) -> ParameterTree[Array]:
-        return {
-            "cosines": self.cosines,
-            "sines": self.sines,
-        }
-
-    def import_weights(
-        self,
-        weights: ParameterTree[Array],
-    ) -> "RoPE":
-        weights = require_mapping(weights)
-        return replace(self, cosines=weights["cosines"], sines=weights["sines"])
 
 
 class UnscaledRoPEConfig(RoPEConfigBase):
