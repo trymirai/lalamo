@@ -15,6 +15,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, 
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.forward_pass_config import TransformerForwardPassConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
@@ -422,7 +423,7 @@ def decode_next_token(
         return_positional_embeddings=False,
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config=None,
+        forward_pass_config=TransformerForwardPassConfig(),
     )
     assert slow_model_result.layer_results is not None
     hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
@@ -451,7 +452,7 @@ def decode_next_token(
         return_positional_embeddings=False,
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-        forward_pass_config=None,
+        forward_pass_config=TransformerForwardPassConfig(),
     )
     state_fast = fast_first_result.updated_state
 
@@ -473,7 +474,7 @@ def decode_next_token(
             return_positional_embeddings=False,
             lengths_without_padding=None,
             forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-            forward_pass_config=None,
+            forward_pass_config=TransformerForwardPassConfig(),
         )
         (fast_logits,) = vmap_twice(model.readout_fast)(fast_result.outputs)
         new_state = fast_result.updated_state

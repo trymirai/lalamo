@@ -39,6 +39,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
 from lalamo.modules import GELU, ForwardPassMode
+from lalamo.modules.forward_pass_config import TransformerForwardPassConfig
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
@@ -1330,7 +1331,7 @@ def test_audio_transformer_inference() -> None:
         return_positional_embeddings=False,
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config=None,
+        forward_pass_config=TransformerForwardPassConfig(),
     )
     lalamo_output = lalamo_result.outputs
 

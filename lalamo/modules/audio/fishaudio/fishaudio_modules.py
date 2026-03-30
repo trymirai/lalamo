@@ -19,6 +19,7 @@ from lalamo.modules.audio.common_modules import (
 )
 from lalamo.modules.common import ForwardPassMode, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
+from lalamo.modules.forward_pass_config import TransformerForwardPassConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
@@ -735,7 +736,7 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
             return_positional_embeddings=False,
             lengths_without_padding=None,
             forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-            forward_pass_config=None,
+            forward_pass_config=TransformerForwardPassConfig(),
         )
         z_q = post_result.outputs
 
