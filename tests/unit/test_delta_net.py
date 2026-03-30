@@ -12,6 +12,7 @@ from lalamo.modules import (
     SeparableCausalConvConfig,
     UpcastMode,
 )
+from lalamo.modules.common import RandomInitializer
 from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 
@@ -63,7 +64,9 @@ def _make_lalamo_delta_net(hf_config: Any):
         value_head_dim=hf_config.linear_value_head_dim,
         kernel_size=hf_config.linear_conv_kernel_dim,
     )
-    return config.random_init(model_dim=hf_config.hidden_size, key=jax.random.PRNGKey(0))
+    return config.init(
+        RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)), model_dim=hf_config.hidden_size
+    )
 
 
 def test_delta_net_attention_matches_hf() -> None:

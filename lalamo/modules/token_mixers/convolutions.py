@@ -2,13 +2,14 @@ import math
 from dataclasses import dataclass, replace
 from typing import NamedTuple
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
-from lalamo.modules.common import LalamoModule
+from lalamo.common import ParameterTree, require_array, require_mapping
+from lalamo.modules.common import Initializer, LalamoModule
 
 __all__ = [
     "CausalConvResult",
@@ -27,46 +28,30 @@ class SeparableCausalConvConfig:
     precision: DTypeLike
     has_biases: bool
 
-    def random_init(
+    def init(
         self,
+        initializer: Initializer,
         input_dim: int,
         kernel_size: int,
-        *,
-        key: PRNGKeyArray,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = jax.random.uniform(
-            key,
-            (input_dim, kernel_size),
-            minval=-scale,
-            maxval=scale,
-            dtype=self.precision,
-        )
+        weights = initializer.normal(scale, (input_dim, kernel_size), self.precision)
         if self.has_biases:
-            biases = jnp.zeros((input_dim,), dtype=self.precision)
+            biases = initializer.zeros((input_dim,), self.precision)
         else:
             biases = None
-        return SeparableCausalConv(self, weights=weights, biases=biases)
-
-    def empty(
-        self,
-        input_dim: int,
-        kernel_size: int,
-    ) -> "SeparableCausalConv":
-        weights = dummy_array(
-            (input_dim, kernel_size),
-            dtype=self.precision,
+        return SeparableCausalConv(
+            weights=weights,
+            biases=biases,
+            activation_precision=self.precision,
         )
-        if self.has_biases:
-            biases = dummy_array((input_dim,), dtype=self.precision)
-        else:
-            biases = None
-        return SeparableCausalConv(self, weights=weights, biases=biases)
 
 
-class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
+class SeparableCausalConv(LalamoModule):
     weights: Float[Array, "channels kernel"]
     biases: Float[Array, " channels"] | None
+
+    activation_precision: DTypeLike = eqx.field(static=True)
 
     def __post_init__(self) -> None:
         input_dim, _ = self.weights.shape
@@ -76,10 +61,6 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
                 raise ValueError(
                     f"Output dimension of biases ({output_dim}) must match input dimension ({input_dim})",
                 )
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
 
     @property
     def input_dim(self) -> int:

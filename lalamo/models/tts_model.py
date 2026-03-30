@@ -33,6 +33,7 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
 )
+from lalamo.modules.common import EmptyInitializer
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
 
@@ -139,7 +140,7 @@ class TTSGenerator(eqx.Module):
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
             weights = unflatten_parameters(weights_dict)
-            model = config.tts_config.empty().import_weights(weights)
+            model = config.tts_config.init(EmptyInitializer(precision=jnp.float32)).import_weights(weights)
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
         return TTSGenerator(

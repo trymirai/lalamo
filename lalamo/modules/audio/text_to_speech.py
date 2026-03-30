@@ -2,11 +2,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
-import jax
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+import equinox as eqx
+from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.common import LalamoModule, register_config_union
+from lalamo.modules.common import Initializer, LalamoModule, register_config_union
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .audio_decoder import TTSAudioDecoder
@@ -36,28 +36,24 @@ class TTSConfig:
 
     activation_precision: DTypeLike
 
-    def empty(self) -> "TTSModel":
-        text_decoder = self.text_decoder_config.empty()
-        audio_decoder = self.audio_decoder_config.empty()
-        vocoder = self.vocoder_config.empty()
-        return TTSModel(config=self, text_decoder=text_decoder, audio_decoder=audio_decoder, vocoder=vocoder)
-
-    def random_init(self, key: PRNGKeyArray) -> "TTSModel":
-        key_text, key_audio = jax.random.split(key)
-        text_decoder = self.text_decoder_config.random_init(key=key_text)
-        audio_decoder = self.audio_decoder_config.random_init(key=key_audio)
-        vocoder = self.vocoder_config.empty()
-        return TTSModel(config=self, text_decoder=text_decoder, audio_decoder=audio_decoder, vocoder=vocoder)
+    def init(self, initializer: Initializer) -> "TTSModel":
+        text_decoder = self.text_decoder_config.init(initializer)
+        audio_decoder = self.audio_decoder_config.init(initializer)
+        vocoder = self.vocoder_config.init(initializer)
+        return TTSModel(
+            text_decoder=text_decoder,
+            audio_decoder=audio_decoder,
+            vocoder=vocoder,
+            activation_precision=self.activation_precision,
+        )
 
 
-class TTSModel(LalamoModule[TTSConfig]):
+class TTSModel(LalamoModule):
     text_decoder: TTSTextDecoder
     audio_decoder: TTSAudioDecoder
     vocoder: Vocoder
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return TTSConfig.activation_precision
+    activation_precision: DTypeLike = eqx.field(static=True)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {}

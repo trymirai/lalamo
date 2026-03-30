@@ -9,6 +9,7 @@ from lalamo.modules import (
     ShortConv,
     ShortConvConfig,
 )
+from lalamo.modules.common import RandomInitializer
 from tests.common import assert_close
 
 
@@ -21,7 +22,7 @@ def make_short_conv() -> ShortConv:
         kernel_size=3,
     )
     model_dim = 4
-    return config.random_init(model_dim=model_dim, key=jax.random.PRNGKey(0))
+    return config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)), model_dim=model_dim)
 
 
 @settings(max_examples=10, deadline=None)

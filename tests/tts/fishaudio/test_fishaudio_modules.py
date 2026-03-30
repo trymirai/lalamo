@@ -42,6 +42,7 @@ from lalamo.modules import GELU, ForwardPassMode
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
+from lalamo.modules.common import EmptyInitializer, RandomInitializer
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     AudioDecoderBlockSpatialParams,
@@ -156,7 +157,8 @@ def test_vector_quantize_decode_code() -> None:
         ),
         out_proj_config=FullPrecisionLinearConfig(precision=jnp.float32),
     )
-    lalamo_vq = lalamo_vq_config.empty(
+    lalamo_vq = lalamo_vq_config.init(
+        EmptyInitializer(precision=jnp.float32),
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=codebook_dim,
@@ -218,7 +220,8 @@ def test_residual_vector_quantize_from_codes() -> None:
         precision=jnp.float32,
         vq_config=vq_config,
     )
-    lalamo_rvq = lalamo_rvq_config.empty(
+    lalamo_rvq = lalamo_rvq_config.init(
+        EmptyInitializer(precision=jnp.float32),
         input_dim=input_dim,
         codebook_size=codebook_size,
         codebook_dim=[codebook_dim] * n_codebooks,
@@ -280,7 +283,8 @@ def test_causal_conv1d_matches_pytorch() -> None:
 
     # Create Lalamo module with same config
     lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    lalamo_conv = lalamo_config.empty(
+    lalamo_conv = lalamo_config.init(
+        EmptyInitializer(precision=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -347,7 +351,8 @@ def test_causal_conv1d_with_dilation() -> None:
     torch_conv.eval()
 
     lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    lalamo_conv = lalamo_config.empty(
+    lalamo_conv = lalamo_config.init(
+        EmptyInitializer(precision=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -402,7 +407,8 @@ def test_causal_conv1d_grouped() -> None:
     torch_conv.eval()
 
     lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    lalamo_conv = lalamo_config.empty(
+    lalamo_conv = lalamo_config.init(
+        EmptyInitializer(precision=jnp.float32),
         in_channels=channels,
         out_channels=channels,
         kernel_size=kernel_size,
@@ -459,7 +465,8 @@ def test_causal_transpose_conv1d_matches_pytorch() -> None:
 
     # Create Lalamo module with same config
     lalamo_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
-    lalamo_conv = lalamo_config.empty(
+    lalamo_conv = lalamo_config.init(
+        EmptyInitializer(precision=jnp.float32),
         in_channels=in_channels,
         out_channels=out_channels,
         kernel_size=kernel_size,
@@ -530,7 +537,8 @@ def test_causal_transpose_conv1d_various_strides() -> None:
         torch_conv.eval()
 
         lalamo_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
-        lalamo_conv = lalamo_config.empty(
+        lalamo_conv = lalamo_config.init(
+            EmptyInitializer(precision=jnp.float32),
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=kernel_size,
@@ -593,8 +601,12 @@ def test_causal_conv_transpose_roundtrip() -> None:
     conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
     trans_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
 
-    lalamo_conv = conv_config.empty(channels, channels, kernel_size, stride=stride)
-    lalamo_trans = trans_config.empty(channels, channels, kernel_size, stride=stride)
+    lalamo_conv = conv_config.init(
+        EmptyInitializer(precision=jnp.float32), channels, channels, kernel_size, stride=stride
+    )
+    lalamo_trans = trans_config.init(
+        EmptyInitializer(precision=jnp.float32), channels, channels, kernel_size, stride=stride
+    )
 
     # Load weights
     lalamo_conv = lalamo_conv.import_weights(
@@ -690,7 +702,7 @@ def test_convnext_block_matches_pytorch() -> None:
         dilation=dilation,
         layer_scale_init_value=layer_scale_init_value,
     )
-    lalamo_block = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
+    lalamo_block = lalamo_config.init(EmptyInitializer(precision=jnp.float32), dim=dim, spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_block.state_dict(), prefix="block")
     lalamo_block = load_convnext_block(lalamo_block, weights_dict, ParameterPath("block"))
@@ -784,7 +796,8 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
         dilation=1,
         layer_scale_init_value=1e-6,
     )
-    lalamo_block = lalamo_config.empty(
+    lalamo_block = lalamo_config.init(
+        EmptyInitializer(precision=jnp.float32),
         trans_conv_params=trans_conv_params,
         convnext_spatial_params=convnext_spatial_params,
     )
@@ -902,7 +915,8 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
         layer_scale_init_value=1e-6,
     )
     upsampler_config = UpsamplerConfig(block_configs=block_configs)
-    lalamo_upsampler = upsampler_config.empty(
+    lalamo_upsampler = upsampler_config.init(
+        EmptyInitializer(precision=jnp.float32),
         trans_conv_params_per_block=tuple(block_params),
         convnext_spatial_params=convnext_spatial_params,
     )
@@ -958,7 +972,7 @@ def test_snake1d_matches_pytorch() -> None:
 
     # Create Lalamo module
     lalamo_config = Snake1dConfig(precision=jnp.float32)
-    lalamo_snake = lalamo_config.empty(channels)
+    lalamo_snake = lalamo_config.init(EmptyInitializer(precision=jnp.float32), channels)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_snake.state_dict(), prefix="snake")
     lalamo_snake = load_snake1d(lalamo_snake, weights_dict, ParameterPath("snake"))
@@ -1008,7 +1022,9 @@ def test_residual_unit_matches_pytorch() -> None:
         causal=True,
     )
     spatial_params = ResidualUnitSpatialParams(dilation=dilation, kernel_size=7)
-    lalamo_res_unit = lalamo_config.empty(dim=dim, spatial_params=spatial_params)
+    lalamo_res_unit = lalamo_config.init(
+        EmptyInitializer(precision=jnp.float32), dim=dim, spatial_params=spatial_params
+    )
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_res_unit.state_dict(), prefix="res")
     lalamo_res_unit = load_residual_unit(lalamo_res_unit, weights_dict, ParameterPath("res"))
@@ -1075,7 +1091,7 @@ def test_decoder_block_matches_pytorch() -> None:
         output_dim=output_dim,
         stride=stride,
     )
-    lalamo_decoder_block = lalamo_config.empty(spatial_params=spatial_params)
+    lalamo_decoder_block = lalamo_config.init(EmptyInitializer(precision=jnp.float32), spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder_block.state_dict(), prefix="dec_block")
 
@@ -1153,7 +1169,7 @@ def test_audio_decoder_matches_pytorch() -> None:
         rates=upsampling_rates,
         d_out=d_out,
     )
-    lalamo_decoder = lalamo_config.empty(spatial_params=spatial_params)
+    lalamo_decoder = lalamo_config.init(EmptyInitializer(precision=jnp.float32), spatial_params=spatial_params)
 
     weights_dict = prepare_state_dict_for_lalamo_loaders(torch_decoder.state_dict(), prefix="decoder")
 
@@ -1201,7 +1217,7 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     # Create Lalamo transformer using config mapping
     precision = jnp.bfloat16
     transformer_cfg, _ = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(config, precision)
-    lalamo_transformer = transformer_cfg.empty()
+    lalamo_transformer = transformer_cfg.init(EmptyInitializer(precision=jnp.bfloat16))
 
     # Load weights
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
@@ -1302,7 +1318,7 @@ def test_audio_transformer_inference() -> None:
     )
 
     # Instantiate an empty Lalamo transformer
-    lalamo_transformer = transformer_cfg.empty()
+    lalamo_transformer = transformer_cfg.init(EmptyInitializer(precision=jnp.float32))
 
     # === Load weights from FishAudio into Lalamo ===
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_transformer.state_dict())

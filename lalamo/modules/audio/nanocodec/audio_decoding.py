@@ -2,11 +2,12 @@ from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from typing import Self
 
-import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+import equinox as eqx
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.modules.common import Initializer
 
 from .nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -29,10 +30,10 @@ class NanoCodecConfig(TTSAudioDecoderConfigBase):
     resblock_kernel_sizes: tuple[int, ...]
     resblock_dilations: tuple[int, ...]
 
-    def empty(self) -> "NanoCodec":
-        """Create NanoCodec with placeholder weights."""
-        quantizer = self.quantizer_config.empty()
-        decoder = self.decoder_config.empty(
+    def init(self, initializer: Initializer) -> "NanoCodec":
+        quantizer = self.quantizer_config.init(initializer)
+        decoder = self.decoder_config.init(
+            initializer,
             input_dim=self.quantizer_config.codebook_dim,
             base_channels=self.base_channels,
             up_sample_rates=self.up_sample_rates,
@@ -43,39 +44,14 @@ class NanoCodecConfig(TTSAudioDecoderConfigBase):
         )
 
         return NanoCodec(
-            config=self,
             quantizer=quantizer,
             decoder=decoder,
-        )
-
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "NanoCodec":
-        """Create NanoCodec with randomly initialized weights."""
-        key_quantizer, key_decoder = jax.random.split(key)
-
-        quantizer = self.quantizer_config.random_init(key=key_quantizer)
-        decoder = self.decoder_config.random_init(
-            input_dim=self.quantizer_config.codebook_dim,
-            base_channels=self.base_channels,
-            up_sample_rates=self.up_sample_rates,
-            in_kernel_size=self.in_kernel_size,
-            out_kernel_size=self.out_kernel_size,
-            resblock_kernel_sizes=self.resblock_kernel_sizes,
-            resblock_dilations=self.resblock_dilations,
-            key=key_decoder,
-        )
-
-        return NanoCodec(
-            config=self,
-            quantizer=quantizer,
-            decoder=decoder,
+            codec_samplerate=self.samplerate,
+            precision=self.precision,
         )
 
 
-class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
+class NanoCodec(TTSAudioDecoder):
     """Lalamo implementation of decoder part of NanoCodec from NVidia.
 
     Original code: https://github.com/NVIDIA-NeMo/NeMo/blob/v2.3.0/nemo/collections/tts/modules/audio_codec_modules.py
@@ -88,13 +64,16 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     quantizer: GroupFiniteScalarQuantizer
     decoder: CausalHiFiGANDecoder
 
+    codec_samplerate: int = eqx.field(static=True)
+    precision: DTypeLike = eqx.field(static=True)
+
     @property
     def samplerate(self) -> int:
-        return self.config.samplerate
+        return self.codec_samplerate
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def n_codebooks(self) -> int:

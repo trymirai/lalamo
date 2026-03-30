@@ -1,6 +1,7 @@
 from dataclasses import dataclass, replace
 from typing import Any, Self
 
+import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jax import vmap
@@ -13,7 +14,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
-from lalamo.modules.common import ForwardPassMode
+from lalamo.modules.common import ForwardPassMode, Initializer
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.token_mixers.state.common import State
@@ -59,77 +60,28 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
     short_logits_size: int = SHORT_LOGITS_SIZE
     repeat_window_size: int = REPEAT_WINDOW_SIZE
 
-    def empty(self) -> "FishAudioTextDecoder":
-        embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
-        embeddings_fast = self.fast_embeddings_config.empty(self.codebook_size, self.fast_model_dim)
-        codebook_embeddings = self.codebook_embeddings_config.empty(
-            self.codebook_size * self.num_codebooks,
-            self.slow_model_dim,
-        )
-        if self.fast_model_projection_config is not None:
-            fast_model_projection = self.fast_model_projection_config.empty(
-                input_dim=self.slow_model_dim,
-                output_dims=(self.fast_model_dim,),
-                has_biases=False,
-            )
-        else:
-            fast_model_projection = Identity()
-        assert isinstance(embeddings_slow, TiedEmbedding)
-        assert isinstance(embeddings_fast, TiedEmbedding)
-        assert isinstance(codebook_embeddings, TiedEmbedding)
-        return FishAudioTextDecoder(
-            self,
-            embeddings_slow=embeddings_slow,
-            transformer_slow=self.slow_model_config.empty(),
-            readout_slow=self.slow_readout_config.empty(
-                input_dim=self.slow_model_dim,
-                output_dims=(self.vocab_size,),
-                has_biases=False,
-            ),
-            embeddings_fast=embeddings_fast,
-            transformer_fast=self.fast_model_config.empty(),
-            readout_fast=self.fast_readout_config.empty(
-                input_dim=self.fast_model_dim,
-                output_dims=(self.codebook_size,),
-                has_biases=False,
-            ),
-            codebook_embeddings=codebook_embeddings,
-            fast_model_projection=fast_model_projection,
-        )
-
-    def random_init(self, *, key: PRNGKeyArray) -> "FishAudioTextDecoder":
-        (
-            key_emb_slow,
-            key_transformer_slow,
-            key_readout_slow,
-            key_emb_fast,
-            key_transformer_fast,
-            key_readout_fast,
-            key_emb_codebook,
-            key_fast_proj,
-        ) = jax.random.split(key, 8)
-
-        embeddings_slow = self.slow_embeddings_config.random_init(
+    def init(self, initializer: Initializer) -> "FishAudioTextDecoder":
+        embeddings_slow = self.slow_embeddings_config.init(
+            initializer,
             vocab_size=self.vocab_size,
             model_dim=self.slow_model_dim,
-            key=key_emb_slow,
         )
-        embeddings_fast = self.fast_embeddings_config.random_init(
+        embeddings_fast = self.fast_embeddings_config.init(
+            initializer,
             vocab_size=self.codebook_size,
             model_dim=self.fast_model_dim,
-            key=key_emb_fast,
         )
-        codebook_embeddings = self.codebook_embeddings_config.random_init(
+        codebook_embeddings = self.codebook_embeddings_config.init(
+            initializer,
             vocab_size=self.codebook_size * self.num_codebooks,
             model_dim=self.slow_model_dim,
-            key=key_emb_codebook,
         )
         if self.fast_model_projection_config is not None:
-            fast_model_projection = self.fast_model_projection_config.random_init(
+            fast_model_projection = self.fast_model_projection_config.init(
+                initializer,
                 input_dim=self.slow_model_dim,
                 output_dims=(self.fast_model_dim,),
                 has_biases=False,
-                key=key_fast_proj,
             )
         else:
             fast_model_projection = Identity()
@@ -139,29 +91,41 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
         assert isinstance(codebook_embeddings, TiedEmbedding)
 
         return FishAudioTextDecoder(
-            self,
             embeddings_slow=embeddings_slow,
-            transformer_slow=self.slow_model_config.random_init(key=key_transformer_slow),
-            readout_slow=self.slow_readout_config.random_init(
+            transformer_slow=self.slow_model_config.init(initializer),
+            readout_slow=self.slow_readout_config.init(
+                initializer,
                 input_dim=self.slow_model_dim,
                 output_dims=(self.vocab_size,),
                 has_biases=False,
-                key=key_readout_slow,
             ),
             embeddings_fast=embeddings_fast,
-            transformer_fast=self.fast_model_config.random_init(key=key_transformer_fast),
-            readout_fast=self.fast_readout_config.random_init(
+            transformer_fast=self.fast_model_config.init(initializer),
+            readout_fast=self.fast_readout_config.init(
+                initializer,
                 input_dim=self.fast_model_dim,
                 output_dims=(self.codebook_size,),
                 has_biases=False,
-                key=key_readout_fast,
             ),
             codebook_embeddings=codebook_embeddings,
             fast_model_projection=fast_model_projection,
+            semantic_token_begin_id=self.semantic_token_begin_id,
+            semantic_token_end_id=self.semantic_token_end_id,
+            im_end_token_id=self.im_end_token_id,
+            codebook_size=self.codebook_size,
+            vocab_size=self.vocab_size,
+            slow_model_dim=self.slow_model_dim,
+            fast_model_dim=self.fast_model_dim,
+            num_codebooks=self.num_codebooks,
+            max_seq_len=self.max_seq_len,
+            scale_codebook_embeddings=self.scale_codebook_embeddings,
+            precision=self.precision,
+            short_logits_size=self.short_logits_size,
+            repeat_window_size=self.repeat_window_size,
         )
 
 
-class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
+class FishAudioTextDecoder(TTSTextDecoder):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
     readout_slow: FullPrecisionLinear
@@ -173,9 +137,23 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     codebook_embeddings: TiedEmbedding
     fast_model_projection: FullPrecisionLinear | Identity
 
+    semantic_token_begin_id: int = eqx.field(static=True)
+    semantic_token_end_id: int = eqx.field(static=True)
+    im_end_token_id: int = eqx.field(static=True)
+    codebook_size: int = eqx.field(static=True)
+    vocab_size: int = eqx.field(static=True)
+    slow_model_dim: int = eqx.field(static=True)
+    fast_model_dim: int = eqx.field(static=True)
+    num_codebooks: int = eqx.field(static=True)
+    max_seq_len: int = eqx.field(static=True)
+    scale_codebook_embeddings: bool = eqx.field(static=True)
+    precision: DTypeLike = eqx.field(static=True)
+    short_logits_size: int = eqx.field(static=True)
+    repeat_window_size: int = eqx.field(static=True)
+
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     def export_weights(self) -> ParameterTree:
         if isinstance(self.fast_model_projection, Identity):
@@ -214,15 +192,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
     @property
     def semantic_begin_id(self) -> int:
-        return self.config.semantic_token_begin_id
+        return self.semantic_token_begin_id
 
     @property
     def semantic_end_id(self) -> int:
-        return self.config.semantic_token_end_id
-
-    @property
-    def num_codebooks(self) -> int:
-        return self.config.num_codebooks
+        return self.semantic_token_end_id
 
     def embed_slow_model(self) -> Array:
         return jnp.zeros((1, 2, 3))
@@ -240,7 +214,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             input_pos = jnp.arange(seq_length)[None, :]
 
         text_and_codebooks = jnp.zeros(
-            (batch_size, self.config.num_codebooks + 1, seq_length),
+            (batch_size, self.num_codebooks + 1, seq_length),
             dtype=text_tokens.dtype,
         )
         # NOTE: the rest of codebook lines should be filled in case audio prompt is used, but
@@ -276,7 +250,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         if apply_codebook_embeddings or jnp.any(vq_masks):
             _, _, seq_length = inp.shape
-            codebook_offsets = (jnp.arange(self.config.num_codebooks) * self.config.codebook_size).reshape(-1, 1)
+            codebook_offsets = (jnp.arange(self.num_codebooks) * self.codebook_size).reshape(-1, 1)
             codebook_offsets = jnp.tile(codebook_offsets, (1, seq_length))
             codebook_embeds = vmap(self.codebook_embeddings.embed)(inp[:, 1:, :] + codebook_offsets)
 
@@ -284,11 +258,11 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             vq_embeds_sum = vq_embeds_sum.at[~vq_masks].set(0)
             embeddings = embeddings + vq_embeds_sum
 
-        if self.config.scale_codebook_embeddings:
+        if self.scale_codebook_embeddings:
             # Expand vq_masks to match x's shape
             vq_masks_expanded = jnp.expand_dims(vq_masks, axis=-1)
             vq_masks_expanded = jnp.broadcast_to(vq_masks_expanded, embeddings.shape)
-            embeddings = jnp.where(vq_masks_expanded, embeddings / jnp.sqrt(self.config.num_codebooks + 1), embeddings)
+            embeddings = jnp.where(vq_masks_expanded, embeddings / jnp.sqrt(self.num_codebooks + 1), embeddings)
             assert isinstance(embeddings, Array)
 
         return embeddings
@@ -310,8 +284,8 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         batch_size, prompt_length = text_tokens.shape
         assert batch_size == 1, "Only batch_size=1 is supported"
 
-        codebook_dim = 1 + self.config.num_codebooks
-        max_seq_len = self.config.max_seq_len
+        codebook_dim = 1 + self.num_codebooks
+        max_seq_len = self.max_seq_len
 
         if prompt_length >= max_seq_len:
             raise ValueError(f"Input sequence length {prompt_length} exceeds max_seq_len {max_seq_len}")
@@ -350,7 +324,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         seq = seq.at[:, prompt_length].set(first_codes[0])
         previous_tokens = previous_tokens.at[:, 0].set(first_codes[0])
 
-        if first_codes[0, 0] == self.config.im_end_token_id:
+        if first_codes[0, 0] == self.im_end_token_id:
             codes = seq[1:, prompt_length : prompt_length + 1]
             return codes
 
@@ -360,7 +334,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             cur_token_expanded = cur_token.reshape(batch_size, codebook_dim, 1)
 
             # Get windowed previous tokens for repetition penalty
-            win_size = self.config.repeat_window_size
+            win_size = self.repeat_window_size
             if i < win_size:
                 window = previous_tokens[:, :win_size]
             else:
@@ -389,7 +363,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
             previous_tokens = previous_tokens.at[:, i].set(next_codes[0])
             generated_count += 1
 
-            if next_codes[0, 0] == self.config.im_end_token_id:
+            if next_codes[0, 0] == self.im_end_token_id:
                 break
 
             cur_token = next_codes
@@ -478,7 +452,7 @@ def decode_next_token(
         (fast_logits,) = vmap_twice(model.readout_fast)(fast_result.outputs)
         new_state = fast_result.updated_state
 
-        short_logits = fast_logits[:, :, : model.config.short_logits_size]
+        short_logits = fast_logits[:, :, : model.short_logits_size]
         code = vmap(lambda x: sampling_policy(x, key=key))(short_logits[:, -1, :])
 
         new_logits = model.embeddings_fast.embed(code)

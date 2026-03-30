@@ -24,7 +24,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping
 
-from .common import LalamoModule, register_config_union
+from .common import Initializer, LalamoModule, register_config_union
 
 __all__ = [
     "LinearScalingRoPEConfig",
@@ -92,6 +92,7 @@ class RoPEConfigBase:
 
     def init(
         self,
+        initializer: Initializer,  # noqa: ARG002
         head_dim: int,
         num_timesteps: int,
     ) -> "RoPE":
@@ -103,36 +104,18 @@ class RoPEConfigBase:
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
-        return RoPE(config=self, cosines=cosines, sines=sines)
+        return RoPE(
+            sines=sines,
+            cosines=cosines,
+            activation_precision=self.precision,
+        )
 
 
-class RoPE(LalamoModule[RoPEConfigBase]):
+class RoPE(LalamoModule):
     sines: Float[Array, "tokens head_channels"]
     cosines: Float[Array, "tokens head_channels"]
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    def __post_init__(self) -> None:
-        num_tokens, _ = self.sines.shape
-        if num_tokens > self.config.max_sequence_length:
-            raise ValueError(
-                f"{num_tokens} exceeds the specified max sequence length {self.config.max_sequence_length}",
-            )
-        if self.cosines.dtype != self.config.precision:
-            raise ValueError(
-                f"Cosines dtype {self.cosines.dtype} does not match the specified precision {self.config.precision}",
-            )
-        if self.sines.dtype != self.config.precision:
-            raise ValueError(
-                f"Sines dtype {self.sines.dtype} does not match the specified precision {self.config.precision}",
-            )
-        if self.cosines.shape != self.sines.shape:
-            raise ValueError(
-                f"Cosines and sines shape mismatch: cosines have shape {self.cosines.shape},"
-                f" while sines have shape {self.sines.shape}",
-            )
+    activation_precision: DTypeLike = eqx.field(static=True)
 
     @property
     def head_dim(self) -> int:
@@ -216,7 +199,6 @@ class YARNRoPEConfig(RoPEConfigBase):
 
     @classmethod
     def _find_correction_dim(cls, num_rotations: float, dim: int, base: float, original_context_length: int) -> float:
-        """Inverse dimension formula to find the dimension based on the number of rotations"""
         return (dim * math.log(original_context_length / (num_rotations * 2 * math.pi))) / (2 * math.log(base))
 
     @classmethod
@@ -229,7 +211,6 @@ class YARNRoPEConfig(RoPEConfigBase):
         original_context_length: int,
         truncate: bool,
     ) -> tuple[float, float]:
-        """Find dimension range bounds based on rotations"""
         low = cls._find_correction_dim(low_rot, dim, base, original_context_length)
         high = cls._find_correction_dim(high_rot, dim, base, original_context_length)
         if truncate:
@@ -240,7 +221,7 @@ class YARNRoPEConfig(RoPEConfigBase):
     @classmethod
     def _linear_ramp_factor(cls, min_value: float, max_value: float, dim: int) -> Float[Array, " head_dim"]:
         if min_value == max_value:
-            max_value += 0.001  # Prevent singularity
+            max_value += 0.001
 
         min_v = jnp.float32(min_value)
         max_v = jnp.float32(max_value)
@@ -265,7 +246,6 @@ class YARNRoPEConfig(RoPEConfigBase):
             self.truncate,
         )
 
-        # Get n-dimensional rotational scaling corrected for extrapolation
         smoothing_factor = 1 - self._linear_ramp_factor(low, high, head_dim // 2)
         return scaled_frequencies * (1 - smoothing_factor) + inverse_frequencies * smoothing_factor
 

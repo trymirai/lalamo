@@ -2,9 +2,9 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import NamedTuple, Self
 
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
+from lalamo.modules.common import Initializer, LalamoModule, ParameterTree, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
@@ -28,21 +28,14 @@ class TokenMixerConfigBase(ABC):
     def rope_dim(self) -> int | None: ...
 
     @abstractmethod
-    def random_init(
+    def init(
         self,
-        model_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "TokenMixerBase": ...
-
-    @abstractmethod
-    def empty(
-        self,
+        initializer: Initializer,
         model_dim: int,
     ) -> "TokenMixerBase": ...
 
 
-class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
+class TokenMixerBase[StateLayerT: StateLayerBase](LalamoModule):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...

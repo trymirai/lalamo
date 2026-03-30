@@ -8,6 +8,7 @@ import torch
 from omegaconf import DictConfig
 
 from lalamo.audio.tts_message_processor import TTSMessage
+from lalamo.modules.common import EmptyInitializer
 from lalamo.model_import.common import import_model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.models import TTSGenerator
@@ -392,7 +393,7 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
 
     # Create Lalamo config and model
     lalamo_config = _create_lalamo_nanocodec_config(config)
-    lalamo_model = lalamo_config.empty()
+    lalamo_model = lalamo_config.init(EmptyInitializer(precision=jnp.float32))
 
     # Load weights into Lalamo model
     weights_dict = prepare_state_dict_for_lalamo_loaders(dict(state_dict))

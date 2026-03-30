@@ -4,13 +4,12 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from jax import lax
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree, dummy_array
-from lalamo.modules.common import LalamoModule
+from lalamo.common import ParameterTree
+from lalamo.modules.common import Initializer, LalamoModule
 
 
 def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, padding_total: int = 0) -> int:
@@ -25,64 +24,33 @@ class CausalConv1dConfig:
     precision: DTypeLike
     has_biases: bool
 
-    def random_init(
+    def init(
         self,
+        initializer: Initializer,
         in_channels: int,
         out_channels: int,
         kernel_size: int,
         stride: int = 1,
         dilation: int = 1,
         groups: int = 1,
-        *,
-        key: PRNGKeyArray,
     ) -> "CausalConv1d":
         effective_kernel_size = (kernel_size - 1) * dilation + 1
-        weights = jax.random.normal(
-            key,
+        weights = initializer.normal(
+            1.0,
             shape=(out_channels, in_channels // groups, kernel_size),
             dtype=self.precision,
         )
 
         if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
+            biases = initializer.zeros((out_channels,), dtype=self.precision)
         else:
             biases = None
 
         return CausalConv1d(
-            config=self,
             weights=weights,
             biases=biases,
-            stride=stride,
-            dilation=dilation,
-            groups=groups,
-            effective_kernel_size=effective_kernel_size,
-        )
-
-    def empty(
-        self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        dilation: int = 1,
-        groups: int = 1,
-    ) -> "CausalConv1d":
-        effective_kernel_size = (kernel_size - 1) * dilation + 1
-
-        weights = dummy_array(
-            (out_channels, in_channels // groups, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = dummy_array((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return CausalConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
+            precision=self.precision,
+            has_biases=self.has_biases,
             stride=stride,
             dilation=dilation,
             groups=groups,
@@ -90,7 +58,7 @@ class CausalConv1dConfig:
         )
 
 
-class CausalConv1d(LalamoModule[CausalConv1dConfig]):
+class CausalConv1d(LalamoModule):
     """Causal 1D convolution module.
     Implements causal convolution by left-padding the input with zeros.
     The output at position t only depends on inputs at positions <= t.
@@ -99,6 +67,8 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
     weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
     biases: Float[Array, " out_channels"] | None
 
+    precision: DTypeLike = eqx.field(static=True)
+    has_biases: bool = eqx.field(static=True)
     stride: int = eqx.field(static=True)
     dilation: int = eqx.field(static=True)
     groups: int = eqx.field(static=True)
@@ -106,7 +76,7 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def out_channels(self) -> int:
@@ -183,40 +153,9 @@ class CausalTransposeConv1dConfig:
     precision: DTypeLike
     has_biases: bool
 
-    def random_init(
+    def init(
         self,
-        in_channels: int,
-        out_channels: int,
-        kernel_size: int,
-        stride: int = 1,
-        groups: int = 1,
-        *,
-        key: PRNGKeyArray,
-    ) -> "CausalTransposeConv1d":
-        # Weight shape: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
-        in_per_group = in_channels // groups
-        weights = jax.random.normal(
-            key,
-            (out_channels, in_per_group, kernel_size),
-            dtype=self.precision,
-        )
-
-        if self.has_biases:
-            biases = jnp.zeros((out_channels,), dtype=self.precision)
-        else:
-            biases = None
-
-        return CausalTransposeConv1d(
-            config=self,
-            weights=weights,
-            biases=biases,
-            in_channels=in_channels,
-            stride=stride,
-            groups=groups,
-        )
-
-    def empty(
-        self,
+        initializer: Initializer,
         in_channels: int,
         out_channels: int,
         kernel_size: int,
@@ -225,27 +164,29 @@ class CausalTransposeConv1dConfig:
     ) -> "CausalTransposeConv1d":
         # Weight shape: (out_channels, in_channels // groups, kernel_size) - JAX OIK format
         in_per_group = in_channels // groups
-        weights = dummy_array(
-            (out_channels, in_per_group, kernel_size),
+        weights = initializer.normal(
+            1.0,
+            shape=(out_channels, in_per_group, kernel_size),
             dtype=self.precision,
         )
 
         if self.has_biases:
-            biases = dummy_array((out_channels,), dtype=self.precision)
+            biases = initializer.zeros((out_channels,), dtype=self.precision)
         else:
             biases = None
 
         return CausalTransposeConv1d(
-            config=self,
             weights=weights,
             biases=biases,
+            precision=self.precision,
+            has_biases=self.has_biases,
             in_channels=in_channels,
             stride=stride,
             groups=groups,
         )
 
 
-class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
+class CausalTransposeConv1d(LalamoModule):
     """Causal transposed 1D convolution (deconvolution) with groups support.
 
     Implements causal transposed convolution by removing appropriate padding
@@ -258,13 +199,15 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
     weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
     biases: Float[Array, " out_channels"] | None
 
+    precision: DTypeLike = eqx.field(static=True)
+    has_biases: bool = eqx.field(static=True)
     in_channels: int = eqx.field(static=True)
     stride: int = eqx.field(static=True)
     groups: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def out_channels(self) -> int:
@@ -342,25 +285,23 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
 class Snake1dConfig:
     precision: DTypeLike
 
-    def empty(self, channels: int) -> "Snake1d":
-        alpha = dummy_array((channels,), dtype=self.precision)
-        return Snake1d(config=self, alpha=alpha)
-
-    def random_init(self, channels: int) -> "Snake1d":
-        alpha = jnp.ones((channels,), dtype=self.precision)
-        return Snake1d(config=self, alpha=alpha)
+    def init(self, initializer: Initializer, channels: int) -> "Snake1d":
+        alpha = initializer.ones((channels,), dtype=self.precision)
+        return Snake1d(alpha=alpha, precision=self.precision)
 
 
-class Snake1d(LalamoModule[Snake1dConfig]):
+class Snake1d(LalamoModule):
     """Snake1d activation module.
     Implements the Snake activation function: x + (1/alpha) * sin^2(alpha * x)
     """
 
     alpha: Float[Array, " channels"]
 
+    precision: DTypeLike = eqx.field(static=True)
+
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def channels(self) -> int:

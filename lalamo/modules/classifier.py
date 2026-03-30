@@ -3,10 +3,9 @@ from enum import StrEnum
 from typing import Self
 
 import equinox as eqx
-import jax
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules import Activation
@@ -19,7 +18,7 @@ from lalamo.modules.transformer import (
 )
 from lalamo.modules.utils import vmap_twice
 
-from .common import ForwardPassMode, LalamoModule
+from .common import ForwardPassMode, Initializer, LalamoModule
 from .embedding import EmbeddingBase, EmbeddingConfig
 from .linear import LinearBase, LinearConfig
 from .rope import PositionalEmbeddings
@@ -46,41 +45,21 @@ class PredictionHeadConfig:
     readout_config: LinearConfig
     use_dense_bias: bool
 
-    def empty(self, input_size: int, num_labels: int) -> "PredictionHead":
-        dense_layer = self.dense_config.empty(
+    def init(self, initializer: Initializer, input_size: int, num_labels: int) -> "PredictionHead":
+        dense_layer = self.dense_config.init(
+            initializer,
             input_dim=input_size,
             output_dims=(input_size,),
             has_biases=self.use_dense_bias,
         )
-        norm = self.normalization_config.empty(input_size)
-        readout = self.readout_config.empty(input_dim=input_size, output_dims=(num_labels,), has_biases=True)
-
-        return PredictionHead(
-            config=self,
-            dense=dense_layer,
-            activation=self.activation,
-            norm=norm,
-            readout=readout,
-        )
-
-    def random_init(self, input_size: int, num_labels: int, key: PRNGKeyArray) -> "PredictionHead":
-        dense_key, readout_key = jax.random.split(key)
-        dense_layer = self.dense_config.random_init(
-            input_size,
-            (input_size,),
-            has_biases=self.use_dense_bias,
-            key=dense_key,
-        )
-        norm = self.normalization_config.empty(input_size)
-        readout = self.readout_config.random_init(
+        norm = self.normalization_config.init(initializer, input_size)
+        readout = self.readout_config.init(
+            initializer,
             input_dim=input_size,
             output_dims=(num_labels,),
             has_biases=True,
-            key=readout_key,
         )
-
         return PredictionHead(
-            config=self,
             dense=dense_layer,
             activation=self.activation,
             norm=norm,
@@ -88,7 +67,7 @@ class PredictionHeadConfig:
         )
 
 
-class PredictionHead(LalamoModule[PredictionHeadConfig]):
+class PredictionHead(LalamoModule):
     dense: LinearBase
     activation: Activation
     norm: Normalization
@@ -188,67 +167,43 @@ class ClassifierConfig:
 
     output_labels: tuple[str, ...] | None
 
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Classifier":
-        embedding_key, transformer_key, prediction_head_key = jax.random.split(key, num=3)
-        embedding = self.embedding_config.random_init(
-            vocab_size=self.vocab_size,
-            model_dim=self.model_dim,
-            key=embedding_key,
-        )
-        embedding_norm = self.embedding_norm_config.empty(self.model_dim)
-        transformer = self.transformer_config.random_init(
-            key=transformer_key,
-        )
-        prediction_head = self.prediction_head_config.random_init(
-            input_size=self.hidden_dim,
-            num_labels=self.num_labels,
-            key=prediction_head_key,
-        )
-        return Classifier(
-            self,
-            embedding=embedding,
-            embedding_norm=embedding_norm,
-            transformer=transformer,
-            prediction_head=prediction_head,
-        )
-
-    def empty(self) -> "Classifier":
-        embedding = self.embedding_config.empty(
+    def init(self, initializer: Initializer) -> "Classifier":
+        embedding = self.embedding_config.init(
+            initializer,
             vocab_size=self.vocab_size,
             model_dim=self.model_dim,
         )
-        embedding_norm = self.embedding_norm_config.empty(self.model_dim)
-        transformer = self.transformer_config.empty()
-        prediction_head = self.prediction_head_config.empty(
+        embedding_norm = self.embedding_norm_config.init(initializer, self.model_dim)
+        transformer = self.transformer_config.init(initializer)
+        prediction_head = self.prediction_head_config.init(
+            initializer,
             input_size=self.hidden_dim,
             num_labels=self.num_labels,
         )
         return Classifier(
-            self,
             embedding=embedding,
             embedding_norm=embedding_norm,
             transformer=transformer,
             prediction_head=prediction_head,
+            classifier_pooling=self.classifier_pooling,
+            output_labels=self.output_labels,
+            num_labels=self.num_labels,
         )
 
 
-class Classifier(LalamoModule[ClassifierConfig]):
+class Classifier(LalamoModule):
     embedding: EmbeddingBase
     embedding_norm: Normalization
     transformer: Transformer
     prediction_head: PredictionHead
 
+    classifier_pooling: PoolingType = eqx.field(static=True)
+    output_labels: tuple[str, ...] | None = eqx.field(static=True)
+    num_labels: int = eqx.field(static=True)
+
     @property
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
-
-    def __post_init__(self) -> None:
-        if self.config.output_labels is not None and len(self.config.output_labels) != self.config.num_labels:
-            raise ValueError("Number of output logits is different from provided list of labels")
 
     @eqx.filter_jit
     def __call__(
@@ -275,13 +230,13 @@ class Classifier(LalamoModule[ClassifierConfig]):
             forward_pass_config=forward_pass_config,
         )
 
-        if self.config.classifier_pooling == PoolingType.CLS:
+        if self.classifier_pooling == PoolingType.CLS:
             pooled_output = transformer_result.outputs[:, 0, :]
-        elif self.config.classifier_pooling == PoolingType.MEAN:
+        elif self.classifier_pooling == PoolingType.MEAN:
             attention_mask = jnp.ones((*token_ids.shape, 1), dtype=transformer_result.outputs.dtype)
             pooled_output = (transformer_result.outputs * attention_mask).sum(axis=1) / attention_mask.sum(axis=1)
         else:
-            raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
+            raise TypeError(f"classifier_pooling of unknown type: {self.classifier_pooling}")
 
         logits = self.prediction_head(pooled_output)
 

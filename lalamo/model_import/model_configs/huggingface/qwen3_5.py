@@ -84,6 +84,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
         is_mlx = isinstance(quantization, MLXQuantizationConfig)
 
         if is_mlx:
+            assert isinstance(quantization, MLXQuantizationConfig)
             if self.tie_word_embeddings:
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
                     input_scale=None,

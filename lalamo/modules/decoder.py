@@ -2,14 +2,14 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import equinox as eqx
-import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 
 from .common import (
     ForwardPassMode,
+    Initializer,
     LalamoModule,
 )
 from .embedding import EmbeddingBase, EmbeddingConfig
@@ -87,40 +87,21 @@ class DecoderConfig:
     vocab_size: int
     pard_token: int | None = None
 
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Decoder":
-        embedding_key, transformer_key = jax.random.split(key)
-        embedding = self.embedding_config.random_init(
-            vocab_size=self.vocab_size,
-            model_dim=self.transformer_config.model_dim,
-            key=embedding_key,
-        )
-        transformer = self.transformer_config.random_init(key=transformer_key)
-
-        return Decoder(
-            config=self,
-            embedding=embedding,
-            transformer=transformer,
-        )
-
-    def empty(self) -> "Decoder":
-        embedding = self.embedding_config.empty(
+    def init(self, initializer: Initializer) -> "Decoder":
+        embedding = self.embedding_config.init(
+            initializer,
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
         )
-        transformer = self.transformer_config.empty()
+        transformer = self.transformer_config.init(initializer)
 
         return Decoder(
-            config=self,
             embedding=embedding,
             transformer=transformer,
         )
 
 
-class Decoder(LalamoModule[DecoderConfig]):
+class Decoder(LalamoModule):
     embedding: EmbeddingBase
     transformer: Transformer
 

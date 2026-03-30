@@ -3,15 +3,14 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import equinox as eqx
-import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
-from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
+from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
@@ -64,15 +63,15 @@ class TransformerConfig:
     hidden_dim: int
     context_length: int
 
-    def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
+    def init(self, initializer: Initializer) -> "Transformer":
         rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
         rope_dim = next(rope_dims, None)
         assert all(d == rope_dim for d in rope_dims)
 
         if self.global_rope_config:
             assert rope_dim is not None
-
             global_rope = self.global_rope_config.init(
+                initializer,
                 head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
@@ -81,75 +80,26 @@ class TransformerConfig:
 
         if self.local_rope_config:
             assert rope_dim is not None
-
             max_sliding_window_size = max(
                 layer_config.mixer_config.sliding_window_size or 0
                 for layer_config in self.layer_configs
                 if isinstance(layer_config.mixer_config, AttentionConfig)
             )
-
             local_rope = self.local_rope_config.init(
+                initializer,
                 head_dim=rope_dim,
                 num_timesteps=max(max_sliding_window_size, self.context_length),
             )
         else:
             local_rope = None
 
-        layers_keys = jax.random.split(key, num=len(self.layer_configs))
         layers = tuple(
-            layer_config.random_init(
-                model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
-                key=layer_key,
-            )
-            for layer_key, layer_config in zip(layers_keys, self.layer_configs, strict=True)
-        )
-        output_norm = self.output_norm_config.init(self.model_dim)
-
-        return Transformer(
-            config=self,
-            global_rope=global_rope,
-            local_rope=local_rope,
-            layers=layers,
-            output_norm=output_norm,
-        )
-
-    def empty(self) -> "Transformer":
-        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
-        rope_dim = next(rope_dims, None)
-        assert all(d == rope_dim for d in rope_dims)
-
-        if self.global_rope_config:
-            assert rope_dim is not None
-
-            global_rope = self.global_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            global_rope = None
-
-        if self.local_rope_config:
-            assert rope_dim is not None
-
-            local_rope = self.local_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            local_rope = None
-
-        layers = tuple(
-            layer_config.empty(
-                model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
-            )
+            layer_config.init(initializer, model_dim=self.model_dim, hidden_dim=self.hidden_dim)
             for layer_config in self.layer_configs
         )
-        output_norm = self.output_norm_config.empty(self.model_dim)
+        output_norm = self.output_norm_config.init(initializer, self.model_dim)
 
         return Transformer(
-            config=self,
             global_rope=global_rope,
             local_rope=local_rope,
             layers=layers,
@@ -157,7 +107,7 @@ class TransformerConfig:
         )
 
 
-class Transformer(LalamoModule[TransformerConfig]):
+class Transformer(LalamoModule):
     global_rope: RoPE | None
     local_rope: RoPE | None
     layers: tuple[TransformerLayer, ...]

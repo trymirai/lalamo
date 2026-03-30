@@ -2,11 +2,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Self
 
-import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+import equinox as eqx
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.modules.common import Initializer
 
 from .fishaudio_modules import (
     ConvNeXtSpatialParams,
@@ -40,8 +41,9 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
     codebook_size: int
     semantic_codebook_size: int
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
     ) -> "DescriptAudioCodec":
         (
             semantic_quantizer_params,
@@ -61,61 +63,22 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
             codebook_size=self.codebook_size,
             semantic_codebook_size=self.semantic_codebook_size,
         )
-        quantizer = self.quantizer_config.empty(
+
+        quantizer = self.quantizer_config.init(
+            initializer,
             upsampler_trans_conv_params=upsample_conv_params,
             convnext_spatial_params=convnext_params,
             semantic_quantizer_params=semantic_quantizer_params,
             quantizer_params=quantizer_params,
         )
 
-        decoder = self.decoder_config.empty(spatial_params=decoder_spatial_params)
+        decoder = self.decoder_config.init(initializer, spatial_params=decoder_spatial_params)
 
         return DescriptAudioCodec(
-            config=self,
             quantizer=quantizer,
             decoder=decoder,
-        )
-
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DescriptAudioCodec":
-        key1, key2 = jax.random.split(key)
-
-        (
-            semantic_quantizer_params,
-            quantizer_params,
-            convnext_params,
-            upsample_conv_params,
-            decoder_spatial_params,
-        ) = DescriptAudioCodecConfig.create_spatial_parameter_objects(
-            encoder_dim=self.encoder_dim,
-            encoder_rates=self.encoder_rates,
-            decoder_dim=self.decoder_dim,
-            decoder_rates=self.decoder_rates,
-            input_dim=self.input_dim,
-            n_codebooks=self.n_codebooks,
-            codebook_dim=self.codebook_dim,
-            downsample_factor=self.downsample_factor,
-            codebook_size=self.codebook_size,
-            semantic_codebook_size=self.semantic_codebook_size,
-        )
-
-        quantizer = self.quantizer_config.random_init(
-            upsampler_trans_conv_params=upsample_conv_params,
-            convnext_spatial_params=convnext_params,
-            semantic_quantizer_params=semantic_quantizer_params,
-            quantizer_params=quantizer_params,
-            key=key1,
-        )
-
-        decoder = self.decoder_config.random_init(spatial_params=decoder_spatial_params, key=key2)
-
-        return DescriptAudioCodec(
-            config=self,
-            quantizer=quantizer,
-            decoder=decoder,
+            samplerate_value=self.samplerate,
+            precision=self.precision,
         )
 
     @staticmethod
@@ -179,7 +142,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
         )
 
 
-class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
+class DescriptAudioCodec(TTSAudioDecoder):
     """Lalamo implementation of DAC (Descript Audio Codec)
     Original code: https://github.com/descriptinc/descript-audio-codec
     The decoding pipeline:
@@ -190,13 +153,16 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     quantizer: DownsampleResidualVectorQuantize
     decoder: DACDecoder
 
+    samplerate_value: int = eqx.field(static=True)
+    precision: DTypeLike = eqx.field(static=True)
+
     @property
     def samplerate(self) -> int:
-        return self.config.samplerate
+        return self.samplerate_value
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def semantic_codebook_size(self) -> int:

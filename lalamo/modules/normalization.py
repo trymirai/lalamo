@@ -7,9 +7,9 @@ import jax
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.common import ParameterTree, dummy_array, require_mapping
+from lalamo.common import ParameterTree, require_mapping
 
-from .common import LalamoModule
+from .common import Initializer, LalamoModule
 
 __all__ = [
     "Normalization",
@@ -33,75 +33,73 @@ class NormalizationConfig:
     subtract_mean: bool
     use_bias: bool = False
 
-    def init(self, input_dim: int) -> "Normalization":
-        scales = jnp.ones(input_dim, dtype=self.scale_precision)
+    def init(self, initializer: Initializer, input_dim: int) -> "Normalization":
+        scales = initializer.ones((input_dim,), self.scale_precision)
         if self.use_bias:
-            bias = jnp.zeros(input_dim, dtype=self.scale_precision)
+            biases = initializer.zeros((input_dim,), self.scale_precision)
         else:
-            bias = None
-        return Normalization(self, scales=scales, biases=bias)
+            biases = None
+        return Normalization(
+            scales=scales,
+            biases=biases,
+            activation_precision=self.scale_precision,
+            accumulation_precision=self.accumulation_precision,
+            epsilon=self.epsilon,
+            scale_offset=self.scale_offset,
+            upcast_mode=self.upcast_mode,
+            subtract_mean=self.subtract_mean,
+        )
 
-    def empty(self, input_dim: int) -> "Normalization":
-        if self.use_bias:
-            bias = dummy_array(input_dim, dtype=self.scale_precision)
-        else:
-            bias = None
-        return Normalization(config=self, scales=dummy_array(input_dim, dtype=self.scale_precision), biases=bias)
 
-
-class Normalization(LalamoModule[NormalizationConfig]):
+class Normalization(LalamoModule):
     scales: Float[Array, " channels"]
-    biases: Float[Array, " channels"] | None = None
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.scale_precision
+    activation_precision: DTypeLike = eqx.field(static=True)
+    accumulation_precision: DTypeLike = eqx.field(static=True)
+
+    epsilon: float = eqx.field(static=True)
+    scale_offset: float | None = eqx.field(static=True)
+    upcast_mode: UpcastMode = eqx.field(static=True)
+    subtract_mean: bool = eqx.field(static=True)
+
+    biases: Float[Array, " channels"] | None = None
 
     @property
     def input_dim(self) -> int:
         (result,) = self.scales.shape
         return result
 
-    def __post_init__(self) -> None:
-        if self.config.scale_precision != self.scales.dtype:
-            raise ValueError(
-                f"Scales precision {self.scales.dtype} does not match the"
-                f" specified precision {self.config.scale_precision}",
-            )
-
     @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        upcasted_inputs = inputs.astype(self.config.accumulation_precision)
+        upcasted_inputs = inputs.astype(self.accumulation_precision)
 
-        if self.config.subtract_mean:
+        if self.subtract_mean:
             mean = jnp.mean(upcasted_inputs)
             upcasted_inputs = upcasted_inputs - mean
 
-        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
+        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.epsilon
         normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 
-        if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
+        if self.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)
 
-        if self.config.upcast_mode == UpcastMode.FULL_LAYER:
-            adjusted_scales = self.scales.astype(self.config.accumulation_precision)
+        if self.upcast_mode == UpcastMode.FULL_LAYER:
+            adjusted_scales = self.scales.astype(self.accumulation_precision)
         else:
             adjusted_scales = self.scales
 
-        if self.config.scale_offset is not None:
-            adjusted_scales = adjusted_scales + self.config.scale_offset
+        if self.scale_offset is not None:
+            adjusted_scales = adjusted_scales + self.scale_offset
 
         result = normalized_x * adjusted_scales
 
-        if self.config.use_bias:
-            assert self.biases is not None
+        if self.biases is not None:
             result += self.biases
         return result.astype(inputs.dtype)
 
     def export_weights(self) -> ParameterTree:
-        result = {"scales": self.scales}
-        if self.config.use_bias:
-            assert self.biases is not None
+        result: dict[str, Array] = {"scales": self.scales}
+        if self.biases is not None:
             result["biases"] = self.biases
         return result
 
@@ -110,7 +108,7 @@ class Normalization(LalamoModule[NormalizationConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         weights = require_mapping(weights)
-        if self.config.use_bias:
+        if self.biases is not None:
             assert isinstance(weights["biases"], Array)
             biases = weights["biases"]
         else:

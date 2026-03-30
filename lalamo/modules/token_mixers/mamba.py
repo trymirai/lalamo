@@ -6,11 +6,11 @@ import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
+from lalamo.common import ParameterTree, require_array, require_mapping, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.common import PositionalEmbeddingSelector
+from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
@@ -116,60 +116,13 @@ class Mamba2Config(TokenMixerConfigBase):
     def rope_dim(self) -> None:
         return None
 
-    def random_init(
+    def init(
         self,
-        model_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Mamba2":
-        in_key, out_key, conv_key, skip_key = jax.random.split(key, 4)
-
-        in_projection = self.in_projection_config.random_init(
-            input_dim=model_dim,
-            output_dims=(
-                self.inner_dim + 2 * self.num_groups * self.state_dim,
-                self.inner_dim,
-                self.num_heads,
-            ),
-            has_biases=self.has_in_biases,
-            key=in_key,
-        )
-
-        out_projection = self.out_projection_config.random_init(
-            self.inner_dim,
-            (model_dim,),
-            has_biases=self.has_out_biases,
-            key=out_key,
-        )
-
-        conv = self.conv_config.random_init(self.conv_dim, self.kernel_size, key=conv_key)
-
-        skip_connection_weight = jax.random.normal(
-            skip_key,
-            (self.num_heads,),
-            dtype=in_projection.activation_precision,
-        )
-
-        gate_bias = jnp.zeros((self.inner_dim,), dtype=in_projection.activation_precision)
-
-        return Mamba2(
-            self,
-            in_projection=in_projection,
-            conv=conv,
-            out_projection=out_projection,
-            skip_connection_weight=skip_connection_weight,
-            gate_bias=gate_bias,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            state_dim=self.state_dim,
-        )
-
-    def empty(
-        self,
+        initializer: Initializer,
         model_dim: int,
     ) -> "Mamba2":
-        in_projection = self.in_projection_config.empty(
+        in_projection = self.in_projection_config.init(
+            initializer,
             input_dim=model_dim,
             output_dims=(
                 self.inner_dim + 2 * self.num_groups * self.state_dim,
@@ -179,32 +132,36 @@ class Mamba2Config(TokenMixerConfigBase):
             has_biases=self.has_in_biases,
         )
 
-        out_projection = self.out_projection_config.empty(
+        out_projection = self.out_projection_config.init(
+            initializer,
             self.inner_dim,
             (model_dim,),
             has_biases=self.has_out_biases,
         )
 
-        conv = self.conv_config.empty(self.conv_dim, self.kernel_size)
+        conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
-        skip_connection_weight = dummy_array((self.num_heads,), in_projection.activation_precision)
-        gate_bias = dummy_array((self.inner_dim,), in_projection.activation_precision)
+        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), in_projection.activation_precision)
+
+        gate_bias = initializer.zeros((self.inner_dim,), in_projection.activation_precision)
 
         return Mamba2(
-            self,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,
             skip_connection_weight=skip_connection_weight,
             gate_bias=gate_bias,
+            activation=self.activation,
             num_heads=self.num_heads,
             num_groups=self.num_groups,
             head_dim=self.head_dim,
             state_dim=self.state_dim,
+            kernel_size=self.kernel_size,
+            chunk_size=self.chunk_size,
         )
 
 
-class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
+class Mamba2(TokenMixerBase[SSMStateLayer]):
     in_projection: LinearBase
     conv: SeparableCausalConv
     out_projection: LinearBase
@@ -212,10 +169,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     skip_connection_weight: Float[Array, " heads"]
     gate_bias: Float[Array, " inner_channels"]
 
+    activation: Activation = eqx.field(static=True)
     num_heads: int = eqx.field(static=True)
     num_groups: int = eqx.field(static=True)
     head_dim: int = eqx.field(static=True)
     state_dim: int = eqx.field(static=True)
+    kernel_size: int = eqx.field(static=True)
+    chunk_size: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -228,6 +188,10 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     @property
     def inner_dim(self) -> int:
         return self.num_heads * self.head_dim
+
+    @property
+    def conv_dim(self) -> int:
+        return self.inner_dim + 2 * self.num_groups * self.state_dim
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
@@ -283,7 +247,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         conv_in, gate, dt_log = self.in_projection(token)
         conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
-        conv_activated = self.config.activation(conv_out)
+        conv_activated = self.activation(conv_out)
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(
             conv_activated,
@@ -515,8 +479,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         if state is None:
             state = SSMStateLayer.init(
-                self.config.kernel_size,
-                self.config.conv_dim,
+                self.kernel_size,
+                self.conv_dim,
                 (self.num_heads, self.head_dim, self.state_dim),
                 self.activation_precision,
             )
@@ -534,7 +498,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state.conv_state,
             return_updated_state=return_updated_state,
         )
-        conv_activated = self.config.activation(conv_output)
+        conv_activated = self.activation(conv_output)
 
         x_channels, input_proj_channels, output_proj_channels = jnp.split(
             conv_activated,
@@ -582,7 +546,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             queries,
             dt,
             state.ssm_state,
-            self.config.chunk_size,
+            self.chunk_size,
             length_without_padding,
             d=self.skip_connection_weight,
             z=gate_values_reshaped,
@@ -608,8 +572,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
     def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
         return SSMStateLayer.init(
-            self.config.kernel_size,
-            self.config.conv_dim,
+            self.kernel_size,
+            self.conv_dim,
             (self.num_heads, self.head_dim, self.state_dim),
             self.activation_precision,
         )
