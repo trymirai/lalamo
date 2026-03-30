@@ -1,26 +1,32 @@
 import contextlib
 import contextvars
-from abc import abstractmethod
+from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
-from typing import Any, Generic, Self, TypeVar
+from typing import Any, NamedTuple, Self, cast
 
 import equinox as eqx
 import jax
 import jax.sharding as shd
 from cattrs import Converter
+from jax import ShapeDtypeStruct
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
 
 __all__ = [
     "DummyUnionMember",
+    "EmptyInitializer",
     "ForwardPassMode",
+    "Initializer",
     "LalamoModule",
+    "ModuleWithConfig",
     "ParameterTree",
+    "PositionalEmbeddingSelector",
+    "RandomInitializer",
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
@@ -40,45 +46,9 @@ class ForwardPassMode(Enum):
     SINGLE_TOKEN = "single_token"
 
 
-ConfigT_co = TypeVar("ConfigT_co", covariant=True)
-
-
-def stringify_path(path: tuple[Any, ...]) -> str:
-    parts: list[str] = []
-    for key in path:
-        match key:
-            case jax.tree_util.GetAttrKey(name):
-                parts.append(name)
-            case jax.tree_util.SequenceKey(idx):
-                parts.append(str(idx))
-            case jax.tree_util.DictKey(key=k):
-                parts.append(str(k))
-            case _:
-                parts.append(str(key))
-    return ".".join(parts)
-
-
-class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
-    config: ConfigT_co = eqx.field(static=True)
-
-    @property
+class LalamoModule(eqx.Module):
     @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
-    def to_uzu(self) -> dict[str, Array]:
-        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(
-            self,
-            is_leaf=lambda x: isinstance(x, LalamoModule) and x is not self,
-        )
-        result: dict[str, Array] = {}
-        for path, leaf in flat_with_path:
-            key = stringify_path(path)
-            if isinstance(leaf, LalamoModule):
-                for sub_key, array in leaf.to_uzu().items():
-                    result[f"{key}.{sub_key}"] = array
-            else:
-                result[key] = leaf
-        return result
+    def export_weights(self) -> ParameterTree[Array]: ...
 
     def from_uzu(self, weights: dict[str, Array], prefix: str = "") -> Self:
         def restore(path: tuple[object, ...], leaf: object) -> object:
@@ -94,6 +64,57 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
             self,
             is_leaf=lambda x: isinstance(x, LalamoModule) and x is not self,
         )
+
+
+class ModuleWithConfig[ModuleT, ConfigT](NamedTuple):
+    module: ModuleT
+    config: ConfigT
+
+
+@dataclass
+class Initializer(ABC):
+    precision: DTypeLike
+
+    @abstractmethod
+    def normal(self, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array: ...
+
+    @abstractmethod
+    def ones(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array: ...
+
+    @abstractmethod
+    def zeros(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array: ...
+
+
+class EmptyInitializer(Initializer):
+    @classmethod
+    def _dummy_array(cls, shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
+        if isinstance(shape, int):
+            shape = (shape,)
+        return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype))
+
+    def normal(self, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array:  # noqa: ARG002
+        return self._dummy_array(shape, dtype)
+
+    def ones(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return self._dummy_array(shape, dtype)
+
+    def zeros(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return self._dummy_array(shape, dtype)
+
+
+@dataclass
+class RandomInitializer(Initializer):
+    key: PRNGKeyArray
+
+    def normal(self, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        self.key, key = jax.random.split(self.key)
+        return jax.random.normal(key, shape, dtype) * std
+
+    def ones(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return jnp.ones(shape, dtype)
+
+    def zeros(self, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
+        return jnp.zeros(shape, dtype)
 
 
 def _dtype_to_str(dtype: DTypeLike) -> str:

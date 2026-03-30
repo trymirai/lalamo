@@ -12,6 +12,7 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
+from lalamo.modules.common import Initializer
 from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
@@ -23,19 +24,24 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
     codebook_size: int
     precision: DTypeLike
 
-    def empty(self) -> "StubTextDecoder":
-        return StubTextDecoder(config=self, seed=123)
+    def init(self, initializer: Initializer) -> "StubTextDecoder":  # noqa: ARG002
+        return StubTextDecoder(
+            seed=123,
+            num_codebooks=self.num_codebooks,
+            codebook_size=self.codebook_size,
+            precision=self.precision,
+        )
 
-    def random_init(self, *, key: PRNGKeyArray) -> "StubTextDecoder":  # noqa: ARG002
-        return StubTextDecoder(config=self, seed=123)
 
-
-class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
+class StubTextDecoder(TTSTextDecoder):
     seed: int = eqx.field(static=True)
+    num_codebooks: int = eqx.field(static=True)
+    codebook_size: int = eqx.field(static=True)
+    precision: DTypeLike = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     def decode_utterance(
         self,
@@ -52,8 +58,8 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
 
         return jax.random.randint(
             key,
-            shape=(batch_size, self.config.num_codebooks, output_length),
+            shape=(batch_size, self.num_codebooks, output_length),
             minval=0,
-            maxval=self.config.codebook_size,
+            maxval=self.codebook_size,
             dtype=jnp.int32,
         )

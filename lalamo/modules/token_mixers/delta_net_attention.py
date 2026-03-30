@@ -5,11 +5,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import dummy_array
-from lalamo.modules.common import PositionalEmbeddingSelector
-from lalamo.modules.linear import Linear, LinearConfig
+from lalamo.common import ParameterTree, require_array, require_mapping, require_tree
+from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
+from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
@@ -51,59 +51,13 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
     value_head_dim: int
     kernel_size: int
 
-    def random_init(
-        self,
-        model_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DeltaNetAttention":
-        proj_key, conv_key, out_key = jax.random.split(key, 3)
-        key_dim, value_dim, conv_dim = _delta_dims(
-            self.num_heads,
-            self.num_groups,
-            self.head_dim,
-            self.value_head_dim,
-        )
-        in_proj = self.in_proj_config.random_init(
-            input_dim=model_dim,
-            output_dims=(
-                key_dim,
-                key_dim,
-                value_dim,
-                value_dim,
-                self.num_heads,
-                self.num_heads,
-            ),
-            has_biases=False,
-            key=proj_key,
-        )
-        conv = self.conv_config.random_init(conv_dim, self.kernel_size, key=conv_key)
-        out_proj = self.out_proj_config.random_init(
-            input_dim=value_dim,
-            output_dims=(model_dim,),
-            has_biases=False,
-            key=out_key,
-        )
-        norm = self.norm_config.init(self.value_head_dim)
-        dt_bias = jnp.zeros((self.num_heads,), dtype=in_proj.activation_precision)
-        a_log = jnp.zeros((self.num_heads,), dtype=in_proj.activation_precision)
-        return DeltaNetAttention(
-            self,
-            in_proj=in_proj,
-            conv=conv,
-            out_proj=out_proj,
-            norm=norm,
-            dt_bias=dt_bias,
-            a_log=a_log,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            value_head_dim=self.value_head_dim,
-            kernel_size=self.kernel_size,
-        )
+    @property
+    def rope_dim(self) -> None:
+        return None
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         model_dim: int,
     ) -> "DeltaNetAttention":
         key_dim, value_dim, conv_dim = _delta_dims(
@@ -112,7 +66,8 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             self.head_dim,
             self.value_head_dim,
         )
-        in_proj = self.in_proj_config.empty(
+        in_proj = self.in_proj_config.init(
+            initializer,
             input_dim=model_dim,
             output_dims=(
                 key_dim,
@@ -124,17 +79,17 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             ),
             has_biases=False,
         )
-        conv = self.conv_config.empty(conv_dim, self.kernel_size)
-        out_proj = self.out_proj_config.empty(
+        conv = self.conv_config.init(initializer, conv_dim, self.kernel_size)
+        out_proj = self.out_proj_config.init(
+            initializer,
             input_dim=value_dim,
             output_dims=(model_dim,),
             has_biases=False,
         )
-        norm = self.norm_config.empty(self.value_head_dim)
-        dt_bias = dummy_array((self.num_heads,), dtype=in_proj.activation_precision)
-        a_log = dummy_array((self.num_heads,), dtype=in_proj.activation_precision)
+        norm = self.norm_config.init(initializer, self.value_head_dim)
+        dt_bias = initializer.zeros((self.num_heads,), in_proj.activation_precision)
+        a_log = initializer.zeros((self.num_heads,), in_proj.activation_precision)
         return DeltaNetAttention(
-            self,
             in_proj=in_proj,
             conv=conv,
             out_proj=out_proj,
@@ -149,33 +104,8 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
         )
 
 
-class DeltaNetScanResult(NamedTuple):
-    outputs: Float[Array, "tokens heads value_channels"]
-    final_state: Float[Array, "heads value_channels key_channels"]
-
-
-class DeltaNetScanInputs(NamedTuple):
-    queries: Float[Array, "tokens heads key_channels"]
-    keys: Float[Array, "tokens heads key_channels"]
-    values: Float[Array, "tokens heads value_channels"]
-    decay_factor: Float[Array, "tokens heads"]
-    beta: Float[Array, "tokens heads"]
-
-
-class DeltaNetTokenStepOutput(NamedTuple):
-    local_output: Float[Array, "heads value_channels"]
-    correction_vec: Float[Array, "heads key_channels"]
-
-
-class DeltaNetChunkScanResult(NamedTuple):
-    chunk_outputs: Float[Array, "chunk_size heads value_channels"]
-    correction_vecs: Float[Array, "chunk_size heads key_channels"]
-    end_state: Float[Array, "heads value_channels key_channels"]
-    end_prop: Float[Array, "heads key_channels key_channels"]
-
-
-class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
-    in_proj: Linear
+class DeltaNetAttention(TokenMixerBase[SSMStateLayer]):
+    in_proj: LinearBase
     conv: SeparableCausalConv
     out_proj: Linear
     norm: Normalization

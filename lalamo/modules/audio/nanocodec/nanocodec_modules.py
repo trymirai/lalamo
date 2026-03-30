@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -19,7 +19,7 @@ from lalamo.modules.audio.common_modules import (
     Snake1d,
     Snake1dConfig,
 )
-from lalamo.modules.common import LalamoModule
+from lalamo.modules.common import Initializer, LalamoModule
 
 __all__ = [
     "CausalHiFiGANDecoder",
@@ -60,30 +60,24 @@ class FiniteScalarQuantizerConfig:
             result *= level
         return result
 
-    def empty(self) -> "FiniteScalarQuantizer":
+    def init(self, initializer: Initializer) -> "FiniteScalarQuantizer":  # noqa: ARG002
         """Create quantizer with buffer arrays.
 
         Note: FSQ has no learnable weights, only precomputed buffers.
         """
         num_levels = jnp.array(self.num_levels, dtype=jnp.int32)
-        # dim_base_index = cumprod([1, levels[0], levels[0]*levels[1], ...])
-        # Used to convert per-dimension indices to a single codebook index
         dim_base_index = jnp.cumprod(jnp.concatenate([jnp.array([1], dtype=jnp.int32), num_levels[:-1]]))
         return FiniteScalarQuantizer(
-            config=self,
             num_levels_buffer=num_levels,
             dim_base_index=dim_base_index,
+            precision=self.precision,
+            eps=self.eps,
+            dim_count=self.dim,
+            total_codebook_size=self.codebook_size,
         )
 
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,  # noqa: ARG002 (unused - FSQ has no learnable weights)
-    ) -> "FiniteScalarQuantizer":
-        return self.empty()
 
-
-class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
+class FiniteScalarQuantizer(LalamoModule):
     """Finite Scalar Quantizer.
 
     Quantizes each element of the input vector independently into a number of levels.
@@ -95,17 +89,22 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     num_levels_buffer: Int[Array, " dim"]
     dim_base_index: Int[Array, " dim"]
 
+    precision: DTypeLike = eqx.field(static=True)
+    eps: float = eqx.field(static=True)
+    dim_count: int = eqx.field(static=True)
+    total_codebook_size: int = eqx.field(static=True)
+
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def dim(self) -> int:
-        return self.config.dim
+        return self.dim_count
 
     @property
     def codebook_size(self) -> int:
-        return self.config.codebook_size
+        return self.total_codebook_size
 
     def _compress(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Apply tanh compression to map continuous values to quantization range.
@@ -114,12 +113,12 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         For a dimension with L levels, outputs are mapped to range [-(L-1)/2, (L-1)/2]
         with appropriate handling for even/odd number of levels.
         """
-        num_levels = self.num_levels_buffer.astype(self.config.precision)
+        num_levels = self.num_levels_buffer.astype(self.precision)
 
         # Output scale: (num_levels - 1) / 2
         # Scaled down slightly to avoid rounding issues at boundaries
         output_scale = (num_levels - 1) / 2
-        output_scale = output_scale * (1 - self.config.eps)
+        output_scale = output_scale * (1 - self.eps)
 
         # Offset for even number of levels (shifts grid by 0.5)
         output_offset = jnp.where(self.num_levels_buffer % 2 == 0, 0.5, 0.0)
@@ -149,19 +148,19 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         compressed = self._compress(inputs)
         codes = self._round_ste(compressed)
         # Normalize to [-1, 1]
-        scale = (self.num_levels_buffer // 2).astype(self.config.precision)
+        scale = (self.num_levels_buffer // 2).astype(self.precision)
         codes = codes / scale[None, :, None]
         return codes
 
     def _codes_to_nonnegative(self, codes: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Convert codes centered around zero to nonnegative integer indices."""
-        scale = (self.num_levels_buffer // 2).astype(self.config.precision)
+        scale = (self.num_levels_buffer // 2).astype(self.precision)
         offset = scale
         return scale[None, :, None] * codes + offset[None, :, None]
 
     def _nonnegative_to_codes(self, codes_nonneg: Float[Array, "dim"]) -> Float[Array, "dim"]:
         """Convert nonnegative indices back to codes centered around zero."""
-        scale = (self.num_levels_buffer // 2).astype(self.config.precision)
+        scale = (self.num_levels_buffer // 2).astype(self.precision)
         offset = scale
         return (codes_nonneg - offset) / scale
 
@@ -172,7 +171,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         """
         nonneg = self._codes_to_nonnegative(codes)
         # Sum over dimensions weighted by base index
-        indices = jnp.sum(nonneg * self.dim_base_index[None, :, None].astype(self.config.precision), axis=1)
+        indices = jnp.sum(nonneg * self.dim_base_index[None, :, None].astype(self.precision), axis=1)
         return indices.astype(jnp.int32)
 
     def _indices_to_codes(self, index: Int[Array, " 1"]) -> Float[Array, " dim"]:
@@ -181,7 +180,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         """
 
         codes_nonnegative = (index // self.dim_base_index) % self.num_levels_buffer
-        return self._nonnegative_to_codes(codes_nonnegative.astype(self.config.precision))
+        return self._nonnegative_to_codes(codes_nonnegative.astype(self.precision))
 
     def encode(
         self,
@@ -234,19 +233,18 @@ class GroupFiniteScalarQuantizerConfig:
         """Codebook size for each group (product of levels)."""
         return self.quantizer_config.codebook_size
 
-    def empty(self) -> "GroupFiniteScalarQuantizer":
-        quantizers = tuple(self.quantizer_config.empty() for _ in range(self.num_groups))
-        return GroupFiniteScalarQuantizer(config=self, quantizers=quantizers)
+    def init(self, initializer: Initializer) -> "GroupFiniteScalarQuantizer":
+        quantizers = tuple(self.quantizer_config.init(initializer) for _ in range(self.num_groups))
+        return GroupFiniteScalarQuantizer(
+            quantizers=quantizers,
+            precision=self.precision,
+            group_count=self.num_groups,
+            total_codebook_dim=self.codebook_dim,
+            codebook_dim_per_quantizer_group=self.codebook_dim_per_group,
+        )
 
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,  # noqa: ARG002 (unused - FSQ has no learnable weights)
-    ) -> "GroupFiniteScalarQuantizer":
-        return self.empty()
 
-
-class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig]):
+class GroupFiniteScalarQuantizer(LalamoModule):
     """Group Finite Scalar Quantizer.
 
     Splits the input vector into groups and applies FSQ on each group separately.
@@ -256,21 +254,26 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
 
     quantizers: tuple[FiniteScalarQuantizer, ...]
 
+    precision: DTypeLike = eqx.field(static=True)
+    group_count: int = eqx.field(static=True)
+    total_codebook_dim: int = eqx.field(static=True)
+    codebook_dim_per_quantizer_group: int = eqx.field(static=True)
+
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def num_groups(self) -> int:
-        return self.config.num_groups
+        return self.group_count
 
     @property
     def codebook_dim(self) -> int:
-        return self.config.codebook_dim
+        return self.total_codebook_dim
 
     @property
     def codebook_dim_per_group(self) -> int:
-        return self.config.codebook_dim_per_group
+        return self.codebook_dim_per_quantizer_group
 
     def encode(
         self,
@@ -319,23 +322,18 @@ class HalfSnakeConfig:
     def precision(self) -> DTypeLike:
         return self.snake_config.precision
 
-    def empty(self, channels: int) -> "HalfSnake":
+    def init(self, initializer: Initializer, channels: int) -> "HalfSnake":
         snake_channels = channels // 2
-        snake = self.snake_config.empty(snake_channels)
-        return HalfSnake(config=self, snake=snake, total_channels=channels)
-
-    def random_init(
-        self,
-        channels: int,
-        *,
-        key: PRNGKeyArray,  # noqa: ARG002 (unused - Snake uses ones initialization)
-    ) -> "HalfSnake":
-        snake_channels = channels // 2
-        snake = self.snake_config.random_init(snake_channels)
-        return HalfSnake(config=self, snake=snake, total_channels=channels)
+        snake = self.snake_config.init(initializer, snake_channels)
+        return HalfSnake(
+            snake=snake,
+            total_channels=channels,
+            precision=self.precision,
+            leaky_relu_negative_slope=self.leaky_relu_negative_slope,
+        )
 
 
-class HalfSnake(LalamoModule[HalfSnakeConfig]):
+class HalfSnake(LalamoModule):
     """HalfSnake activation function.
 
     Applies Snake activation to the first half of channels and
@@ -344,10 +342,12 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
     snake: Snake1d
     total_channels: int = eqx.field(static=True)
+    precision: DTypeLike = eqx.field(static=True)
+    leaky_relu_negative_slope: float = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     @property
     def channels(self) -> int:
@@ -369,8 +369,7 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
         snake_out = self.snake(snake_input)
 
         # Apply LeakyReLU to second half
-        negative_slope = self.config.leaky_relu_negative_slope
-        lrelu_out = jnp.where(lrelu_input >= 0, lrelu_input, negative_slope * lrelu_input)
+        lrelu_out = jnp.where(lrelu_input >= 0, lrelu_input, self.leaky_relu_negative_slope * lrelu_input)
 
         # Concatenate along channel dimension
         return jnp.concatenate([snake_out, lrelu_out], axis=2)
@@ -380,7 +379,7 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 class ResidualBlockConfig:
     """Configuration for ResidualBlock.
 
-    A residual block that applies activation → conv → activation → conv + residual.
+    A residual block that applies activation -> conv -> activation -> conv + residual.
     Used in HiFi-GAN decoder architecture.
     """
 
@@ -391,22 +390,25 @@ class ResidualBlockConfig:
     def precision(self) -> DTypeLike:
         return self.conv_config.precision
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         channels: int,
         kernel_size: int,
         dilation: int,
     ) -> "ResidualBlock":
-        input_activation = self.activation_config.empty(channels)
-        skip_activation = self.activation_config.empty(channels)
+        input_activation = self.activation_config.init(initializer, channels)
+        skip_activation = self.activation_config.init(initializer, channels)
 
-        input_conv = self.conv_config.empty(
+        input_conv = self.conv_config.init(
+            initializer,
             in_channels=channels,
             out_channels=channels,
             kernel_size=kernel_size,
             dilation=dilation,
         )
-        skip_conv = self.conv_config.empty(
+        skip_conv = self.conv_config.init(
+            initializer,
             in_channels=channels,
             out_channels=channels,
             kernel_size=kernel_size,
@@ -414,43 +416,6 @@ class ResidualBlockConfig:
         )
 
         return ResidualBlock(
-            config=self,
-            input_activation=input_activation,
-            skip_activation=skip_activation,
-            input_conv=input_conv,
-            skip_conv=skip_conv,
-        )
-
-    def random_init(
-        self,
-        channels: int,
-        kernel_size: int,
-        dilation: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "ResidualBlock":
-        input_act_key, skip_act_key, input_conv_key, skip_conv_key = jax.random.split(key, 4)
-
-        input_activation = self.activation_config.random_init(channels, key=input_act_key)
-        skip_activation = self.activation_config.random_init(channels, key=skip_act_key)
-
-        input_conv = self.conv_config.random_init(
-            in_channels=channels,
-            out_channels=channels,
-            kernel_size=kernel_size,
-            dilation=dilation,
-            key=input_conv_key,
-        )
-        skip_conv = self.conv_config.random_init(
-            in_channels=channels,
-            out_channels=channels,
-            kernel_size=kernel_size,
-            dilation=1,
-            key=skip_conv_key,
-        )
-
-        return ResidualBlock(
-            config=self,
             input_activation=input_activation,
             skip_activation=skip_activation,
             input_conv=input_conv,
@@ -458,9 +423,9 @@ class ResidualBlockConfig:
         )
 
 
-class ResidualBlock(LalamoModule[ResidualBlockConfig]):
+class ResidualBlock(LalamoModule):
     """Residual block for HiFi-GAN decoder.
-    Applies activation → conv → activation → conv + residual
+    Applies activation -> conv -> activation -> conv + residual
     """
 
     input_activation: HalfSnake
@@ -470,7 +435,7 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.input_conv.precision
 
     @property
     def channels(self) -> int:
@@ -480,7 +445,7 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
         self,
         x: Float[Array, "batch sequence channels"],
     ) -> Float[Array, "batch sequence channels"]:
-        # activation → conv → activation → conv
+        # activation -> conv -> activation -> conv
         conv_input = self.input_activation(x)
         skip_input = self.input_conv(conv_input)
         skip_input = self.skip_activation(skip_input)
@@ -504,44 +469,26 @@ class HiFiGANResBlockConfig:
     def precision(self) -> DTypeLike:
         return self.residual_block_config.precision
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         channels: int,
         kernel_size: int,
         dilations: tuple[int, ...],
     ) -> "HiFiGANResBlock":
         res_blocks = tuple(
-            self.residual_block_config.empty(
+            self.residual_block_config.init(
+                initializer,
                 channels=channels,
                 kernel_size=kernel_size,
                 dilation=dilation,
             )
             for dilation in dilations
         )
-        return HiFiGANResBlock(config=self, res_blocks=res_blocks)
-
-    def random_init(
-        self,
-        channels: int,
-        kernel_size: int,
-        dilations: tuple[int, ...],
-        *,
-        key: PRNGKeyArray,
-    ) -> "HiFiGANResBlock":
-        keys = jax.random.split(key, len(dilations))
-        res_blocks = tuple(
-            self.residual_block_config.random_init(
-                channels=channels,
-                kernel_size=kernel_size,
-                dilation=dilation,
-                key=block_key,
-            )
-            for dilation, block_key in zip(dilations, keys, strict=True)
-        )
-        return HiFiGANResBlock(config=self, res_blocks=res_blocks)
+        return HiFiGANResBlock(res_blocks=res_blocks)
 
 
-class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
+class HiFiGANResBlock(LalamoModule):
     """HiFiGAN residual block wrapper.
     Creates multiple ResidualBlocks with different dilations and applies them sequentially.
     """
@@ -550,7 +497,7 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.res_blocks[0].activation_precision
 
     @property
     def channels(self) -> int:
@@ -580,44 +527,26 @@ class HiFiGANResLayerConfig:
     def precision(self) -> DTypeLike:
         return self.hifigan_res_block_config.precision
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         channels: int,
         kernel_sizes: tuple[int, ...],
         dilations: tuple[int, ...],
     ) -> "HiFiGANResLayer":
         res_blocks = tuple(
-            self.hifigan_res_block_config.empty(
+            self.hifigan_res_block_config.init(
+                initializer,
                 channels=channels,
                 kernel_size=kernel_size,
                 dilations=dilations,
             )
             for kernel_size in kernel_sizes
         )
-        return HiFiGANResLayer(config=self, res_blocks=res_blocks)
-
-    def random_init(
-        self,
-        channels: int,
-        kernel_sizes: tuple[int, ...],
-        dilations: tuple[int, ...],
-        *,
-        key: PRNGKeyArray,
-    ) -> "HiFiGANResLayer":
-        keys = jax.random.split(key, len(kernel_sizes))
-        res_blocks = tuple(
-            self.hifigan_res_block_config.random_init(
-                channels=channels,
-                kernel_size=kernel_size,
-                dilations=dilations,
-                key=block_key,
-            )
-            for kernel_size, block_key in zip(kernel_sizes, keys, strict=True)
-        )
-        return HiFiGANResLayer(config=self, res_blocks=res_blocks)
+        return HiFiGANResLayer(res_blocks=res_blocks)
 
 
-class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
+class HiFiGANResLayer(LalamoModule):
     """HiFiGAN residual layer.
 
     Creates multiple HiFiGANResBlocks with different kernel sizes.
@@ -628,7 +557,7 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.res_blocks[0].activation_precision
 
     @property
     def channels(self) -> int:
@@ -654,8 +583,9 @@ class CausalHiFiGANDecoderConfig:
     def precision(self) -> DTypeLike:
         return self.pre_conv_config.precision
 
-    def empty(
+    def init(
         self,
+        initializer: Initializer,
         input_dim: int,
         base_channels: int,
         up_sample_rates: tuple[int, ...],
@@ -665,7 +595,8 @@ class CausalHiFiGANDecoderConfig:
         resblock_dilations: tuple[int, ...],
     ) -> "CausalHiFiGANDecoder":
         # Pre-conv: input_dim -> base_channels
-        pre_conv = self.pre_conv_config.empty(
+        pre_conv = self.pre_conv_config.init(
+            initializer,
             in_channels=input_dim,
             out_channels=base_channels,
             kernel_size=in_kernel_size,
@@ -682,11 +613,12 @@ class CausalHiFiGANDecoderConfig:
             kernel_size = 2 * up_sample_rate
 
             # Activation before upsample
-            activation = self.activation_config.empty(in_channels)
+            activation = self.activation_config.init(initializer, in_channels)
             activations.append(activation)
 
             # Upsample conv (groups=out_channels for depthwise-like operation)
-            upsample_conv = self.transpose_conv_config.empty(
+            upsample_conv = self.transpose_conv_config.init(
+                initializer,
                 in_channels=in_channels,
                 out_channels=out_channels,
                 kernel_size=kernel_size,
@@ -696,7 +628,8 @@ class CausalHiFiGANDecoderConfig:
             upsample_convs.append(upsample_conv)
 
             # Res layer (at reduced channel count)
-            res_layer = self.res_layer_config.empty(
+            res_layer = self.res_layer_config.init(
+                initializer,
                 channels=out_channels,
                 kernel_sizes=resblock_kernel_sizes,
                 dilations=resblock_dilations,
@@ -706,15 +639,15 @@ class CausalHiFiGANDecoderConfig:
             in_channels = out_channels
 
         # Post activation and conv
-        post_activation = self.activation_config.empty(in_channels)
-        post_conv = self.post_conv_config.empty(
+        post_activation = self.activation_config.init(initializer, in_channels)
+        post_conv = self.post_conv_config.init(
+            initializer,
             in_channels=in_channels,
             out_channels=1,
             kernel_size=out_kernel_size,
         )
 
         return CausalHiFiGANDecoder(
-            config=self,
             pre_conv=pre_conv,
             activations=tuple(activations),
             upsample_convs=tuple(upsample_convs),
@@ -722,91 +655,11 @@ class CausalHiFiGANDecoderConfig:
             post_activation=post_activation,
             post_conv=post_conv,
             up_sample_rates=up_sample_rates,
-        )
-
-    def random_init(
-        self,
-        input_dim: int,
-        base_channels: int,
-        up_sample_rates: tuple[int, ...],
-        in_kernel_size: int,
-        out_kernel_size: int,
-        resblock_kernel_sizes: tuple[int, ...],
-        resblock_dilations: tuple[int, ...],
-        *,
-        key: PRNGKeyArray,
-    ) -> "CausalHiFiGANDecoder":
-        num_stages = len(up_sample_rates)
-        # pre_conv, post_activation, post_conv + 3 per stage (activation, upsample, res_layer)
-        num_keys = 3 + 3 * num_stages
-        keys = jax.random.split(key, num_keys)
-        key_idx = 0
-
-        pre_conv = self.pre_conv_config.random_init(
-            in_channels=input_dim,
-            out_channels=base_channels,
-            kernel_size=in_kernel_size,
-            key=keys[key_idx],
-        )
-        key_idx += 1
-
-        activations = []
-        upsample_convs = []
-        res_layers = []
-
-        in_channels = base_channels
-        for up_sample_rate in up_sample_rates:
-            out_channels = in_channels // 2
-            kernel_size = 2 * up_sample_rate
-
-            activation = self.activation_config.random_init(in_channels, key=keys[key_idx])
-            key_idx += 1
-            activations.append(activation)
-
-            upsample_conv = self.transpose_conv_config.random_init(
-                in_channels=in_channels,
-                out_channels=out_channels,
-                kernel_size=kernel_size,
-                stride=up_sample_rate,
-                groups=out_channels,
-                key=keys[key_idx],
-            )
-            key_idx += 1
-            upsample_convs.append(upsample_conv)
-
-            res_layer = self.res_layer_config.random_init(
-                channels=out_channels,
-                kernel_sizes=resblock_kernel_sizes,
-                dilations=resblock_dilations,
-                key=keys[key_idx],
-            )
-            key_idx += 1
-            res_layers.append(res_layer)
-
-            in_channels = out_channels
-
-        post_activation = self.activation_config.random_init(in_channels, key=keys[key_idx])
-        key_idx += 1
-        post_conv = self.post_conv_config.random_init(
-            in_channels=in_channels,
-            out_channels=1,
-            kernel_size=out_kernel_size,
-            key=keys[key_idx],
-        )
-
-        return CausalHiFiGANDecoder(
-            config=self,
-            pre_conv=pre_conv,
-            activations=tuple(activations),
-            upsample_convs=tuple(upsample_convs),
-            res_layers=tuple(res_layers),
-            post_activation=post_activation,
-            post_conv=post_conv,
-            up_sample_rates=up_sample_rates,
+            precision=self.precision,
         )
 
 
-class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
+class CausalHiFiGANDecoder(LalamoModule):
     """Causal HiFi-GAN decoder for audio generation.
 
     Converts quantized representations to audio waveforms using:
@@ -825,10 +678,11 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
     post_activation: HalfSnake
     post_conv: CausalConv1d
     up_sample_rates: tuple[int, ...] = eqx.field(static=True)
+    precision: DTypeLike = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.precision
 
     def __call__(
         self,

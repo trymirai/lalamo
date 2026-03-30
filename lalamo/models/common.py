@@ -16,6 +16,7 @@ from lalamo.common import DTypeLike
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
+from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
 
@@ -74,10 +75,10 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         self,
         model: LalamoModule,
         message_processor: MessageProcessor,
-    ) -> LalamoModule[Self]: ...
+    ) -> LalamoModule: ...
 
     @classmethod
-    def load_model(cls, path: Path | str) -> LalamoModule[Self]:
+    def load_model(cls, path: Path | str) -> LalamoModule:
         if isinstance(path, str):
             path = Path(path)
         with open(path / "config.json") as config_file:
@@ -85,13 +86,15 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         config = config_converter.structure(config_json["model_config"], cls)
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
-            model = config.model_config.empty().from_uzu(weights_dict)  # type: ignore
+            weights = unflatten_parameters(weights_dict)
+            model = config.model_config.init(EmptyInitializer(precision=jnp.float32)).import_weights(weights)  # type: ignore
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return config.init(model, message_processor)
 
 
-class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
+class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule):
+    config: ConfigT = eqx.field(static=True)
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
 

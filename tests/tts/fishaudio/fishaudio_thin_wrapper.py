@@ -359,7 +359,8 @@ class FishAudioAudioDecoderConfig_Foreign:
     dac_config: DictConfig
 
 
-class FishAudioAudioDecoder_Foreign(TTSAudioDecoder[FishAudioAudioDecoderConfig_Foreign]):
+class FishAudioAudioDecoder_Foreign(TTSAudioDecoder):
+    config: FishAudioAudioDecoderConfig_Foreign
     dac_model: DAC
 
     @property
@@ -453,7 +454,8 @@ class FishAudioTextDecoderConfig_Foreign:
         return FishAudioTextDecoder_Foreign(config=self, fish_model=fish_model)
 
 
-class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_Foreign]):
+class FishAudioTextDecoder_Foreign(TTSTextDecoder):
+    config: FishAudioTextDecoderConfig_Foreign
     fish_model: DualARTransformer
 
     @property

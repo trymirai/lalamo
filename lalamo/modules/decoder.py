@@ -1,16 +1,14 @@
 from dataclasses import dataclass
 
 import equinox as eqx
-import jax
-import jax.numpy as jnp
-from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
 from .common import (
     ForwardPassMode,
+    Initializer,
     LalamoModule,
 )
 from .embedding import EmbeddingBase, EmbeddingConfig
@@ -153,70 +151,22 @@ class DecoderConfig:
     pard_token: int | None = None
     ple_model_config: PLEModelConfig | None = None
 
-    def random_init(
-        self,
-        *,
-        key: PRNGKeyArray,
-    ) -> "Decoder":
-        embedding_key, transformer_key = jax.random.split(key)
-        embedding = self.embedding_config.random_init(
-            vocab_size=self.vocab_size,
-            model_dim=self.transformer_config.model_dim,
-            key=embedding_key,
-        )
-        transformer = self.transformer_config.random_init(key=transformer_key)
-        per_layer_embedding = None
-        if self.ple_model_config is not None:
-            cfg = self.ple_model_config
-            total_ple_dim = cfg.num_layers * cfg.ple_dim
-            per_layer_embedding = PerLayerEmbedding(
-                config=cfg,
-                token_embedding=dummy_array((cfg.ple_vocab_size, total_ple_dim), jnp.bfloat16),
-                model_projection=cfg.linear_config.empty(
-                    self.transformer_config.model_dim,
-                    (total_ple_dim,),
-                    has_biases=False,
-                ),
-                projection_norm=cfg.norm_config.empty(cfg.ple_dim),
-            )
-
-        return Decoder(
-            config=self,
-            embedding=embedding,
-            transformer=transformer,
-            per_layer_embedding=per_layer_embedding,
-        )
-
-    def empty(self) -> "Decoder":
-        embedding = self.embedding_config.empty(
+    def init(self, initializer: Initializer) -> "Decoder":
+        embedding = self.embedding_config.init(
+            initializer,
             vocab_size=self.vocab_size,
             model_dim=self.transformer_config.model_dim,
         )
-        transformer = self.transformer_config.empty()
-        per_layer_embedding = None
-        if self.ple_model_config is not None:
-            cfg = self.ple_model_config
-            total_ple_dim = cfg.num_layers * cfg.ple_dim
-            per_layer_embedding = PerLayerEmbedding(
-                config=cfg,
-                token_embedding=dummy_array((cfg.ple_vocab_size, total_ple_dim), jnp.bfloat16),
-                model_projection=cfg.linear_config.empty(
-                    self.transformer_config.model_dim,
-                    (total_ple_dim,),
-                    has_biases=False,
-                ),
-                projection_norm=cfg.norm_config.empty(cfg.ple_dim),
-            )
+        transformer = self.transformer_config.init(initializer)
 
         return Decoder(
-            config=self,
             embedding=embedding,
             transformer=transformer,
             per_layer_embedding=per_layer_embedding,
         )
 
 
-class Decoder(LalamoModule[DecoderConfig]):
+class Decoder(LalamoModule):
     embedding: EmbeddingBase
     transformer: Transformer
     per_layer_embedding: PerLayerEmbedding | None

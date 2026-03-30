@@ -18,21 +18,17 @@ from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
-    AttentionConfig,
     Decoder,
     DeltaNetAttention,
-    DeltaNetAttentionConfig,
     DenseMLP,
     Linear,
     Mamba2,
-    Mamba2Config,
+    MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
-    MLXQuantizedTiedEmbeddingConfig,
     MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
     ShortConv,
-    ShortConvConfig,
     TiedEmbedding,
     TransformerLayer,
     UntiedEmbedding,
@@ -231,18 +227,46 @@ def load_linear(
             group_size=config.group_size,
             bits=config.bits,
         )
-        return eqx.tree_at(
-            lambda m: (m.weights, m.biases),
+        weight_quantization = module.weight_quantization_mode
+        activation_precision = module.activation_precision
+
+        if weight_quantization == QuantizationMode.UINT4:
+            reverse_order = AWQ_UINT4_REVERSE_ORDER
+        else:
+            reverse_order = None
+
+        weights = _process_quantized_tensor(
+            qweights,
+            weight_quantization,
+            activation_precision,
+            reverse_order,
+        )
+        zeros = _process_quantized_tensor(
+            qzeros,
+            weight_quantization,
+            activation_precision,
+            reverse_order,
+        )
+        scales = scales.astype(activation_precision)
+
+        return load_parameters(
+            lambda m: (m.weights, m.scales, m.zero_points, m.biases),
             module,
             (base, bias),
             is_leaf=lambda x: x is None,
         )
 
-    match config.quant_format:
-        case QuantFormat.FULL_PRECISION:
-            reorder_tuple = (reorder, 0) if reorder is not None else None
-            raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse, reorder=reorder_tuple)
-            base: CompressedArray = FullPrecisionArray(raw=raw_weights.astype(precision))
+    if isinstance(module, MLXQuantizedLinear):
+        reorder_tuple = (reorder, 0) if reorder is not None else None
+        qweights, deq_biases, scales = _fuse_quantized_weights(
+            weights_dict,
+            path,
+            sublayers_to_fuse,
+            MLX_QUANTIZED_WEIGHT_LAYOUT,
+            reorder=reorder_tuple,
+        )
+        weight_quantization = module.weight_quantization_mode
+        activation_precision = module.activation_precision
 
         case QuantFormat.AWQ:
             if reorder is not None:
@@ -932,22 +956,24 @@ def load_delta_net_attention(
                     "out_channels (groups group_size) -> out_channels groups group_size",
                     group_size=in_proj_config.group_size,
                 )
-                grouped_scales = rearrange(fused_scales, "out_channels groups -> out_channels groups 1")
-                grouped_biases = rearrange(fused_deq_biases, "out_channels groups -> out_channels groups 1")
-                base = MLXQuantArray(
-                    raw=rearrange(
-                        grouped_weights * grouped_scales + grouped_biases,
-                        "out_channels groups group_size -> out_channels (groups group_size)",
-                    ),
-                    scales=fused_scales,
-                    deq_biases=fused_deq_biases,
-                    group_size=in_proj_config.group_size,
-                    bits=in_proj_config.bits,
-                )
-        new_weights = base
-        in_proj = eqx.tree_at(
-            lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None), is_leaf=lambda x: x is None
-        )
+                for bp, perm in projection_branches
+            ]
+            fused_qweights = jnp.concatenate([qw for qw, _, _ in per_branch], axis=0)
+            fused_deq_biases = jnp.concatenate([db for _, db, _ in per_branch], axis=0)
+            fused_scales = jnp.concatenate([s for _, _, s in per_branch], axis=0)
+
+            weight_quantization = module.in_proj.weight_quantization_mode
+            activation_precision = module.in_proj.activation_precision
+            weights = _process_quantized_tensor(fused_qweights, weight_quantization, activation_precision, None)
+            scales = fused_scales.astype(activation_precision)
+            deq_biases = fused_deq_biases.astype(activation_precision)
+            in_proj = load_parameters(
+                lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
+                module.in_proj,
+                (weights, scales, deq_biases, None),
+            )
+        else:
+            raise TypeError(f"Unsupported DeltaNetAttention in_proj type: {type(module.in_proj)}")
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj")
     norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
@@ -1104,7 +1130,7 @@ def load_mlx_quantized_tied_embedding(
 
     weights = _process_quantized_tensor(
         qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1129,7 +1155,7 @@ def load_mlx_quantized_untied_embedding(
 
     input_weights = _process_quantized_tensor(
         input_qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1138,7 +1164,7 @@ def load_mlx_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1173,7 +1199,7 @@ def load_mlx_semi_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        module.config.embedding_quantization_mode,
+        module.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1223,7 +1249,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "backbone"
         embedding_path = decoder_path / "embedding"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {Mamba2Config: "mixer"}
+        mixer_key = {Mamba2: "mixer"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -1237,7 +1263,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = base_path / "embedding.encoder"
         pre_mixer_norm_key = "norm"
-        mixer_key = {Mamba2Config: "layer"}
+        mixer_key = {Mamba2: "layer"}
         permute_conv = False
         pre_mlp_norm_key = "norm"
         mlp_key = "layer"
@@ -1251,8 +1277,8 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "operator_norm"
-        mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
-        permute_conv = isinstance(module.config.embedding_config, MLXQuantizedTiedEmbeddingConfig)
+        mixer_key = {ShortConv: "conv", Attention: "self_attn"}
+        permute_conv = isinstance(module.embedding, MLXQuantizedTiedEmbedding)
         pre_mlp_norm_key = "ffn_norm"
         mlp_key = "feed_forward"
         up_proj_key = "w3"
@@ -1265,7 +1291,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {AttentionConfig: "self_attn", DeltaNetAttentionConfig: "linear_attn"}
+        mixer_key = {Attention: "self_attn", DeltaNetAttention: "linear_attn"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -1300,7 +1326,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key[type(layer.config.mixer_config)],
+            mixer_key[type(layer.mixer)],
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,

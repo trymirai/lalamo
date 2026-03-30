@@ -5,10 +5,10 @@ import jax
 from einops import einsum, rearrange
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
-from lalamo.common import dummy_array
-from lalamo.modules.common import PositionalEmbeddingSelector
+from lalamo.common import require_mapping
+from lalamo.modules.common import Initializer, ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -106,44 +106,43 @@ class AttentionConfig(TokenMixerConfigBase):
     # Scale-free RMS normalization on values
     normalize_values: bool = False
 
-    def random_init(
+    def init(
         self,
+        initializer: Initializer,
         model_dim: int,
-        *,
-        key: PRNGKeyArray,
     ) -> "Attention":
-        qkv_key, out_key, gate_key = jax.random.split(key, 3)
         q_output_dim = self.num_heads * self.head_dim
         output_dims = (
             q_output_dim,
             self.num_groups * self.head_dim,
             self.num_groups * self.head_dim,
         )
-        qkv_projection = self.qkv_projection_config.random_init(
+        qkv_projection = self.qkv_projection_config.init(
+            initializer,
             input_dim=model_dim,
             output_dims=output_dims,
             has_biases=self.has_qkv_biases,
-            key=qkv_key,
         )
-        out_projection = self.out_projection_config.random_init(
+        out_projection = self.out_projection_config.init(
+            initializer,
             self.num_heads * self.head_dim,
             (model_dim,),
             has_biases=self.has_out_biases,
-            key=out_key,
         )
 
         if self.gate_projection_config is not None:
-            gate_projection = self.gate_projection_config.random_init(
+            gate_projection = self.gate_projection_config.init(
+                initializer,
                 input_dim=model_dim,
                 output_dims=(q_output_dim,),
                 has_biases=False,
-                key=gate_key,
             )
         else:
             gate_projection = None
 
         if self.query_norm_config is not None:
             query_norm = self.query_norm_config.init(
+                initializer,
                 input_dim=self.head_dim,
             )
         else:
@@ -151,18 +150,18 @@ class AttentionConfig(TokenMixerConfigBase):
 
         if self.key_norm_config is not None:
             key_norm = self.key_norm_config.init(
+                initializer,
                 input_dim=self.head_dim,
             )
         else:
             key_norm = None
 
         if self.has_sinks:
-            sinks = jnp.zeros((self.num_heads,), dtype=qkv_projection.activation_precision)
+            sinks = initializer.zeros((self.num_heads,), qkv_projection.activation_precision)
         else:
             sinks = None
 
         return Attention(
-            self,
             qkv_projection=qkv_projection,
             gate_projection=gate_projection,
             out_projection=out_projection,
@@ -175,78 +174,15 @@ class AttentionConfig(TokenMixerConfigBase):
             is_causal=self.is_causal,
             scale=self.scale,
             sliding_window_size=self.sliding_window_size,
-        )
-
-    def empty(
-        self,
-        model_dim: int,
-    ) -> "Attention":
-        q_output_dim = self.num_heads * self.head_dim
-        output_dims = (
-            q_output_dim,
-            self.num_groups * self.head_dim,
-            self.num_groups * self.head_dim,
-        )
-        qkv_projection = self.qkv_projection_config.empty(
-            input_dim=model_dim,
-            output_dims=output_dims,
-            has_biases=self.has_qkv_biases,
-        )
-        out_projection = self.out_projection_config.empty(
-            self.num_heads * self.head_dim,
-            (model_dim,),
-            has_biases=self.has_out_biases,
-        )
-
-        if self.gate_projection_config is not None:
-            gate_projection = self.gate_projection_config.empty(
-                input_dim=model_dim,
-                output_dims=(q_output_dim,),
-                has_biases=False,
-            )
-        else:
-            gate_projection = None
-
-        if self.query_norm_config is not None:
-            query_norm = self.query_norm_config.empty(
-                input_dim=self.head_dim,
-            )
-        else:
-            query_norm = None
-
-        if self.key_norm_config is not None:
-            key_norm = self.key_norm_config.empty(
-                input_dim=self.head_dim,
-            )
-        else:
-            key_norm = None
-
-        if self.has_sinks:
-            sinks = dummy_array(self.num_heads, qkv_projection.activation_precision)
-        else:
-            sinks = None
-
-        return Attention(
-            self,
-            qkv_projection=qkv_projection,
-            gate_projection=gate_projection,
-            out_projection=out_projection,
-            query_norm=query_norm,
-            key_norm=key_norm,
-            sinks=sinks,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            is_causal=self.is_causal,
-            scale=self.scale,
-            sliding_window_size=self.sliding_window_size,
+            logit_soft_cap=self.logit_soft_cap,
+            use_rope=self.use_rope,
         )
 
 
-class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
-    qkv_projection: Linear
-    gate_projection: Linear | None
-    out_projection: Linear
+class Attention(TokenMixerBase[KVCacheLayer]):
+    qkv_projection: LinearBase
+    gate_projection: LinearBase | None
+    out_projection: LinearBase
 
     query_norm: Normalization | None
     key_norm: Normalization | None
@@ -261,6 +197,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     scale: float | None = eqx.field(static=True)
     sliding_window_size: int | None = eqx.field(static=True)
+    logit_soft_cap: float | None = eqx.field(static=True)
+    use_rope: bool = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -283,16 +221,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.sinks is not None
 
     def __post_init__(self) -> None:
-        if self.qkv_projection.has_biases != self.config.has_qkv_biases:
-            raise ValueError(
-                f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"
-                f" the specified config has_qkv_biases {self.config.has_qkv_biases}",
-            )
-        if self.out_projection.has_biases != self.config.has_out_biases:
-            raise ValueError(
-                f"Output projection has_biases {self.out_projection.has_biases} does not match"
-                f" the specified config has_out_biases {self.config.has_out_biases}",
-            )
         if self.query_norm is not None and self.query_norm.input_dim != self.head_dim:
             raise ValueError(
                 f"Query normalization input dimension must match head_dim ({self.head_dim}),"
@@ -337,16 +265,12 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
                 f" got {v_output_dim}",
             )
-        if self.config.gate_projection_config is not None:
-            if self.gate_projection is None:
-                raise ValueError("gate_projection must be provided when gate_projection_config is set.")
+        if self.gate_projection is not None:
             gate_output_dim = self.gate_projection.output_dims[0]
             if gate_output_dim != expected_q:
                 raise ValueError(
                     f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
                 )
-        elif self.gate_projection is not None:
-            raise ValueError("gate_projection must be None when gate_projection_config is not set.")
         if self.sinks is not None:
             (num_sink_heads,) = self.sinks.shape
             if num_sink_heads != self.num_heads:
@@ -424,14 +348,14 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         else:
             sink_bias = None
 
-        if self.config.logit_soft_cap is not None:
+        if self.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
                 queries,
                 updated_state.keys,
                 updated_state.values,
                 mask=mask,
                 scale=self.scale,
-                logit_soft_cap=self.config.logit_soft_cap,
+                logit_soft_cap=self.logit_soft_cap,
             )
         else:
             attention_output = jax.nn.dot_product_attention(

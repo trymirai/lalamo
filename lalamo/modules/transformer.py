@@ -1,15 +1,14 @@
 from dataclasses import dataclass
 
 import equinox as eqx
-import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
-from .common import ForwardPassMode, LalamoModule
+from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
@@ -57,74 +56,53 @@ class TransformerConfig:
     hidden_dim: int
     context_length: int
 
-    def _init_ropes(self) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
-        rope_cache: dict[RoPEConfig, int] = {}
-        ropes: list[RoPE] = []
-        rope_indices: list[int] = []
-        for layer_config in self.layer_configs:
-            rc = layer_config.rope_config
-            if rc is None:
-                rope_indices.append(-1)
-            elif rc in rope_cache:
-                rope_indices.append(rope_cache[rc])
-            else:
-                rope_cache[rc] = len(ropes)
-                rope_indices.append(len(ropes))
-                ropes.append(rc.init())
-        return tuple(ropes), tuple(rope_indices)
+    def init(self, initializer: Initializer) -> "Transformer":
+        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
+        rope_dim = next(rope_dims, None)
+        assert all(d == rope_dim for d in rope_dims)
 
-    def _source_layer_indices(self) -> tuple[int, ...]:
-        return tuple(i for i, lc in enumerate(self.layer_configs) if lc.kv_source_layer is None)
-
-    def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-        ropes, rope_indices = self._init_ropes()
-
-        layers_keys = jax.random.split(key, num=len(self.layer_configs))
-        layers = tuple(
-            layer_config.random_init(
-                model_dim=self.model_dim,
-                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
-                key=layer_key,
+        if self.global_rope_config:
+            assert rope_dim is not None
+            global_rope = self.global_rope_config.init(
+                initializer,
+                head_dim=rope_dim,
+                num_timesteps=self.context_length,
             )
-            for layer_key, layer_config in zip(layers_keys, self.layer_configs, strict=True)
-        )
-        output_norm = self.output_norm_config.init(self.model_dim)
+        else:
+            global_rope = None
 
-        return Transformer(
-            config=self,
-            ropes=ropes,
-            rope_indices=rope_indices,
-            source_layer_indices=self._source_layer_indices(),
-            layers=layers,
-            output_norm=output_norm,
-        )
-
-    def empty(self) -> "Transformer":
-        ropes, rope_indices = self._init_ropes()
+        if self.local_rope_config:
+            assert rope_dim is not None
+            max_sliding_window_size = max(
+                layer_config.mixer_config.sliding_window_size or 0
+                for layer_config in self.layer_configs
+                if isinstance(layer_config.mixer_config, AttentionConfig)
+            )
+            local_rope = self.local_rope_config.init(
+                initializer,
+                head_dim=rope_dim,
+                num_timesteps=max(max_sliding_window_size, self.context_length),
+            )
+        else:
+            local_rope = None
 
         layers = tuple(
-            layer_config.empty(
-                model_dim=self.model_dim,
-                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
-            )
+            layer_config.init(initializer, model_dim=self.model_dim, hidden_dim=self.hidden_dim)
             for layer_config in self.layer_configs
         )
-        output_norm = self.output_norm_config.empty(self.model_dim)
+        output_norm = self.output_norm_config.init(initializer, self.model_dim)
 
         return Transformer(
-            config=self,
-            ropes=ropes,
-            rope_indices=rope_indices,
-            source_layer_indices=self._source_layer_indices(),
+            global_rope=global_rope,
+            local_rope=local_rope,
             layers=layers,
             output_norm=output_norm,
         )
 
 
-class Transformer(LalamoModule[TransformerConfig]):
-    ropes: tuple[RoPE, ...]
-    rope_indices: tuple[int, ...] = eqx.field(static=True)
-    source_layer_indices: tuple[int, ...] = eqx.field(static=True)
+class Transformer(LalamoModule):
+    global_rope: RoPE | None
+    local_rope: RoPE | None
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 

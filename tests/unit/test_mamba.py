@@ -12,6 +12,7 @@ from lalamo.modules import (
     Mamba2Config,
     SeparableCausalConvConfig,
 )
+from lalamo.modules.common import RandomInitializer
 from lalamo.modules.token_mixers.mamba import exp_segsum, fused_ssd_intra_chunk
 from tests.common import assert_close
 
@@ -33,7 +34,7 @@ def make_mamba() -> Mamba2:
         has_out_biases=True,
     )
     model_dim = 4
-    return config.random_init(model_dim=model_dim, key=jax.random.PRNGKey(0))
+    return config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)), model_dim=model_dim)
 
 
 @settings(max_examples=10, deadline=None)

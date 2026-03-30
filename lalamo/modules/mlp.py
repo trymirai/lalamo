@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.modules.utils import vmap_twice
 
@@ -17,6 +17,7 @@ from .activations import Activation
 from .common import (
     DummyUnionMember,
     ForwardPassMode,
+    Initializer,
     LalamoModule,
     ShardingOrder,
     register_config_union,
@@ -44,7 +45,7 @@ class MLPForwardPassConfig:
     moe_chunk_size_ratio: float = 0.2
 
 
-class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
+class MLPBase(LalamoModule):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
@@ -70,10 +71,12 @@ class MLPBase[ConfigT: MLPConfig](LalamoModule[ConfigT]):
 @dataclass(frozen=True)
 class MLPConfigBase(ABC):
     @abstractmethod
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> MLPBase: ...
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> MLPBase: ...
 
     @abstractmethod
-    def empty(self, model_dim: int, hidden_dim: int) -> MLPBase: ...
+    def init_mixture(
+        self, initializer: Initializer, mixture_size: int, model_dim: int, hidden_dim: int
+    ) -> MLPBase: ...
 
 
 @dataclass(frozen=True)
@@ -89,35 +92,11 @@ class DenseMLPConfig(MLPConfigBase):
     def _with_sharding_order(projection: Linear, order: ShardingOrder) -> Linear:
         return replace(projection, sharding_order=order)
 
-    def random_init(self, model_dim: int, hidden_dim: int, *, key: PRNGKeyArray) -> "DenseMLP":
-        up_key, down_key = jax.random.split(key)
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "DenseMLP":
         return DenseMLP(
-            self,
             up_projection=self._with_sharding_order(
-                self.linear_config.random_init(
-                    model_dim,
-                    (hidden_dim, hidden_dim),
-                    has_biases=self.has_up_biases,
-                    key=up_key,
-                ),
-                ShardingOrder.OUTPUT,
-            ),
-            down_projection=self._with_sharding_order(
-                self.linear_config.random_init(
-                    hidden_dim,
-                    (model_dim,),
-                    has_biases=self.has_down_biases,
-                    key=down_key,
-                ),
-                ShardingOrder.INPUT,
-            ),
-        )
-
-    def empty(self, model_dim: int, hidden_dim: int) -> "DenseMLP":
-        return DenseMLP(
-            self,
-            up_projection=self._with_sharding_order(
-                self.linear_config.empty(
+                self.linear_config.init(
+                    initializer,
                     model_dim,
                     (hidden_dim, hidden_dim),
                     has_biases=self.has_up_biases,
@@ -125,58 +104,30 @@ class DenseMLPConfig(MLPConfigBase):
                 ShardingOrder.OUTPUT,
             ),
             down_projection=self._with_sharding_order(
-                self.linear_config.empty(
+                self.linear_config.init(
+                    initializer,
                     hidden_dim,
                     (model_dim,),
                     has_biases=self.has_down_biases,
                 ),
                 ShardingOrder.INPUT,
             ),
+            activation=self.activation,
+            gate_clipping=self.gate_clipping,
+            up_clipping=self.up_clipping,
         )
 
-    def random_init_mixture(
+    def init_mixture(
         self,
-        mixture_size: int,
-        model_dim: int,
-        hidden_dim: int,
-        *,
-        key: PRNGKeyArray,
-    ) -> "DenseMLP":
-        up_key, down_key = jax.random.split(key)
-        return DenseMLP(
-            self,
-            up_projection=self._with_sharding_order(
-                self.linear_config.random_init_mixture(
-                    mixture_size,
-                    model_dim,
-                    (hidden_dim, hidden_dim),
-                    has_biases=self.has_up_biases,
-                    key=up_key,
-                ),
-                ShardingOrder.OUTPUT,
-            ),
-            down_projection=self._with_sharding_order(
-                self.linear_config.random_init_mixture(
-                    mixture_size,
-                    hidden_dim,
-                    (model_dim,),
-                    has_biases=self.has_down_biases,
-                    key=down_key,
-                ),
-                ShardingOrder.INPUT,
-            ),
-        )
-
-    def empty_mixture(
-        self,
+        initializer: Initializer,
         mixture_size: int,
         model_dim: int,
         hidden_dim: int,
     ) -> "DenseMLP":
         return DenseMLP(
-            self,
             up_projection=self._with_sharding_order(
-                self.linear_config.empty_mixture(
+                self.linear_config.init_mixture(
+                    initializer,
                     mixture_size,
                     model_dim,
                     (hidden_dim, hidden_dim),
@@ -185,7 +136,8 @@ class DenseMLPConfig(MLPConfigBase):
                 ShardingOrder.OUTPUT,
             ),
             down_projection=self._with_sharding_order(
-                self.linear_config.empty_mixture(
+                self.linear_config.init_mixture(
+                    initializer,
                     mixture_size,
                     hidden_dim,
                     (model_dim,),
@@ -193,12 +145,18 @@ class DenseMLPConfig(MLPConfigBase):
                 ),
                 ShardingOrder.INPUT,
             ),
+            activation=self.activation,
+            gate_clipping=self.gate_clipping,
+            up_clipping=self.up_clipping,
         )
 
 
-class DenseMLP(MLPBase[DenseMLPConfig]):
-    up_projection: Linear
-    down_projection: Linear
+class DenseMLP(MLPBase):
+    up_projection: LinearBase
+    down_projection: LinearBase
+    activation: Activation = eqx.field(static=True)
+    gate_clipping: tuple[float | None, float | None] | None = eqx.field(static=True)
+    up_clipping: tuple[float | None, float | None] | None = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -254,11 +212,11 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
         up_proj, gate = self.up_projection(inputs)
-        if self.config.gate_clipping:
-            gate = jnp.clip(gate, *self.config.gate_clipping)
-        if self.config.up_clipping:
-            up_proj = jnp.clip(up_proj, *self.config.up_clipping)
-        gate = self.config.activation(gate)
+        if self.gate_clipping:
+            gate = jnp.clip(gate, *self.gate_clipping)
+        if self.up_clipping:
+            up_proj = jnp.clip(up_proj, *self.up_clipping)
+        gate = self.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
 
         return result
@@ -344,73 +302,52 @@ class MixtureOfExpertsConfig(ABC):
     def mixture_size(self) -> int:
         return self.num_routed_experts + self.num_shared_experts
 
-    def random_init(
-        self,
-        model_dim: int,
-        hidden_dim: int,  # noqa: ARG002
-        *,
-        key: PRNGKeyArray,
-    ) -> "MixtureOfExperts":
-        experts_key, router_key, gate_key = jax.random.split(key, 3)
-        router = self.router_config.random_init(
+    def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":  # noqa: ARG002
+        router = self.router_config.init(
+            initializer,
             model_dim,
             (self.num_routed_experts,),
             has_biases=self.router_has_biases,
-            key=router_key,
         )
-        experts = self.expert_config.random_init_mixture(
+        experts = self.expert_config.init_mixture(
+            initializer,
             self.mixture_size,
             model_dim,
             self.expert_hidden_dim,
-            key=experts_key,
         )
 
         gate = None
         if self.gate_config is not None:
-            gate = self.gate_config.random_init(
+            gate = self.gate_config.init(
+                initializer,
                 model_dim,
                 (1,),
                 has_biases=False,
-                key=gate_key,
             )
 
-        return MixtureOfExperts(self, router, experts, gate)
-
-    def empty(self, model_dim: int, hidden_dim: int) -> "MixtureOfExperts":  # noqa: ARG002
-        router = self.router_config.empty(
-            model_dim,
-            (self.num_routed_experts,),
-            has_biases=self.router_has_biases,
+        return MixtureOfExperts(
+            router=router,
+            experts=experts,
+            gate=gate,
+            routing_function=self.routing_function,
+            num_routed_experts=self.num_routed_experts,
+            num_active_routed_experts=self.num_active_routed_experts,
+            num_shared_experts=self.num_shared_experts,
         )
-        experts = self.expert_config.empty_mixture(self.mixture_size, model_dim, self.expert_hidden_dim)
-
-        gate = None
-        if self.gate_config is not None:
-            gate = self.gate_config.empty(model_dim, (1,), has_biases=False)
-
-        return MixtureOfExperts(self, router, experts, gate)
 
 
-class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
-    router: Linear
+class MixtureOfExperts(MLPBase):
+    router: LinearBase
     experts: DenseMLP
-    gate: Linear | None
+    gate: LinearBase | None
+    routing_function: RoutingFunction = eqx.field(static=True)
+    num_routed_experts: int = eqx.field(static=True)
+    num_active_routed_experts: int = eqx.field(static=True)
+    num_shared_experts: int = eqx.field(static=True)
 
     @property
     def mixture_size(self) -> int:
-        return self.config.mixture_size
-
-    @property
-    def num_active_routed_experts(self) -> int:
-        return self.config.num_active_routed_experts
-
-    @property
-    def num_shared_experts(self) -> int:
-        return self.config.num_shared_experts
-
-    @property
-    def num_routed_experts(self) -> int:
-        return self.config.num_routed_experts
+        return self.num_routed_experts + self.num_shared_experts
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -471,7 +408,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     ) -> Float[Array, "batch suffix_tokens channels"]:
         def per_token(token_input: Float[Array, " channels"]) -> Float[Array, " channels"]:
             (router_logits,) = self.router(token_input)
-            routing = self.config.routing_function.call_unbatched(
+            routing = self.routing_function.call_unbatched(
                 router_logits,
                 num_active=self.num_active_routed_experts,
             )
@@ -522,7 +459,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
-        routing_map = self.config.routing_function(router_logits, self.num_active_routed_experts)
+        routing_map = self.routing_function(router_logits, self.num_active_routed_experts)
 
         token_mask = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],

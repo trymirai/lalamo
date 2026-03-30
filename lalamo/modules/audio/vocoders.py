@@ -3,19 +3,17 @@ from dataclasses import dataclass
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float
 
-from lalamo.modules.common import LalamoModule
+from lalamo.common import ParameterTree
+from lalamo.modules.common import Initializer, LalamoModule
 
 
 @dataclass(frozen=True)
 class NoopVocoderConfig:
-    def empty(self) -> "NoopVocoder":
-        return NoopVocoder(config=self)
+    def init(self, initializer: Initializer) -> "NoopVocoder":  # noqa: ARG002
+        return NoopVocoder()
 
 
-class NoopVocoder(LalamoModule[NoopVocoderConfig]):
-    # Used in models where vocoder is absent and there is no additional
-    # conversion from audio-features space to audio waveform space
-
+class NoopVocoder(LalamoModule):
     @property
     def activation_precision(self) -> DTypeLike:
         return jnp.float32

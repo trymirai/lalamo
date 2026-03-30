@@ -5,13 +5,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
 
-from .activations import Activation
-from .common import ForwardPassMode, LalamoModule
-from .linear import LinearBase, LinearConfig
+from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPEConfig
@@ -154,76 +152,23 @@ class TransformerLayerConfig:
     kv_source_layer: int | None = None
     rope_config: RoPEConfig | None = None
 
-    def random_init(
+    def init(
         self,
+        initializer: Initializer,
         model_dim: int,
         hidden_dim: int,
-        *,
-        key: PRNGKeyArray,
     ) -> "TransformerLayer":
-        attention_key, mlp_key, ple_key = jax.random.split(key, 3)
-        if self.pre_mixer_norm_config is not None:
-            pre_mixer_norm = self.pre_mixer_norm_config.init(model_dim)
-        else:
-            pre_mixer_norm = None
-        mixer = self.mixer_config.random_init(model_dim=model_dim, key=attention_key)
-        if self.post_mixer_norm_config is not None:
-            post_mixer_norm = self.post_mixer_norm_config.init(model_dim)
-        else:
-            post_mixer_norm = None
-        pre_mlp_norm = self.pre_mlp_norm_config.init(model_dim)
-        mlp = self.mlp_config.random_init(model_dim, hidden_dim, key=mlp_key)
-        if self.post_mlp_norm_config is not None:
-            post_mlp_norm = self.post_mlp_norm_config.init(model_dim)
-        else:
-            post_mlp_norm = None
-        if self.ple_config is not None:
-            ple = self.ple_config.init(model_dim, key=ple_key)
-        else:
-            ple = None
-        post_layer_scalar = jnp.ones((1,), dtype=jnp.bfloat16) if self.has_post_layer_scalar else None
-        return TransformerLayer(
-            config=self,
-            pre_mixer_norm=pre_mixer_norm,
-            mixer=mixer,
-            post_mixer_norm=post_mixer_norm,
-            pre_mlp_norm=pre_mlp_norm,
-            mlp=mlp,
-            post_mlp_norm=post_mlp_norm,
-            ple=ple,
-            post_layer_scalar=post_layer_scalar,
+        pre_mixer_norm = (
+            self.pre_mixer_norm_config.init(initializer, model_dim) if self.pre_mixer_norm_config else None
         )
-
-    def empty(
-        self,
-        model_dim: int,
-        hidden_dim: int,
-    ) -> "TransformerLayer":
-        if self.pre_mixer_norm_config is not None:
-            pre_mixer_norm = self.pre_mixer_norm_config.empty(model_dim)
-        else:
-            pre_mixer_norm = None
-        mixer = self.mixer_config.empty(model_dim=model_dim)
-        if self.post_mixer_norm_config is not None:
-            post_mixer_norm = self.post_mixer_norm_config.empty(model_dim)
-        else:
-            post_mixer_norm = None
-        if self.pre_mlp_norm_config is not None:
-            pre_mlp_norm = self.pre_mlp_norm_config.empty(model_dim)
-        else:
-            pre_mlp_norm = None
-        mlp = self.mlp_config.empty(model_dim, hidden_dim)
-        if self.post_mlp_norm_config is not None:
-            post_mlp_norm = self.post_mlp_norm_config.empty(model_dim)
-        else:
-            post_mlp_norm = None
-        if self.ple_config is not None:
-            ple = self.ple_config.empty(model_dim)
-        else:
-            ple = None
-        post_layer_scalar = dummy_array((1,), jnp.bfloat16) if self.has_post_layer_scalar else None
+        mixer = self.mixer_config.init(initializer, model_dim=model_dim)
+        post_mixer_norm = (
+            self.post_mixer_norm_config.init(initializer, model_dim) if self.post_mixer_norm_config else None
+        )
+        pre_mlp_norm = self.pre_mlp_norm_config.init(initializer, model_dim)
+        mlp = self.mlp_config.init(initializer, model_dim, hidden_dim)
+        post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
         return TransformerLayer(
-            config=self,
             pre_mixer_norm=pre_mixer_norm,
             mixer=mixer,
             post_mixer_norm=post_mixer_norm,
@@ -235,7 +180,7 @@ class TransformerLayerConfig:
         )
 
 
-class TransformerLayer(LalamoModule[TransformerLayerConfig]):
+class TransformerLayer(LalamoModule):
     pre_mixer_norm: Normalization | None
     mixer: TokenMixerBase
     post_mixer_norm: Normalization | None
@@ -249,31 +194,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     def activation_precision(self) -> DTypeLike:
         return self.mixer.activation_precision
 
-    def __post_init__(self) -> None:
-        if self.pre_mixer_norm is not None:
-            model_dim = self.pre_mixer_norm.input_dim
-        else:
-            model_dim = self.mixer.model_dim
-        if self.mixer.model_dim != model_dim:
-            raise ValueError(
-                f"Attention model dim {self.mixer.model_dim} does not match"
-                f" the first normalization layer dim {model_dim}",
-            )
-        if self.post_mixer_norm is not None and self.post_mixer_norm.input_dim != model_dim:
-            raise ValueError(
-                f"Post mixer normalization dim {self.post_mixer_norm.input_dim} does not match"
-                f" the first normalization layer dim {model_dim}",
-            )
-        if self.pre_mlp_norm and self.pre_mlp_norm.input_dim != model_dim:
-            raise ValueError(
-                f"Pre MLP normalization dim {self.pre_mlp_norm.input_dim} does not match"
-                f" the first normalization layer dim {model_dim}",
-            )
-        if self.mlp.model_dim != model_dim:
-            raise ValueError(
-                f"MLP up projection dim {self.mlp.model_dim} does not match"
-                f" the first normalization layer dim {model_dim}",
-            )
+    @property
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        return self.mixer.positional_embedding_selector
 
     @eqx.filter_jit
     def __call__(

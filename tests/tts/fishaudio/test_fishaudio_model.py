@@ -16,6 +16,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     load_fishaudio_text_decoder,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
+from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
 from tests.common import assert_close, skip_on_gpu
@@ -51,7 +52,9 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
 
     # Convert PyTorch weights to JAX and load into Lalamo text decoder
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
-    lalamo_text_decoder = load_fishaudio_text_decoder(lalamo_config.empty(), weights_dict)
+    lalamo_text_decoder = load_fishaudio_text_decoder(
+        lalamo_config.init(EmptyInitializer(precision=jnp.bfloat16)), weights_dict
+    )
 
     sampling_policy = GreedyPolicy()
     key = jax.random.PRNGKey(123)
@@ -106,7 +109,7 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
         precision=jnp.float32,
         accumulation_precision=jnp.float32,
     )
-    lalamo_dac = audio_decoder_cfg.empty()
+    lalamo_dac = audio_decoder_cfg.init(EmptyInitializer(precision=jnp.float32))
     lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)
 
     fish_dac_omega_config = get_default_fishaudio_dac_config()

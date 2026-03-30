@@ -872,9 +872,10 @@ def load_descript_audio_codec(dac_module: DescriptAudioCodec, state_dict: Mappin
     loaded_decoder = load_audio_decoder(dac_module.decoder, state_dict, path=ParameterPath("decoder"))
 
     return DescriptAudioCodec(
-        config=dac_module.config,
         quantizer=loaded_quantizer,
         decoder=loaded_decoder,
+        samplerate_value=dac_module.samplerate_value,
+        precision=dac_module.precision,
     )
 
 
