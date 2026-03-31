@@ -2,7 +2,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
-from typing import NamedTuple
+from typing import NamedTuple, Self
 
 import equinox as eqx
 import jax
@@ -103,12 +103,12 @@ class LanguageModelConfig(TextModelConfig[DecoderConfig]):
         self,
         model: LalamoModule,
         message_processor: MessageProcessor,
-    ) -> "LanguageModel":
+    ) -> LalamoModule[Self]:
         assert isinstance(model, Decoder)
         return LanguageModel(self, model, message_processor)
 
     @classmethod
-    def load_model(cls, path: Path | str) -> "LanguageModel":
+    def load_model(cls, path: Path | str) -> LalamoModule[Self]:
         result = super().load_model(path)
         assert isinstance(result, LanguageModel)
         return result
@@ -421,7 +421,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 f"Length of 'keys' should be equal to the number of sequences passed or None; got {len(keys)}",
             )
 
-        def process_batches(batch_size: int) -> Iterator[tuple[int, GenerationResults]]:
+        def process_batches(batch_size: int) -> Iterator[GenerationResults]:
             new_inference_config = replace(inference_config, batch_size=batch_size)
 
             for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):

@@ -1,6 +1,7 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Self
 
 import jax
 from jax import Array
@@ -24,12 +25,12 @@ class ClassifierModelConfig(TextModelConfig[ClassifierConfig]):
         self,
         model: LalamoModule,
         message_processor: MessageProcessor,
-    ) -> "ClassifierModel":
+    ) -> LalamoModule[Self]:
         assert isinstance(model, Classifier)
         return ClassifierModel(self, model, message_processor)
 
     @classmethod
-    def load_model(cls, path: Path | str) -> "ClassifierModel":
+    def load_model(cls, path: Path | str) -> LalamoModule[Self]:
         result = super().load_model(path)
         assert isinstance(result, ClassifierModel)
         return result

@@ -349,6 +349,8 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
             path=(jtu.GetAttrKey(field.name),),
         )
     return entries
+
+
 def field_metadata_by_leaf_id(module: eqx.Module) -> dict[int, FieldMetadataInfo]:
     field_metadata: dict[int, FieldMetadataInfo] = {}
     for entry in _field_value_entries(module):

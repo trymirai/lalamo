@@ -26,6 +26,8 @@ _compile_cache: dict[
 
 def _make_weak_finalizer(model_id: int) -> None:
     _compile_cache.pop(model_id, None)
+
+
 def compile_generate_tokens(
     model: LanguageModel,
     generation_config: GenerationConfig | None = None,

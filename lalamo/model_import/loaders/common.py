@@ -47,11 +47,7 @@ def _apply_parameter_sharding(
 
     if sharding_config.fsdp:
         for dim in tensor_sharding.axes:
-            if (
-                dim != tp_dim
-                and dim < array.ndim
-                and array.shape[dim] % sharding_config.data_axis_size == 0
-            ):
+            if dim != tp_dim and dim < array.ndim and array.shape[dim] % sharding_config.data_axis_size == 0:
                 parts[dim] = sharding_config.data_axis_name
                 break
 

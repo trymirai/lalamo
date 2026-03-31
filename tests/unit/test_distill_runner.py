@@ -83,8 +83,10 @@ def _make_language_model(
     tokenize_request: object | None = None,
 ) -> SimpleNamespace:
     if tokenize_request is None:
+
         def tokenize_request(_messages: object) -> list[int]:
             return [1, 2, 3]
+
     return SimpleNamespace(
         config=_StubLanguageModelConfig(
             model_config=_StubModelConfig(weight_quantization_mode=quantization_mode),
@@ -255,6 +257,10 @@ def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_p
     config = _make_config(tmp_path, num_steps=2, eval_every_steps=1, save_checkpoints=False)
     teacher_model = _make_language_model()
     student_model = _make_language_model()
+    batch = DistillBatch(
+        token_ids=jnp.asarray([[0]], dtype=jnp.int32),
+        lengths_without_padding=jnp.asarray([1], dtype=jnp.int32),
+    )
     initial_state = DistillTrainingState(
         master_weights={"weight": jnp.asarray(0.0, dtype=jnp.float32)},
         muon_weight_dimension_numbers={"weight": None},
@@ -323,8 +329,8 @@ def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_p
             return_value=LoadedDistillBatches(
                 train_examples=1,
                 eval_examples=1,
-                train_batches=[object()],
-                eval_batches=[object()],
+                train_batches=[batch],
+                eval_batches=[batch],
             ),
         ),
         patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),

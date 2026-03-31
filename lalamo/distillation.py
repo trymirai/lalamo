@@ -4,7 +4,7 @@ from collections import defaultdict
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 import equinox as eqx
 import jax
@@ -177,13 +177,13 @@ def _make_qlora_config(
     )
 
 
-def _rewrite_config_tree[C](config: C, rewrite: Callable[[Any], Any]) -> C:
+def _rewrite_config_tree(config: object, rewrite: Callable[[object], object]) -> object:
     rewritten = rewrite(config)
     if rewritten is not config:
         return rewritten
     if dataclasses.is_dataclass(config):
         return dataclasses.replace(
-            config,
+            cast("Any", config),
             **{
                 field.name: _rewrite_config_tree(getattr(config, field.name), rewrite)
                 for field in dataclasses.fields(config)
@@ -241,11 +241,14 @@ def inject_lora_adapter_configs[C](
     lora_rank: int,
     lora_scale: float,
 ) -> C:
-    return _rewrite_config_tree(
-        config,
-        lambda node: _make_qlora_config(node, lora_rank, lora_scale)
-        if isinstance(node, GroupQuantizedLinearConfig) and not isinstance(node, QLoRALinearConfig)
-        else node,
+    return cast(
+        "C",
+        _rewrite_config_tree(
+            config,
+            lambda node: _make_qlora_config(node, lora_rank, lora_scale)
+            if isinstance(node, GroupQuantizedLinearConfig) and not isinstance(node, QLoRALinearConfig)
+            else node,
+        ),
     )
 
 
@@ -378,7 +381,7 @@ def stochastically_quantize_module[M: eqx.Module](
 
 
 def _cast_array_like(value: Array | jax.ShapeDtypeStruct, dtype: DTypeLike) -> Array | jax.ShapeDtypeStruct:
-    if eqx.is_array(value):
+    if isinstance(value, jax.Array):
         return value.astype(dtype)
     return jax.ShapeDtypeStruct(value.shape, dtype)
 
@@ -471,7 +474,7 @@ def compute_distill_batch_metrics(
     student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)
     teacher_probs = jnp.exp(teacher_log_probs)
 
-    batch_size, num_tokens = batch.token_ids.shape
+    _, num_tokens = batch.token_ids.shape
     prediction_tokens = max(num_tokens - 1, 0)
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
     prediction_mask = (

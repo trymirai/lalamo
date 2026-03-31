@@ -157,8 +157,7 @@ def main(
 
     print("\n=== Done ===")
     print(
-        f"Best recipe: {best_optimizer.value} lr={best_lr} subset={best_subset.value} "
-        f"stochastic={best_stochastic}",
+        f"Best recipe: {best_optimizer.value} lr={best_lr} subset={best_subset.value} stochastic={best_stochastic}",
     )
     print(f"Results: {results_path}")
 

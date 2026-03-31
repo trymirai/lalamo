@@ -5,7 +5,6 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
-from functools import partial
 from itertools import cycle, islice
 from pathlib import Path
 
@@ -99,8 +98,8 @@ type DistillBatchLike = DistillBatch | TraceDistillBatch
 class LoadedDistillBatches:
     train_examples: int
     eval_examples: int
-    train_batches: list[DistillBatchLike]
-    eval_batches: list[DistillBatchLike]
+    train_batches: Sequence[DistillBatchLike]
+    eval_batches: Sequence[DistillBatchLike]
 
 
 @dataclass(frozen=True)
@@ -449,9 +448,9 @@ def _shard_distill_batches(
     )
 
 
-def _evaluate_with[BatchT](
-    batches: list[BatchT],
-    compute_batch_metrics: Callable[[BatchT], DistillBatchMetrics],
+def _evaluate_with(
+    batches: Sequence[DistillBatchLike],
+    compute_batch_metrics: Callable[[DistillBatchLike], DistillBatchMetrics],
 ) -> EvaluationMetrics:
     total_kl = 0.0
     total_valid_tokens = 0
@@ -576,15 +575,15 @@ def _build_optimizer(
     return optax.chain(optax.clip_by_global_norm(gradient_clip_norm), optimizer)
 
 
-def _accumulate_train_step[BatchT: eqx.Module](
+def _accumulate_train_step(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
-    microbatches: Sequence[BatchT],
+    microbatches: Sequence[DistillBatchLike],
     train_key: Key[Array, ""],
     *,
     stochastic_rounding: bool,
     compute_step_gradients: Callable[
-        [DistillTrainingState, BatchT, Key[Array, ""] | None],
+        [DistillTrainingState, DistillBatchLike, Key[Array, ""] | None],
         tuple[object, DistillBatchMetrics],
     ],
 ) -> tuple[DistillOptimizerState, DistillBatchMetrics, Key[Array, ""]]:
@@ -763,19 +762,26 @@ def distill(
             )
             best_optimizer_state = best_checkpoint.optimizer_state
 
-    match config.training_mode:
-        case TrainingMode.ONLINE_EXACT:
-            def evaluate_model(student: Decoder) -> EvaluationMetrics:
-                return _evaluate_with(
-                    dataset.eval_batches,
-                    partial(compute_distill_batch_metrics, student, teacher_model.model),
-                )
+    def evaluate_batch(student: Decoder, batch: DistillBatchLike) -> DistillBatchMetrics:
+        match config.training_mode:
+            case TrainingMode.ONLINE_EXACT:
+                assert isinstance(batch, DistillBatch)
+                return compute_distill_batch_metrics(student, teacher_model.model, batch)
+            case TrainingMode.TRACE_TOPK:
+                assert isinstance(batch, TraceDistillBatch)
+                return compute_trace_distill_batch_metrics(student, batch)
 
-            def compute_step_gradients(
-                training_state: DistillTrainingState,
-                batch: DistillBatch,
-                quantization_key: Key[Array, ""] | None,
-            ) -> tuple[object, DistillBatchMetrics]:
+    def evaluate_model(student: Decoder) -> EvaluationMetrics:
+        return _evaluate_with(dataset.eval_batches, lambda batch: evaluate_batch(student, batch))
+
+    def compute_step_gradients(
+        training_state: DistillTrainingState,
+        batch: DistillBatchLike,
+        quantization_key: Key[Array, ""] | None,
+    ) -> tuple[object, DistillBatchMetrics]:
+        match config.training_mode:
+            case TrainingMode.ONLINE_EXACT:
+                assert isinstance(batch, DistillBatch)
                 return compute_distill_step_gradients(
                     training_state,
                     student_model.model,
@@ -785,18 +791,8 @@ def distill(
                     quantization_key=quantization_key,
                     quantization_mode=config.quantization_mode,
                 )
-        case TrainingMode.TRACE_TOPK:
-            def evaluate_model(student: Decoder) -> EvaluationMetrics:
-                return _evaluate_with(
-                    dataset.eval_batches,
-                    partial(compute_trace_distill_batch_metrics, student),
-                )
-
-            def compute_step_gradients(
-                training_state: DistillTrainingState,
-                batch: TraceDistillBatch,
-                quantization_key: Key[Array, ""] | None,
-            ) -> tuple[object, DistillBatchMetrics]:
+            case TrainingMode.TRACE_TOPK:
+                assert isinstance(batch, TraceDistillBatch)
                 return compute_trace_distill_step_gradients(
                     training_state,
                     student_model.model,

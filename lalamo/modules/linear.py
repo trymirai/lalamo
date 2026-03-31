@@ -2,7 +2,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Self
+from typing import Any, Self
 
 import equinox as eqx
 import jax
@@ -1125,11 +1125,11 @@ LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuant
 register_config_union(LinearConfig)
 
 
-def _unwrap_legacy_rht_linear_weights(weights: ParameterTree[Array]) -> ParameterTree[Array]:
-    weights = require_mapping(weights)
-    if "inner_linear" in weights:
-        return require_tree(weights["inner_linear"])
-    return weights
+def _unwrap_legacy_rht_linear_weights(weights: ParameterTree[Array]) -> dict[str, Any]:
+    mapping = dict(require_mapping(weights))
+    if "inner_linear" in mapping:
+        return dict(require_mapping(require_tree(mapping["inner_linear"])))
+    return mapping
 
 
 def _structure_linear_config(
