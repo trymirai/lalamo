@@ -253,6 +253,11 @@ def test_validate_distill_models_rejects_quantization_mode_mismatch() -> None:
         )
 
 
+def test_distill_rejects_zero_eval_examples(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="eval_examples must be at least 1"):
+        distill(_make_config(tmp_path, eval_examples=0))
+
+
 def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_path: Path) -> None:
     config = _make_config(tmp_path, num_steps=2, eval_every_steps=1, save_checkpoints=False)
     teacher_model = _make_language_model()

@@ -521,9 +521,10 @@ def compute_trace_distill_batch_metrics(
     )
     masked_teacher_logits = jnp.where(batch.support_mask, batch.support_logits, -jnp.inf)
     masked_student_logits = jnp.where(batch.support_mask, student_support_logits, -jnp.inf)
+    safe_completion_logits = completion_mask[:, :, None]
 
-    teacher_log_probs = jax.nn.log_softmax(masked_teacher_logits, axis=-1)
-    student_log_probs = jax.nn.log_softmax(masked_student_logits, axis=-1)
+    teacher_log_probs = jax.nn.log_softmax(jnp.where(safe_completion_logits, masked_teacher_logits, 0.0), axis=-1)
+    student_log_probs = jax.nn.log_softmax(jnp.where(safe_completion_logits, masked_student_logits, 0.0), axis=-1)
     teacher_probs = jnp.exp(teacher_log_probs)
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
 

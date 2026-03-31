@@ -462,6 +462,7 @@ def _evaluate_with(
         total_valid_tokens += int(batch_metrics.valid_tokens)
         total_matches += int(batch_metrics.top1_matches)
 
+    assert total_valid_tokens > 0, "Evaluation requires at least one valid token"
     return EvaluationMetrics(
         kl_divergence=total_kl / total_valid_tokens,
         top1_agreement=total_matches / total_valid_tokens,
@@ -637,6 +638,10 @@ def distill(
     trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
     callbacks_type: Callable[[DistillConfig], DistillCallbacks] = DistillCallbacks,
 ) -> DistillResult:
+    if config.train_examples < 1:
+        raise ValueError("train_examples must be at least 1")
+    if config.eval_examples < 1:
+        raise ValueError("eval_examples must be at least 1")
     if config.warmup_steps < 0:
         raise ValueError("warmup_steps must be non-negative")
     if config.gradient_accumulation_steps < 1:

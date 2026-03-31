@@ -778,6 +778,42 @@ def test_compute_trace_distill_batch_metrics_counts_all_matching_top1_tokens() -
 
     assert metrics.valid_tokens == 2
     assert metrics.top1_matches == 2
+
+
+def test_compute_trace_distill_batch_metrics_handles_padded_completion_steps() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(17))
+
+    def select_support(token_ids: list[int], prefix_length: int, completion_length: int) -> list[dict[int, float]]:
+        logits = decoder(
+            token_ids=jnp.asarray([token_ids], dtype=jnp.int32),
+            token_positions=jnp.arange(len(token_ids), dtype=jnp.int32)[None, :],
+        ).logits[0, prefix_length - 1 : prefix_length - 1 + completion_length, :]
+        return [
+            dict(zip(support_ids.tolist(), support_values.tolist(), strict=True))
+            for support_values, support_ids in (jax.lax.top_k(step_logits, 4) for step_logits in logits)
+        ]
+
+    trace_batch = make_trace_distill_batch(
+        (
+            LalamoCompletion(
+                prefix_token_ids=[1, 2, 3],
+                completion_token_ids=[4, 5],
+                completion_token_logits=select_support([1, 2, 3, 4, 5], prefix_length=3, completion_length=2),
+            ),
+            LalamoCompletion(
+                prefix_token_ids=[6, 7],
+                completion_token_ids=[8],
+                completion_token_logits=select_support([6, 7, 8], prefix_length=2, completion_length=1),
+            ),
+        ),
+        pad_token_id=0,
+    )
+
+    metrics = compute_trace_distill_batch_metrics(decoder, trace_batch)
+
+    assert metrics.valid_tokens == 3
+    assert jnp.isfinite(metrics.loss)
+    assert metrics.top1_matches == 3
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
