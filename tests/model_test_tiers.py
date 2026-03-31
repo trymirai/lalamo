@@ -158,6 +158,8 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     # Other
     ("trymirai/chat-moderation-router", ModelTier.EXTRA),
     ("amd/PARD-Qwen3-0.6B", ModelTier.EXTRA),
+    # Bonsai
+    ("prism-ml/Bonsai-4B-mlx-1bit", ModelTier.EXTRA),
 )
 
 TIER_BY_REPO: dict[str, ModelTier] = dict(MODEL_TIERS)
