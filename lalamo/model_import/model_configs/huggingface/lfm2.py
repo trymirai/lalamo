@@ -98,7 +98,10 @@ class HFLFM2Config(HuggingFaceLMConfig):
         if flat is not None and nested is not None and flat != nested:
             raise ValueError(f"Conflicting rope_theta: {flat} (flat) vs {nested} (rope_parameters).")
 
-        return flat if nested is None else nested
+        if nested is not None:
+            return nested
+        assert flat is not None
+        return flat
 
     @property
     def default_precision(self) -> DTypeLike:
