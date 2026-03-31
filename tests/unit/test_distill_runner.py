@@ -1,4 +1,5 @@
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -66,21 +67,19 @@ _EMPTY_PARAMETER_SUMMARY = DistillParameterSummary(
 )
 
 
-def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
-    config_kwargs = {
-        "teacher_path": tmp_path / "teacher",
-        "student_path": tmp_path / "student",
-        "dataset_path": tmp_path / "dataset.parquet",
-        "output_dir": tmp_path / "output",
-        "batch_size": 1,
-        "train_examples": 1,
-        "eval_examples": 1,
-        "num_steps": 1,
-        "optimizer_name": OptimizerName.SGD,
-        "quantization_mode": QuantizationMode.UINT4,
-        **overrides,
-    }
-    return DistillConfig(**config_kwargs)
+def _make_config(tmp_path: Path) -> DistillConfig:
+    return DistillConfig(
+        teacher_path=tmp_path / "teacher",
+        student_path=tmp_path / "student",
+        dataset_path=tmp_path / "dataset.parquet",
+        output_dir=tmp_path / "output",
+        batch_size=1,
+        train_examples=1,
+        eval_examples=1,
+        num_steps=1,
+        optimizer_name=OptimizerName.SGD,
+        quantization_mode=QuantizationMode.UINT4,
+    )
 
 
 def _make_language_model(
@@ -88,10 +87,9 @@ def _make_language_model(
     tokenizer_signature: str = "shared-tokenizer",
     quantization_mode: QuantizationMode = QuantizationMode.UINT4,
     message_processor_config: str = "default",
-    tokenize_request: object | None = None,
+    tokenize_request: Callable[[object], list[int]] | None = None,
 ) -> SimpleNamespace:
     if tokenize_request is None:
-
         def tokenize_request(_messages: object) -> list[int]:
             return [1, 2, 3]
 
@@ -254,16 +252,16 @@ def test_validate_distill_models_rejects_quantization_mode_mismatch() -> None:
 
 def test_distill_rejects_zero_eval_examples(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="eval_examples must be at least 1"):
-        distill(_make_config(tmp_path, eval_examples=0))
+        distill(replace(_make_config(tmp_path), eval_examples=0))
 
 
 def test_distill_rejects_online_exact_sequence_length_below_two(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="max_sequence_length >= 2"):
-        distill(_make_config(tmp_path, max_sequence_length=1))
+        distill(replace(_make_config(tmp_path), max_sequence_length=1))
 
 
 def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, num_steps=2, eval_every_steps=1, save_checkpoints=False)
+    config = replace(_make_config(tmp_path), num_steps=2, eval_every_steps=1, save_checkpoints=False)
     teacher_model = _make_language_model()
     student_model = _make_language_model()
     batch = DistillBatch(
@@ -367,8 +365,8 @@ def test_distill_resume_same_output_dir_skips_copying_best_checkpoint(tmp_path: 
     latest_checkpoint_dir.mkdir(parents=True)
     best_checkpoint_dir.mkdir(parents=True)
 
-    config = _make_config(
-        tmp_path,
+    config = replace(
+        _make_config(tmp_path),
         output_dir=output_dir,
         resume_from=latest_checkpoint_dir,
         num_steps=2,
@@ -470,8 +468,8 @@ def test_distill_resume_uses_loaded_best_state_without_checkpoints(tmp_path: Pat
     latest_checkpoint_dir = output_dir / "latest-checkpoint"
     latest_checkpoint_dir.mkdir(parents=True)
 
-    config = _make_config(
-        tmp_path,
+    config = replace(
+        _make_config(tmp_path),
         output_dir=output_dir,
         resume_from=latest_checkpoint_dir,
         num_steps=3,
@@ -583,7 +581,7 @@ def test_distill_resume_uses_loaded_best_state_without_checkpoints(tmp_path: Pat
 
 
 def test_distill_uses_final_eval_as_best_step_without_periodic_eval(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, num_steps=2, eval_every_steps=0, save_checkpoints=True)
+    config = replace(_make_config(tmp_path), num_steps=2, eval_every_steps=0, save_checkpoints=True)
     teacher_model = _make_language_model()
     student_model = _make_language_model()
     batch = DistillBatch(
