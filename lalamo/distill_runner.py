@@ -829,23 +829,29 @@ def distill(
     config.output_dir.mkdir(parents=True, exist_ok=True)
     latest_checkpoint_dir = config.output_dir / "latest-checkpoint"
     best_checkpoint_dir = config.output_dir / "best-checkpoint"
+
+    def save_checkpoint(checkpoint_dir: Path, step: int) -> None:
+        assert best_eval_kl is not None
+        assert best_step is not None
+        _save_checkpoint(
+            checkpoint_dir,
+            ExperimentCheckpoint(
+                optimizer_state=optimizer_state,
+                train_key_data=jax.random.key_data(train_key),
+            ),
+            CheckpointMetadata(
+                step=step,
+                best_eval_kl=best_eval_kl,
+                best_step=best_step,
+                evaluations_without_improvement=evaluations_without_improvement,
+            ),
+        )
+
     if config.save_checkpoints:
         if resume_best_checkpoint_dir is not None and resume_best_checkpoint_dir != best_checkpoint_dir:
             shutil.copytree(resume_best_checkpoint_dir, best_checkpoint_dir, dirs_exist_ok=True)
         elif best_step == completed_steps:
-            _save_checkpoint(
-                best_checkpoint_dir,
-                ExperimentCheckpoint(
-                    optimizer_state=optimizer_state,
-                    train_key_data=jax.random.key_data(train_key),
-                ),
-                CheckpointMetadata(
-                    step=completed_steps,
-                    best_eval_kl=best_eval_kl,
-                    best_step=best_step,
-                    evaluations_without_improvement=evaluations_without_improvement,
-                ),
-            )
+            save_checkpoint(best_checkpoint_dir, completed_steps)
     history_path = config.output_dir / "history.jsonl"
     step_iterator = cycle(dataset.train_batches)
     compilation_seconds = 0.0
@@ -907,19 +913,7 @@ def distill(
                     best_optimizer_state = optimizer_state
                     evaluations_without_improvement = 0
                     if config.save_checkpoints:
-                        _save_checkpoint(
-                            best_checkpoint_dir,
-                            ExperimentCheckpoint(
-                                optimizer_state=optimizer_state,
-                                train_key_data=jax.random.key_data(train_key),
-                            ),
-                            CheckpointMetadata(
-                                step=step,
-                                best_eval_kl=best_eval_kl,
-                                best_step=best_step,
-                                evaluations_without_improvement=evaluations_without_improvement,
-                            ),
-                        )
+                        save_checkpoint(best_checkpoint_dir, step)
                 else:
                     evaluations_without_improvement += 1
                     patience_exceeded = evaluations_without_improvement >= config.early_stop_patience
@@ -934,36 +928,12 @@ def distill(
 
             should_save_checkpoint = config.checkpoint_every_steps > 0 and step % config.checkpoint_every_steps == 0
             if config.save_checkpoints and (should_save_checkpoint or stopped_early):
-                _save_checkpoint(
-                    latest_checkpoint_dir,
-                    ExperimentCheckpoint(
-                        optimizer_state=optimizer_state,
-                        train_key_data=jax.random.key_data(train_key),
-                    ),
-                    CheckpointMetadata(
-                        step=step,
-                        best_eval_kl=best_eval_kl,
-                        best_step=best_step,
-                        evaluations_without_improvement=evaluations_without_improvement,
-                    ),
-                )
+                save_checkpoint(latest_checkpoint_dir, step)
             if stopped_early:
                 break
 
     if config.save_checkpoints:
-        _save_checkpoint(
-            latest_checkpoint_dir,
-            ExperimentCheckpoint(
-                optimizer_state=optimizer_state,
-                train_key_data=jax.random.key_data(train_key),
-            ),
-            CheckpointMetadata(
-                step=completed_steps,
-                best_eval_kl=best_eval_kl,
-                best_step=best_step,
-                evaluations_without_improvement=evaluations_without_improvement,
-            ),
-        )
+        save_checkpoint(latest_checkpoint_dir, completed_steps)
 
     elapsed_seconds = time.perf_counter() - run_start
     measured_steps = max(executed_steps - 1, 0)
@@ -991,6 +961,11 @@ def distill(
         distill_config,
     )
     final_eval = evaluate_model(final_student)
+    if final_eval.kl_divergence < best_eval_kl:
+        best_eval_kl = final_eval.kl_divergence
+        best_step = completed_steps
+        if config.save_checkpoints:
+            save_checkpoint(best_checkpoint_dir, completed_steps)
 
     model_output_path = config.output_dir / "student-distilled"
     export_config = DistillTrainConfig(

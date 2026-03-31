@@ -8,6 +8,7 @@ from typing import Annotated
 import typer
 
 from lalamo.distill_runner import DistillConfig, DistillResult, OptimizerName, TrainingMode, distill
+from lalamo.main import _infer_student_quantization_mode
 from lalamo.modules.common import ParameterLeafInfo, ParameterNorm
 
 
@@ -66,6 +67,7 @@ def main(
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, object]] = []
+    quantization_mode = _infer_student_quantization_mode(student_path)
     base_config = DistillConfig(
         teacher_path=teacher_path,
         student_path=student_path,
@@ -79,6 +81,7 @@ def main(
         num_steps=num_steps,
         learning_rate=3e-6,
         optimizer_name=OptimizerName.ADAMW,
+        quantization_mode=quantization_mode,
         seed=seed,
         stochastic_rounding=True,
         save_checkpoints=False,

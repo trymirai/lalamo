@@ -2051,7 +2051,7 @@ requires-dist = [
     { name = "jaxtyping", specifier = ">=0.2.36" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "ml-dtypes", specifier = ">=0.5.1" },
-    { name = "optax", specifier = ">=0.2.4" },
+    { name = "optax", specifier = ">=0.2.6" },
     { name = "polars", specifier = ">=1.33.1" },
     { name = "pyaudio", marker = "extra == 'pyaudio'", specifier = ">=0.2.0" },
     { name = "requests", specifier = ">=2.32.5" },
