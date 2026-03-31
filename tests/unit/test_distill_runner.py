@@ -58,6 +58,14 @@ class _FakeDataFrame:
         return _FakeColumn(self._values)
 
 
+_EMPTY_PARAMETER_SUMMARY = DistillParameterSummary(
+    total_parameters=0,
+    trainable_parameters=0,
+    total_master_bytes=0,
+    by_group={},
+)
+
+
 def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
     config_kwargs = {
         "teacher_path": tmp_path / "teacher",
@@ -97,15 +105,6 @@ def _make_language_model(
             tokenize_request=tokenize_request,
             tokenizer=SimpleNamespace(to_str=lambda: tokenizer_signature),
         ),
-    )
-
-
-def _make_parameter_summary() -> DistillParameterSummary:
-    return DistillParameterSummary(
-        total_parameters=0,
-        trainable_parameters=0,
-        total_master_bytes=0,
-        by_group={},
     )
 
 
@@ -345,7 +344,7 @@ def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_p
         ),
         patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
         patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
-        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_EMPTY_PARAMETER_SUMMARY),
         patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
         patch("lalamo.distill_runner.compute_distill_batch_metrics", side_effect=compute_distill_batch_metrics),
         patch("lalamo.distill_runner._accumulate_train_step", side_effect=accumulate_train_step),
@@ -453,7 +452,7 @@ def test_distill_resume_same_output_dir_skips_copying_best_checkpoint(tmp_path: 
         ),
         patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
         patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
-        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_EMPTY_PARAMETER_SUMMARY),
         patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
         patch("lalamo.distill_runner.compute_distill_batch_metrics", side_effect=compute_distill_batch_metrics),
         patch("lalamo.distill_runner._load_checkpoint", side_effect=load_checkpoint),
@@ -566,7 +565,7 @@ def test_distill_resume_uses_loaded_best_state_without_checkpoints(tmp_path: Pat
         ),
         patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
         patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
-        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_EMPTY_PARAMETER_SUMMARY),
         patch("lalamo.distill_runner._load_checkpoint", side_effect=load_checkpoint),
         patch("lalamo.distill_runner._accumulate_train_step", side_effect=accumulate_train_step),
         patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
@@ -658,7 +657,7 @@ def test_distill_uses_final_eval_as_best_step_without_periodic_eval(tmp_path: Pa
         ),
         patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
         patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
-        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_EMPTY_PARAMETER_SUMMARY),
         patch("lalamo.distill_runner._accumulate_train_step", side_effect=accumulate_train_step),
         patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
         patch("lalamo.distill_runner.compute_distill_batch_metrics", side_effect=compute_distill_batch_metrics),

@@ -18,39 +18,11 @@ class TrainableSubset(StrEnum):
     QUANTIZED_AND_L_INF = "quantized_and_l_inf"
 
 
-def _trainable_filter(subset: TrainableSubset) -> Callable[[ParameterLeafInfo], bool]:
-    match subset:
-        case TrainableSubset.ALL:
-            return lambda _info: True
-        case TrainableSubset.QUANTIZED_ONLY:
-            return lambda info: info.quantized
-        case TrainableSubset.QUANTIZED_AND_L_INF:
-            return lambda info: info.quantized or info.norm == ParameterNorm.L_INF
-
-
-def _run(name: str, config: DistillConfig, subset: TrainableSubset) -> DistillResult:
-    print(f"\n--- {name} ---")
-    result = distill(config, trainable_filter=_trainable_filter(subset))
-    print(
-        f"KL {result.initial_eval.kl_divergence:.4f} -> {result.final_eval.kl_divergence:.4f}  "
-        f"top1 {result.initial_eval.top1_agreement:.4f} -> {result.final_eval.top1_agreement:.4f}  "
-        f"sec/step {result.seconds_per_step:.2f}",
-    )
-    return result
-
-
-def _result_row(name: str, subset: TrainableSubset, result: DistillResult) -> dict[str, object]:
-    return {
-        "name": name,
-        "trainable_subset": subset.value,
-        "initial_kl": result.initial_eval.kl_divergence,
-        "final_kl": result.final_eval.kl_divergence,
-        "initial_top1": result.initial_eval.top1_agreement,
-        "final_top1": result.final_eval.top1_agreement,
-        "compilation_seconds": result.compilation_seconds,
-        "seconds_per_step": result.seconds_per_step,
-        "completed_steps": result.completed_steps,
-    }
+_TRAINABLE_FILTERS: dict[TrainableSubset, Callable[[ParameterLeafInfo], bool]] = {
+    TrainableSubset.ALL: lambda _info: True,
+    TrainableSubset.QUANTIZED_ONLY: lambda info: info.quantized,
+    TrainableSubset.QUANTIZED_AND_L_INF: lambda info: info.quantized or info.norm == ParameterNorm.L_INF,
+}
 
 
 def main(
@@ -87,6 +59,29 @@ def main(
         save_checkpoints=False,
     )
 
+    def run_case(name: str, config: DistillConfig, subset: TrainableSubset) -> DistillResult:
+        print(f"\n--- {name} ---")
+        result = distill(config, trainable_filter=_TRAINABLE_FILTERS[subset])
+        results.append(
+            {
+                "name": name,
+                "trainable_subset": subset.value,
+                "initial_kl": result.initial_eval.kl_divergence,
+                "final_kl": result.final_eval.kl_divergence,
+                "initial_top1": result.initial_eval.top1_agreement,
+                "final_top1": result.final_eval.top1_agreement,
+                "compilation_seconds": result.compilation_seconds,
+                "seconds_per_step": result.seconds_per_step,
+                "completed_steps": result.completed_steps,
+            },
+        )
+        print(
+            f"KL {result.initial_eval.kl_divergence:.4f} -> {result.final_eval.kl_divergence:.4f}  "
+            f"top1 {result.initial_eval.top1_agreement:.4f} -> {result.final_eval.top1_agreement:.4f}  "
+            f"sec/step {result.seconds_per_step:.2f}",
+        )
+        return result
+
     print("\n=== Optimizer / LR ===")
     best_optimizer = OptimizerName.ADAMW
     best_lr = 3e-6
@@ -94,7 +89,7 @@ def main(
     for optimizer_name in (OptimizerName.ADAMW, OptimizerName.MUON):
         for learning_rate in (1e-7, 3e-7, 1e-6, 3e-6):
             name = f"{optimizer_name.value}_lr{learning_rate}"
-            result = _run(
+            result = run_case(
                 name,
                 replace(
                     base_config,
@@ -104,7 +99,6 @@ def main(
                 ),
                 TrainableSubset.ALL,
             )
-            results.append(_result_row(name, TrainableSubset.ALL, result))
             if result.final_eval.kl_divergence < best_kl:
                 best_optimizer = optimizer_name
                 best_lr = learning_rate
@@ -117,7 +111,7 @@ def main(
     best_kl = float("inf")
     for subset in TrainableSubset:
         name = f"subset_{subset.value}"
-        result = _run(
+        result = run_case(
             name,
             replace(
                 base_config,
@@ -127,7 +121,6 @@ def main(
             ),
             subset,
         )
-        results.append(_result_row(name, subset, result))
         if result.final_eval.kl_divergence < best_kl:
             best_subset = subset
             best_kl = result.final_eval.kl_divergence
@@ -139,7 +132,7 @@ def main(
     best_kl = float("inf")
     for stochastic_rounding in (True, False):
         name = f"stochastic_{stochastic_rounding}"
-        result = _run(
+        result = run_case(
             name,
             replace(
                 base_config,
@@ -150,7 +143,6 @@ def main(
             ),
             best_subset,
         )
-        results.append(_result_row(name, best_subset, result))
         if result.final_eval.kl_divergence < best_kl:
             best_stochastic = stochastic_rounding
             best_kl = result.final_eval.kl_divergence

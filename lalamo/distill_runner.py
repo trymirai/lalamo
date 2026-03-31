@@ -830,7 +830,7 @@ def distill(
 
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
-        best_step = max(0, completed_steps)
+        best_step = completed_steps
         best_optimizer_state = optimizer_state
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
@@ -902,12 +902,7 @@ def distill(
             if executed_steps == 0:
                 compilation_seconds = time.perf_counter() - warmup_start
 
-            history_entry = HistoryEntry(
-                step=step,
-                train_kl_divergence=float(train_metrics.loss),
-                valid_tokens=int(train_metrics.valid_tokens),
-            )
-
+            eval_metrics: EvaluationMetrics | None = None
             if config.eval_every_steps > 0 and step % config.eval_every_steps == 0:
                 performed_periodic_evaluation = True
                 materialized_student = materialize_trainable_module(
@@ -916,15 +911,6 @@ def distill(
                     distill_config,
                 )
                 eval_metrics = evaluate_model(materialized_student)
-
-                history_entry = HistoryEntry(
-                    step=step,
-                    train_kl_divergence=float(train_metrics.loss),
-                    valid_tokens=int(train_metrics.valid_tokens),
-                    eval_kl_divergence=eval_metrics.kl_divergence,
-                    eval_top1_agreement=eval_metrics.top1_agreement,
-                    eval_valid_tokens=eval_metrics.valid_tokens,
-                )
                 if update_best(step, eval_metrics.kl_divergence):
                     evaluations_without_improvement = 0
                 else:
@@ -933,6 +919,14 @@ def distill(
                     if config.early_stop_patience > 0 and patience_exceeded:
                         stopped_early = True
 
+            history_entry = HistoryEntry(
+                step=step,
+                train_kl_divergence=float(train_metrics.loss),
+                valid_tokens=int(train_metrics.valid_tokens),
+                eval_kl_divergence=None if eval_metrics is None else eval_metrics.kl_divergence,
+                eval_top1_agreement=None if eval_metrics is None else eval_metrics.top1_agreement,
+                eval_valid_tokens=None if eval_metrics is None else eval_metrics.valid_tokens,
+            )
             history_file.write(json.dumps(asdict(history_entry)) + "\n")
             history_file.flush()
             executed_steps += 1

@@ -11,7 +11,6 @@ from jax.tree_util import keystr
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
     DistillBatch,
-    DistillBatchMetrics,
     DistillOptimizerState,
     DistillTrainConfig,
     DistillTrainingState,
@@ -93,40 +92,6 @@ def _make_optimizer_state(
         training_state=training_state,
         optimizer_state=optimizer.init(training_state.master_weights),
     )
-
-
-def _run_distill_step(
-    optimizer_state: DistillOptimizerState,
-    optimizer: optax.GradientTransformation,
-    student: Decoder,
-    teacher: Decoder,
-    batch: DistillBatch,
-    config: DistillTrainConfig,
-) -> tuple[DistillOptimizerState, DistillBatchMetrics]:
-    grads, metrics = compute_distill_step_gradients(
-        optimizer_state.training_state,
-        student,
-        teacher,
-        batch,
-        config,
-    )
-    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics
-
-
-def _run_trace_distill_step(
-    optimizer_state: DistillOptimizerState,
-    optimizer: optax.GradientTransformation,
-    student: Decoder,
-    batch: TraceDistillBatch,
-    config: DistillTrainConfig,
-) -> tuple[DistillOptimizerState, DistillBatchMetrics]:
-    grads, metrics = compute_trace_distill_step_gradients(
-        optimizer_state.training_state,
-        student,
-        batch,
-        config,
-    )
-    return apply_distill_gradients(optimizer_state, optimizer, grads), metrics
 
 
 def _leaf_by_path(tree: object) -> dict[str, object]:
@@ -931,14 +896,14 @@ def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
     )
 
     for _ in range(20):
-        optimizer_state, _ = _run_distill_step(
-            optimizer_state,
-            optimizer,
+        grads, _ = compute_distill_step_gradients(
+            optimizer_state.training_state,
             student,
             teacher,
             batch,
             config,
         )
+        optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
 
     final_metrics = compute_distill_batch_metrics(
         materialize_trainable_module(student, optimizer_state.training_state.master_weights, config),
@@ -966,14 +931,14 @@ def test_applying_distill_step_gradients_matches_helper_step_update() -> None:
     training_state = initialize_distill_training_state(student, config)
     optimizer_state = _make_optimizer_state(training_state, optimizer)
 
-    step_optimizer_state, step_metrics = _run_distill_step(
-        optimizer_state,
-        optimizer,
+    step_grads, step_metrics = compute_distill_step_gradients(
+        optimizer_state.training_state,
         student,
         teacher,
         batch,
         config,
     )
+    step_optimizer_state = apply_distill_gradients(optimizer_state, optimizer, step_grads)
     grads, grad_metrics = compute_distill_step_gradients(
         optimizer_state.training_state,
         student,
@@ -1014,13 +979,13 @@ def test_repeated_trace_distill_step_gradients_reduce_trace_loss() -> None:
     )
 
     for _ in range(20):
-        optimizer_state, _ = _run_trace_distill_step(
-            optimizer_state,
-            optimizer,
+        grads, _ = compute_trace_distill_step_gradients(
+            optimizer_state.training_state,
             student,
             trace_batch,
             config,
         )
+        optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
 
     final_metrics = compute_trace_distill_batch_metrics(
         materialize_trainable_module(student, optimizer_state.training_state.master_weights, config),
@@ -1044,13 +1009,13 @@ def test_applying_trace_distill_step_gradients_matches_helper_step_update() -> N
     training_state = initialize_distill_training_state(student, config)
     optimizer_state = _make_optimizer_state(training_state, optimizer)
 
-    step_optimizer_state, step_metrics = _run_trace_distill_step(
-        optimizer_state,
-        optimizer,
+    step_grads, step_metrics = compute_trace_distill_step_gradients(
+        optimizer_state.training_state,
         student,
         trace_batch,
         config,
     )
+    step_optimizer_state = apply_distill_gradients(optimizer_state, optimizer, step_grads)
     grads, grad_metrics = compute_trace_distill_step_gradients(
         optimizer_state.training_state,
         student,
