@@ -82,6 +82,10 @@ class HFLFM2Config(HuggingFaceLMConfig):
     quantization_config: QuantizationConfig | None = None
 
     @property
+    def effective_quantization(self) -> QuantizationConfig | None:
+        return self.quantization_config or self.quantization
+
+    @property
     def default_precision(self) -> DTypeLike:
         assert self.dtype is not None or self.torch_dtype is not None, (
             "at least one of dtype or torch_dtype must be specified"
@@ -98,14 +102,15 @@ class HFLFM2Config(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         assert self.num_attention_heads == self.num_heads
 
-        if self.quantization_config is not None:
+        quantization = self.effective_quantization
+        if quantization is not None:
             assert self.tie_embedding
 
             embedding_config = MLXQuantizedTiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                group_size=self.quantization_config.group_size,
-                embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                group_size=quantization.group_size,
+                embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )
@@ -128,12 +133,12 @@ class HFLFM2Config(HuggingFaceLMConfig):
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
-        if self.quantization_config is None:
+        if quantization is None:
             linear_config = FullPrecisionLinearConfig(activation_precision)
         else:
             linear_config = MLXQuantizedLinearConfig(
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                group_size=quantization.group_size,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                 activation_quantization_mode=None,
                 activation_precision=activation_precision,
             )

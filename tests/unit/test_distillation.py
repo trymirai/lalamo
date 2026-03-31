@@ -436,6 +436,44 @@ def test_q_lora_import_weights_round_trips_without_transpose() -> None:
     assert jnp.array_equal(imported_layer.lora_up_weights, layer.lora_up_weights)
 
 
+def test_group_quantized_linear_import_weights_accepts_legacy_rht_inner_linear_key() -> None:
+    config = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    )
+    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(28))
+    exported_weights = layer.export_weights()
+    imported_layer = layer.import_weights({"inner_linear": exported_weights})
+    imported_weights = imported_layer.export_weights()
+
+    assert jnp.array_equal(imported_weights["weights"], exported_weights["weights"])
+    assert jnp.array_equal(imported_weights["zero_points"], exported_weights["zero_points"])
+    assert jnp.array_equal(imported_weights["scales"], exported_weights["scales"])
+
+
+def test_q_lora_import_weights_accepts_legacy_rht_inner_linear_key() -> None:
+    config = QLoRALinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+        lora_rank=2,
+        lora_scale=1.0,
+    )
+    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(29))
+    exported_weights = layer.export_weights()
+    imported_layer = layer.import_weights({"inner_linear": exported_weights})
+    imported_weights = imported_layer.export_weights()
+
+    assert jnp.array_equal(imported_weights["weights"], exported_weights["weights"])
+    assert jnp.array_equal(imported_weights["zero_points"], exported_weights["zero_points"])
+    assert jnp.array_equal(imported_weights["scales"], exported_weights["scales"])
+    assert jnp.array_equal(imported_weights["down_weights"], exported_weights["down_weights"])
+    assert jnp.array_equal(imported_weights["up_weights"], exported_weights["up_weights"])
+
+
 def test_q_lora_linear_uses_single_fused_lora_path() -> None:
     config = QLoRALinearConfig(
         group_size=2,

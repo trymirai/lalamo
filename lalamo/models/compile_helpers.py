@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import functools
 import weakref
 from typing import TYPE_CHECKING
@@ -27,16 +26,6 @@ _compile_cache: dict[
 
 def _make_weak_finalizer(model_id: int) -> None:
     _compile_cache.pop(model_id, None)
-
-
-def _bucket_output_length(n: int) -> int:
-    """Round up to next power of 2 so nearby max_output_length values share one XLA kernel."""
-    p = 1
-    while p < n:
-        p <<= 1
-    return p
-
-
 def compile_generate_tokens(
     model: LanguageModel,
     generation_config: GenerationConfig | None = None,
@@ -49,16 +38,8 @@ def compile_generate_tokens(
 ) -> Compiled:
     from .language_model import LanguageModel
 
-    # Bucket max_output_length to the next power of 2 so that values like 2048
-    # and 2049 compile the same XLA kernel (different shapes → different FP
-    # accumulation → non-deterministic greedy outputs).
-    bucketed_config = dataclasses.replace(
-        inference_config,
-        max_output_length=_bucket_output_length(inference_config.max_output_length),
-    )
-
     model_id = id(model)
-    key = (generation_config, bucketed_config, forward_pass_config, prompt_token_ids.sharding)
+    key = (generation_config, inference_config, forward_pass_config, prompt_token_ids.sharding)
     if model_id not in _compile_cache:
         _compile_cache[model_id] = {}
         weakref.finalize(model, _make_weak_finalizer, model_id)
@@ -66,8 +47,8 @@ def compile_generate_tokens(
         generate_tokens_fn = functools.partial(
             LanguageModel.generate_tokens,
             generation_config=generation_config,
-            max_output_length=bucketed_config.max_output_length,
-            num_top_logits_to_return=bucketed_config.num_top_logits_to_return,
+            max_output_length=inference_config.max_output_length,
+            num_top_logits_to_return=inference_config.num_top_logits_to_return,
             forward_pass_config=forward_pass_config,
         )
         _compile_cache[model_id][key] = (
