@@ -1054,7 +1054,7 @@ def distill_advanced(
         Option(
             help="Directory for checkpoints, metrics, and the distilled model.",
         ),
-    ] = DEFAULT_OUTPUT_DIR / "distilled",
+    ],
     training_mode: Annotated[
         TrainingMode,
         Option(help="Distillation mode to run."),

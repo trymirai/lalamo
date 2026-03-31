@@ -47,6 +47,7 @@ from lalamo.modules.embedding import MLXSemiQuantizedUntiedEmbeddingConfig
 from lalamo.modules.linear import (
     FullPrecisionLinearConfig,
     GroupQuantizedLinearConfig,
+    MLXQuantizedLinearConfig,
     QLoRALinear,
     QLoRALinearConfig,
 )
@@ -497,6 +498,60 @@ def test_q_lora_import_weights_accepts_legacy_split_up_weights() -> None:
     assert jnp.array_equal(imported_layer.lora_up_weights, layer.lora_up_weights)
 
 
+def test_full_precision_linear_import_weights_rejects_shape_changes() -> None:
+    layer = FullPrecisionLinearConfig(precision=jnp.float32).random_init(
+        4,
+        (3, 5),
+        has_biases=True,
+        key=jax.random.key(31),
+    )
+
+    with pytest.raises(AssertionError):
+        layer.import_weights(
+            {
+                "weights": jnp.ones((8, 3), dtype=jnp.float32),
+                "biases": jnp.ones((8,), dtype=jnp.float32),
+            },
+        )
+
+
+def test_mlx_quantized_linear_random_init_stays_zero_centered() -> None:
+    layer = MLXQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (8,), has_biases=False, key=jax.random.key(32))
+
+    prepared_weights = jax.vmap(lambda basis: jnp.concatenate(layer(basis)))(
+        jnp.eye(layer.input_dim, dtype=jnp.float32),
+    )
+
+    assert float(prepared_weights.min()) < 0.0
+    assert float(prepared_weights.max()) > 0.0
+    assert abs(float(prepared_weights.mean())) < 0.2
+
+
+def test_mlx_quantized_linear_import_weights_rejects_shape_changes() -> None:
+    layer = MLXQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (8,), has_biases=False, key=jax.random.key(33))
+    exported_weights = layer.export_weights()
+
+    with pytest.raises(AssertionError):
+        layer.import_weights(
+            {
+                **exported_weights,
+                "weights": jnp.ones((8, 1), dtype=exported_weights["weights"].dtype),
+                "scales": jnp.ones((8, 1), dtype=jnp.float32),
+                "deq_biases": jnp.ones((8, 1), dtype=jnp.float32),
+            },
+        )
+
+
 def test_q_lora_linear_uses_single_fused_lora_path() -> None:
     config = QLoRALinearConfig(
         group_size=2,
@@ -684,6 +739,17 @@ def test_compute_distill_batch_metrics_counts_all_matching_top1_tokens() -> None
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
+def test_compute_distill_batch_metrics_rejects_batches_without_prediction_tokens() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(34))
+    batch = DistillBatch(
+        token_ids=jnp.array([[1]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([1], dtype=jnp.int32),
+    )
+
+    with pytest.raises(eqx.EquinoxRuntimeError, match="at least one prediction token"):
+        compute_distill_batch_metrics(decoder, decoder, batch)
+
+
 def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
     traces = (
         LalamoCompletion(
@@ -737,6 +803,15 @@ def test_make_trace_distill_batch_rejects_invalid_traces(
 
     with pytest.raises(AssertionError, match=error_message):
         make_trace_distill_batch(traces, pad_token_id=0)
+
+
+def test_lalamo_completion_rejects_mismatched_trace_lengths() -> None:
+    with pytest.raises(ValueError, match="completion_token_ids"):
+        LalamoCompletion(
+            prefix_token_ids=[1],
+            completion_token_ids=[2, 3],
+            completion_token_logits=[{2: 0.5}],
+        )
 
 
 def _make_trace_batch_from_decoder(decoder: Decoder) -> tuple[TraceDistillBatch, jax.Array]:

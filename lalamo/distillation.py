@@ -481,6 +481,11 @@ def compute_distill_batch_metrics(
         jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (batch.lengths_without_padding[:, None] - 1)
     ).astype(token_kl.dtype)
     valid_tokens = prediction_mask.sum(dtype=jnp.int32)
+    valid_tokens = eqx.error_if(
+        valid_tokens,
+        valid_tokens <= 0,
+        "Online distillation batch requires at least one prediction token",
+    )
     loss = jnp.sum(token_kl * prediction_mask) / valid_tokens.astype(token_kl.dtype)
     student_top1 = jnp.argmax(student_logits, axis=-1)
     teacher_top1 = jnp.argmax(teacher_logits, axis=-1)

@@ -1,7 +1,15 @@
+import equinox as eqx
 import jax.numpy as jnp
+import pytest
 from einops import rearrange
 
-from lalamo.modules import TiedEmbeddingConfig, quantize_tied_embedding_to_mlx
+from lalamo.modules import (
+    MLXQuantizedUntiedEmbeddingConfig,
+    MLXSemiQuantizedUntiedEmbeddingConfig,
+    TiedEmbeddingConfig,
+    UntiedEmbeddingConfig,
+    quantize_tied_embedding_to_mlx,
+)
 from lalamo.quantization import QuantizationMode
 
 
@@ -78,3 +86,118 @@ def test_quantize_tied_embedding_to_mlx_reconstructs_two_value_groups_exactly() 
     assert jnp.array_equal(restored_embedding.weights, quantized_embedding.weights)
     assert jnp.array_equal(restored_embedding.scales, quantized_embedding.scales)
     assert jnp.array_equal(restored_embedding.biases, quantized_embedding.biases)
+
+
+def test_mlx_tied_embedding_import_weights_rejects_wrong_packed_dtype() -> None:
+    embedding = quantize_tied_embedding_to_mlx(
+        TiedEmbeddingConfig(
+            input_scale=None,
+            logit_soft_cap=None,
+            precision=jnp.float32,
+        )
+        .empty(vocab_size=2, model_dim=4)
+        .import_weights(
+            {"weights": jnp.arange(8, dtype=jnp.float32).reshape(2, 4)},
+        ),
+        group_size=2,
+        embedding_quantization_mode=QuantizationMode.UINT4,
+    )
+    exported_weights = embedding.export_weights()
+
+    with pytest.raises(AssertionError):
+        embedding.import_weights(
+            {
+                **exported_weights,
+                "weights": exported_weights["weights"].astype(jnp.int32),
+            },
+        )
+
+
+def test_untied_embedding_import_weights_rejects_shape_changes() -> None:
+    embedding = UntiedEmbeddingConfig(
+        input_scale=None,
+        logit_soft_cap=None,
+        precision=jnp.float32,
+    ).empty(vocab_size=4, model_dim=4)
+
+    with pytest.raises(AssertionError):
+        embedding.import_weights(
+            {
+                "input_weights": jnp.ones((4, 3), dtype=jnp.float32),
+                "output_weights": jnp.ones((4, 4), dtype=jnp.float32),
+            },
+        )
+
+
+def test_mlx_untied_embedding_import_weights_rejects_wrong_packed_dtype() -> None:
+    embedding = MLXQuantizedUntiedEmbeddingConfig(
+        input_scale=None,
+        logit_soft_cap=None,
+        group_size=2,
+        embedding_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).empty(vocab_size=2, model_dim=4)
+    embedding = eqx.tree_at(
+        lambda current: (
+            current.input_weights,
+            current.input_scales,
+            current.input_biases,
+            current.output_weights,
+            current.output_scales,
+            current.output_biases,
+        ),
+        embedding,
+        (
+            jnp.ones((2, 4), dtype=jnp.float32),
+            jnp.ones((2, 2), dtype=jnp.float32),
+            jnp.zeros((2, 2), dtype=jnp.float32),
+            jnp.ones((2, 4), dtype=jnp.float32),
+            jnp.ones((2, 2), dtype=jnp.float32),
+            jnp.zeros((2, 2), dtype=jnp.float32),
+        ),
+    )
+    exported_weights = embedding.export_weights()
+
+    with pytest.raises(AssertionError):
+        embedding.import_weights(
+            {
+                **exported_weights,
+                "output_weights": exported_weights["output_weights"].astype(jnp.int32),
+            },
+        )
+
+
+def test_mlx_semi_quantized_embedding_import_weights_rejects_wrong_packed_dtype() -> None:
+    embedding = MLXSemiQuantizedUntiedEmbeddingConfig(
+        input_scale=None,
+        logit_soft_cap=None,
+        group_size=2,
+        embedding_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).empty(vocab_size=2, model_dim=4)
+    embedding = eqx.tree_at(
+        lambda current: (
+            current.input_weights,
+            current.output_weights,
+            current.output_scales,
+            current.output_biases,
+        ),
+        embedding,
+        (
+            jnp.ones((2, 4), dtype=jnp.float32),
+            jnp.ones((2, 4), dtype=jnp.float32),
+            jnp.ones((2, 2), dtype=jnp.float32),
+            jnp.zeros((2, 2), dtype=jnp.float32),
+        ),
+    )
+    exported_weights = embedding.export_weights()
+
+    with pytest.raises(AssertionError):
+        embedding.import_weights(
+            {
+                **exported_weights,
+                "output_weights": exported_weights["output_weights"].astype(jnp.int32),
+            },
+        )

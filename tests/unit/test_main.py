@@ -105,3 +105,25 @@ def test_distill_advanced_cli_invokes_runner(mock_distill: Mock, tmp_path: Path)
     assert config.gradient_accumulation_steps == 4
     assert config.lora_rank == 16
     assert config.quantization_mode == QuantizationMode.UINT8
+
+
+def test_distill_advanced_cli_requires_output_dir(tmp_path: Path) -> None:
+    teacher_path = tmp_path / "teacher"
+    student_path = tmp_path / "student"
+    dataset_path = tmp_path / "dataset.parquet"
+    teacher_path.mkdir()
+    student_path.mkdir()
+    dataset_path.write_bytes(b"parquet")
+
+    result = CliRunner().invoke(
+        app,
+        [
+            "distill-advanced",
+            str(teacher_path),
+            str(student_path),
+            str(dataset_path),
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "Missing option '--output-dir'" in result.output

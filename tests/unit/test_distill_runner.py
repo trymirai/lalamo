@@ -258,6 +258,11 @@ def test_distill_rejects_zero_eval_examples(tmp_path: Path) -> None:
         distill(_make_config(tmp_path, eval_examples=0))
 
 
+def test_distill_rejects_online_exact_sequence_length_below_two(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="max_sequence_length >= 2"):
+        distill(_make_config(tmp_path, max_sequence_length=1))
+
+
 def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_path: Path) -> None:
     config = _make_config(tmp_path, num_steps=2, eval_every_steps=1, save_checkpoints=False)
     teacher_model = _make_language_model()
@@ -353,4 +358,226 @@ def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_p
 
     assert float(exported_students[0]["weight"]) == 1.0
     assert result.best_step == 1
+    assert result.final_eval.kl_divergence == 0.5
+
+
+def test_distill_resume_same_output_dir_skips_copying_best_checkpoint(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    latest_checkpoint_dir = output_dir / "latest-checkpoint"
+    best_checkpoint_dir = output_dir / "best-checkpoint"
+    latest_checkpoint_dir.mkdir(parents=True)
+    best_checkpoint_dir.mkdir(parents=True)
+
+    config = _make_config(
+        tmp_path,
+        output_dir=output_dir,
+        resume_from=latest_checkpoint_dir,
+        num_steps=2,
+        eval_every_steps=1,
+        save_checkpoints=True,
+    )
+    teacher_model = _make_language_model()
+    student_model = _make_language_model()
+    batch = DistillBatch(
+        token_ids=jnp.asarray([[0, 1]], dtype=jnp.int32),
+        lengths_without_padding=jnp.asarray([2], dtype=jnp.int32),
+    )
+    initial_state = DistillTrainingState(
+        master_weights={"weight": jnp.asarray(0.0, dtype=jnp.float32)},
+        muon_weight_dimension_numbers={"weight": None},
+    )
+    latest_optimizer_state = DistillOptimizerState(
+        training_state=DistillTrainingState(
+            master_weights={"weight": jnp.asarray(2.0, dtype=jnp.float32)},
+            muon_weight_dimension_numbers={"weight": None},
+        ),
+        optimizer_state=optax.sgd(0.1).init({"weight": jnp.asarray(0.0, dtype=jnp.float32)}),
+    )
+    best_optimizer_state = DistillOptimizerState(
+        training_state=DistillTrainingState(
+            master_weights={"weight": jnp.asarray(1.0, dtype=jnp.float32)},
+            muon_weight_dimension_numbers={"weight": None},
+        ),
+        optimizer_state=latest_optimizer_state.optimizer_state,
+    )
+
+    def load_checkpoint(checkpoint_dir: Path, like: object) -> tuple[object, object]:
+        del like
+        if checkpoint_dir == latest_checkpoint_dir:
+            return (
+                SimpleNamespace(
+                    optimizer_state=latest_optimizer_state,
+                    train_key_data=jax.random.key_data(jax.random.key(0)),
+                ),
+                SimpleNamespace(step=2, best_eval_kl=0.5, best_step=1, evaluations_without_improvement=0),
+            )
+        assert checkpoint_dir == best_checkpoint_dir
+        return (
+            SimpleNamespace(
+                optimizer_state=best_optimizer_state,
+                train_key_data=jax.random.key_data(jax.random.key(0)),
+            ),
+            SimpleNamespace(step=1, best_eval_kl=0.5, best_step=1, evaluations_without_improvement=0),
+        )
+
+    def materialize_trainable_module(
+        module: object,
+        master_weights: object,
+        config: object,
+    ) -> object:
+        del module, config
+        return master_weights
+
+    def compute_distill_batch_metrics(
+        student: dict[str, jax.Array],
+        teacher: object,
+        batch: object,
+    ) -> DistillBatchMetrics:
+        del teacher, batch
+        return DistillBatchMetrics(
+            loss=jnp.asarray(float(student["weight"]), dtype=jnp.float32),
+            valid_tokens=jnp.asarray(1, dtype=jnp.int32),
+            top1_matches=jnp.asarray(0, dtype=jnp.int32),
+        )
+
+    with (
+        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=[teacher_model, student_model]),
+        patch(
+            "lalamo.distill_runner._load_distill_batches",
+            return_value=LoadedDistillBatches(
+                train_examples=1,
+                eval_examples=1,
+                train_batches=[batch],
+                eval_batches=[batch],
+            ),
+        ),
+        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
+        patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
+        patch("lalamo.distill_runner.compute_distill_batch_metrics", side_effect=compute_distill_batch_metrics),
+        patch("lalamo.distill_runner._load_checkpoint", side_effect=load_checkpoint),
+        patch("lalamo.distill_runner._save_materialized_student"),
+        patch("lalamo.distill_runner._save_checkpoint"),
+        patch("lalamo.distill_runner.shutil.copytree") as copytree,
+    ):
+        distill(config)
+
+    copytree.assert_not_called()
+
+
+def test_distill_resume_uses_loaded_best_state_without_checkpoints(tmp_path: Path) -> None:
+    output_dir = tmp_path / "output"
+    latest_checkpoint_dir = output_dir / "latest-checkpoint"
+    latest_checkpoint_dir.mkdir(parents=True)
+
+    config = _make_config(
+        tmp_path,
+        output_dir=output_dir,
+        resume_from=latest_checkpoint_dir,
+        num_steps=3,
+        eval_every_steps=1,
+        save_checkpoints=False,
+    )
+    teacher_model = _make_language_model()
+    student_model = _make_language_model()
+    batch = DistillBatch(
+        token_ids=jnp.asarray([[0, 1]], dtype=jnp.int32),
+        lengths_without_padding=jnp.asarray([2], dtype=jnp.int32),
+    )
+    initial_state = DistillTrainingState(
+        master_weights={"weight": jnp.asarray(-99.0, dtype=jnp.float32)},
+        muon_weight_dimension_numbers={"weight": None},
+    )
+    resumed_best_state = DistillTrainingState(
+        master_weights={"weight": jnp.asarray(2.0, dtype=jnp.float32)},
+        muon_weight_dimension_numbers={"weight": None},
+    )
+    post_step_state = DistillTrainingState(
+        master_weights={"weight": jnp.asarray(3.0, dtype=jnp.float32)},
+        muon_weight_dimension_numbers={"weight": None},
+    )
+    exported_students: list[object] = []
+
+    def load_checkpoint(checkpoint_dir: Path, like: object) -> tuple[object, object]:
+        del like
+        assert checkpoint_dir == latest_checkpoint_dir
+        return (
+            SimpleNamespace(
+                optimizer_state=DistillOptimizerState(
+                    training_state=resumed_best_state,
+                    optimizer_state=optax.sgd(0.1).init({"weight": jnp.asarray(0.0, dtype=jnp.float32)}),
+                ),
+                train_key_data=jax.random.key_data(jax.random.key(0)),
+            ),
+            SimpleNamespace(step=2, best_eval_kl=0.5, best_step=2, evaluations_without_improvement=0),
+        )
+
+    def accumulate_train_step(
+        optimizer_state: DistillOptimizerState,
+        optimizer: optax.GradientTransformation,
+        microbatches: object,
+        train_key: object,
+        *,
+        stochastic_rounding: bool,
+        compute_step_gradients: object,
+    ) -> tuple[DistillOptimizerState, DistillBatchMetrics, object]:
+        del optimizer, microbatches, train_key, stochastic_rounding, compute_step_gradients
+        return (
+            DistillOptimizerState(
+                training_state=post_step_state,
+                optimizer_state=optimizer_state.optimizer_state,
+            ),
+            DistillBatchMetrics(
+                loss=jnp.asarray(0.1, dtype=jnp.float32),
+                valid_tokens=jnp.asarray(1, dtype=jnp.int32),
+                top1_matches=jnp.asarray(0, dtype=jnp.int32),
+            ),
+            jax.random.key(1),
+        )
+
+    def materialize_trainable_module(module: object, master_weights: object, config: object) -> object:
+        del module, config
+        return master_weights
+
+    def compute_distill_batch_metrics(
+        student: dict[str, jax.Array],
+        teacher: object,
+        batch: object,
+    ) -> DistillBatchMetrics:
+        del teacher, batch
+        losses = {2.0: 0.5, 3.0: 1.5}
+        return DistillBatchMetrics(
+            loss=jnp.asarray(losses[float(student["weight"])], dtype=jnp.float32),
+            valid_tokens=jnp.asarray(1, dtype=jnp.int32),
+            top1_matches=jnp.asarray(0, dtype=jnp.int32),
+        )
+
+    with (
+        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=[teacher_model, student_model]),
+        patch(
+            "lalamo.distill_runner._load_distill_batches",
+            return_value=LoadedDistillBatches(
+                train_examples=1,
+                eval_examples=1,
+                train_batches=[batch],
+                eval_batches=[batch],
+            ),
+        ),
+        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
+        patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
+        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
+        patch("lalamo.distill_runner._load_checkpoint", side_effect=load_checkpoint),
+        patch("lalamo.distill_runner._accumulate_train_step", side_effect=accumulate_train_step),
+        patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
+        patch("lalamo.distill_runner.compute_distill_batch_metrics", side_effect=compute_distill_batch_metrics),
+        patch(
+            "lalamo.distill_runner._save_materialized_student",
+            side_effect=lambda *_args: exported_students.append(_args[-1]),
+        ),
+    ):
+        result = distill(config)
+
+    assert float(exported_students[0]["weight"]) == 2.0
+    assert result.best_step == 2
     assert result.final_eval.kl_divergence == 0.5

@@ -278,6 +278,10 @@ def load_linear(
             qweights.shape[1],
             weight_quantization,
         )
+        module = replace(
+            module,
+            config=replace(module.config, weight_quantization_mode=actual_quantization),
+        )
 
         weights = _process_quantized_tensor(
             qweights,

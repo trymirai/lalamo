@@ -69,7 +69,7 @@ def load_parameters[M: eqx.Module](
         nonlocal leaf_names_by_id
         if leaf_names_by_id is None:
             leaf_names_by_id = {id(value): f"~{keystr(path)}" for path, value in leaves_with_path(module)}
-        return leaf_names_by_id[id(target)]
+        return leaf_names_by_id.get(id(target), "<selected leaf>")
 
     casted_new_values = []
 
@@ -88,9 +88,11 @@ def load_parameters[M: eqx.Module](
             loaded_value = incoming_value
             if sharding_config is not None:
                 assert metadata_by_leaf_id is not None
+                field_info = metadata_by_leaf_id.get(id(old_value))
+                assert field_info is not None, f"Missing field metadata for sharded parameter {leaf_name(old_value)}"
                 loaded_value = _apply_parameter_sharding(
                     loaded_value,
-                    metadata_by_leaf_id[id(old_value)],
+                    field_info,
                     sharding_config,
                 )
             casted_new_values.append(loaded_value)

@@ -285,10 +285,18 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         weights = require_mapping(weights)
+        new_weights = require_array(weights["weights"])
+        assert new_weights.shape == self.weights.shape
+        assert new_weights.dtype == self.weights.dtype
+        new_biases = require_array(weights["biases"]) if self.has_biases else None
+        if new_biases is not None:
+            assert self.biases is not None
+            assert new_biases.shape == self.biases.shape
+            assert new_biases.dtype == self.biases.dtype
         result = replace(
             self,
-            weights=weights["weights"],
-            biases=weights["biases"] if self.has_biases else None,
+            weights=new_weights,
+            biases=new_biases,
         )
         return result
 
@@ -603,12 +611,22 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
             unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
+        scales = require_array(weights["scales"])
+        assert unpacked_weights.shape == self.weights.shape
+        assert scales.shape == self.scales.shape
+        assert scales.dtype == self.scales.dtype
+        assert unpacked_zero_points.shape == self.zero_points.shape
+        new_biases = require_array(weights["biases"]) if self.has_biases else None
+        if new_biases is not None:
+            assert self.biases is not None
+            assert new_biases.shape == self.biases.shape
+            assert new_biases.dtype == self.biases.dtype
         result = replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=require_array(weights["scales"]),
+            scales=scales,
             zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
-            biases=require_array(weights["biases"]) if self.has_biases else None,
+            biases=new_biases,
         )
         return result
 
@@ -644,8 +662,8 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         else:
             biases = None
 
-        deq_bias = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
-        deq_biases = deq_bias * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
+        zero_point = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
+        deq_biases = -zero_point * scales
 
         layer = MLXQuantizedLinear(
             config=self,
@@ -876,12 +894,24 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         unpacked_weights = require_array(weights["weights"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
+        scales = require_array(weights["scales"])
+        deq_biases = require_array(weights["deq_biases"])
+        assert unpacked_weights.shape == self.weights.shape
+        assert scales.shape == self.scales.shape
+        assert scales.dtype == self.scales.dtype
+        assert deq_biases.shape == self.deq_biases.shape
+        assert deq_biases.dtype == self.deq_biases.dtype
+        new_biases = require_array(weights["biases"]) if self.has_biases else None
+        if new_biases is not None:
+            assert self.biases is not None
+            assert new_biases.shape == self.biases.shape
+            assert new_biases.dtype == self.biases.dtype
         result = replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=require_array(weights["scales"]),
-            deq_biases=require_array(weights["deq_biases"]),
-            biases=require_array(weights["biases"]) if self.has_biases else None,
+            scales=scales,
+            deq_biases=deq_biases,
+            biases=new_biases,
         )
         return result
 
@@ -1111,10 +1141,16 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 tuple(jnp.swapaxes(require_array(weight), -1, -2) for weight in up_weights),
                 axis=-2,
             )
+        down_weights = require_array(weights["down_weights"])
+        up_weights = require_array(up_weights)
+        assert down_weights.shape == self.lora_down_weights.shape
+        assert down_weights.dtype == self.lora_down_weights.dtype
+        assert up_weights.shape == self.lora_up_weights.shape
+        assert up_weights.dtype == self.lora_up_weights.dtype
         result = replace(
             base,
-            lora_down_weights=require_array(weights["down_weights"]),
-            lora_up_weights=require_array(up_weights),
+            lora_down_weights=down_weights,
+            lora_up_weights=up_weights,
         )
         return result
 

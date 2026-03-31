@@ -329,10 +329,16 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         weights = require_mapping(weights)
+        input_weights = require_array(weights["input_weights"])
+        output_weights = require_array(weights["output_weights"])
+        assert input_weights.shape == self.input_weights.shape
+        assert input_weights.dtype == self.input_weights.dtype
+        assert output_weights.shape == self.output_weights.shape
+        assert output_weights.dtype == self.output_weights.dtype
         return replace(
             self,
-            input_weights=weights["input_weights"],
-            output_weights=weights["output_weights"],
+            input_weights=input_weights,
+            output_weights=output_weights,
         )
 
 
@@ -437,6 +443,11 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
+        assert unpacked_weights.dtype == (
+            jnp.uint8
+            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
+            else self.config.embedding_quantization_mode.dtype
+        )
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
         scales = require_array(weights["scales"])
@@ -592,6 +603,13 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         weights = require_mapping(weights)
         unpacked_input_weights = require_array(weights["input_weights"])
         unpacked_output_weights = require_array(weights["output_weights"])
+        expected_weight_dtype = (
+            jnp.uint8
+            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
+            else self.config.embedding_quantization_mode.dtype
+        )
+        assert unpacked_input_weights.dtype == expected_weight_dtype
+        assert unpacked_output_weights.dtype == expected_weight_dtype
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
@@ -728,6 +746,11 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         weights = require_mapping(weights)
         input_weights = require_array(weights["input_weights"])
         unpacked_output_weights = require_array(weights["output_weights"])
+        assert unpacked_output_weights.dtype == (
+            jnp.uint8
+            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
+            else self.config.embedding_quantization_mode.dtype
+        )
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
         output_scales = require_array(weights["output_scales"])

@@ -246,9 +246,10 @@ def _load_tokenized_conversations(
         token_ids = language_model.message_processor.tokenize_request(
             [HFMessage.from_dict(message).as_message() for message in conversation]
         )
+        token_ids = token_ids[:max_sequence_length]
         if len(token_ids) < 2:
             continue
-        tokenized_sequences.append(np.array(token_ids[:max_sequence_length], dtype=np.int32))
+        tokenized_sequences.append(np.array(token_ids, dtype=np.int32))
         if len(tokenized_sequences) == num_examples:
             break
     return tokenized_sequences
@@ -642,6 +643,8 @@ def distill(
         raise ValueError("train_examples must be at least 1")
     if config.eval_examples < 1:
         raise ValueError("eval_examples must be at least 1")
+    if config.training_mode == TrainingMode.ONLINE_EXACT and config.max_sequence_length < 2:
+        raise ValueError("Online distillation requires max_sequence_length >= 2")
     if config.warmup_steps < 0:
         raise ValueError("warmup_steps must be non-negative")
     if config.gradient_accumulation_steps < 1:
@@ -752,6 +755,8 @@ def distill(
         best_eval_kl = checkpoint_metadata.best_eval_kl
         best_step = checkpoint_metadata.best_step
         evaluations_without_improvement = checkpoint_metadata.evaluations_without_improvement
+        if best_step == completed_steps:
+            best_optimizer_state = optimizer_state
         if best_step is not None and best_step != completed_steps:
             resume_best_checkpoint_dir = Path(config.resume_from).parent / "best-checkpoint"
             if not resume_best_checkpoint_dir.exists():
@@ -825,7 +830,7 @@ def distill(
     latest_checkpoint_dir = config.output_dir / "latest-checkpoint"
     best_checkpoint_dir = config.output_dir / "best-checkpoint"
     if config.save_checkpoints:
-        if resume_best_checkpoint_dir is not None:
+        if resume_best_checkpoint_dir is not None and resume_best_checkpoint_dir != best_checkpoint_dir:
             shutil.copytree(resume_best_checkpoint_dir, best_checkpoint_dir, dirs_exist_ok=True)
         elif best_step == completed_steps:
             _save_checkpoint(

@@ -1,6 +1,7 @@
 import contextlib
 import contextvars
 import dataclasses
+import math
 from abc import abstractmethod
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
@@ -539,7 +540,7 @@ def shard_batch_axis(array: Array, sharding_config: ShardingConfig, *, batch_axi
         pad_shape = list(array.shape)
         pad_shape[batch_axis] = padded_size - batch_size
         if jnp.issubdtype(array.dtype, jax.dtypes.prng_key):
-            padding = jax.random.split(jax.random.key(0), pad_shape[batch_axis])
+            padding = jax.random.split(jax.random.key(0), math.prod(pad_shape)).reshape(pad_shape)
         else:
             padding = jnp.zeros(pad_shape, dtype=array.dtype)
         array = jnp.concat([array, padding], axis=batch_axis)
