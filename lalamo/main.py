@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from functools import partial
 from importlib.util import find_spec
@@ -971,14 +971,20 @@ def distill(
 ) -> None:
     quantization_mode = _infer_student_quantization_mode(student_path)
     resolved_output_dir = output_dir or _default_distill_output_dir(student_path, recipe)
+    config = DistillConfig(
+        teacher_path=teacher_path,
+        student_path=student_path,
+        dataset_path=dataset_path,
+        output_dir=resolved_output_dir,
+        training_mode=TrainingMode.ONLINE_EXACT,
+        quantization_mode=quantization_mode,
+        num_devices=devices,
+        seed=seed,
+    )
     match recipe:
         case DistillRecipe.SMOKE:
-            config = DistillConfig(
-                teacher_path=teacher_path,
-                student_path=student_path,
-                dataset_path=dataset_path,
-                output_dir=resolved_output_dir,
-                training_mode=TrainingMode.ONLINE_EXACT,
+            config = replace(
+                config,
                 train_examples=16,
                 eval_examples=8,
                 max_sequence_length=128,
@@ -986,39 +992,22 @@ def distill(
                 num_steps=5 if steps is None else steps,
                 learning_rate=3e-7,
                 optimizer_name=OptimizerName.MUON,
-                quantization_mode=quantization_mode,
-                num_devices=devices,
-                seed=seed,
                 eval_every_steps=1,
                 save_checkpoints=False,
             )
         case DistillRecipe.FULL_MUON:
-            config = DistillConfig(
-                teacher_path=teacher_path,
-                student_path=student_path,
-                dataset_path=dataset_path,
-                output_dir=resolved_output_dir,
-                training_mode=TrainingMode.ONLINE_EXACT,
+            config = replace(
+                config,
                 num_steps=25 if steps is None else steps,
                 optimizer_name=OptimizerName.MUON,
-                quantization_mode=quantization_mode,
-                num_devices=devices,
-                seed=seed,
             )
         case DistillRecipe.QLORA:
-            config = DistillConfig(
-                teacher_path=teacher_path,
-                student_path=student_path,
-                dataset_path=dataset_path,
-                output_dir=resolved_output_dir,
-                training_mode=TrainingMode.ONLINE_EXACT,
+            config = replace(
+                config,
                 num_steps=25 if steps is None else steps,
                 learning_rate=3e-5,
                 optimizer_name=OptimizerName.ADAMW,
-                quantization_mode=quantization_mode,
                 lora_rank=32,
-                num_devices=devices,
-                seed=seed,
             )
     _distill(config, callbacks_type=CliDistillCallbacks)
 

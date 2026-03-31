@@ -772,25 +772,18 @@ def distill(
             )
             best_optimizer_state = best_checkpoint.optimizer_state
 
-    def evaluate_batch(student: Decoder, batch: DistillBatchLike) -> DistillBatchMetrics:
-        match config.training_mode:
-            case TrainingMode.ONLINE_EXACT:
+    match config.training_mode:
+        case TrainingMode.ONLINE_EXACT:
+
+            def evaluate_batch(student: Decoder, batch: DistillBatchLike) -> DistillBatchMetrics:
                 assert isinstance(batch, DistillBatch)
                 return compute_distill_batch_metrics(student, teacher_model.model, batch)
-            case TrainingMode.TRACE_TOPK:
-                assert isinstance(batch, TraceDistillBatch)
-                return compute_trace_distill_batch_metrics(student, batch)
 
-    def evaluate_model(student: Decoder) -> EvaluationMetrics:
-        return _evaluate_with(dataset.eval_batches, lambda batch: evaluate_batch(student, batch))
-
-    def compute_step_gradients(
-        training_state: DistillTrainingState,
-        batch: DistillBatchLike,
-        quantization_key: Key[Array, ""] | None,
-    ) -> tuple[object, DistillBatchMetrics]:
-        match config.training_mode:
-            case TrainingMode.ONLINE_EXACT:
+            def compute_step_gradients(
+                training_state: DistillTrainingState,
+                batch: DistillBatchLike,
+                quantization_key: Key[Array, ""] | None,
+            ) -> tuple[object, DistillBatchMetrics]:
                 assert isinstance(batch, DistillBatch)
                 return compute_distill_step_gradients(
                     training_state,
@@ -801,7 +794,18 @@ def distill(
                     quantization_key=quantization_key,
                     quantization_mode=config.quantization_mode,
                 )
-            case TrainingMode.TRACE_TOPK:
+
+        case TrainingMode.TRACE_TOPK:
+
+            def evaluate_batch(student: Decoder, batch: DistillBatchLike) -> DistillBatchMetrics:
+                assert isinstance(batch, TraceDistillBatch)
+                return compute_trace_distill_batch_metrics(student, batch)
+
+            def compute_step_gradients(
+                training_state: DistillTrainingState,
+                batch: DistillBatchLike,
+                quantization_key: Key[Array, ""] | None,
+            ) -> tuple[object, DistillBatchMetrics]:
                 assert isinstance(batch, TraceDistillBatch)
                 return compute_trace_distill_step_gradients(
                     training_state,
@@ -811,6 +815,9 @@ def distill(
                     quantization_key=quantization_key,
                     quantization_mode=config.quantization_mode,
                 )
+
+    def evaluate_model(student: Decoder) -> EvaluationMetrics:
+        return _evaluate_with(dataset.eval_batches, lambda batch: evaluate_batch(student, batch))
 
     # Initial evaluation
     run_start = time.perf_counter()
@@ -846,6 +853,17 @@ def distill(
                 evaluations_without_improvement=evaluations_without_improvement,
             ),
         )
+
+    def update_best(step: int, eval_kl: float) -> bool:
+        nonlocal best_eval_kl, best_step, best_optimizer_state
+        if best_eval_kl is not None and eval_kl >= best_eval_kl:
+            return False
+        best_eval_kl = eval_kl
+        best_step = step
+        best_optimizer_state = optimizer_state
+        if config.save_checkpoints:
+            save_checkpoint(best_checkpoint_dir, step)
+        return True
 
     if config.save_checkpoints:
         if resume_best_checkpoint_dir is not None and resume_best_checkpoint_dir != best_checkpoint_dir:
@@ -907,13 +925,8 @@ def distill(
                     eval_top1_agreement=eval_metrics.top1_agreement,
                     eval_valid_tokens=eval_metrics.valid_tokens,
                 )
-                if best_eval_kl is None or eval_metrics.kl_divergence < best_eval_kl:
-                    best_eval_kl = eval_metrics.kl_divergence
-                    best_step = step
-                    best_optimizer_state = optimizer_state
+                if update_best(step, eval_metrics.kl_divergence):
                     evaluations_without_improvement = 0
-                    if config.save_checkpoints:
-                        save_checkpoint(best_checkpoint_dir, step)
                 else:
                     evaluations_without_improvement += 1
                     patience_exceeded = evaluations_without_improvement >= config.early_stop_patience
@@ -961,11 +974,7 @@ def distill(
         distill_config,
     )
     final_eval = evaluate_model(final_student)
-    if final_eval.kl_divergence < best_eval_kl:
-        best_eval_kl = final_eval.kl_divergence
-        best_step = completed_steps
-        if config.save_checkpoints:
-            save_checkpoint(best_checkpoint_dir, completed_steps)
+    update_best(completed_steps, final_eval.kl_divergence)
 
     model_output_path = config.output_dir / "student-distilled"
     export_config = DistillTrainConfig(
