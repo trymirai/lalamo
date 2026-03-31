@@ -316,6 +316,10 @@ class _FieldValueEntry:
     field: dataclasses.Field
 
 
+def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
+    return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
+
+
 def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
     entries: list[_FieldValueEntry] = []
 
@@ -352,16 +356,15 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
     return entries
 
 
+def _leaf_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
+    return [entry for entry in _field_value_entries(module) if _is_leaf_array(entry.value)]
+
+
 def field_metadata_by_leaf_id(module: eqx.Module) -> dict[int, FieldMetadataInfo]:
     field_metadata: dict[int, FieldMetadataInfo] = {}
-    for entry in _field_value_entries(module):
-        if _is_leaf_array(entry.value):
-            field_metadata.setdefault(id(entry.value), FieldMetadataInfo(owner=entry.owner, field=entry.field))
+    for entry in _leaf_value_entries(module):
+        field_metadata.setdefault(id(entry.value), FieldMetadataInfo(owner=entry.owner, field=entry.field))
     return field_metadata
-
-
-def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
-    return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
 def _infer_quantization_mode(owner: eqx.Module) -> QuantizationMode | None:
@@ -369,14 +372,10 @@ def _infer_quantization_mode(owner: eqx.Module) -> QuantizationMode | None:
     if config is None:
         return None
 
-    weight_mode = getattr(config, "weight_quantization_mode", None)
-    if isinstance(weight_mode, QuantizationMode):
-        return weight_mode
-
-    embedding_mode = getattr(config, "embedding_quantization_mode", None)
-    if isinstance(embedding_mode, QuantizationMode):
-        return embedding_mode
-
+    for field_name in ("weight_quantization_mode", "embedding_quantization_mode"):
+        mode = getattr(config, field_name, None)
+        if isinstance(mode, QuantizationMode):
+            return mode
     return None
 
 
@@ -384,10 +383,7 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
     canonical_by_leaf_id: dict[int, tuple[int, str]] = {}
     results: list[_ParameterLeafEntry] = []
 
-    for entry in _field_value_entries(module):
-        if not _is_leaf_array(entry.value):
-            continue
-
+    for entry in _leaf_value_entries(module):
         leaf = entry.value
         metadata = entry.field.metadata
         path = keystr(entry.path).lstrip(".")
@@ -430,6 +426,21 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
     return [entry.info for entry in _parameter_leaf_entries(module)]
 
 
+def _entries_by_flat_index(
+    flat_leaves: list[object],
+    entries: list[_ParameterLeafEntry],
+) -> list[_ParameterLeafEntry | None]:
+    entry_iterator = iter(entries)
+    entries_by_flat_index: list[_ParameterLeafEntry | None] = []
+    for leaf in flat_leaves:
+        if not _is_leaf_array(leaf):
+            entries_by_flat_index.append(None)
+            continue
+        entries_by_flat_index.append(next(entry_iterator))
+    assert next(entry_iterator, None) is None
+    return entries_by_flat_index
+
+
 def partition_parameter_leaves[M: eqx.Module, LeafT](
     module: M,
     predicate: Callable[[ParameterLeafInfo], bool],
@@ -439,6 +450,7 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
     flat_leaves, treedef = jtu.tree_flatten(module, is_leaf=lambda leaf: leaf is None)
     if not entries:
         return jtu.tree_unflatten(treedef, [None] * len(flat_leaves))
+    entries_by_flat_index = _entries_by_flat_index(flat_leaves, entries)
 
     selected_by_canonical_index: list[LeafT | None] = [None] * (max(entry.canonical_index for entry in entries) + 1)
     for entry in entries:
@@ -446,18 +458,14 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
             continue
         selected_by_canonical_index[entry.canonical_index] = mapper(entry.leaf, entry.info)
 
-    entry_iterator = iter(entries)
     partitioned_leaves: list[object] = []
-    for leaf in flat_leaves:
-        if not _is_leaf_array(leaf):
+    for entry in entries_by_flat_index:
+        if entry is None:
             partitioned_leaves.append(None)
             continue
-        entry = next(entry_iterator)
         partitioned_leaves.append(
             None if entry.info.alias_of is not None else selected_by_canonical_index[entry.canonical_index],
         )
-
-    assert next(entry_iterator, None) is None
     return jtu.tree_unflatten(treedef, partitioned_leaves)
 
 
@@ -472,34 +480,28 @@ def combine_parameter_leaves[M: eqx.Module](
     flat_leaves, treedef = jtu.tree_flatten(module, is_leaf=lambda leaf: leaf is None)
     replacement_leaves, replacement_treedef = jtu.tree_flatten(replacements, is_leaf=lambda leaf: leaf is None)
     assert replacement_treedef == treedef
+    entries_by_flat_index = _entries_by_flat_index(flat_leaves, entries)
 
     replacement_by_canonical_index: list[object | None] = [None] * (
         max(entry.canonical_index for entry in entries) + 1
     )
-    entry_iterator = iter(entries)
-    for leaf, replacement in zip(flat_leaves, replacement_leaves, strict=True):
-        if not _is_leaf_array(leaf):
+    for entry, replacement in zip(entries_by_flat_index, replacement_leaves, strict=True):
+        if entry is None:
             continue
-        entry = next(entry_iterator)
         if replacement is None or entry.info.alias_of is not None:
             continue
         replacement_by_canonical_index[entry.canonical_index] = replacement
 
-    assert next(entry_iterator, None) is None
     if all(replacement is None for replacement in replacement_by_canonical_index):
         return module
 
-    entry_iterator = iter(entries)
     combined_leaves: list[object] = []
-    for leaf in flat_leaves:
-        if not _is_leaf_array(leaf):
+    for leaf, entry in zip(flat_leaves, entries_by_flat_index, strict=True):
+        if entry is None:
             combined_leaves.append(leaf)
             continue
-        entry = next(entry_iterator)
         replacement = replacement_by_canonical_index[entry.canonical_index]
         combined_leaves.append(leaf if replacement is None else replacement)
-
-    assert next(entry_iterator, None) is None
     return jtu.tree_unflatten(treedef, combined_leaves)
 
 
@@ -515,16 +517,17 @@ def field(
     metadata: Mapping[str, Any] | None = None,
     **kwargs: Any,  # noqa: ANN401
 ) -> Any:  # noqa: ANN401
-    merged_metadata = dict(metadata or {})
-    merged_metadata["trainable"] = trainable
-    merged_metadata["norm"] = norm
-    merged_metadata["quantized"] = quantized
-    merged_metadata["tensor_sharding"] = tensor_sharding
-    merged_metadata["min_size_to_shard"] = min_size_to_shard
     return eqx.field(
         converter=converter,
         static=static,
-        metadata=merged_metadata,
+        metadata={
+            **(metadata or {}),
+            "trainable": trainable,
+            "norm": norm,
+            "quantized": quantized,
+            "tensor_sharding": tensor_sharding,
+            "min_size_to_shard": min_size_to_shard,
+        },
         **kwargs,
     )
 
