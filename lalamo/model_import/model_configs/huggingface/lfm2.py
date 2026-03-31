@@ -29,6 +29,12 @@ from .common import HuggingFaceLMConfig
 
 
 @dataclass(frozen=True)
+class RopeParameters:
+    rope_theta: float
+    rope_type: str = "default"
+
+
+@dataclass(frozen=True)
 class QuantizationConfig:
     group_size: int
     bits: int
@@ -63,7 +69,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
     num_hidden_layers: int
     num_key_value_heads: int
     pad_token_id: int
-    rope_theta: float
     transformers_version: str
     use_cache: bool
     use_pos_enc: bool
@@ -78,8 +83,22 @@ class HFLFM2Config(HuggingFaceLMConfig):
     tie_embedding: bool = True
     theta: float | None = None
 
+    rope_theta: float | None = None
+    rope_parameters: RopeParameters | None = None
     quantization: QuantizationConfig | None = None
     quantization_config: QuantizationConfig | None = None
+
+    @property
+    def resolved_rope_theta(self) -> float:
+        flat = self.rope_theta
+        nested = self.rope_parameters.rope_theta if self.rope_parameters else None
+
+        if flat is None and nested is None:
+            raise ValueError("Neither rope_theta nor rope_parameters is specified.")
+        if flat is not None and nested is not None and flat != nested:
+            raise ValueError(f"Conflicting rope_theta: {flat} (flat) vs {nested} (rope_parameters).")
+
+        return flat if nested is None else nested
 
     @property
     def default_precision(self) -> DTypeLike:
@@ -124,7 +143,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
 
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=self.rope_theta,
+            base=self.resolved_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 

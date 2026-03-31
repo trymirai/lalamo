@@ -41,6 +41,7 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     # Liquid
     ("mlx-community/LFM2-350M-8bit", ModelTier.CORE),
     ("LiquidAI/LFM2-700M", ModelTier.CORE),
+    ("LiquidAI/LFM2.5-350M", ModelTier.CORE),
     ("mlx-community/LFM2-700M-4bit", ModelTier.STANDARD),
     ("LiquidAI/LFM2-2.6B", ModelTier.STANDARD),
     ("LiquidAI/LFM2-2.6B-Exp", ModelTier.STANDARD),
