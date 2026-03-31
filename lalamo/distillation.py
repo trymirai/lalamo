@@ -88,7 +88,7 @@ class DistillOptimizerState(eqx.Module):
 
 class DistillBatch(eqx.Module):
     token_ids: Int[Array, "batch tokens"]
-    lengths_without_padding: Int[Array, " batch"] | None = None
+    lengths_without_padding: Int[Array, " batch"]
 
 
 class DistillBatchMetrics(eqx.Module):
@@ -393,15 +393,12 @@ def make_trace_distill_batch(
     *,
     pad_token_id: int,
 ) -> TraceDistillBatch:
-    if not traces:
-        raise ValueError("Trace distillation batch requires at least one trace")
-    for trace in traces:
-        if not trace.prefix_token_ids:
-            raise ValueError("Trace distillation requires non-empty prefixes")
-        if not trace.completion_token_ids:
-            raise ValueError("Trace distillation requires non-empty completions")
-        if any(not token_logits for token_logits in trace.completion_token_logits):
-            raise ValueError("Trace distillation requires non-empty top-k support for every completion token")
+    assert traces, "Trace distillation batch requires at least one trace"
+    for batch_index, trace in enumerate(traces):
+        assert trace.prefix_token_ids, f"Trace {batch_index} has empty prefix_token_ids"
+        assert trace.completion_token_ids, f"Trace {batch_index} has empty completion_token_ids"
+        for completion_index, token_logits in enumerate(trace.completion_token_logits):
+            assert token_logits, f"Trace {batch_index} completion {completion_index} has empty support logits"
 
     prefix_lengths = jnp.array([len(trace.prefix_token_ids) for trace in traces], dtype=jnp.int32)
     completion_lengths = jnp.array([len(trace.completion_token_ids) for trace in traces], dtype=jnp.int32)
@@ -476,22 +473,12 @@ def compute_distill_batch_metrics(
 
     batch_size, num_tokens = batch.token_ids.shape
     prediction_tokens = max(num_tokens - 1, 0)
-    lengths = (
-        batch.lengths_without_padding
-        if batch.lengths_without_padding is not None
-        else jnp.full(
-            (batch_size,),
-            num_tokens,
-            dtype=jnp.int32,
-        )
-    )
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
-    prediction_mask = (jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (lengths[:, None] - 1)).astype(
-        token_kl.dtype,
-    )
+    prediction_mask = (
+        jnp.arange(prediction_tokens, dtype=jnp.int32)[None, :] < (batch.lengths_without_padding[:, None] - 1)
+    ).astype(token_kl.dtype)
     valid_tokens = prediction_mask.sum(dtype=jnp.int32)
-    safe_valid_tokens = jnp.maximum(valid_tokens, 1)
-    loss = jnp.sum(token_kl * prediction_mask) / safe_valid_tokens
+    loss = jnp.sum(token_kl * prediction_mask) / valid_tokens.astype(token_kl.dtype)
     student_top1 = jnp.argmax(student_logits, axis=-1)
     teacher_top1 = jnp.argmax(teacher_logits, axis=-1)
     top1_matches = jnp.sum(
@@ -521,10 +508,7 @@ def compute_trace_distill_batch_metrics(
     completion_range = jnp.arange(completion_tokens, dtype=jnp.int32)[None, :]
     completion_mask = completion_range < batch.completion_lengths[:, None]
 
-    raw_indices = batch.prefix_lengths[:, None] - 1 + completion_range
-    max_indices = jnp.maximum(batch.prefix_lengths + batch.completion_lengths - 2, 0)
-    prediction_indices = jnp.minimum(raw_indices, max_indices[:, None])
-
+    prediction_indices = batch.prefix_lengths[:, None] - 1 + completion_range
     batch_indices = jnp.arange(batch.token_ids.shape[0], dtype=jnp.int32)[:, None]
     student_completion_logits = student_logits[batch_indices, prediction_indices, :]
     student_support_logits = jnp.take_along_axis(
@@ -532,25 +516,20 @@ def compute_trace_distill_batch_metrics(
         batch.support_token_ids,
         axis=-1,
     )
-    support_rows = batch.support_mask.any(axis=-1, keepdims=True)
-    valid_completion_mask = jnp.logical_and(completion_mask, support_rows.squeeze(-1))
     masked_teacher_logits = jnp.where(batch.support_mask, batch.support_logits, -jnp.inf)
     masked_student_logits = jnp.where(batch.support_mask, student_support_logits, -jnp.inf)
-    safe_teacher_logits = jnp.where(support_rows, masked_teacher_logits, jnp.zeros_like(masked_teacher_logits))
-    safe_student_logits = jnp.where(support_rows, masked_student_logits, jnp.zeros_like(masked_student_logits))
 
-    teacher_log_probs = jax.nn.log_softmax(safe_teacher_logits, axis=-1)
-    student_log_probs = jax.nn.log_softmax(safe_student_logits, axis=-1)
+    teacher_log_probs = jax.nn.log_softmax(masked_teacher_logits, axis=-1)
+    student_log_probs = jax.nn.log_softmax(masked_student_logits, axis=-1)
     teacher_probs = jnp.exp(teacher_log_probs)
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
 
-    valid_tokens = valid_completion_mask.sum(dtype=jnp.int32)
-    safe_valid_tokens = jnp.maximum(valid_tokens, 1)
-    loss = jnp.sum(token_kl * valid_completion_mask.astype(token_kl.dtype)) / safe_valid_tokens
-    student_top1 = jnp.argmax(safe_student_logits, axis=-1)
-    teacher_top1 = jnp.argmax(safe_teacher_logits, axis=-1)
+    valid_tokens = completion_mask.sum(dtype=jnp.int32)
+    loss = jnp.sum(token_kl * completion_mask.astype(token_kl.dtype)) / valid_tokens.astype(token_kl.dtype)
+    student_top1 = jnp.argmax(masked_student_logits, axis=-1)
+    teacher_top1 = jnp.argmax(masked_teacher_logits, axis=-1)
     top1_matches = jnp.sum(
-        jnp.logical_and(student_top1 == teacher_top1, valid_completion_mask),
+        jnp.logical_and(student_top1 == teacher_top1, completion_mask),
         dtype=jnp.int32,
     )
     return DistillBatchMetrics(

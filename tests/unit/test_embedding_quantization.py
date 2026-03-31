@@ -59,9 +59,10 @@ def test_quantize_tied_embedding_to_mlx_reconstructs_two_value_groups_exactly() 
         group_size=2,
         embedding_quantization_mode=QuantizationMode.UINT8,
     )
+    exported_weights = quantized_embedding.export_weights()
 
     grouped_weights = rearrange(
-        quantized_embedding.int_weights.astype(quantized_embedding.activation_precision),
+        exported_weights["weights"].astype(quantized_embedding.activation_precision),
         "vocab (groups elements) -> vocab groups elements",
         elements=quantized_embedding.config.group_size,
     )
@@ -72,7 +73,6 @@ def test_quantize_tied_embedding_to_mlx_reconstructs_two_value_groups_exactly() 
 
     assert jnp.allclose(reconstructed_weights, original_weights, atol=1e-6)
 
-    exported_weights = quantized_embedding.export_weights()
     restored_embedding = quantized_embedding.import_weights(exported_weights)
 
     assert jnp.array_equal(restored_embedding.weights, quantized_embedding.weights)

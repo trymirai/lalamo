@@ -274,7 +274,7 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     input_weights: Float[Array, "vocabulary channels"] = field(norm=ParameterNorm.L_INF)
-    output_weights: Float[Array, "channels vocabulary"] = field(norm=ParameterNorm.L_INF)
+    output_weights: Float[Array, "vocabulary channels"] = field(norm=ParameterNorm.L_INF)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -293,7 +293,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
     def __post_init__(self) -> None:
         if self.config.precision != self.input_weights.dtype:
             raise ValueError(
-                f"Embedding dtype {self.input_weights.dtype} does not match",
+                f"Embedding dtype {self.input_weights.dtype} does not match"
                 f" the specified precision {self.config.precision}",
             )
         if self.config.precision != self.output_weights.dtype:
@@ -366,7 +366,7 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
-    weights: Float[Array, "vocabulary channels"] = field(quantized=True)
+    weights: Float[Array, "vocabulary channels"] = field(quantized=True, norm=ParameterNorm.L_INF)
     scales: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
     biases: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
 
@@ -384,8 +384,7 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         vocab_size, _ = self.weights.shape
         return vocab_size
 
-    @property
-    def int_weights(self) -> Int[Array, "vocabulary channels"]:
+    def _int_weights(self) -> Int[Array, "vocabulary channels"]:
         quantized = quantize_weights(self.weights, self.config.embedding_quantization_mode)
         casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
 
@@ -430,7 +429,7 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
 
     def export_weights(self) -> ParameterTree:
         return {
-            "weights": self.int_weights,
+            "weights": self._int_weights(),
             "scales": self.scales,
             "biases": self.biases,
         }
@@ -440,11 +439,18 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         unpacked_weights = require_array(weights["weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
+        scales = require_array(weights["scales"])
+        biases = require_array(weights["biases"])
+        assert unpacked_weights.shape == self.weights.shape
+        assert scales.shape == self.scales.shape
+        assert scales.dtype == self.scales.dtype
+        assert biases.shape == self.biases.shape
+        assert biases.dtype == self.biases.dtype
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=require_array(weights["scales"]),
-            biases=require_array(weights["biases"]),
+            scales=scales,
+            biases=biases,
         )
 
 
@@ -483,10 +489,10 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
+    input_weights: Float[Array, "vocabulary channels"] = field(quantized=True, norm=ParameterNorm.L_INF)
     input_scales: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
     input_biases: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
-    output_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
+    output_weights: Float[Array, "vocabulary channels"] = field(quantized=True, norm=ParameterNorm.L_INF)
     output_scales: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
     output_biases: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
 
@@ -504,8 +510,7 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         vocab_size, _ = self.input_weights.shape
         return vocab_size
 
-    @property
-    def int_input_weights(self) -> Int[Array, "vocabulary channels"]:
+    def _int_input_weights(self) -> Int[Array, "vocabulary channels"]:
         quantized = quantize_weights(self.input_weights, self.config.embedding_quantization_mode)
         casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
 
@@ -516,8 +521,7 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
 
         return packed
 
-    @property
-    def int_output_weights(self) -> Int[Array, "vocabulary channels"]:
+    def _int_output_weights(self) -> Int[Array, "vocabulary channels"]:
         quantized = quantize_weights(self.output_weights, self.config.embedding_quantization_mode)
         casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
 
@@ -576,10 +580,10 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
 
     def export_weights(self) -> ParameterTree:
         return {
-            "input_weights": self.int_input_weights,
+            "input_weights": self._int_input_weights(),
             "input_scales": self.input_scales,
             "input_biases": self.input_biases,
-            "output_weights": self.int_output_weights,
+            "output_weights": self._int_output_weights(),
             "output_scales": self.output_scales,
             "output_biases": self.output_biases,
         }
@@ -591,14 +595,28 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
+        input_scales = require_array(weights["input_scales"])
+        input_biases = require_array(weights["input_biases"])
+        output_scales = require_array(weights["output_scales"])
+        output_biases = require_array(weights["output_biases"])
+        assert unpacked_input_weights.shape == self.input_weights.shape
+        assert input_scales.shape == self.input_scales.shape
+        assert input_scales.dtype == self.input_scales.dtype
+        assert input_biases.shape == self.input_biases.shape
+        assert input_biases.dtype == self.input_biases.dtype
+        assert unpacked_output_weights.shape == self.output_weights.shape
+        assert output_scales.shape == self.output_scales.shape
+        assert output_scales.dtype == self.output_scales.dtype
+        assert output_biases.shape == self.output_biases.shape
+        assert output_biases.dtype == self.output_biases.dtype
         return replace(
             self,
             input_weights=unpacked_input_weights.astype(self.input_weights.dtype),
-            input_scales=require_array(weights["input_scales"]),
-            input_biases=require_array(weights["input_biases"]),
+            input_scales=input_scales,
+            input_biases=input_biases,
             output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=require_array(weights["output_scales"]),
-            output_biases=require_array(weights["output_biases"]),
+            output_scales=output_scales,
+            output_biases=output_biases,
         )
 
 
@@ -639,8 +657,8 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
 
 
 class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbeddingConfig]):
-    input_weights: Float[Array, "vocabulary channels"] = field()
-    output_weights: Float[Array, "vocabulary channels"] = field(quantized=True)
+    input_weights: Float[Array, "vocabulary channels"] = field(norm=ParameterNorm.L_INF)
+    output_weights: Float[Array, "vocabulary channels"] = field(quantized=True, norm=ParameterNorm.L_INF)
     output_scales: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
     output_biases: Float[Array, "vocabulary groups"] = field(norm=ParameterNorm.L_INF)
 
@@ -658,8 +676,7 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         vocab_size, _ = self.input_weights.shape
         return vocab_size
 
-    @property
-    def int_output_weights(self) -> Int[Array, "vocabulary channels"]:
+    def _int_output_weights(self) -> Int[Array, "vocabulary channels"]:
         quantized = quantize_weights(self.output_weights, self.config.embedding_quantization_mode)
         casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
 
@@ -702,22 +719,32 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
     def export_weights(self) -> ParameterTree:
         return {
             "input_weights": self.input_weights,
-            "output_weights": self.int_output_weights,
+            "output_weights": self._int_output_weights(),
             "output_scales": self.output_scales,
             "output_biases": self.output_biases,
         }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
+        input_weights = require_array(weights["input_weights"])
         unpacked_output_weights = require_array(weights["output_weights"])
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
+        output_scales = require_array(weights["output_scales"])
+        output_biases = require_array(weights["output_biases"])
+        assert input_weights.shape == self.input_weights.shape
+        assert input_weights.dtype == self.input_weights.dtype
+        assert unpacked_output_weights.shape == self.output_weights.shape
+        assert output_scales.shape == self.output_scales.shape
+        assert output_scales.dtype == self.output_scales.dtype
+        assert output_biases.shape == self.output_biases.shape
+        assert output_biases.dtype == self.output_biases.dtype
         return replace(
             self,
-            input_weights=require_array(weights["input_weights"]),
+            input_weights=input_weights,
             output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=require_array(weights["output_scales"]),
-            output_biases=require_array(weights["output_biases"]),
+            output_scales=output_scales,
+            output_biases=output_biases,
         )
 
 

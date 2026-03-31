@@ -10,7 +10,6 @@ __all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"
 
 class QuantizationMode(Enum):
     UINT4 = "uint4"
-    INT8 = "int8"
     UINT8 = "uint8"
 
     @classmethod
@@ -28,8 +27,6 @@ class QuantizationMode(Enum):
         match self:
             case QuantizationMode.UINT4:
                 return (0, 15)
-            case QuantizationMode.INT8:
-                return (-128, 127)
             case QuantizationMode.UINT8:
                 return (0, 255)
 
@@ -38,8 +35,6 @@ class QuantizationMode(Enum):
         match self:
             case QuantizationMode.UINT4:
                 return jnp.uint4
-            case QuantizationMode.INT8:
-                return jnp.int8
             case QuantizationMode.UINT8:
                 return jnp.uint8
 
@@ -48,7 +43,7 @@ class QuantizationMode(Enum):
         match self:
             case QuantizationMode.UINT4:
                 return 4
-            case QuantizationMode.INT8 | QuantizationMode.UINT8:
+            case QuantizationMode.UINT8:
                 return 8
 
     def __str__(self) -> str:
@@ -96,7 +91,7 @@ def stochastic_quantize_weights(
     lower = jnp.floor(clipped)
     upper = jnp.ceil(clipped)
     upper_probability = clipped - lower
-    samples = jax.random.uniform(key, clipped.shape, dtype=clipped.dtype)
+    samples = jax.random.uniform(key, clipped.shape, dtype=jnp.float32)
     return jnp.where(samples < upper_probability, upper, lower)
 
 

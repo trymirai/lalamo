@@ -34,7 +34,7 @@ __all__ = [
     "combine_parameter_leaves",
     "config_converter",
     "field",
-    "find_field_metadata",
+    "field_metadata_by_leaf_id",
     "get_current_sharding_config",
     "iter_parameter_leaves",
     "pad_and_apply_data_sharding",
@@ -349,38 +349,30 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
             path=(jtu.GetAttrKey(field.name),),
         )
     return entries
-
-
-def find_field_metadata(module: eqx.Module, target: Any) -> FieldMetadataInfo | None:  # noqa: ANN401
+def field_metadata_by_leaf_id(module: eqx.Module) -> dict[int, FieldMetadataInfo]:
+    field_metadata: dict[int, FieldMetadataInfo] = {}
     for entry in _field_value_entries(module):
-        if entry.value is not target:
-            continue
-        return FieldMetadataInfo(owner=entry.owner, field=entry.field)
-    return None
+        if _is_leaf_array(entry.value):
+            field_metadata.setdefault(id(entry.value), FieldMetadataInfo(owner=entry.owner, field=entry.field))
+    return field_metadata
 
 
 def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
     return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
-def _infer_quantization_mode(owner: eqx.Module, field_name: str) -> QuantizationMode | None:
+def _infer_quantization_mode(owner: eqx.Module) -> QuantizationMode | None:
     config = getattr(owner, "config", None)
     if config is None:
         return None
 
-    if field_name in {"weights", "zero_points"}:
-        weight_mode = getattr(config, "weight_quantization_mode", None)
-        if isinstance(weight_mode, QuantizationMode):
-            return weight_mode
+    weight_mode = getattr(config, "weight_quantization_mode", None)
+    if isinstance(weight_mode, QuantizationMode):
+        return weight_mode
 
-        embedding_mode = getattr(config, "embedding_quantization_mode", None)
-        if isinstance(embedding_mode, QuantizationMode):
-            return embedding_mode
-
-    if field_name in {"input_weights", "output_weights"}:
-        embedding_mode = getattr(config, "embedding_quantization_mode", None)
-        if isinstance(embedding_mode, QuantizationMode):
-            return embedding_mode
+    embedding_mode = getattr(config, "embedding_quantization_mode", None)
+    if isinstance(embedding_mode, QuantizationMode):
+        return embedding_mode
 
     return None
 
@@ -396,6 +388,7 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
         leaf = entry.value
         metadata = entry.field.metadata
         path = keystr(entry.path).lstrip(".")
+        quantized = metadata.get("quantized", False)
 
         leaf_key = id(leaf)
         canonical_entry = canonical_by_leaf_id.get(leaf_key)
@@ -418,8 +411,8 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
                     dtype=jnp.dtype(leaf.dtype),
                     trainable=metadata.get("trainable", True),
                     norm=metadata.get("norm", ParameterNorm.SPECTRAL),
-                    quantized=metadata.get("quantized", False),
-                    quantization_mode=_infer_quantization_mode(entry.owner, entry.field.name),
+                    quantized=quantized,
+                    quantization_mode=_infer_quantization_mode(entry.owner) if quantized else None,
                     tensor_sharding=metadata.get("tensor_sharding"),
                     min_size_to_shard=metadata.get("min_size_to_shard", 0),
                     alias_of=alias_of,

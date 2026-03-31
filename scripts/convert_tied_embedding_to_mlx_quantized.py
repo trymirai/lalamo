@@ -93,10 +93,11 @@ def main() -> None:
         metadata,
         model_config=replace(metadata.model_config, model_config=updated_model_config),
     )
+    exported_weights = quantized_embedding.export_weights()
 
-    flat_weights["embedding.weights"] = quantized_embedding.int_weights
-    flat_weights["embedding.scales"] = quantized_embedding.scales
-    flat_weights["embedding.biases"] = quantized_embedding.biases
+    flat_weights["embedding.weights"] = exported_weights["weights"]
+    flat_weights["embedding.scales"] = exported_weights["scales"]
+    flat_weights["embedding.biases"] = exported_weights["biases"]
 
     args.output_config.parent.mkdir(parents=True, exist_ok=True)
     args.output_weights.parent.mkdir(parents=True, exist_ok=True)

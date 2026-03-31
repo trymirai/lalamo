@@ -3,36 +3,29 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 import optax
 import pytest
 
 from lalamo.distill_runner import (
-    CheckpointMetadata,
     DistillConfig,
-    EvaluationMetrics,
+    LoadedDistillBatches,
     OptimizerName,
     _accumulate_train_step,
-    _build_optimizer,
+    _load_tokenized_conversations,
+    _shard_distill_batches,
+    _validate_distill_models,
     distill,
 )
 from lalamo.distillation import (
+    DistillBatch,
     DistillBatchMetrics,
     DistillOptimizerState,
     DistillParameterSummary,
     DistillTrainingState,
 )
 from lalamo.quantization import QuantizationMode
-
-
-class _CallableWeights(eqx.Module):
-    leaf: jax.Array | optax.contrib.MuonDimensionNumbers | None
-
-    def __call__(self, token_positions: object) -> object:
-        return token_positions
 
 
 @dataclass(frozen=True)
@@ -46,8 +39,27 @@ class _StubLanguageModelConfig:
     message_processor_config: str = "default"
 
 
+class _FakeColumn:
+    def __init__(self, values: list[object]) -> None:
+        self._values = values
+
+    def to_list(self) -> list[object]:
+        return self._values
+
+
+class _FakeDataFrame:
+    def __init__(self, column_name: str, values: list[object]) -> None:
+        self.columns = [column_name]
+        self._column_name = column_name
+        self._values = values
+
+    def get_column(self, name: str) -> _FakeColumn:
+        assert name == self._column_name
+        return _FakeColumn(self._values)
+
+
 def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
-    config_arguments = {
+    config_kwargs = {
         "teacher_path": tmp_path / "teacher",
         "student_path": tmp_path / "student",
         "dataset_path": tmp_path / "dataset.parquet",
@@ -60,7 +72,7 @@ def _make_config(tmp_path: Path, **overrides: object) -> DistillConfig:
         "quantization_mode": QuantizationMode.UINT4,
         **overrides,
     }
-    return DistillConfig(**config_arguments)
+    return DistillConfig(**config_kwargs)
 
 
 def _make_language_model(
@@ -68,7 +80,11 @@ def _make_language_model(
     tokenizer_signature: str = "shared-tokenizer",
     quantization_mode: QuantizationMode = QuantizationMode.UINT4,
     message_processor_config: str = "default",
+    tokenize_request: object | None = None,
 ) -> SimpleNamespace:
+    if tokenize_request is None:
+        def tokenize_request(_messages: object) -> list[int]:
+            return [1, 2, 3]
     return SimpleNamespace(
         config=_StubLanguageModelConfig(
             model_config=_StubModelConfig(weight_quantization_mode=quantization_mode),
@@ -76,7 +92,7 @@ def _make_language_model(
         ),
         model=SimpleNamespace(activation_precision=jnp.float32, vocab_size=32),
         message_processor=SimpleNamespace(
-            tokenize_request=lambda _messages: [1, 2, 3],
+            tokenize_request=tokenize_request,
             tokenizer=SimpleNamespace(to_str=lambda: tokenizer_signature),
         ),
     )
@@ -91,27 +107,6 @@ def _make_parameter_summary() -> DistillParameterSummary:
     )
 
 
-def _fake_accumulate_train_step(
-    optimizer_state: object,
-    optimizer: optax.GradientTransformation,
-    microbatches: object,
-    train_key: object,
-    *,
-    stochastic_rounding: bool,
-    compute_step_gradients: object,
-) -> tuple[object, DistillBatchMetrics, object]:
-    del optimizer, microbatches, stochastic_rounding, compute_step_gradients
-    return (
-        optimizer_state,
-        DistillBatchMetrics(
-            loss=jnp.asarray(0.1, dtype=jnp.float32),
-            valid_tokens=jnp.asarray(2, dtype=jnp.int32),
-            top1_matches=jnp.asarray(0, dtype=jnp.int32),
-        ),
-        train_key,
-    )
-
-
 def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
     optimizer = optax.sgd(1.0)
     optimizer_state = DistillOptimizerState(
@@ -123,9 +118,11 @@ def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
     )
 
     def compute_step_gradients(
-        _batch: int,
-        _quantization_key: object,
+        training_state: DistillTrainingState,
+        batch: int,
+        quantization_key: jax.Array | None,
     ) -> tuple[object, DistillBatchMetrics]:
+        del training_state, batch, quantization_key
         return (
             {"left": jnp.array([2.0, 4.0]), "right": None},
             DistillBatchMetrics(
@@ -151,205 +148,198 @@ def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
     assert metrics.top1_matches == 2
 
 
-def test_build_optimizer_muon_does_not_call_callable_training_state_tree() -> None:
-    training_state = DistillTrainingState(
-        master_weights=_CallableWeights(jnp.ones((2, 2), dtype=jnp.float32)),
-        muon_weight_dimension_numbers=_CallableWeights(
-            optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0),
-        ),
+def test_load_tokenized_conversations_skips_short_rows_and_keeps_later_examples() -> None:
+    dataframe = _FakeDataFrame(
+        "messages",
+        [
+            [{"role": "user", "content": "drop"}],
+            [{"role": "user", "content": "keep-one"}],
+            [{"role": "user", "content": "keep-two"}],
+        ],
+    )
+    language_model = _make_language_model(
+        tokenize_request=lambda messages: {
+            "drop": [1],
+            "keep-one": [1, 2, 3],
+            "keep-two": [4, 5, 6, 7],
+        }[messages[0].content],
     )
 
-    optimizer = _build_optimizer(
-        OptimizerName.MUON,
-        1e-3,
-        training_state,
-        warmup_steps=0,
-        gradient_clip_norm=None,
+    with (
+        patch("lalamo.distill_runner.load_hf_parquet", return_value=dataframe),
+        patch("lalamo.distill_runner.shuffle_dataset", return_value=dataframe),
+    ):
+        tokenized = _load_tokenized_conversations(
+            Path("dataset.parquet"),
+            seed=0,
+            language_model=language_model,
+            max_sequence_length=3,
+            num_examples=2,
+        )
+
+    assert [sequence.tolist() for sequence in tokenized] == [[1, 2, 3], [4, 5, 6]]
+
+
+def test_shard_distill_batches_rejects_partial_batches() -> None:
+    dataset = LoadedDistillBatches(
+        train_examples=3,
+        eval_examples=2,
+        train_batches=[
+            DistillBatch(
+                token_ids=jnp.ones((3, 4), dtype=jnp.int32),
+                lengths_without_padding=jnp.ones((3,), dtype=jnp.int32),
+            ),
+        ],
+        eval_batches=[
+            DistillBatch(
+                token_ids=jnp.ones((2, 4), dtype=jnp.int32),
+                lengths_without_padding=jnp.ones((2,), dtype=jnp.int32),
+            ),
+        ],
     )
-    optimizer_state = optimizer.init(training_state.master_weights)
-
-    assert optimizer_state is not None
-
-
-def test_distill_skips_best_checkpoint_restore_without_periodic_eval(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, eval_every_steps=0, save_checkpoints=True)
-    training_state = DistillTrainingState(master_weights=(), muon_weight_dimension_numbers=())
-    language_models = [_make_language_model(), _make_language_model()]
-
-    def save_checkpoint(checkpoint_dir: Path, checkpoint: object, metadata: CheckpointMetadata) -> None:
-        del checkpoint, metadata
-        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-
-    def fail_load_checkpoint(checkpoint_dir: Path, like: object) -> object:
-        del like
-        raise AssertionError(f"Unexpected checkpoint restore from {checkpoint_dir}")
 
     with (
-        patch(
-            "lalamo.distill_runner.LanguageModelConfig.load_model",
-            side_effect=language_models,
-        ),
-        patch("lalamo.distill_runner._load_conversations", return_value=[object(), object()]),
-        patch(
-            "lalamo.distill_runner._tokenize_conversations",
-            return_value=[np.array([1, 2, 3], dtype=np.int32), np.array([1, 2, 3], dtype=np.int32)],
-        ),
-        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=training_state),
-        patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
-        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
-        patch("lalamo.distill_runner.materialize_trainable_module", return_value=SimpleNamespace()),
-        patch(
-            "lalamo.distill_runner._evaluate_with",
-            side_effect=[
-                EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
-                EvaluationMetrics(kl_divergence=0.5, top1_agreement=0.0, valid_tokens=1),
-            ],
-        ),
-        patch("lalamo.distill_runner._accumulate_train_step", side_effect=_fake_accumulate_train_step),
-        patch("lalamo.distill_runner._save_checkpoint", side_effect=save_checkpoint),
-        patch("lalamo.distill_runner._load_checkpoint", side_effect=fail_load_checkpoint),
-        patch("lalamo.distill_runner._save_materialized_student"),
-    ):
-        result = distill(config)
-
-    assert result.best_step == 0
-    assert result.completed_steps == 1
-
-
-def test_distill_restores_best_checkpoint_after_periodic_eval(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, eval_every_steps=1, save_checkpoints=True)
-    training_state = DistillTrainingState(master_weights=(), muon_weight_dimension_numbers=())
-    restored_paths: list[Path] = []
-    language_models = [_make_language_model(), _make_language_model()]
-
-    def save_checkpoint(checkpoint_dir: Path, checkpoint: object, metadata: CheckpointMetadata) -> None:
-        del checkpoint, metadata
-        Path(checkpoint_dir).mkdir(parents=True, exist_ok=True)
-
-    def load_checkpoint(checkpoint_dir: Path, like: object) -> tuple[object, CheckpointMetadata]:
-        restored_paths.append(Path(checkpoint_dir))
-        return like, CheckpointMetadata(step=0, best_eval_kl=1.0, best_step=0, evaluations_without_improvement=1)
-
-    with (
-        patch(
-            "lalamo.distill_runner.LanguageModelConfig.load_model",
-            side_effect=language_models,
-        ),
-        patch("lalamo.distill_runner._load_conversations", return_value=[object(), object()]),
-        patch(
-            "lalamo.distill_runner._tokenize_conversations",
-            return_value=[np.array([1, 2, 3], dtype=np.int32), np.array([1, 2, 3], dtype=np.int32)],
-        ),
-        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=training_state),
-        patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
-        patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
-        patch("lalamo.distill_runner.materialize_trainable_module", return_value=SimpleNamespace()),
-        patch(
-            "lalamo.distill_runner._evaluate_with",
-            side_effect=[
-                EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
-                EvaluationMetrics(kl_divergence=2.0, top1_agreement=0.0, valid_tokens=1),
-                EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
-            ],
-        ),
-        patch("lalamo.distill_runner._accumulate_train_step", side_effect=_fake_accumulate_train_step),
-        patch("lalamo.distill_runner._save_checkpoint", side_effect=save_checkpoint),
-        patch("lalamo.distill_runner._load_checkpoint", side_effect=load_checkpoint),
-        patch("lalamo.distill_runner._save_materialized_student"),
-    ):
-        result = distill(config)
-
-    assert result.best_step == 0
-    assert restored_paths == [config.output_dir / "best-checkpoint"]
-
-
-def test_distill_fails_when_sharding_filters_every_batch(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, num_devices=2, batch_size=1)
-    language_models = [_make_language_model(), _make_language_model()]
-
-    with (
-        patch(
-            "lalamo.distill_runner.LanguageModelConfig.load_model",
-            side_effect=language_models,
-        ),
-        patch("lalamo.distill_runner._load_conversations", return_value=[object(), object()]),
-        patch(
-            "lalamo.distill_runner._tokenize_conversations",
-            return_value=[np.array([1, 2, 3], dtype=np.int32), np.array([1, 2, 3], dtype=np.int32)],
-        ),
-        patch("lalamo.distill_runner._setup_device_mesh", return_value=object()),
         patch("lalamo.distill_runner.NamedSharding", return_value=None),
-        pytest.raises(
-            ValueError,
-            match="No train batches remain after data sharding; use more train examples or fewer devices",
+        pytest.raises(ValueError, match="Batch size 3 is not divisible by num_devices=2"),
+    ):
+        _shard_distill_batches(dataset, object(), num_devices=2)
+
+
+def test_shard_distill_batches_keeps_truthful_counts() -> None:
+    dataset = LoadedDistillBatches(
+        train_examples=999,
+        eval_examples=999,
+        train_batches=[
+            DistillBatch(
+                token_ids=jnp.ones((2, 4), dtype=jnp.int32),
+                lengths_without_padding=jnp.ones((2,), dtype=jnp.int32),
+            ),
+        ],
+        eval_batches=[
+            DistillBatch(
+                token_ids=jnp.ones((4, 4), dtype=jnp.int32),
+                lengths_without_padding=jnp.ones((4,), dtype=jnp.int32),
+            ),
+        ],
+    )
+
+    with (
+        patch("lalamo.distill_runner.NamedSharding", return_value=None),
+        patch("lalamo.distill_runner.eqx.filter_shard", side_effect=lambda batch, _sharding: batch),
+    ):
+        sharded = _shard_distill_batches(dataset, object(), num_devices=2)
+
+    assert sharded.train_examples == 2
+    assert sharded.eval_examples == 4
+
+
+def test_validate_distill_models_rejects_mismatched_tokenizers() -> None:
+    with pytest.raises(ValueError, match="identical tokenizers"):
+        _validate_distill_models(
+            _make_language_model(tokenizer_signature="student"),
+            _make_language_model(tokenizer_signature="teacher"),
+            quantization_mode=QuantizationMode.UINT4,
+        )
+
+
+def test_validate_distill_models_rejects_quantization_mode_mismatch() -> None:
+    with pytest.raises(ValueError, match="does not match the student model quantization mode"):
+        _validate_distill_models(
+            _make_language_model(quantization_mode=QuantizationMode.UINT8),
+            _make_language_model(quantization_mode=QuantizationMode.UINT8),
+            quantization_mode=QuantizationMode.UINT4,
+        )
+
+
+def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_path: Path) -> None:
+    config = _make_config(tmp_path, num_steps=2, eval_every_steps=1, save_checkpoints=False)
+    teacher_model = _make_language_model()
+    student_model = _make_language_model()
+    initial_state = DistillTrainingState(
+        master_weights={"weight": jnp.asarray(0.0, dtype=jnp.float32)},
+        muon_weight_dimension_numbers={"weight": None},
+    )
+    exported_students: list[object] = []
+    train_states = [
+        DistillTrainingState(
+            master_weights={"weight": jnp.asarray(1.0, dtype=jnp.float32)},
+            muon_weight_dimension_numbers={"weight": None},
         ),
-    ):
-        distill(config)
-
-
-def test_distill_rejects_mismatched_tokenizers(tmp_path: Path) -> None:
-    config = _make_config(tmp_path)
-    language_models = [
-        _make_language_model(tokenizer_signature="teacher"),
-        _make_language_model(tokenizer_signature="student"),
+        DistillTrainingState(
+            master_weights={"weight": jnp.asarray(2.0, dtype=jnp.float32)},
+            muon_weight_dimension_numbers={"weight": None},
+        ),
     ]
 
+    def accumulate_train_step(
+        optimizer_state: DistillOptimizerState,
+        optimizer: optax.GradientTransformation,
+        microbatches: object,
+        train_key: object,
+        *,
+        stochastic_rounding: bool,
+        compute_step_gradients: object,
+    ) -> tuple[DistillOptimizerState, DistillBatchMetrics, object]:
+        del optimizer, microbatches, stochastic_rounding, compute_step_gradients
+        next_training_state = train_states.pop(0)
+        return (
+            DistillOptimizerState(
+                training_state=next_training_state,
+                optimizer_state=optimizer_state.optimizer_state,
+            ),
+            DistillBatchMetrics(
+                loss=jnp.asarray(0.1, dtype=jnp.float32),
+                valid_tokens=jnp.asarray(1, dtype=jnp.int32),
+                top1_matches=jnp.asarray(0, dtype=jnp.int32),
+            ),
+            train_key,
+        )
+
+    def materialize_trainable_module(
+        module: object,
+        master_weights: object,
+        config: object,
+    ) -> object:
+        del module, config
+        return master_weights
+
+    def compute_distill_batch_metrics(
+        student: dict[str, jax.Array],
+        teacher: object,
+        batch: object,
+    ) -> DistillBatchMetrics:
+        del teacher, batch
+        losses = {0.0: 1.0, 1.0: 0.5, 2.0: 1.5}
+        return DistillBatchMetrics(
+            loss=jnp.asarray(losses[float(student["weight"])], dtype=jnp.float32),
+            valid_tokens=jnp.asarray(1, dtype=jnp.int32),
+            top1_matches=jnp.asarray(0, dtype=jnp.int32),
+        )
+
     with (
-        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=language_models),
-        pytest.raises(ValueError, match="identical tokenizers"),
-    ):
-        distill(config)
-
-
-def test_distill_rejects_quantization_mode_mismatch(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, quantization_mode=QuantizationMode.UINT4)
-    language_models = [
-        _make_language_model(quantization_mode=QuantizationMode.UINT8),
-        _make_language_model(quantization_mode=QuantizationMode.UINT8),
-    ]
-
-    with (
-        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=language_models),
-        pytest.raises(ValueError, match="does not match the student model quantization mode"),
-    ):
-        distill(config)
-
-
-def test_distill_uses_later_usable_sequences(tmp_path: Path) -> None:
-    config = _make_config(tmp_path, train_examples=2, eval_examples=1)
-    training_state = DistillTrainingState(master_weights=(), muon_weight_dimension_numbers=())
-    language_models = [_make_language_model(), _make_language_model()]
-    tokenized_sequences = [
-        np.array([1], dtype=np.int32),
-        np.array([1, 2, 3], dtype=np.int32),
-        np.array([4, 5, 6], dtype=np.int32),
-        np.array([7, 8, 9], dtype=np.int32),
-    ]
-
-    def load_conversations(_dataset_path: Path, *, num_examples: int | None, seed: int) -> list[object]:
-        del seed
-        assert num_examples is None
-        return [object()] * 4
-
-    with (
-        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=language_models),
-        patch("lalamo.distill_runner._load_conversations", side_effect=load_conversations),
-        patch("lalamo.distill_runner._tokenize_conversations", return_value=tokenized_sequences),
-        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=training_state),
+        patch("lalamo.distill_runner.LanguageModelConfig.load_model", side_effect=[teacher_model, student_model]),
+        patch(
+            "lalamo.distill_runner._load_distill_batches",
+            return_value=LoadedDistillBatches(
+                train_examples=1,
+                eval_examples=1,
+                train_batches=[object()],
+                eval_batches=[object()],
+            ),
+        ),
+        patch("lalamo.distill_runner.initialize_distill_training_state", return_value=initial_state),
         patch("lalamo.distill_runner.iter_parameter_leaves", return_value=[]),
         patch("lalamo.distill_runner.summarize_distill_parameters", return_value=_make_parameter_summary()),
-        patch("lalamo.distill_runner.materialize_trainable_module", return_value=SimpleNamespace()),
+        patch("lalamo.distill_runner.materialize_trainable_module", side_effect=materialize_trainable_module),
+        patch("lalamo.distill_runner.compute_distill_batch_metrics", side_effect=compute_distill_batch_metrics),
+        patch("lalamo.distill_runner._accumulate_train_step", side_effect=accumulate_train_step),
         patch(
-            "lalamo.distill_runner._evaluate_with",
-            side_effect=[
-                EvaluationMetrics(kl_divergence=1.0, top1_agreement=0.0, valid_tokens=1),
-                EvaluationMetrics(kl_divergence=0.5, top1_agreement=0.0, valid_tokens=1),
-            ],
+            "lalamo.distill_runner._save_materialized_student",
+            side_effect=lambda *_args: exported_students.append(_args[-1]),
         ),
-        patch("lalamo.distill_runner._accumulate_train_step", side_effect=_fake_accumulate_train_step),
-        patch("lalamo.distill_runner._save_materialized_student"),
     ):
         result = distill(config)
 
-    assert result.train_examples == 2
-    assert result.eval_examples == 1
+    assert float(exported_students[0]["weight"]) == 1.0
+    assert result.best_step == 1
+    assert result.final_eval.kl_divergence == 0.5

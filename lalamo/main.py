@@ -1,4 +1,3 @@
-import dataclasses
 import json
 import random
 import re
@@ -67,6 +66,7 @@ from lalamo.distill_runner import (
     DistillResult,
     OptimizerName,
     TrainingMode,
+    _iter_quantization_modes,
 )
 from lalamo.distill_runner import (
     distill as _distill,
@@ -903,137 +903,6 @@ class DistillRecipe(StrEnum):
     SMOKE = "smoke"
     FULL_MUON = "full-muon"
     QLORA = "qlora"
-    SPINQUANT_QLORA = "spinquant-qlora"
-
-
-@dataclass(frozen=True)
-class DistillRecipeDefaults:
-    training_mode: TrainingMode
-    train_examples: int
-    eval_examples: int
-    max_sequence_length: int
-    batch_size: int
-    num_steps: int
-    learning_rate: float
-    warmup_steps: int
-    gradient_clip_norm: float | None
-    gradient_accumulation_steps: int
-    optimizer_name: OptimizerName
-    lora_rank: int | None
-    lora_scale: float
-    compute_dtype_name: ComputeDTypeName
-    eval_every_steps: int
-    checkpoint_every_steps: int
-    early_stop_patience: int
-    stochastic_rounding: bool
-    save_checkpoints: bool
-
-
-_DISTILL_RECIPES = {
-    DistillRecipe.SMOKE: DistillRecipeDefaults(
-        training_mode=TrainingMode.ONLINE_EXACT,
-        train_examples=16,
-        eval_examples=8,
-        max_sequence_length=128,
-        batch_size=2,
-        num_steps=5,
-        learning_rate=3e-7,
-        warmup_steps=0,
-        gradient_clip_norm=None,
-        gradient_accumulation_steps=1,
-        optimizer_name=OptimizerName.MUON,
-        lora_rank=None,
-        lora_scale=1.0,
-        compute_dtype_name=ComputeDTypeName.AUTO,
-        eval_every_steps=1,
-        checkpoint_every_steps=0,
-        early_stop_patience=0,
-        stochastic_rounding=True,
-        save_checkpoints=False,
-    ),
-    DistillRecipe.FULL_MUON: DistillRecipeDefaults(
-        training_mode=TrainingMode.ONLINE_EXACT,
-        train_examples=256,
-        eval_examples=64,
-        max_sequence_length=256,
-        batch_size=4,
-        num_steps=25,
-        learning_rate=3e-7,
-        warmup_steps=0,
-        gradient_clip_norm=None,
-        gradient_accumulation_steps=1,
-        optimizer_name=OptimizerName.MUON,
-        lora_rank=None,
-        lora_scale=1.0,
-        compute_dtype_name=ComputeDTypeName.AUTO,
-        eval_every_steps=0,
-        checkpoint_every_steps=0,
-        early_stop_patience=0,
-        stochastic_rounding=True,
-        save_checkpoints=True,
-    ),
-    DistillRecipe.QLORA: DistillRecipeDefaults(
-        training_mode=TrainingMode.ONLINE_EXACT,
-        train_examples=256,
-        eval_examples=64,
-        max_sequence_length=256,
-        batch_size=4,
-        num_steps=25,
-        learning_rate=3e-5,
-        warmup_steps=0,
-        gradient_clip_norm=None,
-        gradient_accumulation_steps=1,
-        optimizer_name=OptimizerName.ADAMW,
-        lora_rank=32,
-        lora_scale=1.0,
-        compute_dtype_name=ComputeDTypeName.AUTO,
-        eval_every_steps=0,
-        checkpoint_every_steps=0,
-        early_stop_patience=0,
-        stochastic_rounding=True,
-        save_checkpoints=True,
-    ),
-    DistillRecipe.SPINQUANT_QLORA: DistillRecipeDefaults(
-        training_mode=TrainingMode.ONLINE_EXACT,
-        train_examples=256,
-        eval_examples=64,
-        max_sequence_length=256,
-        batch_size=4,
-        num_steps=25,
-        learning_rate=3e-5,
-        warmup_steps=0,
-        gradient_clip_norm=None,
-        gradient_accumulation_steps=1,
-        optimizer_name=OptimizerName.ADAMW,
-        lora_rank=32,
-        lora_scale=1.0,
-        compute_dtype_name=ComputeDTypeName.AUTO,
-        eval_every_steps=0,
-        checkpoint_every_steps=0,
-        early_stop_patience=0,
-        stochastic_rounding=True,
-        save_checkpoints=True,
-    ),
-}
-
-
-def _iter_quantization_modes(value: object) -> set[QuantizationMode]:
-    quantization_modes: set[QuantizationMode] = set()
-    if dataclasses.is_dataclass(value):
-        for config_field in dataclasses.fields(value):
-            field_value = getattr(value, config_field.name)
-            if config_field.name in {"weight_quantization_mode", "embedding_quantization_mode"}:
-                if isinstance(field_value, QuantizationMode):
-                    quantization_modes.add(field_value)
-                continue
-            quantization_modes.update(_iter_quantization_modes(field_value))
-    elif isinstance(value, tuple | list):
-        for item in value:
-            quantization_modes.update(_iter_quantization_modes(item))
-    elif isinstance(value, dict):
-        for item in value.values():
-            quantization_modes.update(_iter_quantization_modes(item))
-    return quantization_modes
 
 
 def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
@@ -1054,10 +923,6 @@ def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
 
 def _default_distill_output_dir(student_path: Path, recipe: DistillRecipe) -> Path:
     return DEFAULT_OUTPUT_DIR / "distilled" / f"{student_path.name}-{recipe.value}"
-
-
-def _run_distill_cli(config: DistillConfig) -> None:
-    _distill(config, callbacks_type=CliDistillCallbacks)
 
 
 @app.command(help="Distill a quantized model using a recipe-driven setup.")
@@ -1104,40 +969,58 @@ def distill(
         Option(help="Random seed."),
     ] = 0,
 ) -> None:
-    recipe_defaults = _DISTILL_RECIPES[recipe]
     quantization_mode = _infer_student_quantization_mode(student_path)
     resolved_output_dir = output_dir or _default_distill_output_dir(student_path, recipe)
-    _run_distill_cli(
-        DistillConfig(
-            teacher_path=teacher_path,
-            student_path=student_path,
-            dataset_path=dataset_path,
-            output_dir=resolved_output_dir,
-            training_mode=recipe_defaults.training_mode,
-            train_examples=recipe_defaults.train_examples,
-            eval_examples=recipe_defaults.eval_examples,
-            max_sequence_length=recipe_defaults.max_sequence_length,
-            batch_size=recipe_defaults.batch_size,
-            num_steps=recipe_defaults.num_steps if steps is None else steps,
-            learning_rate=recipe_defaults.learning_rate,
-            warmup_steps=recipe_defaults.warmup_steps,
-            gradient_clip_norm=recipe_defaults.gradient_clip_norm,
-            gradient_accumulation_steps=recipe_defaults.gradient_accumulation_steps,
-            optimizer_name=recipe_defaults.optimizer_name,
-            quantization_mode=quantization_mode,
-            lora_rank=recipe_defaults.lora_rank,
-            lora_scale=recipe_defaults.lora_scale,
-            compute_dtype_name=recipe_defaults.compute_dtype_name,
-            eval_every_steps=recipe_defaults.eval_every_steps,
-            checkpoint_every_steps=recipe_defaults.checkpoint_every_steps,
-            early_stop_patience=recipe_defaults.early_stop_patience,
-            resume_from=None,
-            num_devices=devices,
-            seed=seed,
-            stochastic_rounding=recipe_defaults.stochastic_rounding,
-            save_checkpoints=recipe_defaults.save_checkpoints,
-        ),
-    )
+    match recipe:
+        case DistillRecipe.SMOKE:
+            config = DistillConfig(
+                teacher_path=teacher_path,
+                student_path=student_path,
+                dataset_path=dataset_path,
+                output_dir=resolved_output_dir,
+                training_mode=TrainingMode.ONLINE_EXACT,
+                train_examples=16,
+                eval_examples=8,
+                max_sequence_length=128,
+                batch_size=2,
+                num_steps=5 if steps is None else steps,
+                learning_rate=3e-7,
+                optimizer_name=OptimizerName.MUON,
+                quantization_mode=quantization_mode,
+                num_devices=devices,
+                seed=seed,
+                eval_every_steps=1,
+                save_checkpoints=False,
+            )
+        case DistillRecipe.FULL_MUON:
+            config = DistillConfig(
+                teacher_path=teacher_path,
+                student_path=student_path,
+                dataset_path=dataset_path,
+                output_dir=resolved_output_dir,
+                training_mode=TrainingMode.ONLINE_EXACT,
+                num_steps=25 if steps is None else steps,
+                optimizer_name=OptimizerName.MUON,
+                quantization_mode=quantization_mode,
+                num_devices=devices,
+                seed=seed,
+            )
+        case DistillRecipe.QLORA:
+            config = DistillConfig(
+                teacher_path=teacher_path,
+                student_path=student_path,
+                dataset_path=dataset_path,
+                output_dir=resolved_output_dir,
+                training_mode=TrainingMode.ONLINE_EXACT,
+                num_steps=25 if steps is None else steps,
+                learning_rate=3e-5,
+                optimizer_name=OptimizerName.ADAMW,
+                quantization_mode=quantization_mode,
+                lora_rank=32,
+                num_devices=devices,
+                seed=seed,
+            )
+    _distill(config, callbacks_type=CliDistillCallbacks)
 
 
 @app.command(
@@ -1216,10 +1099,10 @@ def distill_advanced(
         OptimizerName,
         Option(help="Optimizer to use."),
     ] = OptimizerName.MUON,
-    bits: Annotated[
-        int,
-        Option(help="Quantization bitness for stochastic rounding."),
-    ] = 4,
+    quantization_mode: Annotated[
+        QuantizationMode,
+        Option(help="Quantization mode for stochastic rounding."),
+    ] = QuantizationMode.UINT4,
     lora_rank: Annotated[
         int | None,
         Option(help="LoRA rank. Omit for full-parameter distillation."),
@@ -1265,12 +1148,7 @@ def distill_advanced(
         Option(help="Persist latest and best checkpoints."),
     ] = True,
 ) -> None:
-    try:
-        quantization_mode = QuantizationMode.from_num_bits(bits)
-    except ValueError as exc:
-        raise BadParameter("--bits must be 4 or 8") from exc
-
-    _run_distill_cli(
+    _distill(
         DistillConfig(
             teacher_path=teacher_path,
             student_path=student_path,
@@ -1300,6 +1178,7 @@ def distill_advanced(
             stochastic_rounding=stochastic_rounding,
             save_checkpoints=save_checkpoints,
         ),
+        callbacks_type=CliDistillCallbacks,
     )
 
 

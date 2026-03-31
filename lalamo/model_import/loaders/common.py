@@ -11,7 +11,7 @@ from jaxtyping import PyTree
 from lalamo.modules.common import (
     FieldMetadataInfo,
     ShardingConfig,
-    find_field_metadata,
+    field_metadata_by_leaf_id,
     get_current_sharding_config,
 )
 
@@ -66,13 +66,14 @@ def load_parameters[M: eqx.Module](
     old_values = list(selector(module))
     new_values = list(new_values)
     sharding_config = get_current_sharding_config()
-    module_leaves = tuple(leaves_with_path(module))
+    metadata_by_leaf_id = field_metadata_by_leaf_id(module) if sharding_config is not None else None
+    leaf_names_by_id: dict[int, str] | None = None
 
     def leaf_name(target: Any) -> str:  # noqa: ANN401
-        for path, value in module_leaves:
-            if value is target:
-                return f"~{keystr(path)}"
-        raise ValueError(f"Leaf {target} not found in tree {module}")
+        nonlocal leaf_names_by_id
+        if leaf_names_by_id is None:
+            leaf_names_by_id = {id(value): f"~{keystr(path)}" for path, value in leaves_with_path(module)}
+        return leaf_names_by_id[id(target)]
 
     casted_new_values = []
 
@@ -90,9 +91,12 @@ def load_parameters[M: eqx.Module](
                 )
             loaded_value = incoming_value
             if sharding_config is not None:
-                field_info = find_field_metadata(module, old_value)
-                if field_info is not None:
-                    loaded_value = _apply_parameter_sharding(loaded_value, field_info, sharding_config)
+                assert metadata_by_leaf_id is not None
+                loaded_value = _apply_parameter_sharding(
+                    loaded_value,
+                    metadata_by_leaf_id[id(old_value)],
+                    sharding_config,
+                )
             casted_new_values.append(loaded_value)
             continue
         if type(old_value) is not type(incoming_value):

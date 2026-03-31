@@ -20,7 +20,7 @@ def _lfm_repo(family: str, size: str, variant: str | None, quantization: Quantiz
 
 _LFM20_MODELS = [
     ModelSpec(
-        vendor="LiquidAI",
+        vendor=_lfm_repo("LFM2", size, variant, quantization)[0],
         family="LFM2",
         name=_lfm_repo("LFM2", size, variant, quantization)[1],
         size=size,
@@ -42,7 +42,7 @@ _LFM20_MODELS = [
 
 _LFM25_MODELS = [
     ModelSpec(
-        vendor="LiquidAI",
+        vendor=_lfm_repo("LFM2.5", size, variant, quantization)[0],
         family="LFM2.5",
         name=_lfm_repo("LFM2.5", size, variant, quantization)[1],
         size=size,

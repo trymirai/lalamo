@@ -38,7 +38,7 @@ from lalamo.modules.common import (
     ParameterNorm,
     combine_parameter_leaves,
     field,
-    find_field_metadata,
+    field_metadata_by_leaf_id,
     iter_parameter_leaves,
     partition_parameter_leaves,
 )
@@ -189,13 +189,12 @@ def test_initialize_distill_training_state_dedupes_alias_masters() -> None:
     assert materialized_leaves[1].alias_of == "left"
 
 
-def test_find_field_metadata_tracks_nested_container_fields() -> None:
+def test_field_metadata_by_leaf_id_tracks_nested_container_fields() -> None:
     shared = jnp.ones((2, 2), dtype=jnp.float32)
     module = NestedAliasModule(blocks=(AliasModule(left=shared, right=shared),))
 
-    field_info = find_field_metadata(module, module.blocks[0].left)
+    field_info = field_metadata_by_leaf_id(module)[id(module.blocks[0].left)]
 
-    assert field_info is not None
     assert field_info.owner is module.blocks[0]
     assert field_info.field.name == "left"
 
@@ -474,6 +473,30 @@ def test_q_lora_import_weights_accepts_legacy_rht_inner_linear_key() -> None:
     assert jnp.array_equal(imported_weights["up_weights"], exported_weights["up_weights"])
 
 
+def test_q_lora_import_weights_accepts_legacy_split_up_weights() -> None:
+    config = QLoRALinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+        lora_rank=2,
+        lora_scale=1.0,
+    )
+    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(30))
+    exported_weights = layer.export_weights()
+    imported_layer = layer.import_weights(
+        {
+            **exported_weights,
+            "up_weights": (
+                jnp.swapaxes(exported_weights["up_weights"][:3], -1, -2),
+                jnp.swapaxes(exported_weights["up_weights"][3:], -1, -2),
+            ),
+        }
+    )
+
+    assert jnp.array_equal(imported_layer.lora_up_weights, layer.lora_up_weights)
+
+
 def test_q_lora_linear_uses_single_fused_lora_path() -> None:
     config = QLoRALinearConfig(
         group_size=2,
@@ -693,9 +716,9 @@ def test_make_trace_distill_batch_pads_sequences_and_support() -> None:
 @pytest.mark.parametrize(
     ("prefix_token_ids", "completion_token_ids", "completion_token_logits", "error_message"),
     [
-        ([], [3], [{3: 0.5}], "non-empty prefixes"),
-        ([1], [], [], "non-empty completions"),
-        ([1], [3], [{}], "non-empty top-k support"),
+        ([], [3], [{3: 0.5}], "empty prefix_token_ids"),
+        ([1], [], [], "empty completion_token_ids"),
+        ([1], [3], [{}], "empty support logits"),
     ],
 )
 def test_make_trace_distill_batch_rejects_invalid_traces(
@@ -712,7 +735,7 @@ def test_make_trace_distill_batch_rejects_invalid_traces(
         ),
     )
 
-    with pytest.raises(ValueError, match=error_message):
+    with pytest.raises(AssertionError, match=error_message):
         make_trace_distill_batch(traces, pad_token_id=0)
 
 
@@ -760,6 +783,8 @@ def test_compute_trace_distill_batch_metrics_counts_all_matching_top1_tokens() -
 
 def test_mlxsq_untied_embedding_keeps_input_lookup_weights_unquantized() -> None:
     embedding = MLXSemiQuantizedUntiedEmbeddingConfig(
+        input_scale=None,
+        logit_soft_cap=None,
         group_size=2,
         embedding_quantization_mode=QuantizationMode.UINT4,
         activation_quantization_mode=None,
