@@ -523,6 +523,9 @@ BONSAI = [
         quantization=QuantizationMode.UINT1,
         repo="prism-ml/Bonsai-4B-mlx-1bit",
         config_type=HFBonsaiConfig,
+        configs=ConfigMap(
+            chat_template=FileSpec("chat_template.jinja"),
+        ),
     ),
 ]
 
