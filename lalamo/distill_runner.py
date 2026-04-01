@@ -1,12 +1,12 @@
-import dataclasses
 import json
 import shutil
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
-from itertools import cycle, islice
+from itertools import islice
 from pathlib import Path
+from typing import Protocol
 
 import equinox as eqx
 import jax
@@ -31,6 +31,7 @@ from lalamo.distillation import (
     DistillTrainingState,
     TraceDistillBatch,
     apply_distill_gradients,
+    apply_donated_distill_gradients,
     compute_distill_batch_metrics,
     compute_distill_step_gradients,
     compute_trace_distill_batch_metrics,
@@ -175,36 +176,24 @@ class ExperimentCheckpoint(eqx.Module):
     train_key_data: Array
 
 
-@dataclass
-class DistillCallbacks:
-    config: DistillConfig
+class DistillCallbacks(Protocol):
+    def started(self) -> None: ...
 
-    def started(self) -> None:
-        pass
+    def loading_models(self) -> None: ...
 
-    def loading_models(self) -> None:
-        pass
+    def finished_loading_models(self) -> None: ...
 
-    def finished_loading_models(self) -> None:
-        pass
+    def loading_dataset(self) -> None: ...
 
-    def loading_dataset(self) -> None:
-        pass
+    def finished_loading_dataset(self) -> None: ...
 
-    def finished_loading_dataset(self) -> None:
-        pass
+    def distillation_progress(self, step: int, num_steps: int) -> None: ...
 
-    def distillation_progress(self, step: int, num_steps: int) -> None:
-        pass
+    def saving_model(self) -> None: ...
 
-    def saving_model(self) -> None:
-        pass
+    def finished_saving_model(self, output_model_path: Path) -> None: ...
 
-    def finished_saving_model(self, output_model_path: Path) -> None:
-        pass
-
-    def finished(self, result: DistillResult) -> None:
-        pass
+    def finished(self, result: DistillResult) -> None: ...
 
 
 def _load_tokenized_conversations(
@@ -253,33 +242,10 @@ def _has_tokenizer_compatibility(
     )
 
 
-def _iter_quantization_modes(config: object) -> set[QuantizationMode]:
-    quantization_modes: set[QuantizationMode] = set()
-
-    def visit(value: object) -> None:
-        if dataclasses.is_dataclass(value):
-            for config_field in dataclasses.fields(value):
-                field_value = getattr(value, config_field.name)
-                if config_field.name in {"weight_quantization_mode", "embedding_quantization_mode"}:
-                    if isinstance(field_value, QuantizationMode):
-                        quantization_modes.add(field_value)
-                    continue
-                visit(field_value)
-            return
-        if isinstance(value, tuple | list):
-            for item in value:
-                visit(item)
-            return
-        if isinstance(value, dict):
-            for item in value.values():
-                visit(item)
-
-    visit(config)
-    return quantization_modes
-
-
-def _single_quantization_mode(config: object) -> QuantizationMode | None:
-    quantization_modes = _iter_quantization_modes(config)
+def _single_quantization_mode(module: eqx.Module) -> QuantizationMode | None:
+    quantization_modes = {
+        info.quantization_mode for info in iter_parameter_leaves(module) if info.quantization_mode is not None
+    }
     if not quantization_modes:
         return None
     if len(quantization_modes) > 1:
@@ -299,7 +265,7 @@ def _validate_distill_models(
     if not _has_tokenizer_compatibility(student_model, teacher_model):
         raise ValueError("Teacher and student must use identical tokenizers and message processor configs")
 
-    student_quantization_mode = _single_quantization_mode(student_model.config.model_config)
+    student_quantization_mode = _single_quantization_mode(student_model.model)
     if student_quantization_mode is not None and quantization_mode != student_quantization_mode:
         raise ValueError(
             f"Requested stochastic rounding mode {quantization_mode.value} does not match the student model"
@@ -367,14 +333,16 @@ def _load_distill_batches(
                 raise ValueError(
                     f"Requested {requested_examples} traces, got {len(traces)} from {config.dataset_path}",
                 )
+            train_traces = traces[: config.train_examples]
+            eval_traces = traces[config.train_examples : requested_examples]
             return LoadedDistillBatches(
                 train_batches=[
-                    make_trace_distill_batch(traces[start : start + device_batch_size], pad_token_id=0)
-                    for start in range(0, config.train_examples, device_batch_size)
+                    make_trace_distill_batch(train_traces[start : start + device_batch_size], pad_token_id=0)
+                    for start in range(0, len(train_traces), device_batch_size)
                 ],
                 eval_batches=[
-                    make_trace_distill_batch(traces[start : start + device_batch_size], pad_token_id=0)
-                    for start in range(config.train_examples, requested_examples, device_batch_size)
+                    make_trace_distill_batch(eval_traces[start : start + device_batch_size], pad_token_id=0)
+                    for start in range(0, len(eval_traces), device_batch_size)
                 ],
             )
 
@@ -402,15 +370,23 @@ def _shard_distill_batches(
 
 
 def _evaluate_with(
+    training_mode: TrainingMode,
+    student: Decoder,
+    teacher: Decoder,
     batches: Sequence[DistillBatchLike],
-    compute_batch_metrics: Callable[[DistillBatchLike], DistillBatchMetrics],
 ) -> EvaluationMetrics:
     total_kl = 0.0
     total_valid_tokens = 0
     total_matches = 0
 
     for batch in batches:
-        batch_metrics = compute_batch_metrics(batch)
+        match training_mode:
+            case TrainingMode.ONLINE_EXACT:
+                assert isinstance(batch, DistillBatch)
+                batch_metrics = compute_distill_batch_metrics(student, teacher, batch)
+            case TrainingMode.TRACE_TOPK:
+                assert isinstance(batch, TraceDistillBatch)
+                batch_metrics = compute_trace_distill_batch_metrics(student, batch)
         total_kl += float(batch_metrics.loss) * int(batch_metrics.valid_tokens)
         total_valid_tokens += int(batch_metrics.valid_tokens)
         total_matches += int(batch_metrics.top1_matches)
@@ -529,17 +505,27 @@ def _build_optimizer(
     return optax.chain(optax.clip_by_global_norm(gradient_clip_norm), optimizer)
 
 
+def _copy_master_weights(master_weights: object) -> object:
+    return jax.tree.map(
+        lambda leaf: leaf + jnp.zeros((), dtype=leaf.dtype) if eqx.is_array(leaf) else leaf,
+        master_weights,
+        is_leaf=lambda leaf: leaf is None,
+    )
+
+
 def _accumulate_train_step(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
     microbatches: Sequence[DistillBatchLike],
     train_key: Key[Array, ""],
     *,
+    optimizer_name: OptimizerName,
+    training_mode: TrainingMode,
+    student: Decoder,
+    teacher: Decoder,
+    distill_config: DistillTrainConfig,
+    quantization_mode: QuantizationMode,
     stochastic_rounding: bool,
-    compute_step_gradients: Callable[
-        [DistillTrainingState, DistillBatchLike, Key[Array, ""] | None],
-        tuple[object, DistillBatchMetrics],
-    ],
 ) -> tuple[DistillOptimizerState, DistillBatchMetrics, Key[Array, ""]]:
     assert microbatches, "Gradient accumulation requires at least one microbatch"
     accumulated_grads: object | None = None
@@ -550,11 +536,28 @@ def _accumulate_train_step(
     for microbatch in microbatches:
         train_key, step_key = jax.random.split(train_key)
         quantization_key = step_key if stochastic_rounding else None
-        grads, metrics = compute_step_gradients(
-            optimizer_state.training_state,
-            microbatch,
-            quantization_key,
-        )
+        match training_mode:
+            case TrainingMode.ONLINE_EXACT:
+                assert isinstance(microbatch, DistillBatch)
+                grads, metrics = compute_distill_step_gradients(
+                    optimizer_state.training_state,
+                    student,
+                    teacher,
+                    microbatch,
+                    distill_config,
+                    quantization_mode,
+                    quantization_key=quantization_key,
+                )
+            case TrainingMode.TRACE_TOPK:
+                assert isinstance(microbatch, TraceDistillBatch)
+                grads, metrics = compute_trace_distill_step_gradients(
+                    optimizer_state.training_state,
+                    student,
+                    microbatch,
+                    distill_config,
+                    quantization_mode,
+                    quantization_key=quantization_key,
+                )
         valid_tokens = metrics.valid_tokens
         weighted_grads = jax.tree.map(lambda grad, scale=valid_tokens: grad * scale, grads)
         accumulated_grads = (
@@ -573,7 +576,10 @@ def _accumulate_train_step(
         valid_tokens=total_valid_tokens,
         top1_matches=total_top1_matches,
     )
-    return apply_distill_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
+    apply_gradients = (
+        apply_distill_gradients if optimizer_name == OptimizerName.MUON else apply_donated_distill_gradients
+    )
+    return apply_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
 
 
 def _setup_device_mesh(num_devices: int) -> Mesh | None:
@@ -609,14 +615,16 @@ def distill(
     mesh = _setup_device_mesh(config.num_devices)
     device_batch_size = config.batch_size * config.num_devices
 
-    callbacks = DistillCallbacks(config) if callbacks is None else callbacks
-    callbacks.started()
+    if callbacks is not None:
+        callbacks.started()
 
     # Models
-    callbacks.loading_models()
+    if callbacks is not None:
+        callbacks.loading_models()
     teacher_model = LanguageModelConfig.load_model(config.teacher_path)
     student_model = LanguageModelConfig.load_model(config.student_path)
-    callbacks.finished_loading_models()
+    if callbacks is not None:
+        callbacks.finished_loading_models()
 
     effective_trainable_filter = trainable_filter
     if config.lora_rank is not None:
@@ -632,13 +640,15 @@ def distill(
     _validate_distill_models(student_model, teacher_model, quantization_mode=config.quantization_mode)
 
     # Dataset
-    callbacks.loading_dataset()
+    if callbacks is not None:
+        callbacks.loading_dataset()
     dataset = _load_distill_batches(
         config,
         student_model,
         device_batch_size=device_batch_size,
     )
-    callbacks.finished_loading_dataset()
+    if callbacks is not None:
+        callbacks.finished_loading_dataset()
 
     dataset = _shard_distill_batches(dataset, mesh, num_devices=config.num_devices)
 
@@ -690,7 +700,7 @@ def distill(
     completed_steps = 0
     best_eval_kl: float | None = None
     best_step: int | None = None
-    best_optimizer_state = optimizer_state
+    best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
     evaluations_without_improvement = 0
     resume_best_checkpoint_dir: Path | None = None
     if config.resume_from is not None:
@@ -708,7 +718,7 @@ def distill(
         best_step = checkpoint_metadata.best_step
         evaluations_without_improvement = checkpoint_metadata.evaluations_without_improvement
         if best_step == completed_steps:
-            best_optimizer_state = optimizer_state
+            best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
         if best_step is not None and best_step != completed_steps:
             resume_best_checkpoint_dir = Path(config.resume_from).parent / "best-checkpoint"
             if not resume_best_checkpoint_dir.exists():
@@ -722,54 +732,7 @@ def distill(
                     train_key_data=jax.random.key_data(train_key),
                 ),
             )
-            best_optimizer_state = best_checkpoint.optimizer_state
-
-    match config.training_mode:
-        case TrainingMode.ONLINE_EXACT:
-
-            def evaluate_batch(student: Decoder, batch: DistillBatchLike) -> DistillBatchMetrics:
-                assert isinstance(batch, DistillBatch)
-                return compute_distill_batch_metrics(student, teacher_model.model, batch)
-
-            def compute_step_gradients(
-                training_state: DistillTrainingState,
-                batch: DistillBatchLike,
-                quantization_key: Key[Array, ""] | None,
-            ) -> tuple[object, DistillBatchMetrics]:
-                assert isinstance(batch, DistillBatch)
-                return compute_distill_step_gradients(
-                    training_state,
-                    student_model.model,
-                    teacher_model.model,
-                    batch,
-                    distill_config,
-                    quantization_key=quantization_key,
-                    quantization_mode=config.quantization_mode,
-                )
-
-        case TrainingMode.TRACE_TOPK:
-
-            def evaluate_batch(student: Decoder, batch: DistillBatchLike) -> DistillBatchMetrics:
-                assert isinstance(batch, TraceDistillBatch)
-                return compute_trace_distill_batch_metrics(student, batch)
-
-            def compute_step_gradients(
-                training_state: DistillTrainingState,
-                batch: DistillBatchLike,
-                quantization_key: Key[Array, ""] | None,
-            ) -> tuple[object, DistillBatchMetrics]:
-                assert isinstance(batch, TraceDistillBatch)
-                return compute_trace_distill_step_gradients(
-                    training_state,
-                    student_model.model,
-                    batch,
-                    distill_config,
-                    quantization_key=quantization_key,
-                    quantization_mode=config.quantization_mode,
-                )
-
-    def evaluate_model(student: Decoder) -> EvaluationMetrics:
-        return _evaluate_with(dataset.eval_batches, lambda batch: evaluate_batch(student, batch))
+            best_master_weights = _copy_master_weights(best_checkpoint.optimizer_state.training_state.master_weights)
 
     # Initial evaluation
     run_start = time.perf_counter()
@@ -778,12 +741,17 @@ def distill(
         optimizer_state.training_state.master_weights,
         distill_config,
     )
-    initial_eval = evaluate_model(initial_student)
+    initial_eval = _evaluate_with(
+        config.training_mode,
+        initial_student,
+        teacher_model.model,
+        dataset.eval_batches,
+    )
 
     if best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
         best_step = completed_steps
-        best_optimizer_state = optimizer_state
+        best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
     latest_checkpoint_dir = config.output_dir / "latest-checkpoint"
@@ -807,12 +775,12 @@ def distill(
         )
 
     def update_best(step: int, eval_kl: float) -> bool:
-        nonlocal best_eval_kl, best_step, best_optimizer_state
+        nonlocal best_eval_kl, best_step, best_master_weights
         if best_eval_kl is not None and eval_kl >= best_eval_kl:
             return False
         best_eval_kl = eval_kl
         best_step = step
-        best_optimizer_state = optimizer_state
+        best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
         if config.save_checkpoints:
             save_checkpoint(best_checkpoint_dir, step)
         return True
@@ -823,7 +791,7 @@ def distill(
         elif best_step == completed_steps:
             save_checkpoint(best_checkpoint_dir, completed_steps)
     history_path = config.output_dir / "history.jsonl"
-    step_iterator = cycle(dataset.train_batches)
+    next_microbatch_index = completed_steps * config.gradient_accumulation_steps
     compilation_seconds = 0.0
     executed_steps = 0
     stopped_early = False
@@ -831,13 +799,12 @@ def distill(
 
     # Training loop
     with history_path.open("a" if completed_steps > 0 else "w") as history_file:
-        microbatch_iterator = islice(
-            step_iterator,
-            completed_steps * config.gradient_accumulation_steps,
-            None,
-        )
         for step in range(completed_steps + 1, config.num_steps + 1):
-            microbatches = tuple(next(microbatch_iterator) for _ in range(config.gradient_accumulation_steps))
+            microbatches = tuple(
+                dataset.train_batches[(next_microbatch_index + offset) % len(dataset.train_batches)]
+                for offset in range(config.gradient_accumulation_steps)
+            )
+            next_microbatch_index += config.gradient_accumulation_steps
 
             if executed_steps == 0:
                 warmup_start = time.perf_counter()
@@ -847,8 +814,13 @@ def distill(
                 optimizer,
                 microbatches,
                 train_key,
+                optimizer_name=config.optimizer_name,
+                training_mode=config.training_mode,
+                student=student_model.model,
+                teacher=teacher_model.model,
+                distill_config=distill_config,
+                quantization_mode=config.quantization_mode,
                 stochastic_rounding=config.stochastic_rounding,
-                compute_step_gradients=compute_step_gradients,
             )
 
             if executed_steps == 0:
@@ -862,7 +834,12 @@ def distill(
                     optimizer_state.training_state.master_weights,
                     distill_config,
                 )
-                eval_metrics = evaluate_model(materialized_student)
+                eval_metrics = _evaluate_with(
+                    config.training_mode,
+                    materialized_student,
+                    teacher_model.model,
+                    dataset.eval_batches,
+                )
                 if update_best(step, eval_metrics.kl_divergence):
                     evaluations_without_improvement = 0
                 else:
@@ -887,7 +864,8 @@ def distill(
             history_file.flush()
             executed_steps += 1
             completed_steps = step
-            callbacks.distillation_progress(step, config.num_steps)
+            if callbacks is not None:
+                callbacks.distillation_progress(step, config.num_steps)
 
             should_save_checkpoint = config.checkpoint_every_steps > 0 and step % config.checkpoint_every_steps == 0
             if config.save_checkpoints and (should_save_checkpoint or stopped_early):
@@ -915,7 +893,13 @@ def distill(
             )
             optimizer_state = best_checkpoint.optimizer_state
         else:
-            optimizer_state = best_optimizer_state
+            optimizer_state = replace(
+                optimizer_state,
+                training_state=replace(
+                    optimizer_state.training_state,
+                    master_weights=best_master_weights,
+                ),
+            )
 
     # Final evaluation and export
     final_student = materialize_trainable_module(
@@ -923,7 +907,12 @@ def distill(
         optimizer_state.training_state.master_weights,
         distill_config,
     )
-    final_eval = evaluate_model(final_student)
+    final_eval = _evaluate_with(
+        config.training_mode,
+        final_student,
+        teacher_model.model,
+        dataset.eval_batches,
+    )
     update_best(completed_steps, final_eval.kl_divergence)
 
     model_output_path = config.output_dir / "student-distilled"
@@ -936,14 +925,16 @@ def distill(
         optimizer_state.training_state.master_weights,
         export_config,
     )
-    callbacks.saving_model()
+    if callbacks is not None:
+        callbacks.saving_model()
     _save_materialized_student(
         config.student_path,
         model_output_path,
         student_model,
         export_student,
     )
-    callbacks.finished_saving_model(model_output_path)
+    if callbacks is not None:
+        callbacks.finished_saving_model(model_output_path)
 
     result = DistillResult(
         teacher_path=str(config.teacher_path),
@@ -979,5 +970,6 @@ def distill(
     with (config.output_dir / "metrics.json").open("w") as metrics_file:
         json.dump(asdict(result), metrics_file, indent=4)
 
-    callbacks.finished(result)
+    if callbacks is not None:
+        callbacks.finished(result)
     return result

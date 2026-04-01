@@ -1,23 +1,39 @@
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
+from typing import TypeVar
 
 import equinox as eqx
 import jax
 import jax.sharding as shd
-from jax.tree import leaves_with_path
-from jax.tree_util import keystr
-from jaxtyping import PyTree
+import jax.tree_util as jtu
 
 from lalamo.modules.common import (
     FieldMetadataInfo,
     ShardingConfig,
+    _field_info_at_path,
     _is_leaf_array,
-    field_metadata_by_leaf_id,
     get_current_sharding_config,
 )
 
 __all__ = [
     "load_parameters",
 ]
+
+
+SelectedTree = TypeVar("SelectedTree")
+
+
+def _abstract_signature(tree: object) -> object:
+    return jax.tree.map(
+        lambda leaf: (
+            None
+            if leaf is None
+            else jax.ShapeDtypeStruct(leaf.shape, leaf.dtype)
+            if _is_leaf_array(leaf)
+            else type(leaf)
+        ),
+        tree,
+        is_leaf=lambda leaf: leaf is None or _is_leaf_array(leaf),
+    )
 
 
 def _apply_parameter_sharding(
@@ -61,43 +77,38 @@ def _apply_parameter_sharding(
 
 
 def load_parameters[M: eqx.Module](
-    selector: Callable[[M], Iterable[PyTree]],
+    selector: Callable[[M], SelectedTree],
     module: M,
-    new_values: Iterable[PyTree],
+    new_values: SelectedTree,
 ) -> M:
-    old_values = list(selector(module))
-    new_values = list(new_values)
+    old_values = selector(module)
     sharding_config = get_current_sharding_config()
-    metadata_by_leaf_id = field_metadata_by_leaf_id(module) if sharding_config is not None else None
-    leaf_names_by_id = {id(value): f"~{keystr(path)}" for path, value in leaves_with_path(module)}
-    casted_new_values: list[PyTree] = []
 
-    for old_value, incoming_value in zip(old_values, new_values, strict=True):
-        leaf_name = leaf_names_by_id.get(id(old_value), "<selected leaf>")
-        if _is_leaf_array(old_value) and eqx.is_array(incoming_value):
-            if old_value.shape != incoming_value.shape:
-                raise ValueError(
-                    f"Expected parameter {module}.{leaf_name} to have shape {old_value.shape},"
-                    f" got {incoming_value.shape}",
-                )
-            if old_value.dtype != incoming_value.dtype:
-                raise ValueError(
-                    f"Expected parameter {module}.{leaf_name} to have dtype {old_value.dtype},"
-                    f" got {incoming_value.dtype}",
-                )
-            loaded_value = incoming_value
-            if sharding_config is not None:
-                assert metadata_by_leaf_id is not None
-                field_info = metadata_by_leaf_id.get(id(old_value))
-                assert field_info is not None, f"Missing field metadata for sharded parameter {leaf_name}"
-                loaded_value = _apply_parameter_sharding(
-                    loaded_value,
-                    field_info,
-                    sharding_config,
-                )
-            casted_new_values.append(loaded_value)
-            continue
-        if type(old_value) is not type(incoming_value):
-            raise TypeError(f"Expected parameter of type {type(old_value)}, got {type(incoming_value)}")
-        casted_new_values.append(incoming_value)
-    return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)
+    if _abstract_signature(old_values) != _abstract_signature(new_values):
+        raise ValueError("load_parameters replacement must preserve the selected parameter structure")
+
+    if sharding_config is None:
+        return eqx.tree_at(selector, module, new_values)
+
+    def metadata_at(path: tuple[object, ...], leaf: object) -> FieldMetadataInfo | None:
+        if not _is_leaf_array(leaf):
+            return None
+        return _field_info_at_path(module, path)
+
+    metadata = selector(jtu.tree_map_with_path(metadata_at, module, is_leaf=lambda leaf: leaf is None))
+
+    def shard_value(old_value: object, incoming_value: object, field_info: FieldMetadataInfo | None) -> object:
+        if not _is_leaf_array(old_value):
+            return incoming_value
+        assert isinstance(field_info, FieldMetadataInfo)
+        assert eqx.is_array(incoming_value)
+        return _apply_parameter_sharding(incoming_value, field_info, sharding_config)
+
+    loaded_values = jax.tree.map(
+        shard_value,
+        old_values,
+        new_values,
+        metadata,
+        is_leaf=lambda leaf: leaf is None or _is_leaf_array(leaf) or isinstance(leaf, FieldMetadataInfo),
+    )
+    return eqx.tree_at(selector, module, loaded_values)

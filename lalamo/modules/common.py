@@ -35,7 +35,6 @@ __all__ = [
     "combine_parameter_leaves",
     "config_converter",
     "field",
-    "field_metadata_by_leaf_id",
     "get_current_sharding_config",
     "iter_parameter_leaves",
     "pad_and_apply_data_sharding",
@@ -298,145 +297,78 @@ class ParameterLeafInfo:
     quantization_mode: QuantizationMode | None
     tensor_sharding: TensorSharding | None
     min_size_to_shard: int
-    alias_of: str | None
-
-
-@dataclass(frozen=True)
-class _ParameterLeafEntry:
-    leaf: Array | jax.ShapeDtypeStruct
-    canonical_index: int
-    info: ParameterLeafInfo
-
-
-@dataclass(frozen=True)
-class _FieldValueEntry:
-    path: tuple[Any, ...]
-    value: Any
-    owner: eqx.Module
-    field: dataclasses.Field
 
 
 def _is_leaf_array(leaf: Any) -> bool:  # noqa: ANN401
     return eqx.is_array(leaf) or isinstance(leaf, jax.ShapeDtypeStruct)
 
 
-def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
-    entries: list[_FieldValueEntry] = []
+def _field_info_at_path(module: eqx.Module, path: tuple[Any, ...]) -> FieldMetadataInfo:
+    current: Any = module
+    owner: eqx.Module | None = None
+    owner_field: dataclasses.Field | None = None
 
-    def visit(value: Any, *, owner: eqx.Module, field: dataclasses.Field, path: tuple[Any, ...]) -> None:  # noqa: ANN401
-        if field.metadata.get("static", False):
-            return
-        if isinstance(value, eqx.Module):
-            for child_field in dataclasses.fields(value):
-                visit(
-                    getattr(value, child_field.name),
-                    owner=value,
-                    field=child_field,
-                    path=(*path, jtu.GetAttrKey(child_field.name)),
-                )
-            return
-        if isinstance(value, tuple | list):
-            for index, item in enumerate(value):
-                visit(item, owner=owner, field=field, path=(*path, jtu.SequenceKey(index)))
-            return
-        if isinstance(value, dict):
-            for key in sorted(value):
-                item = value[key]
-                visit(item, owner=owner, field=field, path=(*path, jtu.DictKey(key)))
-            return
-        if not _is_leaf_array(value):
-            return
-        entries.append(_FieldValueEntry(path=path, value=value, owner=owner, field=field))
+    for key in path:
+        if isinstance(key, jtu.GetAttrKey):
+            assert isinstance(current, eqx.Module)
+            owner = current
+            owner_field = next(field for field in dataclasses.fields(current) if field.name == key.name)
+            current = getattr(current, key.name)
+            continue
+        if isinstance(key, jtu.SequenceKey):
+            current = current[key.idx]
+            continue
+        if isinstance(key, jtu.DictKey):
+            current = current[key.key]
+            continue
+        raise TypeError(f"Unexpected pytree key {key} at {keystr(path)}")
 
-    for field in dataclasses.fields(module):
-        visit(
-            getattr(module, field.name),
-            owner=module,
-            field=field,
-            path=(jtu.GetAttrKey(field.name),),
+    assert owner is not None
+    assert owner_field is not None
+    return FieldMetadataInfo(owner=owner, field=owner_field)
+
+
+def _parameter_arrays_with_metadata(
+    module: eqx.Module,
+) -> list[tuple[str, Array | jax.ShapeDtypeStruct, FieldMetadataInfo]]:
+    results: list[tuple[str, Array | jax.ShapeDtypeStruct, FieldMetadataInfo]] = []
+    seen_leaf_paths: dict[int, str] = {}
+
+    for path, leaf in jtu.tree_flatten_with_path(module, is_leaf=lambda leaf: leaf is None)[0]:
+        if not _is_leaf_array(leaf):
+            continue
+        path_str = keystr(path).lstrip(".")
+        previous_path = seen_leaf_paths.setdefault(id(leaf), path_str)
+        assert previous_path == path_str, (
+            f"Shared parameter leaf {path_str} is not supported; "
+            f"make shared parameters explicit (already seen at {previous_path})"
         )
-    return entries
-
-
-def field_metadata_by_leaf_id(module: eqx.Module) -> dict[int, FieldMetadataInfo]:
-    field_metadata: dict[int, FieldMetadataInfo] = {}
-    for entry in _field_value_entries(module):
-        field_metadata.setdefault(id(entry.value), FieldMetadataInfo(owner=entry.owner, field=entry.field))
-    return field_metadata
-
-
-def _infer_quantization_mode(owner: eqx.Module) -> QuantizationMode | None:
-    config = getattr(owner, "config", None)
-    if config is None:
-        return None
-
-    for field_name in ("weight_quantization_mode", "embedding_quantization_mode"):
-        mode = getattr(config, field_name, None)
-        if isinstance(mode, QuantizationMode):
-            return mode
-    return None
-
-
-def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
-    canonical_by_leaf_id: dict[int, tuple[int, str]] = {}
-    results: list[_ParameterLeafEntry] = []
-
-    for entry in _field_value_entries(module):
-        leaf = entry.value
-        metadata = entry.field.metadata
-        path = keystr(entry.path).lstrip(".")
-        quantized = metadata.get("quantized", False)
-
-        leaf_key = id(leaf)
-        canonical_entry = canonical_by_leaf_id.get(leaf_key)
-        if canonical_entry is None:
-            canonical_index = len(canonical_by_leaf_id)
-            canonical_by_leaf_id[leaf_key] = (canonical_index, path)
-            alias_of = None
-        else:
-            canonical_index, alias_of = canonical_entry
-
-        results.append(
-            _ParameterLeafEntry(
-                leaf=leaf,
-                canonical_index=canonical_index,
-                info=ParameterLeafInfo(
-                    path=path,
-                    owner_type=type(entry.owner),
-                    field_name=entry.field.name,
-                    shape=tuple(leaf.shape),
-                    dtype=jnp.dtype(leaf.dtype),
-                    trainable=metadata.get("trainable", True),
-                    norm=metadata.get("norm", ParameterNorm.SPECTRAL),
-                    quantized=quantized,
-                    quantization_mode=_infer_quantization_mode(entry.owner) if quantized else None,
-                    tensor_sharding=metadata.get("tensor_sharding"),
-                    min_size_to_shard=metadata.get("min_size_to_shard", 0),
-                    alias_of=alias_of,
-                ),
-            ),
-        )
+        results.append((path_str, leaf, _field_info_at_path(module, path)))
 
     return results
 
 
 def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
-    return [entry.info for entry in _parameter_leaf_entries(module)]
-
-
-def _entries_by_flat_index(
-    flat_leaves: list[object],
-    entries: list[_ParameterLeafEntry],
-) -> list[_ParameterLeafEntry | None]:
-    entry_iterator = iter(entries)
-    entries_by_flat_index: list[_ParameterLeafEntry | None] = []
-    for leaf in flat_leaves:
-        if not _is_leaf_array(leaf):
-            entries_by_flat_index.append(None)
-            continue
-        entries_by_flat_index.append(next(entry_iterator))
-    assert next(entry_iterator, None) is None
-    return entries_by_flat_index
+    results: list[ParameterLeafInfo] = []
+    for path, leaf, field_info in _parameter_arrays_with_metadata(module):
+        metadata = field_info.field.metadata
+        quantized = metadata.get("quantized", False)
+        results.append(
+            ParameterLeafInfo(
+                path=path,
+                owner_type=type(field_info.owner),
+                field_name=field_info.field.name,
+                shape=tuple(leaf.shape),
+                dtype=jnp.dtype(leaf.dtype),
+                trainable=metadata.get("trainable", True),
+                norm=metadata.get("norm", ParameterNorm.SPECTRAL),
+                quantized=quantized,
+                quantization_mode=field_info.owner.config.quantization if quantized else None,
+                tensor_sharding=metadata.get("tensor_sharding"),
+                min_size_to_shard=metadata.get("min_size_to_shard", 0),
+            )
+        )
+    return results
 
 
 def partition_parameter_leaves[M: eqx.Module, LeafT](
@@ -444,63 +376,29 @@ def partition_parameter_leaves[M: eqx.Module, LeafT](
     predicate: Callable[[ParameterLeafInfo], bool],
     mapper: Callable[[Array | jax.ShapeDtypeStruct, ParameterLeafInfo], LeafT],
 ) -> M:
-    entries = _parameter_leaf_entries(module)
-    flat_leaves, treedef = jtu.tree_flatten(module, is_leaf=lambda leaf: leaf is None)
-    if not entries:
-        return jtu.tree_unflatten(treedef, [None] * len(flat_leaves))
-    entries_by_flat_index = _entries_by_flat_index(flat_leaves, entries)
+    info_by_path = {info.path: info for info in iter_parameter_leaves(module)}
 
-    selected_by_canonical_index: list[LeafT | None] = [None] * (max(entry.canonical_index for entry in entries) + 1)
-    for entry in entries:
-        if entry.info.alias_of is not None or not predicate(entry.info):
-            continue
-        selected_by_canonical_index[entry.canonical_index] = mapper(entry.leaf, entry.info)
+    def select(path: tuple[Any, ...], leaf: Any) -> LeafT | None:  # noqa: ANN401
+        if not _is_leaf_array(leaf):
+            return None
+        info = info_by_path[keystr(path).lstrip(".")]
+        if not predicate(info):
+            return None
+        return mapper(leaf, info)
 
-    partitioned_leaves: list[object] = []
-    for entry in entries_by_flat_index:
-        if entry is None:
-            partitioned_leaves.append(None)
-            continue
-        partitioned_leaves.append(
-            None if entry.info.alias_of is not None else selected_by_canonical_index[entry.canonical_index],
-        )
-    return jtu.tree_unflatten(treedef, partitioned_leaves)
+    return jtu.tree_map_with_path(
+        select,
+        module,
+        is_leaf=lambda leaf: leaf is None,
+    )
 
 
 def combine_parameter_leaves[M: eqx.Module](
     module: M,
     replacements: M,
 ) -> M:
-    entries = _parameter_leaf_entries(module)
-    if not entries:
-        return module
-
-    flat_leaves, treedef = jtu.tree_flatten(module, is_leaf=lambda leaf: leaf is None)
-    replacement_leaves, replacement_treedef = jtu.tree_flatten(replacements, is_leaf=lambda leaf: leaf is None)
-    assert replacement_treedef == treedef
-    entries_by_flat_index = _entries_by_flat_index(flat_leaves, entries)
-
-    replacement_by_canonical_index: list[object | None] = [None] * (
-        max(entry.canonical_index for entry in entries) + 1
-    )
-    for entry, replacement in zip(entries_by_flat_index, replacement_leaves, strict=True):
-        if entry is None:
-            continue
-        if replacement is None or entry.info.alias_of is not None:
-            continue
-        replacement_by_canonical_index[entry.canonical_index] = replacement
-
-    if all(replacement is None for replacement in replacement_by_canonical_index):
-        return module
-
-    combined_leaves: list[object] = []
-    for leaf, entry in zip(flat_leaves, entries_by_flat_index, strict=True):
-        if entry is None:
-            combined_leaves.append(leaf)
-            continue
-        replacement = replacement_by_canonical_index[entry.canonical_index]
-        combined_leaves.append(leaf if replacement is None else replacement)
-    return jtu.tree_unflatten(treedef, combined_leaves)
+    iter_parameter_leaves(module)
+    return eqx.combine(replacements, module)
 
 
 def field(

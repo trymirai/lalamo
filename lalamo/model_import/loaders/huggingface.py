@@ -263,7 +263,7 @@ def load_linear(
 
     if isinstance(module, MLXQuantizedLinear):
         reorder_tuple = (reorder, 0) if reorder is not None else None
-        qweights, deq_biases, scales = _fuse_quantized_weights(
+        qweights, offsets, scales = _fuse_quantized_weights(
             weights_dict,
             path,
             sublayers_to_fuse,
@@ -290,12 +290,12 @@ def load_linear(
             None,
         )
         scales = scales.astype(activation_precision)
-        deq_biases = deq_biases.astype(activation_precision)
+        offsets = offsets.astype(activation_precision)
 
         return load_parameters(
-            lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
+            lambda m: (m.weights, m.scales, m.offsets, m.biases),
             module,
-            (weights, scales, deq_biases, bias),
+            (weights, scales, offsets, bias),
         )
 
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
@@ -823,18 +823,18 @@ def load_delta_net_attention(
                 for bp, perm in projection_branches
             ]
             fused_qweights = jnp.concatenate([qw for qw, _, _ in per_branch], axis=0)
-            fused_deq_biases = jnp.concatenate([db for _, db, _ in per_branch], axis=0)
+            fused_offsets = jnp.concatenate([offsets for _, offsets, _ in per_branch], axis=0)
             fused_scales = jnp.concatenate([s for _, _, s in per_branch], axis=0)
 
             weight_quantization = module.in_proj.config.weight_quantization_mode
             activation_precision = module.in_proj.activation_precision
             weights = _process_quantized_tensor(fused_qweights, weight_quantization, activation_precision, None)
             scales = fused_scales.astype(activation_precision)
-            deq_biases = fused_deq_biases.astype(activation_precision)
+            offsets = fused_offsets.astype(activation_precision)
             in_proj = load_parameters(
-                lambda m: (m.weights, m.scales, m.deq_biases, m.biases),
+                lambda m: (m.weights, m.scales, m.offsets, m.biases),
                 module.in_proj,
-                (weights, scales, deq_biases, None),
+                (weights, scales, offsets, None),
             )
         else:
             raise TypeError(f"Unsupported DeltaNetAttention in_proj type: {type(module.in_proj)}")

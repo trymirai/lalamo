@@ -104,7 +104,7 @@ def test_mlx_tied_embedding_import_weights_rejects_wrong_packed_dtype() -> None:
     )
     exported_weights = embedding.export_weights()
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         embedding.import_weights(
             {
                 **exported_weights,
@@ -120,7 +120,7 @@ def test_untied_embedding_import_weights_rejects_shape_changes() -> None:
         precision=jnp.float32,
     ).empty(vocab_size=4, model_dim=4)
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         embedding.import_weights(
             {
                 "input_weights": jnp.ones((4, 3), dtype=jnp.float32),
@@ -159,7 +159,7 @@ def test_mlx_untied_embedding_import_weights_rejects_wrong_packed_dtype() -> Non
     )
     exported_weights = embedding.export_weights()
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         embedding.import_weights(
             {
                 **exported_weights,
@@ -194,7 +194,7 @@ def test_mlx_semi_quantized_embedding_import_weights_rejects_wrong_packed_dtype(
     )
     exported_weights = embedding.export_weights()
 
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         embedding.import_weights(
             {
                 **exported_weights,

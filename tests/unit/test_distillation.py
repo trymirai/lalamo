@@ -1,10 +1,8 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import jax.tree_util as jtu
 import optax
 import pytest
-from jax.tree_util import keystr
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
@@ -23,14 +21,19 @@ from lalamo.distillation import (
     materialize_trainable_module,
 )
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.modules.common import field, iter_parameter_leaves
+from lalamo.modules.common import config_converter, field, iter_parameter_leaves
 from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import (
     GroupQuantizedLinearConfig,
+    LinearConfig,
     MLXQuantizedLinearConfig,
-    QLoRALinearConfig,
 )
 from lalamo.quantization import QuantizationMode
+
+requires_muon_dimension_numbers = pytest.mark.skipif(
+    not hasattr(optax.contrib, "MuonDimensionNumbers"),
+    reason="optax.contrib.MuonDimensionNumbers is not available in this test environment",
+)
 
 
 class AliasModule(eqx.Module):
@@ -48,103 +51,12 @@ def _make_optimizer_state(
     )
 
 
-def _leaf_by_path(tree: object) -> dict[str, object]:
-    flat_with_path, _ = jtu.tree_flatten_with_path(
-        tree,
-        is_leaf=lambda leaf: leaf is None or isinstance(leaf, optax.contrib.MuonDimensionNumbers),
-    )
-    return {keystr(path).lstrip("."): leaf for path, leaf in flat_with_path}
-
-
-def _selected_leaf_by_path(tree: object) -> dict[str, object]:
-    return {path: leaf for path, leaf in _leaf_by_path(tree).items() if leaf is not None}
-
-
-def test_initialize_distill_training_state_dedupes_alias_masters() -> None:
+def test_iter_parameter_leaves_rejects_shared_leaf_identity() -> None:
     shared = jnp.ones((2, 2), dtype=jnp.float32)
     module = AliasModule(left=shared, right=shared)
 
-    state = initialize_distill_training_state(
-        module,
-        DistillTrainConfig(compute_dtype=jnp.bfloat16),
-    )
-
-    master_weights = _selected_leaf_by_path(state.master_weights)
-    assert set(master_weights) == {"left"}
-    assert master_weights["left"].dtype == jnp.float32
-
-    materialized = materialize_trainable_module(
-        module,
-        state.master_weights,
-        DistillTrainConfig(compute_dtype=jnp.bfloat16),
-    )
-    materialized_leaves = iter_parameter_leaves(materialized)
-
-    assert materialized.left.dtype == jnp.bfloat16
-    assert materialized.right.dtype == jnp.bfloat16
-    assert materialized_leaves[1].alias_of == "left"
-
-
-def test_group_quantized_linear_import_weights_accepts_legacy_rht_inner_linear_key() -> None:
-    config = GroupQuantizedLinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-    )
-    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(28))
-    exported_weights = layer.export_weights()
-    imported_layer = layer.import_weights({"inner_linear": exported_weights})
-    imported_weights = imported_layer.export_weights()
-
-    assert jnp.array_equal(imported_weights["weights"], exported_weights["weights"])
-    assert jnp.array_equal(imported_weights["zero_points"], exported_weights["zero_points"])
-    assert jnp.array_equal(imported_weights["scales"], exported_weights["scales"])
-
-
-def test_q_lora_import_weights_accepts_legacy_rht_inner_linear_key() -> None:
-    config = QLoRALinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-        lora_rank=2,
-        lora_scale=1.0,
-    )
-    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(29))
-    exported_weights = layer.export_weights()
-    imported_layer = layer.import_weights({"inner_linear": exported_weights})
-    imported_weights = imported_layer.export_weights()
-
-    assert jnp.array_equal(imported_weights["weights"], exported_weights["weights"])
-    assert jnp.array_equal(imported_weights["zero_points"], exported_weights["zero_points"])
-    assert jnp.array_equal(imported_weights["scales"], exported_weights["scales"])
-    assert jnp.array_equal(imported_weights["down_weights"], exported_weights["down_weights"])
-    assert jnp.array_equal(imported_weights["up_weights"], exported_weights["up_weights"])
-
-
-def test_q_lora_import_weights_accepts_legacy_split_up_weights() -> None:
-    config = QLoRALinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-        lora_rank=2,
-        lora_scale=1.0,
-    )
-    layer = config.random_init(4, (3, 5), has_biases=True, key=jax.random.key(30))
-    exported_weights = layer.export_weights()
-    imported_layer = layer.import_weights(
-        {
-            **exported_weights,
-            "up_weights": (
-                jnp.swapaxes(exported_weights["up_weights"][:3], -1, -2),
-                jnp.swapaxes(exported_weights["up_weights"][3:], -1, -2),
-            ),
-        }
-    )
-
-    assert jnp.array_equal(imported_layer.lora_up_weights, layer.lora_up_weights)
+    with pytest.raises(AssertionError, match="Shared parameter leaf"):
+        iter_parameter_leaves(module)
 
 
 def test_mlx_quantized_linear_random_init_stays_zero_centered() -> None:
@@ -162,6 +74,44 @@ def test_mlx_quantized_linear_random_init_stays_zero_centered() -> None:
     assert float(prepared_weights.min()) < 0.0
     assert float(prepared_weights.max()) > 0.0
     assert abs(float(prepared_weights.mean())) < 0.2
+
+
+def test_mlx_quantized_linear_import_weights_accepts_wrapped_saved_params() -> None:
+    layer = MLXQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (8,), has_biases=False, key=jax.random.key(7))
+
+    exported = layer.export_weights()
+    assert "deq_biases" in exported
+
+    loaded = layer.import_weights({"inner_linear": exported})
+
+    assert loaded.export_weights().keys() == exported.keys()
+    for key in exported:
+        assert jnp.array_equal(exported[key], loaded.export_weights()[key])
+
+
+def test_linear_config_structure_accepts_wrapped_inner_config() -> None:
+    config = config_converter.structure(
+        {
+            "type": "RHTLinearWrapperConfig",
+            "block_size": 32,
+            "inner_config": {
+                "type": "GroupQuantizedLinearConfig",
+                "group_size": 32,
+                "weight_quantization_mode": "uint4",
+                "activation_quantization_mode": None,
+                "activation_precision": "bfloat16",
+            },
+        },
+        LinearConfig,
+    )
+
+    assert isinstance(config, GroupQuantizedLinearConfig)
+    assert config.weight_quantization_mode == QuantizationMode.UINT4
 
 
 _TINY_LLAMA_CONFIG = HFLlamaConfig(
@@ -360,6 +310,7 @@ def test_compute_trace_distill_batch_metrics_handles_padded_completion_steps() -
     assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
+@requires_muon_dimension_numbers
 def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(10))
     student = eqx.tree_at(
@@ -389,6 +340,7 @@ def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
             teacher,
             batch,
             config,
+            QuantizationMode.UINT4,
         )
         optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
 
@@ -402,6 +354,7 @@ def test_repeated_distill_step_gradients_reduce_tiny_llama_loss() -> None:
     assert final_metrics.loss < initial_metrics.loss * 0.5
 
 
+@requires_muon_dimension_numbers
 def test_repeated_trace_distill_step_gradients_reduce_trace_loss() -> None:
     teacher = _make_tiny_llama_decoder(key=jax.random.key(16))
     student = eqx.tree_at(
@@ -426,6 +379,7 @@ def test_repeated_trace_distill_step_gradients_reduce_trace_loss() -> None:
             student,
             trace_batch,
             config,
+            QuantizationMode.UINT4,
         )
         optimizer_state = apply_distill_gradients(optimizer_state, optimizer, grads)
 

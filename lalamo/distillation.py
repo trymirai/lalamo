@@ -1,4 +1,3 @@
-import dataclasses
 import math
 from collections import defaultdict
 from collections.abc import Callable, Sequence
@@ -40,6 +39,7 @@ __all__ = [
     "OptimizerGroup",
     "TraceDistillBatch",
     "apply_distill_gradients",
+    "apply_donated_distill_gradients",
     "compute_distill_batch_metrics",
     "compute_distill_step_gradients",
     "compute_trace_distill_batch_metrics",
@@ -48,7 +48,6 @@ __all__ = [
     "initialize_distill_training_state",
     "inject_lora_adapter_configs",
     "inject_lora_adapters",
-    "is_leaf_trainable",
     "lora_trainable_filter",
     "make_trace_distill_batch",
     "materialize_trainable_module",
@@ -106,12 +105,8 @@ class TraceDistillBatch(eqx.Module):
     support_mask: Bool[Array, "batch completion_tokens support"]
 
 
-def is_leaf_trainable(info: ParameterLeafInfo) -> bool:
-    return info.alias_of is None and info.trainable
-
-
 def get_optimizer_group(info: ParameterLeafInfo) -> OptimizerGroup:
-    if not is_leaf_trainable(info):
+    if not info.trainable:
         return OptimizerGroup.FROZEN
     if info.norm == ParameterNorm.SPECTRAL and len(info.shape) == 2:
         return OptimizerGroup.MUON
@@ -133,7 +128,14 @@ def _inject_qlora_linear(
     lora_scale: float,
     key: Key[Array, ""],
 ) -> QLoRALinear:
-    qlora_config = _make_qlora_config(linear.config, lora_rank, lora_scale)
+    qlora_config = QLoRALinearConfig(
+        group_size=linear.config.group_size,
+        weight_quantization_mode=linear.config.weight_quantization_mode,
+        activation_quantization_mode=linear.config.activation_quantization_mode,
+        activation_precision=linear.config.activation_precision,
+        lora_rank=lora_rank,
+        lora_scale=lora_scale,
+    )
 
     leading_dims = linear.weights.shape[:-2]
     max_down_abs_value = 1 / math.sqrt(linear.input_dim)
@@ -165,35 +167,8 @@ def _is_replaceable_quantized_linear(leaf: Any) -> bool:  # noqa: ANN401
     return isinstance(leaf, GroupQuantizedLinear) and not isinstance(leaf, QLoRALinear)
 
 
-def _make_qlora_config(
-    config: GroupQuantizedLinearConfig,
-    lora_rank: int,
-    lora_scale: float,
-) -> QLoRALinearConfig:
-    return QLoRALinearConfig(
-        **{field.name: getattr(config, field.name) for field in dataclasses.fields(config)},
-        lora_rank=lora_rank,
-        lora_scale=lora_scale,
-    )
-
-
-def _rewrite_config_tree(config: object, rewrite: Callable[[object], object]) -> object:
-    rewritten = rewrite(config)
-    if rewritten is not config:
-        return rewritten
-    if dataclasses.is_dataclass(config):
-        return dataclasses.replace(
-            cast("Any", config),
-            **{
-                field.name: _rewrite_config_tree(getattr(config, field.name), rewrite)
-                for field in dataclasses.fields(config)
-            },
-        )
-    if isinstance(config, tuple):
-        return tuple(_rewrite_config_tree(item, rewrite) for item in config)
-    if isinstance(config, list):
-        return [_rewrite_config_tree(item, rewrite) for item in config]
-    return config
+def _is_replaceable_quantized_linear_config(leaf: Any) -> bool:  # noqa: ANN401
+    return isinstance(leaf, GroupQuantizedLinearConfig) and not isinstance(leaf, QLoRALinearConfig)
 
 
 def inject_lora_adapters[M: eqx.Module](
@@ -202,38 +177,23 @@ def inject_lora_adapters[M: eqx.Module](
     lora_scale: float,
     key: Key[Array, ""],
 ) -> M:
-    quantized_linears = [
-        leaf
+    replaceable_count = sum(
+        _is_replaceable_quantized_linear(leaf)
         for leaf in jtu.tree_leaves(module, is_leaf=_is_replaceable_quantized_linear)
-        if _is_replaceable_quantized_linear(leaf)
-    ]
-    if not quantized_linears:
+    )
+    if replaceable_count == 0:
         return module
 
-    flat_module, treedef = jtu.tree_flatten(module, is_leaf=_is_replaceable_quantized_linear)
-    split_keys = tuple(jax.random.split(key, len(quantized_linears)))
-    key_index = 0
-    lora_key_leaves: list[Key[Array, ""] | None] = []
-    for leaf in flat_module:
-        if not _is_replaceable_quantized_linear(leaf):
-            lora_key_leaves.append(None)
-            continue
-        lora_key_leaves.append(split_keys[key_index])
-        key_index += 1
-    lora_keys = jtu.tree_unflatten(
-        treedef,
-        lora_key_leaves,
-    )
-    assert key_index == len(split_keys)
-
-    return jax.tree.map(
-        lambda leaf, lora_key: leaf
-        if lora_key is None
-        else _inject_qlora_linear(leaf, lora_rank, lora_scale, lora_key),
+    lora_keys = iter(jax.random.split(key, replaceable_count))
+    adapted_module = jtu.tree_map(
+        lambda leaf: leaf
+        if not _is_replaceable_quantized_linear(leaf)
+        else _inject_qlora_linear(leaf, lora_rank, lora_scale, next(lora_keys)),
         module,
-        lora_keys,
         is_leaf=_is_replaceable_quantized_linear,
     )
+    assert next(lora_keys, None) is None
+    return adapted_module
 
 
 def inject_lora_adapter_configs[C](
@@ -243,11 +203,19 @@ def inject_lora_adapter_configs[C](
 ) -> C:
     return cast(
         "C",
-        _rewrite_config_tree(
+        jtu.tree_map(
+            lambda leaf: leaf
+            if not _is_replaceable_quantized_linear_config(leaf)
+            else QLoRALinearConfig(
+                group_size=leaf.group_size,
+                weight_quantization_mode=leaf.weight_quantization_mode,
+                activation_quantization_mode=leaf.activation_quantization_mode,
+                activation_precision=leaf.activation_precision,
+                lora_rank=lora_rank,
+                lora_scale=lora_scale,
+            ),
             config,
-            lambda node: _make_qlora_config(node, lora_rank, lora_scale)
-            if isinstance(node, GroupQuantizedLinearConfig) and not isinstance(node, QLoRALinearConfig)
-            else node,
+            is_leaf=_is_replaceable_quantized_linear_config,
         ),
     )
 
@@ -266,12 +234,9 @@ def summarize_distill_parameters(
     total_master_bytes = 0
 
     for info in leaves:
-        if info.alias_of is not None:
-            continue
-
         parameter_count = math.prod(info.shape)
         total_parameters += parameter_count
-        if is_leaf_trainable(info) and (trainable_filter is None or trainable_filter(info)):
+        if info.trainable and (trainable_filter is None or trainable_filter(info)):
             by_group[get_optimizer_group(info)] += parameter_count
             trainable_parameters += parameter_count
             total_master_bytes += parameter_count * master_dtype.itemsize
@@ -295,18 +260,29 @@ def initialize_distill_training_state(
     master_dtype = jnp.dtype(config.master_dtype)
     muon_dims = optax.contrib.MuonDimensionNumbers(reduction_axis=1, output_axis=0)
 
-    def should_train(info: ParameterLeafInfo) -> bool:
-        return is_leaf_trainable(info) and (trainable_filter is None or trainable_filter(info))
+    if trainable_filter is None:
+        return DistillTrainingState(
+            master_weights=partition_parameter_leaves(
+                module,
+                lambda info: info.trainable,
+                lambda leaf, _info: _cast_array_like(leaf, master_dtype),
+            ),
+            muon_weight_dimension_numbers=partition_parameter_leaves(
+                module,
+                lambda info: info.trainable,
+                lambda _leaf, info: muon_dims if get_optimizer_group(info) == OptimizerGroup.MUON else None,
+            ),
+        )
 
     return DistillTrainingState(
         master_weights=partition_parameter_leaves(
             module,
-            should_train,
+            lambda info: info.trainable and trainable_filter(info),
             lambda leaf, _info: _cast_array_like(leaf, master_dtype),
         ),
         muon_weight_dimension_numbers=partition_parameter_leaves(
             module,
-            should_train,
+            lambda info: info.trainable and trainable_filter(info),
             lambda _leaf, info: muon_dims if get_optimizer_group(info) == OptimizerGroup.MUON else None,
         ),
     )
@@ -336,30 +312,28 @@ def stochastically_quantize_module[M: eqx.Module](
         lambda info: info.quantized,
         lambda leaf, _info: leaf,
     )
-    quantized_leaves = [
-        leaf
+    quantized_count = sum(
+        leaf is not None
         for leaf in jtu.tree_leaves(
             quantized_weights,
             is_leaf=lambda leaf: leaf is None,
         )
-        if leaf is not None
-    ]
-    if not quantized_leaves:
+    )
+    if quantized_count == 0:
         return module
 
-    flat_quantized_weights, treedef = jtu.tree_flatten(quantized_weights, is_leaf=lambda leaf: leaf is None)
-    quantization_keys = jtu.tree_unflatten(treedef, jax.random.split(key, len(flat_quantized_weights)))
-    quantized_weights = jax.tree.map(
-        lambda leaf, quantization_key: None
+    quantization_keys = iter(jax.random.split(key, quantized_count))
+    quantized_weights = jtu.tree_map(
+        lambda leaf: None
         if leaf is None
         else leaf
         + jax.lax.stop_gradient(
-            stochastic_quantize_weights(leaf, quantization_mode, quantization_key) - leaf,
+            stochastic_quantize_weights(leaf, quantization_mode, next(quantization_keys)) - leaf,
         ),
         quantized_weights,
-        quantization_keys,
         is_leaf=lambda leaf: leaf is None,
     )
+    assert next(quantization_keys, None) is None
     return combine_parameter_leaves(module, quantized_weights)
 
 
@@ -538,13 +512,13 @@ def compute_distill_step_gradients(
     teacher: Decoder,
     batch: DistillBatch,
     config: DistillTrainConfig,
+    quantization_mode: QuantizationMode,
     *,
     quantization_key: Key[Array, ""] | None = None,
-    quantization_mode: QuantizationMode | None = None,
 ) -> tuple[Any, DistillBatchMetrics]:
     def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
         materialized_student = materialize_trainable_module(student, master_weights, config)
-        if quantization_key is not None and quantization_mode is not None:
+        if quantization_key is not None:
             materialized_student = stochastically_quantize_module(
                 materialized_student,
                 quantization_mode,
@@ -563,13 +537,13 @@ def compute_trace_distill_step_gradients(
     student: Decoder,
     batch: TraceDistillBatch,
     config: DistillTrainConfig,
+    quantization_mode: QuantizationMode,
     *,
     quantization_key: Key[Array, ""] | None = None,
-    quantization_mode: QuantizationMode | None = None,
 ) -> tuple[Any, DistillBatchMetrics]:
     def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
         materialized_student = materialize_trainable_module(student, master_weights, config)
-        if quantization_key is not None and quantization_mode is not None:
+        if quantization_key is not None:
             materialized_student = stochastically_quantize_module(
                 materialized_student,
                 quantization_mode,
@@ -582,7 +556,6 @@ def compute_trace_distill_step_gradients(
     return grads, metrics
 
 
-@eqx.filter_jit
 def apply_distill_gradients(
     optimizer_state: DistillOptimizerState,
     optimizer: optax.GradientTransformation,
@@ -602,3 +575,12 @@ def apply_distill_gradients(
         ),
         optimizer_state=new_optimizer_state,
     )
+
+
+@eqx.filter_jit(donate="all")
+def apply_donated_distill_gradients(
+    optimizer_state: DistillOptimizerState,
+    optimizer: optax.GradientTransformation,
+    grads: Any,  # noqa: ANN401
+) -> DistillOptimizerState:
+    return apply_distill_gradients(optimizer_state, optimizer, grads)

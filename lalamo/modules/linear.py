@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
 from typing import Any, Self, cast
 
@@ -142,13 +142,12 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         else:
             biases = None
 
-        layer = FullPrecisionLinear(
+        return FullPrecisionLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
             biases=biases,
         )
-        return layer
 
     def random_init_mixture(
         self,
@@ -284,21 +283,12 @@ class FullPrecisionLinear(LinearBase[FullPrecisionLinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> Self:
-        weights = require_mapping(weights)
-        new_weights = require_array(weights["weights"])
-        assert new_weights.shape == self.weights.shape
-        assert new_weights.dtype == self.weights.dtype
-        new_biases = require_array(weights["biases"]) if self.has_biases else None
-        if new_biases is not None:
-            assert self.biases is not None
-            assert new_biases.shape == self.biases.shape
-            assert new_biases.dtype == self.biases.dtype
-        result = replace(
+        params = _linear_params(weights)
+        return replace(
             self,
-            weights=new_weights,
-            biases=new_biases,
+            weights=require_array(params["weights"]),
+            biases=require_array(params["biases"]) if self.has_biases else None,
         )
-        return result
 
 
 @dataclass(frozen=True)
@@ -307,6 +297,14 @@ class QuantizedLinearConfigBase(LinearConfigBase):
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
     activation_precision: DTypeLike
+
+    @property
+    def quantization(self) -> QuantizationMode:
+        return self.weight_quantization_mode
+
+    def group_count(self, input_dim: int) -> int:
+        assert input_dim % self.group_size == 0
+        return input_dim // self.group_size
 
 
 class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT]):
@@ -333,11 +331,6 @@ class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
 
 
-def _num_groups(input_dim: int, group_size: int) -> int:
-    assert input_dim % group_size == 0, f"input_dim={input_dim} must be divisible by group_size={group_size}"
-    return input_dim // group_size
-
-
 @dataclass(frozen=True)
 class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
     def random_init(
@@ -356,7 +349,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
             maxval=max_val + 1,
             dtype=self.activation_precision,
         )
-        num_groups = _num_groups(input_dim, self.group_size)
+        num_groups = self.group_count(input_dim)
         scale = 1 / ((max_val - min_val) / 2 * math.sqrt(input_dim))
         scales = scale * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
@@ -368,7 +361,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         zero_point = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
         zero_points = zero_point * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
-        layer = GroupQuantizedLinear(
+        return GroupQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
@@ -376,7 +369,6 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
             zero_points=zero_points,
             biases=biases,
         )
-        return layer
 
     def random_init_mixture(
         self,
@@ -401,7 +393,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
             (*leading_dims, sum(output_dims), input_dim),
             dtype=self.activation_precision,
         )
-        num_groups = _num_groups(input_dim, self.group_size)
+        num_groups = self.group_count(input_dim)
         scales = dummy_array((*leading_dims, sum(output_dims), num_groups), dtype=self.activation_precision)
 
         if has_biases:
@@ -470,10 +462,6 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
     def has_biases(self) -> bool:
         return self.biases is not None
 
-    @property
-    def num_groups(self) -> int:
-        return _num_groups(self.input_dim, self.config.group_size)
-
     def _quantized_weights_for_export(self) -> Int[Array, "*components in_channels out_channels"]:
         quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
         casted = quantized.astype(self.config.weight_quantization_mode.dtype)
@@ -497,64 +485,43 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         return packed
 
     def __post_init__(self) -> None:
+        group_count = self.config.group_count(self.input_dim)
+        output_dim = sum(self.output_dims)
+        component_shape = self.weights.shape[:-2]
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
                 f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *w_num_components, w_output_dim, _ = self.weights.shape
-        if w_output_dim != sum(self.output_dims):
+        if self.weights.shape[-2] != output_dim:
             raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to sum of output dims ({sum(self.output_dims)}).",
+                f"Number of output channels in weights ({self.weights.shape[-2]}) is not"
+                f" equal to sum of output dims ({output_dim}).",
             )
 
-        if self.scales.dtype != self.config.activation_precision:
-            raise ValueError(
-                f"Scale dtype ({self.scales.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision})."
-                " Quantized layers require parameter dtypes to be equal to the activation precision.",
-            )
-        *s_num_components, s_output_dim, s_num_groups = self.scales.shape
-        if w_output_dim != s_output_dim:
-            raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to number of output channels in scales ({s_output_dim}).",
-            )
-        if tuple(s_num_components) != tuple(w_num_components):
-            raise ValueError(
-                f"Number of mixture components in weights ({w_num_components}) is not"
-                f" equal to number of mixture components in scales ({s_num_components}).",
-            )
-        if s_num_groups != self.num_groups:
-            raise ValueError(
-                f"Number of groups in scales ({s_num_groups}) is incompatible with"
-                f" the specified group size ({self.config.group_size}).",
-            )
-
-        if self.zero_points.dtype != self.config.activation_precision:
-            raise ValueError(
-                f"Zero point dtype ({self.zero_points.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision})."
-                " Quantized layers require parameter dtypes to be equal to the activation precision.",
-            )
-        *zp_num_components, zp_output_dim, zp_num_groups = self.zero_points.shape
-        if w_output_dim != zp_output_dim:
-            raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to number of output channels in zero points ({zp_output_dim}).",
-            )
-        if tuple(zp_num_components) != tuple(w_num_components):
-            raise ValueError(
-                f"Number of mixture components in weights ({w_num_components}) is not"
-                f" equal to number of mixture components in zero points ({zp_num_components}).",
-            )
-        if self.num_groups != zp_num_groups:
-            raise ValueError(
-                f"Number of groups in zero points ({zp_num_groups}) is incompatible with"
-                f" the specified group size ({self.config.group_size}).",
-            )
+        for name, value in (("scales", self.scales), ("zero points", self.zero_points)):
+            if value.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"{name.title()} dtype ({value.dtype}) is not equal to specified activation precision"
+                    f" ({self.config.activation_precision})."
+                    " Quantized layers require parameter dtypes to be equal to the activation precision.",
+                )
+            if value.shape[:-2] != component_shape:
+                raise ValueError(
+                    f"Number of mixture components in {name} ({value.shape[:-2]}) is not"
+                    f" equal to number of mixture components in weights ({component_shape}).",
+                )
+            if value.shape[-2] != output_dim:
+                raise ValueError(
+                    f"Number of output channels in {name} ({value.shape[-2]}) is not"
+                    f" equal to number of output channels in weights ({output_dim}).",
+                )
+            if value.shape[-1] != group_count:
+                raise ValueError(
+                    f"Number of groups in {name} ({value.shape[-1]}) is incompatible with"
+                    f" the specified group size ({self.config.group_size}).",
+                )
 
         if self.biases is not None:
             if self.biases.dtype != self.config.activation_precision:
@@ -563,24 +530,24 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
                     f" ({self.config.activation_precision}).",
                     " Quantized layers require parameter dtypes to be equal to the activation precision.",
                 )
-            *b_num_components, b_output_dim = self.biases.shape
-            if w_output_dim != b_output_dim:
+            if self.biases.shape[:-1] != component_shape:
                 raise ValueError(
-                    f"Number of output channels in weights ({w_output_dim}) is not"
-                    f" equal to number of output channels in biases ({b_output_dim}).",
+                    f"Number of mixture components in biases ({self.biases.shape[:-1]}) is not"
+                    f" equal to number of mixture components in weights ({component_shape}).",
                 )
-            if tuple(b_num_components) != tuple(w_num_components):
+            if self.biases.shape[-1] != output_dim:
                 raise ValueError(
-                    f"Number of mixture components in weights ({w_num_components}) is not"
-                    f" equal to number of mixture components in biases ({b_num_components}).",
+                    f"Number of output channels in biases ({self.biases.shape[-1]}) is not"
+                    f" equal to number of output channels in weights ({output_dim}).",
                 )
 
     def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
+        group_count = self.config.group_count(self.input_dim)
         quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
             "... total_out_channels (groups group_channels) -> ... total_out_channels groups group_channels",
-            groups=self.num_groups,
+            groups=group_count,
         )
 
         zero_points = rearrange(self.zero_points, "... total_out_channels groups -> ... total_out_channels groups 1")
@@ -605,30 +572,19 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = _unwrap_legacy_rht_linear_weights(weights)
-        unpacked_weights = require_array(weights["weights"])
-        unpacked_zero_points = require_array(weights["zero_points"])
+        params = _linear_params(weights)
+        unpacked_weights = require_array(params["weights"])
+        unpacked_zero_points = require_array(params["zero_points"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
             unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
-        scales = require_array(weights["scales"])
-        assert unpacked_weights.shape == self.weights.shape
-        assert scales.shape == self.scales.shape
-        assert scales.dtype == self.scales.dtype
-        assert unpacked_zero_points.shape == self.zero_points.shape
-        new_biases = require_array(weights["biases"]) if self.has_biases else None
-        if new_biases is not None:
-            assert self.biases is not None
-            assert new_biases.shape == self.biases.shape
-            assert new_biases.dtype == self.biases.dtype
-        result = replace(
+        return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=scales,
+            scales=require_array(params["scales"]),
             zero_points=unpacked_zero_points.astype(self.zero_points.dtype),
-            biases=new_biases,
+            biases=require_array(params["biases"]) if self.has_biases else None,
         )
-        return result
 
 
 class GroupQuantizedLinear(GroupQuantizedLinearBase[GroupQuantizedLinearConfig]):
@@ -653,7 +609,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
             maxval=max_val + 1,
             dtype=self.activation_precision,
         )
-        num_groups = _num_groups(input_dim, self.group_size)
+        num_groups = self.group_count(input_dim)
         scale = 1 / ((max_val - min_val) / 2 * math.sqrt(input_dim))
         scales = scale * jnp.ones((sum(output_dims), num_groups), dtype=self.activation_precision)
 
@@ -663,17 +619,16 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
             biases = None
 
         zero_point = min_val + 2 ** (self.weight_quantization_mode.bits - 1)
-        deq_biases = -zero_point * scales
+        offsets = -zero_point * scales
 
-        layer = MLXQuantizedLinear(
+        return MLXQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
             scales=scales,
-            deq_biases=deq_biases,
+            offsets=offsets,
             biases=biases,
         )
-        return layer
 
     def random_init_mixture(
         self,
@@ -698,21 +653,21 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
             (*leading_dims, sum(output_dims), input_dim),
             dtype=self.activation_precision,
         )
-        num_groups = _num_groups(input_dim, self.group_size)
+        num_groups = self.group_count(input_dim)
         scales = dummy_array((*leading_dims, sum(output_dims), num_groups), dtype=self.activation_precision)
 
         if has_biases:
             biases = dummy_array((*leading_dims, sum(output_dims)), dtype=self.activation_precision)
         else:
             biases = None
-        deq_biases = dummy_array((*leading_dims, sum(output_dims), num_groups), dtype=self.activation_precision)
+        offsets = dummy_array((*leading_dims, sum(output_dims), num_groups), dtype=self.activation_precision)
 
         return MLXQuantizedLinear(
             config=self,
             output_dims=output_dims,
             weights=weights,
             scales=scales,
-            deq_biases=deq_biases,
+            offsets=offsets,
             biases=biases,
         )
 
@@ -743,7 +698,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         ),
     )
     scales: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
-    deq_biases: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
+    offsets: Float[Array, "*components total_out_channels groups"] = field(norm=ParameterNorm.L_INF)
     biases: Float[Array, "*components total_out_channels"] | None = field()
 
     @property
@@ -767,10 +722,6 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
     def has_biases(self) -> bool:
         return self.biases is not None
 
-    @property
-    def num_groups(self) -> int:
-        return _num_groups(self.input_dim, self.config.group_size)
-
     def _quantized_weights_for_export(self) -> Int[Array, "*components in_channels out_channels"]:
         quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
         casted = quantized.astype(self.config.weight_quantization_mode.dtype)
@@ -783,64 +734,43 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         return packed
 
     def __post_init__(self) -> None:
+        group_count = self.config.group_count(self.input_dim)
+        output_dim = sum(self.output_dims)
+        component_shape = self.weights.shape[:-2]
         if self.weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"Weight dtype ({self.weights.dtype}) is not equal to specified activation precision"
                 f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
-        *w_num_components, w_output_dim, _ = self.weights.shape
-        if w_output_dim != sum(self.output_dims):
+        if self.weights.shape[-2] != output_dim:
             raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to sum of output dims ({sum(self.output_dims)}).",
+                f"Number of output channels in weights ({self.weights.shape[-2]}) is not"
+                f" equal to sum of output dims ({output_dim}).",
             )
 
-        if self.scales.dtype != self.config.activation_precision:
-            raise ValueError(
-                f"Scale dtype ({self.scales.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision})."
-                " Quantized layers require parameter dtypes to be equal to the activation precision.",
-            )
-        *s_num_components, s_output_dim, s_num_groups = self.scales.shape
-        if w_output_dim != s_output_dim:
-            raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to number of output channels in scales ({s_output_dim}).",
-            )
-        if tuple(s_num_components) != tuple(w_num_components):
-            raise ValueError(
-                f"Number of mixture components in weights ({w_num_components}) is not"
-                f" equal to number of mixture components in scales ({s_num_components}).",
-            )
-        if s_num_groups != self.num_groups:
-            raise ValueError(
-                f"Number of groups in scales ({s_num_groups}) is incompatible with"
-                f" the specified group size ({self.config.group_size}).",
-            )
-
-        if self.deq_biases.dtype != self.config.activation_precision:
-            raise ValueError(
-                f"Dequantization bias dtype ({self.deq_biases.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision})."
-                " Quantized layers require parameter dtypes to be equal to the activation precision.",
-            )
-        *zp_num_components, zp_output_dim, zp_num_groups = self.deq_biases.shape
-        if w_output_dim != zp_output_dim:
-            raise ValueError(
-                f"Number of output channels in weights ({w_output_dim}) is not"
-                f" equal to number of output channels in zero points ({zp_output_dim}).",
-            )
-        if tuple(zp_num_components) != tuple(w_num_components):
-            raise ValueError(
-                f"Number of mixture components in weights ({w_num_components}) is not"
-                f" equal to number of mixture components in zero points ({zp_num_components}).",
-            )
-        if self.num_groups != zp_num_groups:
-            raise ValueError(
-                f"Number of groups in zero points ({zp_num_groups}) is incompatible with"
-                f" the specified group size ({self.config.group_size}).",
-            )
+        for name, value in (("scales", self.scales), ("offsets", self.offsets)):
+            if value.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"{name.title()} dtype ({value.dtype}) is not equal to specified activation precision"
+                    f" ({self.config.activation_precision})."
+                    " Quantized layers require parameter dtypes to be equal to the activation precision.",
+                )
+            if value.shape[:-2] != component_shape:
+                raise ValueError(
+                    f"Number of mixture components in {name} ({value.shape[:-2]}) is not"
+                    f" equal to number of mixture components in weights ({component_shape}).",
+                )
+            if value.shape[-2] != output_dim:
+                raise ValueError(
+                    f"Number of output channels in {name} ({value.shape[-2]}) is not"
+                    f" equal to number of output channels in weights ({output_dim}).",
+                )
+            if value.shape[-1] != group_count:
+                raise ValueError(
+                    f"Number of groups in {name} ({value.shape[-1]}) is incompatible with"
+                    f" the specified group size ({self.config.group_size}).",
+                )
 
         if self.biases is not None:
             if self.biases.dtype != self.config.activation_precision:
@@ -849,30 +779,30 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
                     f" ({self.config.activation_precision}).",
                     " Quantized layers require parameter dtypes to be equal to the activation precision.",
                 )
-            *b_num_components, b_output_dim = self.biases.shape
-            if w_output_dim != b_output_dim:
+            if self.biases.shape[:-1] != component_shape:
                 raise ValueError(
-                    f"Number of output channels in weights ({w_output_dim}) is not"
-                    f" equal to number of output channels in biases ({b_output_dim}).",
+                    f"Number of mixture components in biases ({self.biases.shape[:-1]}) is not"
+                    f" equal to number of mixture components in weights ({component_shape}).",
                 )
-            if tuple(b_num_components) != tuple(w_num_components):
+            if self.biases.shape[-1] != output_dim:
                 raise ValueError(
-                    f"Number of mixture components in weights ({w_num_components}) is not"
-                    f" equal to number of mixture components in biases ({b_num_components}).",
+                    f"Number of output channels in biases ({self.biases.shape[-1]}) is not"
+                    f" equal to number of output channels in weights ({output_dim}).",
                 )
 
     def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
+        group_count = self.config.group_count(self.input_dim)
         quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
             "... total_out_channels (groups group_channels) -> ... total_out_channels groups group_channels",
-            groups=self.num_groups,
+            groups=group_count,
         )
 
         scales = rearrange(self.scales, "... total_out_channels groups -> ... total_out_channels groups 1")
-        deq_biases = rearrange(self.deq_biases, "... total_out_channels groups -> ... total_out_channels groups 1")
+        offsets = rearrange(self.offsets, "... total_out_channels groups -> ... total_out_channels groups 1")
 
-        scaled_grouped_weights = grouped_weights * scales + deq_biases
+        scaled_grouped_weights = grouped_weights * scales + offsets
         result = rearrange(
             scaled_grouped_weights,
             "... total_out_channels groups group_channels -> ... total_out_channels (groups group_channels)",
@@ -880,42 +810,26 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         return result
 
     def export_weights(self) -> ParameterTree:
-        if self.biases is None:
-            return {
-                "weights": self._quantized_weights_for_export(),
-                "scales": self.scales,
-                "deq_biases": self.deq_biases,
-            }
-        return {
+        result = {
             "weights": self._quantized_weights_for_export(),
             "scales": self.scales,
-            "deq_biases": self.deq_biases,
-            "biases": self.biases,
+            "deq_biases": self.offsets,
         }
+        if self.biases is not None:
+            result["biases"] = self.biases
+        return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
-        weights = _unwrap_legacy_rht_linear_weights(weights)
-        unpacked_weights = require_array(weights["weights"])
+        params = _linear_params(weights)
+        unpacked_weights = require_array(params["weights"])
         if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-        scales = require_array(weights["scales"])
-        deq_biases = require_array(weights["deq_biases"])
-        assert unpacked_weights.shape == self.weights.shape
-        assert scales.shape == self.scales.shape
-        assert scales.dtype == self.scales.dtype
-        assert deq_biases.shape == self.deq_biases.shape
-        assert deq_biases.dtype == self.deq_biases.dtype
-        new_biases = require_array(weights["biases"]) if self.has_biases else None
-        if new_biases is not None:
-            assert self.biases is not None
-            assert new_biases.shape == self.biases.shape
-            assert new_biases.dtype == self.biases.dtype
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=scales,
-            deq_biases=deq_biases,
-            biases=new_biases,
+            scales=require_array(params["scales"]),
+            offsets=require_array(params["deq_biases"]),
+            biases=require_array(params["biases"]) if self.has_biases else None,
         )
 
 
@@ -960,7 +874,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             dtype=self.activation_precision,
         )
 
-        layer = QLoRALinear(
+        return QLoRALinear(
             config=self,
             output_dims=output_dims,
             weights=group_quantized_linear.weights,
@@ -970,7 +884,6 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
         )
-        return layer
 
     def random_init_mixture(
         self,
@@ -1003,7 +916,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             (*leading_dims, sum(output_dims), input_dim),
             dtype=self.activation_precision,
         )
-        num_groups = _num_groups(input_dim, self.group_size)
+        num_groups = self.group_count(input_dim)
         scales = dummy_array(
             (*leading_dims, sum(output_dims), num_groups),
             dtype=self.activation_precision,
@@ -1136,23 +1049,20 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         weights: ParameterTree[Array],
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
-        weights = _unwrap_legacy_rht_linear_weights(weights)
-        up_weights = weights["up_weights"]
+        params = _linear_params(weights)
+        down_weights = require_array(params["down_weights"])
+        if down_weights.shape[-2:] == (self.input_dim, self.config.lora_rank):
+            down_weights = jnp.swapaxes(down_weights, -1, -2)
+        up_weights = params["up_weights"]
         if isinstance(up_weights, Sequence):
             up_weights = jnp.concatenate(
                 tuple(jnp.swapaxes(require_array(weight), -1, -2) for weight in up_weights),
                 axis=-2,
             )
-        down_weights = require_array(weights["down_weights"])
-        up_weights = require_array(up_weights)
-        assert down_weights.shape == self.lora_down_weights.shape
-        assert down_weights.dtype == self.lora_down_weights.dtype
-        assert up_weights.shape == self.lora_up_weights.shape
-        assert up_weights.dtype == self.lora_up_weights.dtype
         return replace(
             base,
             lora_down_weights=down_weights,
-            lora_up_weights=up_weights,
+            lora_up_weights=require_array(up_weights),
         )
 
 
@@ -1162,11 +1072,11 @@ LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuant
 register_config_union(LinearConfig)
 
 
-def _unwrap_legacy_rht_linear_weights(weights: ParameterTree[Array]) -> dict[str, Any]:
-    mapping = dict(require_mapping(weights))
-    if "inner_linear" in mapping:
-        return dict(require_mapping(require_tree(mapping["inner_linear"])))
-    return mapping
+def _linear_params(weights: ParameterTree[Array]) -> Mapping[str, Any]:
+    params = require_mapping(weights)
+    if "inner_linear" not in params:
+        return params
+    return require_mapping(require_tree(params["inner_linear"]))
 
 
 def _structure_linear_config(

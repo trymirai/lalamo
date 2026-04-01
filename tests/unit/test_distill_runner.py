@@ -4,6 +4,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
@@ -26,6 +27,7 @@ from lalamo.distillation import (
     DistillParameterSummary,
     DistillTrainingState,
 )
+from lalamo.modules.common import field
 from lalamo.quantization import QuantizationMode
 
 
@@ -33,11 +35,28 @@ from lalamo.quantization import QuantizationMode
 class _StubModelConfig:
     weight_quantization_mode: QuantizationMode
 
+    @property
+    def quantization(self) -> QuantizationMode:
+        return self.weight_quantization_mode
+
 
 @dataclass(frozen=True)
 class _StubLanguageModelConfig:
     model_config: _StubModelConfig
     message_processor_config: str = "default"
+
+
+class _StubQuantizedModel(eqx.Module):
+    config: _StubModelConfig = eqx.field(static=True)
+    weights: jax.Array = field(quantized=True)
+
+    @property
+    def activation_precision(self) -> jnp.dtype:
+        return self.weights.dtype
+
+    @property
+    def vocab_size(self) -> int:
+        return 32
 
 
 _EMPTY_PARAMETER_SUMMARY = DistillParameterSummary(
@@ -80,7 +99,10 @@ def _make_language_model(
             model_config=_StubModelConfig(weight_quantization_mode=quantization_mode),
             message_processor_config=message_processor_config,
         ),
-        model=SimpleNamespace(activation_precision=jnp.float32, vocab_size=32),
+        model=_StubQuantizedModel(
+            config=_StubModelConfig(weight_quantization_mode=quantization_mode),
+            weights=jnp.zeros((1, 1), dtype=jnp.float32),
+        ),
         message_processor=SimpleNamespace(
             tokenize_request=tokenize_request,
             tokenizer=SimpleNamespace(to_str=lambda: tokenizer_signature),
@@ -217,10 +239,16 @@ def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_p
         microbatches: object,
         train_key: object,
         *,
+        optimizer_name: object,
+        training_mode: object,
+        student: object,
+        teacher: object,
+        distill_config: object,
+        quantization_mode: object,
         stochastic_rounding: bool,
-        compute_step_gradients: object,
     ) -> tuple[DistillOptimizerState, DistillBatchMetrics, object]:
-        del optimizer, microbatches, stochastic_rounding, compute_step_gradients
+        del optimizer, microbatches, optimizer_name, training_mode, student, teacher
+        del distill_config, quantization_mode, stochastic_rounding
         next_training_state = train_states.pop(0)
         return (
             DistillOptimizerState(
@@ -307,10 +335,16 @@ def test_distill_uses_final_eval_as_best_step_without_periodic_eval(tmp_path: Pa
         microbatches: object,
         train_key: object,
         *,
+        optimizer_name: object,
+        training_mode: object,
+        student: object,
+        teacher: object,
+        distill_config: object,
+        quantization_mode: object,
         stochastic_rounding: bool,
-        compute_step_gradients: object,
     ) -> tuple[DistillOptimizerState, DistillBatchMetrics, object]:
-        del optimizer, microbatches, train_key, stochastic_rounding, compute_step_gradients
+        del optimizer, microbatches, train_key, optimizer_name, training_mode, student, teacher
+        del distill_config, quantization_mode, stochastic_rounding
         return (
             DistillOptimizerState(
                 training_state=final_state,

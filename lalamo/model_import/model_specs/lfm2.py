@@ -9,22 +9,26 @@ from .common import ConfigMap, FileSpec, ModelSpec
 __all__ = ["LFM2_MODELS"]
 
 
-def _lfm_repo(family: str, size: str, variant: str | None, quantization: QuantizationMode | None) -> tuple[str, str]:
+def _lfm_name(family: str, size: str, variant: str | None, quantization: QuantizationMode | None) -> str:
     return (
-        "LiquidAI" if quantization is None else "mlx-community",
         f"{family}-{size}"
         f"{f'-{variant}' if variant is not None else ''}"
-        f"{f'-{quantization.bits}bit' if quantization is not None else ''}",
+        f"{f'-{quantization.bits}bit' if quantization is not None else ''}"
     )
+
+
+def _lfm_repo(family: str, size: str, variant: str | None, quantization: QuantizationMode | None) -> str:
+    owner = "LiquidAI" if quantization is None else "mlx-community"
+    return f"{owner}/{_lfm_name(family, size, variant, quantization)}"
 
 
 _LFM20_MODELS = [
     ModelSpec(
-        vendor=_lfm_repo("LFM2", size, variant, quantization)[0],
+        vendor="LiquidAI",
         family="LFM2",
-        name=_lfm_repo("LFM2", size, variant, quantization)[1],
+        name=_lfm_name("LFM2", size, variant, quantization),
         size=size,
-        repo="/".join(_lfm_repo("LFM2", size, variant, quantization)),
+        repo=_lfm_repo("LFM2", size, variant, quantization),
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(
@@ -42,11 +46,11 @@ _LFM20_MODELS = [
 
 _LFM25_MODELS = [
     ModelSpec(
-        vendor=_lfm_repo("LFM2.5", size, variant, quantization)[0],
+        vendor="LiquidAI",
         family="LFM2.5",
-        name=_lfm_repo("LFM2.5", size, variant, quantization)[1],
+        name=_lfm_name("LFM2.5", size, variant, quantization),
         size=size,
-        repo="/".join(_lfm_repo("LFM2.5", size, variant, quantization)),
+        repo=_lfm_repo("LFM2.5", size, variant, quantization),
         config_type=HFLFM2Config,
         quantization=quantization,
         configs=ConfigMap(

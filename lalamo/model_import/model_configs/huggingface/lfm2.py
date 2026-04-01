@@ -1,5 +1,7 @@
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Literal
 
 import jax.numpy as jnp
@@ -78,12 +80,16 @@ class HFLFM2Config(HuggingFaceLMConfig):
     tie_embedding: bool = True
     theta: float | None = None
 
-    quantization: QuantizationConfig | None = None
     quantization_config: QuantizationConfig | None = None
 
-    @property
-    def effective_quantization(self) -> QuantizationConfig | None:
-        return self.quantization_config or self.quantization
+    @classmethod
+    def from_json(cls, json_path: Path | str) -> "HFLFM2Config":
+        json_path = Path(json_path)
+        with open(json_path) as f:
+            config = json.load(f)
+        if "quantization_config" not in config and "quantization" in config:
+            config["quantization_config"] = config.pop("quantization")
+        return cls._converter.structure(config, cls)
 
     @property
     def default_precision(self) -> DTypeLike:
@@ -102,7 +108,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         assert self.num_attention_heads == self.num_heads
 
-        quantization = self.effective_quantization
+        quantization = self.quantization_config
         if quantization is not None:
             assert self.tie_embedding
 

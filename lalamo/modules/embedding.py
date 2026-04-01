@@ -61,10 +61,10 @@ class EmbeddingConfigBase:
 
 class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @abstractmethod
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]: ...
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]: ...
 
     @abstractmethod
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]: ...
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]: ...
 
     @property
     @abstractmethod
@@ -73,20 +73,6 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def model_dim(self) -> int: ...
-
-    @eqx.filter_jit
-    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
-        result = self._prepare_input_weights()[x]
-        if self.config.input_scale is not None:
-            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
-        return result
-
-    @eqx.filter_jit
-    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
-        logits = self._prepare_output_weights() @ x
-        if self.config.logit_soft_cap is not None:
-            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
-        return logits
 
 
 def _pack_embedding_weights(
@@ -99,7 +85,7 @@ def _pack_embedding_weights(
     return quantized
 
 
-def _prepare_mlx_embedding_weights(
+def _materialize_mlx_embedding_weights(
     weights: Float[Array, "vocabulary channels"],
     scales: Float[Array, "vocabulary groups"],
     biases: Float[Array, "vocabulary groups"],
@@ -117,6 +103,22 @@ def _prepare_mlx_embedding_weights(
         + rearrange(biases, "vocab groups -> vocab groups 1"),
         "vocab groups elements -> vocab (groups elements)",
     )
+
+
+@dataclass(frozen=True)
+class QuantizedEmbeddingConfigBase(EmbeddingConfigBase):
+    group_size: int
+    embedding_quantization_mode: QuantizationMode
+    activation_quantization_mode: QuantizationMode | None
+    activation_precision: DTypeLike
+
+    @property
+    def quantization(self) -> QuantizationMode:
+        return self.embedding_quantization_mode
+
+    def group_count(self, model_dim: int) -> int:
+        assert model_dim % self.group_size == 0
+        return model_dim // self.group_size
 
 
 @dataclass(frozen=True)
@@ -165,11 +167,19 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         vocab_size, _ = self.weights.shape
         return vocab_size
 
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.weights
+    @eqx.filter_jit
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        result = self.weights[x]
+        if self.config.input_scale is not None:
+            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
+        return result
 
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.weights
+    @eqx.filter_jit
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
+        logits = self.weights @ x
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+        return logits
 
     def export_weights(self) -> ParameterTree:
         return {"weights": self.weights}
@@ -342,11 +352,19 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
                 f"Input model dim {input_model_dim} does not match the output model dim {output_model_dim}",
             )
 
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.input_weights
+    @eqx.filter_jit
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        result = self.input_weights[x]
+        if self.config.input_scale is not None:
+            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
+        return result
 
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.output_weights
+    @eqx.filter_jit
+    def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
+        logits = self.output_weights @ x
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+        return logits
 
     def export_weights(self) -> ParameterTree:
         return {
@@ -359,26 +377,15 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         weights: ParameterTree[Array],
     ) -> Self:
         weights = require_mapping(weights)
-        input_weights = require_array(weights["input_weights"])
-        output_weights = require_array(weights["output_weights"])
-        assert input_weights.shape == self.input_weights.shape
-        assert input_weights.dtype == self.input_weights.dtype
-        assert output_weights.shape == self.output_weights.shape
-        assert output_weights.dtype == self.output_weights.dtype
         return replace(
             self,
-            input_weights=input_weights,
-            output_weights=output_weights,
+            input_weights=require_array(weights["input_weights"]),
+            output_weights=require_array(weights["output_weights"]),
         )
 
 
 @dataclass(frozen=True)
-class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
-    group_size: int
-    embedding_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
-
+class MLXQuantizedTiedEmbeddingConfig(QuantizedEmbeddingConfigBase):
     def random_init(
         self,
         vocab_size: int,
@@ -393,8 +400,7 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
     ) -> "MLXQuantizedTiedEmbedding":
-        assert model_dim % self.group_size == 0
-        model_groups = model_dim // self.group_size
+        model_groups = self.group_count(model_dim)
         weights = dummy_array((vocab_size, model_dim), dtype=self.activation_precision)
         scales = dummy_array((vocab_size, model_groups), dtype=self.activation_precision)
         biases = dummy_array((vocab_size, model_groups), dtype=self.activation_precision)
@@ -420,33 +426,54 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         vocab_size, _ = self.weights.shape
         return vocab_size
 
-    def _int_weights(self) -> Int[Array, "vocabulary channels"]:
-        return _pack_embedding_weights(self.weights, self.config.embedding_quantization_mode)
+    def __post_init__(self) -> None:
+        for name, value in (("Embedding", self.weights), ("Scale", self.scales), ("Bias", self.biases)):
+            if value.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"{name} dtype {value.dtype} does not match"
+                    f" the specified precision {self.config.activation_precision}",
+                )
+        vocab_size, model_dim = self.weights.shape
+        expected_shape = (vocab_size, self.config.group_count(model_dim))
+        if self.scales.shape != expected_shape:
+            raise ValueError(f"Scale shape {self.scales.shape} does not match {expected_shape}")
+        if self.biases.shape != expected_shape:
+            raise ValueError(f"Bias shape {self.biases.shape} does not match {expected_shape}")
 
-    def _prepare_weights(self) -> Float[Array, "vocabulary channels"]:
-        return _prepare_mlx_embedding_weights(
+    @eqx.filter_jit
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        result = _materialize_mlx_embedding_weights(
             self.weights,
             self.scales,
             self.biases,
             group_size=self.config.group_size,
             quantization_mode=self.config.embedding_quantization_mode,
-        )
-
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self._prepare_weights()
-
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self._prepare_weights()
+        )[x]
+        if self.config.input_scale is not None:
+            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
+        return result
 
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
-        return super().readout(x)
+        logits = (
+            _materialize_mlx_embedding_weights(
+                self.weights,
+                self.scales,
+                self.biases,
+                group_size=self.config.group_size,
+                quantization_mode=self.config.embedding_quantization_mode,
+            )
+            @ x
+        )
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+        return logits
 
     def export_weights(self) -> ParameterTree:
         return {
-            "weights": self._int_weights(),
+            "weights": _pack_embedding_weights(self.weights, self.config.embedding_quantization_mode),
             "scales": self.scales,
             "biases": self.biases,
         }
@@ -454,35 +481,23 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
-        assert unpacked_weights.dtype == (
-            jnp.uint8
-            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
-            else self.config.embedding_quantization_mode.dtype
-        )
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
-        scales = require_array(weights["scales"])
-        biases = require_array(weights["biases"])
-        assert unpacked_weights.shape == self.weights.shape
-        assert scales.shape == self.scales.shape
-        assert scales.dtype == self.scales.dtype
-        assert biases.shape == self.biases.shape
-        assert biases.dtype == self.biases.dtype
+        elif unpacked_weights.dtype != self.config.embedding_quantization_mode.dtype:
+            raise ValueError(
+                f"Expected packed embedding weights to have dtype {self.config.embedding_quantization_mode.dtype},"
+                f" got {unpacked_weights.dtype}",
+            )
         return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
-            scales=scales,
-            biases=biases,
+            scales=require_array(weights["scales"]),
+            biases=require_array(weights["biases"]),
         )
 
 
 @dataclass(frozen=True)
-class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
-    group_size: int
-    embedding_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
-
+class MLXQuantizedUntiedEmbeddingConfig(QuantizedEmbeddingConfigBase):
     def random_init(
         self,
         vocab_size: int,
@@ -497,8 +512,7 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
     ) -> "MLXQuantizedUntiedEmbedding":
-        assert model_dim % self.group_size == 0
-        model_groups = model_dim // self.group_size
+        model_groups = self.group_count(model_dim)
         return MLXQuantizedUntiedEmbedding(
             config=self,
             input_weights=dummy_array((vocab_size, model_dim), dtype=self.activation_precision),
@@ -532,42 +546,75 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         vocab_size, _ = self.input_weights.shape
         return vocab_size
 
-    def _int_input_weights(self) -> Int[Array, "vocabulary channels"]:
-        return _pack_embedding_weights(self.input_weights, self.config.embedding_quantization_mode)
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("Input embedding", self.input_weights),
+            ("Output embedding", self.output_weights),
+            ("Input scale", self.input_scales),
+            ("Input bias", self.input_biases),
+            ("Output scale", self.output_scales),
+            ("Output bias", self.output_biases),
+        ):
+            if value.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"{name} dtype {value.dtype} does not match"
+                    f" the specified precision {self.config.activation_precision}",
+                )
+        input_vocab_size, model_dim = self.input_weights.shape
+        output_vocab_size, output_model_dim = self.output_weights.shape
+        if input_vocab_size != output_vocab_size:
+            raise ValueError(
+                f"Input vocab size {input_vocab_size} does not match output vocab size {output_vocab_size}",
+            )
+        if model_dim != output_model_dim:
+            raise ValueError(f"Input model dim {model_dim} does not match output model dim {output_model_dim}")
+        expected_shape = (input_vocab_size, self.config.group_count(model_dim))
+        if self.input_scales.shape != expected_shape:
+            raise ValueError(f"Input scale shape {self.input_scales.shape} does not match {expected_shape}")
+        if self.input_biases.shape != expected_shape:
+            raise ValueError(f"Input bias shape {self.input_biases.shape} does not match {expected_shape}")
+        if self.output_scales.shape != expected_shape:
+            raise ValueError(f"Output scale shape {self.output_scales.shape} does not match {expected_shape}")
+        if self.output_biases.shape != expected_shape:
+            raise ValueError(f"Output bias shape {self.output_biases.shape} does not match {expected_shape}")
 
-    def _int_output_weights(self) -> Int[Array, "vocabulary channels"]:
-        return _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode)
-
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return _prepare_mlx_embedding_weights(
+    @eqx.filter_jit
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        result = _materialize_mlx_embedding_weights(
             self.input_weights,
             self.input_scales,
             self.input_biases,
             group_size=self.config.group_size,
             quantization_mode=self.config.embedding_quantization_mode,
-        )
-
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return _prepare_mlx_embedding_weights(
-            self.output_weights,
-            self.output_scales,
-            self.output_biases,
-            group_size=self.config.group_size,
-            quantization_mode=self.config.embedding_quantization_mode,
-        )
+        )[x]
+        if self.config.input_scale is not None:
+            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
+        return result
 
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
-        return super().readout(x)
+        logits = (
+            _materialize_mlx_embedding_weights(
+                self.output_weights,
+                self.output_scales,
+                self.output_biases,
+                group_size=self.config.group_size,
+                quantization_mode=self.config.embedding_quantization_mode,
+            )
+            @ x
+        )
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+        return logits
 
     def export_weights(self) -> ParameterTree:
         return {
-            "input_weights": self._int_input_weights(),
+            "input_weights": _pack_embedding_weights(self.input_weights, self.config.embedding_quantization_mode),
             "input_scales": self.input_scales,
             "input_biases": self.input_biases,
-            "output_weights": self._int_output_weights(),
+            "output_weights": _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode),
             "output_scales": self.output_scales,
             "output_biases": self.output_biases,
         }
@@ -576,48 +623,34 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         weights = require_mapping(weights)
         unpacked_input_weights = require_array(weights["input_weights"])
         unpacked_output_weights = require_array(weights["output_weights"])
-        expected_weight_dtype = (
-            jnp.uint8
-            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
-            else self.config.embedding_quantization_mode.dtype
-        )
-        assert unpacked_input_weights.dtype == expected_weight_dtype
-        assert unpacked_output_weights.dtype == expected_weight_dtype
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
-        input_scales = require_array(weights["input_scales"])
-        input_biases = require_array(weights["input_biases"])
-        output_scales = require_array(weights["output_scales"])
-        output_biases = require_array(weights["output_biases"])
-        assert unpacked_input_weights.shape == self.input_weights.shape
-        assert input_scales.shape == self.input_scales.shape
-        assert input_scales.dtype == self.input_scales.dtype
-        assert input_biases.shape == self.input_biases.shape
-        assert input_biases.dtype == self.input_biases.dtype
-        assert unpacked_output_weights.shape == self.output_weights.shape
-        assert output_scales.shape == self.output_scales.shape
-        assert output_scales.dtype == self.output_scales.dtype
-        assert output_biases.shape == self.output_biases.shape
-        assert output_biases.dtype == self.output_biases.dtype
+        else:
+            expected_weight_dtype = self.config.embedding_quantization_mode.dtype
+            if unpacked_input_weights.dtype != expected_weight_dtype:
+                raise ValueError(
+                    f"Expected packed input embedding weights to have dtype {expected_weight_dtype},"
+                    f" got {unpacked_input_weights.dtype}",
+                )
+            if unpacked_output_weights.dtype != expected_weight_dtype:
+                raise ValueError(
+                    f"Expected packed output embedding weights to have dtype {expected_weight_dtype},"
+                    f" got {unpacked_output_weights.dtype}",
+                )
         return replace(
             self,
             input_weights=unpacked_input_weights.astype(self.input_weights.dtype),
-            input_scales=input_scales,
-            input_biases=input_biases,
+            input_scales=require_array(weights["input_scales"]),
+            input_biases=require_array(weights["input_biases"]),
             output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=output_scales,
-            output_biases=output_biases,
+            output_scales=require_array(weights["output_scales"]),
+            output_biases=require_array(weights["output_biases"]),
         )
 
 
 @dataclass(frozen=True)
-class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
-    group_size: int
-    embedding_quantization_mode: QuantizationMode
-    activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
-
+class MLXSemiQuantizedUntiedEmbeddingConfig(QuantizedEmbeddingConfigBase):
     def random_init(
         self,
         vocab_size: int,
@@ -632,8 +665,7 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
     ) -> "MLXSemiQuantizedUntiedEmbedding":
-        assert model_dim % self.group_size == 0
-        model_groups = model_dim // self.group_size
+        model_groups = self.group_count(model_dim)
         input_weights = dummy_array((vocab_size, model_dim), dtype=self.activation_precision)
         output_weights = dummy_array((vocab_size, model_dim), dtype=self.activation_precision)
         output_scales = dummy_array((vocab_size, model_groups), dtype=self.activation_precision)
@@ -667,31 +699,61 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         vocab_size, _ = self.input_weights.shape
         return vocab_size
 
-    def _int_output_weights(self) -> Int[Array, "vocabulary channels"]:
-        return _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode)
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("Input embedding", self.input_weights),
+            ("Output embedding", self.output_weights),
+            ("Output scale", self.output_scales),
+            ("Output bias", self.output_biases),
+        ):
+            if value.dtype != self.config.activation_precision:
+                raise ValueError(
+                    f"{name} dtype {value.dtype} does not match"
+                    f" the specified precision {self.config.activation_precision}",
+                )
+        input_vocab_size, model_dim = self.input_weights.shape
+        output_vocab_size, output_model_dim = self.output_weights.shape
+        if input_vocab_size != output_vocab_size:
+            raise ValueError(
+                f"Input vocab size {input_vocab_size} does not match output vocab size {output_vocab_size}",
+            )
+        if model_dim != output_model_dim:
+            raise ValueError(f"Input model dim {model_dim} does not match output model dim {output_model_dim}")
+        expected_shape = (input_vocab_size, self.config.group_count(model_dim))
+        if self.output_scales.shape != expected_shape:
+            raise ValueError(f"Output scale shape {self.output_scales.shape} does not match {expected_shape}")
+        if self.output_biases.shape != expected_shape:
+            raise ValueError(f"Output bias shape {self.output_biases.shape} does not match {expected_shape}")
 
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.input_weights
-
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return _prepare_mlx_embedding_weights(
-            self.output_weights,
-            self.output_scales,
-            self.output_biases,
-            group_size=self.config.group_size,
-            quantization_mode=self.config.embedding_quantization_mode,
-        )
+    @eqx.filter_jit
+    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        result = self.input_weights[x]
+        if self.config.input_scale is not None:
+            result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
+        return result
 
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
-        return super().readout(x)
+        logits = (
+            _materialize_mlx_embedding_weights(
+                self.output_weights,
+                self.output_scales,
+                self.output_biases,
+                group_size=self.config.group_size,
+                quantization_mode=self.config.embedding_quantization_mode,
+            )
+            @ x
+        )
+        if self.config.logit_soft_cap is not None:
+            logits = apply_soft_capping(logits, self.config.logit_soft_cap)
+        return logits
 
     def export_weights(self) -> ParameterTree:
         return {
             "input_weights": self.input_weights,
-            "output_weights": self._int_output_weights(),
+            "output_weights": _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode),
             "output_scales": self.output_scales,
             "output_biases": self.output_biases,
         }
@@ -700,28 +762,20 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         weights = require_mapping(weights)
         input_weights = require_array(weights["input_weights"])
         unpacked_output_weights = require_array(weights["output_weights"])
-        assert unpacked_output_weights.dtype == (
-            jnp.uint8
-            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
-            else self.config.embedding_quantization_mode.dtype
-        )
         if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
-        output_scales = require_array(weights["output_scales"])
-        output_biases = require_array(weights["output_biases"])
-        assert input_weights.shape == self.input_weights.shape
-        assert input_weights.dtype == self.input_weights.dtype
-        assert unpacked_output_weights.shape == self.output_weights.shape
-        assert output_scales.shape == self.output_scales.shape
-        assert output_scales.dtype == self.output_scales.dtype
-        assert output_biases.shape == self.output_biases.shape
-        assert output_biases.dtype == self.output_biases.dtype
+        elif unpacked_output_weights.dtype != self.config.embedding_quantization_mode.dtype:
+            raise ValueError(
+                "Expected packed output embedding weights to have dtype"
+                f" {self.config.embedding_quantization_mode.dtype},"
+                f" got {unpacked_output_weights.dtype}",
+            )
         return replace(
             self,
             input_weights=input_weights,
             output_weights=unpacked_output_weights.astype(self.output_weights.dtype),
-            output_scales=output_scales,
-            output_biases=output_biases,
+            output_scales=require_array(weights["output_scales"]),
+            output_biases=require_array(weights["output_biases"]),
         )
 
 

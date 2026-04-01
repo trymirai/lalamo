@@ -61,7 +61,6 @@ from lalamo.common import (
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distill_runner import (
     ComputeDTypeName,
-    DistillCallbacks,
     DistillConfig,
     DistillResult,
     OptimizerName,
@@ -821,7 +820,8 @@ def generate_replies(
 
 
 @dataclass
-class CliDistillCallbacks(DistillCallbacks):
+class CliDistillCallbacks:
+    config: DistillConfig
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
     task: TaskID | None = None
@@ -907,7 +907,7 @@ def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
         config_json = json.load(config_file)
     model_config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
     try:
-        quantization_mode = _single_quantization_mode(model_config.model_config)
+        quantization_mode = _single_quantization_mode(model_config.model_config.empty())
     except ValueError as error:
         raise BadParameter(
             str(error) + "; use `distill-advanced` for mixed-bit models",
@@ -982,13 +982,14 @@ def distill(
         case DistillRecipe.SMOKE:
             config = replace(
                 config,
-                train_examples=16,
-                eval_examples=8,
-                max_sequence_length=128,
-                batch_size=2,
+                train_examples=8,
+                eval_examples=4,
+                max_sequence_length=64,
+                batch_size=1,
                 num_steps=5 if steps is None else steps,
-                learning_rate=3e-7,
-                optimizer_name=OptimizerName.MUON,
+                learning_rate=3e-5,
+                optimizer_name=OptimizerName.ADAMW,
+                lora_rank=32,
                 eval_every_steps=1,
                 save_checkpoints=False,
             )
