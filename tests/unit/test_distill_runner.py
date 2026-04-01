@@ -87,6 +87,7 @@ def _make_language_model(
             tokenize_request=tokenize_request,
             tokenizer=SimpleNamespace(
                 to_str=lambda: tokenizer_signature,
+                get_vocab=lambda: {tokenizer_signature: 0},
                 get_vocab_size=lambda: tokenizer_vocab_size,
             ),
         ),
