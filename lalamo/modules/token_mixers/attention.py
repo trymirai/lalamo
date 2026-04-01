@@ -164,31 +164,24 @@ def _standard_attention(
     keys = _repeat_kv(keys, group_size)
     values = _repeat_kv(values, group_size)
 
-    # jax.nn.dot_product_attention expects (batch heads tokens channels) but we don't have batch here
-    q = rearrange(queries, "tokens heads hidden -> heads tokens hidden")
-    k = rearrange(keys, "tokens heads hidden -> heads tokens hidden")
-    v = rearrange(values, "tokens heads hidden -> heads tokens hidden")
-
+    # jax.nn.dot_product_attention expects (tokens, heads, hidden) — same as our layout, no rearrange needed
     if upcast_dtype is not None:
-        q = q.astype(upcast_dtype)
-        k = k.astype(upcast_dtype)
-        v = v.astype(upcast_dtype)
+        queries = queries.astype(upcast_dtype)
+        keys = keys.astype(upcast_dtype)
+        values = values.astype(upcast_dtype)
 
-    if mask is not None:
-        attn_mask = rearrange(mask, "dst src -> 1 dst src")
-    else:
-        attn_mask = None
+    attn_mask = rearrange(mask, "dst src -> 1 dst src") if mask is not None else None
 
     result = jax.nn.dot_product_attention(
-        q,
-        k,
-        v,
+        queries,
+        keys,
+        values,
         bias=bias,
         mask=attn_mask,
         scale=scale,
         implementation=implementation,
     )
-    return rearrange(result, "heads tokens hidden -> tokens heads hidden").astype(original_dtype)
+    return result.astype(original_dtype)
 
 
 def _dispatch_attention(
