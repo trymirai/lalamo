@@ -63,6 +63,7 @@ dev = [
     "tiktoken>=0.12.0",
     "omegaconf>=2.3.0",
     "blobfile>=3.1.0",
+    "httpx>=0.28.0",
 ]
 
 [project.scripts]
@@ -116,7 +117,10 @@ qwen-tts = { git="https://github.com/trymirai/Qwen3-TTS.git", tag="cab8d85" }
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
 # addopts = "--jaxtyping-packages=lalamo,beartype.beartype"
-addopts = ["--dist=loadgroup"]
+# addopts = ["--dist=loadgroup"]
+# log_cli = true
+# log_cli_level = "INFO"
+markers = ["fast: quick smoke tests"]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"

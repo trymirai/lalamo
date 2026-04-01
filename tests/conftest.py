@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import shutil
+import tempfile
 from collections.abc import Callable, Generator
 from pathlib import Path
 
@@ -13,7 +15,7 @@ from lalamo.main import app
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.model_registry import ModelRegistry
 from tests.common import tolerance
-from tests.resource_slots import resource_slots
+from tests.model_test_tiers import TIER_BY_REPO, ModelSize, ModelTier, model_size
 
 # Keep this explicit. "default" is not the same as leaving the setting unset:
 # unset lets JAX pick backend-specific behavior ("auto"), which can route to
@@ -23,16 +25,45 @@ from tests.resource_slots import resource_slots
 # Be careful when raising this precision for correctness baselines.
 jax.config.update("jax_default_matmul_precision", "default")
 
+FAST_MARKER = pytest.mark.fast
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    for item in items:
+        if "/unit/" in str(item.fspath):
+            item.add_marker(FAST_MARKER)
+
+
 GPU_ATOL = 1e-3
 GPU_RTOL = 0.03
 
+ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
 
-@pytest.fixture(autouse=True)
-def _resource_slots(
-    request: pytest.FixtureRequest,
-    tmp_path_factory: pytest.TempPathFactory,
-) -> Generator[None]:
-    yield from resource_slots(request, tmp_path_factory)
+
+def filter_specs(
+    *,
+    model_type: ModelType | None = None,
+    max_tier: ModelTier | None = None,
+    repos: frozenset[str] | None = None,
+) -> tuple[ModelSpec, ...]:
+    specs = ALL_MODEL_SPECS
+    if model_type is not None:
+        specs = tuple(spec for spec in specs if spec.model_type == model_type)
+    if max_tier is not None:
+        specs = tuple(spec for spec in specs if TIER_BY_REPO.get(spec.origin.description, ModelTier.EXTRA) <= max_tier)
+    if repos is not None:
+        specs = tuple(spec for spec in specs if spec.origin.description in repos)
+    return specs
+
+
+SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
+    ModelSize.SMALL: pytest.mark.small_model,
+    ModelSize.LARGE: pytest.mark.large_model,
+}
+
+
+def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[ModelSpec | pytest.param]:
+    return [pytest.param(spec, marks=SIZE_MARKS[model_size(spec)]) for spec in specs]
 
 
 @pytest.fixture(autouse=True)
@@ -45,29 +76,42 @@ def _gpu_tolerance() -> Generator[None]:
 
 
 RunLalamo = Callable[..., str]
-ConvertModel = Callable[[str], Path]
+
+
+class ConvertModel:
+    def __init__(self, registry: ModelRegistry) -> None:
+        self._registry = registry
+        self._cache: dict[str, Path] = {}
+        self._local_dirs: list[Path] = []
+
+    def _convert(self, repo: str) -> Path:
+        output_dir = Path(tempfile.mkdtemp()) / repo.replace("/", "__")
+        convert(self._registry.repo_to_model[repo], output_dir)
+        return output_dir
+
+    def __call__(self, repo: str, *, cached: bool = False) -> Path:
+        if cached:
+            if repo not in self._cache:
+                self._cache[repo] = self._convert(repo)
+            return self._cache[repo]
+
+        output_dir = self._convert(repo)
+        self._local_dirs.append(output_dir.parent)
+        return output_dir
+
+    def cleanup_local(self) -> None:
+        for local_dir in self._local_dirs:
+            shutil.rmtree(local_dir, ignore_errors=True)
+        self._local_dirs.clear()
+
+    def cleanup_all(self) -> None:
+        self.cleanup_local()
+        for output_dir in self._cache.values():
+            shutil.rmtree(output_dir.parent, ignore_errors=True)
+        self._cache.clear()
+
 
 ANSI_ESCAPE_REGEX = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
-
-ALL_MODEL_SPECS: tuple[ModelSpec, ...] = ModelRegistry.build(allow_third_party_plugins=False).models
-
-LLM_SPECS: tuple[ModelSpec, ...] = tuple(
-    spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.LANGUAGE_MODEL
-)
-TTS_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in ALL_MODEL_SPECS if spec.model_type == ModelType.TTS_MODEL)
-
-_CORE_LLM_REPOS: frozenset[str] = frozenset(
-    {
-        "Qwen/Qwen2.5-0.5B-Instruct",
-        "LiquidAI/LFM2-700M",
-        "google/gemma-3-1b-it",
-        "meta-llama/Llama-3.2-1B-Instruct",
-        "cartesia-ai/Llamba-1B",
-        "mlx-community/Qwen3.5-0.8B-MLX-4bit",
-    }
-)
-
-CORE_LLM_SPECS: tuple[ModelSpec, ...] = tuple(spec for spec in LLM_SPECS if spec.origin.description in _CORE_LLM_REPOS)
 
 
 def strip_ansi_escape(text: str) -> str:
@@ -96,34 +140,13 @@ def model_registry() -> ModelRegistry:
 
 
 @pytest.fixture(scope="session")
-def convert_model(
-    model_registry: ModelRegistry,
-    tmp_path_factory: pytest.TempPathFactory,
-) -> ConvertModel:
-    def _convert(repo: str) -> Path:
-        output_dir = tmp_path_factory.getbasetemp() / "converted_models" / repo.replace("/", "__")
-        if not (output_dir / "config.json").exists():
-            convert(model_registry.repo_to_model[repo], output_dir)
-        return output_dir
-
-    return _convert
+def _convert_model_session(model_registry: ModelRegistry) -> Generator[ConvertModel, None, None]:
+    converter = ConvertModel(model_registry)
+    yield converter
+    converter.cleanup_all()
 
 
-@pytest.fixture(params=ALL_MODEL_SPECS, ids=[spec.origin.description for spec in ALL_MODEL_SPECS])
-def all_model_specs(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-@pytest.fixture(params=LLM_SPECS, ids=[spec.origin.description for spec in LLM_SPECS])
-def llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-@pytest.fixture(params=TTS_SPECS, ids=[spec.origin.description for spec in TTS_SPECS])
-def tts_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
-
-
-@pytest.fixture(params=CORE_LLM_SPECS, ids=[spec.origin.description for spec in CORE_LLM_SPECS])
-def core_llm_spec(request: pytest.FixtureRequest) -> ModelSpec:
-    return request.param
+@pytest.fixture
+def convert_model(_convert_model_session: ConvertModel) -> Generator[ConvertModel, None, None]:
+    yield _convert_model_session
+    _convert_model_session.cleanup_local()

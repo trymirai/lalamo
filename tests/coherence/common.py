@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-import requests
+import httpx
 
 from tests.conftest import strip_ansi_escape
 
@@ -39,18 +39,20 @@ def _load_examples(path: Path | str = Path(__file__).parent / "prompt_spec.toml"
 
     examples = [
         FewShotExample(
-            output=e["output"],
-            verdict=CoherenceVerdict(coherent=True, score=e["score"], summary=e["summary"], issues=tuple(e["issues"])),
-        )
-        for e in data.get("coherent", [])
-    ] + [
-        FewShotExample(
-            output=e["output"],
+            output=example["output"],
             verdict=CoherenceVerdict(
-                coherent=False, score=e["score"], summary=e["summary"], issues=tuple(e["issues"])
+                coherent=True, score=example["score"], summary=example["summary"], issues=tuple(example["issues"])
             ),
         )
-        for e in data.get("incoherent", [])
+        for example in data.get("coherent", [])
+    ] + [
+        FewShotExample(
+            output=example["output"],
+            verdict=CoherenceVerdict(
+                coherent=False, score=example["score"], summary=example["summary"], issues=tuple(example["issues"])
+            ),
+        )
+        for example in data.get("incoherent", [])
     ]
 
     return task_prompt, examples
@@ -152,7 +154,7 @@ def judge(
     for attempt in range(max_retries):
         temperature = 0.0 if attempt == 0 else 0.5
         try:
-            resp = requests.post(
+            resp = httpx.post(
                 OPENROUTER_ENDPOINT,
                 headers={
                     "Authorization": f"Bearer {api_key}",

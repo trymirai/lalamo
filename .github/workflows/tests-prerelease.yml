@@ -26,8 +26,24 @@ jobs:
   config:
     uses: ./.github/workflows/config.yml
 
-  conversion-and-coherence:
-    name: Conversion & Coherence
+  coherence-small:
+    name: "Coherence (small)"
+    runs-on: [github-n2hmem16]
+    needs: [config]
+    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest tests/coherence -m small_model -vs
+
+  coherence-large:
+    name: "Coherence (large)"
     runs-on: [github-n2hmem32]
     needs: [config]
     if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
@@ -40,7 +56,23 @@ jobs:
 
       - name: Run pytest
         run: |
-          pytest tests/conversion tests/coherence -n 4
+          pytest tests/coherence -m large_model -vs
+
+  tts-coherence:
+    name: "TTS Coherence"
+    runs-on: [github-n2hmem16]
+    needs: [config]
+    if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+        with:
+          dev: 'true'
+
+      - name: Run pytest
+        run: |
+          pytest tests/coherence/test_tts_coherence.py
 
   latest-deps:
     name: "Latest Deps: ${{ matrix.suite }} (${{ matrix.device }}) / ${{ matrix.python }}"
@@ -55,7 +87,7 @@ jobs:
         device: [cpu, gpu]
         include:
           - device: cpu
-            runner: '["ubuntu-latest"]'
+            runner: '["cpu"]' # ubuntu-latest does not have enough RAM (?) to run these
           - device: gpu
             runner: '["self-hosted", "linux", "gpu"]'
           - python: py313
