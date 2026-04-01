@@ -253,7 +253,7 @@ def _has_tokenizer_compatibility(
     return (
         student_tokenizer.get_vocab() == teacher_tokenizer.get_vocab()
         and student_vocab_size == teacher_vocab_size
-        and student_model.model.vocab_size == student_vocab_size
+        and student_model.model.vocab_size >= student_vocab_size
         and teacher_model.model.vocab_size >= teacher_vocab_size
     )
 
@@ -302,7 +302,7 @@ def _validate_distill_models(
     quantization_mode: QuantizationMode,
 ) -> None:
     if not _has_tokenizer_compatibility(student_model, teacher_model):
-        raise ValueError("Teacher and student must use identical tokenizers and message processor configs")
+        raise ValueError("Teacher and student must use identical tokenizers")
 
     student_quantization_mode = _single_quantization_mode(student_model.config.model_config)
     if student_quantization_mode is not None and quantization_mode != student_quantization_mode:

@@ -193,6 +193,14 @@ def test_validate_distill_models_accepts_teacher_with_extra_vocab_tail() -> None
     )
 
 
+def test_validate_distill_models_accepts_shared_extra_vocab_tail() -> None:
+    _validate_distill_models(
+        _make_language_model(tokenizer_vocab_size=32, model_vocab_size=40),
+        _make_language_model(tokenizer_vocab_size=32, model_vocab_size=40),
+        quantization_mode=QuantizationMode.UINT4,
+    )
+
+
 @pytest.mark.parametrize(
     ("config", "error_message"),
     [
