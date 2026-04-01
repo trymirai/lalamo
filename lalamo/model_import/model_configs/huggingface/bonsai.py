@@ -14,7 +14,6 @@ from lalamo.modules import (
     NormalizationConfig,
     TransformerConfig,
     TransformerLayerConfig,
-    UnscaledRoPEConfig,
     UpcastMode,
     YARNRoPEConfig,
 )
@@ -31,6 +30,8 @@ class BonsaiYarnRopeScalingConfig:
     rope_type: Literal["yarn"]
     factor: float
     original_max_position_embeddings: int
+    # HuggingFace YARN defaults, not present in Bonsai's config.json:
+    # https://github.com/huggingface/transformers/blob/6abd9725ee7d809dc974991f8ff6c958afb63a3a/src/transformers/modeling_rope_utils.py#L591
     beta_fast: float = 32.0
     beta_slow: float = 1.0
 
@@ -43,21 +44,19 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     hidden_size: int
     intermediate_size: int
     max_position_embeddings: int
-    max_window_layers: int
     model_type: Literal["qwen3"]
     num_attention_heads: int
     num_hidden_layers: int
     num_key_value_heads: int
     rms_norm_eps: float
     rope_theta: float
-    sliding_window: int | None
+    rope_scaling: BonsaiYarnRopeScalingConfig
     tie_word_embeddings: bool
     use_sliding_window: bool
     vocab_size: int
     head_dim: int
 
     quantization: QuantizationConfigType = None
-    rope_scaling: BonsaiYarnRopeScalingConfig | None = None
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
 
     def to_decoder_config(
@@ -67,9 +66,8 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        assert isinstance(self.quantization, MLXQuantizationConfig), (
-            "HFBonsaiConfig requires MLX quantization config"
-        )
+        assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
+        assert not self.use_sliding_window, "Sliding window attention is not supported for Bonsai"
         quantization = self.quantization
         quantization_mode = QuantizationMode.from_num_bits(quantization.bits)
 
@@ -92,23 +90,16 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
                 activation_precision=activation_precision,
             )
 
-        if self.rope_scaling is not None:
-            rope_config = YARNRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
-                scaling_factor=self.rope_scaling.factor,
-                original_context_length=self.rope_scaling.original_max_position_embeddings,
-                beta_fast=self.rope_scaling.beta_fast,
-                beta_slow=self.rope_scaling.beta_slow,
-                truncate=True,
-            )
-        else:
-            rope_config = UnscaledRoPEConfig(
-                precision=activation_precision,
-                base=self.rope_theta,
-                max_sequence_length=context_length or self.max_position_embeddings,
-            )
+        rope_config = YARNRoPEConfig(
+            precision=activation_precision,
+            base=self.rope_theta,
+            max_sequence_length=context_length or self.max_position_embeddings,
+            scaling_factor=self.rope_scaling.factor,
+            original_context_length=self.rope_scaling.original_max_position_embeddings,
+            beta_fast=self.rope_scaling.beta_fast,
+            beta_slow=self.rope_scaling.beta_slow,
+            truncate=True,
+        )
 
         rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,
@@ -173,5 +164,4 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             embedding_config=embedding_config,
             transformer_config=transformer_config,
             vocab_size=self.vocab_size,
-            pard_token=None,
         )

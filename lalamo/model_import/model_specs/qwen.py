@@ -1,4 +1,10 @@
-from lalamo.model_import.model_configs import HFBonsaiConfig, HFQwen2Config, HFQwen3Config, HFQwen3NextConfig, HFQwen35Config
+from lalamo.model_import.model_configs import (
+    HFBonsaiConfig,
+    HFQwen2Config,
+    HFQwen3Config,
+    HFQwen3NextConfig,
+    HFQwen35Config,
+)
 from lalamo.quantization import QuantizationMode
 
 from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType
