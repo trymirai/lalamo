@@ -5,6 +5,7 @@ import jax.tree_util as jtu
 import optax
 import pytest
 from jax.tree_util import keystr
+from types import SimpleNamespace
 
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.distillation import (
@@ -36,6 +37,16 @@ from lalamo.quantization import QuantizationMode
 class AliasModule(eqx.Module):
     left: jax.Array = field()
     right: jax.Array = field()
+
+
+class _ExtraVocabDecoder(eqx.Module):
+    inner: Decoder
+    extra_vocab: int = eqx.field(static=True)
+
+    def __call__(self, *, token_ids: jax.Array, token_positions: jax.Array) -> SimpleNamespace:
+        logits = self.inner(token_ids=token_ids, token_positions=token_positions).logits
+        tail = jnp.zeros(logits.shape[:-1] + (self.extra_vocab,), dtype=logits.dtype)
+        return SimpleNamespace(logits=jnp.concatenate([logits, tail], axis=-1))
 
 
 def _make_optimizer_state(
@@ -210,6 +221,21 @@ def test_compute_distill_batch_metrics_matches_teacher_logits() -> None:
     )
 
     metrics = compute_distill_batch_metrics(decoder, decoder, batch)
+
+    assert metrics.valid_tokens == 5
+    assert metrics.top1_matches == 5
+    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
+
+
+def test_compute_distill_batch_metrics_ignores_teacher_vocab_tail() -> None:
+    decoder = _make_tiny_llama_decoder(key=jax.random.key(35))
+    teacher = _ExtraVocabDecoder(decoder, extra_vocab=4)
+    batch = DistillBatch(
+        token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
+        lengths_without_padding=jnp.array([6], dtype=jnp.int32),
+    )
+
+    metrics = compute_distill_batch_metrics(decoder, teacher, batch)
 
     assert metrics.valid_tokens == 5
     assert metrics.top1_matches == 5

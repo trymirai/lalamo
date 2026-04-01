@@ -246,9 +246,15 @@ def _has_tokenizer_compatibility(
     student_model: LanguageModel,
     teacher_model: LanguageModel,
 ) -> bool:
+    student_tokenizer = student_model.message_processor.tokenizer
+    teacher_tokenizer = teacher_model.message_processor.tokenizer
+    student_vocab_size = student_tokenizer.get_vocab_size()
+    teacher_vocab_size = teacher_tokenizer.get_vocab_size()
     return (
-        student_model.message_processor.tokenizer.to_str() == teacher_model.message_processor.tokenizer.to_str()
-        and student_model.model.vocab_size == teacher_model.model.vocab_size
+        student_tokenizer.to_str() == teacher_tokenizer.to_str()
+        and student_vocab_size == teacher_vocab_size
+        and student_model.model.vocab_size == student_vocab_size
+        and teacher_model.model.vocab_size >= teacher_vocab_size
     )
 
 

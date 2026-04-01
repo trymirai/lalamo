@@ -452,6 +452,8 @@ def compute_distill_batch_metrics(
 ) -> DistillBatchMetrics:
     teacher_logits = _decoder_logits(teacher, batch).astype(jnp.float32)
     student_logits = _decoder_logits(student, batch).astype(jnp.float32)
+    assert teacher_logits.shape[-1] >= student_logits.shape[-1]
+    teacher_logits = teacher_logits[..., : student_logits.shape[-1]]
 
     teacher_log_probs = jax.nn.log_softmax(teacher_logits, axis=-1)
     student_log_probs = jax.nn.log_softmax(student_logits, axis=-1)

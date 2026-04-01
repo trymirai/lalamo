@@ -68,6 +68,8 @@ def _make_language_model(
     tokenizer_signature: str = "shared-tokenizer",
     quantization_mode: QuantizationMode = QuantizationMode.UINT4,
     message_processor_config: str = "default",
+    tokenizer_vocab_size: int = 32,
+    model_vocab_size: int = 32,
     tokenize_request: Callable[[object], list[int]] | None = None,
 ) -> SimpleNamespace:
     if tokenize_request is None:
@@ -80,10 +82,13 @@ def _make_language_model(
             model_config=_StubModelConfig(weight_quantization_mode=quantization_mode),
             message_processor_config=message_processor_config,
         ),
-        model=SimpleNamespace(activation_precision=jnp.float32, vocab_size=32),
+        model=SimpleNamespace(activation_precision=jnp.float32, vocab_size=model_vocab_size),
         message_processor=SimpleNamespace(
             tokenize_request=tokenize_request,
-            tokenizer=SimpleNamespace(to_str=lambda: tokenizer_signature),
+            tokenizer=SimpleNamespace(
+                to_str=lambda: tokenizer_signature,
+                get_vocab_size=lambda: tokenizer_vocab_size,
+            ),
         ),
     )
 
@@ -175,6 +180,14 @@ def test_validate_distill_models_accepts_different_prompt_templates_with_same_to
     _validate_distill_models(
         _make_language_model(message_processor_config="bonsai"),
         _make_language_model(message_processor_config="qwen"),
+        quantization_mode=QuantizationMode.UINT4,
+    )
+
+
+def test_validate_distill_models_accepts_teacher_with_extra_vocab_tail() -> None:
+    _validate_distill_models(
+        _make_language_model(tokenizer_vocab_size=32, model_vocab_size=32),
+        _make_language_model(tokenizer_vocab_size=32, model_vocab_size=40),
         quantization_mode=QuantizationMode.UINT4,
     )
 
