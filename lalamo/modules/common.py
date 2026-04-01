@@ -344,6 +344,8 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
                 item = value[key]
                 visit(item, owner=owner, field=field, path=(*path, jtu.DictKey(key)))
             return
+        if not _is_leaf_array(value):
+            return
         entries.append(_FieldValueEntry(path=path, value=value, owner=owner, field=field))
 
     for field in dataclasses.fields(module):
@@ -356,13 +358,9 @@ def _field_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
     return entries
 
 
-def _leaf_value_entries(module: eqx.Module) -> list[_FieldValueEntry]:
-    return [entry for entry in _field_value_entries(module) if _is_leaf_array(entry.value)]
-
-
 def field_metadata_by_leaf_id(module: eqx.Module) -> dict[int, FieldMetadataInfo]:
     field_metadata: dict[int, FieldMetadataInfo] = {}
-    for entry in _leaf_value_entries(module):
+    for entry in _field_value_entries(module):
         field_metadata.setdefault(id(entry.value), FieldMetadataInfo(owner=entry.owner, field=entry.field))
     return field_metadata
 
@@ -383,7 +381,7 @@ def _parameter_leaf_entries(module: eqx.Module) -> list[_ParameterLeafEntry]:
     canonical_by_leaf_id: dict[int, tuple[int, str]] = {}
     results: list[_ParameterLeafEntry] = []
 
-    for entry in _leaf_value_entries(module):
+    for entry in _field_value_entries(module):
         leaf = entry.value
         metadata = entry.field.metadata
         path = keystr(entry.path).lstrip(".")

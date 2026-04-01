@@ -66,7 +66,7 @@ from lalamo.distill_runner import (
     DistillResult,
     OptimizerName,
     TrainingMode,
-    _iter_quantization_modes,
+    _single_quantization_mode,
 )
 from lalamo.distill_runner import (
     distill as _distill,
@@ -824,8 +824,7 @@ def generate_replies(
 class CliDistillCallbacks(DistillCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
     progress: Progress | None = None
-    loading_task: TaskID | None = None
-    training_task: TaskID | None = None
+    task: TaskID | None = None
 
     def started(self) -> None:
         self.progress = self.stack.enter_context(
@@ -840,43 +839,41 @@ class CliDistillCallbacks(DistillCallbacks):
 
     def loading_models(self) -> None:
         assert self.progress is not None
-        self.loading_task = self.progress.add_task("[cyan]Loading teacher and student...[/cyan]", total=None)
+        self.task = self.progress.add_task("[cyan]Loading teacher and student...[/cyan]", total=None)
 
     def finished_loading_models(self) -> None:
         assert self.progress is not None
-        assert self.loading_task is not None
-        self.progress.remove_task(self.loading_task)
-        self.loading_task = None
+        assert self.task is not None
+        self.progress.remove_task(self.task)
+        self.task = None
 
     def loading_dataset(self) -> None:
         assert self.progress is not None
-        self.loading_task = self.progress.add_task("[cyan]Loading dataset...[/cyan]", total=None)
+        self.task = self.progress.add_task("[cyan]Loading dataset...[/cyan]", total=None)
 
     def finished_loading_dataset(self) -> None:
         assert self.progress is not None
-        assert self.loading_task is not None
-        self.progress.remove_task(self.loading_task)
-        self.loading_task = None
-        self.training_task = self.progress.add_task(
+        assert self.task is not None
+        self.progress.remove_task(self.task)
+        self.task = self.progress.add_task(
             "[cyan]Distilling...[/cyan]",
             total=self.config.num_steps,
         )
 
     def distillation_progress(self, step: int, num_steps: int) -> None:
         assert self.progress is not None
-        if self.training_task is None:
-            self.training_task = self.progress.add_task("[cyan]Distilling...[/cyan]", total=num_steps)
-        self.progress.update(self.training_task, completed=step)
+        assert self.task is not None
+        self.progress.update(self.task, completed=step, total=num_steps)
 
     def saving_model(self) -> None:
         assert self.progress is not None
-        if self.training_task is not None:
-            self.progress.update(self.training_task, description="[cyan]Saving model...[/cyan]")
+        assert self.task is not None
+        self.progress.update(self.task, description="[cyan]Saving model...[/cyan]")
 
     def finished_saving_model(self, output_model_path: Path) -> None:
         assert self.progress is not None
-        if self.training_task is not None:
-            self.progress.update(self.training_task, description="Completed")
+        assert self.task is not None
+        self.progress.update(self.task, description="Completed")
         console.print(f"Distilled model saved to [cyan]{output_model_path}[/cyan]")
 
     def finished(self, result: DistillResult) -> None:
@@ -909,16 +906,16 @@ def _infer_student_quantization_mode(student_path: Path) -> QuantizationMode:
     with (student_path / "config.json").open() as config_file:
         config_json = json.load(config_file)
     model_config = config_converter.structure(config_json["model_config"], LanguageModelConfig)
-    quantization_modes = _iter_quantization_modes(model_config.model_config)
-    if not quantization_modes:
-        raise BadParameter("Student model does not appear to be quantized", param_hint="student_path")
-    if len(quantization_modes) > 1:
+    try:
+        quantization_mode = _single_quantization_mode(model_config.model_config)
+    except ValueError as error:
         raise BadParameter(
-            "Recipe-driven distill currently supports a single quantization bitness per student model;"
-            " use `distill-advanced` for mixed-bit models",
+            str(error) + "; use `distill-advanced` for mixed-bit models",
             param_hint="student_path",
-        )
-    return next(iter(quantization_modes))
+        ) from error
+    if quantization_mode is None:
+        raise BadParameter("Student model does not appear to be quantized", param_hint="student_path")
+    return quantization_mode
 
 
 def _default_distill_output_dir(student_path: Path, recipe: DistillRecipe) -> Path:
@@ -1009,7 +1006,7 @@ def distill(
                 optimizer_name=OptimizerName.ADAMW,
                 lora_rank=32,
             )
-    _distill(config, callbacks_type=CliDistillCallbacks)
+    _distill(config, callbacks=CliDistillCallbacks(config))
 
 
 @app.command(
@@ -1137,38 +1134,36 @@ def distill_advanced(
         Option(help="Persist latest and best checkpoints."),
     ] = True,
 ) -> None:
-    _distill(
-        DistillConfig(
-            teacher_path=teacher_path,
-            student_path=student_path,
-            dataset_path=dataset_path,
-            output_dir=output_dir,
-            training_mode=training_mode,
-            train_examples=train_examples,
-            eval_examples=eval_examples,
-            max_sequence_length=max_sequence_length,
-            batch_size=batch_size,
-            num_steps=num_steps,
-            learning_rate=learning_rate,
-            warmup_steps=warmup_steps,
-            gradient_clip_norm=gradient_clip_norm,
-            gradient_accumulation_steps=gradient_accumulation_steps,
-            optimizer_name=optimizer,
-            quantization_mode=quantization_mode,
-            lora_rank=lora_rank,
-            lora_scale=lora_scale,
-            compute_dtype_name=compute_dtype_name,
-            eval_every_steps=eval_every_steps,
-            checkpoint_every_steps=checkpoint_every_steps,
-            early_stop_patience=early_stop_patience,
-            resume_from=resume_from,
-            num_devices=num_devices,
-            seed=seed,
-            stochastic_rounding=stochastic_rounding,
-            save_checkpoints=save_checkpoints,
-        ),
-        callbacks_type=CliDistillCallbacks,
+    config = DistillConfig(
+        teacher_path=teacher_path,
+        student_path=student_path,
+        dataset_path=dataset_path,
+        output_dir=output_dir,
+        training_mode=training_mode,
+        train_examples=train_examples,
+        eval_examples=eval_examples,
+        max_sequence_length=max_sequence_length,
+        batch_size=batch_size,
+        num_steps=num_steps,
+        learning_rate=learning_rate,
+        warmup_steps=warmup_steps,
+        gradient_clip_norm=gradient_clip_norm,
+        gradient_accumulation_steps=gradient_accumulation_steps,
+        optimizer_name=optimizer,
+        quantization_mode=quantization_mode,
+        lora_rank=lora_rank,
+        lora_scale=lora_scale,
+        compute_dtype_name=compute_dtype_name,
+        eval_every_steps=eval_every_steps,
+        checkpoint_every_steps=checkpoint_every_steps,
+        early_stop_patience=early_stop_patience,
+        resume_from=resume_from,
+        num_devices=num_devices,
+        seed=seed,
+        stochastic_rounding=stochastic_rounding,
+        save_checkpoints=save_checkpoints,
     )
+    _distill(config, callbacks=CliDistillCallbacks(config))
 
 
 speculator_app = Typer()

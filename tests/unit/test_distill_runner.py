@@ -123,8 +123,6 @@ def test_load_tokenized_conversations_skips_short_rows_and_keeps_later_examples(
 
 def test_shard_distill_batches_rejects_partial_batches() -> None:
     dataset = LoadedDistillBatches(
-        train_examples=3,
-        eval_examples=2,
         train_batches=[
             DistillBatch(
                 token_ids=jnp.ones((3, 4), dtype=jnp.int32),
@@ -144,34 +142,6 @@ def test_shard_distill_batches_rejects_partial_batches() -> None:
         pytest.raises(ValueError, match="Batch size 3 is not divisible by num_devices=2"),
     ):
         _shard_distill_batches(dataset, object(), num_devices=2)
-
-
-def test_shard_distill_batches_keeps_truthful_counts() -> None:
-    dataset = LoadedDistillBatches(
-        train_examples=999,
-        eval_examples=999,
-        train_batches=[
-            DistillBatch(
-                token_ids=jnp.ones((2, 4), dtype=jnp.int32),
-                lengths_without_padding=jnp.ones((2,), dtype=jnp.int32),
-            ),
-        ],
-        eval_batches=[
-            DistillBatch(
-                token_ids=jnp.ones((4, 4), dtype=jnp.int32),
-                lengths_without_padding=jnp.ones((4,), dtype=jnp.int32),
-            ),
-        ],
-    )
-
-    with (
-        patch("lalamo.distill_runner.NamedSharding", return_value=None),
-        patch("lalamo.distill_runner.eqx.filter_shard", side_effect=lambda batch, _sharding: batch),
-    ):
-        sharded = _shard_distill_batches(dataset, object(), num_devices=2)
-
-    assert sharded.train_examples == 2
-    assert sharded.eval_examples == 4
 
 
 @pytest.mark.parametrize(
@@ -291,8 +261,6 @@ def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_p
         patch(
             "lalamo.distill_runner._load_distill_batches",
             return_value=LoadedDistillBatches(
-                train_examples=1,
-                eval_examples=1,
                 train_batches=[batch],
                 eval_batches=[batch],
             ),
@@ -382,8 +350,6 @@ def test_distill_uses_final_eval_as_best_step_without_periodic_eval(tmp_path: Pa
         patch(
             "lalamo.distill_runner._load_distill_batches",
             return_value=LoadedDistillBatches(
-                train_examples=1,
-                eval_examples=1,
                 train_batches=[batch],
                 eval_batches=[batch],
             ),

@@ -55,7 +55,6 @@ __all__ = [
     "ComputeDTypeName",
     "DistillCallbacks",
     "DistillConfig",
-    "DistillConfigSnapshot",
     "DistillResult",
     "EvaluationMetrics",
     "OptimizerName",
@@ -96,16 +95,8 @@ type DistillBatchLike = DistillBatch | TraceDistillBatch
 
 @dataclass(frozen=True)
 class LoadedDistillBatches:
-    train_examples: int
-    eval_examples: int
     train_batches: Sequence[DistillBatchLike]
     eval_batches: Sequence[DistillBatchLike]
-
-
-@dataclass(frozen=True)
-class DistillConfigSnapshot:
-    master_dtype: str
-    compute_dtype: str
 
 
 @dataclass(frozen=True)
@@ -114,16 +105,6 @@ class CheckpointMetadata:
     best_eval_kl: float | None
     best_step: int | None
     evaluations_without_improvement: int
-
-
-@dataclass(frozen=True)
-class HistoryEntry:
-    step: int
-    train_kl_divergence: float
-    valid_tokens: int
-    eval_kl_divergence: float | None = None
-    eval_top1_agreement: float | None = None
-    eval_valid_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -176,7 +157,8 @@ class DistillResult:
     seed: int
     optimizer: OptimizerName
     quantization_mode: str
-    distill_config: DistillConfigSnapshot
+    master_dtype: str
+    compute_dtype: str
     parameter_summary: DistillParameterSummary
     initial_eval: EvaluationMetrics
     final_eval: EvaluationMetrics
@@ -296,6 +278,18 @@ def _iter_quantization_modes(config: object) -> set[QuantizationMode]:
     return quantization_modes
 
 
+def _single_quantization_mode(config: object) -> QuantizationMode | None:
+    quantization_modes = _iter_quantization_modes(config)
+    if not quantization_modes:
+        return None
+    if len(quantization_modes) > 1:
+        raise ValueError(
+            "Distillation currently supports a single quantization bitness per student model;"
+            f" got {sorted(mode.value for mode in quantization_modes)}",
+        )
+    return next(iter(quantization_modes))
+
+
 def _validate_distill_models(
     student_model: LanguageModel,
     teacher_model: LanguageModel,
@@ -305,16 +299,11 @@ def _validate_distill_models(
     if not _has_tokenizer_compatibility(student_model, teacher_model):
         raise ValueError("Teacher and student must use identical tokenizers and message processor configs")
 
-    student_quantization_modes = _iter_quantization_modes(student_model.config.model_config)
-    if len(student_quantization_modes) > 1:
-        raise ValueError(
-            "Distillation currently supports a single quantization bitness per student model;"
-            f" got {sorted(mode.value for mode in student_quantization_modes)}",
-        )
-    if student_quantization_modes and quantization_mode not in student_quantization_modes:
+    student_quantization_mode = _single_quantization_mode(student_model.config.model_config)
+    if student_quantization_mode is not None and quantization_mode != student_quantization_mode:
         raise ValueError(
             f"Requested stochastic rounding mode {quantization_mode.value} does not match the student model"
-            f" quantization mode {next(iter(student_quantization_modes)).value}",
+            f" quantization mode {student_quantization_mode.value}",
         )
 
 
@@ -339,90 +328,55 @@ def _make_batches(
     return batches
 
 
-def _make_trace_batches(
-    traces: Sequence[LalamoCompletion],
-    *,
-    batch_size: int,
-    pad_token_id: int,
-) -> list[TraceDistillBatch]:
-    return [
-        make_trace_distill_batch(traces[start : start + batch_size], pad_token_id=pad_token_id)
-        for start in range(0, len(traces), batch_size)
-    ]
-
-
-def _load_online_exact_batches(
-    config: DistillConfig,
-    student_model: LanguageModel,
-    *,
-    device_batch_size: int,
-) -> LoadedDistillBatches:
-    requested_examples = config.train_examples + config.eval_examples
-    tokenized = _load_tokenized_conversations(
-        config.dataset_path,
-        seed=config.seed,
-        language_model=student_model,
-        max_sequence_length=config.max_sequence_length,
-        num_examples=requested_examples,
-    )
-    if len(tokenized) < requested_examples:
-        raise ValueError(
-            f"Requested {requested_examples} usable sequences, got {len(tokenized)} from {config.dataset_path}",
-        )
-
-    return LoadedDistillBatches(
-        train_examples=config.train_examples,
-        eval_examples=config.eval_examples,
-        train_batches=_make_batches(
-            tokenized[: config.train_examples],
-            batch_size=device_batch_size,
-            fixed_sequence_length=config.max_sequence_length,
-        ),
-        eval_batches=_make_batches(
-            tokenized[config.train_examples : requested_examples],
-            batch_size=device_batch_size,
-            fixed_sequence_length=config.max_sequence_length,
-        ),
-    )
-
-
-def _load_trace_topk_batches(
-    config: DistillConfig,
-    *,
-    device_batch_size: int,
-) -> LoadedDistillBatches:
-    requested_examples = config.train_examples + config.eval_examples
-    traces = _load_traces(config.dataset_path, num_examples=requested_examples)
-    if len(traces) < requested_examples:
-        raise ValueError(f"Requested {requested_examples} traces, got {len(traces)} from {config.dataset_path}")
-
-    return LoadedDistillBatches(
-        train_examples=config.train_examples,
-        eval_examples=config.eval_examples,
-        train_batches=_make_trace_batches(
-            traces[: config.train_examples],
-            batch_size=device_batch_size,
-            pad_token_id=0,
-        ),
-        eval_batches=_make_trace_batches(
-            traces[config.train_examples : requested_examples],
-            batch_size=device_batch_size,
-            pad_token_id=0,
-        ),
-    )
-
-
 def _load_distill_batches(
     config: DistillConfig,
     student_model: LanguageModel,
     *,
     device_batch_size: int,
 ) -> LoadedDistillBatches:
+    requested_examples = config.train_examples + config.eval_examples
     match config.training_mode:
         case TrainingMode.ONLINE_EXACT:
-            return _load_online_exact_batches(config, student_model, device_batch_size=device_batch_size)
+            tokenized = _load_tokenized_conversations(
+                config.dataset_path,
+                seed=config.seed,
+                language_model=student_model,
+                max_sequence_length=config.max_sequence_length,
+                num_examples=requested_examples,
+            )
+            if len(tokenized) < requested_examples:
+                raise ValueError(
+                    "Requested"
+                    f" {requested_examples} usable sequences, got {len(tokenized)} from {config.dataset_path}",
+                )
+            return LoadedDistillBatches(
+                train_batches=_make_batches(
+                    tokenized[: config.train_examples],
+                    batch_size=device_batch_size,
+                    fixed_sequence_length=config.max_sequence_length,
+                ),
+                eval_batches=_make_batches(
+                    tokenized[config.train_examples : requested_examples],
+                    batch_size=device_batch_size,
+                    fixed_sequence_length=config.max_sequence_length,
+                ),
+            )
         case TrainingMode.TRACE_TOPK:
-            return _load_trace_topk_batches(config, device_batch_size=device_batch_size)
+            traces = _load_traces(config.dataset_path, num_examples=requested_examples)
+            if len(traces) < requested_examples:
+                raise ValueError(
+                    f"Requested {requested_examples} traces, got {len(traces)} from {config.dataset_path}",
+                )
+            return LoadedDistillBatches(
+                train_batches=[
+                    make_trace_distill_batch(traces[start : start + device_batch_size], pad_token_id=0)
+                    for start in range(0, config.train_examples, device_batch_size)
+                ],
+                eval_batches=[
+                    make_trace_distill_batch(traces[start : start + device_batch_size], pad_token_id=0)
+                    for start in range(config.train_examples, requested_examples, device_batch_size)
+                ],
+            )
 
 
 def _shard_distill_batches(
@@ -444,8 +398,6 @@ def _shard_distill_batches(
         dataset,
         train_batches=[eqx.filter_shard(batch, batch_sharding) for batch in dataset.train_batches],
         eval_batches=[eqx.filter_shard(batch, batch_sharding) for batch in dataset.eval_batches],
-        train_examples=sum(batch.token_ids.shape[0] for batch in dataset.train_batches),
-        eval_examples=sum(batch.token_ids.shape[0] for batch in dataset.eval_batches),
     )
 
 
@@ -637,7 +589,7 @@ def distill(
     config: DistillConfig,
     *,
     trainable_filter: Callable[[ParameterLeafInfo], bool] | None = None,
-    callbacks_type: Callable[[DistillConfig], DistillCallbacks] = DistillCallbacks,
+    callbacks: DistillCallbacks | None = None,
 ) -> DistillResult:
     if config.train_examples < 1:
         raise ValueError("train_examples must be at least 1")
@@ -657,7 +609,7 @@ def distill(
     mesh = _setup_device_mesh(config.num_devices)
     device_batch_size = config.batch_size * config.num_devices
 
-    callbacks = callbacks_type(config)
+    callbacks = DistillCallbacks(config) if callbacks is None else callbacks
     callbacks.started()
 
     # Models
@@ -919,15 +871,19 @@ def distill(
                     if config.early_stop_patience > 0 and patience_exceeded:
                         stopped_early = True
 
-            history_entry = HistoryEntry(
-                step=step,
-                train_kl_divergence=float(train_metrics.loss),
-                valid_tokens=int(train_metrics.valid_tokens),
-                eval_kl_divergence=None if eval_metrics is None else eval_metrics.kl_divergence,
-                eval_top1_agreement=None if eval_metrics is None else eval_metrics.top1_agreement,
-                eval_valid_tokens=None if eval_metrics is None else eval_metrics.valid_tokens,
+            history_file.write(
+                json.dumps(
+                    {
+                        "step": step,
+                        "train_kl_divergence": float(train_metrics.loss),
+                        "valid_tokens": int(train_metrics.valid_tokens),
+                        "eval_kl_divergence": None if eval_metrics is None else eval_metrics.kl_divergence,
+                        "eval_top1_agreement": None if eval_metrics is None else eval_metrics.top1_agreement,
+                        "eval_valid_tokens": None if eval_metrics is None else eval_metrics.valid_tokens,
+                    }
+                )
+                + "\n"
             )
-            history_file.write(json.dumps(asdict(history_entry)) + "\n")
             history_file.flush()
             executed_steps += 1
             completed_steps = step
@@ -994,8 +950,8 @@ def distill(
         student_path=str(config.student_path),
         dataset_path=str(config.dataset_path),
         training_mode=config.training_mode,
-        train_examples=dataset.train_examples,
-        eval_examples=dataset.eval_examples,
+        train_examples=config.train_examples,
+        eval_examples=config.eval_examples,
         max_sequence_length=config.max_sequence_length,
         batch_size=config.batch_size,
         num_steps=config.num_steps,
@@ -1007,10 +963,8 @@ def distill(
         seed=config.seed,
         optimizer=config.optimizer_name,
         quantization_mode=config.quantization_mode.value,
-        distill_config=DistillConfigSnapshot(
-            master_dtype=str(jnp.dtype(distill_config.master_dtype)),
-            compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
-        ),
+        master_dtype=str(jnp.dtype(distill_config.master_dtype)),
+        compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
         parameter_summary=parameter_summary,
         initial_eval=initial_eval,
         final_eval=final_eval,

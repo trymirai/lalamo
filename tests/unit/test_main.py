@@ -43,7 +43,7 @@ def test_distill_cli_invokes_recipe(
     assert result.exit_code == 0
     assert mock_distill.call_count == 1
     config = mock_distill.call_args.args[0]
-    assert mock_distill.call_args.kwargs["callbacks_type"] is CliDistillCallbacks
+    assert isinstance(mock_distill.call_args.kwargs["callbacks"], CliDistillCallbacks)
     assert mock_infer_quantization_mode.call_args.args == (student_path,)
     assert config.teacher_path == teacher_path
     assert config.student_path == student_path
@@ -92,7 +92,7 @@ def test_distill_advanced_cli_invokes_runner(mock_distill: Mock, tmp_path: Path)
 
     assert result.exit_code == 0
     assert mock_distill.call_count == 1
-    assert mock_distill.call_args.kwargs["callbacks_type"] is CliDistillCallbacks
+    assert isinstance(mock_distill.call_args.kwargs["callbacks"], CliDistillCallbacks)
 
     config = mock_distill.call_args.args[0]
     assert config.teacher_path == teacher_path

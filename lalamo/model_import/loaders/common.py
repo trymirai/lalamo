@@ -1,5 +1,4 @@
 from collections.abc import Callable, Iterable
-from typing import Any
 
 import equinox as eqx
 import jax
@@ -11,6 +10,7 @@ from jaxtyping import PyTree
 from lalamo.modules.common import (
     FieldMetadataInfo,
     ShardingConfig,
+    _is_leaf_array,
     field_metadata_by_leaf_id,
     get_current_sharding_config,
 )
@@ -18,10 +18,6 @@ from lalamo.modules.common import (
 __all__ = [
     "load_parameters",
 ]
-
-
-def _is_leaf_array(value: Any) -> bool:  # noqa: ANN401
-    return eqx.is_array(value) or isinstance(value, jax.ShapeDtypeStruct)
 
 
 def _apply_parameter_sharding(
