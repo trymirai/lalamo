@@ -13,26 +13,6 @@ from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_read, safe_write
 
 
-def _parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--input-config", type=Path, required=True)
-    parser.add_argument("--input-weights", type=Path, required=True)
-    parser.add_argument("--output-config", type=Path, required=True)
-    parser.add_argument("--output-weights", type=Path, required=True)
-    parser.add_argument("--group-size", type=int, default=64)
-    parser.add_argument("--num-bits", type=int, default=8)
-    parser.add_argument("--num-iterations", type=int, default=1)
-    parser.add_argument("--epsilon", type=float, default=1e-5)
-    parser.add_argument("--validation-output", type=Path)
-    return parser.parse_args()
-
-
-def _load_flat_weights(path: Path) -> dict[str, jax.Array]:
-    with path.open("rb") as weights_file:
-        _, flat_weights = safe_read(weights_file)
-    return dict(flat_weights.items())
-
-
 def _compute_validation_metrics(
     original_embedding: EmbeddingBase,
     quantized_embedding: EmbeddingBase,
@@ -61,19 +41,26 @@ def _compute_validation_metrics(
 
 
 def main() -> None:
-    args = _parse_args()
+    parser = argparse.ArgumentParser()
+    for name in ("input-config", "input-weights", "output-config", "output-weights"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--group-size", type=int, default=64)
+    parser.add_argument("--num-bits", type=int, default=8)
+    parser.add_argument("--num-iterations", type=int, default=1)
+    parser.add_argument("--epsilon", type=float, default=1e-5)
+    args = parser.parse_args()
 
     metadata = config_converter.structure(json.loads(args.input_config.read_text()), ModelMetadata)
     assert isinstance(metadata.model_config, LanguageModelConfig)
     embedding_config = metadata.model_config.model_config.embedding_config
     assert isinstance(embedding_config, TiedEmbeddingConfig)
 
-    flat_weights = _load_flat_weights(args.input_weights)
+    with args.input_weights.open("rb") as weights_file:
+        flat_weights = dict(safe_read(weights_file)[1].items())
     embedding_weights = flat_weights["embedding.weights"]
-    original_embedding = embedding_config.empty(
-        vocab_size=embedding_weights.shape[0],
-        model_dim=embedding_weights.shape[1],
-    ).import_weights({"weights": embedding_weights})
+    original_embedding = embedding_config.empty(*embedding_weights.shape).import_weights(
+        {"weights": embedding_weights}
+    )
 
     quantized_embedding = quantize_tied_embedding_to_mlx(
         original_embedding,
@@ -85,31 +72,23 @@ def main() -> None:
         epsilon=args.epsilon,
     )
 
-    updated_model_config = replace(
-        metadata.model_config.model_config,
-        embedding_config=quantized_embedding.config,
-    )
     updated_metadata = replace(
         metadata,
-        model_config=replace(metadata.model_config, model_config=updated_model_config),
+        model_config=replace(
+            metadata.model_config,
+            model_config=replace(metadata.model_config.model_config, embedding_config=quantized_embedding.config),
+        ),
     )
-    exported_weights = quantized_embedding.export_weights()
+    for key, value in quantized_embedding.export_weights().items():
+        flat_weights[f"embedding.{key}"] = value
 
-    flat_weights["embedding.weights"] = exported_weights["weights"]
-    flat_weights["embedding.scales"] = exported_weights["scales"]
-    flat_weights["embedding.biases"] = exported_weights["biases"]
-
-    args.output_config.parent.mkdir(parents=True, exist_ok=True)
-    args.output_weights.parent.mkdir(parents=True, exist_ok=True)
+    for path in (args.output_config, args.output_weights):
+        path.parent.mkdir(parents=True, exist_ok=True)
     args.output_config.write_text(json.dumps(config_converter.unstructure(updated_metadata, ModelMetadata), indent=4))
     with args.output_weights.open("wb") as weights_file:
         safe_write(weights_file, flat_weights)
 
-    metrics = _compute_validation_metrics(original_embedding, quantized_embedding)
-    if args.validation_output is not None:
-        args.validation_output.parent.mkdir(parents=True, exist_ok=True)
-        args.validation_output.write_text(json.dumps(metrics, indent=4))
-    print(json.dumps(metrics, indent=4))
+    print(json.dumps(_compute_validation_metrics(original_embedding, quantized_embedding), indent=4))
 
 
 if __name__ == "__main__":
