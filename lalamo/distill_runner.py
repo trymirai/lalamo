@@ -247,8 +247,7 @@ def _has_tokenizer_compatibility(
     teacher_model: LanguageModel,
 ) -> bool:
     return (
-        student_model.config.message_processor_config == teacher_model.config.message_processor_config
-        and student_model.message_processor.tokenizer.to_str() == teacher_model.message_processor.tokenizer.to_str()
+        student_model.message_processor.tokenizer.to_str() == teacher_model.message_processor.tokenizer.to_str()
         and student_model.model.vocab_size == teacher_model.model.vocab_size
     )
 

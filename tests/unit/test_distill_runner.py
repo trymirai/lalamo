@@ -171,6 +171,14 @@ def test_validate_distill_models_rejects_invalid_inputs(
         _validate_distill_models(student_model, teacher_model, quantization_mode=quantization_mode)
 
 
+def test_validate_distill_models_accepts_different_prompt_templates_with_same_tokenizer() -> None:
+    _validate_distill_models(
+        _make_language_model(message_processor_config="bonsai"),
+        _make_language_model(message_processor_config="qwen"),
+        quantization_mode=QuantizationMode.UINT4,
+    )
+
+
 @pytest.mark.parametrize(
     ("config", "error_message"),
     [
