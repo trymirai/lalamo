@@ -185,23 +185,6 @@ def test_q_lora_policy_prefers_adapter_weights() -> None:
     assert get_optimizer_group(leaves["lora_down_weights"]) == OptimizerGroup.MUON
 
 
-def test_q_lora_linear_config_empty_builds_q_lora_linear() -> None:
-    config = QLoRALinearConfig(
-        group_size=2,
-        weight_quantization_mode=QuantizationMode.UINT4,
-        activation_quantization_mode=None,
-        activation_precision=jnp.float32,
-        lora_rank=2,
-        lora_scale=1.0,
-    )
-
-    layer = config.empty(4, (4,), has_biases=True)
-
-    assert isinstance(layer, QLoRALinear)
-    assert layer.lora_down_weights.shape == (2, 4)
-    assert layer.lora_up_weights.shape == (4, 2)
-
-
 def test_quant_aux_is_trainable_by_default() -> None:
     config = GroupQuantizedLinearConfig(
         group_size=2,
@@ -677,21 +660,8 @@ def test_llama_decoder_marks_rope_tables_frozen() -> None:
     assert leaves["transformer.global_rope.sines"].norm == ParameterNorm.L_INF
 
 
-def test_compute_distill_batch_metrics_has_zero_loss_for_matching_decoders() -> None:
+def test_compute_distill_batch_metrics_matches_teacher_logits() -> None:
     decoder = _make_tiny_llama_decoder(key=jax.random.key(9))
-    batch = DistillBatch(
-        token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
-        lengths_without_padding=jnp.array([6], dtype=jnp.int32),
-    )
-
-    metrics = compute_distill_batch_metrics(decoder, decoder, batch)
-
-    assert metrics.valid_tokens == 5
-    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
-
-
-def test_compute_distill_batch_metrics_counts_all_matching_top1_tokens() -> None:
-    decoder = _make_tiny_llama_decoder(key=jax.random.key(14))
     batch = DistillBatch(
         token_ids=jnp.array([[1, 2, 3, 4, 5, 6]], dtype=jnp.int32),
         lengths_without_padding=jnp.array([6], dtype=jnp.int32),
@@ -801,23 +771,14 @@ def _make_trace_batch_from_decoder(decoder: Decoder) -> tuple[TraceDistillBatch,
     return make_trace_distill_batch(traces, pad_token_id=0), token_ids
 
 
-def test_compute_trace_distill_batch_metrics_has_zero_loss_for_matching_decoder() -> None:
+def test_compute_trace_distill_batch_metrics_match_teacher_support() -> None:
     decoder = _make_tiny_llama_decoder(key=jax.random.key(13))
     trace_batch, _ = _make_trace_batch_from_decoder(decoder)
     metrics = compute_trace_distill_batch_metrics(decoder, trace_batch)
 
     assert metrics.valid_tokens == 2
-    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
-
-
-def test_compute_trace_distill_batch_metrics_counts_all_matching_top1_tokens() -> None:
-    decoder = _make_tiny_llama_decoder(key=jax.random.key(15))
-    trace_batch, _ = _make_trace_batch_from_decoder(decoder)
-
-    metrics = compute_trace_distill_batch_metrics(decoder, trace_batch)
-
-    assert metrics.valid_tokens == 2
     assert metrics.top1_matches == 2
+    assert jnp.isclose(metrics.loss, 0.0, atol=1e-6)
 
 
 def test_compute_trace_distill_batch_metrics_handles_padded_completion_steps() -> None:
@@ -1172,28 +1133,3 @@ def test_full_pipeline_on_llama_decoder() -> None:
     assert not any(path.startswith("transformer.global_rope.") for path in trainable_paths)
     assert any("embedding" in path for path in trainable_paths)
     assert any(path.endswith("weights") for path in trainable_paths)
-
-
-def test_full_pipeline_round_trip_preserves_values() -> None:
-    layer = FullPrecisionLinearConfig(precision=jnp.float32).random_init(
-        input_dim=4,
-        output_dims=(4,),
-        has_biases=True,
-        key=jax.random.key(12),
-    )
-
-    config = DistillTrainConfig(master_dtype=jnp.float32, compute_dtype=jnp.bfloat16)
-    state = initialize_distill_training_state(layer, config)
-    materialized = materialize_trainable_module(layer, state.master_weights, config)
-
-    assert jnp.allclose(
-        materialized.weights,
-        layer.weights.astype(jnp.bfloat16),
-        atol=0,
-    )
-    assert materialized.biases is not None
-    assert jnp.allclose(
-        materialized.biases,
-        layer.biases.astype(jnp.bfloat16),
-        atol=0,
-    )

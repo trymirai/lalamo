@@ -7,6 +7,7 @@ from unittest.mock import patch
 import jax
 import jax.numpy as jnp
 import optax
+import polars as pl
 import pytest
 
 from lalamo.distill_runner import (
@@ -40,25 +41,6 @@ class _StubLanguageModelConfig:
     message_processor_config: str = "default"
 
 
-class _FakeColumn:
-    def __init__(self, values: list[object]) -> None:
-        self._values = values
-
-    def to_list(self) -> list[object]:
-        return self._values
-
-
-class _FakeDataFrame:
-    def __init__(self, column_name: str, values: list[object]) -> None:
-        self.columns = [column_name]
-        self._column_name = column_name
-        self._values = values
-
-    def get_column(self, name: str) -> _FakeColumn:
-        assert name == self._column_name
-        return _FakeColumn(self._values)
-
-
 _EMPTY_PARAMETER_SUMMARY = DistillParameterSummary(
     total_parameters=0,
     trainable_parameters=0,
@@ -90,6 +72,7 @@ def _make_language_model(
     tokenize_request: Callable[[object], list[int]] | None = None,
 ) -> SimpleNamespace:
     if tokenize_request is None:
+
         def tokenize_request(_messages: object) -> list[int]:
             return [1, 2, 3]
 
@@ -148,13 +131,14 @@ def test_accumulate_train_step_handles_nested_gradient_pytrees() -> None:
 
 
 def test_load_tokenized_conversations_skips_short_rows_and_keeps_later_examples() -> None:
-    dataframe = _FakeDataFrame(
-        "messages",
-        [
-            [{"role": "user", "content": "drop"}],
-            [{"role": "user", "content": "keep-one"}],
-            [{"role": "user", "content": "keep-two"}],
-        ],
+    dataframe = pl.DataFrame(
+        {
+            "messages": [
+                [{"role": "user", "content": "drop"}],
+                [{"role": "user", "content": "keep-one"}],
+                [{"role": "user", "content": "keep-two"}],
+            ],
+        },
     )
     language_model = _make_language_model(
         tokenize_request=lambda messages: {
@@ -232,32 +216,47 @@ def test_shard_distill_batches_keeps_truthful_counts() -> None:
     assert sharded.eval_examples == 4
 
 
-def test_validate_distill_models_rejects_mismatched_tokenizers() -> None:
-    with pytest.raises(ValueError, match="identical tokenizers"):
-        _validate_distill_models(
+@pytest.mark.parametrize(
+    ("student_model", "teacher_model", "quantization_mode", "error_message"),
+    [
+        (
             _make_language_model(tokenizer_signature="student"),
             _make_language_model(tokenizer_signature="teacher"),
-            quantization_mode=QuantizationMode.UINT4,
-        )
-
-
-def test_validate_distill_models_rejects_quantization_mode_mismatch() -> None:
-    with pytest.raises(ValueError, match="does not match the student model quantization mode"):
-        _validate_distill_models(
+            QuantizationMode.UINT4,
+            "identical tokenizers",
+        ),
+        (
             _make_language_model(quantization_mode=QuantizationMode.UINT8),
             _make_language_model(quantization_mode=QuantizationMode.UINT8),
-            quantization_mode=QuantizationMode.UINT4,
-        )
+            QuantizationMode.UINT4,
+            "does not match the student model quantization mode",
+        ),
+    ],
+)
+def test_validate_distill_models_rejects_invalid_inputs(
+    student_model: SimpleNamespace,
+    teacher_model: SimpleNamespace,
+    quantization_mode: QuantizationMode,
+    error_message: str,
+) -> None:
+    with pytest.raises(ValueError, match=error_message):
+        _validate_distill_models(student_model, teacher_model, quantization_mode=quantization_mode)
 
 
-def test_distill_rejects_zero_eval_examples(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="eval_examples must be at least 1"):
-        distill(replace(_make_config(tmp_path), eval_examples=0))
-
-
-def test_distill_rejects_online_exact_sequence_length_below_two(tmp_path: Path) -> None:
-    with pytest.raises(ValueError, match="max_sequence_length >= 2"):
-        distill(replace(_make_config(tmp_path), max_sequence_length=1))
+@pytest.mark.parametrize(
+    ("config", "error_message"),
+    [
+        (lambda config: replace(config, eval_examples=0), "eval_examples must be at least 1"),
+        (lambda config: replace(config, max_sequence_length=1), "max_sequence_length >= 2"),
+    ],
+)
+def test_distill_rejects_invalid_config(
+    tmp_path: Path,
+    config: Callable[[DistillConfig], DistillConfig],
+    error_message: str,
+) -> None:
+    with pytest.raises(ValueError, match=error_message):
+        distill(config(_make_config(tmp_path)))
 
 
 def test_distill_restores_best_in_memory_state_when_not_saving_checkpoints(tmp_path: Path) -> None:
