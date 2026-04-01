@@ -311,12 +311,12 @@ class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT
     biases: Float[Array, "*components total_out_channels"] | None
 
     @abstractmethod
-    def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]: ...
+    def _dequantize_weights(self) -> Float[Array, "*components in_channels total_out_channels"]: ...
 
     def _apply_weights(self, inputs: Float[Array, " in_channels"]) -> Float[Array, " total_out_channels"]:
         if self.config.activation_quantization_mode is not None:
             inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
-        return self._prepare_scaled_weights() @ inputs
+        return self._dequantize_weights() @ inputs
 
     @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
@@ -541,7 +541,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
                     f" equal to number of output channels in weights ({output_dim}).",
                 )
 
-    def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
+    def _dequantize_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
         group_count = self.config.group_count(self.input_dim)
         quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
@@ -790,7 +790,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
                     f" equal to number of output channels in weights ({output_dim}).",
                 )
 
-    def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
+    def _dequantize_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
         group_count = self.config.group_count(self.input_dim)
         quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
@@ -1038,6 +1038,8 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         return tuple(jnp.split(joint_out, self.get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterTree:
+        # Keep one explicit on-disk shape contract for QLoRA weights:
+        # down_weights = (lora_rank, input_dim), up_weights = (output_dim, lora_rank).
         return dict(
             down_weights=self.lora_down_weights,
             up_weights=self.lora_up_weights,
@@ -1050,19 +1052,10 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
         params = _linear_params(weights)
-        down_weights = require_array(params["down_weights"])
-        if down_weights.shape[-2:] == (self.input_dim, self.config.lora_rank):
-            down_weights = jnp.swapaxes(down_weights, -1, -2)
-        up_weights = params["up_weights"]
-        if isinstance(up_weights, Sequence):
-            up_weights = jnp.concatenate(
-                tuple(jnp.swapaxes(require_array(weight), -1, -2) for weight in up_weights),
-                axis=-2,
-            )
         return replace(
             base,
-            lora_down_weights=down_weights,
-            lora_up_weights=require_array(up_weights),
+            lora_down_weights=require_array(params["down_weights"]),
+            lora_up_weights=require_array(params["up_weights"]),
         )
 
 

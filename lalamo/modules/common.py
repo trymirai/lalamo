@@ -352,7 +352,7 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
     results: list[ParameterLeafInfo] = []
     for path, leaf, field_info in _parameter_arrays_with_metadata(module):
         metadata = field_info.field.metadata
-        quantized = metadata.get("quantized", False)
+        quantized = metadata["quantized"]
         results.append(
             ParameterLeafInfo(
                 path=path,
@@ -360,12 +360,12 @@ def iter_parameter_leaves(module: eqx.Module) -> list[ParameterLeafInfo]:
                 field_name=field_info.field.name,
                 shape=tuple(leaf.shape),
                 dtype=jnp.dtype(leaf.dtype),
-                trainable=metadata.get("trainable", True),
-                norm=metadata.get("norm", ParameterNorm.SPECTRAL),
+                trainable=metadata["trainable"],
+                norm=metadata["norm"],
                 quantized=quantized,
                 quantization_mode=field_info.owner.config.quantization if quantized else None,
-                tensor_sharding=metadata.get("tensor_sharding"),
-                min_size_to_shard=metadata.get("min_size_to_shard", 0),
+                tensor_sharding=metadata["tensor_sharding"],
+                min_size_to_shard=metadata["min_size_to_shard"],
             )
         )
     return results
@@ -397,7 +397,6 @@ def combine_parameter_leaves[M: eqx.Module](
     module: M,
     replacements: M,
 ) -> M:
-    iter_parameter_leaves(module)
     return eqx.combine(replacements, module)
 
 

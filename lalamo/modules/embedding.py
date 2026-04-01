@@ -85,7 +85,7 @@ def _pack_embedding_weights(
     return quantized
 
 
-def _materialize_mlx_embedding_weights(
+def _dequantize_mlx_embedding_weights(
     weights: Float[Array, "vocabulary channels"],
     scales: Float[Array, "vocabulary groups"],
     biases: Float[Array, "vocabulary groups"],
@@ -442,7 +442,7 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
 
     @eqx.filter_jit
     def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
-        result = _materialize_mlx_embedding_weights(
+        result = _dequantize_mlx_embedding_weights(
             self.weights,
             self.scales,
             self.biases,
@@ -458,7 +458,7 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         logits = (
-            _materialize_mlx_embedding_weights(
+            _dequantize_mlx_embedding_weights(
                 self.weights,
                 self.scales,
                 self.biases,
@@ -580,7 +580,7 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
 
     @eqx.filter_jit
     def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
-        result = _materialize_mlx_embedding_weights(
+        result = _dequantize_mlx_embedding_weights(
             self.input_weights,
             self.input_scales,
             self.input_biases,
@@ -596,7 +596,7 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         logits = (
-            _materialize_mlx_embedding_weights(
+            _dequantize_mlx_embedding_weights(
                 self.output_weights,
                 self.output_scales,
                 self.output_biases,
@@ -737,7 +737,7 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         if self.config.activation_quantization_mode is not None:
             x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
         logits = (
-            _materialize_mlx_embedding_weights(
+            _dequantize_mlx_embedding_weights(
                 self.output_weights,
                 self.output_scales,
                 self.output_biases,

@@ -698,8 +698,8 @@ def distill(
     # Checkpoint state
     train_key = jax.random.key(config.seed)
     completed_steps = 0
-    best_eval_kl: float | None = None
-    best_step: int | None = None
+    checkpoint_best_eval_kl: float | None = None
+    checkpoint_best_step: int | None = None
     best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
     evaluations_without_improvement = 0
     resume_best_checkpoint_dir: Path | None = None
@@ -714,12 +714,12 @@ def distill(
         optimizer_state = checkpoint.optimizer_state
         train_key = jax.random.wrap_key_data(checkpoint.train_key_data)
         completed_steps = checkpoint_metadata.step
-        best_eval_kl = checkpoint_metadata.best_eval_kl
-        best_step = checkpoint_metadata.best_step
+        checkpoint_best_eval_kl = checkpoint_metadata.best_eval_kl
+        checkpoint_best_step = checkpoint_metadata.best_step
         evaluations_without_improvement = checkpoint_metadata.evaluations_without_improvement
-        if best_step == completed_steps:
+        if checkpoint_best_step == completed_steps:
             best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
-        if best_step is not None and best_step != completed_steps:
+        if checkpoint_best_step is not None and checkpoint_best_step != completed_steps:
             resume_best_checkpoint_dir = Path(config.resume_from).parent / "best-checkpoint"
             if not resume_best_checkpoint_dir.exists():
                 raise ValueError(
@@ -748,18 +748,20 @@ def distill(
         dataset.eval_batches,
     )
 
-    if best_eval_kl is None:
+    if checkpoint_best_eval_kl is None:
         best_eval_kl = initial_eval.kl_divergence
         best_step = completed_steps
         best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
+    else:
+        best_eval_kl = checkpoint_best_eval_kl
+        assert checkpoint_best_step is not None
+        best_step = checkpoint_best_step
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
     latest_checkpoint_dir = config.output_dir / "latest-checkpoint"
     best_checkpoint_dir = config.output_dir / "best-checkpoint"
 
     def save_checkpoint(checkpoint_dir: Path, step: int) -> None:
-        assert best_eval_kl is not None
-        assert best_step is not None
         _save_checkpoint(
             checkpoint_dir,
             ExperimentCheckpoint(
@@ -773,17 +775,6 @@ def distill(
                 evaluations_without_improvement=evaluations_without_improvement,
             ),
         )
-
-    def update_best(step: int, eval_kl: float) -> bool:
-        nonlocal best_eval_kl, best_step, best_master_weights
-        if best_eval_kl is not None and eval_kl >= best_eval_kl:
-            return False
-        best_eval_kl = eval_kl
-        best_step = step
-        best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
-        if config.save_checkpoints:
-            save_checkpoint(best_checkpoint_dir, step)
-        return True
 
     if config.save_checkpoints:
         if resume_best_checkpoint_dir is not None and resume_best_checkpoint_dir != best_checkpoint_dir:
@@ -840,7 +831,12 @@ def distill(
                     teacher_model.model,
                     dataset.eval_batches,
                 )
-                if update_best(step, eval_metrics.kl_divergence):
+                if eval_metrics.kl_divergence < best_eval_kl:
+                    best_eval_kl = eval_metrics.kl_divergence
+                    best_step = step
+                    best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
+                    if config.save_checkpoints:
+                        save_checkpoint(best_checkpoint_dir, step)
                     evaluations_without_improvement = 0
                 else:
                     evaluations_without_improvement += 1
@@ -879,9 +875,7 @@ def distill(
     elapsed_seconds = time.perf_counter() - run_start
     measured_steps = max(executed_steps - 1, 0)
 
-    should_restore_best_checkpoint = (
-        performed_periodic_evaluation and best_step is not None and best_step != completed_steps
-    )
+    should_restore_best_checkpoint = performed_periodic_evaluation and best_step != completed_steps
     if should_restore_best_checkpoint:
         if config.save_checkpoints and best_checkpoint_dir.exists():
             best_checkpoint, _ = _load_checkpoint(
@@ -913,7 +907,12 @@ def distill(
         teacher_model.model,
         dataset.eval_batches,
     )
-    update_best(completed_steps, final_eval.kl_divergence)
+    if final_eval.kl_divergence < best_eval_kl:
+        best_eval_kl = final_eval.kl_divergence
+        best_step = completed_steps
+        best_master_weights = _copy_master_weights(optimizer_state.training_state.master_weights)
+        if config.save_checkpoints:
+            save_checkpoint(best_checkpoint_dir, completed_steps)
 
     model_output_path = config.output_dir / "student-distilled"
     export_config = DistillTrainConfig(
