@@ -39,6 +39,4 @@ def fetch_available_models() -> list[RegistryModel]:
     response.raise_for_status()
 
     data = response.json()
-    models_data = data.get("models", [])
-
-    return [RegistryModel.from_dict(model_data) for model_data in models_data]
+    return [RegistryModel.from_dict(model_data) for model_data in data["models"]]

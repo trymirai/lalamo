@@ -139,7 +139,7 @@ class Qwen3TTSTalkerConfig:
     code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
     spk_id: dict[str, int]
     codec_language_id: dict[str, int]
-    layer_types: tuple[str, ...]
+    layer_types: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -367,6 +367,9 @@ def _build_text_decoder_config(
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
 
+    talker_layer_types = talker.layer_types or ("full_attention",) * talker.num_hidden_layers
+    predictor_layer_types = predictor.layer_types or ("full_attention",) * predictor.num_hidden_layers
+
     talker_transformer_config = build_transformer_config(
         precision=precision,
         hidden_size=talker.hidden_size,
@@ -380,7 +383,7 @@ def _build_text_decoder_config(
         rms_norm_eps=talker.rms_norm_eps,
         attention_bias=talker.attention_bias,
         sliding_window_sizes=tuple(
-            talker.sliding_window if lt == "sliding_attention" else None for lt in talker.layer_types
+            talker.sliding_window if lt == "sliding_attention" else None for lt in talker_layer_types
         ),
     )
     predictor_transformer_config = build_transformer_config(
@@ -396,7 +399,7 @@ def _build_text_decoder_config(
         rms_norm_eps=predictor.rms_norm_eps,
         attention_bias=predictor.attention_bias,
         sliding_window_sizes=tuple(
-            predictor.sliding_window if lt == "sliding_attention" else None for lt in predictor.layer_types
+            predictor.sliding_window if lt == "sliding_attention" else None for lt in predictor_layer_types
         ),
     )
 

@@ -4,9 +4,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import equinox as eqx
+import jax
+import numpy as np
 from jax import Array
 from jaxtyping import DTypeLike, PRNGKeyArray
-from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
 from lalamo.audio.tts_message_processor import (
@@ -66,9 +67,25 @@ class LatentTTSGenerator(eqx.Module):
         key: PRNGKeyArray | None = None,
         generation_config: LatentTTSGenerationConfig | None = None,
     ) -> TTSGenerationResult:
-        raise NotImplementedError(
-            "LatentTTSGenerator.generate_speech() must be implemented by a subclass "
-            "that knows how to prepare model-specific inputs (e.g. reference audio)."
+        if key is None:
+            key = jax.random.PRNGKey(0)
+        if generation_config is None:
+            generation_config = self.config.generation_config
+
+        output = self.latent_tts_model.generate_speech_from_messages(
+            messages,
+            self.message_processor,
+            self.config.latent_tts_config,
+            key=key,
+            generation_config=generation_config,
+        )
+
+        waveform_length = int(output.waveform_lengths[0])
+        waveform = np.array(output.waveform[0, :waveform_length], dtype=np.float32)
+
+        return TTSGenerationResult(
+            audio=waveform,
+            audio_params=self.get_generated_audio_params(),
         )
 
     @classmethod
@@ -87,11 +104,7 @@ class LatentTTSGenerator(eqx.Module):
             weights = unflatten_parameters(weights_dict)
             model = config.latent_tts_config.empty().import_weights(weights)
 
-        tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
+        tokenizer = config.latent_tts_config.create_tokenizer(path)
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
 
-        return cls(
-            config=config,
-            latent_tts_model=model,
-            message_processor=message_processor,
-        )
+        return cls(config=config, latent_tts_model=model, message_processor=message_processor)

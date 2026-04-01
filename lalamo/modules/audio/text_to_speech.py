@@ -29,7 +29,10 @@ def _registry_unstructure(base_cls: type) -> Callable[[object], dict | None]:  #
     def unstructure(obj: object) -> dict | None:
         if obj is None:
             return None
-        fields = {f.name: config_converter.unstructure(getattr(obj, f.name)) for f in dataclasses.fields(obj)}  # type: ignore[arg-type]
+        fields = {
+            f.name: config_converter.unstructure(getattr(obj, f.name), f.type)
+            for f in dataclasses.fields(obj)  # type: ignore[arg-type]
+        }
         return {"type": type(obj).__name__, **fields}
 
     return unstructure
@@ -42,7 +45,16 @@ def _registry_structure(base_cls: type[RegistryABC]) -> Callable[[dict | None, t
         new_data = dict(data)
         type_name = new_data.pop("type")
         name_to_type = {t.__name__: t for t in base_cls.__descendants__()}
-        target_type = name_to_type[type_name]
+        target_type = name_to_type.get(type_name)
+        if target_type is None:
+            # Plugin config classes are often registered via import-time side effects.
+            # When loading a converted model directly, those entry points may not have
+            # been imported yet, so load them lazily and retry resolution once.
+            from lalamo.model_registry import load_third_party_specs
+
+            load_third_party_specs("lalamo_plugins.specs.v1")
+            name_to_type = {t.__name__: t for t in base_cls.__descendants__()}
+            target_type = name_to_type[type_name]
         return make_dict_structure_fn(target_type, config_converter)(new_data, target_type)
 
     return structure
@@ -100,5 +112,5 @@ class TTSModel(LalamoModule[TTSConfig]):
             self,
             text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
             audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
-            vocoder=self.vocoder.import_weights(require_tree(weights["vocoder"])),
+            vocoder=self.vocoder.import_weights(require_tree(weights.get("vocoder", {}))),
         )

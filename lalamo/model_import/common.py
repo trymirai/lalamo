@@ -82,14 +82,13 @@ class ImportResults(NamedTuple):
 
 
 def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -> str | None:
-    if isinstance(token_ids, int):
-        token_ids = [token_ids]
-
-    if not isinstance(token_ids, list) or any((not isinstance(el, int)) for el in token_ids):
-        return None
-
-    decoded = tokenizer.decode(token_ids[:1], skip_special_tokens=False)
-    return decoded
+    match token_ids:
+        case int(tid):
+            return tokenizer.decode([tid], skip_special_tokens=False)
+        case [int(tid), *_]:
+            return tokenizer.decode([tid], skip_special_tokens=False)
+        case None:
+            return None
 
 
 def _instantiate_tokenizer_from_model_spec(
@@ -139,8 +138,8 @@ def import_message_processor(
     tokenizer.add_special_tokens(added_special_tokens)
     tokenizer.add_tokens(added_not_special_tokens)
 
-    bos_token = getattr(tokenizer_config, "bos_token", None)
-    eos_token = getattr(tokenizer_config, "eos_token", None)
+    bos_token = tokenizer_config.bos_token
+    eos_token = tokenizer_config.eos_token
 
     if eos_token is None or bos_token is None:
         foreign_decoder_config_file = model_spec.origin.resolve_file(
@@ -428,8 +427,6 @@ def _import_latent_tts_model(
         metadata_dict={},
     )
 
-    if not hasattr(latent_tts_config, "default_generation_config"):
-        raise ValueError(f"{type(latent_tts_config).__name__} must implement default_generation_config()")
     generation_config = latent_tts_config.default_generation_config()
     generator_config = LatentTTSGeneratorConfig(
         latent_tts_config=latent_tts_config,

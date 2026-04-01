@@ -1,9 +1,13 @@
 from abc import abstractmethod
+from collections.abc import Iterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from jaxtyping import Array, Float, Int, PRNGKeyArray
+from tokenizers import Tokenizer
 
+from lalamo.audio.tts_message_processor import TTSMessage, TTSMessageProcessor
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 
@@ -42,6 +46,17 @@ class LatentTTSModel[ConfigT](LalamoModule[ConfigT]):
     @abstractmethod
     def decode(self, predicted: Any) -> LatentTTSOutputs: ...  # noqa: ANN401
 
+    @abstractmethod
+    def generate_speech_from_messages(
+        self,
+        messages: Iterable[TTSMessage],
+        message_processor: TTSMessageProcessor,
+        latent_tts_config: "LatentTTSConfig",
+        *,
+        key: PRNGKeyArray,
+        generation_config: LatentTTSGenerationConfig,
+    ) -> LatentTTSOutputs: ...
+
 
 class LatentTTSConfig(RegistryABC):
     @abstractmethod
@@ -50,3 +65,9 @@ class LatentTTSConfig(RegistryABC):
     @property
     @abstractmethod
     def samplerate(self) -> int: ...
+
+    @abstractmethod
+    def default_generation_config(self) -> LatentTTSGenerationConfig: ...
+
+    def create_tokenizer(self, model_path: Path | str) -> Tokenizer:
+        return Tokenizer.from_file(str(Path(model_path) / "tokenizer.json"))

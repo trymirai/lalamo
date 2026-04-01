@@ -175,6 +175,7 @@ class Conv1d(LalamoModule[Conv1dConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
+        x = x.astype(self.weights.dtype)
         match self.padding_mode:
             case Conv1dPadding.CAUSAL:
                 output = self._call_causal(x)

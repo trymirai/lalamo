@@ -19,8 +19,6 @@ def play_mono_audio(audio: np.ndarray, samplerate: int, audio_chunk_size: int = 
     audio = np.clip(audio, -1.0, 1.0)
     # very dumb conversion to PCM16
     pcm_audio = (audio * np.iinfo(np.int16).max).astype(np.int16)
-
-    audio_chunk_size = 1024
     num_chunks = int(np.ceil(n_samples / audio_chunk_size))
 
     # actual size of each chunk might not be exactly 'audio_chunk_size' but not critical here

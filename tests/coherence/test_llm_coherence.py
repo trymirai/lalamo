@@ -57,7 +57,9 @@ def _generate_single(
     return pl.read_parquet(output_path).get_column("response").to_list()[0]
 
 
-@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.origin.description for s in standard_llm_specs])
+@pytest.mark.parametrize(
+    "spec", mark_by_size(standard_llm_specs), ids=[s.origin.description for s in standard_llm_specs]
+)
 def test_model_coherent_and_stops(
     spec: ModelSpec,
     convert_model: ConvertModel,

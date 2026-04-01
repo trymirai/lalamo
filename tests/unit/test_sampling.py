@@ -20,7 +20,9 @@ from tests.model_test_tiers import ModelTier
 standard_llm_specs = filter_specs(model_type=ModelType.LANGUAGE_MODEL, max_tier=ModelTier.STANDARD)
 
 
-@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.origin.description for s in standard_llm_specs])
+@pytest.mark.parametrize(
+    "spec", mark_by_size(standard_llm_specs), ids=[s.origin.description for s in standard_llm_specs]
+)
 def test_logit_processing(spec: ModelSpec) -> None:
     # TODO: lalamo should do greedy for do_sample=False
     generation_config = spec.configs.generation_config
