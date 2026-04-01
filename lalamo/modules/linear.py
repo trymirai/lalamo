@@ -2,7 +2,7 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import equinox as eqx
 import jax
@@ -880,14 +880,18 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         return result
 
     def export_weights(self) -> ParameterTree:
-        result = dict(
-            weights=self._quantized_weights_for_export(),
-            scales=self.scales,
-            deq_biases=self.deq_biases,
-        )
-        if self.biases is not None:
-            result["biases"] = self.biases
-        return result
+        if self.biases is None:
+            return {
+                "weights": self._quantized_weights_for_export(),
+                "scales": self.scales,
+                "deq_biases": self.deq_biases,
+            }
+        return {
+            "weights": self._quantized_weights_for_export(),
+            "scales": self.scales,
+            "deq_biases": self.deq_biases,
+            "biases": self.biases,
+        }
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = _unwrap_legacy_rht_linear_weights(weights)
@@ -906,14 +910,13 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             assert self.biases is not None
             assert new_biases.shape == self.biases.shape
             assert new_biases.dtype == self.biases.dtype
-        result = replace(
+        return replace(
             self,
             weights=unpacked_weights.astype(self.weights.dtype),
             scales=scales,
             deq_biases=deq_biases,
             biases=new_biases,
         )
-        return result
 
 
 class MLXQuantizedLinear(MLXQuantizedLinearBase[MLXQuantizedLinearConfig]):
@@ -1122,11 +1125,10 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         return tuple(jnp.split(joint_out, self.get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterTree:
-        quantized_linear_weights: dict[str, ParameterTree] = super().export_weights()  # type: ignore
         return dict(
             down_weights=self.lora_down_weights,
             up_weights=self.lora_up_weights,
-            **quantized_linear_weights,
+            **cast("dict[str, ParameterTree]", super().export_weights()),
         )
 
     def import_weights(
@@ -1147,12 +1149,11 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         assert down_weights.dtype == self.lora_down_weights.dtype
         assert up_weights.shape == self.lora_up_weights.shape
         assert up_weights.dtype == self.lora_up_weights.dtype
-        result = replace(
+        return replace(
             base,
             lora_down_weights=down_weights,
             lora_up_weights=up_weights,
         )
-        return result
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig

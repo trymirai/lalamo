@@ -271,16 +271,12 @@ def summarize_distill_parameters(
 
         parameter_count = math.prod(info.shape)
         total_parameters += parameter_count
-
-        if not is_leaf_trainable(info) or (trainable_filter is not None and not trainable_filter(info)):
-            by_group[OptimizerGroup.FROZEN] += parameter_count
+        if is_leaf_trainable(info) and (trainable_filter is None or trainable_filter(info)):
+            by_group[get_optimizer_group(info)] += parameter_count
+            trainable_parameters += parameter_count
+            total_master_bytes += parameter_count * master_dtype.itemsize
             continue
-
-        optimizer_group = get_optimizer_group(info)
-        by_group[optimizer_group] += parameter_count
-
-        trainable_parameters += parameter_count
-        total_master_bytes += parameter_count * master_dtype.itemsize
+        by_group[OptimizerGroup.FROZEN] += parameter_count
 
     return DistillParameterSummary(
         total_parameters=total_parameters,
@@ -352,20 +348,7 @@ def stochastically_quantize_module[M: eqx.Module](
         return module
 
     flat_quantized_weights, treedef = jtu.tree_flatten(quantized_weights, is_leaf=lambda leaf: leaf is None)
-    split_keys = tuple(jax.random.split(key, len(quantized_leaves)))
-    key_index = 0
-    quantization_key_leaves: list[Key[Array, ""] | None] = []
-    for leaf in flat_quantized_weights:
-        if leaf is None:
-            quantization_key_leaves.append(None)
-            continue
-        quantization_key_leaves.append(split_keys[key_index])
-        key_index += 1
-    quantization_keys = jtu.tree_unflatten(
-        treedef,
-        quantization_key_leaves,
-    )
-    assert key_index == len(split_keys)
+    quantization_keys = jtu.tree_unflatten(treedef, jax.random.split(key, len(flat_quantized_weights)))
     quantized_weights = jax.tree.map(
         lambda leaf, quantization_key: None
         if leaf is None

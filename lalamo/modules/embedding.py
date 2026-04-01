@@ -89,6 +89,36 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
         return logits
 
 
+def _pack_embedding_weights(
+    weights: Float[Array, "vocabulary channels"],
+    quantization_mode: QuantizationMode,
+) -> Int[Array, "vocabulary channels"]:
+    quantized = quantize_weights(weights, quantization_mode).astype(quantization_mode.dtype)
+    if quantization_mode == QuantizationMode.UINT4:
+        return jax_uint4_to_packed_uint8(quantized)
+    return quantized
+
+
+def _prepare_mlx_embedding_weights(
+    weights: Float[Array, "vocabulary channels"],
+    scales: Float[Array, "vocabulary groups"],
+    biases: Float[Array, "vocabulary groups"],
+    *,
+    group_size: int,
+    quantization_mode: QuantizationMode,
+) -> Float[Array, "vocabulary channels"]:
+    grouped_weights = rearrange(
+        quantize_weights(weights, quantization_mode),
+        "vocab (groups elements) -> vocab groups elements",
+        elements=group_size,
+    )
+    return rearrange(
+        grouped_weights * rearrange(scales, "vocab groups -> vocab groups 1")
+        + rearrange(biases, "vocab groups -> vocab groups 1"),
+        "vocab groups elements -> vocab (groups elements)",
+    )
+
+
 @dataclass(frozen=True)
 class TiedEmbeddingConfig(EmbeddingConfigBase):
     precision: DTypeLike
@@ -391,35 +421,16 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         return vocab_size
 
     def _int_weights(self) -> Int[Array, "vocabulary channels"]:
-        quantized = quantize_weights(self.weights, self.config.embedding_quantization_mode)
-        casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return _pack_embedding_weights(self.weights, self.config.embedding_quantization_mode)
 
     def _prepare_weights(self) -> Float[Array, "vocabulary channels"]:
-        quantized_weights = quantize_weights(self.weights, self.config.embedding_quantization_mode)
-        grouped_weights = rearrange(
-            quantized_weights,
-            "vocab (groups elements) -> vocab groups elements",
-            elements=self.config.group_size,
+        return _prepare_mlx_embedding_weights(
+            self.weights,
+            self.scales,
+            self.biases,
+            group_size=self.config.group_size,
+            quantization_mode=self.config.embedding_quantization_mode,
         )
-
-        scales = rearrange(self.scales, "vocab groups -> vocab groups 1")
-
-        biases = rearrange(self.biases, "vocab groups -> vocab groups 1")
-
-        scaled_grouped_weights = grouped_weights * scales + biases
-
-        result = rearrange(
-            scaled_grouped_weights,
-            "vocab groups elements -> vocab (groups elements)",
-        )
-        return result
 
     def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
         return self._prepare_weights()
@@ -522,66 +533,28 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         return vocab_size
 
     def _int_input_weights(self) -> Int[Array, "vocabulary channels"]:
-        quantized = quantize_weights(self.input_weights, self.config.embedding_quantization_mode)
-        casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return _pack_embedding_weights(self.input_weights, self.config.embedding_quantization_mode)
 
     def _int_output_weights(self) -> Int[Array, "vocabulary channels"]:
-        quantized = quantize_weights(self.output_weights, self.config.embedding_quantization_mode)
-        casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode)
 
     def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        quantized_weights = quantize_weights(self.input_weights, self.config.embedding_quantization_mode)
-        grouped_weights = rearrange(
-            quantized_weights,
-            "vocab (groups elements) -> vocab groups elements",
-            elements=self.config.group_size,
+        return _prepare_mlx_embedding_weights(
+            self.input_weights,
+            self.input_scales,
+            self.input_biases,
+            group_size=self.config.group_size,
+            quantization_mode=self.config.embedding_quantization_mode,
         )
-
-        scales = rearrange(self.input_scales, "vocab groups -> vocab groups 1")
-
-        biases = rearrange(self.input_biases, "vocab groups -> vocab groups 1")
-
-        scaled_grouped_weights = grouped_weights * scales + biases
-
-        result = rearrange(
-            scaled_grouped_weights,
-            "vocab groups elements -> vocab (groups elements)",
-        )
-        return result
 
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        quantized_weights = quantize_weights(self.output_weights, self.config.embedding_quantization_mode)
-        grouped_weights = rearrange(
-            quantized_weights,
-            "vocab (groups elements) -> vocab groups elements",
-            elements=self.config.group_size,
+        return _prepare_mlx_embedding_weights(
+            self.output_weights,
+            self.output_scales,
+            self.output_biases,
+            group_size=self.config.group_size,
+            quantization_mode=self.config.embedding_quantization_mode,
         )
-
-        scales = rearrange(self.output_scales, "vocab groups -> vocab groups 1")
-
-        biases = rearrange(self.output_biases, "vocab groups -> vocab groups 1")
-
-        scaled_grouped_weights = grouped_weights * scales + biases
-
-        result = rearrange(
-            scaled_grouped_weights,
-            "vocab groups elements -> vocab (groups elements)",
-        )
-        return result
 
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
@@ -695,38 +668,19 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         return vocab_size
 
     def _int_output_weights(self) -> Int[Array, "vocabulary channels"]:
-        quantized = quantize_weights(self.output_weights, self.config.embedding_quantization_mode)
-        casted = quantized.astype(self.config.embedding_quantization_mode.dtype)
-
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
-            packed = jax_uint4_to_packed_uint8(casted)
-        else:
-            packed = casted
-
-        return packed
+        return _pack_embedding_weights(self.output_weights, self.config.embedding_quantization_mode)
 
     def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
         return self.input_weights
 
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        quantized_weights = quantize_weights(self.output_weights, self.config.embedding_quantization_mode)
-        grouped_weights = rearrange(
-            quantized_weights,
-            "vocab (groups elements) -> vocab groups elements",
-            elements=self.config.group_size,
+        return _prepare_mlx_embedding_weights(
+            self.output_weights,
+            self.output_scales,
+            self.output_biases,
+            group_size=self.config.group_size,
+            quantization_mode=self.config.embedding_quantization_mode,
         )
-
-        scales = rearrange(self.output_scales, "vocab groups -> vocab groups 1")
-
-        biases = rearrange(self.output_biases, "vocab groups -> vocab groups 1")
-
-        scaled_grouped_weights = grouped_weights * scales + biases
-
-        result = rearrange(
-            scaled_grouped_weights,
-            "vocab groups elements -> vocab (groups elements)",
-        )
-        return result
 
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
