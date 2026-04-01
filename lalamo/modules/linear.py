@@ -12,7 +12,12 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.utils import (
+    jax_uint1_to_packed_uint8,
+    jax_uint4_to_packed_uint8,
+    jax_uint8_to_unpacked_uint1,
+    jax_uint8_to_unpacked_uint4,
+)
 
 from .common import (
     LalamoModule,
@@ -478,7 +483,9 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
         casted = quantized.astype(self.config.weight_quantization_mode.dtype)
 
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT1:
+            packed = jax_uint1_to_packed_uint8(casted)
+        elif self.config.weight_quantization_mode == QuantizationMode.UINT4:
             packed = jax_uint4_to_packed_uint8(casted)
         else:
             packed = casted
@@ -489,7 +496,9 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         quantized = quantize_weights(self.zero_points, self.config.weight_quantization_mode)
         casted = quantized.astype(self.config.weight_quantization_mode.dtype)
 
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT1:
+            packed = jax_uint1_to_packed_uint8(casted)
+        elif self.config.weight_quantization_mode == QuantizationMode.UINT4:
             packed = jax_uint4_to_packed_uint8(casted)
         else:
             packed = casted
@@ -608,7 +617,10 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
         weights = _unwrap_legacy_rht_linear_weights(weights)
         unpacked_weights = require_array(weights["weights"])
         unpacked_zero_points = require_array(weights["zero_points"])
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT1:
+            unpacked_weights = jax_uint8_to_unpacked_uint1(unpacked_weights)
+            unpacked_zero_points = jax_uint8_to_unpacked_uint1(unpacked_zero_points)
+        elif self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
             unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
         scales = require_array(weights["scales"])
@@ -775,7 +787,9 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
         quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
         casted = quantized.astype(self.config.weight_quantization_mode.dtype)
 
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT1:
+            packed = jax_uint1_to_packed_uint8(casted)
+        elif self.config.weight_quantization_mode == QuantizationMode.UINT4:
             packed = jax_uint4_to_packed_uint8(casted)
         else:
             packed = casted
@@ -896,7 +910,9 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = _unwrap_legacy_rht_linear_weights(weights)
         unpacked_weights = require_array(weights["weights"])
-        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT1:
+            unpacked_weights = jax_uint8_to_unpacked_uint1(unpacked_weights)
+        elif self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
         scales = require_array(weights["scales"])
         deq_biases = require_array(weights["deq_biases"])

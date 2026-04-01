@@ -10,7 +10,12 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
+from lalamo.utils import (
+    jax_uint1_to_packed_uint8,
+    jax_uint4_to_packed_uint8,
+    jax_uint8_to_unpacked_uint1,
+    jax_uint8_to_unpacked_uint4,
+)
 
 from .common import (
     LalamoModule,
@@ -94,6 +99,8 @@ def _pack_embedding_weights(
     quantization_mode: QuantizationMode,
 ) -> Int[Array, "vocabulary channels"]:
     quantized = quantize_weights(weights, quantization_mode).astype(quantization_mode.dtype)
+    if quantization_mode == QuantizationMode.UINT1:
+        return jax_uint1_to_packed_uint8(quantized)
     if quantization_mode == QuantizationMode.UINT4:
         return jax_uint4_to_packed_uint8(quantized)
     return quantized
@@ -456,10 +463,12 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
         unpacked_weights = require_array(weights["weights"])
         assert unpacked_weights.dtype == (
             jnp.uint8
-            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
+            if self.config.embedding_quantization_mode in {QuantizationMode.UINT1, QuantizationMode.UINT4}
             else self.config.embedding_quantization_mode.dtype
         )
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT1:
+            unpacked_weights = jax_uint8_to_unpacked_uint1(unpacked_weights)
+        elif self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
         scales = require_array(weights["scales"])
         biases = require_array(weights["biases"])
@@ -578,12 +587,15 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
         unpacked_output_weights = require_array(weights["output_weights"])
         expected_weight_dtype = (
             jnp.uint8
-            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
+            if self.config.embedding_quantization_mode in {QuantizationMode.UINT1, QuantizationMode.UINT4}
             else self.config.embedding_quantization_mode.dtype
         )
         assert unpacked_input_weights.dtype == expected_weight_dtype
         assert unpacked_output_weights.dtype == expected_weight_dtype
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT1:
+            unpacked_input_weights = jax_uint8_to_unpacked_uint1(unpacked_input_weights)
+            unpacked_output_weights = jax_uint8_to_unpacked_uint1(unpacked_output_weights)
+        elif self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_input_weights = jax_uint8_to_unpacked_uint4(unpacked_input_weights)
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
         input_scales = require_array(weights["input_scales"])
@@ -702,10 +714,12 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
         unpacked_output_weights = require_array(weights["output_weights"])
         assert unpacked_output_weights.dtype == (
             jnp.uint8
-            if self.config.embedding_quantization_mode == QuantizationMode.UINT4
+            if self.config.embedding_quantization_mode in {QuantizationMode.UINT1, QuantizationMode.UINT4}
             else self.config.embedding_quantization_mode.dtype
         )
-        if self.config.embedding_quantization_mode == QuantizationMode.UINT4:
+        if self.config.embedding_quantization_mode == QuantizationMode.UINT1:
+            unpacked_output_weights = jax_uint8_to_unpacked_uint1(unpacked_output_weights)
+        elif self.config.embedding_quantization_mode == QuantizationMode.UINT4:
             unpacked_output_weights = jax_uint8_to_unpacked_uint4(unpacked_output_weights)
         output_scales = require_array(weights["output_scales"])
         output_biases = require_array(weights["output_biases"])

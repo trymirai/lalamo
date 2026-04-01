@@ -88,6 +88,37 @@ def test_quantize_tied_embedding_to_mlx_reconstructs_two_value_groups_exactly() 
     assert jnp.array_equal(restored_embedding.biases, quantized_embedding.biases)
 
 
+def test_quantize_tied_embedding_to_mlx_packs_uint1_weights() -> None:
+    embedding = TiedEmbeddingConfig(
+        input_scale=None,
+        logit_soft_cap=None,
+        precision=jnp.float32,
+    ).empty(vocab_size=2, model_dim=8)
+    embedding = embedding.import_weights(
+        {
+            "weights": jnp.array(
+                [
+                    [0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0],
+                    [1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                ],
+                dtype=jnp.float32,
+            ),
+        },
+    )
+
+    quantized_embedding = quantize_tied_embedding_to_mlx(
+        embedding,
+        group_size=8,
+        embedding_quantization_mode=QuantizationMode.UINT1,
+    )
+    exported_weights = quantized_embedding.export_weights()
+    restored_embedding = quantized_embedding.import_weights(exported_weights)
+
+    assert exported_weights["weights"].dtype == jnp.uint8
+    assert exported_weights["weights"].shape == (2, 1)
+    assert jnp.array_equal(restored_embedding.weights, quantized_embedding.weights)
+
+
 def test_mlx_tied_embedding_import_weights_rejects_wrong_packed_dtype() -> None:
     embedding = quantize_tied_embedding_to_mlx(
         TiedEmbeddingConfig(

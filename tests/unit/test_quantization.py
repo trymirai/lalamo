@@ -76,3 +76,31 @@ def test_quantized_linear_weights_have_nonzero_gradients() -> None:
 
         assert grad.shape == layer.weights.shape
         assert jnp.any(grad != 0)
+
+
+def test_mlx_quantized_linear_packs_uint1_weights_for_export() -> None:
+    layer = MLXQuantizedLinearConfig(
+        group_size=8,
+        weight_quantization_mode=QuantizationMode.UINT1,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(8, (4,), has_biases=False, key=jax.random.key(0))
+    layer = replace(
+        layer,
+        weights=jnp.array(
+            [
+                [0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0],
+                [1.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0],
+                [1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0],
+            ],
+            dtype=jnp.float32,
+        ),
+    )
+
+    exported_weights = layer.export_weights()
+    restored_layer = layer.import_weights(exported_weights)
+
+    assert exported_weights["weights"].dtype == jnp.uint8
+    assert exported_weights["weights"].shape == (4, 1)
+    assert jnp.array_equal(restored_layer.weights, layer.weights)
