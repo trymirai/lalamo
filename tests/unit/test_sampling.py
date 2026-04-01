@@ -16,6 +16,13 @@ from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 
 
+def test_make_policy_skips_zero_min_p() -> None:
+    policy = GenerationConfig(min_p=0.0).default_policy()
+    logits = jnp.array([0.0, -1.0], dtype=jnp.float32)
+
+    assert_close(result=policy.process_logits(logits), reference=logits)
+
+
 def test_logit_processing(hf_model_spec: ModelSpec) -> None:
     # TODO: lalamo should do greedy for do_sample=False
     generation_config = hf_model_spec.configs.generation_config

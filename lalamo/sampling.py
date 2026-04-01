@@ -111,6 +111,6 @@ def make_policy(
         policies.append(TopKPolicy(top_k))
     if top_p is not None:
         policies.append(TopPPolicy(top_p))
-    if min_p is not None:
+    if min_p is not None and min_p > 0.0:
         policies.append(MinPPolicy(min_p))
     return CompositePolicy(tuple(policies))
