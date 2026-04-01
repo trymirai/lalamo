@@ -475,6 +475,11 @@ def compute_trace_distill_batch_metrics(
     token_kl = jnp.sum(teacher_probs * (teacher_log_probs - student_log_probs), axis=-1)
 
     valid_tokens = completion_mask.sum(dtype=jnp.int32)
+    valid_tokens = eqx.error_if(
+        valid_tokens,
+        valid_tokens <= 0,
+        "Trace distillation batch requires at least one completion token",
+    )
     loss = jnp.sum(token_kl * completion_mask.astype(token_kl.dtype)) / valid_tokens.astype(token_kl.dtype)
     student_top1 = jnp.argmax(masked_student_logits, axis=-1)
     teacher_top1 = jnp.argmax(masked_teacher_logits, axis=-1)

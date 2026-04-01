@@ -6,7 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
@@ -48,7 +48,7 @@ class EmbeddingConfigBase:
         vocab_size: int,
         model_dim: int,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "EmbeddingBase": ...
 
     @abstractmethod
@@ -130,7 +130,7 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "TiedEmbedding":
         weights = jax.random.normal(key, (vocab_size, model_dim), dtype=self.precision)
         return TiedEmbedding(config=self, weights=weights)
@@ -214,7 +214,7 @@ def quantize_tied_embedding_to_mlx(
     target_activation_precision = jnp.dtype(
         embedding.activation_precision if activation_precision is None else activation_precision,
     )
-    quantization_min, quantization_max = map(float, embedding_quantization_mode.range)
+    quantization_min, quantization_max = [float(value) for value in embedding_quantization_mode.range]
     grouped_weights = rearrange(
         embedding.weights.astype(jnp.float32),
         "vocabulary (groups group_channels) -> vocabulary groups group_channels",
@@ -287,7 +287,7 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "UntiedEmbedding":
         input_key, output_key = jax.random.split(key)
         input_weights = jax.random.normal(input_key, (vocab_size, model_dim), dtype=self.precision)
@@ -391,7 +391,7 @@ class MLXQuantizedTiedEmbeddingConfig(QuantizedEmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "MLXQuantizedTiedEmbedding":
         raise NotImplementedError
 
@@ -503,7 +503,7 @@ class MLXQuantizedUntiedEmbeddingConfig(QuantizedEmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "MLXQuantizedUntiedEmbedding":
         raise NotImplementedError
 
@@ -656,7 +656,7 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(QuantizedEmbeddingConfigBase):
         vocab_size: int,
         model_dim: int,
         *,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> "MLXSemiQuantizedUntiedEmbedding":
         raise NotImplementedError
 

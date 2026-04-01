@@ -527,7 +527,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
             if self.biases.dtype != self.config.activation_precision:
                 raise ValueError(
                     f"Bias dtype ({self.biases.dtype}) is not equal to specified activation precision"
-                    f" ({self.config.activation_precision}).",
+                    f" ({self.config.activation_precision})."
                     " Quantized layers require parameter dtypes to be equal to the activation precision.",
                 )
             if self.biases.shape[:-1] != component_shape:
@@ -776,7 +776,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
             if self.biases.dtype != self.config.activation_precision:
                 raise ValueError(
                     f"Bias dtype ({self.biases.dtype}) is not equal to specified activation precision"
-                    f" ({self.config.activation_precision}).",
+                    f" ({self.config.activation_precision})."
                     " Quantized layers require parameter dtypes to be equal to the activation precision.",
                 )
             if self.biases.shape[:-1] != component_shape:
@@ -1002,7 +1002,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         if self.lora_up_weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"LORA up weight dtype ({self.lora_up_weights.dtype}) is not equal to specified activation precision"
-                f" ({self.config.activation_precision}).",
+                f" ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *lu_num_components, lora_up_output_dim, lora_up_input_dim = self.lora_up_weights.shape
