@@ -9,12 +9,15 @@ __all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"
 
 
 class QuantizationMode(Enum):
+    UINT1 = "uint1"
     UINT4 = "uint4"
     UINT8 = "uint8"
 
     @classmethod
     def from_num_bits(cls, num_bits: int) -> "QuantizationMode":
         match num_bits:
+            case 1:
+                return cls.UINT1
             case 4:
                 return cls.UINT4
             case 8:
@@ -25,6 +28,8 @@ class QuantizationMode(Enum):
     @property
     def range(self) -> tuple[int, int]:
         match self:
+            case QuantizationMode.UINT1:
+                return (0, 1)
             case QuantizationMode.UINT4:
                 return (0, 15)
             case QuantizationMode.UINT8:
@@ -33,6 +38,8 @@ class QuantizationMode(Enum):
     @property
     def dtype(self) -> DTypeLike:
         match self:
+            case QuantizationMode.UINT1:
+                return jnp.uint8
             case QuantizationMode.UINT4:
                 return jnp.uint4
             case QuantizationMode.UINT8:
@@ -41,6 +48,8 @@ class QuantizationMode(Enum):
     @property
     def bits(self) -> int:
         match self:
+            case QuantizationMode.UINT1:
+                return 1
             case QuantizationMode.UINT4:
                 return 4
             case QuantizationMode.UINT8:

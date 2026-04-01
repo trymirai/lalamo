@@ -296,6 +296,8 @@ def _validate_distill_models(
     *,
     quantization_mode: QuantizationMode,
 ) -> None:
+    if quantization_mode == QuantizationMode.UINT1:
+        raise ValueError("Distillation to uint1 is not supported yet.")
     if not _has_tokenizer_compatibility(student_model, teacher_model):
         raise ValueError("Teacher and student must use identical tokenizers and message processor configs")
 

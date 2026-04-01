@@ -1,0 +1,184 @@
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Literal
+
+import jax.numpy as jnp
+from jaxtyping import DTypeLike
+
+from lalamo.modules import (
+    AttentionConfig,
+    DecoderConfig,
+    DenseMLPConfig,
+    MLXQuantizedLinearConfig,
+    MLXQuantizedTiedEmbeddingConfig,
+    MLXQuantizedUntiedEmbeddingConfig,
+    NormalizationConfig,
+    TransformerConfig,
+    TransformerLayerConfig,
+    UnscaledRoPEConfig,
+    UpcastMode,
+    YARNRoPEConfig,
+)
+from lalamo.modules.activations import SiLU
+from lalamo.quantization import QuantizationMode
+
+from .common import HuggingFaceLMConfig, MLXQuantizationConfig
+
+__all__ = ["HFBonsaiConfig"]
+
+
+@dataclass(frozen=True)
+class BonsaiYarnRopeScalingConfig:
+    rope_type: Literal["yarn"]
+    factor: float
+    original_max_position_embeddings: int
+    beta_fast: float = 32.0
+    beta_slow: float = 1.0
+
+
+@dataclass(frozen=True)
+class HFBonsaiConfig(HuggingFaceLMConfig):
+    architectures: list[str]
+    eos_token_id: int | list[int]
+    attention_bias: bool
+    hidden_act: Literal["silu"]
+    hidden_size: int
+    intermediate_size: int
+    max_position_embeddings: int
+    max_window_layers: int
+    model_type: Literal["qwen3"]
+    num_attention_heads: int
+    num_hidden_layers: int
+    num_key_value_heads: int
+    rms_norm_eps: float
+    rope_theta: float
+    sliding_window: int | None
+    tie_word_embeddings: bool
+    use_sliding_window: bool
+    vocab_size: int
+    head_dim: int
+
+    torch_dtype: Literal["bfloat16", "float16", "float32"] | None = None
+    quantization: MLXQuantizationConfig | None = None
+    rope_scaling: BonsaiYarnRopeScalingConfig | None = None
+    dtype: Literal["bfloat16", "float16", "float32"] | None = None
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        return jnp.dtype(self.dtype or self.torch_dtype or "bfloat16")
+
+    def to_decoder_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
+    ) -> DecoderConfig:
+        assert self.quantization is not None
+        quantization_mode = QuantizationMode.from_num_bits(self.quantization.bits)
+
+        if self.tie_word_embeddings:
+            embedding_config = MLXQuantizedTiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+                group_size=self.quantization.group_size,
+                embedding_quantization_mode=quantization_mode,
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+        else:
+            embedding_config = MLXQuantizedUntiedEmbeddingConfig(
+                input_scale=None,
+                logit_soft_cap=None,
+                group_size=self.quantization.group_size,
+                embedding_quantization_mode=quantization_mode,
+                activation_quantization_mode=None,
+                activation_precision=activation_precision,
+            )
+
+        if self.rope_scaling is None:
+            rope_config = UnscaledRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=context_length or self.max_position_embeddings,
+            )
+        else:
+            rope_config = YARNRoPEConfig(
+                precision=activation_precision,
+                base=self.rope_theta,
+                max_sequence_length=context_length or self.max_position_embeddings,
+                scaling_factor=self.rope_scaling.factor,
+                original_context_length=self.rope_scaling.original_max_position_embeddings,
+                beta_fast=self.rope_scaling.beta_fast,
+                beta_slow=self.rope_scaling.beta_slow,
+                truncate=True,
+            )
+
+        rmsnorm_config = NormalizationConfig(
+            scale_precision=activation_precision,
+            accumulation_precision=accumulation_precision,
+            epsilon=self.rms_norm_eps,
+            scale_offset=None,
+            upcast_mode=UpcastMode.ONLY_NORMALIZATION,
+            subtract_mean=False,
+        )
+        linear_config = MLXQuantizedLinearConfig(
+            group_size=self.quantization.group_size,
+            weight_quantization_mode=quantization_mode,
+            activation_quantization_mode=None,
+            activation_precision=activation_precision,
+        )
+        mlp_config = DenseMLPConfig(
+            linear_config=linear_config,
+            activation=SiLU(),
+            has_up_biases=False,
+            has_down_biases=False,
+            up_clipping=None,
+            gate_clipping=None,
+        )
+        if self.use_sliding_window:
+            sliding_window_sizes = [
+                self.sliding_window if i >= self.max_window_layers else None for i in range(self.num_hidden_layers)
+            ]
+        else:
+            sliding_window_sizes = [None] * self.num_hidden_layers
+
+        return DecoderConfig(
+            embedding_config=embedding_config,
+            transformer_config=TransformerConfig(
+                global_rope_config=rope_config,
+                local_rope_config=None,
+                layer_configs=tuple(
+                    TransformerLayerConfig(
+                        pre_mixer_norm_config=rmsnorm_config,
+                        mixer_config=AttentionConfig(
+                            qkv_projection_config=linear_config,
+                            out_projection_config=linear_config,
+                            query_norm_config=rmsnorm_config,
+                            key_norm_config=rmsnorm_config,
+                            logit_soft_cap=None,
+                            has_sinks=False,
+                            has_qkv_biases=self.attention_bias,
+                            has_out_biases=self.attention_bias,
+                            num_heads=self.num_attention_heads,
+                            num_groups=self.num_key_value_heads,
+                            head_dim=self.head_dim,
+                            is_causal=True,
+                            scale=None,
+                            sliding_window_size=sliding_window_size,
+                        ),
+                        post_mixer_norm_config=None,
+                        pre_mlp_norm_config=rmsnorm_config,
+                        mlp_config=mlp_config,
+                        post_mlp_norm_config=None,
+                    )
+                    for sliding_window_size in sliding_window_sizes
+                ),
+                output_norm_config=rmsnorm_config,
+                model_dim=self.hidden_size,
+                hidden_dim=self.intermediate_size,
+                context_length=context_length or self.max_position_embeddings,
+            ),
+            vocab_size=self.vocab_size,
+            pard_token=None,
+        )

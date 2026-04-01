@@ -97,6 +97,8 @@ def _detect_mlx_quantization(
     packed_dim: int,
     default: QuantizationMode,
 ) -> QuantizationMode:
+    if packed_dim * 32 == expected_in_dim:
+        return QuantizationMode.UINT1
     if packed_dim * 8 == expected_in_dim:
         return QuantizationMode.UINT4
     if packed_dim * 4 == expected_in_dim:

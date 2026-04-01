@@ -3,6 +3,8 @@ import pytest
 
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.huggingface import load_linear, load_mlx_quantized_tied_embedding
+from lalamo.model_import.model_configs.huggingface.bonsai import BonsaiYarnRopeScalingConfig, HFBonsaiConfig
+from lalamo.model_import.model_configs.huggingface.common import MLXQuantizationConfig
 from lalamo.model_import.model_configs.huggingface.lfm2 import HFLFM2Config, QuantizationConfig
 from lalamo.modules import config_converter
 from lalamo.modules.embedding import MLXQuantizedTiedEmbeddingConfig
@@ -102,6 +104,69 @@ def test_load_mlx_quantized_linear_updates_detected_quantization_mode() -> None:
     )
 
     assert loaded.config.weight_quantization_mode == QuantizationMode.UINT4
+
+
+def test_load_mlx_quantized_linear_detects_uint1() -> None:
+    module = MLXQuantizedLinearConfig(
+        group_size=32,
+        weight_quantization_mode=QuantizationMode.UINT8,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).empty(32, (8,), has_biases=False)
+
+    loaded = load_linear(
+        module,
+        {
+            ParameterPath("linear") / "weight": jnp.zeros((8, 1), dtype=jnp.int32),
+            ParameterPath("linear") / "scales": jnp.ones((8, 1), dtype=jnp.float32),
+            ParameterPath("linear") / "biases": jnp.zeros((8, 1), dtype=jnp.float32),
+        },
+        ParameterPath("linear"),
+    )
+
+    assert loaded.config.weight_quantization_mode == QuantizationMode.UINT1
+
+
+def test_hf_bonsai_config_uses_uint1_quantization() -> None:
+    config = HFBonsaiConfig(
+        architectures=["Qwen3ForCausalLM"],
+        eos_token_id=151645,
+        torch_dtype="bfloat16",
+        attention_bias=False,
+        hidden_act="silu",
+        hidden_size=16,
+        intermediate_size=32,
+        max_position_embeddings=128,
+        max_window_layers=1,
+        model_type="qwen3",
+        num_attention_heads=2,
+        num_hidden_layers=2,
+        num_key_value_heads=2,
+        rms_norm_eps=1e-5,
+        rope_theta=10000.0,
+        sliding_window=64,
+        tie_word_embeddings=True,
+        use_sliding_window=True,
+        vocab_size=32,
+        head_dim=8,
+        quantization=MLXQuantizationConfig(group_size=32, bits=1),
+        rope_scaling=BonsaiYarnRopeScalingConfig(
+            rope_type="yarn",
+            factor=4.0,
+            original_max_position_embeddings=32,
+        ),
+    )
+
+    decoder_config = config.to_decoder_config(
+        context_length=64,
+        activation_precision=jnp.float32,
+        accumulation_precision=jnp.float32,
+        metadata_dict={},
+    )
+
+    assert decoder_config.embedding_config.embedding_quantization_mode == QuantizationMode.UINT1
+    qkv_config = decoder_config.transformer_config.layer_configs[0].mixer_config.qkv_projection_config
+    assert qkv_config.weight_quantization_mode == QuantizationMode.UINT1
 
 
 @pytest.mark.parametrize(
