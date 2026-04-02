@@ -117,7 +117,8 @@ class QuantizedEmbeddingConfigBase(EmbeddingConfigBase):
         return self.embedding_quantization_mode
 
     def group_count(self, model_dim: int) -> int:
-        assert model_dim % self.group_size == 0
+        if model_dim % self.group_size != 0:
+            raise ValueError(f"model_dim ({model_dim}) must be divisible by group_size ({self.group_size})")
         return model_dim // self.group_size
 
 

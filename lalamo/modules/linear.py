@@ -979,7 +979,7 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         if self.lora_down_weights.dtype != self.config.activation_precision:
             raise ValueError(
                 f"LORA down weight dtype ({self.lora_down_weights.dtype}) is not equal to the"
-                f" specified activation precision ({self.config.activation_precision}).",
+                f" specified activation precision ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
         *ld_num_components, lora_down_output_dim, lora_down_input_dim = self.lora_down_weights.shape

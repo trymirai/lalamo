@@ -197,14 +197,14 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         values: Float[Array, "tokens heads head_v_dim"],
         decay_factor: Float[Array, "tokens heads"],
         beta: Float[Array, "tokens heads"],
-        initial_state: Float[Array, "heads head_k_dim head_v_dim"],
+        initial_state: Float[Array, "heads head_v_dim head_k_dim"],
         num_steps: Int[Array, ""] | int,
     ) -> tuple[
         Float[Array, "tokens heads head_v_dim"],
-        Float[Array, "heads head_k_dim head_v_dim"],
+        Float[Array, "heads head_v_dim head_k_dim"],
     ]:
         def scan_fn(
-            index_and_state: tuple[Int[Array, ""], Float[Array, "heads head_k_dim head_v_dim"]],
+            index_and_state: tuple[Int[Array, ""], Float[Array, "heads head_v_dim head_k_dim"]],
             step_inputs: tuple[
                 Float[Array, "heads head_k_dim"],
                 Float[Array, "heads head_k_dim"],
@@ -213,7 +213,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
                 Float[Array, " heads"],
             ],
         ) -> tuple[
-            tuple[Int[Array, ""], Float[Array, "heads head_k_dim head_v_dim"]],
+            tuple[Int[Array, ""], Float[Array, "heads head_v_dim head_k_dim"]],
             Float[Array, "heads head_v_dim"],
         ]:
             index, carry_state = index_and_state
@@ -221,10 +221,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
             decay = jnp.exp(decay_factor_t)[:, None, None]
             decayed_state = carry_state * decay
-            value_delta = value_t - jnp.sum(decayed_state * key_t[:, :, None], axis=-2)
+            value_delta = value_t - jnp.sum(decayed_state * key_t[:, None, :], axis=-1)
             value_delta = value_delta * beta_t[:, None]
-            updated_state = decayed_state + key_t[:, :, None] * value_delta[:, None, :]
-            output_t = jnp.einsum("hk,hkv->hv", query_t, updated_state)
+            updated_state = decayed_state + value_delta[:, :, None] * key_t[:, None, :]
+            output_t = jnp.einsum("hk,hvk->hv", query_t, updated_state)
 
             propagated_state = jax.lax.cond(index < num_steps, lambda: updated_state, lambda: carry_state)
             return (index + 1, propagated_state), output_t
@@ -259,7 +259,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             state = SSMStateLayer.init(
                 self.kernel_size,
                 self.conv_dim,
-                (self.num_heads, self.head_dim, self.value_head_dim),
+                (self.num_heads, self.value_head_dim, self.head_dim),
                 self.activation_precision,
             )
 
@@ -333,7 +333,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         return SSMStateLayer.init(
             self.kernel_size,
             self.conv_dim,
-            (self.num_heads, self.head_dim, self.value_head_dim),
+            (self.num_heads, self.value_head_dim, self.head_dim),
             self.activation_precision,
         )
 

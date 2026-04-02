@@ -9,45 +9,62 @@ __all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"
 
 
 class QuantizationMode(Enum):
+    UINT1 = "uint1"
     UINT4 = "uint4"
+    INT8 = "int8"
     UINT8 = "uint8"
 
     @classmethod
     def from_num_bits(cls, num_bits: int) -> "QuantizationMode":
-        match num_bits:
-            case 4:
-                return cls.UINT4
-            case 8:
-                return cls.UINT8
-            case _:
-                raise ValueError(f"No quantization mode defined for {num_bits} bits")
+        bit_to_mode = {
+            1: cls.UINT1,
+            4: cls.UINT4,
+            8: cls.UINT8,
+        }
+        if num_bits not in bit_to_mode:
+            raise ValueError(f"No quantization mode defined for {num_bits} bits")
+        return bit_to_mode[num_bits]
 
     @property
     def range(self) -> tuple[int, int]:
-        match self:
-            case QuantizationMode.UINT4:
-                return (0, 15)
-            case QuantizationMode.UINT8:
-                return (0, 255)
+        value_to_range = {
+            QuantizationMode.UINT1: (0, 1),
+            QuantizationMode.UINT4: (0, 15),
+            QuantizationMode.INT8: (-128, 127),
+            QuantizationMode.UINT8: (0, 255),
+        }
+        return value_to_range[self]
 
     @property
     def dtype(self) -> DTypeLike:
-        match self:
-            case QuantizationMode.UINT4:
-                return jnp.uint4
-            case QuantizationMode.UINT8:
-                return jnp.uint8
+        value_to_dtype = {
+            QuantizationMode.UINT1: jnp.uint8,
+            QuantizationMode.UINT4: jnp.uint4,
+            QuantizationMode.INT8: jnp.int8,
+            QuantizationMode.UINT8: jnp.uint8,
+        }
+        return value_to_dtype[self]
 
     @property
     def bits(self) -> int:
-        match self:
-            case QuantizationMode.UINT4:
-                return 4
-            case QuantizationMode.UINT8:
-                return 8
+        value_to_bits = {
+            QuantizationMode.UINT1: 1,
+            QuantizationMode.UINT4: 4,
+            QuantizationMode.INT8: 8,
+            QuantizationMode.UINT8: 8,
+        }
+        return value_to_bits[self]
 
     def __str__(self) -> str:
         return self.value
+
+
+MODE_TO_RANGE = {
+    QuantizationMode.UINT1: (0, 1),
+    QuantizationMode.UINT4: (0, 15),
+    QuantizationMode.INT8: (-128, 127),
+    QuantizationMode.UINT8: (0, 255),
+}
 
 
 def _quantize_weights_primal(x: Float[Array, "..."], mode: QuantizationMode) -> Float[Array, "..."]:
@@ -106,11 +123,9 @@ def dynamically_quantize_activations(
     min_val_neg = jnp.minimum(min_val, 0)
     max_val_pos = jnp.maximum(max_val, 0)
 
-    # scale
     scale = (max_val_pos - min_val_neg) / (range_max - range_min)
     scale = jnp.maximum(scale, jnp.finfo(x.dtype).eps)
 
-    # zero point
     descaled_min = min_val_neg / scale
     descaled_max = max_val_pos / scale
     zero_point_from_min_error = range_min + descaled_min

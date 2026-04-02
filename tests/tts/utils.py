@@ -27,6 +27,7 @@ def prepare_state_dict_for_lalamo_loaders(
         result[full_key] = torch_to_jax(tensor.detach())
     return result
 
+
 _rng = np.random.default_rng()
 
 
@@ -83,7 +84,11 @@ def generate_spline_curve(
 
 
 def generate_harmonic_row(
-    fs: float, n_points: int, f0: float, num_harmonics: int = 50, flat_frequency: bool = False,
+    fs: float,
+    n_points: int,
+    f0: float,
+    num_harmonics: int = 50,
+    flat_frequency: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Generate a harmonic signal with varying f0 and formant filtering.
 
