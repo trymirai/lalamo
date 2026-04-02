@@ -24,7 +24,7 @@ Add the repo to `tests/model_test_tiers.py`.
 1. `uv run lalamo convert {repo}`
 2. `uv run lalamo chat {repo}` — must produce coherent output.
 3. Run pre-commit only on files you changed: `pre-commit run --files <file1> <file2> ...`
-4. Do not run the test suite.
+4. Run the fast test suite: `uv run pytest -m fast -n=auto`
 
 ## Common pitfalls
 
