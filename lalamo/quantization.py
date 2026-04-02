@@ -11,7 +11,6 @@ __all__ = ["QuantizationMode", "quantize_weights", "stochastic_quantize_weights"
 class QuantizationMode(Enum):
     UINT1 = "uint1"
     UINT4 = "uint4"
-    INT8 = "int8"
     UINT8 = "uint8"
 
     @classmethod
@@ -30,7 +29,6 @@ class QuantizationMode(Enum):
         value_to_range = {
             QuantizationMode.UINT1: (0, 1),
             QuantizationMode.UINT4: (0, 15),
-            QuantizationMode.INT8: (-128, 127),
             QuantizationMode.UINT8: (0, 255),
         }
         return value_to_range[self]
@@ -40,7 +38,6 @@ class QuantizationMode(Enum):
         value_to_dtype = {
             QuantizationMode.UINT1: jnp.uint8,
             QuantizationMode.UINT4: jnp.uint4,
-            QuantizationMode.INT8: jnp.int8,
             QuantizationMode.UINT8: jnp.uint8,
         }
         return value_to_dtype[self]
@@ -50,7 +47,6 @@ class QuantizationMode(Enum):
         value_to_bits = {
             QuantizationMode.UINT1: 1,
             QuantizationMode.UINT4: 4,
-            QuantizationMode.INT8: 8,
             QuantizationMode.UINT8: 8,
         }
         return value_to_bits[self]
@@ -62,7 +58,6 @@ class QuantizationMode(Enum):
 MODE_TO_RANGE = {
     QuantizationMode.UINT1: (0, 1),
     QuantizationMode.UINT4: (0, 15),
-    QuantizationMode.INT8: (-128, 127),
     QuantizationMode.UINT8: (0, 255),
 }
 
