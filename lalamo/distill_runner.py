@@ -14,7 +14,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from cattrs import Converter
-from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Key
 
 from lalamo.common import flatten_parameters
@@ -646,7 +645,7 @@ def distill(
     )
 
     if sharding_config is not None:
-        replicated_sharding = sharding_config.make_sharding(P())
+        replicated_sharding = sharding_config.make_sharding(jax.sharding.PartitionSpec())
         student_model = eqx.filter_shard(student_model, replicated_sharding)
         teacher_model = eqx.filter_shard(teacher_model, replicated_sharding)
         optimizer_state = eqx.filter_shard(optimizer_state, replicated_sharding)
