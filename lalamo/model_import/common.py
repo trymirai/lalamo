@@ -418,7 +418,6 @@ def _import_latent_tts_model(
     tts_request_factory_config = TTSMessageProcessorConfig(
         prompt_template=model_spec.configs.chat_template,
     )
-    message_processor = TTSMessageProcessor(tts_request_factory_config, tokenizer)
 
     latent_tts_config = foreign_config.to_lalamo_config(
         context_length=context_length,
@@ -426,6 +425,8 @@ def _import_latent_tts_model(
         accumulation_precision=accumulation_precision,
         metadata_dict={},
     )
+
+    message_processor = latent_tts_config.create_message_processor(tts_request_factory_config, tokenizer)
 
     generation_config = latent_tts_config.default_generation_config()
     generator_config = LatentTTSGeneratorConfig(

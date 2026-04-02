@@ -105,6 +105,8 @@ class LatentTTSGenerator(eqx.Module):
             model = config.latent_tts_config.empty().import_weights(weights)
 
         tokenizer = config.latent_tts_config.create_tokenizer(path)
-        message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
+        message_processor = config.latent_tts_config.create_message_processor(
+            config.message_processor_config, tokenizer
+        )
 
         return cls(config=config, latent_tts_model=model, message_processor=message_processor)

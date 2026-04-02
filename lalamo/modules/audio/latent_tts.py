@@ -7,7 +7,7 @@ from typing import Any
 from jaxtyping import Array, Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.audio.tts_message_processor import TTSMessage, TTSMessageProcessor
+from lalamo.audio.tts_message_processor import TTSMessage, TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 
@@ -71,3 +71,6 @@ class LatentTTSConfig(RegistryABC):
 
     def create_tokenizer(self, model_path: Path | str) -> Tokenizer:
         return Tokenizer.from_file(str(Path(model_path) / "tokenizer.json"))
+
+    def create_message_processor(self, config: TTSMessageProcessorConfig, tokenizer: Tokenizer) -> TTSMessageProcessor:
+        return TTSMessageProcessor(config, tokenizer)
