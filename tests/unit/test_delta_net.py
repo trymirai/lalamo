@@ -93,7 +93,7 @@ def test_delta_net_attention_matches_hf() -> None:
 
     inputs = torch.randn(1, 7, hf_config.hidden_size, dtype=torch.float32)
     with torch.no_grad():
-        hf_out = hf_module(inputs, cache_params=None, cache_position=None, attention_mask=None)
+        hf_out = hf_module(inputs, attention_mask=None)
 
     lalamo_out = lalamo_module(
         torch_to_jax(inputs[0]),

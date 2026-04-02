@@ -54,7 +54,7 @@ ModelSpec(
 
 ### PyAudio
 
-PyAudio enables audio playback for TTS models and is used as an optional Lalamo feature because it requires [PortAudio](https://www.portaudio.com/) to be installed. 
+PyAudio enables audio playback for TTS models and is used as an optional Lalamo feature because it requires [PortAudio](https://www.portaudio.com/) to be installed.
 
 How to:
 
@@ -67,4 +67,3 @@ Then run :
 ```bash
 uv run --with  pyaudio lalamo path/to/model --replay
 ```
-

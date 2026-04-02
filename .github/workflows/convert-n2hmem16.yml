@@ -1,0 +1,27 @@
+name: "Convert (n2hmem16)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  HF_TOKEN: ${{ secrets.HF_TOKEN }}
+
+jobs:
+  convert:
+    name: Convert (Qwen3-0.6B)
+    runs-on: [github-n2hmem16]
+
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+
+      - name: Convert model
+        run: |
+          lalamo convert "Qwen/Qwen3-0.6B"

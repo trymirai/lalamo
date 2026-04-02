@@ -12,7 +12,7 @@ __all__ = ["SSMStateLayer"]
 
 class SSMStateLayer(StateLayerBase):
     conv_state: Float[Array, "*batch tokens conv_channels"]
-    ssm_state: Float[Array, "*batch groups head_channels state_channels"]
+    ssm_state: Float[Array, "*batch groups state_channels head_channels"]
 
     def __post_init__(self) -> None:
         if self.conv_state.ndim not in (2, 3):
@@ -22,7 +22,7 @@ class SSMStateLayer(StateLayerBase):
             )
         if self.ssm_state.ndim not in (3, 4):
             raise ValueError(
-                "SSM state must have 3 or 4 dimensions: [batch], heads, head_channels, state_channels,"
+                "SSM state must have 3 or 4 dimensions: [batch], heads, state_channels, head_channels,"
                 f" got shape {self.ssm_state.shape}",
             )
         if self.conv_state.dtype != self.ssm_state.dtype:

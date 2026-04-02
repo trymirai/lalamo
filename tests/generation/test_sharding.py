@@ -7,7 +7,7 @@ import pytest
 from tests.common import skip_on_gpu
 
 MODELS = [
-    "Qwen/Qwen2.5-0.5B-Instruct",
+    "Qwen/Qwen3-0.6B",
 ]
 
 
@@ -71,7 +71,8 @@ def test_sharded_forward_passes_match(model: str) -> None:
             print("all sharding configs passed")
         """),
         ],
-        check=False, capture_output=True,
+        check=False,
+        capture_output=True,
         text=True,
         timeout=600,
     )

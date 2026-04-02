@@ -10,4 +10,3 @@ MODEL_LIST = [ModelTestSpec(model.repo, DType.FLOAT32) for model in LFM2_MODELS 
 @pytest.mark.parametrize("test_spec", MODEL_LIST, ids=[m.model_repo for m in MODEL_LIST])
 def test_lfm2_models(test_spec: ModelTestSpec) -> None:
     _test_model(test_spec, LFM2DecoderTracer)
-

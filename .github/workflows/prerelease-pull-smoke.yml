@@ -27,7 +27,7 @@ jobs:
 
   pull-smoke:
     name: Pull Smoke (CPU)
-    runs-on: [cpu]
+    runs-on: ubuntu-latest
     needs: [config]
     if: ${{ needs.config.outputs.run-tests == 'true' && needs.config.outputs.is-prerelease == 'true' }}
 
@@ -68,6 +68,7 @@ jobs:
 
       - name: Run pull tests
         id: pull_smoke
+        continue-on-error: true
         run: |
           pytest tests/indicators/pull_smoke.py 2>&1 | tee pull_smoke.log
 

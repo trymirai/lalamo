@@ -1296,6 +1296,7 @@ def test_audio_transformer_inference() -> None:
     transformer_cfg = lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         post_module_transformer_foreign,
         precision,
+        accumulation_precision=precision,
         window_size=post_module_config_dict["window_size"],
         input_dim=post_module_config_dict["input_dim"],
     )

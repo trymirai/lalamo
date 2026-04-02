@@ -36,4 +36,5 @@ runs:
         echo "HF_XET_HIGH_PERFORMANCE=1" >> "$GITHUB_ENV"
         echo "$GITHUB_WORKSPACE/.venv/bin" >> "$GITHUB_PATH"
         echo "VIRTUAL_ENV=$GITHUB_WORKSPACE/.venv" >> "$GITHUB_ENV"
+        mkdir -p "$HOME/.cache/huggingface/hub"
       shell: bash
