@@ -23,6 +23,7 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
+from lalamo.checkpoint import CheckpointManager
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
 from lalamo.models import ClassifierModel, LanguageModel
@@ -37,6 +38,7 @@ __version__ = "0.6.13"
 
 __all__ = [
     "AssistantMessage",
+    "CheckpointManager",
     "ClassifierModel",
     "CollectTracesCallbacks",
     "CollectTracesEvent",

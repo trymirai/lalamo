@@ -22,7 +22,7 @@ dependencies = [
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "requests>=2.32.5",
     "soundfile>=0.13.1",
-    "transformers>=5.5",
+    "orbax-checkpoint>=0.11.33",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
