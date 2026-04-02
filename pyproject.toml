@@ -115,7 +115,6 @@ markers = [
 ]
 
 [tool.pytest_env]
-TMPDIR = "/home/knyaz/workspace/lalamo-3/.tmp"
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"

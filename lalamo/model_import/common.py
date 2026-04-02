@@ -352,14 +352,6 @@ def _import_language_model(
         if precision is None:
             precision = foreign_decoder_config.default_precision
 
-        metadata_dict: ChainMap[str, str] = ChainMap()
-        decoder_config = foreign_decoder_config.to_lalamo_config(
-            context_length,
-            precision,
-            accumulation_precision,
-            metadata_dict,
-        )
-
         decoder = _load_main_processing_module(
             model_spec,
             model_weights_paths,
@@ -417,13 +409,6 @@ def _import_classifier(
 
         if precision is None:
             precision = foreign_classifier_config.default_precision
-
-        classifier_config = foreign_classifier_config.to_lalamo_config(
-            context_length,
-            precision,
-            accumulation_precision,
-            {},
-        )
 
         classifier = _load_main_processing_module(
             model_spec,

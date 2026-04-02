@@ -93,8 +93,7 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         return config.init(model, message_processor)
 
 
-class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule):
-    config: ConfigT = eqx.field(static=True)
+class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
 

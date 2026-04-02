@@ -1135,7 +1135,7 @@ def load_mlx_quantized_tied_embedding(
 
     weights = _process_quantized_tensor(
         qweights,
-        module.embedding_quantization_mode,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1160,7 +1160,7 @@ def load_mlx_quantized_untied_embedding(
 
     input_weights = _process_quantized_tensor(
         input_qweights,
-        module.embedding_quantization_mode,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1169,7 +1169,7 @@ def load_mlx_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        module.embedding_quantization_mode,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
@@ -1204,7 +1204,7 @@ def load_mlx_semi_quantized_untied_embedding(
 
     output_weights = _process_quantized_tensor(
         output_qweights,
-        module.embedding_quantization_mode,
+        module.config.embedding_quantization_mode,
         module.activation_precision,
         None,
     )
