@@ -25,20 +25,6 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.transformer import Transformer, TransformerConfig
 
 
-def _init_linear(
-    initializer: Initializer,
-    config: FullPrecisionLinearConfig,
-    input_dim: int,
-    output_dims: tuple[int, ...],
-    has_biases: bool,
-) -> FullPrecisionLinear:
-    return config.init(initializer, input_dim=input_dim, output_dims=output_dims, has_biases=has_biases)
-
-
-def _init_transformer(initializer: Initializer, config: TransformerConfig) -> Transformer:
-    return config.init(initializer)
-
-
 @dataclass(frozen=True)
 class ConvNeXtSpatialParams:
     """Spatial parameters for ConvNeXt blocks.
@@ -81,8 +67,8 @@ class ConvNeXtBlockConfig:
         norm = self.norm_config.init(initializer, dim)
 
         hidden_dim = int(spatial_params.mlp_ratio * dim)
-        pwconv1 = _init_linear(initializer, self.pwconv_config, dim, (hidden_dim,), has_biases=True)
-        pwconv2 = _init_linear(initializer, self.pwconv_config, hidden_dim, (dim,), has_biases=True)
+        pwconv1 = self.pwconv_config.init(initializer, input_dim=dim, output_dims=(hidden_dim,), has_biases=True)
+        pwconv2 = self.pwconv_config.init(initializer, input_dim=hidden_dim, output_dims=(dim,), has_biases=True)
 
         return ConvNeXtBlock(
             config=self,
@@ -353,7 +339,7 @@ class VectorQuantizeConfig:
         codebook = self.codebook_config.init(initializer, codebook_size, codebook_dim)
         assert isinstance(codebook, TiedEmbedding)
 
-        out_proj = _init_linear(initializer, self.out_proj_config, codebook_dim, (input_dim,), has_biases=True)
+        out_proj = self.out_proj_config.init(initializer, input_dim=codebook_dim, output_dims=(input_dim,), has_biases=True)
         assert isinstance(out_proj, FullPrecisionLinear)
 
         return VectorQuantize(
@@ -518,7 +504,7 @@ class DownsampleResidualVectorQuantizeConfig:
             codebook_size=quantizer_params.codebook_size,
             codebook_dim=quantizer_params.codebook_dim,
         )
-        post_module = _init_transformer(initializer, self.post_module_config)
+        post_module = self.post_module_config.init(initializer)
         upsampler = self.upsampler_config.init(
             initializer,
             trans_conv_params_per_block=upsampler_trans_conv_params,
