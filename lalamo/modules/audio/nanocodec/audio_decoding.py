@@ -44,14 +44,13 @@ class NanoCodecConfig(TTSAudioDecoderConfigBase):
         )
 
         return NanoCodec(
+            config=self,
             quantizer=quantizer,
             decoder=decoder,
-            codec_samplerate=self.samplerate,
-            precision=self.precision,
         )
 
 
-class NanoCodec(TTSAudioDecoder):
+class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     """Lalamo implementation of decoder part of NanoCodec from NVidia.
 
     Original code: https://github.com/NVIDIA-NeMo/NeMo/blob/v2.3.0/nemo/collections/tts/modules/audio_codec_modules.py
@@ -64,16 +63,13 @@ class NanoCodec(TTSAudioDecoder):
     quantizer: GroupFiniteScalarQuantizer
     decoder: CausalHiFiGANDecoder
 
-    codec_samplerate: int = eqx.field(static=True)
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def samplerate(self) -> int:
-        return self.codec_samplerate
+        return self.config.samplerate
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def n_codebooks(self) -> int:

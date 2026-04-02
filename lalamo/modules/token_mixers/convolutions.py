@@ -41,17 +41,19 @@ class SeparableCausalConvConfig:
         else:
             biases = None
         return SeparableCausalConv(
+            config=self,
             weights=weights,
             biases=biases,
-            activation_precision=self.precision,
         )
 
 
-class SeparableCausalConv(LalamoModule):
+class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
     weights: Float[Array, "channels kernel"]
     biases: Float[Array, " channels"] | None
 
-    activation_precision: DTypeLike = eqx.field(static=True)
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
 
     def __post_init__(self) -> None:
         input_dim, _ = self.weights.shape

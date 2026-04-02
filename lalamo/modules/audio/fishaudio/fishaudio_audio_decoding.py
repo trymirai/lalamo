@@ -75,10 +75,9 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
         decoder = self.decoder_config.init(initializer, spatial_params=decoder_spatial_params)
 
         return DescriptAudioCodec(
+            config=self,
             quantizer=quantizer,
             decoder=decoder,
-            samplerate_value=self.samplerate,
-            precision=self.precision,
         )
 
     @staticmethod
@@ -142,7 +141,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
         )
 
 
-class DescriptAudioCodec(TTSAudioDecoder):
+class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     """Lalamo implementation of DAC (Descript Audio Codec)
     Original code: https://github.com/descriptinc/descript-audio-codec
     The decoding pipeline:
@@ -153,16 +152,13 @@ class DescriptAudioCodec(TTSAudioDecoder):
     quantizer: DownsampleResidualVectorQuantize
     decoder: DACDecoder
 
-    samplerate_value: int = eqx.field(static=True)
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def samplerate(self) -> int:
-        return self.samplerate_value
+        return self.config.samplerate
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def semantic_codebook_size(self) -> int:

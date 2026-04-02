@@ -146,22 +146,16 @@ class Mamba2Config(TokenMixerConfigBase):
         gate_bias = initializer.zeros((self.inner_dim,), in_projection.activation_precision)
 
         return Mamba2(
+            config=self,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,
             skip_connection_weight=skip_connection_weight,
             gate_bias=gate_bias,
-            activation=self.activation,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            state_dim=self.state_dim,
-            kernel_size=self.kernel_size,
-            chunk_size=self.chunk_size,
         )
 
 
-class Mamba2(TokenMixerBase[SSMStateLayer]):
+class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     in_projection: LinearBase
     conv: SeparableCausalConv
     out_projection: LinearBase
@@ -169,13 +163,33 @@ class Mamba2(TokenMixerBase[SSMStateLayer]):
     skip_connection_weight: Float[Array, " heads"]
     gate_bias: Float[Array, " inner_channels"]
 
-    activation: Activation = eqx.field(static=True)
-    num_heads: int = eqx.field(static=True)
-    num_groups: int = eqx.field(static=True)
-    head_dim: int = eqx.field(static=True)
-    state_dim: int = eqx.field(static=True)
-    kernel_size: int = eqx.field(static=True)
-    chunk_size: int = eqx.field(static=True)
+    @property
+    def activation(self) -> Activation:
+        return self.config.activation
+
+    @property
+    def num_heads(self) -> int:
+        return self.config.num_heads
+
+    @property
+    def num_groups(self) -> int:
+        return self.config.num_groups
+
+    @property
+    def head_dim(self) -> int:
+        return self.config.head_dim
+
+    @property
+    def state_dim(self) -> int:
+        return self.config.state_dim
+
+    @property
+    def kernel_size(self) -> int:
+        return self.config.kernel_size
+
+    @property
+    def chunk_size(self) -> int:
+        return self.config.chunk_size
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -196,21 +210,6 @@ class Mamba2(TokenMixerBase[SSMStateLayer]):
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
         return PositionalEmbeddingSelector.NONE
-
-    def __post_init__(self) -> None:
-        if self.skip_connection_weight.shape != (self.num_heads,):
-            raise ValueError(
-                f"Skip connection weight must have shape (num_heads,) = ({self.num_heads},), "
-                f"got {self.skip_connection_weight.shape}",
-            )
-        if self.gate_bias.shape != (self.inner_dim,):
-            raise ValueError(
-                f"Gate bias must have shape (inner_dim,) = ({self.inner_dim},), got {self.gate_bias.shape}",
-            )
-        if self.num_heads % self.num_groups != 0:
-            raise ValueError(
-                f"Number of value heads ({self.num_heads}) must be divisible by number of groups ({self.num_groups})",
-            )
 
     def _step(
         self,

@@ -100,6 +100,7 @@ class TransformerConfig:
         output_norm = self.output_norm_config.init(initializer, self.model_dim)
 
         return Transformer(
+            config=self,
             global_rope=global_rope,
             local_rope=local_rope,
             layers=layers,
@@ -107,7 +108,7 @@ class TransformerConfig:
         )
 
 
-class Transformer(LalamoModule):
+class Transformer(LalamoModule[TransformerConfig]):
     global_rope: RoPE | None
     local_rope: RoPE | None
     layers: tuple[TransformerLayer, ...]

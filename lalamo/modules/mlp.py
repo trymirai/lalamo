@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.utils import vmap_twice
@@ -47,7 +47,7 @@ class MLPForwardPassConfig:
     moe_chunk_size_ratio: float = 0.2
 
 
-class MLPBase(LalamoModule):
+class MLPBase[ConfigT: "MLPConfig"](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
@@ -96,6 +96,7 @@ class DenseMLPConfig(MLPConfigBase):
 
     def init(self, initializer: Initializer, model_dim: int, hidden_dim: int) -> "DenseMLP":
         return DenseMLP(
+            config=self,
             up_projection=self._with_sharding_order(
                 self.linear_config.init(
                     initializer,
@@ -114,9 +115,6 @@ class DenseMLPConfig(MLPConfigBase):
                 ),
                 ShardingOrder.INPUT,
             ),
-            activation=self.activation,
-            gate_clipping=self.gate_clipping,
-            up_clipping=self.up_clipping,
         )
 
     def init_mixture(
@@ -127,6 +125,7 @@ class DenseMLPConfig(MLPConfigBase):
         hidden_dim: int,
     ) -> "DenseMLP":
         return DenseMLP(
+            config=self,
             up_projection=self._with_sharding_order(
                 self.linear_config.init_mixture(
                     initializer,
@@ -147,18 +146,12 @@ class DenseMLPConfig(MLPConfigBase):
                 ),
                 ShardingOrder.INPUT,
             ),
-            activation=self.activation,
-            gate_clipping=self.gate_clipping,
-            up_clipping=self.up_clipping,
         )
 
 
-class DenseMLP(MLPBase):
+class DenseMLP(MLPBase[DenseMLPConfig]):
     up_projection: LinearBase
     down_projection: LinearBase
-    activation: Activation = eqx.field(static=True)
-    gate_clipping: tuple[float | None, float | None] | None = eqx.field(static=True)
-    up_clipping: tuple[float | None, float | None] | None = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -214,11 +207,11 @@ class DenseMLP(MLPBase):
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
         up_proj, gate = self.up_projection(inputs)
-        if self.gate_clipping:
-            gate = jnp.clip(gate, *self.gate_clipping)
-        if self.up_clipping:
-            up_proj = jnp.clip(up_proj, *self.up_clipping)
-        gate = self.activation(gate)
+        if self.config.gate_clipping:
+            gate = jnp.clip(gate, *self.config.gate_clipping)
+        if self.config.up_clipping:
+            up_proj = jnp.clip(up_proj, *self.config.up_clipping)
+        gate = self.config.activation(gate)
         (result,) = self.down_projection(up_proj * gate)
 
         return result
@@ -342,28 +335,33 @@ class MixtureOfExpertsConfig(ABC):
             )
 
         return MixtureOfExperts(
+            config=self,
             router=router,
             experts=experts,
             gate=gate,
-            routing_function=self.routing_function,
-            num_routed_experts=self.num_routed_experts,
-            num_active_routed_experts=self.num_active_routed_experts,
-            num_shared_experts=self.num_shared_experts,
         )
 
 
-class MixtureOfExperts(MLPBase):
+class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: LinearBase
     experts: DenseMLP
     gate: LinearBase | None
-    routing_function: RoutingFunction = eqx.field(static=True)
-    num_routed_experts: int = eqx.field(static=True)
-    num_active_routed_experts: int = eqx.field(static=True)
-    num_shared_experts: int = eqx.field(static=True)
 
     @property
     def mixture_size(self) -> int:
-        return self.num_routed_experts + self.num_shared_experts
+        return self.config.mixture_size
+
+    @property
+    def num_active_routed_experts(self) -> int:
+        return self.config.num_active_routed_experts
+
+    @property
+    def num_shared_experts(self) -> int:
+        return self.config.num_shared_experts
+
+    @property
+    def num_routed_experts(self) -> int:
+        return self.config.num_routed_experts
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -424,7 +422,7 @@ class MixtureOfExperts(MLPBase):
     ) -> Float[Array, "batch suffix_tokens channels"]:
         def per_token(token_input: Float[Array, " channels"]) -> Float[Array, " channels"]:
             (router_logits,) = self.router(token_input)
-            routing = self.routing_function.call_unbatched(
+            routing = self.config.routing_function.call_unbatched(
                 router_logits,
                 num_active=self.num_active_routed_experts,
             )
@@ -475,7 +473,7 @@ class MixtureOfExperts(MLPBase):
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
         (router_logits,) = vmap(self.router)(flattened_inputs)
-        routing_map = self.routing_function(router_logits, self.num_active_routed_experts)
+        routing_map = self.config.routing_function(router_logits, self.num_active_routed_experts)
 
         token_mask = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],

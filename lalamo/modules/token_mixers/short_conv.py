@@ -55,19 +55,21 @@ class ShortConvConfig(TokenMixerConfigBase):
             has_biases=False,
         )
         return ShortConv(
+            config=self,
             in_projection=in_projection,
             conv=conv,
             out_projection=out_projection,
-            kernel_size=self.kernel_size,
         )
 
 
-class ShortConv(TokenMixerBase[ShortConvStateLayer]):
+class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     in_projection: LinearBase
     conv: SeparableCausalConv
     out_projection: LinearBase
 
-    kernel_size: int = eqx.field(static=True)
+    @property
+    def kernel_size(self) -> int:
+        return self.config.kernel_size
 
     @property
     def activation_precision(self) -> DTypeLike:

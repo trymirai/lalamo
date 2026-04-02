@@ -35,7 +35,7 @@ class TokenMixerConfigBase(ABC):
     ) -> "TokenMixerBase": ...
 
 
-class TokenMixerBase[StateLayerT: StateLayerBase](LalamoModule):
+class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...

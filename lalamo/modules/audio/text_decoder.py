@@ -15,7 +15,7 @@ class TTSTextDecoderConfigBase(ABC):
     def init(self, initializer: Initializer) -> "TTSTextDecoder": ...
 
 
-class TTSTextDecoder(LalamoModule):
+class TTSTextDecoder[ConfigT: TTSTextDecoderConfigBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...

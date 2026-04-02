@@ -91,6 +91,7 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
         assert isinstance(codebook_embeddings, TiedEmbedding)
 
         return FishAudioTextDecoder(
+            config=self,
             embeddings_slow=embeddings_slow,
             transformer_slow=self.slow_model_config.init(initializer),
             readout_slow=self.slow_readout_config.init(
@@ -109,23 +110,10 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
             ),
             codebook_embeddings=codebook_embeddings,
             fast_model_projection=fast_model_projection,
-            semantic_token_begin_id=self.semantic_token_begin_id,
-            semantic_token_end_id=self.semantic_token_end_id,
-            im_end_token_id=self.im_end_token_id,
-            codebook_size=self.codebook_size,
-            vocab_size=self.vocab_size,
-            slow_model_dim=self.slow_model_dim,
-            fast_model_dim=self.fast_model_dim,
-            num_codebooks=self.num_codebooks,
-            max_seq_len=self.max_seq_len,
-            scale_codebook_embeddings=self.scale_codebook_embeddings,
-            precision=self.precision,
-            short_logits_size=self.short_logits_size,
-            repeat_window_size=self.repeat_window_size,
         )
 
 
-class FishAudioTextDecoder(TTSTextDecoder):
+class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     embeddings_slow: TiedEmbedding
     transformer_slow: Transformer
     readout_slow: FullPrecisionLinear
@@ -137,23 +125,9 @@ class FishAudioTextDecoder(TTSTextDecoder):
     codebook_embeddings: TiedEmbedding
     fast_model_projection: FullPrecisionLinear | Identity
 
-    semantic_token_begin_id: int = eqx.field(static=True)
-    semantic_token_end_id: int = eqx.field(static=True)
-    im_end_token_id: int = eqx.field(static=True)
-    codebook_size: int = eqx.field(static=True)
-    vocab_size: int = eqx.field(static=True)
-    slow_model_dim: int = eqx.field(static=True)
-    fast_model_dim: int = eqx.field(static=True)
-    num_codebooks: int = eqx.field(static=True)
-    max_seq_len: int = eqx.field(static=True)
-    scale_codebook_embeddings: bool = eqx.field(static=True)
-    precision: DTypeLike = eqx.field(static=True)
-    short_logits_size: int = eqx.field(static=True)
-    repeat_window_size: int = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     def export_weights(self) -> ParameterTree:
         if isinstance(self.fast_model_projection, Identity):

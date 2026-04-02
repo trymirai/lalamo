@@ -56,6 +56,7 @@ _LFM25_MODELS = [
         use_cases=tuple(),
     )
     for size, variant, quantization in chain(
+        product(["350M"], [None], [None]),
         product(["1.2B"], ["Instruct"], [None]),
     )
 ]

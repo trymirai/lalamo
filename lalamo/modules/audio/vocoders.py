@@ -11,10 +11,10 @@ from lalamo.modules.common import Initializer, LalamoModule
 @dataclass(frozen=True)
 class NoopVocoderConfig:
     def init(self, initializer: Initializer) -> "NoopVocoder":  # noqa: ARG002
-        return NoopVocoder()
+        return NoopVocoder(config=self)
 
 
-class NoopVocoder(LalamoModule):
+class NoopVocoder(LalamoModule[NoopVocoderConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return jnp.float32

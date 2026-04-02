@@ -8,19 +8,24 @@ from jaxtyping import Array, DTypeLike
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
+    AttentionConfig,
     Decoder,
     DeltaNetAttention,
+    DeltaNetAttentionConfig,
     DenseMLP,
     FullPrecisionLinear,
     GroupQuantizedLinear,
     LinearBase,
     Mamba2,
+    Mamba2Config,
     MLXQuantizedLinear,
     MLXQuantizedTiedEmbedding,
+    MLXQuantizedTiedEmbeddingConfig,
     MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
     ShortConv,
+    ShortConvConfig,
     TiedEmbedding,
     TransformerLayer,
     UntiedEmbedding,
@@ -212,7 +217,7 @@ def load_linear(
             sublayers_to_fuse,
             AWQ_QUANTIZED_WEIGHT_LAYOUT,
         )
-        weight_quantization = module.weight_quantization_mode
+        weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
 
         if weight_quantization == QuantizationMode.UINT4:
@@ -249,7 +254,7 @@ def load_linear(
             MLX_QUANTIZED_WEIGHT_LAYOUT,
             reorder=reorder_tuple,
         )
-        weight_quantization = module.weight_quantization_mode
+        weight_quantization = module.config.weight_quantization_mode
         activation_precision = module.activation_precision
 
         actual_quantization = _detect_mlx_quantization(
@@ -844,7 +849,7 @@ def load_delta_net_attention(
             fused_deq_biases = jnp.concatenate([db for _, db, _ in per_branch], axis=0)
             fused_scales = jnp.concatenate([s for _, _, s in per_branch], axis=0)
 
-            weight_quantization = module.in_proj.weight_quantization_mode
+            weight_quantization = module.in_proj.config.weight_quantization_mode
             activation_precision = module.in_proj.activation_precision
             weights = _process_quantized_tensor(fused_qweights, weight_quantization, activation_precision, None)
             scales = fused_scales.astype(activation_precision)
@@ -1131,7 +1136,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "backbone"
         embedding_path = decoder_path / "embedding"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {Mamba2: "mixer"}
+        mixer_key = {Mamba2Config: "mixer"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -1145,7 +1150,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = base_path / "embedding.encoder"
         pre_mixer_norm_key = "norm"
-        mixer_key = {Mamba2: "layer"}
+        mixer_key = {Mamba2Config: "layer"}
         permute_conv = False
         pre_mlp_norm_key = "norm"
         mlp_key = "layer"
@@ -1159,8 +1164,8 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "operator_norm"
-        mixer_key = {ShortConv: "conv", Attention: "self_attn"}
-        permute_conv = isinstance(module.embedding, MLXQuantizedTiedEmbedding)
+        mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
+        permute_conv = isinstance(module.config.embedding_config, MLXQuantizedTiedEmbeddingConfig)
         pre_mlp_norm_key = "ffn_norm"
         mlp_key = "feed_forward"
         up_proj_key = "w3"
@@ -1173,7 +1178,7 @@ def load_huggingface_decoder(
         decoder_path = base_path / "model"
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "input_layernorm"
-        mixer_key = {Attention: "self_attn", DeltaNetAttention: "linear_attn"}
+        mixer_key = {AttentionConfig: "self_attn", DeltaNetAttentionConfig: "linear_attn"}
         permute_conv = False
         pre_mlp_norm_key = "post_attention_layernorm"
         mlp_key = "mlp"
@@ -1208,7 +1213,7 @@ def load_huggingface_decoder(
             weights_dict,
             decoder_path / "layers" / ((i * 2) if alternating_layers else i),
             decoder_path / "layers" / ((i * 2 + 1) if alternating_layers else i),
-            mixer_key[type(layer.mixer)],
+            mixer_key[type(layer.config.mixer_config)],
             mlp_key,
             pre_mixer_norm_key,
             pre_mlp_norm_key,

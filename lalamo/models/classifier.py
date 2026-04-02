@@ -37,11 +37,11 @@ class ClassifierModelConfig(TextModelConfig[ClassifierConfig]):
 
 class ClassifierModel(TextModel[ClassifierModelConfig, Classifier]):
     def label_output_logits(self, logits: Float[Array, "batch logits"]) -> dict[str, Float[Array, " batch"]]:
-        output_labels = self.model.output_labels
+        output_labels = self.model.config.output_labels
         probabilities = jax.nn.sigmoid(logits)
 
         if output_labels is None:
-            output_labels = [f"class_{idx}" for idx in range(self.model.num_labels)]
+            output_labels = [f"class_{idx}" for idx in range(self.model.config.num_labels)]
 
         assert probabilities.ndim == 2, f"Expected 2D array, got array of shape {logits.shape}"
 

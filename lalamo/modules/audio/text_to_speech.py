@@ -41,19 +41,21 @@ class TTSConfig:
         audio_decoder = self.audio_decoder_config.init(initializer)
         vocoder = self.vocoder_config.init(initializer)
         return TTSModel(
+            config=self,
             text_decoder=text_decoder,
             audio_decoder=audio_decoder,
             vocoder=vocoder,
-            activation_precision=self.activation_precision,
         )
 
 
-class TTSModel(LalamoModule):
+class TTSModel(LalamoModule[TTSConfig]):
     text_decoder: TTSTextDecoder
     audio_decoder: TTSAudioDecoder
     vocoder: Vocoder
 
-    activation_precision: DTypeLike = eqx.field(static=True)
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.activation_precision
 
     def export_weights(self) -> ParameterTree[Array]:
         return {}

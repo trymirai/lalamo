@@ -90,32 +90,43 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
         dt_bias = initializer.zeros((self.num_heads,), in_proj.activation_precision)
         a_log = initializer.zeros((self.num_heads,), in_proj.activation_precision)
         return DeltaNetAttention(
+            config=self,
             in_proj=in_proj,
             conv=conv,
             out_proj=out_proj,
             norm=norm,
             dt_bias=dt_bias,
             a_log=a_log,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            value_head_dim=self.value_head_dim,
-            kernel_size=self.kernel_size,
         )
 
 
-class DeltaNetAttention(TokenMixerBase[SSMStateLayer]):
+class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     in_proj: LinearBase
     conv: SeparableCausalConv
     out_proj: LinearBase
     norm: Normalization
     dt_bias: Float[Array, " heads"]
     a_log: Float[Array, " heads"]
-    num_heads: int = eqx.field(static=True)
-    num_groups: int = eqx.field(static=True)
-    head_dim: int = eqx.field(static=True)
-    value_head_dim: int = eqx.field(static=True)
-    kernel_size: int = eqx.field(static=True)
+
+    @property
+    def num_heads(self) -> int:
+        return self.config.num_heads
+
+    @property
+    def num_groups(self) -> int:
+        return self.config.num_groups
+
+    @property
+    def head_dim(self) -> int:
+        return self.config.head_dim
+
+    @property
+    def value_head_dim(self) -> int:
+        return self.config.value_head_dim
+
+    @property
+    def kernel_size(self) -> int:
+        return self.config.kernel_size
 
     @property
     def activation_precision(self) -> DTypeLike:

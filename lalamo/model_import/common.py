@@ -391,7 +391,7 @@ def _import_language_model(
         generation_config = GenerationConfig(stop_token_ids)
 
     language_model_config = LanguageModelConfig(
-        model_config=decoder_config,
+        model_config=decoder.config,
         message_processor_config=message_processor.config,
         generation_config=generation_config,
     )
@@ -442,7 +442,7 @@ def _import_classifier(
     message_processor = import_message_processor(model_spec)
 
     classifier_model_config = ClassifierModelConfig(
-        model_config=classifier_config,
+        model_config=classifier.config,
         message_processor_config=message_processor.config,
     )
     classifier_model = ClassifierModel(classifier_model_config, classifier, message_processor)

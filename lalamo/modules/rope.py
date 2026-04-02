@@ -104,18 +104,16 @@ class RoPEConfigBase:
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
-        return RoPE(
-            sines=sines,
-            cosines=cosines,
-            activation_precision=self.precision,
-        )
+        return RoPE(config=self, sines=sines, cosines=cosines)
 
 
-class RoPE(LalamoModule):
+class RoPE(LalamoModule[RoPEConfigBase]):
     sines: Float[Array, "tokens head_channels"]
     cosines: Float[Array, "tokens head_channels"]
 
-    activation_precision: DTypeLike = eqx.field(static=True)
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
 
     @property
     def head_dim(self) -> int:

@@ -34,9 +34,8 @@ __all__ = [
 ]
 
 
-class LinearBase(LalamoModule):
+class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
-    activation_precision: DTypeLike = eqx.field(static=True)
     # sharding order specifies in which order do we attempt to shard
     sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
@@ -110,10 +109,10 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         weights = initializer.normal(std, (*leading_dims, sum(output_dims), input_dim), self.precision)
         biases = initializer.zeros((*leading_dims, sum(output_dims)), self.precision) if has_biases else None
         return FullPrecisionLinear(
+            config=self,
             weights=weights,
             biases=biases,
             output_dims=output_dims,
-            activation_precision=self.precision,
         )
 
     def init(
@@ -136,7 +135,7 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         return self._init_general(initializer, (mixture_size,), input_dim, output_dims, has_biases)
 
 
-class FullPrecisionLinear(LinearBase):
+class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
     weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
@@ -144,6 +143,10 @@ class FullPrecisionLinear(LinearBase):
         ),
     )
     biases: Float[Array, "*components total_out_channels"] | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.precision
 
     @property
     def mixture_size(self) -> int | None:
@@ -201,16 +204,15 @@ class QuantizedLinearConfigBase(LinearConfigBase):
     activation_precision: DTypeLike
 
 
-class QuantizedLinearBase(LinearBase):
+class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT]):
     biases: Float[Array, "*components total_out_channels"] | None
-    activation_quantization_mode: QuantizationMode | None = eqx.field(static=True)
 
     @abstractmethod
     def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]: ...
 
     def _apply_weights(self, inputs: Float[Array, " in_channels"]) -> Float[Array, " total_out_channels"]:
-        if self.activation_quantization_mode is not None:
-            inputs = dynamically_quantize_activations(inputs, self.activation_quantization_mode)
+        if self.config.activation_quantization_mode is not None:
+            inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
         return self._prepare_scaled_weights() @ inputs
 
     @eqx.filter_jit
@@ -246,15 +248,12 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         zero_points = initializer.zeros((*leading_dims, total_out, num_groups), self.activation_precision)
 
         return GroupQuantizedLinear(
+            config=self,
             output_dims=output_dims,
             weights=weights,
             scales=scales,
             zero_points=zero_points,
             biases=biases,
-            activation_quantization_mode=self.activation_quantization_mode,
-            group_size=self.group_size,
-            weight_quantization_mode=self.weight_quantization_mode,
-            activation_precision=self.activation_precision,
         )
 
     def init(
@@ -277,7 +276,7 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         return self._init_general(initializer, (mixture_size,), input_dim, output_dims, has_biases)
 
 
-class GroupQuantizedLinearBase(QuantizedLinearBase):
+class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
     weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
@@ -287,9 +286,10 @@ class GroupQuantizedLinearBase(QuantizedLinearBase):
     scales: Float[Array, "*components total_out_channels groups"]
     zero_points: Float[Array, "*components total_out_channels groups"]
     biases: Float[Array, "*components total_out_channels"] | None
-    group_size: int = eqx.field(static=True)
-    weight_quantization_mode: QuantizationMode = eqx.field(static=True)
-    activation_precision: DTypeLike = eqx.field(static=True)
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.activation_precision
 
     @property
     def mixture_size(self) -> int | None:
@@ -310,14 +310,14 @@ class GroupQuantizedLinearBase(QuantizedLinearBase):
 
     @property
     def num_groups(self) -> int:
-        return self.input_dim // self.group_size
+        return self.input_dim // self.config.group_size
 
     @property
     def int_weights(self) -> Int[Array, "*components in_channels out_channels"]:
-        quantized = quantize_weights(self.weights, self.weight_quantization_mode)
-        casted = quantized.astype(self.weight_quantization_mode.dtype)
+        quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
+        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
 
-        if self.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             packed = jax_uint4_to_packed_uint8(casted)
         else:
             packed = casted
@@ -326,10 +326,10 @@ class GroupQuantizedLinearBase(QuantizedLinearBase):
 
     @property
     def int_zero_points(self) -> Int[Array, "*components groups out_channels"]:
-        quantized = quantize_weights(self.zero_points, self.weight_quantization_mode)
-        casted = quantized.astype(self.weight_quantization_mode.dtype)
+        quantized = quantize_weights(self.zero_points, self.config.weight_quantization_mode)
+        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
 
-        if self.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             packed = jax_uint4_to_packed_uint8(casted)
         else:
             packed = casted
@@ -337,7 +337,7 @@ class GroupQuantizedLinearBase(QuantizedLinearBase):
         return packed
 
     def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
-        quantized_weights = quantize_weights(self.weights, self.weight_quantization_mode)
+        quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
             "... total_out_channels (groups group_channels) -> ... total_out_channels groups group_channels",
@@ -369,7 +369,7 @@ class GroupQuantizedLinearBase(QuantizedLinearBase):
         weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
         unpacked_zero_points = require_array(weights["zero_points"])
-        if self.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
             unpacked_zero_points = jax_uint8_to_unpacked_uint4(unpacked_zero_points)
         result = replace(
@@ -406,15 +406,12 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         deq_biases = initializer.zeros((*leading_dims, total_out, num_groups), self.activation_precision)
 
         return MLXQuantizedLinear(
+            config=self,
             output_dims=output_dims,
             weights=weights,
             scales=scales,
             deq_biases=deq_biases,
             biases=biases,
-            activation_quantization_mode=self.activation_quantization_mode,
-            group_size=self.group_size,
-            weight_quantization_mode=self.weight_quantization_mode,
-            activation_precision=self.activation_precision,
         )
 
     def init(
@@ -437,7 +434,7 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         return self._init_general(initializer, (mixture_size,), input_dim, output_dims, has_biases)
 
 
-class MLXQuantizedLinearBase(QuantizedLinearBase):
+class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearBase[ConfigT]):
     weights: Float[Array, "*components total_out_channels in_channels"] = sharded_field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
@@ -447,9 +444,10 @@ class MLXQuantizedLinearBase(QuantizedLinearBase):
     scales: Float[Array, "*components total_out_channels groups"]
     deq_biases: Float[Array, "*components total_out_channels groups"]
     biases: Float[Array, "*components total_out_channels"] | None
-    group_size: int = eqx.field(static=True)
-    weight_quantization_mode: QuantizationMode = eqx.field(static=True)
-    activation_precision: DTypeLike = eqx.field(static=True)
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.activation_precision
 
     @property
     def mixture_size(self) -> int | None:
@@ -470,14 +468,14 @@ class MLXQuantizedLinearBase(QuantizedLinearBase):
 
     @property
     def num_groups(self) -> int:
-        return self.input_dim // self.group_size
+        return self.input_dim // self.config.group_size
 
     @property
     def int_weights(self) -> Int[Array, "*components in_channels out_channels"]:
-        quantized = quantize_weights(self.weights, self.weight_quantization_mode)
-        casted = quantized.astype(self.weight_quantization_mode.dtype)
+        quantized = quantize_weights(self.weights, self.config.weight_quantization_mode)
+        casted = quantized.astype(self.config.weight_quantization_mode.dtype)
 
-        if self.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             packed = jax_uint4_to_packed_uint8(casted)
         else:
             packed = casted
@@ -485,7 +483,7 @@ class MLXQuantizedLinearBase(QuantizedLinearBase):
         return packed
 
     def _prepare_scaled_weights(self) -> Float[Array, "*components in_channels total_out_channels"]:
-        quantized_weights = quantize_weights(self.weights, self.weight_quantization_mode)
+        quantized_weights = quantize_weights(self.weights, self.config.weight_quantization_mode)
         grouped_weights = rearrange(
             quantized_weights,
             "... total_out_channels (groups group_channels) -> ... total_out_channels groups group_channels",
@@ -515,7 +513,7 @@ class MLXQuantizedLinearBase(QuantizedLinearBase):
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
         unpacked_weights = require_array(weights["weights"])
-        if self.weight_quantization_mode == QuantizationMode.UINT4:
+        if self.config.weight_quantization_mode == QuantizationMode.UINT4:
             unpacked_weights = jax_uint8_to_unpacked_uint4(unpacked_weights)
         result = replace(
             self,
@@ -565,6 +563,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         )
 
         return QLoRALinear(
+            config=self,
             output_dims=output_dims,
             weights=group_quantized_linear.weights,
             scales=group_quantized_linear.scales,
@@ -572,12 +571,6 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
             zero_points=group_quantized_linear.zero_points,
             lora_down_weights=lora_down_weights,
             lora_up_weights=lora_up_weights,
-            activation_quantization_mode=self.activation_quantization_mode,
-            group_size=self.group_size,
-            weight_quantization_mode=self.weight_quantization_mode,
-            activation_precision=self.activation_precision,
-            lora_rank=self.lora_rank,
-            lora_scale=self.lora_scale,
         )
 
     def init(  # type: ignore[override]
@@ -608,8 +601,6 @@ class QLoRALinear(GroupQuantizedLinearBase):
         ),
     )
     lora_up_weights: tuple[Float[Array, "*components lora_channels out_channels"], ...]
-    lora_rank: int = eqx.field(static=True)
-    lora_scale: float = eqx.field(static=True)
 
     def _split_biases(self) -> tuple[Float[Array, "*components out_channels"] | None, ...]:
         if self.biases is not None:
@@ -627,7 +618,7 @@ class QLoRALinear(GroupQuantizedLinearBase):
         q_outs = jnp.split(joint_q_out, self.get_split_points(self.output_dims))
 
         joint_lora_hidden = inputs @ self.lora_down_weights
-        lora_hiddens = jnp.split(joint_lora_hidden, self.get_split_points([self.lora_rank] * self.num_outputs))
+        lora_hiddens = jnp.split(joint_lora_hidden, self.get_split_points([self.config.lora_rank] * self.num_outputs))
         lora_outs = [
             lora_hidden @ lora_up_weight
             for lora_up_weight, lora_hidden in zip(self.lora_up_weights, lora_hiddens, strict=True)
@@ -635,7 +626,7 @@ class QLoRALinear(GroupQuantizedLinearBase):
 
         results = []
         for q_out, lora_out, bias in zip(q_outs, lora_outs, self._split_biases(), strict=True):
-            result = q_out + self.lora_scale * lora_out
+            result = q_out + self.config.lora_scale * lora_out
             if bias is not None:
                 result = result + bias
             results.append(result)
