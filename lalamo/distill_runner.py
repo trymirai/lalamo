@@ -141,23 +141,8 @@ class DistillConfig:
 
 @dataclass(frozen=True)
 class DistillResult:
-    teacher_path: str
-    student_path: str
-    dataset_path: str
-    training_mode: TrainingMode
-    train_examples: int
-    eval_examples: int
-    max_sequence_length: int
-    batch_size: int
-    num_steps: int
+    config: DistillConfig
     completed_steps: int
-    learning_rate: float
-    warmup_steps: int
-    gradient_clip_norm: float | None
-    gradient_accumulation_steps: int
-    seed: int
-    optimizer: OptimizerName
-    quantization_mode: str
     master_dtype: str
     compute_dtype: str
     parameter_summary: DistillParameterSummary
@@ -212,18 +197,17 @@ def _load_tokenized_conversations(
     else:
         raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
 
-    tokenized_sequences: list[np.ndarray] = []
-    for conversation in dataframe.get_column(column_name).to_list():
-        token_ids = language_model.message_processor.tokenize_request(
-            [HFMessage.from_dict(message).as_message() for message in conversation]
-        )
-        token_ids = token_ids[:max_sequence_length]
-        if len(token_ids) < 2:
-            continue
-        tokenized_sequences.append(np.array(token_ids, dtype=np.int32))
-        if len(tokenized_sequences) == num_examples:
-            break
-    return tokenized_sequences
+    conversations = dataframe.get_column(column_name).to_list()
+    all_token_ids = language_model.message_processor.tokenize_requests(
+        [HFMessage.from_dict(message).as_message() for message in conversation]
+        for conversation in conversations
+    )
+    tokenized_sequences = [
+        np.array(ids[:max_sequence_length], dtype=np.int32)
+        for ids in all_token_ids
+        if len(ids[:max_sequence_length]) >= 2
+    ]
+    return tokenized_sequences[:num_examples]
 
 
 def _load_traces(dataset_path: Path, *, num_examples: int) -> list[LalamoCompletion]:
@@ -231,7 +215,7 @@ def _load_traces(dataset_path: Path, *, num_examples: int) -> list[LalamoComplet
         return list(islice(LalamoCompletion.deserialize_many(trace_fd), num_examples))
 
 
-def _has_tokenizer_compatibility(
+def _same_tokenizers(
     student_model: LanguageModel,
     teacher_model: LanguageModel,
 ) -> bool:
@@ -262,7 +246,7 @@ def _validate_distill_models(
     *,
     quantization_mode: QuantizationMode,
 ) -> None:
-    if not _has_tokenizer_compatibility(student_model, teacher_model):
+    if not _same_tokenizers(student_model, teacher_model):
         raise ValueError("Teacher and student must use identical tokenizers and message processor configs")
 
     student_quantization_mode = _single_quantization_mode(student_model.model)
@@ -609,6 +593,8 @@ def distill(
         raise ValueError("gradient_accumulation_steps must be at least 1")
     if config.gradient_clip_norm is not None and config.gradient_clip_norm <= 0:
         raise ValueError("gradient_clip_norm must be positive when provided")
+    if config.lora_scale <= 0:
+        raise ValueError("lora_scale must be positive")
     if config.num_devices < 1:
         raise ValueError("num_devices must be at least 1")
 
@@ -936,23 +922,8 @@ def distill(
         callbacks.finished_saving_model(model_output_path)
 
     result = DistillResult(
-        teacher_path=str(config.teacher_path),
-        student_path=str(config.student_path),
-        dataset_path=str(config.dataset_path),
-        training_mode=config.training_mode,
-        train_examples=config.train_examples,
-        eval_examples=config.eval_examples,
-        max_sequence_length=config.max_sequence_length,
-        batch_size=config.batch_size,
-        num_steps=config.num_steps,
+        config=config,
         completed_steps=completed_steps,
-        learning_rate=config.learning_rate,
-        warmup_steps=config.warmup_steps,
-        gradient_clip_norm=config.gradient_clip_norm,
-        gradient_accumulation_steps=config.gradient_accumulation_steps,
-        seed=config.seed,
-        optimizer=config.optimizer_name,
-        quantization_mode=config.quantization_mode.value,
         master_dtype=str(jnp.dtype(distill_config.master_dtype)),
         compute_dtype=str(jnp.dtype(distill_config.compute_dtype)),
         parameter_summary=parameter_summary,
