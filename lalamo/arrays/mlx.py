@@ -11,10 +11,10 @@ from jaxtyping import Array, DTypeLike, Float
 from lalamo.common import ParameterTree, dummy_array
 from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
-from .base import QuantArray, unpack_int32
+from .base import CompressedArray, unpack_int32
 
 
-class MLXQuantArray(QuantArray):
+class MLXQuantArray(CompressedArray):
     int_weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     deq_biases: Float[Array, "... out_channels groups"]
@@ -39,6 +39,9 @@ class MLXQuantArray(QuantArray):
 
     def aval(self) -> jax.core.ShapedArray:
         return jax.core.ShapedArray(self.int_weights.shape, self.scales.dtype)
+
+    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
+        return self.value @ vector
 
     @property
     def value(self) -> Array:

@@ -539,7 +539,7 @@ def load_convnext_block(
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
     base1 = FullPrecisionArray(data=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision))
-    new_weights1 = CompositeArray.from_quant(base1)
+    new_weights1 = CompositeArray.from_compressed(base1)
     pointwise_conv_step1 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step1,
@@ -556,7 +556,7 @@ def load_convnext_block(
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
     base2 = FullPrecisionArray(data=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision))
-    new_weights2 = CompositeArray.from_quant(base2)
+    new_weights2 = CompositeArray.from_compressed(base2)
     pointwise_conv_step2 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step2,

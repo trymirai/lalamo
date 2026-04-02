@@ -10,9 +10,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-import quax
-
-from lalamo.arrays import FullPrecisionArray, QuantArray, quant_array_import_weights
+from lalamo.arrays import CompressedArray, FullPrecisionArray, quant_array_import_weights
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
@@ -77,7 +75,7 @@ class LinearConfig:
         raw = jax.random.uniform(key, (total_out, input_dim), minval=-scale, maxval=scale, dtype=self.precision)
         full = FullPrecisionArray(data=raw)
         if self.quant_format == QuantFormat.FULL_PRECISION:
-            weights: QuantArray = full
+            weights: CompressedArray = full
         else:
             exported = full.export_weights()
             weights = quant_array_import_weights(
@@ -105,7 +103,7 @@ class LinearConfig:
 
 class Linear(LalamoModule[LinearConfig]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
-    weights: QuantArray = sharded_field(
+    weights: CompressedArray = sharded_field(
         tensor_sharding=TensorSharding(
             axes=(-2, -1),
             axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
@@ -156,7 +154,7 @@ class Linear(LalamoModule[LinearConfig]):
             )
         if self.config.activation_quantization_mode is not None:
             inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
-        result = quax.quaxify(jnp.dot)(self.weights, inputs)
+        result = self.weights.dot(inputs)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))

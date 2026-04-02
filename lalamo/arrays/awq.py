@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike, Float
 from lalamo.common import ParameterTree, dummy_array
 from lalamo.utils import jax_uint4_to_packed_uint8, jax_uint8_to_unpacked_uint4
 
-from .base import QuantArray, unpack_int32
+from .base import CompressedArray, unpack_int32
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
@@ -21,7 +21,7 @@ def _reverse_awq_uint4_order(array: Array) -> Array:
     return rearrange(grouped[..., AWQ_UINT4_REVERSE_ORDER], "... group pack -> ... (group pack)")
 
 
-class AWQQuantArray(QuantArray):
+class AWQQuantArray(CompressedArray):
     int_weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     zero_points: Float[Array, "... out_channels groups"]
@@ -46,6 +46,9 @@ class AWQQuantArray(QuantArray):
 
     def aval(self) -> jax.core.ShapedArray:
         return jax.core.ShapedArray(self.int_weights.shape, self.scales.dtype)
+
+    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
+        return self.value @ vector
 
     @property
     def value(self) -> Array:

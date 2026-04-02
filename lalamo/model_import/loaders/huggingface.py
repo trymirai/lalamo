@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
-from lalamo.arrays import AWQQuantArray, CompositeArray, FullPrecisionArray, MLXQuantArray, QuantArray
+from lalamo.arrays import AWQQuantArray, CompositeArray, CompressedArray, FullPrecisionArray, MLXQuantArray
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -215,7 +215,7 @@ def load_linear(
         case QuantFormat.FULL_PRECISION:
             reorder_tuple = (reorder, 0) if reorder is not None else None
             raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse, reorder=reorder_tuple)
-            base: QuantArray = FullPrecisionArray(data=raw_weights.astype(precision))
+            base: CompressedArray = FullPrecisionArray(data=raw_weights.astype(precision))
 
         case QuantFormat.AWQ:
             if reorder is not None:
