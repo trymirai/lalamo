@@ -1,3 +1,4 @@
+from .bonsai import HFBonsaiConfig
 from .common import HuggingFaceLMConfig
 from .gemma2 import HFGemma2Config
 from .gemma3 import HFGemma3Config, HFGemma3TextConfig
@@ -14,6 +15,7 @@ from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
 
 __all__ = [
+    "HFBonsaiConfig",
     "HFGPTOssConfig",
     "HFGemma2Config",
     "HFGemma3Config",

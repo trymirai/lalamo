@@ -74,6 +74,8 @@ class MinPPolicy(SamplingPolicy):
     p: float = eqx.field(static=True)
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        if self.p == 0.0:
+            return logits
         max_logit = jnp.max(logits)
         logit_cutoff = max_logit + log(self.p)
         return jnp.where(logits >= logit_cutoff, logits, -jnp.inf)
