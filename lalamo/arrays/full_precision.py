@@ -8,14 +8,17 @@ from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.common import ParameterTree, dummy_array
 
-from .base import QuantArray
+from .base import CompressedArray
 
 
-class FullPrecisionArray(QuantArray):
+class FullPrecisionArray(CompressedArray):
     data: Float[Array, "... out_channels in_channels"]
 
     def aval(self) -> jax.core.ShapedArray:
         return jax.core.ShapedArray(self.data.shape, self.data.dtype)
+
+    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
+        return self.data @ vector
 
     @property
     def value(self) -> Array:

@@ -3,18 +3,21 @@ from __future__ import annotations
 import abc
 import warnings
 
+import equinox as eqx
 import jax.core
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array
+from jaxtyping import Array, Float
 
-import quax
 from lalamo.common import ParameterTree
 
 
-class QuantArray(quax.Value):
+class CompressedArray(eqx.Module):
     @abc.abstractmethod
     def aval(self) -> jax.core.ShapedArray: ...
+
+    @abc.abstractmethod
+    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]: ...
 
     @property
     @abc.abstractmethod

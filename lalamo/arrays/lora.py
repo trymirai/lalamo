@@ -8,11 +8,12 @@ import jax.numpy as jnp
 import jax.random as jr
 from jaxtyping import Array, Float, PRNGKeyArray
 
-import quax
 from lalamo.common import ParameterTree
 
+from .base import CompressedArray
 
-class LoraArray(quax.Value):
+
+class LoraArray(CompressedArray):
     down: Float[Array, "... out_channels rank"]
     up: Float[Array, "... rank in_channels"]
     scale: float = eqx.field(static=True, default=1.0)
@@ -21,6 +22,9 @@ class LoraArray(quax.Value):
         *batch, out_channels, _ = self.down.shape
         *_, _, in_channels = self.up.shape
         return jax.core.ShapedArray((*batch, out_channels, in_channels), self.down.dtype)
+
+    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
+        return self.scale * (self.down @ (self.up @ vector))
 
     def materialise(self) -> Array:
         warnings.warn("LoraArray.materialise() — computing down @ up.", stacklevel=2)

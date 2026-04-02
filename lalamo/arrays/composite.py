@@ -6,21 +6,24 @@ from functools import reduce
 import equinox as eqx
 import jax.core
 import jax.numpy as jnp
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, Float, PRNGKeyArray
 
-import quax
 from lalamo.common import ParameterTree
 
-from .base import QuantArray
+from .base import CompressedArray
 from .lora import LoraArray
 
 
-class CompositeArray(quax.Value):
-    base: QuantArray
-    loras: tuple[LoraArray, ...] = eqx.field(default=())
+class CompositeArray(CompressedArray):
+    parts: tuple[CompressedArray, ...] = eqx.field(default=())
 
     def aval(self) -> jax.core.ShapedArray:
-        return self.base.aval()
+        if not self.parts:
+            raise ValueError("CompositeArray has no parts")
+        return self.parts[0].aval()
+
+    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]:
+        return reduce(lambda acc, part: acc + part.dot(vector), self.parts[1:], self.parts[0].dot(vector))
 
     def materialise(self) -> Array:
         warnings.warn("CompositeArray.materialise() — full materialization.", stacklevel=2)
@@ -28,7 +31,7 @@ class CompositeArray(quax.Value):
 
     @property
     def value(self) -> Array:
-        return reduce(lambda acc, lora: acc + lora.value, self.loras, self.base.value)
+        return reduce(lambda acc, part: acc + part.value, self.parts[1:], self.parts[0].value)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -43,16 +46,19 @@ class CompositeArray(quax.Value):
         return len(self.shape)
 
     def export_weights(self) -> ParameterTree:
-        result: dict[str, ParameterTree] = self.base.export_weights()  # type: ignore
-        for i, lora in enumerate(self.loras):
-            result[f"lora_{i}"] = lora.export_weights()
+        result: dict[str, ParameterTree] = {}
+        for i, part in enumerate(self.parts):
+            result[f"part_{i}"] = part.export_weights()
         return result
 
     @staticmethod
-    def from_quant(base: QuantArray) -> CompositeArray:
-        return CompositeArray(base=base)
+    def from_compressed(base: CompressedArray) -> CompositeArray:
+        return CompositeArray(parts=(base,))
+
+    def add_part(self, part: CompressedArray) -> CompositeArray:
+        return CompositeArray(parts=(*self.parts, part))
 
     def add_lora(self, *, rank: int, scale: float = 1.0, key: PRNGKeyArray) -> CompositeArray:
         *_, out_channels, in_channels = self.shape
         lora = LoraArray.from_rank(out_channels, in_channels, rank=rank, scale=scale, key=key)
-        return CompositeArray(base=self.base, loras=(*self.loras, lora))
+        return self.add_part(lora)
