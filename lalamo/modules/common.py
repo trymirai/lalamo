@@ -5,7 +5,7 @@ from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
-from typing import Any, NamedTuple, Self, cast
+from typing import Any, Generic, Self, TypeVar, cast
 
 import equinox as eqx
 import jax
@@ -23,7 +23,6 @@ __all__ = [
     "ForwardPassMode",
     "Initializer",
     "LalamoModule",
-    "ModuleWithConfig",
     "ParameterTree",
     "PositionalEmbeddingSelector",
     "RandomInitializer",
@@ -46,7 +45,16 @@ class ForwardPassMode(Enum):
     SINGLE_TOKEN = "single_token"
 
 
-class LalamoModule(eqx.Module):
+ConfigT_co = TypeVar("ConfigT_co", covariant=True)
+
+
+class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
+    config: ConfigT_co = eqx.field(static=True)
+
+    @property
+    @abstractmethod
+    def activation_precision(self) -> DTypeLike: ...
+
     @abstractmethod
     def export_weights(self) -> ParameterTree[Array]: ...
 
@@ -64,11 +72,6 @@ class LalamoModule(eqx.Module):
             self,
             is_leaf=lambda x: isinstance(x, LalamoModule) and x is not self,
         )
-
-
-class ModuleWithConfig[ModuleT, ConfigT](NamedTuple):
-    module: ModuleT
-    config: ConfigT
 
 
 @dataclass

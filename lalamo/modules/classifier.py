@@ -59,6 +59,7 @@ class PredictionHeadConfig:
             has_biases=True,
         )
         return PredictionHead(
+            config=self,
             dense=dense_layer,
             activation=self.activation,
             norm=norm,
@@ -66,7 +67,7 @@ class PredictionHeadConfig:
         )
 
 
-class PredictionHead(LalamoModule):
+class PredictionHead(LalamoModule[PredictionHeadConfig]):
     dense: LinearBase
     activation: Activation
     norm: Normalization
@@ -162,25 +163,19 @@ class ClassifierConfig:
             num_labels=self.num_labels,
         )
         return Classifier(
+            config=self,
             embedding=embedding,
             embedding_norm=embedding_norm,
             transformer=transformer,
             prediction_head=prediction_head,
-            classifier_pooling=self.classifier_pooling,
-            output_labels=self.output_labels,
-            num_labels=self.num_labels,
         )
 
 
-class Classifier(LalamoModule):
+class Classifier(LalamoModule[ClassifierConfig]):
     embedding: EmbeddingBase
     embedding_norm: Normalization
     transformer: Transformer
     prediction_head: PredictionHead
-
-    classifier_pooling: PoolingType = eqx.field(static=True)
-    output_labels: tuple[str, ...] | None = eqx.field(static=True)
-    num_labels: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -211,13 +206,13 @@ class Classifier(LalamoModule):
             forward_pass_config=forward_pass_config,
         )
 
-        if self.classifier_pooling == PoolingType.CLS:
+        if self.config.classifier_pooling == PoolingType.CLS:
             pooled_output = transformer_result.outputs[:, 0, :]
-        elif self.classifier_pooling == PoolingType.MEAN:
+        elif self.config.classifier_pooling == PoolingType.MEAN:
             attention_mask = jnp.ones((*token_ids.shape, 1), dtype=transformer_result.outputs.dtype)
             pooled_output = (transformer_result.outputs * attention_mask).sum(axis=1) / attention_mask.sum(axis=1)
         else:
-            raise TypeError(f"classifier_pooling of unknown type: {self.classifier_pooling}")
+            raise TypeError(f"classifier_pooling of unknown type: {self.config.classifier_pooling}")
 
         logits = self.prediction_head(pooled_output)
 

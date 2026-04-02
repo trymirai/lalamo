@@ -82,16 +82,15 @@ class ConvNeXtBlockConfig:
         pwconv2 = _init_linear(initializer, self.pwconv_config, hidden_dim, (dim,), has_biases=True)
 
         return ConvNeXtBlock(
+            config=self,
             depthwise_conv=dwconv,
             norm=norm,
             pointwise_conv_step1=pwconv1,
             pointwise_conv_step2=pwconv2,
-            precision=self.precision,
-            activation=self.activation,
         )
 
 
-class ConvNeXtBlock(LalamoModule):
+class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
     """ConvNeXt block implementation.
 
     Architecture:
@@ -112,12 +111,9 @@ class ConvNeXtBlock(LalamoModule):
     pointwise_conv_step1: Linear
     pointwise_conv_step2: Linear
 
-    precision: DTypeLike = eqx.field(static=True)
-    activation: Activation = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def dim(self) -> int:
@@ -133,7 +129,7 @@ class ConvNeXtBlock(LalamoModule):
         x = self.depthwise_conv(x)
         x = jax.vmap(jax.vmap(self.norm))(x)
         (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step1))(x)
-        x = jax.vmap(jax.vmap(self.activation))(x)
+        x = jax.vmap(jax.vmap(self.config.activation))(x)
         (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step2))(x)
         if apply_residual:
             x = residual + x
@@ -176,13 +172,13 @@ class UpsamplingBlockConfig:
         )
 
         return UpsamplingBlock(
+            config=self,
             trans_conv=trans_conv,
             convnext=convnext,
-            precision=self.precision,
         )
 
 
-class UpsamplingBlock(LalamoModule):
+class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
     """Upsampling block consisting of transposed convolution followed by ConvNeXt block.
 
     Architecture:
@@ -196,11 +192,9 @@ class UpsamplingBlock(LalamoModule):
     trans_conv: CausalTransposeConv1d
     convnext: ConvNeXtBlock
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def in_channels(self) -> int:
@@ -244,10 +238,10 @@ class UpsamplerConfig:
             for config, trans_conv_params in zip(self.block_configs, trans_conv_params_per_block, strict=True)
         ]
 
-        return Upsampler(blocks=tuple(blocks))
+        return Upsampler(config=self, blocks=tuple(blocks))
 
 
-class Upsampler(LalamoModule):
+class Upsampler(LalamoModule[UpsamplerConfig]):
     """Full upsampler module consisting of multiple UpsamplingBlocks.
 
     This module sequentially applies a series of upsampling blocks to progressively
@@ -298,13 +292,13 @@ class VectorQuantizeConfig:
         assert isinstance(out_proj, FullPrecisionLinear)
 
         return VectorQuantize(
+            config=self,
             codebook=codebook,
             out_proj=out_proj,
-            precision=self.precision,
         )
 
 
-class VectorQuantize(LalamoModule):
+class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
     """Vector Quantization module (decoding path only).
 
     Decodes codebook indices back to input space by:
@@ -315,11 +309,9 @@ class VectorQuantize(LalamoModule):
     codebook: TiedEmbedding
     out_proj: Linear
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def codebook_size(self) -> int:
@@ -370,23 +362,21 @@ class ResidualVectorQuantizeConfig:
         ]
 
         return ResidualVectorQuantize(
+            config=self,
             quantizers=tuple(quantizers),
-            precision=self.precision,
         )
 
 
-class ResidualVectorQuantize(LalamoModule):
+class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
     """Residual Vector Quantization module (decoding path only).
     Decodes codes from multiple codebooks by summing their decoded outputs.
     """
 
     quantizers: tuple[VectorQuantize, ...]
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def n_codebooks(self) -> int:
@@ -439,15 +429,15 @@ class DownsampleResidualVectorQuantizeConfig:
         )
 
         return DownsampleResidualVectorQuantize(
+            config=self,
             semantic_quantizer=semantic_quantizer,
             quantizer=quantizer,
             post_module=post_module,
             upsampler=upsampler,
-            precision=self.precision,
         )
 
 
-class DownsampleResidualVectorQuantize(LalamoModule):
+class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuantizeConfig]):
     """Downsampled Residual Vector Quantization decoder module.
 
     This module decodes audio codes by:
@@ -468,11 +458,9 @@ class DownsampleResidualVectorQuantize(LalamoModule):
     post_module: Transformer
     upsampler: Upsampler
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def semantic_codebook_size(self) -> int:
@@ -568,15 +556,15 @@ class ResidualUnitConfig:
         )
 
         return ResidualUnit(
+            config=self,
             snake1=snake1,
             conv1=conv1,
             snake2=snake2,
             conv2=conv2,
-            precision=self.precision,
         )
 
 
-class ResidualUnit(LalamoModule):
+class ResidualUnit(LalamoModule[ResidualUnitConfig]):
     """ResidualUnit module.
 
     Architecture:
@@ -595,11 +583,9 @@ class ResidualUnit(LalamoModule):
     snake2: Snake1d
     conv2: CausalConv1d
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def dim(self) -> int:
@@ -672,16 +658,16 @@ class DACDecoderBlockConfig:
         res_unit3 = self.res_unit_config.init(initializer, output_dim, ResidualUnitSpatialParams(dilation=9))
 
         return DACDecoderBlock(
+            config=self,
             snake=snake,
             trans_conv=trans_conv,
             res_unit1=res_unit1,
             res_unit2=res_unit2,
             res_unit3=res_unit3,
-            precision=self.precision,
         )
 
 
-class DACDecoderBlock(LalamoModule):
+class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
     """DACDecoderBlock module for audio decoding.
 
     Architecture:
@@ -701,11 +687,9 @@ class DACDecoderBlock(LalamoModule):
     res_unit2: ResidualUnit
     res_unit3: ResidualUnit
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def input_dim(self) -> int:
@@ -795,15 +779,15 @@ class DACDecoderConfig:
         )
 
         return DACDecoder(
+            config=self,
             first_conv=first_conv,
             decoder_blocks=tuple(decoder_blocks),
             final_snake=final_snake,
             final_conv=final_conv,
-            precision=self.precision,
         )
 
 
-class DACDecoder(LalamoModule):
+class DACDecoder(LalamoModule[DACDecoderConfig]):
     """Decoder module used in DAC for decoding audio from latent representations.
 
     Architecture:
@@ -822,11 +806,9 @@ class DACDecoder(LalamoModule):
     final_snake: Snake1d
     final_conv: CausalConv1d
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def input_channels(self) -> int:

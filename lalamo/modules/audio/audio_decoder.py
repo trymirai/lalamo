@@ -13,7 +13,7 @@ class TTSAudioDecoderConfigBase(ABC):
     def init(self, initializer: Initializer) -> "TTSAudioDecoder": ...
 
 
-class TTSAudioDecoder(LalamoModule):
+class TTSAudioDecoder[ConfigT: TTSAudioDecoderConfigBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...

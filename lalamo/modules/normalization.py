@@ -38,30 +38,16 @@ class NormalizationConfig:
             biases = initializer.zeros((input_dim,), self.scale_precision)
         else:
             biases = None
-        return Normalization(
-            scales=scales,
-            biases=biases,
-            activation_precision=self.scale_precision,
-            accumulation_precision=self.accumulation_precision,
-            epsilon=self.epsilon,
-            scale_offset=self.scale_offset,
-            upcast_mode=self.upcast_mode,
-            subtract_mean=self.subtract_mean,
-        )
+        return Normalization(config=self, scales=scales, biases=biases)
 
 
-class Normalization(LalamoModule):
+class Normalization(LalamoModule[NormalizationConfig]):
     scales: Float[Array, " channels"]
-
-    activation_precision: DTypeLike = eqx.field(static=True)
-    accumulation_precision: DTypeLike = eqx.field(static=True)
-
-    epsilon: float = eqx.field(static=True)
-    scale_offset: float | None = eqx.field(static=True)
-    upcast_mode: UpcastMode = eqx.field(static=True)
-    subtract_mean: bool = eqx.field(static=True)
-
     biases: Float[Array, " channels"] | None = None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.config.scale_precision
 
     @property
     def input_dim(self) -> int:
@@ -70,25 +56,25 @@ class Normalization(LalamoModule):
 
     @eqx.filter_jit
     def __call__(self, inputs: Float[Array, " channels"]) -> Float[Array, " channels"]:
-        upcasted_inputs = inputs.astype(self.accumulation_precision)
+        upcasted_inputs = inputs.astype(self.config.accumulation_precision)
 
-        if self.subtract_mean:
+        if self.config.subtract_mean:
             mean = jnp.mean(upcasted_inputs)
             upcasted_inputs = upcasted_inputs - mean
 
-        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.epsilon
+        adjusted_variance = jnp.mean(jnp.square(upcasted_inputs)) + self.config.epsilon
         normalized_x = upcasted_inputs * jax.lax.rsqrt(adjusted_variance)
 
-        if self.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
+        if self.config.upcast_mode == UpcastMode.ONLY_NORMALIZATION:
             normalized_x = normalized_x.astype(inputs.dtype)
 
-        if self.upcast_mode == UpcastMode.FULL_LAYER:
-            adjusted_scales = self.scales.astype(self.accumulation_precision)
+        if self.config.upcast_mode == UpcastMode.FULL_LAYER:
+            adjusted_scales = self.scales.astype(self.config.accumulation_precision)
         else:
             adjusted_scales = self.scales
 
-        if self.scale_offset is not None:
-            adjusted_scales = adjusted_scales + self.scale_offset
+        if self.config.scale_offset is not None:
+            adjusted_scales = adjusted_scales + self.config.scale_offset
 
         result = normalized_x * adjusted_scales
 

@@ -26,22 +26,17 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
 
     def init(self, initializer: Initializer) -> "StubTextDecoder":  # noqa: ARG002
         return StubTextDecoder(
+            config=self,
             seed=123,
-            num_codebooks=self.num_codebooks,
-            codebook_size=self.codebook_size,
-            precision=self.precision,
         )
 
 
-class StubTextDecoder(TTSTextDecoder):
+class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
     seed: int = eqx.field(static=True)
-    num_codebooks: int = eqx.field(static=True)
-    codebook_size: int = eqx.field(static=True)
-    precision: DTypeLike = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     def decode_utterance(
         self,

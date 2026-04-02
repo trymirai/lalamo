@@ -162,24 +162,17 @@ class AttentionConfig(TokenMixerConfigBase):
             sinks = None
 
         return Attention(
+            config=self,
             qkv_projection=qkv_projection,
             gate_projection=gate_projection,
             out_projection=out_projection,
             query_norm=query_norm,
             key_norm=key_norm,
             sinks=sinks,
-            num_heads=self.num_heads,
-            num_groups=self.num_groups,
-            head_dim=self.head_dim,
-            is_causal=self.is_causal,
-            scale=self.scale,
-            sliding_window_size=self.sliding_window_size,
-            logit_soft_cap=self.logit_soft_cap,
-            use_rope=self.use_rope,
         )
 
 
-class Attention(TokenMixerBase[KVCacheLayer]):
+class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     qkv_projection: LinearBase
     gate_projection: LinearBase | None
     out_projection: LinearBase
@@ -189,17 +182,6 @@ class Attention(TokenMixerBase[KVCacheLayer]):
 
     sinks: Float[Array, " heads"] | None
 
-    num_heads: int = eqx.field(static=True)
-    num_groups: int = eqx.field(static=True)
-    head_dim: int = eqx.field(static=True)
-
-    is_causal: bool = eqx.field(static=True)
-
-    scale: float | None = eqx.field(static=True)
-    sliding_window_size: int | None = eqx.field(static=True)
-    logit_soft_cap: float | None = eqx.field(static=True)
-    use_rope: bool = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
         return self.qkv_projection.activation_precision
@@ -207,6 +189,38 @@ class Attention(TokenMixerBase[KVCacheLayer]):
     @property
     def model_dim(self) -> int:
         return self.qkv_projection.input_dim
+
+    @property
+    def num_heads(self) -> int:
+        return self.config.num_heads
+
+    @property
+    def num_groups(self) -> int:
+        return self.config.num_groups
+
+    @property
+    def head_dim(self) -> int:
+        return self.config.head_dim
+
+    @property
+    def is_causal(self) -> bool:
+        return self.config.is_causal
+
+    @property
+    def scale(self) -> float | None:
+        return self.config.scale
+
+    @property
+    def sliding_window_size(self) -> int | None:
+        return self.config.sliding_window_size
+
+    @property
+    def logit_soft_cap(self) -> float | None:
+        return self.config.logit_soft_cap
+
+    @property
+    def use_rope(self) -> bool:
+        return self.config.use_rope
 
     @property
     def group_size(self) -> int:
@@ -219,64 +233,6 @@ class Attention(TokenMixerBase[KVCacheLayer]):
     @property
     def has_sinks(self) -> bool:
         return self.sinks is not None
-
-    def __post_init__(self) -> None:
-        if self.query_norm is not None and self.query_norm.input_dim != self.head_dim:
-            raise ValueError(
-                f"Query normalization input dimension must match head_dim ({self.head_dim}),"
-                f" got {self.query_norm.input_dim}",
-            )
-        if self.key_norm is not None and self.key_norm.input_dim != self.head_dim:
-            raise ValueError(
-                f"Key normalization input dimension must match head_dim ({self.head_dim}),"
-                f" got {self.key_norm.input_dim}",
-            )
-        if self.num_heads % self.num_groups != 0:
-            raise ValueError(
-                "Number of heads must be divisible by the number of groups,"
-                f" got {self.num_heads} heads and {self.num_groups} groups",
-            )
-        if self.out_projection.input_dim != self.num_heads * self.head_dim:
-            raise ValueError(
-                f"Output projection input dimension must be num_heads * head_dim"
-                f" ({self.num_heads} * {self.head_dim} = {self.num_heads * self.head_dim}),"
-                f" got {self.out_projection.input_dim}",
-            )
-        output_dims = self.qkv_projection.output_dims
-        if len(output_dims) != 3:
-            raise ValueError(
-                f"QKV projection must have 3 output dims, got {len(output_dims)}",
-            )
-        q_output_dim, k_output_dim, v_output_dim = output_dims
-        expected_q = self.num_heads * self.head_dim
-        if q_output_dim != expected_q:
-            raise ValueError(
-                f"Query projection output dimension must be {expected_q}, got {q_output_dim}",
-            )
-        if k_output_dim != self.num_groups * self.head_dim:
-            raise ValueError(
-                f"Key projection output dimension must be num_groups * head_dim"
-                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
-                f" got {k_output_dim}",
-            )
-        if v_output_dim != self.num_groups * self.head_dim:
-            raise ValueError(
-                f"Value projection output dimension must be num_groups * head_dim"
-                f" ({self.num_groups} * {self.head_dim} = {self.num_groups * self.head_dim}),"
-                f" got {v_output_dim}",
-            )
-        if self.gate_projection is not None:
-            gate_output_dim = self.gate_projection.output_dims[0]
-            if gate_output_dim != expected_q:
-                raise ValueError(
-                    f"Gate projection output dimension must be {expected_q}, got {gate_output_dim}",
-                )
-        if self.sinks is not None:
-            (num_sink_heads,) = self.sinks.shape
-            if num_sink_heads != self.num_heads:
-                raise ValueError(
-                    f"Number of sink heads must be equal to number of heads ({self.num_heads}), got {num_sink_heads}",
-                )
 
     @eqx.filter_jit
     def __call__(

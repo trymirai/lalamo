@@ -160,13 +160,14 @@ class DecoderConfig:
         transformer = self.transformer_config.init(initializer)
 
         return Decoder(
+            config=self,
             embedding=embedding,
             transformer=transformer,
             per_layer_embedding=per_layer_embedding,
         )
 
 
-class Decoder(LalamoModule):
+class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
     per_layer_embedding: PerLayerEmbedding | None

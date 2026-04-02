@@ -169,6 +169,7 @@ class TransformerLayerConfig:
         mlp = self.mlp_config.init(initializer, model_dim, hidden_dim)
         post_mlp_norm = self.post_mlp_norm_config.init(initializer, model_dim) if self.post_mlp_norm_config else None
         return TransformerLayer(
+            config=self,
             pre_mixer_norm=pre_mixer_norm,
             mixer=mixer,
             post_mixer_norm=post_mixer_norm,
@@ -180,7 +181,7 @@ class TransformerLayerConfig:
         )
 
 
-class TransformerLayer(LalamoModule):
+class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     pre_mixer_norm: Normalization | None
     mixer: TokenMixerBase
     post_mixer_norm: Normalization | None

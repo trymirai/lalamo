@@ -45,10 +45,9 @@ class CausalConv1dConfig:
             biases = None
 
         return CausalConv1d(
+            config=self,
             weights=weights,
             biases=biases,
-            precision=self.precision,
-            has_biases=self.has_biases,
             stride=stride,
             dilation=dilation,
             groups=groups,
@@ -56,7 +55,7 @@ class CausalConv1dConfig:
         )
 
 
-class CausalConv1d(LalamoModule):
+class CausalConv1d(LalamoModule[CausalConv1dConfig]):
     """Causal 1D convolution module.
     Implements causal convolution by left-padding the input with zeros.
     The output at position t only depends on inputs at positions <= t.
@@ -65,8 +64,6 @@ class CausalConv1d(LalamoModule):
     weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
     biases: Float[Array, " out_channels"] | None
 
-    precision: DTypeLike = eqx.field(static=True)
-    has_biases: bool = eqx.field(static=True)
     stride: int = eqx.field(static=True)
     dilation: int = eqx.field(static=True)
     groups: int = eqx.field(static=True)
@@ -74,7 +71,7 @@ class CausalConv1d(LalamoModule):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def out_channels(self) -> int:
@@ -154,17 +151,16 @@ class CausalTransposeConv1dConfig:
             biases = None
 
         return CausalTransposeConv1d(
+            config=self,
             weights=weights,
             biases=biases,
-            precision=self.precision,
-            has_biases=self.has_biases,
             in_channels=in_channels,
             stride=stride,
             groups=groups,
         )
 
 
-class CausalTransposeConv1d(LalamoModule):
+class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
     """Causal transposed 1D convolution (deconvolution) with groups support.
 
     Implements causal transposed convolution by removing appropriate padding
@@ -177,15 +173,13 @@ class CausalTransposeConv1d(LalamoModule):
     weights: Float[Array, "out_channels in_channels_per_group kernel_size"]
     biases: Float[Array, " out_channels"] | None
 
-    precision: DTypeLike = eqx.field(static=True)
-    has_biases: bool = eqx.field(static=True)
     in_channels: int = eqx.field(static=True)
     stride: int = eqx.field(static=True)
     groups: int = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def out_channels(self) -> int:
@@ -245,21 +239,19 @@ class Snake1dConfig:
 
     def init(self, initializer: Initializer, channels: int) -> "Snake1d":
         alpha = initializer.ones((channels,), dtype=self.precision)
-        return Snake1d(alpha=alpha, precision=self.precision)
+        return Snake1d(config=self, alpha=alpha)
 
 
-class Snake1d(LalamoModule):
+class Snake1d(LalamoModule[Snake1dConfig]):
     """Snake1d activation module.
     Implements the Snake activation function: x + (1/alpha) * sin^2(alpha * x)
     """
 
     alpha: Float[Array, " channels"]
 
-    precision: DTypeLike = eqx.field(static=True)
-
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.precision
+        return self.config.precision
 
     @property
     def channels(self) -> int:
