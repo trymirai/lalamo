@@ -104,7 +104,7 @@ def _make_language_model(
             weights=jnp.zeros((1, 1), dtype=jnp.float32),
         ),
         message_processor=SimpleNamespace(
-            tokenize_request=tokenize_request,
+            tokenize_requests=lambda conversations: [tokenize_request(msgs) for msgs in conversations],
             tokenizer=SimpleNamespace(to_str=lambda: tokenizer_signature),
         ),
     )

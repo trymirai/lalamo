@@ -938,7 +938,7 @@ def distill(
     )
 
     with (config.output_dir / "metrics.json").open("w") as metrics_file:
-        json.dump(asdict(result), metrics_file, indent=4)
+        json.dump(asdict(result), metrics_file, indent=4, default=str)
 
     if callbacks is not None:
         callbacks.finished(result)
