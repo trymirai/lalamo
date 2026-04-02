@@ -33,8 +33,6 @@ def test_distill_cli_invokes_recipe(
             DistillRecipe.QLORA.value,
             "--steps",
             "123",
-            "--devices",
-            "2",
             "--output-dir",
             str(output_dir),
         ],
@@ -49,7 +47,6 @@ def test_distill_cli_invokes_recipe(
     assert config.student_path == student_path
     assert config.dataset_path == dataset_path
     assert config.output_dir == output_dir
-    assert config.num_devices == 2
     assert config.num_steps == 123
     assert config.quantization_mode == QuantizationMode.UINT8
     assert config.lora_rank == 32

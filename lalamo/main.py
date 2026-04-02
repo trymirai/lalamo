@@ -953,10 +953,6 @@ def distill(
         int | None,
         Option(help="Override the recipe step count."),
     ] = None,
-    devices: Annotated[
-        int,
-        Option(help="Number of devices for data-parallel training."),
-    ] = 1,
     output_dir: Annotated[
         Path | None,
         Option(help="Directory for checkpoints, metrics, and the distilled model."),
@@ -975,7 +971,6 @@ def distill(
         output_dir=resolved_output_dir,
         training_mode=TrainingMode.ONLINE_EXACT,
         quantization_mode=quantization_mode,
-        num_devices=devices,
         seed=seed,
     )
     match recipe:
@@ -1126,10 +1121,6 @@ def distill_advanced(
         bool,
         Option(help="Enable stochastic rounding for quantized training leaves."),
     ] = True,
-    num_devices: Annotated[
-        int,
-        Option(help="Number of devices for data-parallel training."),
-    ] = 1,
     save_checkpoints: Annotated[
         bool,
         Option(help="Persist latest and best checkpoints."),
@@ -1159,7 +1150,6 @@ def distill_advanced(
         checkpoint_every_steps=checkpoint_every_steps,
         early_stop_patience=early_stop_patience,
         resume_from=resume_from,
-        num_devices=num_devices,
         seed=seed,
         stochastic_rounding=stochastic_rounding,
         save_checkpoints=save_checkpoints,

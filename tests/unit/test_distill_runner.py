@@ -16,7 +16,6 @@ from lalamo.distill_runner import (
     LoadedDistillBatches,
     OptimizerName,
     _load_tokenized_conversations,
-    _shard_distill_batches,
     _validate_distill_models,
     distill,
 )
@@ -142,28 +141,6 @@ def test_load_tokenized_conversations_skips_short_rows_and_keeps_later_examples(
 
     assert [sequence.tolist() for sequence in tokenized] == [[1, 2, 3], [4, 5, 6]]
 
-
-def test_shard_distill_batches_rejects_partial_batches() -> None:
-    dataset = LoadedDistillBatches(
-        train_batches=[
-            DistillBatch(
-                token_ids=jnp.ones((3, 4), dtype=jnp.int32),
-                lengths_without_padding=jnp.ones((3,), dtype=jnp.int32),
-            ),
-        ],
-        eval_batches=[
-            DistillBatch(
-                token_ids=jnp.ones((2, 4), dtype=jnp.int32),
-                lengths_without_padding=jnp.ones((2,), dtype=jnp.int32),
-            ),
-        ],
-    )
-
-    with (
-        patch("lalamo.distill_runner.NamedSharding", return_value=None),
-        pytest.raises(ValueError, match="Batch size 3 is not divisible by num_devices=2"),
-    ):
-        _shard_distill_batches(dataset, object(), num_devices=2)
 
 
 @pytest.mark.parametrize(

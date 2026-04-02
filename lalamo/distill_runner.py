@@ -14,7 +14,6 @@ import jax.numpy as jnp
 import numpy as np
 import optax
 from cattrs import Converter
-from jax.sharding import Mesh, NamedSharding
 from jax.sharding import PartitionSpec as P
 from jaxtyping import Array, Key
 
@@ -47,7 +46,7 @@ from lalamo.distillation import (
 from lalamo.model_import import ModelMetadata
 from lalamo.models import LanguageModel, LanguageModelConfig
 from lalamo.modules import config_converter
-from lalamo.modules.common import ParameterLeafInfo, iter_parameter_leaves
+from lalamo.modules.common import ParameterLeafInfo, ShardingConfig, iter_parameter_leaves, pad_and_apply_data_sharding
 from lalamo.modules.decoder import Decoder
 from lalamo.quantization import QuantizationMode
 from lalamo.safetensors import safe_write
@@ -133,7 +132,6 @@ class DistillConfig:
     checkpoint_every_steps: int = 0
     early_stop_patience: int = 0
     resume_from: Path | None = None
-    num_devices: int = 1
     seed: int = 0
     stochastic_rounding: bool = True
     save_checkpoints: bool = True
@@ -190,14 +188,13 @@ def _load_tokenized_conversations(
     num_examples: int,
 ) -> list[np.ndarray]:
     dataframe = shuffle_dataset(load_hf_parquet(dataset_path), seed=seed)
-    if "conversation" in dataframe.columns:
-        column_name = "conversation"
-    elif "messages" in dataframe.columns:
-        column_name = "messages"
-    else:
-        raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
+    if "conversation" not in dataframe.columns:
+        if "messages" in dataframe.columns:
+            dataframe = dataframe.rename({"messages": "conversation"})
+        else:
+            raise ValueError(f"{dataset_path} must contain a 'conversation' or 'messages' column")
 
-    conversations = dataframe.get_column(column_name).to_list()
+    conversations = dataframe.get_column("conversation").to_list()
     all_token_ids = language_model.message_processor.tokenize_requests(
         [HFMessage.from_dict(message).as_message() for message in conversation]
         for conversation in conversations
@@ -330,27 +327,6 @@ def _load_distill_batches(
                 ],
             )
 
-
-def _shard_distill_batches(
-    dataset: LoadedDistillBatches,
-    mesh: Mesh | None,
-    *,
-    num_devices: int,
-) -> LoadedDistillBatches:
-    if mesh is None:
-        return dataset
-
-    batch_sharding = NamedSharding(mesh, P("batch"))
-    for batch in [*dataset.train_batches, *dataset.eval_batches]:
-        if batch.token_ids.shape[0] % num_devices == 0:
-            continue
-        raise ValueError(f"Batch size {batch.token_ids.shape[0]} is not divisible by num_devices={num_devices}")
-
-    return replace(
-        dataset,
-        train_batches=[eqx.filter_shard(batch, batch_sharding) for batch in dataset.train_batches],
-        eval_batches=[eqx.filter_shard(batch, batch_sharding) for batch in dataset.eval_batches],
-    )
 
 
 def _evaluate_with(
@@ -566,14 +542,6 @@ def _accumulate_train_step(
     return apply_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
 
 
-def _setup_device_mesh(num_devices: int) -> Mesh | None:
-    if num_devices <= 1:
-        return None
-    devices = jax.devices()[:num_devices]
-    if len(devices) < num_devices:
-        raise ValueError(f"Requested {num_devices} devices but only {len(devices)} available")
-    return Mesh(devices, axis_names=("batch",))
-
 
 def distill(
     config: DistillConfig,
@@ -595,11 +563,9 @@ def distill(
         raise ValueError("gradient_clip_norm must be positive when provided")
     if config.lora_scale <= 0:
         raise ValueError("lora_scale must be positive")
-    if config.num_devices < 1:
-        raise ValueError("num_devices must be at least 1")
 
-    mesh = _setup_device_mesh(config.num_devices)
-    device_batch_size = config.batch_size * config.num_devices
+    sharding_config = ShardingConfig.build() if jax.device_count() > 1 else None
+    device_batch_size = config.batch_size * jax.device_count()
 
     if callbacks is not None:
         callbacks.started()
@@ -636,7 +602,11 @@ def distill(
     if callbacks is not None:
         callbacks.finished_loading_dataset()
 
-    dataset = _shard_distill_batches(dataset, mesh, num_devices=config.num_devices)
+    dataset = replace(
+        dataset,
+        train_batches=[pad_and_apply_data_sharding(batch, sharding_config=sharding_config, batch_axis=0) for batch in dataset.train_batches],
+        eval_batches=[pad_and_apply_data_sharding(batch, sharding_config=sharding_config, batch_axis=0) for batch in dataset.eval_batches],
+    )
 
     # Training state
     match config.compute_dtype_name:
@@ -675,8 +645,8 @@ def distill(
         trainable_filter=effective_trainable_filter,
     )
 
-    if mesh is not None:
-        replicated_sharding = NamedSharding(mesh, P())
+    if sharding_config is not None:
+        replicated_sharding = sharding_config.make_sharding(P())
         student_model = eqx.filter_shard(student_model, replicated_sharding)
         teacher_model = eqx.filter_shard(teacher_model, replicated_sharding)
         optimizer_state = eqx.filter_shard(optimizer_state, replicated_sharding)
