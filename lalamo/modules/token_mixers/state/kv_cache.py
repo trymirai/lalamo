@@ -83,7 +83,7 @@ class DynamicKVCacheLayer(KVCacheLayer):
             if padding_mask is not None:
                 true = jnp.ones((1,), dtype=jnp.bool)
                 padding_mask = jnp.concatenate([true, padding_mask], axis=0)
-        return cls(has_sinks, keys, values, padding_mask)
+        return cls(has_sinks=has_sinks, keys=keys, values=values, padding_mask=padding_mask)
 
     def attention_mask(
         self,

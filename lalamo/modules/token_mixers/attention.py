@@ -25,6 +25,14 @@ __all__ = [
 ]
 
 
+def _rms_normalize(
+    x: Float[Array, "*batch channels"],
+    eps: float,
+) -> Float[Array, "*batch channels"]:
+    variance = jnp.mean(jnp.square(x.astype(jnp.float32)), axis=-1, keepdims=True) + eps
+    return (x * jax.lax.rsqrt(variance)).astype(x.dtype)
+
+
 def _repeat_kv(
     keys_or_values: Float[Array, "tokens groups channels"],
     group_size: int,
@@ -99,6 +107,8 @@ class AttentionConfig(TokenMixerConfigBase):
     use_rope: bool = True
     # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
     partial_rope_dim: int | None = None
+    # Scale-free RMS normalization on values (used by Gemma 4)
+    normalize_values: bool = False
 
     @property
     def rope_dim(self) -> int | None:
@@ -407,6 +417,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             queries = vmap(vmap(self.query_norm))(queries)
         if self.key_norm is not None:
             keys = vmap(vmap(self.key_norm))(keys)
+        if self.config.normalize_values:
+            values = _rms_normalize(values, eps=1e-6)
 
         if positional_embeddings is not None:
             apply_positional_embeddings = vmap(positional_embeddings.apply, in_axes=1, out_axes=1)

@@ -80,6 +80,15 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("google/gemma-3-27b-it", ModelTier.EXTRA),
     ("mlx-community/gemma-3-27b-it-8bit", ModelTier.EXTRA),
     ("google/functiongemma-270m-it", ModelTier.EXTRA),
+    # Gemma 4
+    ("google/gemma-4-E2B-it", ModelTier.CORE),
+    ("google/gemma-4-E4B-it", ModelTier.STANDARD),
+    ("google/gemma-4-E2B", ModelTier.EXTRA),
+    ("google/gemma-4-E4B", ModelTier.EXTRA),
+    ("google/gemma-4-31B-it", ModelTier.EXTRA),
+    ("google/gemma-4-31B", ModelTier.EXTRA),
+    ("google/gemma-4-26B-A4B-it", ModelTier.STANDARD),
+    ("google/gemma-4-26B-A4B", ModelTier.EXTRA),
     # SmolLM
     ("HuggingFaceTB/SmolLM2-1.7B-Instruct", ModelTier.STANDARD),
     ("HuggingFaceTB/SmolLM3-3B", ModelTier.STANDARD),

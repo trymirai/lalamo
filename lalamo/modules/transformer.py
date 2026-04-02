@@ -64,42 +64,90 @@ class TransformerConfig:
     hidden_dim: int
     context_length: int
 
-    def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
-        rope_dim = next(rope_dims, None)
-        assert all(d == rope_dim for d in rope_dims)
+    def _rope_dims_by_selector(self) -> dict[PositionalEmbeddingSelector, int]:
+        result: dict[PositionalEmbeddingSelector, int] = {}
+        for layer in self.layer_configs:
+            rope_dim = layer.rope_dim
+            if rope_dim is None:
+                continue
+            # Determine selector from config fields (the property is on the Module, not Config)
+            mixer = layer.mixer_config
+            if isinstance(mixer, AttentionConfig):
+                if not mixer.use_rope:
+                    selector = PositionalEmbeddingSelector.NONE
+                elif mixer.sliding_window_size is not None:
+                    selector = PositionalEmbeddingSelector.LOCAL
+                else:
+                    selector = PositionalEmbeddingSelector.GLOBAL
+            else:
+                continue
+            if selector in result:
+                assert result[selector] == rope_dim, (
+                    f"Conflicting rope_dim for {selector}: {result[selector]} vs {rope_dim}"
+                )
+            else:
+                result[selector] = rope_dim
+        return result
+
+    def _head_dims_by_selector(self) -> dict[PositionalEmbeddingSelector, int]:
+        result: dict[PositionalEmbeddingSelector, int] = {}
+        for layer in self.layer_configs:
+            mixer = layer.mixer_config
+            if not isinstance(mixer, AttentionConfig) or not mixer.use_rope:
+                continue
+            selector = (
+                PositionalEmbeddingSelector.LOCAL
+                if mixer.sliding_window_size is not None
+                else PositionalEmbeddingSelector.GLOBAL
+            )
+            result.setdefault(selector, mixer.head_dim)
+        return result
+
+    def _init_ropes(self) -> tuple[RoPE | None, RoPE | None]:
+        rope_dims = self._rope_dims_by_selector()
+        head_dims = self._head_dims_by_selector()
+        global_rope_dim = rope_dims.get(PositionalEmbeddingSelector.GLOBAL)
+        local_rope_dim = rope_dims.get(PositionalEmbeddingSelector.LOCAL)
+        global_head_dim = head_dims.get(PositionalEmbeddingSelector.GLOBAL)
 
         if self.global_rope_config:
+            rope_dim = global_rope_dim or local_rope_dim
             assert rope_dim is not None
-
+            # When global head_dim > rope_dim, use padded partial rotary
+            if global_head_dim and global_head_dim > rope_dim:
+                rotary_dim: int | None = rope_dim
+                head_dim_for_rope = global_head_dim
+            else:
+                rotary_dim = None
+                head_dim_for_rope = rope_dim
             global_rope = self.global_rope_config.init(
-                head_dim=rope_dim,
+                head_dim=head_dim_for_rope,
                 num_timesteps=self.context_length,
+                rotary_dim=rotary_dim,
             )
         else:
             global_rope = None
 
         if self.local_rope_config:
+            rope_dim = local_rope_dim or global_rope_dim
             assert rope_dim is not None
-
-            max_sliding_window_size = max(
-                layer_config.mixer_config.sliding_window_size or 0
-                for layer_config in self.layer_configs
-                if isinstance(layer_config.mixer_config, AttentionConfig)
-            )
-
             local_rope = self.local_rope_config.init(
                 head_dim=rope_dim,
-                num_timesteps=max(max_sliding_window_size, self.context_length),
+                num_timesteps=self.context_length,
             )
         else:
             local_rope = None
+
+        return global_rope, local_rope
+
+    def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
+        global_rope, local_rope = self._init_ropes()
 
         layers_keys = jax.random.split(key, num=len(self.layer_configs))
         layers = tuple(
             layer_config.random_init(
                 model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
+                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
                 key=layer_key,
             )
             for layer_key, layer_config in zip(layers_keys, self.layer_configs, strict=True)
@@ -115,34 +163,12 @@ class TransformerConfig:
         )
 
     def empty(self) -> "Transformer":
-        rope_dims = (layer.rope_dim for layer in self.layer_configs if layer.rope_dim is not None)
-        rope_dim = next(rope_dims, None)
-        assert all(d == rope_dim for d in rope_dims)
-
-        if self.global_rope_config:
-            assert rope_dim is not None
-
-            global_rope = self.global_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            global_rope = None
-
-        if self.local_rope_config:
-            assert rope_dim is not None
-
-            local_rope = self.local_rope_config.init(
-                head_dim=rope_dim,
-                num_timesteps=self.context_length,
-            )
-        else:
-            local_rope = None
+        global_rope, local_rope = self._init_ropes()
 
         layers = tuple(
             layer_config.empty(
                 model_dim=self.model_dim,
-                hidden_dim=self.hidden_dim,
+                hidden_dim=layer_config.hidden_dim or self.hidden_dim,
             )
             for layer_config in self.layer_configs
         )
@@ -179,6 +205,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig | None,
+        per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -202,10 +229,10 @@ class Transformer(LalamoModule[TransformerConfig]):
         else:
             local_positional_embeddings = global_positional_embeddings
 
-        updated_state_layers = []
+        updated_state_layers: list = []
         layer_results = []
 
-        for layer, state_layer in zip(self.layers, maybe_state, strict=True):
+        for i, (layer, state_layer) in enumerate(zip(self.layers, maybe_state, strict=True)):
             match layer.positional_embedding_selector:
                 case PositionalEmbeddingSelector.LOCAL:
                     positional_embeddings_to_use = local_positional_embeddings
@@ -214,19 +241,32 @@ class Transformer(LalamoModule[TransformerConfig]):
                 case PositionalEmbeddingSelector.NONE:
                     positional_embeddings_to_use = None
 
+            per_layer_input = per_layer_inputs[i] if per_layer_inputs is not None else None
+
+            # KV sharing: pass the source layer's state to the shared layer.
+            kv_source = layer.config.kv_source_layer
+            effective_state = updated_state_layers[kv_source] if kv_source is not None else state_layer
+
             layer_result = layer(
                 inner_features,
                 positional_embeddings_to_use,
-                state=state_layer,
-                return_updated_state=return_updated_state,
+                state=effective_state,
+                return_updated_state=return_updated_state or (kv_source is not None),
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config,
+                per_layer_input=per_layer_input,
             )
+
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
-            updated_state_layers.append(layer_result.updated_state)
+
+            if kv_source is not None:
+                # Shared layer: keep the source's state (discard the extended one)
+                updated_state_layers.append(updated_state_layers[kv_source])
+            else:
+                updated_state_layers.append(layer_result.updated_state)
 
         normalized_outputs = vmap_twice(self.output_norm)(inner_features)
 
