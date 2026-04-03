@@ -182,7 +182,7 @@ def load_linear_and_fuse_scaling(
         if bias is not None:
             bias = bias * scaling_to_fuse
 
-    base = FullPrecisionArray(data=weights.astype(module.activation_precision))
+    base = FullPrecisionArray(raw=weights.astype(module.activation_precision))
     new_weights = base
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias), is_leaf=lambda x: x is None)
 
@@ -209,12 +209,12 @@ def load_transformer_block(
 
         # Permute QKV weights from interleaved RoPE format to rotate-half format
         permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
-            qkv_projection.weights.value,
+            qkv_projection.weights.materialize(),
             num_heads=attn_module.num_heads,
             num_groups=attn_module.num_groups,
             head_dim=attn_module.head_dim,
         )
-        base = FullPrecisionArray(data=permuted_qkv_weights.astype(qkv_projection.activation_precision))
+        base = FullPrecisionArray(raw=permuted_qkv_weights.astype(qkv_projection.activation_precision))
         new_weights = base
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
@@ -442,7 +442,7 @@ def load_vector_quantize(
     out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
     # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
-    base = FullPrecisionArray(data=out_proj_weight.astype(module.out_proj.activation_precision))
+    base = FullPrecisionArray(raw=out_proj_weight.astype(module.out_proj.activation_precision))
     new_weights = base
     out_proj = eqx.tree_at(
         lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias), is_leaf=lambda x: x is None
@@ -538,7 +538,7 @@ def load_convnext_block(
     # PyTorch Linear weight is (out_features, in_features)
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    base1 = FullPrecisionArray(data=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision))
+    base1 = FullPrecisionArray(raw=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision))
     new_weights1 = CompositeArray.from_compressed(base1)
     pointwise_conv_step1 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
@@ -555,7 +555,7 @@ def load_convnext_block(
         layer_scale = weights_dict[layer_scale_path]
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
-    base2 = FullPrecisionArray(data=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision))
+    base2 = FullPrecisionArray(raw=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision))
     new_weights2 = CompositeArray.from_compressed(base2)
     pointwise_conv_step2 = eqx.tree_at(
         lambda m: (m.weights, m.biases),

@@ -6,7 +6,14 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
-from lalamo.arrays import AWQQuantArray, CompositeArray, CompressedArray, FullPrecisionArray, MLXQuantArray
+from lalamo.arrays import (
+    AWQQuantArray,
+    CompositeArray,
+    CompressedArray,
+    FullPrecisionArray,
+    MLXQuantArray,
+    quant_array_from_torch,
+)
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -210,12 +217,30 @@ def load_linear(
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse, reorder)
     precision = module.activation_precision
     config = module.config
+    if sublayers_to_fuse is None and reorder is None:
+        assert config.quant_format == QuantFormat.FULL_PRECISION or (
+            config.bits is not None and config.group_size is not None
+        )
+        base = quant_array_from_torch(
+            weights_dict,
+            quant_format=config.quant_format,
+            prefix=path,
+            precision=precision,
+            group_size=config.group_size,
+            bits=config.bits,
+        )
+        return eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module,
+            (base, bias),
+            is_leaf=lambda x: x is None,
+        )
 
     match config.quant_format:
         case QuantFormat.FULL_PRECISION:
             reorder_tuple = (reorder, 0) if reorder is not None else None
             raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse, reorder=reorder_tuple)
-            base: CompressedArray = FullPrecisionArray(data=raw_weights.astype(precision))
+            base: CompressedArray = FullPrecisionArray(raw=raw_weights.astype(precision))
 
         case QuantFormat.AWQ:
             if reorder is not None:
@@ -234,9 +259,25 @@ def load_linear(
             zeros = _process_quantized_tensor(
                 qzeros, QuantizationMode.from_num_bits(config.bits), precision, reverse_order
             )
+            grouped_weights = rearrange(
+                weights.T,
+                "out_channels (groups group_size) -> out_channels groups group_size",
+                group_size=config.group_size,
+            )
+            grouped_zero_points = rearrange(
+                zeros.T,
+                "out_channels groups -> out_channels groups 1",
+            )
+            grouped_scales = rearrange(
+                scales.T,
+                "out_channels groups -> out_channels groups 1",
+            )
             base = AWQQuantArray(
-                int_weights=weights.T,
-                scales=scales.T.astype(precision),
+                raw=rearrange(
+                    (grouped_weights - grouped_zero_points) * grouped_scales,
+                    "out_channels groups group_size -> out_channels (groups group_size)",
+                ),
+                scales=scales.T,
                 zero_points=zeros.T,
                 group_size=config.group_size,
                 bits=config.bits,
@@ -258,10 +299,20 @@ def load_linear(
                 QuantizationMode.from_num_bits(config.bits),
             )
             unpacked_weights = _process_quantized_tensor(qweights, actual_quantization, precision, None)
+            grouped_weights = rearrange(
+                unpacked_weights,
+                "out_channels (groups group_size) -> out_channels groups group_size",
+                group_size=config.group_size,
+            )
+            grouped_scales = rearrange(scales, "out_channels groups -> out_channels groups 1")
+            grouped_biases = rearrange(deq_biases, "out_channels groups -> out_channels groups 1")
             base = MLXQuantArray(
-                int_weights=unpacked_weights,
-                scales=scales.astype(precision),
-                deq_biases=deq_biases.astype(precision),
+                raw=rearrange(
+                    grouped_weights * grouped_scales + grouped_biases,
+                    "out_channels groups group_size -> out_channels (groups group_size)",
+                ),
+                scales=scales,
+                deq_biases=deq_biases,
                 group_size=config.group_size,
                 bits=actual_quantization.bits,
             )
@@ -822,7 +873,7 @@ def load_delta_net_attention(
                     ],
                     axis=0,
                 )
-                base = FullPrecisionArray(data=merged.astype(in_proj_config.precision))
+                base = FullPrecisionArray(raw=merged.astype(in_proj_config.precision))
             case QuantFormat.AWQ:
                 raise ValueError("DeltaNetAttention does not support AWQ quantization.")
             case QuantFormat.MLX:
@@ -843,10 +894,20 @@ def load_delta_net_attention(
                 precision = in_proj_config.precision
                 quant_mode = QuantizationMode.from_num_bits(in_proj_config.bits)
                 unpacked = _process_quantized_tensor(fused_qweights, quant_mode, precision, None)
+                grouped_weights = rearrange(
+                    unpacked,
+                    "out_channels (groups group_size) -> out_channels groups group_size",
+                    group_size=in_proj_config.group_size,
+                )
+                grouped_scales = rearrange(fused_scales, "out_channels groups -> out_channels groups 1")
+                grouped_biases = rearrange(fused_deq_biases, "out_channels groups -> out_channels groups 1")
                 base = MLXQuantArray(
-                    int_weights=unpacked,
-                    scales=fused_scales.astype(precision),
-                    deq_biases=fused_deq_biases.astype(precision),
+                    raw=rearrange(
+                        grouped_weights * grouped_scales + grouped_biases,
+                        "out_channels groups group_size -> out_channels (groups group_size)",
+                    ),
+                    scales=fused_scales,
+                    deq_biases=fused_deq_biases,
                     group_size=in_proj_config.group_size,
                     bits=in_proj_config.bits,
                 )
@@ -1250,7 +1311,7 @@ def load_huggingface_classifier(
         weights = weights_dict[path / "weight"]
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
-        new_weights = FullPrecisionArray(data=shuffled_weights.astype(module.activation_precision))
+        new_weights = FullPrecisionArray(raw=shuffled_weights.astype(module.activation_precision))
         return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None), is_leaf=lambda x: x is None)
 
     def load_attention_local(
