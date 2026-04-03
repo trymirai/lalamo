@@ -271,8 +271,10 @@ class VectorQuantizeConfig:
         codebook = self.codebook_config.init(initializer, codebook_size, codebook_dim)
         assert isinstance(codebook, TiedEmbedding)
 
-        out_proj = self.out_proj_config.init(initializer, input_dim=codebook_dim, output_dims=(input_dim,), has_biases=True)
-        assert isinstance(out_proj, FullPrecisionLinear)
+        out_proj = self.out_proj_config.init(
+            initializer, input_dim=codebook_dim, output_dims=(input_dim,), has_biases=True
+        )
+        assert isinstance(out_proj, Linear)
 
         return VectorQuantize(
             config=self,

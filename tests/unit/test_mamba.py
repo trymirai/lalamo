@@ -20,9 +20,9 @@ from tests.common import assert_close
 def make_mamba() -> Mamba2:
     precision = jnp.float32
     config = Mamba2Config(
-        in_projection_config=LinearConfig(precision=precision),
-        out_projection_config=LinearConfig(precision=precision),
-        conv_config=SeparableCausalConvConfig(precision=precision, has_biases=True),
+        in_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
+        conv_config=SeparableCausalConvConfig(has_biases=True),
         activation=Identity(),
         kernel_size=3,
         num_heads=2,
@@ -34,7 +34,7 @@ def make_mamba() -> Mamba2:
         has_out_biases=True,
     )
     model_dim = 4
-    return config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)), model_dim=model_dim)
+    return config.init(RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)), model_dim=model_dim)
 
 
 @settings(max_examples=10, deadline=None)

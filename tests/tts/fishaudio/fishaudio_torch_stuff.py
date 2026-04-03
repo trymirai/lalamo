@@ -120,8 +120,6 @@ class ConfigMapping:
         )
 
         norm_config = NormalizationConfig(
-            scale_precision=precision,
-            accumulation_precision=precision,
             epsilon=config.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,

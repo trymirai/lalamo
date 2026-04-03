@@ -122,6 +122,10 @@ class RoPE(LalamoModule[RoPEConfigBase]):
     cosines: Float[Array, "tokens head_channels"]
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.sines.dtype
+
+    @property
     def head_dim(self) -> int:
         _, result = self.sines.shape
         return result

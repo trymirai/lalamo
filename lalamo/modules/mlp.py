@@ -148,6 +148,10 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
     down_projection: LinearBase
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.up_projection.activation_precision
+
+    @property
     def model_dim(self) -> int:
         return self.up_projection.input_dim
 
@@ -322,6 +326,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     router: LinearBase
     experts: DenseMLP
     gate: LinearBase | None
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.experts.activation_precision
 
     @property
     def mixture_size(self) -> int:

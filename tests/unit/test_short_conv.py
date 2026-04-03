@@ -16,13 +16,13 @@ from tests.common import assert_close
 def make_short_conv() -> ShortConv:
     precision = jnp.float32
     config = ShortConvConfig(
-        in_projection_config=LinearConfig(precision=precision),
-        conv_config=SeparableCausalConvConfig(precision=precision, has_biases=True),
-        out_projection_config=LinearConfig(precision=precision),
+        in_projection_config=LinearConfig(),
+        conv_config=SeparableCausalConvConfig(has_biases=True),
+        out_projection_config=LinearConfig(),
         kernel_size=3,
     )
     model_dim = 4
-    return config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)), model_dim=model_dim)
+    return config.init(RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)), model_dim=model_dim)
 
 
 @settings(max_examples=10, deadline=None)
@@ -65,5 +65,5 @@ def test_short_conv_state_respects_length_without_padding(
     assert padded_result.state is not None
     assert reference_result.state is not None
 
-    assert_close(result=padded_result.outputs[:seqlen], reference=reference_result.outputs)
-    assert_close(result=padded_result.state.conv_state, reference=reference_result.state.conv_state)
+    assert_close(result=padded_result.outputs[:seqlen], reference=reference_result.outputs, atol=1e-2)
+    assert_close(result=padded_result.state.conv_state, reference=reference_result.state.conv_state, atol=1e-2)

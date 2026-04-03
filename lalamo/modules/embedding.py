@@ -89,7 +89,6 @@ class TiedEmbeddingConfig(EmbeddingConfigBase):
         return TiedEmbedding(config=self, weights=weights)
 
 
-
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
     weights: Float[Array, "vocabulary channels"]
 
@@ -129,7 +128,6 @@ class UntiedEmbeddingConfig(EmbeddingConfigBase):
             input_weights=input_weights,
             output_weights=output_weights,
         )
-
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):

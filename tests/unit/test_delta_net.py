@@ -50,8 +50,6 @@ def _make_hf_delta_net() -> tuple[Any, Any]:
 def _make_lalamo_delta_net(hf_config: Any):
     precision = jnp.float32
     norm_config = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
         epsilon=hf_config.rms_norm_eps,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -60,7 +58,7 @@ def _make_lalamo_delta_net(hf_config: Any):
     linear_config = LinearConfig(precision=precision)
     config = DeltaNetAttentionConfig(
         in_proj_config=linear_config,
-        conv_config=SeparableCausalConvConfig(precision=precision, has_biases=False),
+        conv_config=SeparableCausalConvConfig(has_biases=False),
         out_proj_config=linear_config,
         norm_config=norm_config,
         num_heads=hf_config.linear_num_value_heads,
@@ -70,7 +68,7 @@ def _make_lalamo_delta_net(hf_config: Any):
         kernel_size=hf_config.linear_conv_kernel_dim,
     )
     return config.init(
-        RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)), model_dim=hf_config.hidden_size
+        RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)), model_dim=hf_config.hidden_size
     )
 
 

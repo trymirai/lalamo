@@ -197,6 +197,10 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_layer_scalar: Float[Array, "1"] | None
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.mlp.activation_precision
+
+    @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
         return self.mixer.positional_embedding_selector
 
@@ -221,7 +225,9 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             )
         fpc = forward_pass_config or TransformerLayerForwardPassConfig()
 
-        def apply_norm(norm: Normalization, x: Float[Array, "batch tokens channels"]) -> Float[Array, "batch tokens channels"]:
+        def apply_norm(
+            norm: Normalization, x: Float[Array, "batch tokens channels"]
+        ) -> Float[Array, "batch tokens channels"]:
             return vmap_twice(partial(norm, forward_pass_config=fpc.normalization))(x)
 
         if self.pre_mixer_norm is not None:

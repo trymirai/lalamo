@@ -682,8 +682,6 @@ def test_convnext_block_matches_pytorch() -> None:
         activation=GELU(),
         dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
-            scale_precision=jnp.float32,
-            accumulation_precision=jnp.float32,
             epsilon=1e-6,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
@@ -764,8 +762,6 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
         activation=GELU(approximate=False),
         dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
-            scale_precision=jnp.float32,
-            accumulation_precision=jnp.float32,
             epsilon=1e-6,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,
@@ -885,8 +881,6 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
         activation=GELU(approximate=False),
         dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
-            scale_precision=jnp.float32,
-            accumulation_precision=jnp.float32,
             epsilon=1e-6,
             scale_offset=None,
             upcast_mode=UpcastMode.FULL_LAYER,

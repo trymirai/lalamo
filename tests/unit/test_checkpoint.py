@@ -13,6 +13,7 @@ from lalamo.modules import (
     NormalizationConfig,
     UpcastMode,
 )
+from lalamo.modules.common import RandomInitializer
 from lalamo.modules.activations import SiLU
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
@@ -25,8 +26,6 @@ from lalamo.modules.transformer_layer import TransformerLayerConfig
 def _tiny_decoder_config() -> DecoderConfig:
     precision = jnp.float32
     norm = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
         epsilon=1e-5,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -64,10 +63,9 @@ def _tiny_decoder_config() -> DecoderConfig:
         post_mlp_norm_config=None,
     )
     return DecoderConfig(
-        embedding_config=TiedEmbeddingConfig(precision=precision, input_scale=None, logit_soft_cap=None),
+        embedding_config=TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None),
         transformer_config=TransformerConfig(
             global_rope_config=UnscaledRoPEConfig(
-                precision=precision,
                 base=10000.0,
                 max_sequence_length=16,
             ),
@@ -85,7 +83,7 @@ def _tiny_decoder_config() -> DecoderConfig:
 @pytest.mark.fast
 def test_checkpoint_save_restore() -> None:
     config = _tiny_decoder_config()
-    model = config.random_init(key=jax.random.PRNGKey(0))
+    model = config.init(RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)))
 
     with tempfile.TemporaryDirectory() as tmp:
         manager = CheckpointManager(directory=Path(tmp))

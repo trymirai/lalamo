@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import orbax.checkpoint as ocp
 
 from lalamo.model_import.loaders.common import _apply_parameter_sharding, find_field_sharding
-from lalamo.modules.common import LalamoModule, ShardingConfig, config_converter
+from lalamo.modules.common import EmptyInitializer, LalamoModule, ShardingConfig, config_converter
 
 __all__ = ["CheckpointManager"]
 
@@ -40,7 +40,7 @@ class CheckpointManager:
         module_name, class_name = config_json.pop("_type").rsplit(".", 1)
         config_type = getattr(importlib.import_module(module_name), class_name)
         config = config_converter.structure(config_json, config_type)
-        empty = config.empty()
+        empty = config.init(EmptyInitializer(precision=jnp.float32))
         target = jax.tree.map(
             lambda s: _apply_parameter_sharding(
                 jnp.zeros(s.shape, s.dtype),
