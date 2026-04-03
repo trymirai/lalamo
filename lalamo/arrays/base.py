@@ -1,10 +1,9 @@
 from __future__ import annotations
 
 import abc
-import warnings
+from dataclasses import dataclass
 
 import equinox as eqx
-import jax.core
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, Float
@@ -12,38 +11,24 @@ from jaxtyping import Array, Float
 from lalamo.common import ParameterTree
 
 
+@dataclass(frozen=True)
+class ArrayForwardPassConfig:
+    quantize: bool = False
+
+
 class CompressedArray(eqx.Module):
     @abc.abstractmethod
-    def aval(self) -> jax.core.ShapedArray: ...
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array: ...
 
-    @abc.abstractmethod
-    def dot(self, vector: Float[Array, " in_channels"]) -> Float[Array, " out_channels"]: ...
-
-    @property
-    @abc.abstractmethod
-    def value(self) -> Array: ...
+    def dot(
+        self,
+        vector: Float[Array, " in_channels"],
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),
+    ) -> Float[Array, " out_channels"]:
+        return self.materialize(forward_pass_config) @ vector
 
     @abc.abstractmethod
     def export_weights(self) -> ParameterTree: ...
-
-    def materialise(self) -> Array:
-        warnings.warn(
-            f"{type(self).__name__}.materialise() — implicit dequantization fallback.",
-            stacklevel=2,
-        )
-        return self.value
-
-    @property
-    def shape(self) -> tuple[int, ...]:
-        return self.aval().shape
-
-    @property
-    def dtype(self) -> jnp.dtype:
-        return self.aval().dtype
-
-    @property
-    def ndim(self) -> int:
-        return len(self.shape)
 
 
 def unpack_int32(packed: Array, bits: int) -> Array:

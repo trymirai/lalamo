@@ -10,7 +10,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.arrays import CompressedArray, FullPrecisionArray, quant_array_import_weights
+from lalamo.arrays import ArrayForwardPassConfig, CompressedArray, FullPrecisionArray, quant_array_import_weights
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
@@ -73,7 +73,7 @@ class LinearConfig:
         total_out = sum(output_dims)
         scale = 1 / math.sqrt(input_dim)
         raw = jax.random.uniform(key, (total_out, input_dim), minval=-scale, maxval=scale, dtype=self.precision)
-        full = FullPrecisionArray(data=raw)
+        full = FullPrecisionArray(raw=raw)
         if self.quant_format == QuantFormat.FULL_PRECISION:
             weights: CompressedArray = full
         else:
@@ -113,7 +113,7 @@ class Linear(LalamoModule[LinearConfig]):
     sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
     def __check_init__(self) -> None:
-        *_, weight_out, weight_in = self.weights.shape
+        *_, weight_out, weight_in = self.weights.materialize().shape
         expected_out = sum(self.output_dims)
         if weight_out != expected_out:
             raise ValueError(f"Weight out_channels ({weight_out}) != sum(output_dims) ({expected_out})")
@@ -124,7 +124,7 @@ class Linear(LalamoModule[LinearConfig]):
 
     @property
     def input_dim(self) -> int:
-        return self.weights.shape[-1]
+        return self.weights.materialize().shape[-1]
 
     @property
     def has_biases(self) -> bool:
@@ -132,7 +132,7 @@ class Linear(LalamoModule[LinearConfig]):
 
     @property
     def mixture_size(self) -> int | None:
-        return self.weights.shape[0] if self.weights.ndim > 2 else None
+        return self.weights.materialize().shape[0] if self.weights.materialize().ndim > 2 else None
 
     @property
     def num_outputs(self) -> int:
@@ -147,14 +147,18 @@ class Linear(LalamoModule[LinearConfig]):
         return tuple(accumulate(output_dims[:-1]))
 
     @eqx.filter_jit
-    def __call__(self, inputs: Float[Array, " in_channels"]) -> tuple[Float[Array, " out_channels"], ...]:
+    def __call__(
+        self,
+        inputs: Float[Array, " in_channels"],
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),
+    ) -> tuple[Float[Array, " out_channels"], ...]:
         if self.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly. Use eqx.filter_vmap or lax.scan instead.",
             )
         if self.config.activation_quantization_mode is not None:
             inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
-        result = self.weights.dot(inputs)
+        result = self.weights.dot(inputs, forward_pass_config)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
