@@ -22,6 +22,7 @@ from .decoder import (
     DecoderConfig,
     DecoderForwardPassConfig,
     DecoderResult,
+    PerLayerEmbedding,
     PLEModelConfig,
 )
 from .embedding import (
@@ -90,6 +91,7 @@ from .token_mixers import (
 )
 from .transformer import Transformer, TransformerConfig
 from .transformer_layer import (
+    PLELayer,
     PLELayerConfig,
     TransformerLayer,
     TransformerLayerActivationTrace,
@@ -147,8 +149,10 @@ __all__ = [
     "NoopVocoder",
     "Normalization",
     "NormalizationConfig",
+    "PLELayer",
     "PLELayerConfig",
     "PLEModelConfig",
+    "PerLayerEmbedding",
     "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",

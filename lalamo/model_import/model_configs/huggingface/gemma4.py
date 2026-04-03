@@ -4,7 +4,6 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Self
 
-import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterPath
@@ -35,17 +34,6 @@ from .common import HuggingFaceLMConfig, QuantizationConfigType
 __all__ = ["HFGemma4Config"]
 
 
-def _round_to_bfloat16(x: float) -> float:
-    return jnp.asarray(x).astype(jnp.bfloat16).item()
-
-
-@dataclass(frozen=True)
-class Gemma4RoPEParameters:
-    rope_theta: float
-    rope_type: Literal["default", "proportional"]
-    partial_rotary_factor: float | None = None
-
-
 @dataclass(frozen=True)
 class HFGemma4TextConfig:
     hidden_size: int
@@ -53,33 +41,24 @@ class HFGemma4TextConfig:
     model_type: Literal["gemma4_text"]
     num_hidden_layers: int
     sliding_window: int
-    rms_norm_eps: float = 1e-06
-    attention_bias: bool = False
-    num_attention_heads: int = 8
-    num_key_value_heads: int = 1
-    num_global_key_value_heads: int | None = None
-    head_dim: int = 256
-    global_head_dim: int = 512
-    max_position_embeddings: int = 131072
-    rope_parameters: dict[str, Any] = field(default_factory=dict)
-    final_logit_softcapping: float | None = 30.0
-    vocab_size: int = 262144
-    layer_types: list[Literal["sliding_attention", "full_attention"]] = field(default_factory=list)
-    hidden_activation: str = "gelu_pytorch_tanh"
-    hidden_size_per_layer_input: int = 0
-    vocab_size_per_layer_input: int = 262144
-    num_kv_shared_layers: int = 0
-    use_double_wide_mlp: bool = False
-    tie_word_embeddings: bool = True
-
-    @property
-    def _sliding_window_sizes(self) -> list[int | None]:
-        return [self.sliding_window if lt == "sliding_attention" else None for lt in self.layer_types]
-
-    def _head_dim_for_layer(self, layer_idx: int) -> int:
-        if self.layer_types[layer_idx] == "full_attention":
-            return self.global_head_dim
-        return self.head_dim
+    rms_norm_eps: float
+    attention_bias: bool
+    num_attention_heads: int
+    num_key_value_heads: int
+    num_global_key_value_heads: int | None
+    head_dim: int
+    global_head_dim: int
+    max_position_embeddings: int
+    rope_parameters: dict[str, Any]
+    final_logit_softcapping: float | None
+    vocab_size: int
+    layer_types: list[Literal["sliding_attention", "full_attention"]]
+    hidden_activation: str
+    hidden_size_per_layer_input: int
+    vocab_size_per_layer_input: int
+    num_kv_shared_layers: int
+    use_double_wide_mlp: bool
+    tie_word_embeddings: bool
 
     def _kv_source_layer(self, layer_idx: int) -> int | None:
         first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
@@ -87,26 +66,10 @@ class HFGemma4TextConfig:
             return None
         prev_types = self.layer_types[:first_kv_shared]
         target_type = self.layer_types[layer_idx]
-        # Find the last non-shared layer of the same attention type
         for j in range(len(prev_types) - 1, -1, -1):
             if prev_types[j] == target_type:
                 return j
         return None
-
-    def _intermediate_size_for_layer(self, layer_idx: int) -> int:
-        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
-        is_shared = layer_idx >= first_kv_shared > 0
-        if self.use_double_wide_mlp and is_shared:
-            return self.intermediate_size * 2
-        return self.intermediate_size
-
-    def _rope_config_for_type(self, layer_type: str) -> Gemma4RoPEParameters:
-        params = self.rope_parameters.get(layer_type, {})
-        return Gemma4RoPEParameters(
-            rope_theta=params.get("rope_theta", 10000.0),
-            rope_type=params.get("rope_type", "default"),
-            partial_rotary_factor=params.get("partial_rotary_factor"),
-        )
 
     def to_decoder_config(
         self,
@@ -115,10 +78,8 @@ class HFGemma4TextConfig:
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
-        input_scale = _round_to_bfloat16(self.hidden_size**0.5)
-
         embedding_config = TiedEmbeddingConfig(
-            input_scale=input_scale,
+            input_scale=self.hidden_size**0.5,
             logit_soft_cap=self.final_logit_softcapping,
             precision=activation_precision,
         )
@@ -143,37 +104,57 @@ class HFGemma4TextConfig:
             gate_clipping=None,
         )
 
-        # Global RoPE (for full attention layers)
-        full_rope_params = self._rope_config_for_type("full_attention")
+        max_seq_len = context_length or self.max_position_embeddings
         global_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=full_rope_params.rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            base=self.rope_parameters.get("full_attention", {}).get("rope_theta", 10000.0),
+            max_sequence_length=max_seq_len,
         )
-
-        # Local RoPE (for sliding attention layers)
-        sliding_rope_params = self._rope_config_for_type("sliding_attention")
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=sliding_rope_params.rope_theta,
-            max_sequence_length=context_length or self.max_position_embeddings,
+            base=self.rope_parameters.get("sliding_attention", {}).get("rope_theta", 10000.0),
+            max_sequence_length=max_seq_len,
         )
 
-        # PLE layer config
         ple_layer_config = None
+        ple_model_config = None
         if self.hidden_size_per_layer_input > 0:
+            ple_embed_scale = self.hidden_size_per_layer_input**0.5
+            model_projection_scale = self.hidden_size**-0.5
+            input_scale = 2.0**-0.5
             ple_layer_config = PLELayerConfig(
                 linear_config=linear_config,
                 norm_config=rms_norm_config,
                 ple_dim=self.hidden_size_per_layer_input,
                 activation=GELU(),
+                has_layer_scalar=True,
+            )
+            ple_model_config = PLEModelConfig(
+                ple_dim=self.hidden_size_per_layer_input,
+                num_layers=self.num_hidden_layers,
+                ple_vocab_size=self.vocab_size_per_layer_input,
+                ple_embed_scale=ple_embed_scale,
+                model_projection_scale=model_projection_scale,
+                input_scale=input_scale,
+                linear_config=linear_config,
+                norm_config=rms_norm_config,
             )
 
-        # Build per-layer configs
         layer_configs = []
-        for i, sliding_window_size in enumerate(self._sliding_window_sizes):
-            layer_head_dim = self._head_dim_for_layer(i)
-            layer_intermediate = self._intermediate_size_for_layer(i)
+        for i, layer_type in enumerate(self.layer_types):
+            if layer_type == "sliding_attention":
+                sliding_window_size = self.sliding_window
+            else:
+                sliding_window_size = None
+            if layer_type == "full_attention":
+                layer_head_dim = self.global_head_dim
+            else:
+                layer_head_dim = self.head_dim
+            kv_source = self._kv_source_layer(i)
+            if self.use_double_wide_mlp and kv_source is not None:
+                layer_intermediate = self.intermediate_size * 2
+            else:
+                layer_intermediate = self.intermediate_size
 
             num_kv_heads = self.num_key_value_heads
             if sliding_window_size is None and self.num_global_key_value_heads is not None:
@@ -206,8 +187,7 @@ class HFGemma4TextConfig:
                 post_mlp_norm_config=rms_norm_config,
                 hidden_dim=layer_intermediate,
                 ple_config=ple_layer_config,
-                has_layer_scalar=True,
-                kv_source_layer=self._kv_source_layer(i),
+                kv_source_layer=kv_source,
             )
             layer_configs.append(transformer_layer_config)
 
@@ -218,28 +198,8 @@ class HFGemma4TextConfig:
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
-            context_length=context_length or self.max_position_embeddings,
+            context_length=max_seq_len,
         )
-
-        ple_model_config = None
-        if self.hidden_size_per_layer_input > 0:
-            ple_model_config = PLEModelConfig(
-                ple_dim=self.hidden_size_per_layer_input,
-                num_layers=self.num_hidden_layers,
-                ple_vocab_size=self.vocab_size_per_layer_input,
-                ple_embed_scale=self.hidden_size_per_layer_input**0.5,
-                model_projection_scale=self.hidden_size**-0.5,
-                input_scale=2.0**-0.5,
-                linear_config=linear_config,
-                norm_config=NormalizationConfig(
-                    scale_precision=activation_precision,
-                    accumulation_precision=accumulation_precision,
-                    epsilon=self.rms_norm_eps,
-                    scale_offset=None,
-                    upcast_mode=UpcastMode.FULL_LAYER,
-                    subtract_mean=False,
-                ),
-            )
 
         return DecoderConfig(
             embedding_config=embedding_config,
@@ -252,6 +212,8 @@ class HFGemma4TextConfig:
 @dataclass(frozen=True)
 class HFGemma4Config(HuggingFaceLMConfig):
     text_config: HFGemma4TextConfig
+    initializer_range: float
+    transformers_version: str
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     architectures: list[str] = field(default_factory=list)
@@ -271,8 +233,6 @@ class HFGemma4Config(HuggingFaceLMConfig):
     eoa_token_index: int | None = None
     boa_token_id: int | None = None
     vision_soft_tokens_per_image: int | None = None
-    initializer_range: float = 0.02
-    transformers_version: str = ""
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
@@ -312,10 +272,9 @@ class HFGemma4Config(HuggingFaceLMConfig):
         model: Decoder,
         weights_dict: Mapping[str, Array],
     ) -> Decoder:
-        if model.config.ple_model_config is None:
+        if model.per_layer_embedding is None:
             return model
 
-        # Determine the base path for language model weights
         if any(key.startswith("model.language_model.") for key in weights_dict):
             base = ParameterPath("model") / "language_model"
         elif any(key.startswith("language_model.") for key in weights_dict):
@@ -323,62 +282,39 @@ class HFGemma4Config(HuggingFaceLMConfig):
         else:
             base = ParameterPath("model")
 
-        # Load PLE token embedding
-        ple_token_embedding = weights_dict[base / "embed_tokens_per_layer" / "weight"]
-
-        # Load PLE model projection
-        assert model.ple_model_projection is not None
-        ple_model_projection = load_linear(
-            model.ple_model_projection,
-            weights_dict,
-            base / "per_layer_model_projection",
+        new_per_layer_embedding = replace(
+            model.per_layer_embedding,
+            token_embedding=weights_dict[base / "embed_tokens_per_layer" / "weight"],
+            model_projection=load_linear(
+                model.per_layer_embedding.model_projection,
+                weights_dict,
+                base / "per_layer_model_projection",
+            ),
+            projection_norm=load_rmsnorm(
+                model.per_layer_embedding.projection_norm,
+                weights_dict,
+                base / "per_layer_projection_norm",
+            ),
         )
 
-        # Load PLE projection norm
-        assert model.ple_projection_norm is not None
-        ple_projection_norm = load_rmsnorm(
-            model.ple_projection_norm,
-            weights_dict,
-            base / "per_layer_projection_norm",
-        )
-
-        # Load per-layer PLE weights (gate, projection, norm) and layer_scalar
         layers_base = base / "layers"
         new_layers = []
         for i, layer in enumerate(model.transformer.layers):
+            if layer.ple is None:
+                new_layers.append(layer)
+                continue
             layer_path = layers_base / i
-
-            updates = {}
-
-            if layer.ple_gate is not None:
-                updates["ple_gate"] = load_linear(
-                    layer.ple_gate,
-                    weights_dict,
-                    layer_path / "per_layer_input_gate",
-                )
-            if layer.ple_projection is not None:
-                updates["ple_projection"] = load_linear(
-                    layer.ple_projection,
-                    weights_dict,
-                    layer_path / "per_layer_projection",
-                )
-            if layer.ple_norm is not None:
-                updates["ple_norm"] = load_rmsnorm(
-                    layer.ple_norm,
-                    weights_dict,
-                    layer_path / "post_per_layer_input_norm",
-                )
-            if layer.layer_scalar is not None:
-                updates["layer_scalar"] = weights_dict[layer_path / "layer_scalar"]
-
-            new_layers.append(replace(layer, **updates))
-
-        new_transformer = replace(model.transformer, layers=tuple(new_layers))
+            ple_updates: dict[str, Any] = {
+                "gate": load_linear(layer.ple.gate, weights_dict, layer_path / "per_layer_input_gate"),
+                "projection": load_linear(layer.ple.projection, weights_dict, layer_path / "per_layer_projection"),
+                "norm": load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
+            }
+            if layer.ple.layer_scalar is not None:
+                ple_updates["layer_scalar"] = weights_dict[layer_path / "layer_scalar"]
+            new_layers.append(replace(layer, ple=replace(layer.ple, **ple_updates)))
 
         return replace(
             model,
-            ple_token_embedding=ple_token_embedding,
-            ple_model_projection=ple_model_projection,
-            ple_projection_norm=ple_projection_norm,
-            transformer=new_transformer,
+            per_layer_embedding=new_per_layer_embedding,
+            transformer=replace(model.transformer, layers=tuple(new_layers)),
         )

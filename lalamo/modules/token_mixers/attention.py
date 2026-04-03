@@ -107,7 +107,7 @@ class AttentionConfig(TokenMixerConfigBase):
     use_rope: bool = True
     # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
     partial_rope_dim: int | None = None
-    # Scale-free RMS normalization on values (used by Gemma 4)
+    # Scale-free RMS normalization on values
     normalize_values: bool = False
 
     @property

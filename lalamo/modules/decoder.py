@@ -8,7 +8,7 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_mapping, require_tree
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 
 from .common import (
     ForwardPassMode,
@@ -33,6 +33,8 @@ __all__ = [
     "DecoderConfig",
     "DecoderForwardPassConfig",
     "DecoderResult",
+    "PLEModelConfig",
+    "PerLayerEmbedding",
 ]
 
 
@@ -95,6 +97,57 @@ class PLEModelConfig:
     norm_config: NormalizationConfig
 
 
+class PerLayerEmbedding(LalamoModule[PLEModelConfig]):
+    token_embedding: Float[Array, "vocab ple_total_dim"]
+    model_projection: LinearBase
+    projection_norm: Normalization
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.model_projection.activation_precision
+
+    def __call__(
+        self,
+        token_ids: Int[Array, "batch suffix_tokens"],
+        inner_features: Float[Array, "batch suffix_tokens channels"],
+    ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...]:
+        cfg = self.config
+        token_ple = self.token_embedding[token_ids] * cfg.ple_embed_scale
+        token_ple = rearrange(
+            token_ple,
+            "batch seq (layers ple_dim) -> batch seq layers ple_dim",
+            layers=cfg.num_layers,
+            ple_dim=cfg.ple_dim,
+        )
+        (model_ple,) = vmap(vmap(self.model_projection))(inner_features)
+        model_ple = model_ple * cfg.model_projection_scale
+        model_ple = rearrange(
+            model_ple,
+            "batch seq (layers ple_dim) -> batch seq layers ple_dim",
+            layers=cfg.num_layers,
+            ple_dim=cfg.ple_dim,
+        )
+        model_ple = vmap(vmap(vmap(self.projection_norm)))(model_ple)
+        combined = (model_ple + token_ple) * cfg.input_scale
+        return tuple(combined[:, :, i, :] for i in range(cfg.num_layers))
+
+    def export_weights(self) -> ParameterTree:
+        return {
+            "token_embedding": self.token_embedding,
+            "model_projection": self.model_projection.export_weights(),
+            "projection_norm": self.projection_norm.export_weights(),
+        }
+
+    def import_weights(self, weights: ParameterTree[Array]) -> Self:
+        weights = require_mapping(weights)
+        return replace(
+            self,
+            token_embedding=require_array(weights["token_embedding"]),
+            model_projection=self.model_projection.import_weights(require_tree(weights["model_projection"])),
+            projection_norm=self.projection_norm.import_weights(require_tree(weights["projection_norm"])),
+        )
+
+
 @dataclass(frozen=True)
 class DecoderConfig:
     embedding_config: EmbeddingConfig
@@ -121,6 +174,7 @@ class DecoderConfig:
             config=self,
             embedding=embedding,
             transformer=transformer,
+            per_layer_embedding=None,
         )
 
     def empty(self) -> "Decoder":
@@ -129,39 +183,33 @@ class DecoderConfig:
             model_dim=self.transformer_config.model_dim,
         )
         transformer = self.transformer_config.empty()
-        ple_token_embedding = None
-        ple_model_projection = None
-        ple_projection_norm = None
+        per_layer_embedding = None
         if self.ple_model_config is not None:
             cfg = self.ple_model_config
             total_ple_dim = cfg.num_layers * cfg.ple_dim
-            ple_token_embedding = dummy_array(
-                (cfg.ple_vocab_size, total_ple_dim),
-                jnp.bfloat16,
+            per_layer_embedding = PerLayerEmbedding(
+                config=cfg,
+                token_embedding=dummy_array((cfg.ple_vocab_size, total_ple_dim), jnp.bfloat16),
+                model_projection=cfg.linear_config.empty(
+                    self.transformer_config.model_dim,
+                    (total_ple_dim,),
+                    has_biases=False,
+                ),
+                projection_norm=cfg.norm_config.empty(cfg.ple_dim),
             )
-            ple_model_projection = cfg.linear_config.empty(
-                self.transformer_config.model_dim,
-                (total_ple_dim,),
-                has_biases=False,
-            )
-            ple_projection_norm = cfg.norm_config.empty(cfg.ple_dim)
 
         return Decoder(
             config=self,
             embedding=embedding,
             transformer=transformer,
-            ple_token_embedding=ple_token_embedding,
-            ple_model_projection=ple_model_projection,
-            ple_projection_norm=ple_projection_norm,
+            per_layer_embedding=per_layer_embedding,
         )
 
 
 class Decoder(LalamoModule[DecoderConfig]):
     embedding: EmbeddingBase
     transformer: Transformer
-    ple_token_embedding: Float[Array, "vocab ple_total_dim"] | None = None
-    ple_model_projection: LinearBase | None = None
-    ple_projection_norm: Normalization | None = None
+    per_layer_embedding: PerLayerEmbedding | None
 
     @property
     def vocab_size(self) -> int:
@@ -170,42 +218,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return self.embedding.activation_precision
-
-    def _compute_per_layer_inputs(
-        self,
-        token_ids: Int[Array, "batch suffix_tokens"],
-        inner_features: Float[Array, "batch suffix_tokens channels"],
-    ) -> tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None:
-        if self.ple_token_embedding is None:
-            return None
-        assert self.ple_model_projection is not None
-        assert self.ple_projection_norm is not None
-        assert self.config.ple_model_config is not None
-        cfg = self.config.ple_model_config
-
-        # Token PLE: lookup and scale
-        token_ple = self.ple_token_embedding[token_ids] * cfg.ple_embed_scale
-        token_ple = rearrange(
-            token_ple,
-            "batch seq (layers ple_dim) -> batch seq layers ple_dim",
-            layers=cfg.num_layers,
-            ple_dim=cfg.ple_dim,
-        )
-
-        # Model projection PLE: vmap over batch and seq dims since linear expects 1D input
-        (model_ple,) = vmap(vmap(self.ple_model_projection))(inner_features)
-        model_ple = model_ple * cfg.model_projection_scale
-        model_ple = rearrange(
-            model_ple,
-            "batch seq (layers ple_dim) -> batch seq layers ple_dim",
-            layers=cfg.num_layers,
-            ple_dim=cfg.ple_dim,
-        )
-        model_ple = vmap(vmap(vmap(self.ple_projection_norm)))(model_ple)
-
-        # Combine
-        combined = (model_ple + token_ple) * cfg.input_scale
-        return tuple(combined[:, :, i, :] for i in range(cfg.num_layers))
 
     @eqx.filter_jit
     def __call__(
@@ -230,7 +242,10 @@ class Decoder(LalamoModule[DecoderConfig]):
             )
         inner_features = vmap(self.embedding.embed)(token_ids)
 
-        per_layer_inputs = self._compute_per_layer_inputs(token_ids, inner_features)
+        if self.per_layer_embedding is not None:
+            per_layer_inputs = self.per_layer_embedding(token_ids, inner_features)
+        else:
+            per_layer_inputs = None
 
         transformer_result = self.transformer(
             inner_features=inner_features,
@@ -276,32 +291,19 @@ class Decoder(LalamoModule[DecoderConfig]):
             embedding=self.embedding.export_weights(),
             transformer=self.transformer.export_weights(),
         )
-        if self.ple_token_embedding is not None:
-            result["ple_token_embedding"] = self.ple_token_embedding
-        if self.ple_model_projection is not None:
-            result["ple_model_projection"] = self.ple_model_projection.export_weights()
-        if self.ple_projection_norm is not None:
-            result["ple_projection_norm"] = self.ple_projection_norm.export_weights()
+        if self.per_layer_embedding is not None:
+            result["per_layer_embedding"] = self.per_layer_embedding.export_weights()
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
-        ple_token_embedding = None
-        if self.ple_token_embedding is not None:
-            ple_token_embedding = weights.get("ple_token_embedding")
-        ple_model_projection = None
-        if self.ple_model_projection is not None:
-            ple_model_projection = self.ple_model_projection.import_weights(
-                require_tree(weights["ple_model_projection"])
-            )
-        ple_projection_norm = None
-        if self.ple_projection_norm is not None:
-            ple_projection_norm = self.ple_projection_norm.import_weights(require_tree(weights["ple_projection_norm"]))
+        if self.per_layer_embedding is not None:
+            per_layer_embedding = self.per_layer_embedding.import_weights(require_tree(weights["per_layer_embedding"]))
+        else:
+            per_layer_embedding = None
         return replace(
             self,
             embedding=self.embedding.import_weights(require_tree(weights["embedding"])),
             transformer=self.transformer.import_weights(require_tree(weights["transformer"])),
-            ple_token_embedding=ple_token_embedding,
-            ple_model_projection=ple_model_projection,
-            ple_projection_norm=ple_projection_norm,
+            per_layer_embedding=per_layer_embedding,
         )
