@@ -503,11 +503,12 @@ def compute_distill_step_gradients(
     config: DistillTrainConfig,
     quantization_mode: QuantizationMode,
     *,
-    quantization_key: Key[Array, ""] | None = None,
+    stochastic_rounding: bool,
+    quantization_key: Key[Array, ""],
 ) -> tuple[Any, DistillBatchMetrics]:
     def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
         materialized_student = materialize_trainable_module(student, master_weights, config)
-        if quantization_key is not None:
+        if stochastic_rounding:
             materialized_student = stochastically_quantize_module(
                 materialized_student,
                 quantization_mode,
@@ -528,11 +529,12 @@ def compute_trace_distill_step_gradients(
     config: DistillTrainConfig,
     quantization_mode: QuantizationMode,
     *,
-    quantization_key: Key[Array, ""] | None = None,
+    stochastic_rounding: bool,
+    quantization_key: Key[Array, ""],
 ) -> tuple[Any, DistillBatchMetrics]:
     def loss_fn(master_weights: Any) -> tuple[Float[Array, ""], DistillBatchMetrics]:  # noqa: ANN401
         materialized_student = materialize_trainable_module(student, master_weights, config)
-        if quantization_key is not None:
+        if stochastic_rounding:
             materialized_student = stochastically_quantize_module(
                 materialized_student,
                 quantization_mode,

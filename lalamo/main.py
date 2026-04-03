@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field, replace
+from dataclasses import MISSING, dataclass, field, fields as dc_fields, replace
 from enum import StrEnum
 from functools import partial
 from importlib.util import find_spec
@@ -1005,6 +1005,9 @@ def distill(
     _distill(config, callbacks=CliDistillCallbacks(config))
 
 
+_DISTILL_DEFAULTS = {f.name: f.default for f in dc_fields(DistillConfig) if f.default is not MISSING}
+
+
 @app.command(
     name="distill-advanced",
     help="Distill a quantized model using an unquantized teacher with full control over all tuning knobs.",
@@ -1040,91 +1043,91 @@ def distill_advanced(
     training_mode: Annotated[
         TrainingMode,
         Option(help="Distillation mode to run."),
-    ] = TrainingMode.ONLINE_EXACT,
+    ] = _DISTILL_DEFAULTS["training_mode"],
     train_examples: Annotated[
         int,
         Option(help="Number of examples to use for training."),
-    ] = 256,
+    ] = _DISTILL_DEFAULTS["train_examples"],
     eval_examples: Annotated[
         int,
         Option(help="Number of examples to use for evaluation."),
-    ] = 64,
+    ] = _DISTILL_DEFAULTS["eval_examples"],
     max_sequence_length: Annotated[
         int,
         Option(help="Maximum sequence length for tokenized training examples."),
-    ] = 256,
+    ] = _DISTILL_DEFAULTS["max_sequence_length"],
     batch_size: Annotated[
         int,
         Option(help="Batch size."),
-    ] = 4,
+    ] = _DISTILL_DEFAULTS["batch_size"],
     num_steps: Annotated[
         int,
         Option(help="Number of optimization steps."),
-    ] = 25,
+    ] = _DISTILL_DEFAULTS["num_steps"],
     learning_rate: Annotated[
         float,
         Option(help="Learning rate."),
-    ] = 3e-7,
+    ] = _DISTILL_DEFAULTS["learning_rate"],
     warmup_steps: Annotated[
         int,
         Option(help="Linearly warm up the learning rate over this many optimizer steps."),
-    ] = 0,
+    ] = _DISTILL_DEFAULTS["warmup_steps"],
     gradient_clip_norm: Annotated[
         float | None,
         Option(help="Clip gradients by global norm before the optimizer update."),
-    ] = None,
+    ] = _DISTILL_DEFAULTS["gradient_clip_norm"],
     gradient_accumulation_steps: Annotated[
         int,
         Option(help="Accumulate gradients over this many microbatches per optimizer step."),
-    ] = 1,
+    ] = _DISTILL_DEFAULTS["gradient_accumulation_steps"],
     optimizer: Annotated[
         OptimizerName,
         Option(help="Optimizer to use."),
-    ] = OptimizerName.MUON,
+    ] = _DISTILL_DEFAULTS["optimizer_name"],
     quantization_mode: Annotated[
         QuantizationMode,
         Option(help="Quantization mode for stochastic rounding."),
-    ] = QuantizationMode.UINT4,
+    ] = _DISTILL_DEFAULTS["quantization_mode"],
     lora_rank: Annotated[
         int | None,
         Option(help="LoRA rank. Omit for full-parameter distillation."),
-    ] = None,
+    ] = _DISTILL_DEFAULTS["lora_rank"],
     lora_scale: Annotated[
         float,
         Option(help="LoRA scale."),
-    ] = 1.0,
+    ] = _DISTILL_DEFAULTS["lora_scale"],
     compute_dtype_name: Annotated[
         ComputeDTypeName,
         Option(help="Compute dtype for distillation."),
-    ] = ComputeDTypeName.AUTO,
+    ] = _DISTILL_DEFAULTS["compute_dtype_name"],
     eval_every_steps: Annotated[
         int,
         Option(help="Evaluate every N steps. Set to 0 to disable periodic eval."),
-    ] = 0,
+    ] = _DISTILL_DEFAULTS["eval_every_steps"],
     checkpoint_every_steps: Annotated[
         int,
         Option(help="Save the latest checkpoint every N steps. Set to 0 to disable periodic checkpoints."),
-    ] = 0,
+    ] = _DISTILL_DEFAULTS["checkpoint_every_steps"],
     early_stop_patience: Annotated[
         int,
         Option(help="Stop after this many evaluations without improvement. Set to 0 to disable."),
-    ] = 0,
+    ] = _DISTILL_DEFAULTS["early_stop_patience"],
     resume_from: Annotated[
         Path | None,
         Option(help="Resume from a checkpoint directory."),
-    ] = None,
+    ] = _DISTILL_DEFAULTS["resume_from"],
     seed: Annotated[
         int,
         Option(help="Random seed."),
-    ] = 0,
+    ] = _DISTILL_DEFAULTS["seed"],
     stochastic_rounding: Annotated[
         bool,
         Option(help="Enable stochastic rounding for quantized training leaves."),
-    ] = True,
+    ] = _DISTILL_DEFAULTS["stochastic_rounding"],
     save_checkpoints: Annotated[
         bool,
         Option(help="Persist latest and best checkpoints."),
-    ] = True,
+    ] = _DISTILL_DEFAULTS["save_checkpoints"],
 ) -> None:
     config = DistillConfig(
         teacher_path=teacher_path,

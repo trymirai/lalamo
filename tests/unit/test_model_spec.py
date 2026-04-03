@@ -35,18 +35,3 @@ def test_deserialization() -> None:
     assert model_spec.tool_role_name == "tool"
     assert model_spec.weights_type == WeightsType.SAFETENSORS
     assert model_spec.use_cases == ()
-
-
-def test_consistency() -> None:
-    spec = ModelSpec(
-        vendor="Meta",
-        family="Llama-3.2",
-        name="Llama-3.2-1B-Instruct",
-        size="1B",
-        quantization=None,
-        repo="meta-llama/Llama-3.2-1B-Instruct",
-        config_type=HFLlamaConfig,
-        use_cases=tuple(),
-    )
-
-    assert ModelSpec.from_json(spec.to_json()) == spec

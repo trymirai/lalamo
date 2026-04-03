@@ -327,7 +327,6 @@ def _load_distill_batches(
             )
 
 
-
 def _evaluate_with(
     training_mode: TrainingMode,
     student: Decoder,
@@ -494,7 +493,6 @@ def _accumulate_train_step(
 
     for microbatch in microbatches:
         train_key, step_key = jax.random.split(train_key)
-        quantization_key = step_key if stochastic_rounding else None
         match training_mode:
             case TrainingMode.ONLINE_EXACT:
                 assert isinstance(microbatch, DistillBatch)
@@ -505,7 +503,8 @@ def _accumulate_train_step(
                     microbatch,
                     distill_config,
                     quantization_mode,
-                    quantization_key=quantization_key,
+                    stochastic_rounding=stochastic_rounding,
+                    quantization_key=step_key,
                 )
             case TrainingMode.TRACE_TOPK:
                 assert isinstance(microbatch, TraceDistillBatch)
@@ -515,7 +514,8 @@ def _accumulate_train_step(
                     microbatch,
                     distill_config,
                     quantization_mode,
-                    quantization_key=quantization_key,
+                    stochastic_rounding=stochastic_rounding,
+                    quantization_key=step_key,
                 )
         valid_tokens = metrics.valid_tokens
         weighted_grads = jax.tree.map(lambda grad, scale=valid_tokens: grad * scale, grads)
@@ -539,7 +539,6 @@ def _accumulate_train_step(
         apply_distill_gradients if optimizer_name == OptimizerName.MUON else apply_donated_distill_gradients
     )
     return apply_gradients(optimizer_state, optimizer, averaged_grads), step_metrics, train_key
-
 
 
 def distill(
@@ -601,10 +600,11 @@ def distill(
     if callbacks is not None:
         callbacks.finished_loading_dataset()
 
+    shard = lambda batch: pad_and_apply_data_sharding(batch, sharding_config=sharding_config, batch_axis=0)
     dataset = replace(
         dataset,
-        train_batches=[pad_and_apply_data_sharding(batch, sharding_config=sharding_config, batch_axis=0) for batch in dataset.train_batches],
-        eval_batches=[pad_and_apply_data_sharding(batch, sharding_config=sharding_config, batch_axis=0) for batch in dataset.eval_batches],
+        train_batches=[shard(batch) for batch in dataset.train_batches],
+        eval_batches=[shard(batch) for batch in dataset.eval_batches],
     )
 
     # Training state

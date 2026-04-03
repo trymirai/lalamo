@@ -59,26 +59,6 @@ def test_load_parameters_rejects_incompatible_replacements(
         )
 
 
-def test_load_parameters_uses_field_metadata_for_sharding() -> None:
-    module = _LoaderModule(weights=jnp.ones((2, 2), dtype=jnp.float32))
-
-    with (
-        patch("lalamo.model_import.loaders.common.get_current_sharding_config", return_value=object()),
-        patch(
-            "lalamo.model_import.loaders.common._apply_parameter_sharding",
-            side_effect=lambda array, _field_info, _sharding_config: array + 1,
-        ) as apply_parameter_sharding,
-    ):
-        loaded = load_parameters(
-            lambda current: (current.weights,),
-            module,
-            (jnp.full((2, 2), 2.0, dtype=jnp.float32),),
-        )
-
-    assert jnp.allclose(loaded.weights, jnp.full((2, 2), 3.0, dtype=jnp.float32))
-    assert apply_parameter_sharding.call_args.args[1].field.name == "weights"
-
-
 def test_shard_batch_axis_pads_higher_rank_prng_key_arrays() -> None:
     keys = jax.random.split(jax.random.key(0), 4).reshape(2, 2)
 

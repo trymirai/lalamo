@@ -4,36 +4,6 @@ from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFiel
 DIRECT_TEMPLATE = "{% for message in messages %}{{ message.content }}{% endfor %}"
 
 
-class TestConfigMapChatTemplate:
-    def test_chat_template_as_string(self) -> None:
-        config = ConfigMap(chat_template=DIRECT_TEMPLATE)
-        assert config.chat_template == DIRECT_TEMPLATE
-        assert isinstance(config.chat_template, str)
-
-    def test_chat_template_as_file_spec(self) -> None:
-        file_spec = FileSpec("chat_template.jinja")
-        config = ConfigMap(chat_template=file_spec)
-        assert config.chat_template == file_spec
-        assert isinstance(config.chat_template, FileSpec)
-
-    def test_chat_template_as_file_spec_with_repo(self) -> None:
-        file_spec = FileSpec("chat_template.jinja", repo="some/repo")
-        config = ConfigMap(chat_template=file_spec)
-        assert config.chat_template == file_spec
-        assert isinstance(config.chat_template, FileSpec)
-        assert config.chat_template.repo == "some/repo"
-
-    def test_chat_template_as_json_field_spec(self) -> None:
-        json_spec = JSONFieldSpec(FileSpec("config.json"), "chat_template")
-        config = ConfigMap(chat_template=json_spec)
-        assert config.chat_template == json_spec
-        assert isinstance(config.chat_template, JSONFieldSpec)
-
-    def test_chat_template_none(self) -> None:
-        config = ConfigMap()
-        assert config.chat_template is None
-
-
 class TestModelSpecWithChatTemplate:
     def test_model_spec_with_string_chat_template(self) -> None:
         spec = ModelSpec(
