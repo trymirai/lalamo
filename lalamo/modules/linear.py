@@ -91,6 +91,17 @@ class LinearConfig:
     ) -> Linear:
         return Linear(config=self, output_dims=output_dims, weights=weights, biases=biases)
 
+    def array_from_raw(self, raw: Array) -> CompressedArray:
+        return _array_from_raw(self, raw)
+
+    def from_raw(
+        self,
+        raw: Array,
+        output_dims: tuple[int, ...],
+        biases: Float[Array, "*batch total_out_channels"] | None,
+    ) -> Linear:
+        return self.from_array(weights=self.array_from_raw(raw), output_dims=output_dims, biases=biases)
+
     def init(
         self,
         initializer: Initializer,
@@ -104,7 +115,7 @@ class LinearConfig:
         if not hasattr(raw, "reshape"):
             raw = dummy_array(raw.shape, raw.dtype)
         biases = initializer.zeros((total_out,), initializer.precision) if has_biases else None
-        return self.from_array(weights=_array_from_raw(self, raw), output_dims=output_dims, biases=biases)
+        return self.from_raw(raw=raw, output_dims=output_dims, biases=biases)
 
     def init_mixture(
         self,
@@ -120,7 +131,7 @@ class LinearConfig:
         if not hasattr(raw, "reshape"):
             raw = dummy_array(raw.shape, raw.dtype)
         biases = initializer.zeros((mixture_size, total_out), initializer.precision) if has_biases else None
-        return self.from_array(weights=_array_from_raw(self, raw), output_dims=output_dims, biases=biases)
+        return self.from_raw(raw=raw, output_dims=output_dims, biases=biases)
 
 
 class Linear(LalamoModule[LinearConfig]):
@@ -163,6 +174,21 @@ class Linear(LalamoModule[LinearConfig]):
         self,
         inputs: Float[Array, " in_channels"],
     ) -> tuple[Float[Array, " out_channels"], ...]: ...
+
+    def from_raw(
+        self,
+        raw_weights: Array,
+        biases: Float[Array, "*batch total_out_channels"] | None,
+    ) -> Linear:
+        cast_weights = raw_weights.astype(self.activation_precision)
+        cast_biases = None if biases is None else biases.astype(self.activation_precision)
+        new_weights = self.config.array_from_raw(cast_weights)
+        return eqx.tree_at(
+            lambda module: (module.weights, module.biases),
+            self,
+            (new_weights, cast_biases),
+            is_leaf=lambda x: x is None,
+        )
 
     @staticmethod
     def get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:

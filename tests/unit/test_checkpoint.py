@@ -94,3 +94,19 @@ def test_checkpoint_save_restore() -> None:
     restored_arrays = eqx.filter(restored, eqx.is_array)
 
     assert bool(eqx.tree_equal(original_arrays, restored_arrays))
+
+
+@pytest.mark.fast
+def test_checkpoint_restore_preserves_saved_dtypes() -> None:
+    config = _tiny_decoder_config()
+    model = config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        manager = CheckpointManager(directory=Path(tmp))
+        manager.save("test", model)
+        restored = manager.restore("test")
+
+    original_arrays = jax.tree.leaves(eqx.filter(model, eqx.is_array))
+    restored_arrays = jax.tree.leaves(eqx.filter(restored, eqx.is_array))
+
+    assert [array.dtype for array in restored_arrays] == [array.dtype for array in original_arrays]

@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import orbax.checkpoint as ocp
 
 from lalamo.model_import.loaders.common import _apply_parameter_sharding, find_field_sharding
-from lalamo.modules.common import EmptyInitializer, LalamoModule, ShardingConfig, config_converter
+from lalamo.modules.common import EmptyInitializer, LalamoModule, ShardingConfig, config_converter, stringify_path
 
 __all__ = ["CheckpointManager"]
 
@@ -23,9 +23,12 @@ class CheckpointManager:
         checkpointer = ocp.StandardCheckpointer()
         checkpointer.save(self.directory / name / "state", arrays)
         checkpointer.wait_until_finished()
+        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(model)
+        array_dtypes = {stringify_path(path): str(leaf.dtype) for path, leaf in flat_with_path if eqx.is_array(leaf)}
         config = model.config
         config_json = {
             "_type": f"{type(config).__module__}.{type(config).__qualname__}",
+            "_array_dtypes": array_dtypes,
             **config_converter.unstructure(config),
         }
         (self.directory / name / "config.json").write_text(json.dumps(config_json))
@@ -38,17 +41,26 @@ class CheckpointManager:
         config_path = self.directory / name / "config.json"
         config_json = json.loads(config_path.read_text())
         module_name, class_name = config_json.pop("_type").rsplit(".", 1)
+        array_dtypes: dict[str, str] = config_json.pop("_array_dtypes")
         config_type = getattr(importlib.import_module(module_name), class_name)
         config = config_converter.structure(config_json, config_type)
         empty = config.init(EmptyInitializer(precision=jnp.float32))
-        target = jax.tree.map(
-            lambda s: _apply_parameter_sharding(
-                jnp.zeros(s.shape, s.dtype),
-                find_field_sharding(empty, s),
-                sharding_config,
+        is_restore_leaf = lambda x: isinstance(x, jax.ShapeDtypeStruct) or eqx.is_array(x)
+        target = jax.tree_util.tree_map_with_path(
+            lambda path, leaf: (
+                _apply_parameter_sharding(
+                    jnp.zeros(
+                        leaf.shape,
+                        config_converter.structure(array_dtypes[stringify_path(path)], jnp.dtype),
+                    ),
+                    find_field_sharding(empty, leaf),
+                    sharding_config,
+                )
+                if is_restore_leaf(leaf)
+                else leaf
             ),
             empty,
-            is_leaf=lambda x: isinstance(x, jax.ShapeDtypeStruct),
+            is_leaf=is_restore_leaf,
         )
         arrays, non_arrays = eqx.partition(target, eqx.is_array)
         restored = ocp.StandardCheckpointer().restore(self.directory / name / "state", target=arrays)
