@@ -63,7 +63,7 @@ class TTSMessageProcessor:
             prompt_text = prompt_text[1:]
         return prompt_text
 
-    def preprocess(self, text: str, language: str = "en") -> str:
+    def preprocess(self, text: str, language: str = "en") -> str:  # noqa: ARG002
         return text
 
     def tokenize_text(self, text: str) -> list[int]:

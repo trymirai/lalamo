@@ -112,5 +112,5 @@ class TTSModel(LalamoModule[TTSConfig]):
             self,
             text_decoder=self.text_decoder.import_weights(require_tree(weights["text_decoder"])),
             audio_decoder=self.audio_decoder.import_weights(require_tree(weights["audio_decoder"])),
-            vocoder=self.vocoder.import_weights(require_tree(weights.get("vocoder", {}))),
+            vocoder=self.vocoder.import_weights(require_tree(weights.get("vocoder", {}))),  # ty: ignore[no-matching-overload]
         )

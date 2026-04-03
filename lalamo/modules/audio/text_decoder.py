@@ -35,7 +35,7 @@ class TTSTextDecoderConfigBase(RegistryABC):
     def random_init(self, *, key: PRNGKeyArray) -> "TTSTextDecoder": ...
 
     @classmethod
-    def format_instruction(cls, style: str) -> str | None:
+    def format_instruction(cls, style: str) -> str | None:  # noqa: ARG003
         return None
 
 
