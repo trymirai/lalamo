@@ -11,9 +11,10 @@ from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings, RoPEConfig
-from .token_mixers import Attention, KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
+from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
+from .rope import PositionalEmbeddings
+from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
+from .token_mixers.common import MixerForwardPassConfig
 from .utils import vmap_twice
 
 __all__ = [
@@ -27,7 +28,11 @@ __all__ = [
 ]
 
 
-type TransformerLayerForwardPassConfig = MLPForwardPassConfig
+@dataclass(frozen=True)
+class TransformerLayerForwardPassConfig:
+    mixer: MixerForwardPassConfig = MixerForwardPassConfig()  # noqa: B008
+    mlp: MLPForwardPassConfig = MLPForwardPassConfig()  # noqa: B008
+    normalization: NormalizationForwardPassConfig = NormalizationForwardPassConfig()  # noqa: B008
 
 
 class TransformerLayerActivationTrace(eqx.Module):
@@ -192,10 +197,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     post_layer_scalar: Float[Array, "1"] | None
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.mixer.activation_precision
-
-    @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
         return self.mixer.positional_embedding_selector
 
@@ -218,50 +219,46 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
+        fpc = forward_pass_config or TransformerLayerForwardPassConfig()
+
+        def apply_norm(norm: Normalization, x: Float[Array, "batch tokens channels"]) -> Float[Array, "batch tokens channels"]:
+            return vmap_twice(partial(norm, forward_pass_config=fpc.normalization))(x)
+
         if self.pre_mixer_norm is not None:
-            normalized_mixer_inputs = vmap_twice(self.pre_mixer_norm)(inputs)
+            normalized_mixer_inputs = apply_norm(self.pre_mixer_norm, inputs)
         else:
             normalized_mixer_inputs = inputs
 
-        mixer_partial = partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace)
-        if attention_parent_indices is not None:
-            if not isinstance(self.mixer, Attention):
-                raise NotImplementedError(
-                    f"Tree attention (attention_parent_indices) is only supported with"
-                    f" {Attention.__name__} mixers; got {type(self.mixer).__name__}.",
-                )
-            mixer_outputs, updated_state = vmap(mixer_partial)(
-                normalized_mixer_inputs,
-                positional_embeddings,
-                state=state,
-                length_without_padding=lengths_without_padding,
-                attention_parent_indices=attention_parent_indices,
-            )
-        else:
-            mixer_outputs, updated_state = vmap(mixer_partial)(
-                normalized_mixer_inputs,
-                positional_embeddings,
-                state=state,
-                length_without_padding=lengths_without_padding,
-            )
+        batched_mixer_fn = vmap(
+            partial(
+                self.mixer,
+                return_updated_state=return_updated_state or return_activation_trace,
+                forward_pass_config=fpc.mixer,
+            ),
+        )
+        mixer_outputs, updated_state = batched_mixer_fn(
+            normalized_mixer_inputs,
+            positional_embeddings,
+            state=state,
+            length_without_padding=lengths_without_padding,
+        )
         if self.post_mixer_norm is not None:
-            normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
+            normalized_mixer_outputs = apply_norm(self.post_mixer_norm, mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs
         else:
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
-        if self.pre_mlp_norm is not None:
-            normalized_mlp_inputs = vmap_twice(self.pre_mlp_norm)(mlp_inputs)
-        else:
-            normalized_mlp_inputs = mlp_inputs
+        normalized_mlp_inputs = (
+            apply_norm(self.pre_mlp_norm, mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
+        )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             forward_pass_mode=forward_pass_mode,
-            forward_pass_config=forward_pass_config,
+            forward_pass_config=fpc.mlp,
         )
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)
+            normalized_mlp_outputs = norm_fn(self.post_mlp_norm)(mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None

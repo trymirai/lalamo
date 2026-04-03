@@ -45,7 +45,6 @@ __all__ = [
 class FiniteScalarQuantizerConfig:
     num_levels: tuple[int, ...]
     eps: float
-    precision: DTypeLike
 
     @property
     def dim(self) -> int:
@@ -87,10 +86,6 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     dim_base_index: Int[Array, " dim"]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def dim(self) -> int:
         return self.config.dim
 
@@ -105,7 +100,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         For a dimension with L levels, outputs are mapped to range [-(L-1)/2, (L-1)/2]
         with appropriate handling for even/odd number of levels.
         """
-        num_levels = self.num_levels_buffer.astype(self.config.precision)
+        num_levels = self.num_levels_buffer.astype(inputs.dtype)
 
         # Output scale: (num_levels - 1) / 2
         # Scaled down slightly to avoid rounding issues at boundaries
@@ -140,19 +135,19 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         compressed = self._compress(inputs)
         codes = self._round_ste(compressed)
         # Normalize to [-1, 1]
-        scale = (self.num_levels_buffer // 2).astype(self.precision)
+        scale = (self.num_levels_buffer // 2).astype(codes.dtype)
         codes = codes / scale[None, :, None]
         return codes
 
     def _codes_to_nonnegative(self, codes: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Convert codes centered around zero to nonnegative integer indices."""
-        scale = (self.num_levels_buffer // 2).astype(self.precision)
+        scale = (self.num_levels_buffer // 2).astype(codes.dtype)
         offset = scale
         return scale[None, :, None] * codes + offset[None, :, None]
 
     def _nonnegative_to_codes(self, codes_nonneg: Float[Array, "dim"]) -> Float[Array, "dim"]:
         """Convert nonnegative indices back to codes centered around zero."""
-        scale = (self.num_levels_buffer // 2).astype(self.precision)
+        scale = (self.num_levels_buffer // 2).astype(codes_nonneg.dtype)
         offset = scale
         return (codes_nonneg - offset) / scale
 
@@ -163,7 +158,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         """
         nonneg = self._codes_to_nonnegative(codes)
         # Sum over dimensions weighted by base index
-        indices = jnp.sum(nonneg * self.dim_base_index[None, :, None].astype(self.precision), axis=1)
+        indices = jnp.sum(nonneg * self.dim_base_index[None, :, None].astype(nonneg.dtype), axis=1)
         return indices.astype(jnp.int32)
 
     def _indices_to_codes(self, index: Int[Array, " 1"]) -> Float[Array, " dim"]:
@@ -172,7 +167,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         """
 
         codes_nonnegative = (index // self.dim_base_index) % self.num_levels_buffer
-        return self._nonnegative_to_codes(codes_nonnegative.astype(self.precision))
+        return self._nonnegative_to_codes(codes_nonnegative.astype(jnp.float32))
 
     def encode(
         self,
@@ -207,10 +202,6 @@ class GroupFiniteScalarQuantizerConfig:
     quantizer_config: FiniteScalarQuantizerConfig
 
     @property
-    def precision(self) -> DTypeLike:
-        return self.quantizer_config.precision
-
-    @property
     def codebook_dim_per_group(self) -> int:
         """Dimension per group (number of levels dimensions)."""
         return self.quantizer_config.dim
@@ -242,10 +233,6 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
     """
 
     quantizers: tuple[FiniteScalarQuantizer, ...]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
 
     @property
     def num_groups(self) -> int:
@@ -302,10 +289,6 @@ class HalfSnakeConfig:
     snake_config: Snake1dConfig
     leaky_relu_negative_slope: float
 
-    @property
-    def precision(self) -> DTypeLike:
-        return self.snake_config.precision
-
     def init(self, initializer: Initializer, channels: int) -> "HalfSnake":
         snake_channels = channels // 2
         snake = self.snake_config.init(initializer, snake_channels)
@@ -325,10 +308,6 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
     snake: Snake1d
     total_channels: int = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
 
     @property
     def channels(self) -> int:
@@ -366,10 +345,6 @@ class ResidualBlockConfig:
 
     activation_config: HalfSnakeConfig
     conv_config: CausalConv1dConfig
-
-    @property
-    def precision(self) -> DTypeLike:
-        return self.conv_config.precision
 
     def init(
         self,
@@ -416,10 +391,6 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
     skip_conv: CausalConv1d
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
-
-    @property
     def channels(self) -> int:
         return self.input_conv.in_channels
 
@@ -446,10 +417,6 @@ class HiFiGANResBlockConfig:
     """
 
     residual_block_config: ResidualBlockConfig
-
-    @property
-    def precision(self) -> DTypeLike:
-        return self.residual_block_config.precision
 
     def init(
         self,
@@ -478,10 +445,6 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
     res_blocks: tuple[ResidualBlock, ...]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.res_blocks[0].activation_precision
-
-    @property
     def channels(self) -> int:
         return self.res_blocks[0].channels
 
@@ -504,10 +467,6 @@ class HiFiGANResLayerConfig:
     """
 
     hifigan_res_block_config: HiFiGANResBlockConfig
-
-    @property
-    def precision(self) -> DTypeLike:
-        return self.hifigan_res_block_config.precision
 
     def init(
         self,
@@ -538,10 +497,6 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
     res_blocks: tuple[HiFiGANResBlock, ...]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.res_blocks[0].activation_precision
-
-    @property
     def channels(self) -> int:
         return self.res_blocks[0].channels
 
@@ -560,10 +515,6 @@ class CausalHiFiGANDecoderConfig:
     transpose_conv_config: CausalTransposeConv1dConfig
     res_layer_config: HiFiGANResLayerConfig
     post_conv_config: CausalConv1dConfig
-
-    @property
-    def precision(self) -> DTypeLike:
-        return self.pre_conv_config.precision
 
     def init(
         self,
@@ -663,7 +614,7 @@ class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.pre_conv.activation_precision
 
     def __call__(
         self,

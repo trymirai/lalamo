@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 import equinox as eqx
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterTree
 
@@ -175,10 +175,6 @@ class Decoder(LalamoModule[DecoderConfig]):
     @property
     def vocab_size(self) -> int:
         return self.embedding.vocab_size
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.embedding.activation_precision
 
     @eqx.filter_jit
     def __call__(

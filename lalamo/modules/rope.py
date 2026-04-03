@@ -74,7 +74,6 @@ class PositionalEmbeddings(eqx.Module):
 
 @dataclass(frozen=True)
 class RoPEConfigBase:
-    precision: DTypeLike
     base: float
     max_sequence_length: int
     head_dim: int
@@ -94,7 +93,7 @@ class RoPEConfigBase:
 
     def _mask_inverse_frequencies(
         self,
-        initializer: Initializer,  # noqa: ARG002
+        initializer: Initializer,
         head_dim: int,
     ) -> Float[Array, " tokens"]:
         if self.partial_rotary_dim is None or self.partial_rotary_dim >= head_dim:
@@ -113,18 +112,14 @@ class RoPEConfigBase:
         inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, head_dim)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
         embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
-        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)
-        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
+        cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(initializer.precision)
+        sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(initializer.precision)
         return RoPE(config=self, sines=sines, cosines=cosines)
 
 
 class RoPE(LalamoModule[RoPEConfigBase]):
     sines: Float[Array, "tokens head_channels"]
     cosines: Float[Array, "tokens head_channels"]
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
 
     @property
     def head_dim(self) -> int:

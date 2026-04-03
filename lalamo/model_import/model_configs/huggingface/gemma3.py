@@ -3,7 +3,6 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 import jax.numpy as jnp
-from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     DecoderConfig,
@@ -84,8 +83,6 @@ class HFGemma3TextConfigRaw:
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
         fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
@@ -96,7 +93,6 @@ class HFGemma3TextConfigRaw:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=input_scale,
                 logit_soft_cap=self.final_logit_softcapping,
-                precision=activation_precision,
             )
         elif isinstance(quantization, MLXQuantizationConfig):
             embedding_config = MLXQuantizedTiedEmbeddingConfig(
@@ -105,13 +101,10 @@ class HFGemma3TextConfigRaw:
                 group_size=quantization.group_size,
                 embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         else:
             raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
         rms_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
@@ -120,7 +113,6 @@ class HFGemma3TextConfigRaw:
 
         if isinstance(self.rope_scaling, GemmaRoPEScalingConfig):
             global_rope_config = LinearScalingRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
@@ -128,7 +120,6 @@ class HFGemma3TextConfigRaw:
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             global_rope_config = YARNRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 scaling_factor=self.rope_scaling.factor,
                 max_sequence_length=self.max_position_embeddings,
@@ -140,7 +131,6 @@ class HFGemma3TextConfigRaw:
             )
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 head_dim=self.head_dim,
@@ -149,20 +139,20 @@ class HFGemma3TextConfigRaw:
             raise ValueError("Invalid rope scaling configuration")
 
         local_rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_local_base_freq,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=self.head_dim,
         )
 
         if quantization is None:
-            linear_config = LinearConfig(precision=activation_precision)
+            linear_config = FullPrecisionLinearConfig()
         elif isinstance(quantization, MLXQuantizationConfig):
             linear_config = LinearConfig(
                 precision=activation_precision,
                 quant_format=QuantFormat.MLX,
                 group_size=quantization.group_size,
-                bits=quantization.bits,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
             )
         else:
             raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
@@ -260,15 +250,11 @@ class HFGemma3Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         quantization = self.quantization or self.quantization_config
         return self.text_config.to_decoder_config(
             context_length=context_length,
-            activation_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             metadata_dict=metadata_dict,
             fallback_quantization=quantization,
         )

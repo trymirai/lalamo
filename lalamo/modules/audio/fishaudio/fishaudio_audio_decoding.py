@@ -21,7 +21,6 @@ from .fishaudio_modules import (
 
 @dataclass(frozen=True)
 class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
-    precision: DTypeLike
     quantizer_config: DownsampleResidualVectorQuantizeConfig
     decoder_config: DACDecoderConfig
     samplerate: int
@@ -156,7 +155,7 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.decoder.activation_precision
 
     @property
     def semantic_codebook_size(self) -> int:

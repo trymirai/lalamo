@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 
-from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, Float
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import Initializer, LalamoModule
@@ -14,9 +13,14 @@ class NoopVocoderConfig:
 
 
 class NoopVocoder(LalamoModule[NoopVocoderConfig]):
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return jnp.float32
+    def export_weights(self) -> ParameterTree[Array]:
+        return {}
+
+    def import_weights(
+        self,
+        weights: ParameterTree[Array],  # noqa: ARG002
+    ) -> Self:
+        return self
 
     def __call__(
         self,

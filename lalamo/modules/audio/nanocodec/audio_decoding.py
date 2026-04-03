@@ -16,7 +16,6 @@ from .nanocodec_modules import (
 
 @dataclass(frozen=True)
 class NanoCodecConfig(TTSAudioDecoderConfigBase):
-    precision: DTypeLike
     quantizer_config: GroupFiniteScalarQuantizerConfig
     decoder_config: CausalHiFiGANDecoderConfig
     samplerate: int
@@ -66,7 +65,7 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.decoder.activation_precision
 
     @property
     def n_codebooks(self) -> int:

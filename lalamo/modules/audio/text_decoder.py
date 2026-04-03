@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from jaxtyping import Array, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import Initializer, LalamoModule
@@ -15,10 +15,6 @@ class TTSTextDecoderConfigBase(ABC):
 
 
 class TTSTextDecoder[ConfigT: TTSTextDecoderConfigBase](LalamoModule[ConfigT]):
-    @property
-    @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
     @abstractmethod
     def decode_utterance(
         self,

@@ -308,7 +308,6 @@ def _load_main_processing_module(
     foreign_config: ForeignConfig,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     context_length: int | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
 ) -> LalamoModule:
     with ExitStack() as stack:
         weights_shards = []
@@ -326,7 +325,6 @@ def _load_main_processing_module(
         processing_module = foreign_config.load(
             context_length,
             precision,
-            accumulation_precision,
             weights_dict,
             metadata_dict,
         )
@@ -339,7 +337,6 @@ def _import_language_model(
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
     with _download_weights_and_config_files(
@@ -359,7 +356,6 @@ def _import_language_model(
             foreign_decoder_config,
             progress_callback,
             context_length,
-            accumulation_precision,
         )
         assert isinstance(decoder, Decoder)
 
@@ -397,7 +393,6 @@ def _import_classifier(
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[ClassifierModel, ClassifierModelConfig]:
     with _download_weights_and_config_files(
@@ -417,7 +412,6 @@ def _import_classifier(
             foreign_classifier_config,
             progress_callback,
             context_length,
-            accumulation_precision,
         )
         assert isinstance(classifier, Classifier)
 
@@ -439,7 +433,6 @@ def _import_tts_model(
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[TTSGenerator, TTSGeneratorConfig]:
     with _download_weights_and_config_files(
@@ -482,7 +475,6 @@ def _import_tts_model(
             foreign_tts_config,
             progress_callback,
             context_length,
-            accumulation_precision,
         )
 
         assert isinstance(tts_model, TTSModel)
@@ -498,8 +490,6 @@ def _import_tts_model(
     tts_generator_config = TTSGeneratorConfig(
         tts_config=foreign_tts_config.to_lalamo_config(
             context_length=context_length,
-            activation_precision=precision,
-            accumulation_precision=accumulation_precision,
             metadata_dict={},
         ),
         message_processor_config=message_processor.config,
@@ -514,7 +504,6 @@ def import_model(
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
-    accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
     sharding_config: ShardingConfig | None = None,
 ) -> ImportResults:
@@ -531,7 +520,6 @@ def import_model(
                     model_spec,
                     context_length=context_length,
                     precision=precision,
-                    accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
                 )
             case ModelType.CLASSIFIER_MODEL:
@@ -539,7 +527,6 @@ def import_model(
                     model_spec,
                     context_length=context_length,
                     precision=precision,
-                    accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
                 )
             case ModelType.TTS_MODEL:
@@ -547,7 +534,6 @@ def import_model(
                     model_spec,
                     context_length=context_length,
                     precision=precision,
-                    accumulation_precision=accumulation_precision,
                     progress_callback=progress_callback,
                 )
 

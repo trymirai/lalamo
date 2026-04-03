@@ -74,7 +74,6 @@ def from_fish_audio_config(
         semantic_token_end_id=tokenizer.semantic_end_id,
         im_end_token_id=tokenizer.get_token_id(IM_END_TOKEN),
         codebook_size=fish_audio_cfg.codebook_size,
-        precision=precision,
         vocab_size=fish_audio_cfg.vocab_size,
         slow_model_dim=fish_audio_cfg.dim,
         fast_model_dim=fish_audio_cfg.fast_dim,

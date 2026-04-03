@@ -25,7 +25,6 @@ class CausalConvResult(NamedTuple):
 
 @dataclass(frozen=True)
 class SeparableCausalConvConfig:
-    precision: DTypeLike
     has_biases: bool
 
     def init(
@@ -35,9 +34,9 @@ class SeparableCausalConvConfig:
         kernel_size: int,
     ) -> "SeparableCausalConv":
         scale = 1 / math.sqrt(kernel_size * input_dim)
-        weights = initializer.normal(scale, (input_dim, kernel_size), self.precision)
+        weights = initializer.normal(scale, (input_dim, kernel_size), initializer.precision)
         if self.has_biases:
-            biases = initializer.zeros((input_dim,), self.precision)
+            biases = initializer.zeros((input_dim,), initializer.precision)
         else:
             biases = None
         return SeparableCausalConv(
@@ -53,7 +52,7 @@ class SeparableCausalConv(LalamoModule[SeparableCausalConvConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.weights.dtype
 
     def __post_init__(self) -> None:
         input_dim, _ = self.weights.shape

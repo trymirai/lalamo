@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -83,8 +81,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         quantization = self.quantization or self.quantization_config
@@ -96,7 +92,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                     group_size=quantization.group_size,
                     embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                     activation_quantization_mode=None,
-                    activation_precision=activation_precision,
                 )
             else:
                 embedding_config = MLXQuantizedUntiedEmbeddingConfig(
@@ -105,31 +100,26 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                     group_size=quantization.group_size,
                     embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                     activation_quantization_mode=None,
-                    activation_precision=activation_precision,
                 )
         else:  # noqa: PLR5501
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    precision=activation_precision,
                 )
             else:
                 embedding_config = UntiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    precision=activation_precision,
                 )
         if self.rope_scaling is None:
             rope_config = UnscaledRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             rope_config = YARNRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
@@ -141,7 +131,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             )
         elif isinstance(self.rope_scaling, LlamaRopeScalingConfig):
             rope_config = LlamaRoPEConfig(
-                precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
@@ -153,30 +142,28 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         else:
             raise ValueError("Unsupported rope_scaling configuration")
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
         if quantization is None:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-            )
+            linear_config = FullPrecisionLinearConfig()
         elif isinstance(quantization, MLXQuantizationConfig):
             linear_config = LinearConfig(
                 precision=activation_precision,
                 quant_format=QuantFormat.MLX,
                 group_size=quantization.group_size,
-                bits=quantization.bits,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
             )
         else:
             linear_config = LinearConfig(
                 precision=activation_precision,
                 quant_format=QuantFormat.AWQ,
                 group_size=quantization.group_size,
-                bits=quantization.bits,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
             )
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,

@@ -2,7 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     AttentionConfig,
@@ -62,8 +61,6 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
@@ -78,7 +75,6 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
                 group_size=quantization.group_size,
                 embedding_quantization_mode=quantization_mode,
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         else:
             embedding_config = MLXQuantizedUntiedEmbeddingConfig(
@@ -87,11 +83,9 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
                 group_size=quantization.group_size,
                 embedding_quantization_mode=quantization_mode,
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
 
         rope_config = YARNRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             scaling_factor=self.rope_scaling.factor,
@@ -102,8 +96,6 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
         )
 
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -113,7 +105,6 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             group_size=quantization.group_size,
             weight_quantization_mode=quantization_mode,
             activation_quantization_mode=None,
-            activation_precision=activation_precision,
         )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,

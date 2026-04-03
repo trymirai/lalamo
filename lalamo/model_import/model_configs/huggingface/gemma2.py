@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -57,8 +55,6 @@ class HFGemma2Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         embedding_input_scale = self.hidden_size**0.5
@@ -66,25 +62,19 @@ class HFGemma2Config(HuggingFaceLMConfig):
         embedding_config = TiedEmbeddingConfig(
             input_scale=embedding_input_scale,
             logit_soft_cap=self.final_logit_softcapping,
-            precision=activation_precision,
         )
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=self.max_position_embeddings,
             head_dim=self.head_dim,
         )
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.FULL_LAYER,
             subtract_mean=False,
         )
-        linear_config = LinearConfig(
-            precision=activation_precision,
-        )
+        linear_config = FullPrecisionLinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),

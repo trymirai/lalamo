@@ -44,21 +44,18 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
     def to_lalamo_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> ConfigT: ...
 
     def load(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
+        precision: DTypeLike,
         weights_dict: Mapping[str, Array],
         metadata_dict: Mapping[str, str],
     ) -> LalamoModule[ConfigT]:
-        config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
-        model = config.init(EmptyInitializer(precision=activation_precision))
+        config = self.to_lalamo_config(context_length, metadata_dict)
+        model = config.init(EmptyInitializer(precision=precision))
         return self._load_weights(model, weights_dict)
 
 
@@ -68,8 +65,6 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig: ...
 
@@ -80,11 +75,9 @@ class ForeignLMConfig(ForeignConfig, RegistryABC):
     def to_lalamo_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
-        return self.to_decoder_config(context_length, activation_precision, accumulation_precision, metadata_dict)
+        return self.to_decoder_config(context_length, metadata_dict)
 
 
 @dataclass(frozen=True)
@@ -93,18 +86,14 @@ class ForeignClassifierConfig(ForeignConfig, RegistryABC):
     def to_classifier_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
     ) -> ClassifierConfig: ...
 
     def to_lalamo_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> ClassifierConfig:
-        return self.to_classifier_config(context_length, activation_precision, accumulation_precision)
+        return self.to_classifier_config(context_length)
 
 
 @dataclass(frozen=True)
@@ -113,15 +102,11 @@ class ForeignTTSConfig(ForeignConfig, RegistryABC):
     def to_tts_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
     ) -> TTSConfig: ...
 
     def to_lalamo_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> TTSConfig:
-        return self.to_tts_config(context_length, activation_precision, accumulation_precision)
+        return self.to_tts_config(context_length)

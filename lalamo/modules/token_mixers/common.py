@@ -19,12 +19,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class MixerForwardPassConfig:
-    # DeltaNet chunked attention parameters.
-    chunk_size: int = 32
-    # Minimum tokens in the last chunk before it falls back to sequential scan.
-    # If the remainder after chunking is shorter than this, the tail is processed
-    # sequentially to avoid wasting compute on mostly-padded chunks.
-    min_chunk_len: int = 16
+    pass
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):
@@ -45,10 +40,6 @@ class TokenMixerConfigBase(ABC):
 class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
-    @property
-    @abstractmethod
     def model_dim(self) -> int: ...
 
     @abstractmethod
@@ -59,7 +50,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig | None = None,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 
 import equinox as eqx
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.common import Initializer, LalamoModule, register_config_union
@@ -32,8 +32,6 @@ class TTSConfig:
     audio_decoder_config: TTSAudioDecoderConfig
     vocoder_config: VocoderConfig
 
-    activation_precision: DTypeLike
-
     def init(self, initializer: Initializer) -> "TTSModel":
         text_decoder = self.text_decoder_config.init(initializer)
         audio_decoder = self.audio_decoder_config.init(initializer)
@@ -50,10 +48,6 @@ class TTSModel(LalamoModule[TTSConfig]):
     text_decoder: TTSTextDecoder
     audio_decoder: TTSAudioDecoder
     vocoder: Vocoder
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.activation_precision
 
     def export_weights(self) -> ParameterTree[Array]:
         return {}

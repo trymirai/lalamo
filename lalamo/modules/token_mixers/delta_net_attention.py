@@ -87,8 +87,8 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
             has_biases=False,
         )
         norm = self.norm_config.init(initializer, self.value_head_dim)
-        dt_bias = initializer.zeros((self.num_heads,), in_proj.activation_precision)
-        a_log = initializer.zeros((self.num_heads,), in_proj.activation_precision)
+        dt_bias = initializer.zeros((self.num_heads,), initializer.precision)
+        a_log = initializer.zeros((self.num_heads,), initializer.precision)
         return DeltaNetAttention(
             config=self,
             in_proj=in_proj,
@@ -127,10 +127,6 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     @property
     def kernel_size(self) -> int:
         return self.config.kernel_size
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_proj.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -365,7 +361,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
     ) -> DeltaNetAttentionResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
@@ -382,7 +378,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
                 self.kernel_size,
                 self.conv_dim,
                 (self.num_heads, self.value_head_dim, self.head_dim),
-                self.activation_precision,
+                self.in_proj.activation_precision,
             )
 
         conv_output, updated_conv_state = self.conv(
@@ -468,5 +464,5 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             self.kernel_size,
             self.conv_dim,
             (self.num_heads, self.value_head_dim, self.head_dim),
-            self.activation_precision,
+            self.in_proj.activation_precision,
         )

@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -81,8 +79,6 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
         fallback_quantization: QuantizationConfigType | None = None,
     ) -> DecoderConfig:
@@ -100,7 +96,6 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     group_size=quantization.group_size,
                     embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                     activation_quantization_mode=None,
-                    activation_precision=activation_precision,
                 )
             else:
                 embedding_config = MLXQuantizedUntiedEmbeddingConfig(
@@ -109,34 +104,28 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                     group_size=quantization.group_size,
                     embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
                     activation_quantization_mode=None,
-                    activation_precision=activation_precision,
                 )
         else:  # noqa: PLR5501
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    precision=activation_precision,
                 )
             else:
                 embedding_config = UntiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    precision=activation_precision,
                 )
 
         if self.rope_scaling is not None:
             raise NotImplementedError("rope_scaling is not supported yet")
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=int(self.head_dim * self.partial_rotary_factor),
         )
 
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=1.0,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -144,8 +133,6 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         )
         # Gated DeltaNet RMSNorm in Qwen3-Next uses direct weights (no +1 offset).
         gated_rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -153,22 +140,22 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
         )
 
         if quantization is None:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-            )
+            linear_config = FullPrecisionLinearConfig()
         elif isinstance(quantization, MLXQuantizationConfig):
             linear_config = LinearConfig(
                 precision=activation_precision,
                 quant_format=QuantFormat.MLX,
                 group_size=quantization.group_size,
-                bits=quantization.bits,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
             )
         else:
             linear_config = LinearConfig(
                 precision=activation_precision,
                 quant_format=QuantFormat.AWQ,
                 group_size=quantization.group_size,
-                bits=quantization.bits,
+                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                activation_quantization_mode=None,
             )
 
         moe_config: MixtureOfExpertsConfig | None = None
@@ -208,7 +195,6 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                 mixer_config = DeltaNetAttentionConfig(
                     in_proj_config=linear_config,
                     conv_config=SeparableCausalConvConfig(
-                        precision=activation_precision,
                         has_biases=False,
                     ),
                     out_proj_config=linear_config,

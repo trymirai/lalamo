@@ -149,7 +149,6 @@ def test_vector_quantize_decode_code() -> None:
 
     # Create Lalamo VectorQuantize with same config
     lalamo_vq_config = VectorQuantizeConfig(
-        precision=jnp.float32,
         codebook_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
@@ -208,7 +207,6 @@ def test_residual_vector_quantize_from_codes() -> None:
     dac_rvq.eval()
 
     vq_config = VectorQuantizeConfig(
-        precision=jnp.float32,
         codebook_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
@@ -217,7 +215,6 @@ def test_residual_vector_quantize_from_codes() -> None:
         out_proj_config=LinearConfig(precision=jnp.float32),
     )
     lalamo_rvq_config = ResidualVectorQuantizeConfig(
-        precision=jnp.float32,
         vq_config=vq_config,
     )
     lalamo_rvq = lalamo_rvq_config.init(
@@ -682,7 +679,6 @@ def test_convnext_block_matches_pytorch() -> None:
     torch_block.eval()
 
     lalamo_config = ConvNeXtBlockConfig(
-        precision=jnp.float32,
         activation=GELU(),
         dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
@@ -765,7 +761,6 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
 
     # Create Lalamo UpsamplingBlock
     convnext_config = ConvNeXtBlockConfig(
-        precision=jnp.float32,
         activation=GELU(approximate=False),
         dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
@@ -780,7 +775,6 @@ def test_upsampling_block_matches_pytorch(fish_audio_local_model_path) -> None:
         pwconv_config=LinearConfig(precision=jnp.float32),
     )
     lalamo_config = UpsamplingBlockConfig(
-        precision=jnp.float32,
         trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
         convnext_config=convnext_config,
     )
@@ -888,7 +882,6 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
 
     # Create Lalamo Upsampler config - one UpsamplingBlockConfig per block
     convnext_config = ConvNeXtBlockConfig(
-        precision=jnp.float32,
         activation=GELU(approximate=False),
         dwconv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         norm_config=NormalizationConfig(
@@ -903,7 +896,6 @@ def test_upsampler_matches_pytorch(fish_audio_local_model_path) -> None:
         pwconv_config=LinearConfig(precision=jnp.float32),
     )
     upsampling_block_config = UpsamplingBlockConfig(
-        precision=jnp.float32,
         trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
         convnext_config=convnext_config,
     )
@@ -1016,7 +1008,6 @@ def test_residual_unit_matches_pytorch() -> None:
 
     # Create Lalamo module
     lalamo_config = ResidualUnitConfig(
-        precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
         conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         causal=True,
@@ -1074,13 +1065,11 @@ def test_decoder_block_matches_pytorch() -> None:
 
     # Create Lalamo module
     res_unit_config = ResidualUnitConfig(
-        precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
         conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         causal=True,
     )
     lalamo_config = DACDecoderBlockConfig(
-        precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
         trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
         res_unit_config=res_unit_config,
@@ -1144,20 +1133,17 @@ def test_audio_decoder_matches_pytorch() -> None:
 
     # Create Lalamo module
     res_unit_config = ResidualUnitConfig(
-        precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
         conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         causal=True,
     )
     decoder_block_config = DACDecoderBlockConfig(
-        precision=jnp.float32,
         snake_config=Snake1dConfig(precision=jnp.float32),
         trans_conv_config=CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True),
         res_unit_config=res_unit_config,
         causal=True,
     )
     lalamo_config = DACDecoderConfig(
-        precision=jnp.float32,
         conv_config=CausalConv1dConfig(precision=jnp.float32, has_biases=True),
         snake_config=Snake1dConfig(precision=jnp.float32),
         decoder_block_config=decoder_block_config,

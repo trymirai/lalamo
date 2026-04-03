@@ -140,9 +140,9 @@ class Mamba2Config(TokenMixerConfigBase):
 
         conv = self.conv_config.init(initializer, self.conv_dim, self.kernel_size)
 
-        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), in_projection.activation_precision)
+        skip_connection_weight = initializer.normal(1.0, (self.num_heads,), initializer.precision)
 
-        gate_bias = initializer.zeros((self.inner_dim,), in_projection.activation_precision)
+        gate_bias = initializer.zeros((self.inner_dim,), initializer.precision)
 
         return Mamba2(
             config=self,
@@ -189,10 +189,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     @property
     def chunk_size(self) -> int:
         return self.config.chunk_size
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -471,7 +467,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: ARG002, B008
+        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
     ) -> Mamba2Result:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
@@ -481,7 +477,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
                 self.kernel_size,
                 self.conv_dim,
                 (self.num_heads, self.head_dim, self.state_dim),
-                self.activation_precision,
+                self.in_projection.activation_precision,
             )
 
         seq_len, _ = inputs.shape
@@ -574,5 +570,5 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             self.kernel_size,
             self.conv_dim,
             (self.num_heads, self.head_dim, self.state_dim),
-            self.activation_precision,
+            self.in_projection.activation_precision,
         )

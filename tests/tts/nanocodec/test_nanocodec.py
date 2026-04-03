@@ -4,7 +4,30 @@ from lalamo.audio.tts_message_processor import TTSMessage
 from lalamo.modules.common import EmptyInitializer
 from lalamo.model_import.common import import_model
 from lalamo.models import TTSGenerator
-from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
+from lalamo.modules.audio.common_modules import (
+    CausalConv1dConfig,
+    CausalTransposeConv1dConfig,
+)
+from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+    Snake1dConfig,
+)
+from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
+from lalamo.modules.audio.nanocodec.nanocodec_consts import (
+    DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
+    DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
+    DEFAULT_AUDIO_DECODER_RESBLOCK_DILATIONS,
+    DEFAULT_AUDIO_DECODER_RESBLOCK_KERNEL_SIZES,
+    DEFAULT_FSQ_EPS,
+)
+from lalamo.modules.audio.nanocodec.nanocodec_modules import (
+    CausalHiFiGANDecoderConfig,
+    FiniteScalarQuantizerConfig,
+    GroupFiniteScalarQuantizerConfig,
+    HalfSnakeConfig,
+    HiFiGANResBlockConfig,
+    HiFiGANResLayerConfig,
+    ResidualBlockConfig,
+)
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSModel
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
@@ -291,7 +314,6 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     fsq_config = FiniteScalarQuantizerConfig(
         num_levels=tuple(nemo_quantizer_config["num_levels_per_group"]),
         eps=DEFAULT_FSQ_EPS,
-        precision=DEFAULT_NANOCODEC_PRECISION,
     )
 
     # Group FSQ config
@@ -333,7 +355,6 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     )
 
     return NanoCodecConfig(
-        precision=jnp.float32,
         quantizer_config=quantizer_config,
         decoder_config=decoder_config,
         samplerate=config["sample_rate"],

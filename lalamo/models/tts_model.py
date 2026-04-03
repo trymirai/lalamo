@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -58,20 +58,12 @@ class TTSGenerator(eqx.Module):
 
     message_processor: TTSMessageProcessor = eqx.field(static=True)
 
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.tts_model.text_decoder.activation_precision
-
-    def to_uzu(self) -> dict[str, Array]:
-        result: dict[str, Array] = {}
-        for prefix, sub in [
-            ("text_decoder", self.tts_model.text_decoder),
-            ("audio_decoder", self.tts_model.audio_decoder),
-            ("vocoder", self.tts_model.vocoder),
-        ]:
-            for key, array in sub.to_uzu().items():
-                result[f"{prefix}.{key}"] = array
-        return result
+    def export_weights(self) -> ParameterTree[Array]:
+        return {
+            "text_decoder": self.tts_model.text_decoder.export_weights(),
+            "audio_decoder": self.tts_model.audio_decoder.export_weights(),
+            "vocoder": self.tts_model.vocoder.export_weights(),
+        }
 
     def tokenize_text(self, messages: Iterable[TTSMessage]) -> Int[Array, " batch tokens"]:
         text_tokens = self.message_processor.tokenize_request(messages)

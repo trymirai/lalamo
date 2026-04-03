@@ -48,10 +48,6 @@ class MLPForwardPassConfig:
 class MLPBase[ConfigT: "MLPConfig"](LalamoModule[ConfigT]):
     @property
     @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
-    @property
-    @abstractmethod
     def model_dim(self) -> int: ...
 
     @property
@@ -150,10 +146,6 @@ class DenseMLPConfig(MLPConfigBase):
 class DenseMLP(MLPBase[DenseMLPConfig]):
     up_projection: LinearBase
     down_projection: LinearBase
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.up_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -346,10 +338,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     @property
     def num_routed_experts(self) -> int:
         return self.config.num_routed_experts
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.experts.activation_precision
 
     @property
     def model_dim(self) -> int:

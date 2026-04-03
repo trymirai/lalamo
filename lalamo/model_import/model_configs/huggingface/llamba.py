@@ -2,7 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     DecoderConfig,
@@ -66,8 +65,6 @@ class HFLlambaConfig(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         if "quantization_kwargs.group_size" in metadata_dict:
@@ -79,24 +76,19 @@ class HFLlambaConfig(HuggingFaceLMConfig):
                     int(metadata_dict["quantization_kwargs.bits"]),
                 ),
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         elif self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
 
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.norm_epsilon,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -108,12 +100,13 @@ class HFLlambaConfig(HuggingFaceLMConfig):
                 precision=activation_precision,
                 quant_format=QuantFormat.MLX,
                 group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                bits=int(metadata_dict["quantization_kwargs.bits"]),
+                weight_quantization_mode=QuantizationMode.from_num_bits(
+                    int(metadata_dict["quantization_kwargs.bits"]),
+                ),
+                activation_quantization_mode=None,
             )
         else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-            )
+            linear_config = FullPrecisionLinearConfig()
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -138,7 +131,6 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             in_projection_config=linear_config,
             out_projection_config=linear_config,
             conv_config=SeparableCausalConvConfig(
-                precision=activation_precision,
                 has_biases=self.ssm_cfg.conv_bias,
             ),
             activation=activation,

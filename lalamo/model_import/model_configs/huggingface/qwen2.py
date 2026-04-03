@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -68,47 +66,39 @@ class HFQwen2Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         head_dim = self.hidden_size // self.num_attention_heads
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=head_dim,
         )
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
         if self.quantization_config is None:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-            )
+            linear_config = FullPrecisionLinearConfig()
         else:
             linear_config = LinearConfig(
                 precision=activation_precision,
                 quant_format=QuantFormat.AWQ,
                 group_size=self.quantization_config.group_size,
-                bits=self.quantization_config.bits,
+                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                activation_quantization_mode=None,
             )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
