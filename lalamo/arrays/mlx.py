@@ -5,11 +5,18 @@ from collections.abc import Mapping
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterPath, ParameterTree, dummy_array
 
-from .base import ArrayForwardPassConfig, CompressedArray, unpack_int32
+from .base import (
+    ArrayForwardPassConfig,
+    CompressedArray,
+    DeterministicQuantize,
+    NoQuantize,
+    StochasticQuantize,
+    unpack_int32,
+)
 
 
 def mlx_quantize_per_group(
@@ -23,6 +30,21 @@ def mlx_quantize_per_group(
     safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
     expanded_biases = jnp.repeat(deq_biases, group_size, axis=-1)
     return jnp.clip(jnp.round((weights - expanded_biases) / safe_scales), 0, (2**bits) - 1)
+
+
+def mlx_stochastic_quantize_per_group(
+    weights: Float[Array, "... out_channels in_channels"],
+    scales: Float[Array, "... out_channels groups"],
+    deq_biases: Float[Array, "... out_channels groups"],
+    *,
+    group_size: int,
+    bits: int,
+    key: PRNGKeyArray,
+) -> Array:
+    safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
+    expanded_biases = jnp.repeat(deq_biases, group_size, axis=-1)
+    pre_round = (weights - expanded_biases) / safe_scales
+    return jnp.clip(jnp.floor(pre_round + jax.random.uniform(key, pre_round.shape)), 0, (2**bits) - 1)
 
 
 def mlx_dequantize_per_group(
@@ -44,6 +66,21 @@ class MLXQuantArray(CompressedArray):
     group_size: int = eqx.field(static=True)
     bits: int = eqx.field(static=True)
 
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
+        match forward_pass_config.quantize:
+            case NoQuantize():
+                return self.raw
+            case DeterministicQuantize():
+                int_weights = mlx_quantize_per_group(
+                    self.raw, self.scales, self.deq_biases, group_size=self.group_size, bits=self.bits
+                )
+            case StochasticQuantize(key=key):
+                int_weights = mlx_stochastic_quantize_per_group(
+                    self.raw, self.scales, self.deq_biases, group_size=self.group_size, bits=self.bits, key=key
+                )
+        quantized = mlx_dequantize_per_group(int_weights, self.scales, self.deq_biases, group_size=self.group_size)
+        return self.raw + jax.lax.stop_gradient(quantized - self.raw)
+
     def __check_init__(self) -> None:
         *_, out_ch, in_ch = self.raw.shape
         expected_groups = in_ch // self.group_size
@@ -57,18 +94,6 @@ class MLXQuantArray(CompressedArray):
             raise ValueError(
                 f"deq_biases shape {self.deq_biases.shape} incompatible with weights shape {self.raw.shape}"
             )
-
-    def fake_quantize(self) -> Array:
-        int_weights = mlx_quantize_per_group(
-            self.raw, self.scales, self.deq_biases, group_size=self.group_size, bits=self.bits
-        )
-        return mlx_dequantize_per_group(int_weights, self.scales, self.deq_biases, group_size=self.group_size)
-
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
-        if not forward_pass_config.quantize:
-            return self.raw
-        quantized = self.fake_quantize()
-        return self.raw + jax.lax.stop_gradient(quantized - self.raw)
 
     def export_weights(self) -> ParameterTree:
         int_dtype = jnp.uint4 if self.bits == 4 else jnp.uint8

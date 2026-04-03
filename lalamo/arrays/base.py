@@ -6,14 +6,32 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 
 
 @dataclass(frozen=True)
+class NoQuantize:
+    pass
+
+
+@dataclass(frozen=True)
+class DeterministicQuantize:
+    pass
+
+
+@dataclass(frozen=True)
+class StochasticQuantize:
+    key: PRNGKeyArray
+
+
+Quantize = NoQuantize | DeterministicQuantize | StochasticQuantize
+
+
+@dataclass(frozen=True)
 class ArrayForwardPassConfig:
-    quantize: bool = False
+    quantize: Quantize = DeterministicQuantize()
 
 
 class CompressedArray(eqx.Module):

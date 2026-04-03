@@ -6,11 +6,18 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterPath, ParameterTree, dummy_array
 
-from .base import ArrayForwardPassConfig, CompressedArray, unpack_int32
+from .base import (
+    ArrayForwardPassConfig,
+    CompressedArray,
+    DeterministicQuantize,
+    NoQuantize,
+    StochasticQuantize,
+    unpack_int32,
+)
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
@@ -33,6 +40,21 @@ def awq_quantize_per_group(
     return jnp.clip(jnp.round(weights / safe_scales + expanded_zp), 0, (2**bits) - 1)
 
 
+def awq_stochastic_quantize_per_group(
+    weights: Float[Array, "... out_channels in_channels"],
+    scales: Float[Array, "... out_channels groups"],
+    zero_points: Array,
+    *,
+    group_size: int,
+    bits: int,
+    key: PRNGKeyArray,
+) -> Array:
+    safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
+    expanded_zp = jnp.repeat(zero_points, group_size, axis=-1)
+    pre_round = weights / safe_scales + expanded_zp
+    return jnp.clip(jnp.floor(pre_round + jax.random.uniform(key, pre_round.shape)), 0, (2**bits) - 1)
+
+
 def awq_dequantize_per_group(
     int_weights: Array,
     scales: Float[Array, "... out_channels groups"],
@@ -52,6 +74,21 @@ class AWQQuantArray(CompressedArray):
     group_size: int = eqx.field(static=True)
     bits: int = eqx.field(static=True, default=4)
 
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
+        match forward_pass_config.quantize:
+            case NoQuantize():
+                return self.raw
+            case DeterministicQuantize():
+                int_weights = awq_quantize_per_group(
+                    self.raw, self.scales, self.zero_points, group_size=self.group_size, bits=self.bits
+                )
+            case StochasticQuantize(key=key):
+                int_weights = awq_stochastic_quantize_per_group(
+                    self.raw, self.scales, self.zero_points, group_size=self.group_size, bits=self.bits, key=key
+                )
+        quantized = awq_dequantize_per_group(int_weights, self.scales, self.zero_points, group_size=self.group_size)
+        return self.raw + jax.lax.stop_gradient(quantized - self.raw)
+
     def __check_init__(self) -> None:
         *_, out_ch, in_ch = self.raw.shape
         expected_groups = in_ch // self.group_size
@@ -65,18 +102,6 @@ class AWQQuantArray(CompressedArray):
             raise ValueError(
                 f"zero_points shape {self.zero_points.shape} incompatible with weights shape {self.raw.shape}"
             )
-
-    def fake_quantize(self) -> Array:
-        int_weights = awq_quantize_per_group(
-            self.raw, self.scales, self.zero_points, group_size=self.group_size, bits=self.bits
-        )
-        return awq_dequantize_per_group(int_weights, self.scales, self.zero_points, group_size=self.group_size)
-
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
-        if not forward_pass_config.quantize:
-            return self.raw
-        quantized = self.fake_quantize()
-        return self.raw + jax.lax.stop_gradient(quantized - self.raw)
 
     def export_weights(self) -> ParameterTree:
         int_dtype = jnp.uint4 if self.bits == 4 else jnp.uint8
