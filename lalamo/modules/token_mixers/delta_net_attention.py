@@ -506,7 +506,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             )
 
         def norm_gate(x: Float[Array, " channels"], gate: Float[Array, " channels"]) -> Float[Array, " channels"]:
-            return self.norm(x) * jax.nn.silu(gate.astype(jnp.float32)).astype(x.dtype)
+            return self.norm(x) * jax.nn.silu(gate)
 
         num_tokens, *_ = gate.shape
         gate = gate.reshape(num_tokens, self.num_heads, self.value_head_dim)
