@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-
-from jaxtyping import Array, DTypeLike
-
-from lalamo.common import ParameterPath
+from typing import TYPE_CHECKING
 
 from .awq import AWQQuantArray
-from .base import CompressedArray
 from .full_precision import FullPrecisionArray
 from .mlx import MLXQuantArray
 from .quant_format import QuantFormat
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, DTypeLike
+
+    from lalamo.common import ParameterPath
+
+    from .base import CompressedArray
 
 
 def quant_array_import_weights(

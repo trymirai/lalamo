@@ -11,9 +11,8 @@ from tarfile import TarInfo
 from typing import NamedTuple
 
 import huggingface_hub
-import jax.numpy as jnp
 import yaml
-from jax import Array
+from jax import Array  # noqa: TC002
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 

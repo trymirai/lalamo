@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int
 
 from lalamo.modules.utils import vmap_twice
 

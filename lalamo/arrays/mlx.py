@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterPath, ParameterTree, dummy_array
 
@@ -17,6 +17,9 @@ from .base import (
     StochasticQuantize,
     unpack_int32,
 )
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 
 def mlx_quantize_per_group(
@@ -66,7 +69,7 @@ class MLXQuantArray(CompressedArray):
     group_size: int = eqx.field(static=True)
     bits: int = eqx.field(static=True)
 
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
         match forward_pass_config.quantize:
             case NoQuantize():
                 return self.raw

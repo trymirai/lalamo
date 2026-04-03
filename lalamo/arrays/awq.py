@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterPath, ParameterTree, dummy_array
 
@@ -18,6 +18,9 @@ from .base import (
     StochasticQuantize,
     unpack_int32,
 )
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
@@ -74,7 +77,7 @@ class AWQQuantArray(CompressedArray):
     group_size: int = eqx.field(static=True)
     bits: int = eqx.field(static=True, default=4)
 
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
         match forward_pass_config.quantize:
             case NoQuantize():
                 return self.raw

@@ -4,24 +4,23 @@ import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
+from itertools import accumulate
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax.numpy as jnp
-from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree, require_array, require_mapping
-from lalamo.quantization import QuantizationMode, dynamically_quantize_activations, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8
+from lalamo.arrays import ArrayForwardPassConfig, CompressedArray, FullPrecisionArray
+from lalamo.arrays.awq import AWQQuantArray
+from lalamo.arrays.mlx import MLXQuantArray
+from lalamo.arrays.quant_format import QuantFormat
+from lalamo.common import dummy_array
+from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
-from .common import (
-    Initializer,
-    LalamoModule,
-    ShardingOrder,
-    TensorSharding,
-    register_config_union,
-    sharded_field,
-)
+from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, sharded_field
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, DTypeLike, Float
 
 __all__ = [
     "Linear",
@@ -30,13 +29,107 @@ __all__ = [
 ]
 
 
-class LinearBase[ConfigT: LinearConfigBase](LalamoModule[ConfigT]):
+def _grouped_init_stats(raw: Array, group_size: int, bits: int) -> tuple[Array, Array]:
+    *leading_dims, out_channels, in_channels = raw.shape
+    if in_channels % group_size != 0:
+        raise ValueError(f"in_channels ({in_channels}) must be divisible by group_size ({group_size})")
+    grouped = raw.reshape((*leading_dims, out_channels, in_channels // group_size, group_size))
+    group_mins = jnp.min(grouped, axis=-1)
+    group_maxs = jnp.max(grouped, axis=-1)
+    quant_levels = (2**bits) - 1
+    scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(raw.dtype).eps)
+    return group_mins, scales
+
+
+def _array_from_raw(config: LinearConfig, raw: Array) -> CompressedArray:
+    match config.quant_format:
+        case QuantFormat.FULL_PRECISION:
+            return FullPrecisionArray(raw=raw)
+        case QuantFormat.AWQ:
+            assert config.group_size is not None and config.bits is not None
+            group_mins, scales = _grouped_init_stats(raw, config.group_size, config.bits)
+            quant_levels = (2**config.bits) - 1
+            zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, quant_levels).astype(raw.dtype)
+            return AWQQuantArray(
+                raw=raw,
+                scales=scales,
+                zero_points=zero_points,
+                group_size=config.group_size,
+                bits=config.bits,
+            )
+        case QuantFormat.MLX:
+            assert config.group_size is not None and config.bits is not None
+            group_mins, scales = _grouped_init_stats(raw, config.group_size, config.bits)
+            return MLXQuantArray(
+                raw=raw,
+                scales=scales,
+                deq_biases=group_mins,
+                group_size=config.group_size,
+                bits=config.bits,
+            )
+
+
+@dataclass(frozen=True)
+class LinearConfig:
+    quant_format: QuantFormat = QuantFormat.FULL_PRECISION
+    group_size: int | None = None
+    bits: int | None = None
+    activation_quantization_mode: QuantizationMode | None = None
+
+    def __post_init__(self) -> None:
+        if self.quant_format == QuantFormat.FULL_PRECISION:
+            if self.group_size is not None or self.bits is not None:
+                raise ValueError("group_size and bits must be None for FULL_PRECISION format")
+        elif self.group_size is None or self.bits is None:
+            raise ValueError(f"group_size and bits are required for {self.quant_format.name} format")
+
+    def from_array(
+        self,
+        weights: CompressedArray,
+        output_dims: tuple[int, ...],
+        biases: Float[Array, "*batch total_out_channels"] | None,
+    ) -> Linear:
+        return Linear(config=self, output_dims=output_dims, weights=weights, biases=biases)
+
+    def init(
+        self,
+        initializer: Initializer,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        has_biases: bool,
+    ) -> Linear:
+        total_out = sum(output_dims)
+        scale = 1 / math.sqrt(input_dim)
+        raw = initializer.normal(scale, (total_out, input_dim), initializer.precision)
+        if not hasattr(raw, "reshape"):
+            raw = dummy_array(raw.shape, raw.dtype)
+        biases = initializer.zeros((total_out,), initializer.precision) if has_biases else None
+        return self.from_array(weights=_array_from_raw(self, raw), output_dims=output_dims, biases=biases)
+
+    def init_mixture(
+        self,
+        initializer: Initializer,
+        mixture_size: int,
+        input_dim: int,
+        output_dims: tuple[int, ...],
+        has_biases: bool,
+    ) -> Linear:
+        total_out = sum(output_dims)
+        scale = 1 / math.sqrt(input_dim)
+        raw = initializer.normal(scale, (mixture_size, total_out, input_dim), initializer.precision)
+        if not hasattr(raw, "reshape"):
+            raw = dummy_array(raw.shape, raw.dtype)
+        biases = initializer.zeros((mixture_size, total_out), initializer.precision) if has_biases else None
+        return self.from_array(weights=_array_from_raw(self, raw), output_dims=output_dims, biases=biases)
+
+
+class Linear(LalamoModule[LinearConfig]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
     # sharding order specifies in which order do we attempt to shard
     sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
     def __check_init__(self) -> None:
-        *_, weight_out, weight_in = self.weights.materialize().shape
+        *_, weight_out, _weight_in = self.weights.materialize().shape
         expected_out = sum(self.output_dims)
         if weight_out != expected_out:
             raise ValueError(f"Weight out_channels ({weight_out}) != sum(output_dims) ({expected_out})")
@@ -177,7 +270,7 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
     def __call__(
         self,
         inputs: Float[Array, " in_channels"],
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> tuple[Float[Array, " out_channels"], ...]:
         if self.mixture_size is not None:
             raise ValueError(

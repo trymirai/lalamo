@@ -1,7 +1,6 @@
 import jax.numpy as jnp
 
 from lalamo.audio.tts_message_processor import TTSMessage
-from lalamo.modules.common import EmptyInitializer
 from lalamo.model_import.common import import_model
 from lalamo.models import TTSGenerator
 from lalamo.modules.audio.common_modules import (
@@ -30,6 +29,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSModel
+from lalamo.modules.common import EmptyInitializer
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
     CausalHiFiGANDecoder,

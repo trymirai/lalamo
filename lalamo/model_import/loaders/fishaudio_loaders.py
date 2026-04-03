@@ -7,12 +7,11 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import equinox as eqx
 from einops import rearrange
 from jax import numpy as jnp
 from jaxtyping import Array, Float
 from tokenizers import Tokenizer
-
-import equinox as eqx
 
 from lalamo.arrays import FullPrecisionArray
 from lalamo.common import ParameterPath
@@ -539,11 +538,10 @@ def load_convnext_block(
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
     base1 = FullPrecisionArray(raw=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision))
-    new_weights1 = CompositeArray.from_compressed(base1)
     pointwise_conv_step1 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step1,
-        (new_weights1, pwconv1_bias),
+        (base1, pwconv1_bias),
         is_leaf=lambda x: x is None,
     )
 
@@ -556,11 +554,10 @@ def load_convnext_block(
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
     base2 = FullPrecisionArray(raw=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision))
-    new_weights2 = CompositeArray.from_compressed(base2)
     pointwise_conv_step2 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step2,
-        (new_weights2, pwconv2_bias),
+        (base2, pwconv2_bias),
         is_leaf=lambda x: x is None,
     )
 

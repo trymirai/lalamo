@@ -13,8 +13,8 @@ from lalamo.modules import (
     NormalizationConfig,
     UpcastMode,
 )
-from lalamo.modules.common import RandomInitializer
 from lalamo.modules.activations import SiLU
+from lalamo.modules.common import RandomInitializer
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.rope import UnscaledRoPEConfig

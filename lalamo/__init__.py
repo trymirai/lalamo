@@ -3,6 +3,7 @@ import os
 # Must run before importing jax / tensorflow, this hides the XLA optimization logs
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
+from lalamo.checkpoint import CheckpointManager
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -23,7 +24,6 @@ from lalamo.message_processor import (
     ToolSchema,
     UserMessage,
 )
-from lalamo.checkpoint import CheckpointManager
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
 from lalamo.models import ClassifierModel, LanguageModel

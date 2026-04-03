@@ -7,7 +7,6 @@ from typing import Self
 
 import equinox as eqx
 import jax
-from jax import Array
 from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from tokenizers import Tokenizer

@@ -86,9 +86,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         quantization = self.quantization or self.quantization_config
 
-        is_mlx = isinstance(quantization, MLXQuantizationConfig)
-
-        if is_mlx:
+        if isinstance(quantization, MLXQuantizationConfig):
             if self.tie_word_embeddings:
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
                     input_scale=None,
@@ -116,6 +114,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     input_scale=None,
                     logit_soft_cap=None,
                 )
+        is_mlx = isinstance(quantization, MLXQuantizationConfig)
 
         partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
         rope_config = UnscaledRoPEConfig(

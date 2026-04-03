@@ -1,25 +1,29 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import jax.numpy as jnp
 import jax.random as jr
-from jaxtyping import Array, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 
 from .base import ArrayForwardPassConfig, CompressedArray
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, Float, PRNGKeyArray
 
 
 class LoraArray(CompressedArray):
     down: Float[Array, "... out_channels rank"]
     up: Float[Array, "... rank in_channels"]
 
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
         return self.down @ self.up
 
     def dot(
         self,
         vector: Float[Array, " in_channels"],
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, " out_channels"]:
         return self.down @ (self.up @ vector)
 

@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import Initializer
@@ -32,6 +32,18 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
 
 class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
     seed: int = eqx.field(static=True)
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return jnp.int32
+
+    @property
+    def num_codebooks(self) -> int:
+        return self.config.num_codebooks
+
+    @property
+    def codebook_size(self) -> int:
+        return self.config.codebook_size
 
     def decode_utterance(
         self,

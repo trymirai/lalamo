@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import abc
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Float, PRNGKeyArray
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 
@@ -36,12 +39,12 @@ class ArrayForwardPassConfig:
 
 class CompressedArray(eqx.Module):
     @abc.abstractmethod
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array: ...
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array: ...  # noqa: B008
 
     def dot(
         self,
         vector: Float[Array, " in_channels"],
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, " out_channels"]:
         return self.materialize(forward_pass_config) @ vector
 

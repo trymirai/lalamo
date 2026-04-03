@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from itertools import chain
 from pathlib import Path
+from typing import cast
 
 import polars as pl
 import requests
@@ -33,7 +34,7 @@ from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModel
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
-from lalamo.modules.common import ShardingConfig, use_sharding
+from lalamo.modules.common import LalamoModule, ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator
@@ -223,7 +224,7 @@ def convert(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-    weights = model.to_uzu()
+    weights = cast("LalamoModule", model).to_uzu()
     del model
 
     with Path(output_dir / "model.safetensors").open("wb") as fd:

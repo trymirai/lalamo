@@ -42,7 +42,6 @@ from lalamo.modules import GELU, ForwardPassMode
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
-from lalamo.modules.common import EmptyInitializer, RandomInitializer
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     AudioDecoderBlockSpatialParams,
@@ -61,6 +60,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
+from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode

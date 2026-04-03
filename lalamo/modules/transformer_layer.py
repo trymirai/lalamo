@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 
 import equinox as eqx
@@ -30,9 +30,9 @@ __all__ = [
 
 @dataclass(frozen=True)
 class TransformerLayerForwardPassConfig:
-    mixer: MixerForwardPassConfig = MixerForwardPassConfig()  # noqa: B008
-    mlp: MLPForwardPassConfig = MLPForwardPassConfig()  # noqa: B008
-    normalization: NormalizationForwardPassConfig = NormalizationForwardPassConfig()  # noqa: B008
+    mixer: MixerForwardPassConfig = field(default_factory=MixerForwardPassConfig)
+    mlp: MLPForwardPassConfig = field(default_factory=MLPForwardPassConfig)
+    normalization: NormalizationForwardPassConfig = field(default_factory=NormalizationForwardPassConfig)
 
 
 class TransformerLayerActivationTrace(eqx.Module):
@@ -260,11 +260,12 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
+            lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=fpc.mlp,
         )
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = norm_fn(self.post_mlp_norm)(mlp_outputs)
+            normalized_mlp_outputs = apply_norm(self.post_mlp_norm, mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None

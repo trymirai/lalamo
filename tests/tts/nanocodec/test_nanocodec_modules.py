@@ -22,7 +22,6 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
 from lalamo.modules.audio.common_modules import CausalConv1dConfig
 from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import DEFAULT_FSQ_EPS
-from lalamo.modules.common import EmptyInitializer, RandomInitializer
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
     CausalTransposeConv1dConfig,
@@ -33,6 +32,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     HiFiGANResLayerConfig,
     ResidualBlockConfig,
 )
+from lalamo.modules.common import EmptyInitializer, RandomInitializer
 from tests.common import assert_close
 from tests.tts.nanocodec import nanocodec_torch_stuff as nanocodec_torch
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders

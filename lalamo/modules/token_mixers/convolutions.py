@@ -2,7 +2,6 @@ import math
 from dataclasses import dataclass
 from typing import NamedTuple
 
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum

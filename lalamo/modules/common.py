@@ -54,7 +54,7 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     @abstractmethod
     def export_weights(self) -> ParameterTree[Array]: ...
 
-    def from_uzu(self, weights: dict[str, Array], prefix: str = "") -> Self:
+    def from_uzu(self, weights: Mapping[str, Array], prefix: str = "") -> Self:
         def restore(path: tuple[object, ...], leaf: object) -> object:
             key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
             if isinstance(leaf, LalamoModule):

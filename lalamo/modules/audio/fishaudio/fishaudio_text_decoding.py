@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Any
 
-import equinox as eqx
 import jax
 from jax import numpy as jnp
 from jax import vmap
@@ -128,11 +127,39 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
     @property
     def semantic_begin_id(self) -> int:
-        return self.semantic_token_begin_id
+        return self.config.semantic_token_begin_id
 
     @property
     def semantic_end_id(self) -> int:
-        return self.semantic_token_end_id
+        return self.config.semantic_token_end_id
+
+    @property
+    def num_codebooks(self) -> int:
+        return self.config.num_codebooks
+
+    @property
+    def codebook_size(self) -> int:
+        return self.config.codebook_size
+
+    @property
+    def scale_codebook_embeddings(self) -> bool:
+        return self.config.scale_codebook_embeddings
+
+    @property
+    def max_seq_len(self) -> int:
+        return self.config.max_seq_len
+
+    @property
+    def im_end_token_id(self) -> int:
+        return self.config.im_end_token_id
+
+    @property
+    def repeat_window_size(self) -> int:
+        return self.config.repeat_window_size
+
+    @property
+    def short_logits_size(self) -> int:
+        return self.config.short_logits_size
 
     def embed_slow_model(self) -> Array:
         return jnp.zeros((1, 2, 3))

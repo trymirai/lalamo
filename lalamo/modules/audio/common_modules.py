@@ -69,7 +69,7 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
     effective_kernel_size: int = eqx.field(static=True)
 
     @property
-    def activation_precision(self):
+    def activation_precision(self) -> jnp.dtype:
         return self.weights.dtype
 
     @property
@@ -176,7 +176,7 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
     groups: int = eqx.field(static=True)
 
     @property
-    def activation_precision(self):
+    def activation_precision(self) -> jnp.dtype:
         return self.weights.dtype
 
     @property
@@ -246,7 +246,7 @@ class Snake1d(LalamoModule[Snake1dConfig]):
     alpha: Float[Array, " channels"]
 
     @property
-    def activation_precision(self):
+    def activation_precision(self) -> jnp.dtype:
         return self.alpha.dtype
 
     @property

@@ -1,19 +1,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-
-import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from typing import TYPE_CHECKING
 
 from lalamo.common import ParameterPath, ParameterTree, dummy_array
 
-from .base import CompressedArray
+from .base import ArrayForwardPassConfig, CompressedArray
+
+if TYPE_CHECKING:
+    from jaxtyping import Array, DTypeLike, Float
 
 
 class FullPrecisionArray(CompressedArray):
     raw: Float[Array, "... out_channels in_channels"]
 
-    def materialize(self, forward_pass_config=None) -> Array:
+    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
         return self.raw
 
     def export_weights(self) -> ParameterTree:

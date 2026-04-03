@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 
-import equinox as eqx
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase

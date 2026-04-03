@@ -8,7 +8,6 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.arrays import (
     AWQQuantArray,
-    CompositeArray,
     CompressedArray,
     FullPrecisionArray,
     MLXQuantArray,

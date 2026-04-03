@@ -1,7 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-
 from lalamo.modules import (
     Activation,
     AttentionConfig,
