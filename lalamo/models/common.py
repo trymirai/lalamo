@@ -12,7 +12,7 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.common import DTypeLike, ParameterTree, unflatten_parameters
+from lalamo.common import ParameterTree, unflatten_parameters
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
@@ -96,10 +96,6 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
 class TextModel[ConfigT, ModelT: Decoder | Classifier](LalamoModule[ConfigT]):
     model: ModelT
     message_processor: MessageProcessor = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.model.activation_precision
 
     def export_weights(self) -> ParameterTree:
         return self.model.export_weights()  # type: ignore

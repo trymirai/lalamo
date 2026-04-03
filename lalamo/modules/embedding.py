@@ -47,13 +47,6 @@ class EmbeddingConfigBase:
         model_dim: int,
     ) -> "EmbeddingBase": ...
 
-    @abstractmethod
-    def empty(
-        self,
-        vocab_size: int,
-        model_dim: int,
-    ) -> "EmbeddingBase": ...
-
 
 class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     @abstractmethod
@@ -87,24 +80,15 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
 
 @dataclass(frozen=True)
 class TiedEmbeddingConfig(EmbeddingConfigBase):
-    precision: DTypeLike
-
     def init(
         self,
         initializer: Initializer,
         vocab_size: int,
         model_dim: int,
     ) -> "TiedEmbedding":
-        weights = initializer.normal(1.0, (vocab_size, model_dim), self.precision)
+        weights = initializer.normal(1.0, (vocab_size, model_dim), initializer.precision)
         return TiedEmbedding(config=self, weights=weights)
 
-    def empty(
-        self,
-        vocab_size: int,
-        model_dim: int,
-    ) -> "TiedEmbedding":
-        weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
-        return TiedEmbedding(config=self, weights=weights)
 
 
 class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
@@ -112,7 +96,7 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.weights.dtype
 
     @property
     def model_dim(self) -> int:
@@ -143,34 +127,20 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
 
 @dataclass(frozen=True)
 class UntiedEmbeddingConfig(EmbeddingConfigBase):
-    precision: DTypeLike
-
     def init(
         self,
         initializer: Initializer,
         vocab_size: int,
         model_dim: int,
     ) -> "UntiedEmbedding":
-        input_weights = initializer.normal(1.0, (vocab_size, model_dim), self.precision)
-        output_weights = initializer.normal(1.0, (vocab_size, model_dim), self.precision)
+        input_weights = initializer.normal(1.0, (vocab_size, model_dim), initializer.precision)
+        output_weights = initializer.normal(1.0, (vocab_size, model_dim), initializer.precision)
         return UntiedEmbedding(
             config=self,
             input_weights=input_weights,
             output_weights=output_weights,
         )
 
-    def empty(
-        self,
-        vocab_size: int,
-        model_dim: int,
-    ) -> "UntiedEmbedding":
-        input_weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
-        output_weights = dummy_array((vocab_size, model_dim), dtype=self.precision)
-        return UntiedEmbedding(
-            config=self,
-            input_weights=input_weights,
-            output_weights=output_weights,
-        )
 
 
 class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
@@ -179,7 +149,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.input_weights.dtype
 
     @property
     def model_dim(self) -> int:
@@ -220,7 +190,6 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
     group_size: int
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
 
     def init(
         self,
@@ -230,28 +199,14 @@ class MLXQuantizedTiedEmbeddingConfig(EmbeddingConfigBase):
     ) -> "MLXQuantizedTiedEmbedding":
         assert model_dim % self.group_size == 0
         model_groups = model_dim // self.group_size
-        weights = initializer.zeros((vocab_size, model_dim), self.activation_precision)
-        scales = initializer.ones((vocab_size, model_groups), self.activation_precision)
-        biases = initializer.zeros((vocab_size, model_groups), self.activation_precision)
+        weights = initializer.zeros((vocab_size, model_dim), initializer.precision)
+        scales = initializer.ones((vocab_size, model_groups), initializer.precision)
+        biases = initializer.zeros((vocab_size, model_groups), initializer.precision)
         return MLXQuantizedTiedEmbedding(
             config=self,
             weights=weights,
             scales=scales,
             biases=biases,
-        )
-
-    def empty(
-        self,
-        vocab_size: int,
-        model_dim: int,
-    ) -> "MLXQuantizedTiedEmbedding":
-        assert model_dim % self.group_size == 0
-        model_groups = model_dim // self.group_size
-        return MLXQuantizedTiedEmbedding(
-            config=self,
-            weights=dummy_array((vocab_size, model_dim), dtype=self.activation_precision),
-            scales=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
-            biases=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
         )
 
 
@@ -262,7 +217,7 @@ class MLXQuantizedTiedEmbedding(EmbeddingBase[MLXQuantizedTiedEmbeddingConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.activation_precision
+        return self.scales.dtype
 
     @property
     def model_dim(self) -> int:
@@ -342,7 +297,6 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
     group_size: int
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
 
     def init(
         self,
@@ -354,29 +308,12 @@ class MLXQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
         model_groups = model_dim // self.group_size
         return MLXQuantizedUntiedEmbedding(
             config=self,
-            input_weights=initializer.zeros((vocab_size, model_dim), self.activation_precision),
-            input_scales=initializer.ones((vocab_size, model_groups), self.activation_precision),
-            input_biases=initializer.zeros((vocab_size, model_groups), self.activation_precision),
-            output_weights=initializer.zeros((vocab_size, model_dim), self.activation_precision),
-            output_scales=initializer.ones((vocab_size, model_groups), self.activation_precision),
-            output_biases=initializer.zeros((vocab_size, model_groups), self.activation_precision),
-        )
-
-    def empty(
-        self,
-        vocab_size: int,
-        model_dim: int,
-    ) -> "MLXQuantizedUntiedEmbedding":
-        assert model_dim % self.group_size == 0
-        model_groups = model_dim // self.group_size
-        return MLXQuantizedUntiedEmbedding(
-            config=self,
-            input_weights=dummy_array((vocab_size, model_dim), dtype=self.activation_precision),
-            input_scales=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
-            input_biases=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
-            output_weights=dummy_array((vocab_size, model_dim), dtype=self.activation_precision),
-            output_scales=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
-            output_biases=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
+            input_weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
+            input_scales=initializer.ones((vocab_size, model_groups), initializer.precision),
+            input_biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
+            output_weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
+            output_scales=initializer.ones((vocab_size, model_groups), initializer.precision),
+            output_biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
         )
 
 
@@ -390,7 +327,7 @@ class MLXQuantizedUntiedEmbedding(EmbeddingBase[MLXQuantizedUntiedEmbeddingConfi
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.activation_precision
+        return self.input_weights.dtype
 
     @property
     def model_dim(self) -> int:
@@ -503,7 +440,6 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
     group_size: int
     embedding_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
 
     def init(
         self,
@@ -515,25 +451,10 @@ class MLXSemiQuantizedUntiedEmbeddingConfig(EmbeddingConfigBase):
         model_groups = model_dim // self.group_size
         return MLXSemiQuantizedUntiedEmbedding(
             config=self,
-            input_weights=initializer.zeros((vocab_size, model_dim), self.activation_precision),
-            output_weights=initializer.zeros((vocab_size, model_dim), self.activation_precision),
-            output_scales=initializer.ones((vocab_size, model_groups), self.activation_precision),
-            output_biases=initializer.zeros((vocab_size, model_groups), self.activation_precision),
-        )
-
-    def empty(
-        self,
-        vocab_size: int,
-        model_dim: int,
-    ) -> "MLXSemiQuantizedUntiedEmbedding":
-        assert model_dim % self.group_size == 0
-        model_groups = model_dim // self.group_size
-        return MLXSemiQuantizedUntiedEmbedding(
-            config=self,
-            input_weights=dummy_array((vocab_size, model_dim), dtype=self.activation_precision),
-            output_weights=dummy_array((vocab_size, model_dim), dtype=self.activation_precision),
-            output_scales=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
-            output_biases=dummy_array((vocab_size, model_groups), dtype=self.activation_precision),
+            input_weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
+            output_weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
+            output_scales=initializer.ones((vocab_size, model_groups), initializer.precision),
+            output_biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
         )
 
 
@@ -545,7 +466,7 @@ class MLXSemiQuantizedUntiedEmbedding(EmbeddingBase[MLXSemiQuantizedUntiedEmbedd
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.activation_precision
+        return self.input_weights.dtype
 
     @property
     def model_dim(self) -> int:

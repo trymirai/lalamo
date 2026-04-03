@@ -4,7 +4,7 @@ from typing import Self
 
 import equinox as eqx
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
@@ -113,10 +113,6 @@ class Transformer(LalamoModule[TransformerConfig]):
     local_rope: RoPE | None
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.layers[0].activation_precision
 
     @eqx.filter_jit
     def __call__(

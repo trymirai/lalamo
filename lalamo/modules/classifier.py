@@ -5,7 +5,7 @@ from typing import Self
 import equinox as eqx
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, Float, Int
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules import Activation
@@ -86,10 +86,6 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         norm_outs = self.norm(dense_outs)
         (result,) = self.readout(norm_outs)
         return result
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.dense.activation_precision
 
     def export_weights(self) -> ParameterTree:
         result = dict(
@@ -195,10 +191,6 @@ class Classifier(LalamoModule[ClassifierConfig]):
     embedding_norm: Normalization
     transformer: Transformer
     prediction_head: PredictionHead
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.embedding.activation_precision
 
     @eqx.filter_jit
     def __call__(

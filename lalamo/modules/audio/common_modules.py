@@ -6,7 +6,7 @@ from typing import Self
 import equinox as eqx
 import jax.numpy as jnp
 from jax import lax
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, Float
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import Initializer, LalamoModule
@@ -21,7 +21,6 @@ def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, pa
 
 @dataclass(frozen=True)
 class CausalConv1dConfig:
-    precision: DTypeLike
     has_biases: bool
 
     def init(
@@ -38,11 +37,11 @@ class CausalConv1dConfig:
         weights = initializer.normal(
             1.0,
             shape=(out_channels, in_channels // groups, kernel_size),
-            dtype=self.precision,
+            dtype=initializer.precision,
         )
 
         if self.has_biases:
-            biases = initializer.zeros((out_channels,), dtype=self.precision)
+            biases = initializer.zeros((out_channels,), dtype=initializer.precision)
         else:
             biases = None
 
@@ -72,8 +71,8 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
     effective_kernel_size: int = eqx.field(static=True)
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+    def activation_precision(self):
+        return self.weights.dtype
 
     @property
     def out_channels(self) -> int:
@@ -147,7 +146,6 @@ class CausalConv1d(LalamoModule[CausalConv1dConfig]):
 
 @dataclass(frozen=True)
 class CausalTransposeConv1dConfig:
-    precision: DTypeLike
     has_biases: bool
 
     def init(
@@ -164,11 +162,11 @@ class CausalTransposeConv1dConfig:
         weights = initializer.normal(
             1.0,
             shape=(out_channels, in_per_group, kernel_size),
-            dtype=self.precision,
+            dtype=initializer.precision,
         )
 
         if self.has_biases:
-            biases = initializer.zeros((out_channels,), dtype=self.precision)
+            biases = initializer.zeros((out_channels,), dtype=initializer.precision)
         else:
             biases = None
 
@@ -200,8 +198,8 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
     groups: int = eqx.field(static=True)
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+    def activation_precision(self):
+        return self.weights.dtype
 
     @property
     def out_channels(self) -> int:
@@ -277,10 +275,8 @@ class CausalTransposeConv1d(LalamoModule[CausalTransposeConv1dConfig]):
 
 @dataclass(frozen=True)
 class Snake1dConfig:
-    precision: DTypeLike
-
     def init(self, initializer: Initializer, channels: int) -> "Snake1d":
-        alpha = initializer.ones((channels,), dtype=self.precision)
+        alpha = initializer.ones((channels,), dtype=initializer.precision)
         return Snake1d(config=self, alpha=alpha)
 
 
@@ -292,8 +288,8 @@ class Snake1d(LalamoModule[Snake1dConfig]):
     alpha: Float[Array, " channels"]
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+    def activation_precision(self):
+        return self.alpha.dtype
 
     @property
     def channels(self) -> int:

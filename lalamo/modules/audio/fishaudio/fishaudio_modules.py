@@ -42,7 +42,6 @@ class ConvNeXtSpatialParams:
 
 @dataclass(frozen=True)
 class ConvNeXtBlockConfig:
-    precision: DTypeLike
     activation: Activation
     dwconv_config: CausalConv1dConfig
     norm_config: NormalizationConfig
@@ -102,7 +101,7 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.depthwise_conv.activation_precision
 
     @property
     def dim(self) -> int:
@@ -164,7 +163,6 @@ class TransposeConvSpatialParams:
 
 @dataclass(frozen=True)
 class UpsamplingBlockConfig:
-    precision: DTypeLike
     trans_conv_config: CausalTransposeConv1dConfig
     convnext_config: ConvNeXtBlockConfig
 
@@ -211,7 +209,7 @@ class UpsamplingBlock(LalamoModule[UpsamplingBlockConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.trans_conv.activation_precision
 
     @property
     def in_channels(self) -> int:
@@ -325,7 +323,6 @@ class Upsampler(LalamoModule[UpsamplerConfig]):
 
 @dataclass(frozen=True)
 class VectorQuantizeConfig:
-    precision: DTypeLike
     codebook_config: TiedEmbeddingConfig
     out_proj_config: FullPrecisionLinearConfig
 
@@ -362,7 +359,7 @@ class VectorQuantize(LalamoModule[VectorQuantizeConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.out_proj.activation_precision
 
     @property
     def codebook_size(self) -> int:
@@ -405,7 +402,6 @@ class VectorQuantizerParams:
 
 @dataclass(frozen=True)
 class ResidualVectorQuantizeConfig:
-    precision: DTypeLike
     vq_config: VectorQuantizeConfig
 
     def init(
@@ -445,7 +441,7 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.quantizers[0].activation_precision
 
     @property
     def n_codebooks(self) -> int:
@@ -478,7 +474,6 @@ class ResidualVectorQuantize(LalamoModule[ResidualVectorQuantizeConfig]):
 
 @dataclass(frozen=True)
 class DownsampleResidualVectorQuantizeConfig:
-    precision: DTypeLike
     semantic_quantizer_config: ResidualVectorQuantizeConfig
     quantizer_config: ResidualVectorQuantizeConfig
     post_module_config: TransformerConfig
@@ -543,7 +538,7 @@ class DownsampleResidualVectorQuantize(LalamoModule[DownsampleResidualVectorQuan
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.semantic_quantizer.activation_precision
 
     @property
     def semantic_codebook_size(self) -> int:
@@ -629,7 +624,6 @@ class ResidualUnitSpatialParams:
 
 @dataclass(frozen=True)
 class ResidualUnitConfig:
-    precision: DTypeLike
     snake_config: Snake1dConfig
     conv_config: CausalConv1dConfig
     causal: bool = True
@@ -697,7 +691,7 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.conv1.activation_precision
 
     @property
     def dim(self) -> int:
@@ -767,7 +761,6 @@ class AudioDecoderBlockSpatialParams:
 
 @dataclass(frozen=True)
 class DACDecoderBlockConfig:
-    precision: DTypeLike
     snake_config: Snake1dConfig
     trans_conv_config: CausalTransposeConv1dConfig
     res_unit_config: ResidualUnitConfig
@@ -828,7 +821,7 @@ class DACDecoderBlock(LalamoModule[DACDecoderBlockConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.trans_conv.activation_precision
 
     @property
     def input_dim(self) -> int:
@@ -892,7 +885,6 @@ class DACDecoderSpatialParams:
 
 @dataclass(frozen=True)
 class DACDecoderConfig:
-    precision: DTypeLike
     conv_config: CausalConv1dConfig
     snake_config: Snake1dConfig
     decoder_block_config: DACDecoderBlockConfig
@@ -979,7 +971,7 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.first_conv.activation_precision
 
     @property
     def input_channels(self) -> int:

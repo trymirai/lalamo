@@ -56,10 +56,6 @@ ConfigT_co = TypeVar("ConfigT_co", covariant=True)
 class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = eqx.field(static=True)
 
-    @property
-    @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
     @abstractmethod
     def export_weights(self) -> ParameterTree[Array]: ...
 

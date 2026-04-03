@@ -75,13 +75,10 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     def to_tts_config(
         self,
         context_length: int | None,  # noqa: ARG002
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,  # noqa: ARG002
     ) -> TTSConfig:
         fsq_config = FiniteScalarQuantizerConfig(
             num_levels=self.num_levels_per_group,
             eps=DEFAULT_FSQ_EPS,
-            precision=activation_precision,
         )
 
         quantizer_config = GroupFiniteScalarQuantizerConfig(
@@ -89,13 +86,13 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
             quantizer_config=fsq_config,
         )
 
-        snake_config = Snake1dConfig(precision=activation_precision)
+        snake_config = Snake1dConfig()
         activation_config = HalfSnakeConfig(
             snake_config=snake_config,
             leaky_relu_negative_slope=DEFAULT_LEAKY_RELU_NEGATIVE_SLOPE,
         )
-        conv_config = CausalConv1dConfig(precision=activation_precision, has_biases=True)
-        transpose_conv_config = CausalTransposeConv1dConfig(precision=activation_precision, has_biases=True)
+        conv_config = CausalConv1dConfig(has_biases=True)
+        transpose_conv_config = CausalTransposeConv1dConfig(has_biases=True)
 
         residual_block_config = ResidualBlockConfig(
             activation_config=activation_config,
@@ -116,7 +113,6 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         codebook_size = int(np.prod(self.num_levels_per_group))
 
         audio_decoder_config = NanoCodecConfig(
-            precision=activation_precision,
             quantizer_config=quantizer_config,
             decoder_config=decoder_config,
             samplerate=self.samplerate,
@@ -131,14 +127,12 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
         text_decoder_config = StubTextDecoderConfig(
             num_codebooks=num_codebooks,
             codebook_size=codebook_size,
-            precision=activation_precision,
         )
 
         return TTSConfig(
             text_decoder_config=text_decoder_config,
             audio_decoder_config=audio_decoder_config,
             vocoder_config=VocoderConfig(),
-            activation_precision=activation_precision,
         )
 
     def _load_weights(

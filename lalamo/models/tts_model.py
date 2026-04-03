@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Float, Int, PRNGKeyArray
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -59,10 +59,6 @@ class TTSGenerator(eqx.Module):
     tts_model: TTSModel
 
     message_processor: TTSMessageProcessor = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.tts_model.text_decoder.activation_precision
 
     def export_weights(self) -> ParameterTree[Array]:
         return {

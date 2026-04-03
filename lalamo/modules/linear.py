@@ -95,8 +95,6 @@ class LinearConfigBase(ABC):
 
 @dataclass(frozen=True)
 class FullPrecisionLinearConfig(LinearConfigBase):
-    precision: DTypeLike
-
     def _init_general(
         self,
         initializer: Initializer,
@@ -106,8 +104,8 @@ class FullPrecisionLinearConfig(LinearConfigBase):
         has_biases: bool,
     ) -> "FullPrecisionLinear":
         std = 1 / math.sqrt(input_dim)
-        weights = initializer.normal(std, (*leading_dims, sum(output_dims), input_dim), self.precision)
-        biases = initializer.zeros((*leading_dims, sum(output_dims)), self.precision) if has_biases else None
+        weights = initializer.normal(std, (*leading_dims, sum(output_dims), input_dim), initializer.precision)
+        biases = initializer.zeros((*leading_dims, sum(output_dims)), initializer.precision) if has_biases else None
         return FullPrecisionLinear(
             config=self,
             weights=weights,
@@ -146,7 +144,7 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.weights.dtype
 
     @property
     def mixture_size(self) -> int | None:
@@ -201,7 +199,6 @@ class QuantizedLinearConfigBase(LinearConfigBase):
     group_size: int
     weight_quantization_mode: QuantizationMode
     activation_quantization_mode: QuantizationMode | None
-    activation_precision: DTypeLike
 
 
 class QuantizedLinearBase[ConfigT: QuantizedLinearConfigBase](LinearBase[ConfigT]):
@@ -242,10 +239,10 @@ class GroupQuantizedLinearConfig(QuantizedLinearConfigBase):
         num_groups = input_dim // self.group_size
         total_out = sum(output_dims)
         std = (max_val - min_val + 2) / 2
-        weights = initializer.normal(std, (*leading_dims, total_out, input_dim), self.activation_precision)
-        scales = initializer.zeros((*leading_dims, total_out, num_groups), self.activation_precision)
-        biases = initializer.zeros((*leading_dims, total_out), self.activation_precision) if has_biases else None
-        zero_points = initializer.zeros((*leading_dims, total_out, num_groups), self.activation_precision)
+        weights = initializer.normal(std, (*leading_dims, total_out, input_dim), initializer.precision)
+        scales = initializer.zeros((*leading_dims, total_out, num_groups), initializer.precision)
+        biases = initializer.zeros((*leading_dims, total_out), initializer.precision) if has_biases else None
+        zero_points = initializer.zeros((*leading_dims, total_out, num_groups), initializer.precision)
 
         return GroupQuantizedLinear(
             config=self,
@@ -289,7 +286,7 @@ class GroupQuantizedLinearBase[ConfigT: GroupQuantizedLinearConfig](QuantizedLin
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.activation_precision
+        return self.scales.dtype
 
     @property
     def mixture_size(self) -> int | None:
@@ -400,10 +397,10 @@ class MLXQuantizedLinearConfig(QuantizedLinearConfigBase):
         num_groups = input_dim // self.group_size
         total_out = sum(output_dims)
         std = (max_val - min_val + 2) / 2
-        weights = initializer.normal(std, (*leading_dims, total_out, input_dim), self.activation_precision)
-        scales = initializer.zeros((*leading_dims, total_out, num_groups), self.activation_precision)
-        biases = initializer.zeros((*leading_dims, total_out), self.activation_precision) if has_biases else None
-        deq_biases = initializer.zeros((*leading_dims, total_out, num_groups), self.activation_precision)
+        weights = initializer.normal(std, (*leading_dims, total_out, input_dim), initializer.precision)
+        scales = initializer.zeros((*leading_dims, total_out, num_groups), initializer.precision)
+        biases = initializer.zeros((*leading_dims, total_out), initializer.precision) if has_biases else None
+        deq_biases = initializer.zeros((*leading_dims, total_out, num_groups), initializer.precision)
 
         return MLXQuantizedLinear(
             config=self,
@@ -447,7 +444,7 @@ class MLXQuantizedLinearBase[ConfigT: MLXQuantizedLinearConfig](QuantizedLinearB
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.activation_precision
+        return self.scales.dtype
 
     @property
     def mixture_size(self) -> int | None:

@@ -15,14 +15,20 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import apply_soft_capping
 
-from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 
 __all__ = [
     "Attention",
     "AttentionConfig",
+    "AttentionForwardPassConfig",
     "AttentionResult",
 ]
+
+
+@dataclass(frozen=True)
+class AttentionForwardPassConfig(MixerForwardPassConfig):
+    upcast_dtype: DTypeLike | None = jnp.float32
 
 
 def _repeat_kv(
@@ -157,7 +163,7 @@ class AttentionConfig(TokenMixerConfigBase):
             key_norm = None
 
         if self.has_sinks:
-            sinks = initializer.zeros((self.num_heads,), qkv_projection.activation_precision)
+            sinks = initializer.zeros((self.num_heads,), initializer.precision)
         else:
             sinks = None
 
@@ -181,10 +187,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
     key_norm: Normalization | None
 
     sinks: Float[Array, " heads"] | None
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.qkv_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -250,6 +252,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
@@ -346,7 +349,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             capacity,
             self.num_groups,
             self.head_dim,
-            self.activation_precision,
+            self.qkv_projection.activation_precision,
         )
 
     def export_weights(self) -> ParameterTree:

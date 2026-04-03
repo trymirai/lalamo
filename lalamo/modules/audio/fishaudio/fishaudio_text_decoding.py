@@ -55,8 +55,6 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
 
     scale_codebook_embeddings: bool
 
-    precision: DTypeLike
-
     short_logits_size: int = SHORT_LOGITS_SIZE
     repeat_window_size: int = REPEAT_WINDOW_SIZE
 
@@ -127,7 +125,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.config.precision
+        return self.embeddings_slow.activation_precision
 
     def export_weights(self) -> ParameterTree:
         if isinstance(self.fast_model_projection, Identity):

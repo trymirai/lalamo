@@ -2,8 +2,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
 
-from jaxtyping import DTypeLike
-
 from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
@@ -72,8 +70,6 @@ class HFQwen3Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if isinstance(self.quantization_config, MLXQuantizationConfig):
@@ -84,7 +80,6 @@ class HFQwen3Config(HuggingFaceLMConfig):
                     group_size=self.quantization_config.group_size,
                     embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                     activation_quantization_mode=None,
-                    activation_precision=activation_precision,
                 )
             else:
                 embedding_config = MLXQuantizedUntiedEmbeddingConfig(
@@ -93,51 +88,41 @@ class HFQwen3Config(HuggingFaceLMConfig):
                     group_size=self.quantization_config.group_size,
                     embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                     activation_quantization_mode=None,
-                    activation_precision=activation_precision,
                 )
         else:  # noqa: PLR5501
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    precision=activation_precision,
                 )
             else:
                 embedding_config = UntiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    precision=activation_precision,
                 )
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
         rmsnorm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.rms_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
         if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig(
-                precision=activation_precision,
-            )
+            linear_config = FullPrecisionLinearConfig()
         elif isinstance(self.quantization_config, MLXQuantizationConfig):
             linear_config = MLXQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
                 weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         else:
             linear_config = GroupQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
                 weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,

@@ -10,7 +10,7 @@ from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
-from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 from .state import ShortConvStateLayer
 
@@ -72,10 +72,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         return self.config.kernel_size
 
     @property
-    def activation_precision(self) -> DTypeLike:
-        return self.in_projection.activation_precision
-
-    @property
     def model_dim(self) -> int:
         return self.in_projection.input_dim
 
@@ -91,6 +87,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
@@ -115,7 +112,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         return ShortConvStateLayer.init(
             self.kernel_size,
             self.in_projection.input_dim,
-            self.activation_precision,
+            self.in_projection.activation_precision,
         )
 
     def export_weights(self) -> ParameterTree:

@@ -114,8 +114,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
     def to_decoder_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         assert self.num_attention_heads == self.num_heads
@@ -129,40 +127,33 @@ class HFLFM2Config(HuggingFaceLMConfig):
                 group_size=self.quantization_config.group_size,
                 embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
         elif self.tie_embedding:
             embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
         else:
             embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                precision=activation_precision,
             )
 
         rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.resolved_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
 
         if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig(activation_precision)
+            linear_config = FullPrecisionLinearConfig()
         else:
             linear_config = MLXQuantizedLinearConfig(
                 group_size=self.quantization_config.group_size,
                 weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
                 activation_quantization_mode=None,
-                activation_precision=activation_precision,
             )
 
         block_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.block_norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -188,7 +179,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
 
         short_conv_config = ShortConvConfig(
             in_projection_config=linear_config,
-            conv_config=SeparableCausalConvConfig(activation_precision, has_biases=self.conv_bias),
+            conv_config=SeparableCausalConvConfig(has_biases=self.conv_bias),
             out_projection_config=linear_config,
             kernel_size=self.conv_L_cache,
         )
@@ -224,8 +215,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
         ]
 
         output_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,

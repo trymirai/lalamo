@@ -11,7 +11,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
+from jaxtyping import Array, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
@@ -25,7 +25,6 @@ __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
 class StubTextDecoderConfig(TTSTextDecoderConfigBase):
     num_codebooks: int
     codebook_size: int
-    precision: DTypeLike
 
     def init(self, initializer: Initializer) -> "StubTextDecoder":  # noqa: ARG002
         return StubTextDecoder(
@@ -36,10 +35,6 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
 
 class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
     seed: int = eqx.field(static=True)
-
-    @property
-    def activation_precision(self) -> DTypeLike:
-        return self.config.precision
 
     def decode_utterance(
         self,

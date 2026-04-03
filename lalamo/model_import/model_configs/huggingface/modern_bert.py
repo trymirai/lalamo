@@ -1,8 +1,6 @@
 from dataclasses import dataclass
 from typing import Any, Literal
 
-import jax.numpy as jnp
-from jaxtyping import DTypeLike
 
 from lalamo.modules import (
     Activation,
@@ -105,17 +103,12 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
     def to_classifier_config(
         self,
         context_length: int | None,
-        activation_precision: DTypeLike,
-        accumulation_precision: DTypeLike,
     ) -> ClassifierConfig:
         embedding_config = TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
-            precision=activation_precision,
         )
         embedding_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -123,12 +116,10 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         )
 
         global_rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.global_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
         local_rope_config = UnscaledRoPEConfig(
-            precision=activation_precision,
             base=self.local_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
         )
@@ -136,16 +127,12 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         sliding_window_sizes = self.calculate_sliding_windows(self.num_hidden_layers, self.global_attn_every_n_layers)
 
         transformer_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=accumulation_precision,
             epsilon=self.norm_eps,
             scale_offset=None,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
-        linear_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        linear_config = FullPrecisionLinearConfig()
         activation = activation_from_str(self.hidden_activation)
         assert activation is SiLU or activation is GELU
         mlp_config = DenseMLPConfig(
@@ -198,21 +185,15 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             context_length=context_length or self.max_position_embeddings,
         )
 
-        prediction_head_dense_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        prediction_head_dense_config = FullPrecisionLinearConfig()
         prediction_head_norm_config = NormalizationConfig(
-            scale_precision=activation_precision,
-            accumulation_precision=jnp.float32,
             epsilon=self.norm_eps,
             scale_offset=0.0,
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=True,
         )
         prediction_head_activation = activation_from_str(self.classifier_activation)
-        prediction_head_readout_config = FullPrecisionLinearConfig(
-            precision=activation_precision,
-        )
+        prediction_head_readout_config = FullPrecisionLinearConfig()
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
             activation=prediction_head_activation(),

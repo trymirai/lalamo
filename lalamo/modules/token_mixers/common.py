@@ -10,10 +10,16 @@ from lalamo.modules.rope import PositionalEmbeddings
 from .state.common import StateLayerBase
 
 __all__ = [
+    "MixerForwardPassConfig",
     "TokenMixerBase",
     "TokenMixerConfigBase",
     "TokenMixerResult",
 ]
+
+
+@dataclass(frozen=True)
+class MixerForwardPassConfig:
+    pass
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):
@@ -38,10 +44,6 @@ class TokenMixerConfigBase(ABC):
 class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]):
     @property
     @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
-    @property
-    @abstractmethod
     def model_dim(self) -> int: ...
 
     @property
@@ -56,6 +58,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig | None = None,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

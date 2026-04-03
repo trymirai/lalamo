@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Self
 
-from jaxtyping import Array, DTypeLike
+from jaxtyping import Array
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import Initializer, LalamoModule
@@ -15,10 +15,6 @@ class TTSAudioDecoderConfigBase(ABC):
 
 
 class TTSAudioDecoder[ConfigT: TTSAudioDecoderConfigBase](LalamoModule[ConfigT]):
-    @property
-    @abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
-
     @abstractmethod
     def export_weights(self) -> ParameterTree[Array]: ...
 
