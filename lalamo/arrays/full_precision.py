@@ -8,6 +8,7 @@ from .base import ArrayForwardPassConfig, CompressedArray
 
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float
+
     from lalamo.modules.common import Initializer
 
 

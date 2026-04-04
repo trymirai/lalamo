@@ -12,8 +12,8 @@ from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
-from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.arrays import ArrayForwardPassConfig
+from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
@@ -766,7 +766,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 sequence_tokenized,
                 generation_config=generation_config,
                 inference_config=bucket_inference_config,
-                forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
+                forward_pass_config=forward_pass_config,
                 keys=keys[np.array(sequence_ids)],
                 sharding_config=sharding_config,
             )

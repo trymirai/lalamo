@@ -53,7 +53,8 @@ class TransformerLayerForwardPassConfig(eqx.Module):
             match arrays.quantize:
                 case StochasticQuantize(key=key):
                     return tuple(
-                        replace(arrays, quantize=StochasticQuantize(subkey)) for subkey in jax.random.split(key, num)
+                        replace(arrays, quantize=StochasticQuantize(subkey))  # type: ignore[invalid-argument-type]
+                        for subkey in jax.random.split(key, num)
                     )
                 case _:
                     return (arrays,) * num

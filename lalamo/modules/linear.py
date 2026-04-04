@@ -98,18 +98,29 @@ class LinearConfig:
         out_channels: int,
         in_channels: int,
     ) -> CompressedArray:
-        array_init_kwargs: dict[str, int] = {}
-        if self.group_size is not None:
-            array_init_kwargs["group_size"] = self.group_size
-        if self.bits is not None:
-            array_init_kwargs["bits"] = self.bits
-        return self.quant_format.array_class.init(
-            initializer,
-            leading_dims,
-            out_channels,
-            in_channels,
-            **array_init_kwargs,
-        )
+        match self.quant_format:
+            case QuantFormat.FULL_PRECISION:
+                return FullPrecisionArray.init(initializer, leading_dims, out_channels, in_channels)
+            case QuantFormat.AWQ:
+                assert self.group_size is not None and self.bits is not None
+                return AWQQuantArray.init(
+                    initializer,
+                    leading_dims,
+                    out_channels,
+                    in_channels,
+                    group_size=self.group_size,
+                    bits=self.bits,
+                )
+            case QuantFormat.MLX:
+                assert self.group_size is not None and self.bits is not None
+                return MLXQuantArray.init(
+                    initializer,
+                    leading_dims,
+                    out_channels,
+                    in_channels,
+                    group_size=self.group_size,
+                    bits=self.bits,
+                )
 
     def array_from_raw(self, raw: Array) -> CompressedArray:
         return _array_from_raw(self, raw)

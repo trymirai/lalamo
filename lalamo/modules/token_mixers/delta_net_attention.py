@@ -1,6 +1,5 @@
-from functools import partial
-
 from dataclasses import dataclass
+from functools import partial
 
 import einops
 import equinox as eqx

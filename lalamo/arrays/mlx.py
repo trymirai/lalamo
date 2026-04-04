@@ -20,6 +20,7 @@ from .base import (
 
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+
     from lalamo.modules.common import Initializer
 
 

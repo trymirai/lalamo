@@ -6,8 +6,6 @@ from typing import TYPE_CHECKING
 import equinox as eqx
 import jax.random as jr
 
-from lalamo.common import is_abstract_array
-
 from .base import ArrayForwardPassConfig, CompressedArray, StochasticQuantize
 from .lora import LoraArray
 
@@ -25,21 +23,21 @@ class CompositeArray(CompressedArray):
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
         match forward_pass_config.quantize:
             case StochasticQuantize(key=key):
-                subkeys = jr.split(key, len(self.parts))
-                if self.is_abstract:
-                    return self.parts[0].materialize(
-                        replace(forward_pass_config, quantize=StochasticQuantize(key=subkeys[0]))
-                    )
-                return sum(
-                    (
-                        part.materialize(replace(forward_pass_config, quantize=StochasticQuantize(key=subkey)))
-                        for part, subkey in zip(self.parts, subkeys, strict=True)
-                    )
+                part_configs = tuple(
+                    replace(forward_pass_config, quantize=StochasticQuantize(key=subkey))
+                    for subkey in jr.split(key, len(self.parts))
                 )
             case _:
-                if self.is_abstract:
-                    return self.parts[0].materialize(forward_pass_config)
-                return sum(part.materialize(forward_pass_config) for part in self.parts)
+                part_configs = (forward_pass_config,) * len(self.parts)
+
+        materialized_parts = [
+            part.materialize(part_forward_pass_config)
+            for part, part_forward_pass_config in zip(self.parts, part_configs, strict=True)
+        ]
+        first_part, *remaining_parts = materialized_parts
+        if self.is_abstract:
+            return first_part
+        return sum(remaining_parts, start=first_part)
 
     def export_weights(self) -> ParameterTree:
         return {f"part_{i}": part.export_weights() for i, part in enumerate(self.parts)}

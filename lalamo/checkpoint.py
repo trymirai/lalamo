@@ -45,7 +45,10 @@ class CheckpointManager:
         config_type = getattr(importlib.import_module(module_name), class_name)
         config = config_converter.structure(config_json, config_type)
         empty = config.init(EmptyInitializer(precision=jnp.float32))
-        is_restore_leaf = lambda x: isinstance(x, jax.ShapeDtypeStruct) or eqx.is_array(x)
+
+        def is_restore_leaf(node: object) -> bool:
+            return isinstance(node, jax.ShapeDtypeStruct) or eqx.is_array(node)
+
         target = jax.tree_util.tree_map_with_path(
             lambda path, leaf: (
                 _apply_parameter_sharding(
