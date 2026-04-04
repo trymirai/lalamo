@@ -93,73 +93,49 @@ def _process_quantized_tensor(
     return unpacked.astype(activation_precision)
 
 
-def _maybe_reorder(array: Array, reorder: tuple[Array, int] | None) -> Array:
-    if reorder is None:
-        return array
-    perm, axis = reorder
-    return jnp.take(array, perm, axis=axis)
-
-
 def _fuse_full_precision_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
     *,
     param_name: str = "weight",
-    reorder: tuple[Array, int] | None = None,
 ) -> Array:
     if sublayers_to_fuse is None:
-        return _maybe_reorder(weights_dict[path / param_name], reorder)
+        return weights_dict[path / param_name]
 
     weights = [weights_dict[path / layer_name / param_name] for layer_name in sublayers_to_fuse]
-    fused = jnp.concatenate(weights, axis=0)
-    return _maybe_reorder(fused, reorder)
+    return jnp.concatenate(weights, axis=0)
 
 
-@dataclass(frozen=True)
-class QuantizedParamLayout:
-    weight: str
-    scale: str
-    bias: str
-    transposed: bool
-
-
-AWQ_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("qweight", "scales", "qzeros", transposed=True)
-MLX_QUANTIZED_WEIGHT_LAYOUT = QuantizedParamLayout("weight", "scales", "biases", transposed=False)
-
-
-def _fuse_quantized_weights(
+def _fuse_awq_weights(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-    quantized_param_layout: QuantizedParamLayout,
-    *,
-    reorder: tuple[Array, int] | None = None,
 ) -> tuple[Array, Array, Array]:
-    # Note that AWQ quantized weights are stored transposed relative to full-precision weights
-
     if sublayers_to_fuse is None:
-        qweights = weights_dict[path / quantized_param_layout.weight]
-        qzeros = weights_dict[path / quantized_param_layout.bias]
-        scales = weights_dict[path / quantized_param_layout.scale]
-        return (
-            _maybe_reorder(qweights, reorder),
-            _maybe_reorder(qzeros, reorder),
-            _maybe_reorder(scales, reorder),
-        )
-
-    qweights = [weights_dict[path / layer_name / quantized_param_layout.weight] for layer_name in sublayers_to_fuse]
-    qzeros = [weights_dict[path / layer_name / quantized_param_layout.bias] for layer_name in sublayers_to_fuse]
-    scales = [weights_dict[path / layer_name / quantized_param_layout.scale] for layer_name in sublayers_to_fuse]
-
-    fused_qweights = jnp.concatenate(qweights, axis=int(quantized_param_layout.transposed))
-    fused_qzeros = jnp.concatenate(qzeros, axis=int(quantized_param_layout.transposed))
-    fused_scales = jnp.concatenate(scales, axis=int(quantized_param_layout.transposed))
-
+        return weights_dict[path / "qweight"], weights_dict[path / "qzeros"], weights_dict[path / "scales"]
     return (
-        _maybe_reorder(fused_qweights, reorder),
-        _maybe_reorder(fused_qzeros, reorder),
-        _maybe_reorder(fused_scales, reorder),
+        jnp.concatenate([weights_dict[path / layer_name / "qweight"] for layer_name in sublayers_to_fuse], axis=1),
+        jnp.concatenate([weights_dict[path / layer_name / "qzeros"] for layer_name in sublayers_to_fuse], axis=1),
+        jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=1),
+    )
+
+
+def _fuse_mlx_weights(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+) -> tuple[Array, Array, Array]:
+    if sublayers_to_fuse is None:
+        return (
+            weights_dict[path / "weight"],
+            weights_dict[path / "biases"],
+            weights_dict[path / "scales"],
+        )
+    return (
+        jnp.concatenate([weights_dict[path / layer_name / "weight"] for layer_name in sublayers_to_fuse], axis=0),
+        jnp.concatenate([weights_dict[path / layer_name / "biases"] for layer_name in sublayers_to_fuse], axis=0),
+        jnp.concatenate([weights_dict[path / layer_name / "scales"] for layer_name in sublayers_to_fuse], axis=0),
     )
 
 
@@ -168,7 +144,6 @@ def _load_bias(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-    reorder: Array | None,
 ) -> Array | None:
     if not module.has_biases:
         paths_to_check = [path / proj / "bias" for proj in sublayers_to_fuse] if sublayers_to_fuse else [path / "bias"]
@@ -183,8 +158,6 @@ def _load_bias(
             [weights_dict[path / proj_name / "bias"] for proj_name in sublayers_to_fuse],
             axis=0,
         )
-    if reorder is not None:
-        bias = _maybe_reorder(bias, (reorder, 0))
     return bias.astype(module.activation_precision)
 
 
@@ -193,13 +166,11 @@ def load_linear(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None = None,
-    *,
-    reorder: Array | None = None,
 ) -> Linear:
-    bias = _load_bias(module, weights_dict, path, sublayers_to_fuse, reorder)
+    bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
     precision = module.activation_precision
     config = module.config
-    if sublayers_to_fuse is None and reorder is None:
+    if sublayers_to_fuse is None:
         assert config.quant_format == QuantFormat.FULL_PRECISION or (
             config.bits is not None and config.group_size is not None
         )
@@ -242,19 +213,15 @@ def load_linear(
 
     match config.quant_format:
         case QuantFormat.FULL_PRECISION:
-            reorder_tuple = (reorder, 0) if reorder is not None else None
-            raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse, reorder=reorder_tuple)
+            raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
             base = FullPrecisionArray.from_weight(raw_weights, dtype=precision)
 
         case QuantFormat.AWQ:
-            if reorder is not None:
-                raise ValueError("Reorder is not supported for AWQ quantized weights.")
             assert config.bits is not None and config.group_size is not None
-            qweights, qzeros, scales = _fuse_quantized_weights(
+            qweights, qzeros, scales = _fuse_awq_weights(
                 weights_dict,
                 path,
                 sublayers_to_fuse,
-                AWQ_QUANTIZED_WEIGHT_LAYOUT,
             )
             base = AWQQuantArray.from_packed(
                 qweights,
@@ -267,13 +234,10 @@ def load_linear(
 
         case QuantFormat.MLX:
             assert config.bits is not None and config.group_size is not None
-            reorder_tuple = (reorder, 0) if reorder is not None else None
-            qweights, deq_biases, scales = _fuse_quantized_weights(
+            qweights, deq_biases, scales = _fuse_mlx_weights(
                 weights_dict,
                 path,
                 sublayers_to_fuse,
-                MLX_QUANTIZED_WEIGHT_LAYOUT,
-                reorder=reorder_tuple,
             )
             base = MLXQuantArray.from_packed(
                 qweights,
@@ -749,6 +713,11 @@ def load_delta_net_attention(
     path: ParameterPath,
     permute_conv: bool,
 ) -> DeltaNetAttention:
+    def _permute_rows(array: Array, permutation: Array | None) -> Array:
+        if permutation is None:
+            return array
+        return jnp.take(array, permutation, axis=0)
+
     def _delta_net_qkvz_perm() -> Array:
         v_per_k = module.num_heads // module.num_groups
         key_block = 2 * module.head_dim
@@ -807,12 +776,7 @@ def load_delta_net_attention(
             case QuantFormat.FULL_PRECISION:
                 merged = jnp.concatenate(
                     [
-                        _fuse_full_precision_weights(
-                            weights_dict,
-                            bp,
-                            None,
-                            reorder=(perm, 0) if perm is not None else None,
-                        )
+                        _permute_rows(_fuse_full_precision_weights(weights_dict, bp, None), perm)
                         for bp, perm in projection_branches
                     ],
                     axis=0,
@@ -823,13 +787,7 @@ def load_delta_net_attention(
             case QuantFormat.MLX:
                 assert in_proj_config.bits is not None and in_proj_config.group_size is not None
                 per_branch = [
-                    _fuse_quantized_weights(
-                        weights_dict,
-                        bp,
-                        None,
-                        MLX_QUANTIZED_WEIGHT_LAYOUT,
-                        reorder=(perm, 0) if perm is not None else None,
-                    )
+                    tuple(_permute_rows(tensor, perm) for tensor in _fuse_mlx_weights(weights_dict, bp, None))
                     for bp, perm in projection_branches
                 ]
                 fused_qweights = jnp.concatenate([qw for qw, _, _ in per_branch], axis=0)

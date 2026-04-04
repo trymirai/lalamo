@@ -137,7 +137,7 @@ class AWQQuantArray(CompressedArray):
         *,
         dtype: DTypeLike,
         group_size: int,
-        bits: int = 4,
+        bits: int,
     ) -> AWQQuantArray:
         unpacked_weights = unpack_int32(packed_weights, bits)
         unpacked_zero_points = unpack_int32(packed_zero_points, bits)
