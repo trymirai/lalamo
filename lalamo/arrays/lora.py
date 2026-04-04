@@ -17,8 +17,12 @@ class LoraArray(CompressedArray):
     down: Float[Array, "... out_channels rank"]
     up: Float[Array, "... rank in_channels"]
 
+    @property
+    def is_abstract(self) -> bool:
+        return is_abstract_array(self.down)
+
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
-        if is_abstract_array(self.down):
+        if self.is_abstract:
             *leading_dims, out_channels, _rank = self.down.shape
             _leading_dims2, _rank2, in_channels = self.up.shape
             return dummy_array((*leading_dims, out_channels, in_channels), self.down.dtype)
@@ -29,7 +33,7 @@ class LoraArray(CompressedArray):
         vector: Float[Array, " in_channels"],
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, " out_channels"]:
-        if is_abstract_array(self.down):
+        if self.is_abstract:
             *leading_dims, out_channels, _rank = self.down.shape
             return dummy_array((*leading_dims, out_channels), self.down.dtype)
         return self.down @ (self.up @ vector)

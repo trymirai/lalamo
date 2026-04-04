@@ -6,7 +6,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
-from lalamo.arrays import AWQQuantArray, CompressedArray, FullPrecisionArray, MLXQuantArray, quant_array_from_torch
+from lalamo.arrays import AWQQuantArray, CompressedArray, FullPrecisionArray, MLXQuantArray
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -170,47 +170,6 @@ def load_linear(
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
     precision = module.activation_precision
     config = module.config
-    if sublayers_to_fuse is None:
-        assert config.quant_format == QuantFormat.FULL_PRECISION or (
-            config.bits is not None and config.group_size is not None
-        )
-        base = quant_array_from_torch(
-            weights_dict,
-            quant_format=config.quant_format,
-            prefix=path,
-            precision=precision,
-            group_size=config.group_size,
-            bits=config.bits,
-        )
-        weight_quantization = module.config.weight_quantization_mode
-        activation_precision = module.activation_precision
-
-        if weight_quantization == QuantizationMode.UINT4:
-            reverse_order = AWQ_UINT4_REVERSE_ORDER
-        else:
-            reverse_order = None
-
-        weights = _process_quantized_tensor(
-            qweights,
-            weight_quantization,
-            activation_precision,
-            reverse_order,
-        )
-        zeros = _process_quantized_tensor(
-            qzeros,
-            weight_quantization,
-            activation_precision,
-            reverse_order,
-        )
-        scales = scales.astype(activation_precision)
-
-        return load_parameters(
-            lambda m: (m.weights, m.scales, m.zero_points, m.biases),
-            module,
-            (base, bias),
-            is_leaf=lambda x: x is None,
-        )
-
     match config.quant_format:
         case QuantFormat.FULL_PRECISION:
             raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)

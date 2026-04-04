@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from lalamo.common import is_abstract_array
+
 from .base import ArrayForwardPassConfig, CompressedArray
 
 if TYPE_CHECKING:
@@ -11,6 +13,10 @@ if TYPE_CHECKING:
 
 class FullPrecisionArray(CompressedArray):
     raw: Float[Array, "... out_channels in_channels"]
+
+    @property
+    def is_abstract(self) -> bool:
+        return is_abstract_array(self.raw)
 
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
         return self.raw

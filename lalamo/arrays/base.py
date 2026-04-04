@@ -33,6 +33,10 @@ class ArrayForwardPassConfig(eqx.Module):
 
 
 class CompressedArray(eqx.Module):
+    @property
+    @abc.abstractmethod
+    def is_abstract(self) -> bool: ...
+
     @abc.abstractmethod
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array: ...  # noqa: B008
 

@@ -84,8 +84,12 @@ class MLXQuantArray(CompressedArray):
     group_size: int = eqx.field(static=True)
     bits: int = eqx.field(static=True)
 
+    @property
+    def is_abstract(self) -> bool:
+        return is_abstract_array(self.raw)
+
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
-        if is_abstract_array(self.raw):
+        if self.is_abstract:
             return self.raw
         match forward_pass_config.quantize:
             case NoQuantize():
