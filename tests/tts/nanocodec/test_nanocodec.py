@@ -323,10 +323,10 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     )
 
     # Build decoder config hierarchy
-    snake_config = Snake1dConfig(precision=jnp.float32)
+    snake_config = Snake1dConfig()
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = CausalConv1dConfig(has_biases=True)
+    transpose_conv_config = CausalTransposeConv1dConfig(has_biases=True)
 
     residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,

@@ -19,6 +19,7 @@ __all__ = [
     "ParameterTree",
     "dummy_array",
     "flatten_parameters",
+    "is_abstract_array",
     "require_array",
     "require_mapping",
     "require_tree",
@@ -61,6 +62,10 @@ def dummy_array(shape: int | tuple[int, ...], dtype: DTypeLike) -> Array:
     if isinstance(shape, int):
         shape = (shape,)
     return cast("Array", ShapeDtypeStruct(shape=shape, dtype=dtype))
+
+
+def is_abstract_array(value: object) -> bool:
+    return isinstance(value, ShapeDtypeStruct)
 
 
 def flatten_parameters[ArrayType: ArrayLike](nested_parameters: ParameterTree[ArrayType]) -> dict[str, ArrayType]:

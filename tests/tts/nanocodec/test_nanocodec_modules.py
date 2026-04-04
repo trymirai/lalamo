@@ -184,9 +184,9 @@ def test_half_snake_forward_matches_torch() -> None:
     channels = 128
 
     # Create Lalamo HalfSnake
-    snake_config = Snake1dConfig(precision=jnp.float32)
+    snake_config = Snake1dConfig()
     lalamo_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    lalamo_half_snake = lalamo_config.init(RandomInitializer(precision=jnp.bfloat16, key=PRNGKey(123)), channels)
+    lalamo_half_snake = lalamo_config.init(RandomInitializer(precision=jnp.float32, key=PRNGKey(123)), channels)
 
     # Create PyTorch HalfSnake
     torch_half_snake = nanocodec_torch.HalfSnake(channels)
@@ -246,7 +246,7 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     )
 
     # Create Lalamo conv
-    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
         EmptyInitializer(precision=jnp.float32),
         in_channels=in_channels,
@@ -300,7 +300,7 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
         bias=True,
     )
 
-    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_config = CausalConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
         EmptyInitializer(precision=jnp.float32),
         in_channels=in_channels,
@@ -350,7 +350,7 @@ def test_causal_transpose_conv1d_forward_matches_torch() -> None:
     )
 
     # Create Lalamo transposed conv
-    lalamo_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_config = CausalTransposeConv1dConfig(has_biases=True)
     lalamo_conv = lalamo_config.init(
         EmptyInitializer(precision=jnp.float32),
         in_channels=in_channels,
@@ -412,9 +412,9 @@ def test_residual_block_forward_matches_torch() -> None:
     )
 
     # Create Lalamo residual block
-    snake_config = Snake1dConfig(precision=jnp.float32)
+    snake_config = Snake1dConfig()
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = CausalConv1dConfig(has_biases=True)
 
     lalamo_block_config = ResidualBlockConfig(
         activation_config=activation_config,
@@ -470,9 +470,9 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
     )
 
     # Create Lalamo HiFiGANResBlock
-    snake_config = Snake1dConfig(precision=jnp.float32)
+    snake_config = Snake1dConfig()
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = CausalConv1dConfig(has_biases=True)
     residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
@@ -529,9 +529,9 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
     )
 
     # Create Lalamo HiFiGANResLayer
-    snake_config = Snake1dConfig(precision=jnp.float32)
+    snake_config = Snake1dConfig()
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = CausalConv1dConfig(has_biases=True)
     residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
@@ -598,10 +598,10 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
     )
 
     # Create Lalamo decoder
-    snake_config = Snake1dConfig(precision=jnp.float32)
+    snake_config = Snake1dConfig()
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
-    transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = CausalConv1dConfig(has_biases=True)
+    transpose_conv_config = CausalTransposeConv1dConfig(has_biases=True)
 
     residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,

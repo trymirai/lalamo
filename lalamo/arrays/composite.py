@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import equinox as eqx
 import jax.random as jr
 
-from lalamo.common import ParameterTree
+from lalamo.common import is_abstract_array
 
 from .base import ArrayForwardPassConfig, CompressedArray, StochasticQuantize
 from .lora import LoraArray
@@ -24,6 +24,8 @@ class CompositeArray(CompressedArray):
             case StochasticQuantize(key=key):
                 subkeys = jr.split(key, len(self.parts))
                 head = first.materialize(replace(forward_pass_config, quantize=StochasticQuantize(key=subkeys[0])))
+                if is_abstract_array(head):
+                    return head
                 return sum(
                     (
                         part.materialize(replace(forward_pass_config, quantize=StochasticQuantize(key=subkey)))
@@ -32,9 +34,12 @@ class CompositeArray(CompressedArray):
                     start=head,
                 )
             case _:
+                head = first.materialize(forward_pass_config)
+                if is_abstract_array(head):
+                    return head
                 return sum(
                     (part.materialize(forward_pass_config) for part in rest),
-                    start=first.materialize(forward_pass_config),
+                    start=head,
                 )
 
     def export_weights(self) -> ParameterTree:

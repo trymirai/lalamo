@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 import jax.numpy as jnp
 import jax.random as jr
 
-from lalamo.common import ParameterTree
+from lalamo.common import dummy_array, is_abstract_array
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
@@ -18,6 +18,10 @@ class LoraArray(CompressedArray):
     up: Float[Array, "... rank in_channels"]
 
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
+        if is_abstract_array(self.down):
+            *leading_dims, out_channels, _rank = self.down.shape
+            _leading_dims2, _rank2, in_channels = self.up.shape
+            return dummy_array((*leading_dims, out_channels, in_channels), self.down.dtype)
         return self.down @ self.up
 
     def dot(
@@ -25,6 +29,9 @@ class LoraArray(CompressedArray):
         vector: Float[Array, " in_channels"],
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, " out_channels"]:
+        if is_abstract_array(self.down):
+            *leading_dims, out_channels, _rank = self.down.shape
+            return dummy_array((*leading_dims, out_channels), self.down.dtype)
         return self.down @ (self.up @ vector)
 
     def export_weights(self) -> ParameterTree:

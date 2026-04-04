@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import abc
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import equinox as eqx
@@ -14,26 +13,22 @@ if TYPE_CHECKING:
 from lalamo.common import ParameterTree
 
 
-@dataclass(frozen=True)
-class NoQuantize:
+class NoQuantize(eqx.Module):
     pass
 
 
-@dataclass(frozen=True)
-class DeterministicQuantize:
+class DeterministicQuantize(eqx.Module):
     pass
 
 
-@dataclass(frozen=True)
-class StochasticQuantize:
+class StochasticQuantize(eqx.Module):
     key: PRNGKeyArray
 
 
 Quantize = NoQuantize | DeterministicQuantize | StochasticQuantize
 
 
-@dataclass(frozen=True)
-class ArrayForwardPassConfig:
+class ArrayForwardPassConfig(eqx.Module):
     quantize: Quantize = DeterministicQuantize()
 
 

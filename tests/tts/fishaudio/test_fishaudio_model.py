@@ -47,8 +47,7 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
     fish_model = pytorch_tts_generator.tts_model.text_decoder.fish_model
 
     # Create Lalamo text decoder config from PyTorch model config
-    precision = jnp.float32
-    lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer, precision)
+    lalamo_config = from_fish_audio_config(fish_model.config, fish_model.tokenizer)
 
     # Convert PyTorch weights to JAX and load into Lalamo text decoder
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
@@ -106,8 +105,6 @@ def test_dac_matches_pytorch(fish_audio_local_model_path) -> None:
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_dac.state_dict())
     audio_decoder_cfg = instantiate_dac_config_from_fishaudio_config(
         get_default_fishaudio_dac_config(),
-        precision=jnp.float32,
-        accumulation_precision=jnp.float32,
     )
     lalamo_dac = audio_decoder_cfg.init(EmptyInitializer(precision=jnp.float32))
     lalamo_dac = load_descript_audio_codec(lalamo_dac, weights_dict)

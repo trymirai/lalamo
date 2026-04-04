@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-from lalamo.common import ParameterPath, ParameterTree, dummy_array
+from lalamo.common import is_abstract_array
+from lalamo.quantization import QuantizationMode
 
 from .base import (
     ArrayForwardPassConfig,
@@ -20,6 +20,7 @@ from .base import (
 
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+    from lalamo.modules.common import Initializer
 
 
 def mlx_quantize_per_group(
@@ -30,7 +31,7 @@ def mlx_quantize_per_group(
     group_size: int,
     bits: int,
 ) -> Array:
-    safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
+    safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
     expanded_biases = jnp.repeat(deq_biases, group_size, axis=-1)
     return jnp.clip(jnp.round((weights - expanded_biases) / safe_scales), 0, (2**bits) - 1)
 
@@ -44,7 +45,7 @@ def mlx_stochastic_quantize_per_group(
     bits: int,
     key: PRNGKeyArray,
 ) -> Array:
-    safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
+    safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
     expanded_biases = jnp.repeat(deq_biases, group_size, axis=-1)
     pre_round = (weights - expanded_biases) / safe_scales
     return jnp.clip(jnp.floor(pre_round + jax.random.uniform(key, pre_round.shape)), 0, (2**bits) - 1)
@@ -62,6 +63,20 @@ def mlx_dequantize_per_group(
     return int_weights * expanded_scales + expanded_biases
 
 
+def detect_mlx_quantization(
+    expected_in_channels: int,
+    packed_in_channels: int,
+    default: QuantizationMode,
+) -> QuantizationMode:
+    if packed_in_channels * 8 == expected_in_channels:
+        return QuantizationMode.UINT4
+    if packed_in_channels * 4 == expected_in_channels:
+        return QuantizationMode.UINT8
+    if packed_in_channels * 32 == expected_in_channels:
+        return QuantizationMode.UINT1
+    return default
+
+
 class MLXQuantArray(CompressedArray):
     raw: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
@@ -70,6 +85,8 @@ class MLXQuantArray(CompressedArray):
     bits: int = eqx.field(static=True)
 
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
+        if is_abstract_array(self.raw):
+            return self.raw
         match forward_pass_config.quantize:
             case NoQuantize():
                 return self.raw
@@ -98,61 +115,56 @@ class MLXQuantArray(CompressedArray):
                 f"deq_biases shape {self.deq_biases.shape} incompatible with weights shape {self.raw.shape}"
             )
 
-    def export_weights(self) -> ParameterTree:
-        int_dtype = jnp.uint4 if self.bits == 4 else jnp.uint8
-        int_weights = mlx_quantize_per_group(
-            self.raw, self.scales, self.deq_biases, group_size=self.group_size, bits=self.bits
-        )
-        return dict(
-            weights=int_weights.astype(int_dtype),
-            scales=self.scales,
-            deq_biases=self.deq_biases,
-        )
-
-    @staticmethod
-    def import_weights(
-        weights_map: Mapping[str, Array],
-        *,
-        precision: DTypeLike,
-        group_size: int,
-        bits: int,
-    ) -> MLXQuantArray:
-        scales = weights_map["scales"]
-        deq_biases = weights_map["deq_biases"]
-        raw = mlx_dequantize_per_group(weights_map["weights"], scales, deq_biases, group_size=group_size)
-        return MLXQuantArray(raw=raw, scales=scales, deq_biases=deq_biases, group_size=group_size, bits=bits)
-
-    @staticmethod
-    def empty(
+    @classmethod
+    def init(
+        cls,
+        initializer: Initializer,
         leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
-        precision: DTypeLike,
         *,
         group_size: int,
         bits: int,
     ) -> MLXQuantArray:
         num_groups = in_channels // group_size
-        return MLXQuantArray(
-            raw=dummy_array((*leading_dims, out_channels, in_channels), precision),
-            scales=dummy_array((*leading_dims, out_channels, num_groups), precision),
-            deq_biases=dummy_array((*leading_dims, out_channels, num_groups), precision),
+        return cls(
+            raw=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
+            scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
+            deq_biases=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
             group_size=group_size,
             bits=bits,
         )
 
-    @staticmethod
-    def from_torch(
-        state_dict: Mapping[str, Array],
+    @classmethod
+    def from_packed(
+        cls,
+        packed_weights: Array,
+        scales: Array,
+        deq_biases: Array,
         *,
-        prefix: ParameterPath | str,
         dtype: DTypeLike,
+        expected_in_channels: int,
         group_size: int,
         bits: int,
     ) -> MLXQuantArray:
-        path = ParameterPath(prefix)
-        unpacked_weights = unpack_int32(state_dict[path / "weight"], bits)
-        scales = state_dict[path / "scales"].astype(dtype)
-        deq_biases = state_dict[path / "biases"].astype(dtype)
-        raw = mlx_dequantize_per_group(unpacked_weights.astype(dtype), scales, deq_biases, group_size=group_size)
-        return MLXQuantArray(raw=raw, scales=scales, deq_biases=deq_biases, group_size=group_size, bits=bits)
+        quantization_mode = detect_mlx_quantization(
+            expected_in_channels,
+            packed_weights.shape[-1],
+            QuantizationMode.from_num_bits(bits),
+        )
+        unpacked_weights = unpack_int32(packed_weights, quantization_mode.bits).astype(dtype)
+        adjusted_scales = scales.astype(dtype)
+        adjusted_biases = deq_biases.astype(dtype)
+        raw = mlx_dequantize_per_group(
+            unpacked_weights,
+            adjusted_scales,
+            adjusted_biases,
+            group_size=group_size,
+        )
+        return cls(
+            raw=raw,
+            scales=adjusted_scales,
+            deq_biases=adjusted_biases,
+            group_size=group_size,
+            bits=quantization_mode.bits,
+        )

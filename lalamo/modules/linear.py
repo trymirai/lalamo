@@ -14,7 +14,7 @@ from lalamo.arrays import ArrayForwardPassConfig, CompressedArray, FullPrecision
 from lalamo.arrays.awq import AWQQuantArray
 from lalamo.arrays.mlx import MLXQuantArray
 from lalamo.arrays.quant_format import QuantFormat
-from lalamo.common import dummy_array
+from lalamo.common import is_abstract_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
 from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, sharded_field
@@ -91,6 +91,26 @@ class LinearConfig:
     ) -> Linear:
         return Linear(config=self, output_dims=output_dims, weights=weights, biases=biases)
 
+    def init_array(
+        self,
+        initializer: Initializer,
+        leading_dims: tuple[int, ...],
+        out_channels: int,
+        in_channels: int,
+    ) -> CompressedArray:
+        array_init_kwargs: dict[str, int] = {}
+        if self.group_size is not None:
+            array_init_kwargs["group_size"] = self.group_size
+        if self.bits is not None:
+            array_init_kwargs["bits"] = self.bits
+        return self.quant_format.array_class.init(
+            initializer,
+            leading_dims,
+            out_channels,
+            in_channels,
+            **array_init_kwargs,
+        )
+
     def array_from_raw(self, raw: Array) -> CompressedArray:
         return _array_from_raw(self, raw)
 
@@ -112,9 +132,13 @@ class LinearConfig:
         total_out = sum(output_dims)
         scale = 1 / math.sqrt(input_dim)
         raw = initializer.normal(scale, (total_out, input_dim), initializer.precision)
-        if not hasattr(raw, "reshape"):
-            raw = dummy_array(raw.shape, raw.dtype)
         biases = initializer.zeros((total_out,), initializer.precision) if has_biases else None
+        if is_abstract_array(raw):
+            return self.from_array(
+                weights=self.init_array(initializer, (), total_out, input_dim),
+                output_dims=output_dims,
+                biases=biases,
+            )
         return self.from_raw(raw=raw, output_dims=output_dims, biases=biases)
 
     def init_mixture(
@@ -128,9 +152,13 @@ class LinearConfig:
         total_out = sum(output_dims)
         scale = 1 / math.sqrt(input_dim)
         raw = initializer.normal(scale, (mixture_size, total_out, input_dim), initializer.precision)
-        if not hasattr(raw, "reshape"):
-            raw = dummy_array(raw.shape, raw.dtype)
         biases = initializer.zeros((mixture_size, total_out), initializer.precision) if has_biases else None
+        if is_abstract_array(raw):
+            return self.from_array(
+                weights=self.init_array(initializer, (mixture_size,), total_out, input_dim),
+                output_dims=output_dims,
+                biases=biases,
+            )
         return self.from_raw(raw=raw, output_dims=output_dims, biases=biases)
 
 

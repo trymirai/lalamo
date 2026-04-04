@@ -86,6 +86,10 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     dim_base_index: Int[Array, " dim"]
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return jnp.float32
+
+    @property
     def dim(self) -> int:
         return self.config.dim
 
@@ -235,6 +239,10 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
     quantizers: tuple[FiniteScalarQuantizer, ...]
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.quantizers[0].activation_precision
+
+    @property
     def num_groups(self) -> int:
         return self.config.num_groups
 
@@ -308,6 +316,10 @@ class HalfSnake(LalamoModule[HalfSnakeConfig]):
 
     snake: Snake1d
     total_channels: int = eqx.field(static=True)
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.snake.activation_precision
 
     @property
     def channels(self) -> int:
@@ -391,6 +403,10 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
     skip_conv: CausalConv1d
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.input_conv.activation_precision
+
+    @property
     def channels(self) -> int:
         return self.input_conv.in_channels
 
@@ -445,6 +461,10 @@ class HiFiGANResBlock(LalamoModule[HiFiGANResBlockConfig]):
     res_blocks: tuple[ResidualBlock, ...]
 
     @property
+    def activation_precision(self) -> DTypeLike:
+        return self.res_blocks[0].activation_precision
+
+    @property
     def channels(self) -> int:
         return self.res_blocks[0].channels
 
@@ -495,6 +515,10 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
     """
 
     res_blocks: tuple[HiFiGANResBlock, ...]
+
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.res_blocks[0].activation_precision
 
     @property
     def channels(self) -> int:

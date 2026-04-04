@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
 
 import equinox as eqx
@@ -8,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 
-from lalamo.common import ParameterPath, ParameterTree, dummy_array
+from lalamo.common import is_abstract_array
 
 from .base import (
     ArrayForwardPassConfig,
@@ -21,6 +20,7 @@ from .base import (
 
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+    from lalamo.modules.common import Initializer
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)
 
@@ -78,6 +78,8 @@ class AWQQuantArray(CompressedArray):
     bits: int = eqx.field(static=True, default=4)
 
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
+        if is_abstract_array(self.raw):
+            return self.raw
         match forward_pass_config.quantize:
             case NoQuantize():
                 return self.raw
@@ -106,65 +108,54 @@ class AWQQuantArray(CompressedArray):
                 f"zero_points shape {self.zero_points.shape} incompatible with weights shape {self.raw.shape}"
             )
 
-    def export_weights(self) -> ParameterTree:
-        int_dtype = jnp.uint4 if self.bits == 4 else jnp.uint8
-        int_weights = awq_quantize_per_group(
-            self.raw, self.scales, self.zero_points, group_size=self.group_size, bits=self.bits
-        )
-        return dict(
-            weights=int_weights.astype(int_dtype),
-            scales=self.scales,
-            zero_points=self.zero_points.astype(int_dtype),
-        )
-
-    @staticmethod
-    def import_weights(
-        weights_map: Mapping[str, Array],
-        *,
-        precision: DTypeLike,
-        group_size: int,
-        bits: int,
-    ) -> AWQQuantArray:
-        scales = weights_map["scales"]
-        zero_points = weights_map["zero_points"]
-        raw = awq_dequantize_per_group(weights_map["weights"], scales, zero_points, group_size=group_size)
-        return AWQQuantArray(raw=raw, scales=scales, zero_points=zero_points, group_size=group_size, bits=bits)
-
-    @staticmethod
-    def empty(
+    @classmethod
+    def init(
+        cls,
+        initializer: Initializer,
         leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
-        precision: DTypeLike,
         *,
         group_size: int,
         bits: int,
     ) -> AWQQuantArray:
         num_groups = in_channels // group_size
-        return AWQQuantArray(
-            raw=dummy_array((*leading_dims, out_channels, in_channels), precision),
-            scales=dummy_array((*leading_dims, out_channels, num_groups), precision),
-            zero_points=jnp.zeros((*leading_dims, out_channels, num_groups), dtype=precision),
+        return cls(
+            raw=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
+            scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
+            zero_points=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
             group_size=group_size,
             bits=bits,
         )
 
-    @staticmethod
-    def from_torch(
-        state_dict: Mapping[str, Array],
+    @classmethod
+    def from_packed(
+        cls,
+        packed_weights: Array,
+        packed_zero_points: Array,
+        scales: Array,
         *,
-        prefix: ParameterPath | str,
         dtype: DTypeLike,
         group_size: int,
         bits: int = 4,
     ) -> AWQQuantArray:
-        path = ParameterPath(prefix)
-        unpacked_weights = unpack_int32(state_dict[path / "qweight"], bits)
-        unpacked_zeros = unpack_int32(state_dict[path / "qzeros"], bits)
+        unpacked_weights = unpack_int32(packed_weights, bits)
+        unpacked_zero_points = unpack_int32(packed_zero_points, bits)
         if bits == 4:
             unpacked_weights = _reverse_awq_uint4_order(unpacked_weights)
-            unpacked_zeros = _reverse_awq_uint4_order(unpacked_zeros)
-        zero_points = unpacked_zeros.T.astype(dtype)
-        scales = state_dict[path / "scales"].T.astype(dtype)
-        raw = awq_dequantize_per_group(unpacked_weights.T.astype(dtype), scales, zero_points, group_size=group_size)
-        return AWQQuantArray(raw=raw, scales=scales, zero_points=zero_points, group_size=group_size, bits=bits)
+            unpacked_zero_points = _reverse_awq_uint4_order(unpacked_zero_points)
+        adjusted_scales = scales.T.astype(dtype)
+        zero_points = unpacked_zero_points.T.astype(dtype)
+        raw = awq_dequantize_per_group(
+            unpacked_weights.T.astype(dtype),
+            adjusted_scales,
+            zero_points,
+            group_size=group_size,
+        )
+        return cls(
+            raw=raw,
+            scales=adjusted_scales,
+            zero_points=zero_points,
+            group_size=group_size,
+            bits=bits,
+        )

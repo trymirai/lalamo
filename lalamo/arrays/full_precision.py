@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
 from typing import TYPE_CHECKING
-
-from lalamo.common import ParameterPath, ParameterTree, dummy_array
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
 if TYPE_CHECKING:
     from jaxtyping import Array, DTypeLike, Float
+    from lalamo.modules.common import Initializer
 
 
 class FullPrecisionArray(CompressedArray):
@@ -17,28 +15,21 @@ class FullPrecisionArray(CompressedArray):
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
         return self.raw
 
-    def export_weights(self) -> ParameterTree:
-        return dict(weights=self.raw)
-
-    @staticmethod
-    def empty(
+    @classmethod
+    def init(
+        cls,
+        initializer: Initializer,
         leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
-        precision: DTypeLike,
     ) -> FullPrecisionArray:
-        return FullPrecisionArray(raw=dummy_array((*leading_dims, out_channels, in_channels), precision))
+        return cls(raw=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision))
 
-    @staticmethod
-    def import_weights(weights_map: Mapping[str, Array]) -> FullPrecisionArray:
-        return FullPrecisionArray(raw=weights_map["weights"])
-
-    @staticmethod
-    def from_torch(
-        state_dict: Mapping[str, Array],
+    @classmethod
+    def from_weight(
+        cls,
+        weights: Array,
         *,
-        prefix: ParameterPath | str,
         dtype: DTypeLike,
     ) -> FullPrecisionArray:
-        path = ParameterPath(prefix)
-        return FullPrecisionArray(raw=state_dict[path / "weight"].astype(dtype))
+        return cls(raw=weights.astype(dtype))

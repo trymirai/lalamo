@@ -9,7 +9,7 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
-from jaxtyping import DTypeLike
+
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
@@ -39,26 +39,23 @@ from .fishaudio_thin_wrapper import FishAudioTextDecoderConfig_Foreign
 def from_fish_audio_config(
     fish_audio_cfg: DualARModelArgs,
     tokenizer: FishTokenizer,
-    precision: DTypeLike,
 ) -> "FishAudioTextDecoderConfig":
     slow_transformer_cfg, slow_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         fish_audio_cfg,
-        precision,
     )
     fast_fish_cfg = ConfigMapping.extract_fast_transformer_params(fish_audio_cfg)
     fast_transformer_cfg, fast_readout_cfg = ConfigMapping.lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         fast_fish_cfg,
-        precision,
     )
 
-    slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
-    fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+    slow_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
+    fast_embedding_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
 
-    codebook_embeddings_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
+    codebook_embeddings_cfg = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None)
     if fish_audio_cfg.dim == fish_audio_cfg.fast_dim:
         fast_model_projection_config = None
     else:
-        fast_model_projection_config = LinearConfig(precision)
+        fast_model_projection_config = LinearConfig()
 
     assert fish_audio_cfg.fast_dim is not None
     return FishAudioTextDecoderConfig(
@@ -110,10 +107,8 @@ class ConfigMapping:
     @staticmethod
     def lalamo_transformer_cfg_from_fish_text_decoder_cfg(
         config: BaseModelArgs,
-        precision: DTypeLike,
     ) -> tuple[TransformerConfig, LinearConfig]:
         global_rope_config = UnscaledRoPEConfig(
-            precision=precision,
             base=config.rope_base,
             max_sequence_length=config.max_seq_len,
             head_dim=config.head_dim,
@@ -232,7 +227,6 @@ class FishAudioFromTorch:
             text_decoder.config,
             audio_decoder.config,
             VocoderConfig(),
-            activation_precision=torch_to_jax(precision),
         )
 
         tts_model = TTSModel(

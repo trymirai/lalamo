@@ -11,11 +11,11 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.common import ParameterTree, unflatten_parameters
+from lalamo.common import is_abstract_array
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
-from lalamo.modules.common import EmptyInitializer
+from lalamo.modules.common import EmptyInitializer, stringify_path
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
 
@@ -85,8 +85,18 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
         config = config_converter.structure(config_json["model_config"], cls)
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.model_config.init(EmptyInitializer(precision=jnp.float32)).import_weights(weights)  # type: ignore
+            if all(key.startswith("model.") for key in weights_dict):
+                weights_dict = {key.removeprefix("model."): value for key, value in weights_dict.items()}
+            model = config.model_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)  # type: ignore
+        abstract_leaves = [
+            f"{stringify_path(path)}: shape={leaf.shape}, dtype={leaf.dtype}"
+            for path, leaf in jax.tree_util.tree_flatten_with_path(model)[0]
+            if is_abstract_array(leaf)
+        ]
+        if abstract_leaves:
+            raise ValueError(
+                "Model contains abstract leaves after loading:\n" + "\n".join(abstract_leaves),
+            )
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = MessageProcessor(config.message_processor_config, tokenizer)
         return config.init(model, message_processor)
