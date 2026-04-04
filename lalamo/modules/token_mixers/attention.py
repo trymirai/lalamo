@@ -377,6 +377,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
@@ -424,6 +425,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             self.is_causal,
             length_without_padding,
             self.sliding_window_size,
+            tree_mask=tree_mask,
         )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)

@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import NamedTuple, Self
 
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
@@ -63,6 +63,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

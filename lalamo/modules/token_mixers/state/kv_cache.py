@@ -42,6 +42,7 @@ class KVCacheLayer(StateLayerBase):
         is_causal: bool,
         suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]: ...
 
     @abstractmethod
@@ -91,8 +92,11 @@ class DynamicKVCacheLayer(KVCacheLayer):
         is_causal: bool,
         suffix_length_without_padding: (Int[Array, ""] | int | None) = None,  # noqa: ARG002
         sliding_window_size: int | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
+        if tree_mask is not None:
+            return tree_mask
         total_num_tokens, _, _ = self.keys.shape
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
@@ -144,8 +148,11 @@ class StaticKVCacheLayer(KVCacheLayer):
         is_causal: bool,
         suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
+        if tree_mask is not None:
+            return tree_mask
         if suffix_length_without_padding is None:
             suffix_length_without_padding = suffix_length
         if is_causal:
@@ -213,6 +220,29 @@ class StaticKVCacheLayer(KVCacheLayer):
             keys=updated_keys,
             values=updated_values,
             current_length=updated_sequence_length,
+        )
+
+    def repack(
+        self,
+        accepted_token_indices: Int[Array, " max_draft"],
+        accepted_count: Int[Array, ""],
+        prefix_length: Int[Array, ""] | int,
+    ) -> "StaticKVCacheLayer":
+        self._raise_if_batched()
+        src_indices = jnp.asarray(prefix_length) + accepted_token_indices
+        gathered_keys = self.keys[src_indices]
+        gathered_values = self.values[src_indices]
+        updated_keys = dynamic_update_slice_in_dim(
+            self.keys, gathered_keys, prefix_length, 0, allow_negative_indices=False,
+        )
+        updated_values = dynamic_update_slice_in_dim(
+            self.values, gathered_values, prefix_length, 0, allow_negative_indices=False,
+        )
+        return StaticKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=updated_keys,
+            values=updated_values,
+            current_length=jnp.asarray(prefix_length) + accepted_count,
         )
 
     @classmethod

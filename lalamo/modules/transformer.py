@@ -5,7 +5,7 @@ from typing import Self
 import equinox as eqx
 import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.token_mixers import AttentionConfig
@@ -179,6 +179,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig | None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -223,6 +224,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config,
+                tree_mask=tree_mask,
             )
             inner_features = layer_result.outputs
             layer_results.append(layer_result)

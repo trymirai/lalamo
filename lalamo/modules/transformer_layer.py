@@ -6,7 +6,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 
@@ -213,6 +213,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -225,7 +226,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mixer_inputs = inputs
 
         batched_mixer_fn = vmap(
-            partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace),
+            partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace, tree_mask=tree_mask),
         )
         mixer_outputs, updated_state = batched_mixer_fn(
             normalized_mixer_inputs,

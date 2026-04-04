@@ -4,7 +4,7 @@ from typing import Self
 import equinox as eqx
 import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 
@@ -143,6 +143,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderForwardPassConfig | None = None,
+        tree_mask: Bool[Array, "suffix_tokens tokens"] | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -165,6 +166,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
+            tree_mask=tree_mask,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)
