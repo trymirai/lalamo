@@ -9,8 +9,8 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
+    EmbeddingQuantConfig,
     LinearConfig,
-    MLXQuantizedTiedEmbeddingConfig,
     NormalizationConfig,
     QuantFormat,
     SeparableCausalConvConfig,
@@ -121,12 +121,13 @@ class HFLFM2Config(HuggingFaceLMConfig):
         if self.quantization_config is not None:
             assert self.tie_embedding
 
-            embedding_config = MLXQuantizedTiedEmbeddingConfig(
+            embedding_config = TiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                group_size=self.quantization_config.group_size,
-                embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
+                quantization=EmbeddingQuantConfig(
+                    group_size=self.quantization_config.group_size,
+                    quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                ),
             )
         elif self.tie_embedding:
             embedding_config = TiedEmbeddingConfig(

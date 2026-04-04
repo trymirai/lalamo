@@ -6,9 +6,8 @@ from lalamo.modules import (
     AttentionConfig,
     DecoderConfig,
     DenseMLPConfig,
+    EmbeddingQuantConfig,
     LinearConfig,
-    MLXQuantizedTiedEmbeddingConfig,
-    MLXQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
     QuantFormat,
     TiedEmbeddingConfig,
@@ -72,21 +71,22 @@ class HFQwen3Config(HuggingFaceLMConfig):
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
         if isinstance(self.quantization_config, MLXQuantizationConfig):
+            quant_config = EmbeddingQuantConfig(
+                group_size=self.quantization_config.group_size,
+                quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+            )
             if self.tie_word_embeddings:
-                embedding_config = MLXQuantizedTiedEmbeddingConfig(
+                embedding_config = TiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    group_size=self.quantization_config.group_size,
-                    embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                    activation_quantization_mode=None,
+                    quantization=quant_config,
                 )
             else:
-                embedding_config = MLXQuantizedUntiedEmbeddingConfig(
+                embedding_config = UntiedEmbeddingConfig(
                     input_scale=None,
                     logit_soft_cap=None,
-                    group_size=self.quantization_config.group_size,
-                    embedding_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                    activation_quantization_mode=None,
+                    input_quantization=quant_config,
+                    output_quantization=quant_config,
                 )
         else:  # noqa: PLR5501
             if self.tie_word_embeddings:

@@ -7,6 +7,7 @@ from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
 from lalamo.arrays import AWQQuantArray, CompressedArray, FullPrecisionArray, MLXQuantArray
+from lalamo.arrays.embedding import CompressedEmbedding, FullPrecisionEmbedding, MLXQuantizedEmbedding
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -19,20 +20,16 @@ from lalamo.modules import (
     Linear,
     Mamba2,
     Mamba2Config,
-    MLXQuantizedLinear,
-    MLXQuantizedTiedEmbedding,
-    MLXQuantizedTiedEmbeddingConfig,
-    MLXSemiQuantizedUntiedEmbedding,
     Normalization,
     SeparableCausalConv,
     ShortConv,
     ShortConvConfig,
     TiedEmbedding,
+    TiedEmbeddingConfig,
     TransformerLayer,
     UntiedEmbedding,
 )
 from lalamo.modules.classifier import Classifier
-from lalamo.modules.embedding import MLXQuantizedUntiedEmbedding
 from lalamo.modules.mlp import MixtureOfExperts, MLPBase
 from lalamo.quantization import QuantizationMode
 
@@ -897,107 +894,40 @@ def load_transformer_layer(
     )
 
 
+def _load_compressed_embedding(
+    embedding: CompressedEmbedding,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> CompressedEmbedding:
+    if isinstance(embedding, FullPrecisionEmbedding):
+        weights = weights_dict[path / "weight"].astype(embedding.activation_precision)
+        return FullPrecisionEmbedding(weights=weights)
+    if isinstance(embedding, MLXQuantizedEmbedding):
+        weights = _process_quantized_tensor(
+            weights_dict[path / "weight"],
+            embedding.quantization_mode,
+            embedding.activation_precision,
+            None,
+        )
+        scales = weights_dict[path / "scales"].astype(embedding.activation_precision)
+        biases = weights_dict[path / "biases"].astype(embedding.activation_precision)
+        return MLXQuantizedEmbedding(
+            weights=weights,
+            scales=scales,
+            biases=biases,
+            group_size=embedding.group_size,
+            quantization_mode=embedding.quantization_mode,
+        )
+    raise TypeError(f"Unsupported embedding type: {type(embedding)}")
+
+
 def load_tied_embedding(
     module: TiedEmbedding,
     weights_dict: Mapping[str, Array],
     embedding_path: ParameterPath,
 ) -> TiedEmbedding:
-    weights = weights_dict[embedding_path / "weight"]
-    return load_parameters(lambda m: (m.weights,), module, (weights,))
-
-
-def load_mlx_quantized_tied_embedding(
-    module: MLXQuantizedTiedEmbedding,
-    weights_dict: Mapping[str, Array],
-    embedding_path: ParameterPath,
-) -> MLXQuantizedTiedEmbedding:
-    qweights = weights_dict[embedding_path / "weight"]
-    qscales = weights_dict[embedding_path / "scales"]
-    qbiases = weights_dict[embedding_path / "biases"]
-
-    weights = _process_quantized_tensor(
-        qweights,
-        module.config.embedding_quantization_mode,
-        module.activation_precision,
-        None,
-    )
-    scales = qscales.astype(module.activation_precision)
-    biases = qbiases.astype(module.activation_precision)
-
-    return load_parameters(lambda m: (m.weights, m.scales, m.biases), module, (weights, scales, biases))
-
-
-def load_mlx_quantized_untied_embedding(
-    module: MLXQuantizedUntiedEmbedding,
-    weights_dict: Mapping[str, Array],
-    embedding_path: ParameterPath,
-    lm_head_path: ParameterPath,
-) -> MLXQuantizedUntiedEmbedding:
-    input_qweights = weights_dict[embedding_path / "weight"]
-    input_qscales = weights_dict[embedding_path / "scales"]
-    input_qbiases = weights_dict[embedding_path / "biases"]
-    output_qweights = weights_dict[lm_head_path / "weight"]
-    output_qscales = weights_dict[lm_head_path / "scales"]
-    output_qbiases = weights_dict[lm_head_path / "biases"]
-
-    input_weights = _process_quantized_tensor(
-        input_qweights,
-        module.config.embedding_quantization_mode,
-        module.activation_precision,
-        None,
-    )
-    input_scales = input_qscales.astype(module.activation_precision)
-    input_biases = input_qbiases.astype(module.activation_precision)
-
-    output_weights = _process_quantized_tensor(
-        output_qweights,
-        module.config.embedding_quantization_mode,
-        module.activation_precision,
-        None,
-    )
-    output_scales = output_qscales.astype(module.activation_precision)
-    output_biases = output_qbiases.astype(module.activation_precision)
-
-    return load_parameters(
-        lambda m: (
-            m.input_weights,
-            m.input_scales,
-            m.input_biases,
-            m.output_weights,
-            m.output_scales,
-            m.output_biases,
-        ),
-        module,
-        (input_weights, input_scales, input_biases, output_weights, output_scales, output_biases),
-    )
-
-
-def load_mlx_semi_quantized_untied_embedding(
-    module: MLXSemiQuantizedUntiedEmbedding,
-    weights_dict: Mapping[str, Array],
-    embedding_path: ParameterPath,
-    lm_head_path: ParameterPath,
-) -> MLXSemiQuantizedUntiedEmbedding:
-    input_weights = weights_dict[embedding_path / "weight"]
-
-    output_qweights = weights_dict[lm_head_path / "weight"]
-    output_qscales = weights_dict[lm_head_path / "scales"]
-    output_qbiases = weights_dict[lm_head_path / "biases"]
-
-    output_weights = _process_quantized_tensor(
-        output_qweights,
-        module.config.embedding_quantization_mode,
-        module.activation_precision,
-        None,
-    )
-    output_scales = output_qscales.astype(module.activation_precision)
-    output_biases = output_qbiases.astype(module.activation_precision)
-
-    return load_parameters(
-        lambda m: (m.input_weights, m.output_weights, m.output_scales, m.output_biases),
-        module,
-        (input_weights, output_weights, output_scales, output_biases),
-    )
+    embedding = _load_compressed_embedding(module.embedding, weights_dict, embedding_path)
+    return load_parameters(lambda m: (m.embedding,), module, (embedding,))
 
 
 def load_untied_embedding(
@@ -1006,12 +936,12 @@ def load_untied_embedding(
     embedding_path: ParameterPath,
     lm_head_path: ParameterPath,
 ) -> UntiedEmbedding:
-    input_weights = weights_dict[embedding_path / "weight"]
-    output_weights = weights_dict[lm_head_path / "weight"]
+    input_emb = _load_compressed_embedding(module.input_embedding, weights_dict, embedding_path)
+    output_emb = _load_compressed_embedding(module.output_embedding, weights_dict, lm_head_path)
     return load_parameters(
-        lambda m: (m.input_weights, m.output_weights),
+        lambda m: (m.input_embedding, m.output_embedding),
         module,
-        (input_weights, output_weights),
+        (input_emb, output_emb),
     )
 
 
@@ -1065,7 +995,10 @@ def load_huggingface_decoder(
         embedding_path = decoder_path / "embed_tokens"
         pre_mixer_norm_key = "operator_norm"
         mixer_key = {ShortConvConfig: "conv", AttentionConfig: "self_attn"}
-        permute_conv = isinstance(module.config.embedding_config, MLXQuantizedTiedEmbeddingConfig)
+        permute_conv = (
+            isinstance(module.config.embedding_config, TiedEmbeddingConfig)
+            and module.config.embedding_config.quantization is not None
+        )
         pre_mlp_norm_key = "ffn_norm"
         mlp_key = "feed_forward"
         up_proj_key = "w3"
@@ -1091,17 +1024,6 @@ def load_huggingface_decoder(
 
     if isinstance(module.embedding, TiedEmbedding):
         embedding = load_tied_embedding(module.embedding, weights_dict, embedding_path)
-    elif isinstance(module.embedding, MLXQuantizedTiedEmbedding):
-        embedding = load_mlx_quantized_tied_embedding(module.embedding, weights_dict, embedding_path)
-    elif isinstance(module.embedding, MLXQuantizedUntiedEmbedding):
-        embedding = load_mlx_quantized_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
-    elif isinstance(module.embedding, MLXSemiQuantizedUntiedEmbedding):
-        embedding = load_mlx_semi_quantized_untied_embedding(
-            module.embedding,
-            weights_dict,
-            embedding_path,
-            lm_head_path,
-        )
     elif isinstance(module.embedding, UntiedEmbedding):
         embedding = load_untied_embedding(module.embedding, weights_dict, embedding_path, lm_head_path)
     else:
@@ -1142,8 +1064,9 @@ def load_huggingface_classifier(
         weights_dict: Mapping[str, Array],
         decoder_path: ParameterPath,
     ) -> TiedEmbedding:
-        input_weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
-        return load_parameters(lambda m: (m.weights,), module, (input_weights,))
+        weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
+        embedding = FullPrecisionEmbedding(weights=weights.astype(module.activation_precision))
+        return load_parameters(lambda m: (m.embedding,), module, (embedding,))
 
     def load_linear_with_reshufling(
         module: Linear,

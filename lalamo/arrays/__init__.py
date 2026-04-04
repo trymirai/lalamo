@@ -6,6 +6,9 @@ from .base import NoQuantize as NoQuantize
 from .base import Quantize as Quantize
 from .base import StochasticQuantize as StochasticQuantize
 from .composite import CompositeArray as CompositeArray
+from .embedding import CompressedEmbedding as CompressedEmbedding
+from .embedding import FullPrecisionEmbedding as FullPrecisionEmbedding
+from .embedding import MLXQuantizedEmbedding as MLXQuantizedEmbedding
 from .full_precision import FullPrecisionArray as FullPrecisionArray
 from .lora import LoraArray as LoraArray
 from .mlx import MLXQuantArray as MLXQuantArray

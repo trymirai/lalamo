@@ -6,8 +6,8 @@ import jax.numpy as jnp
 
 from lalamo.modules import (
     DecoderConfig,
+    EmbeddingQuantConfig,
     LinearConfig,
-    MLXQuantizedTiedEmbeddingConfig,
     QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -95,12 +95,13 @@ class HFGemma3TextConfigRaw:
                 logit_soft_cap=self.final_logit_softcapping,
             )
         elif isinstance(quantization, MLXQuantizationConfig):
-            embedding_config = MLXQuantizedTiedEmbeddingConfig(
+            embedding_config = TiedEmbeddingConfig(
                 input_scale=input_scale,
                 logit_soft_cap=self.final_logit_softcapping,
-                group_size=quantization.group_size,
-                embedding_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
+                quantization=EmbeddingQuantConfig(
+                    group_size=quantization.group_size,
+                    quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                ),
             )
         else:
             raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")

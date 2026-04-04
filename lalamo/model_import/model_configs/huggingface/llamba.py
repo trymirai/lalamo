@@ -5,10 +5,10 @@ from typing import Literal
 from lalamo.modules import (
     DecoderConfig,
     DenseMLPConfig,
+    EmbeddingQuantConfig,
     Identity,
     LinearConfig,
     Mamba2Config,
-    MLXSemiQuantizedUntiedEmbeddingConfig,
     NormalizationConfig,
     QuantFormat,
     SeparableCausalConvConfig,
@@ -67,14 +67,15 @@ class HFLlambaConfig(HuggingFaceLMConfig):
         metadata_dict: Mapping[str, str],
     ) -> DecoderConfig:
         if "quantization_kwargs.group_size" in metadata_dict:
-            embedding_config = MLXSemiQuantizedUntiedEmbeddingConfig(
+            embedding_config = UntiedEmbeddingConfig(
                 input_scale=None,
                 logit_soft_cap=None,
-                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                embedding_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"]),
+                output_quantization=EmbeddingQuantConfig(
+                    group_size=int(metadata_dict["quantization_kwargs.group_size"]),
+                    quantization_mode=QuantizationMode.from_num_bits(
+                        int(metadata_dict["quantization_kwargs.bits"]),
+                    ),
                 ),
-                activation_quantization_mode=None,
             )
         elif self.tie_embeddings:
             embedding_config = TiedEmbeddingConfig(

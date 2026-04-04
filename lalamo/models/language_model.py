@@ -866,7 +866,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 state.state,
                 return_updated_state=True,
                 forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-                forward_pass_config=forward_pass_config,
+                forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
             )
             assert decoder_outputs.updated_state is not None, "updated_state should not be None"
             state = DecodingState(
