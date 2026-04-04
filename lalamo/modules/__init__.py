@@ -80,8 +80,7 @@ from .token_mixers import (
     State,
     StaticKVCacheLayer,
 )
-from .transformer import Transformer, TransformerConfig
-from .transformer import TransformerForwardPassConfig
+from .transformer import Transformer, TransformerConfig, TransformerForwardPassConfig
 from .transformer_layer import (
     PLELayer,
     PLELayerConfig,
@@ -111,6 +110,7 @@ __all__ = [
     "DynamicKVCacheLayer",
     "EmbeddingBase",
     "EmbeddingConfig",
+    "EmbeddingQuantConfig",
     "EmptyInitializer",
     "ForwardPassMode",
     "Identity",
@@ -124,7 +124,6 @@ __all__ = [
     "MLPBase",
     "MLPConfig",
     "MLPForwardPassConfig",
-    "EmbeddingQuantConfig",
     "Mamba2",
     "Mamba2Config",
     "MixtureOfExperts",

@@ -1,12 +1,11 @@
 from collections.abc import Mapping
-from dataclasses import dataclass
 
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
-from lalamo.arrays import AWQQuantArray, CompressedArray, FullPrecisionArray, MLXQuantArray
+from lalamo.arrays import AWQQuantArray, FullPrecisionArray, MLXQuantArray
 from lalamo.arrays.embedding import CompressedEmbedding, FullPrecisionEmbedding, MLXQuantizedEmbedding
 from lalamo.arrays.quant_format import QuantFormat
 from lalamo.common import ParameterPath
