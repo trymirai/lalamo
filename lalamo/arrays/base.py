@@ -4,8 +4,11 @@ import abc
 from typing import TYPE_CHECKING
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from einops import rearrange
+
+from lalamo.common import stringify_path
 
 if TYPE_CHECKING:
     from jaxtyping import Array, Float, PRNGKeyArray
@@ -40,11 +43,36 @@ class CompressedArray(eqx.Module):
     @abc.abstractmethod
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array: ...  # noqa: B008
 
-    @abc.abstractmethod
-    def to_uzu(self) -> dict[str, Array]: ...
+    def to_uzu(self) -> dict[str, Array]:
+        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(
+            self,
+            is_leaf=lambda x: isinstance(x, CompressedArray) and x is not self,
+        )
+        result: dict[str, Array] = {}
+        for path, leaf in flat_with_path:
+            key = stringify_path(path)
+            if isinstance(leaf, CompressedArray):
+                for sub_key, array in leaf.to_uzu().items():
+                    result[f"{key}.{sub_key}"] = array
+            else:
+                result[key] = leaf
+        return result
 
-    @abc.abstractmethod
-    def from_uzu(self, weights: dict[str, Array]) -> CompressedArray: ...
+    def from_uzu(self, weights: dict[str, Array]) -> CompressedArray:
+        def restore(path: tuple[object, ...], leaf: object) -> object:
+            key = stringify_path(path)
+            if isinstance(leaf, CompressedArray):
+                relevant = {k.removeprefix(f"{key}."): v for k, v in weights.items() if k.startswith(f"{key}.")}
+                return leaf.from_uzu(relevant)
+            if key in weights:
+                return weights[key]
+            return leaf
+
+        return jax.tree_util.tree_map_with_path(
+            restore,
+            self,
+            is_leaf=lambda x: isinstance(x, CompressedArray) and x is not self,
+        )
 
     def dot(
         self,

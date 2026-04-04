@@ -15,7 +15,7 @@ from jax import ShapeDtypeStruct
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
-from lalamo.common import ParameterTree, require_array, require_tree
+from lalamo.common import ParameterTree, stringify_path
 
 __all__ = [
     "DummyUnionMember",
@@ -36,7 +36,6 @@ __all__ = [
     "require_array",
     "require_tree",
     "sharded_field",
-    "stringify_path",
 ]
 
 

@@ -23,10 +23,26 @@ __all__ = [
     "require_array",
     "require_mapping",
     "require_tree",
+    "stringify_path",
     "unflatten_parameters",
 ]
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
+
+
+def stringify_path(path: tuple[object, ...]) -> str:
+    parts: list[str] = []
+    for key in path:
+        match key:
+            case jax.tree_util.GetAttrKey(name):
+                parts.append(name)
+            case jax.tree_util.SequenceKey(idx):
+                parts.append(str(idx))
+            case jax.tree_util.DictKey(key=k):
+                parts.append(str(k))
+            case _:
+                parts.append(str(key))
+    return ".".join(parts)
 
 
 class LalamoWarning(UserWarning):

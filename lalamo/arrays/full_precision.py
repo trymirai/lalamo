@@ -22,12 +22,6 @@ class FullPrecisionArray(CompressedArray):
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
         return self.raw
 
-    def to_uzu(self) -> dict[str, Array]:
-        return {"raw": self.raw}
-
-    def from_uzu(self, weights: dict[str, Array]) -> FullPrecisionArray:
-        return type(self)(raw=weights["raw"])
-
     @classmethod
     def init(
         cls,

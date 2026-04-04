@@ -17,7 +17,7 @@ from lalamo.audio.tts_message_processor import (
     TTSMessageProcessor,
     TTSMessageProcessorConfig,
 )
-from lalamo.common import is_abstract_array
+from lalamo.common import is_abstract_array, stringify_path
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -34,7 +34,7 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
 )
-from lalamo.modules.common import EmptyInitializer, stringify_path
+from lalamo.modules.common import EmptyInitializer
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
 

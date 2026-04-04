@@ -11,11 +11,11 @@ from jax import numpy as jnp
 from jaxtyping import PRNGKeyArray
 from tokenizers import Tokenizer
 
-from lalamo.common import is_abstract_array
+from lalamo.common import is_abstract_array, stringify_path
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
-from lalamo.modules.common import EmptyInitializer, stringify_path
+from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
 
