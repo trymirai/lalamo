@@ -38,8 +38,17 @@ class LoraArray(CompressedArray):
             return dummy_array((*leading_dims, out_channels), self.down.dtype)
         return self.down @ (self.up @ vector)
 
-    def export_weights(self) -> ParameterTree:
-        return dict(down_weights=self.down, up_weights=self.up)
+    def to_uzu(self) -> dict[str, Array]:
+        return {
+            "down": self.down,
+            "up": self.up,
+        }
+
+    def from_uzu(self, weights: dict[str, Array]) -> LoraArray:
+        return type(self)(
+            down=weights["down"],
+            up=weights["up"],
+        )
 
     @staticmethod
     def from_rank(

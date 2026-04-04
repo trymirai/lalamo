@@ -15,7 +15,9 @@ from .base import (
     DeterministicQuantize,
     NoQuantize,
     StochasticQuantize,
+    pack_uint_to_uint8,
     unpack_int32,
+    unpack_uint8_to_uint,
 )
 
 if TYPE_CHECKING:
@@ -103,23 +105,45 @@ class MLXQuantArray(CompressedArray):
                 int_weights = mlx_stochastic_quantize_per_group(
                     self.raw, self.scales, self.deq_biases, group_size=self.group_size, bits=self.bits, key=key
                 )
+            case unknown:
+                raise TypeError(f"Unknown quantization strategy: {unknown}")
         quantized = mlx_dequantize_per_group(int_weights, self.scales, self.deq_biases, group_size=self.group_size)
         quantized = quantized.astype(self.raw.dtype)
         return self.raw + jax.lax.stop_gradient(quantized - self.raw)
 
-    def __check_init__(self) -> None:
-        *_, out_ch, in_ch = self.raw.shape
-        expected_groups = in_ch // self.group_size
-        if in_ch % self.group_size != 0:
-            raise ValueError(f"in_channels ({in_ch}) not divisible by group_size ({self.group_size})")
-        *_, scale_out, scale_groups = self.scales.shape
-        if scale_out != out_ch or scale_groups != expected_groups:
-            raise ValueError(f"scales shape {self.scales.shape} incompatible with weights shape {self.raw.shape}")
-        *_, bias_out, bias_groups = self.deq_biases.shape
-        if bias_out != out_ch or bias_groups != expected_groups:
-            raise ValueError(
-                f"deq_biases shape {self.deq_biases.shape} incompatible with weights shape {self.raw.shape}"
-            )
+    def to_uzu(self) -> dict[str, Array]:
+        quantized_weights = mlx_quantize_per_group(
+            self.raw,
+            self.scales,
+            self.deq_biases,
+            group_size=self.group_size,
+            bits=self.bits,
+        )
+        return {
+            "qweight": pack_uint_to_uint8(quantized_weights, self.bits),
+            "scales": self.scales,
+            "biases": self.deq_biases,
+        }
+
+    def from_uzu(self, weights: dict[str, Array]) -> MLXQuantArray:
+        packed_weights = weights["qweight"]
+        float_dtype = weights["scales"].dtype
+        unpacked_weights = unpack_uint8_to_uint(packed_weights, self.bits).astype(float_dtype)
+        scales = weights["scales"]
+        deq_biases = weights["biases"]
+        raw = mlx_dequantize_per_group(
+            unpacked_weights,
+            scales,
+            deq_biases,
+            group_size=self.group_size,
+        )
+        return type(self)(
+            raw=raw,
+            scales=scales,
+            deq_biases=deq_biases,
+            group_size=self.group_size,
+            bits=self.bits,
+        )
 
     @classmethod
     def init(
@@ -153,9 +177,10 @@ class MLXQuantArray(CompressedArray):
         group_size: int,
         bits: int,
     ) -> MLXQuantArray:
+        _packed_out, packed_in = packed_weights.shape
         quantization_mode = detect_mlx_quantization(
             expected_in_channels,
-            packed_weights.shape[-1],
+            packed_in,
             QuantizationMode.from_num_bits(bits),
         )
         unpacked_weights = unpack_int32(packed_weights, quantization_mode.bits).astype(dtype)

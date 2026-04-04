@@ -39,8 +39,23 @@ class CompositeArray(CompressedArray):
             return first_part
         return sum(remaining_parts, start=first_part)
 
-    def export_weights(self) -> ParameterTree:
-        return {f"part_{i}": part.export_weights() for i, part in enumerate(self.parts)}
+    def to_uzu(self) -> dict[str, Array]:
+        result: dict[str, Array] = {}
+        for index, part in enumerate(self.parts):
+            part_name = "base" if index == 0 else "lora" if isinstance(part, LoraArray) else f"part_{index}"
+            for key, value in part.to_uzu().items():
+                result[f"{part_name}.{key}"] = value
+        return result
+
+    def from_uzu(self, weights: dict[str, Array]) -> CompositeArray:
+        restored_parts: list[CompressedArray] = []
+        for index, part in enumerate(self.parts):
+            prefix = "base." if index == 0 else "lora." if isinstance(part, LoraArray) else f"part_{index}."
+            part_weights = {
+                key.removeprefix(prefix): value for key, value in weights.items() if key.startswith(prefix)
+            }
+            restored_parts.append(part.from_uzu(part_weights))
+        return type(self)(parts=tuple(restored_parts))
 
     @staticmethod
     def from_compressed(base: CompressedArray) -> CompositeArray:

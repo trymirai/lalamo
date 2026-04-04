@@ -30,7 +30,7 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig
+from lalamo.models import GenerationConfig, LanguageModelConfig, TTSGenerator
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
@@ -224,7 +224,8 @@ def convert(
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
-    weights = cast("LalamoModule", model).to_uzu()
+    serializable_model = model.tts_model if isinstance(model, TTSGenerator) else model
+    weights = cast("LalamoModule", serializable_model).to_uzu()
     del model
 
     with Path(output_dir / "model.safetensors").open("wb") as fd:

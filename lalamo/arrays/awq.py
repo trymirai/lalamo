@@ -15,7 +15,9 @@ from .base import (
     DeterministicQuantize,
     NoQuantize,
     StochasticQuantize,
+    pack_uint_to_uint8,
     unpack_int32,
+    unpack_uint8_to_uint,
 )
 
 if TYPE_CHECKING:
@@ -96,23 +98,47 @@ class AWQQuantArray(CompressedArray):
                 int_weights = awq_stochastic_quantize_per_group(
                     self.raw, self.scales, self.zero_points, group_size=self.group_size, bits=self.bits, key=key
                 )
+            case unknown:
+                raise TypeError(f"Unknown quantization strategy: {unknown}")
         quantized = awq_dequantize_per_group(int_weights, self.scales, self.zero_points, group_size=self.group_size)
         quantized = quantized.astype(self.raw.dtype)
         return self.raw + jax.lax.stop_gradient(quantized - self.raw)
 
-    def __check_init__(self) -> None:
-        *_, out_ch, in_ch = self.raw.shape
-        expected_groups = in_ch // self.group_size
-        if in_ch % self.group_size != 0:
-            raise ValueError(f"in_channels ({in_ch}) not divisible by group_size ({self.group_size})")
-        *_, scale_out, scale_groups = self.scales.shape
-        if scale_out != out_ch or scale_groups != expected_groups:
-            raise ValueError(f"scales shape {self.scales.shape} incompatible with weights shape {self.raw.shape}")
-        *_, zp_out, zp_groups = self.zero_points.shape
-        if zp_out != out_ch or zp_groups != expected_groups:
-            raise ValueError(
-                f"zero_points shape {self.zero_points.shape} incompatible with weights shape {self.raw.shape}"
-            )
+    def to_uzu(self) -> dict[str, Array]:
+        quantized_weights = awq_quantize_per_group(
+            self.raw,
+            self.scales,
+            self.zero_points,
+            group_size=self.group_size,
+            bits=self.bits,
+        )
+        packed_weights = pack_uint_to_uint8(quantized_weights, self.bits)
+        packed_zero_points = pack_uint_to_uint8(self.zero_points.astype(jnp.uint8), self.bits)
+        return {
+            "qweight": packed_weights,
+            "scales": self.scales,
+            "qzeros": packed_zero_points,
+        }
+
+    def from_uzu(self, weights: dict[str, Array]) -> AWQQuantArray:
+        packed_weights = weights["qweight"]
+        packed_zero_points = weights["qzeros"]
+        float_dtype = weights["scales"].dtype
+        unpacked_weights = unpack_uint8_to_uint(packed_weights, self.bits).astype(float_dtype)
+        unpacked_zero_points = unpack_uint8_to_uint(packed_zero_points, self.bits).astype(float_dtype)
+        raw = awq_dequantize_per_group(
+            unpacked_weights,
+            weights["scales"],
+            unpacked_zero_points,
+            group_size=self.group_size,
+        )
+        return type(self)(
+            raw=raw,
+            scales=weights["scales"],
+            zero_points=unpacked_zero_points,
+            group_size=self.group_size,
+            bits=self.bits,
+        )
 
     @classmethod
     def init(

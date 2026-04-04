@@ -17,6 +17,7 @@ from lalamo.audio.tts_message_processor import (
     TTSMessageProcessor,
     TTSMessageProcessorConfig,
 )
+from lalamo.common import is_abstract_array
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -33,7 +34,7 @@ from lalamo.modules.audio.text_to_speech import (
     DEFAULT_TTS_SAMPLING_POLICY,
     TTSConfig,
 )
-from lalamo.modules.common import EmptyInitializer
+from lalamo.modules.common import EmptyInitializer, stringify_path
 from lalamo.safetensors import safe_read
 from lalamo.sampling import SamplingPolicy
 
@@ -133,8 +134,18 @@ class TTSGenerator(eqx.Module):
         assert isinstance(config, TTSGeneratorConfig)
         with Path(path / "model.safetensors").open("rb") as fd:
             _, weights_dict = safe_read(fd)
-            weights = unflatten_parameters(weights_dict)
-            model = config.tts_config.init(EmptyInitializer(precision=jnp.float32)).import_weights(weights)
+            if all(key.startswith("model.") for key in weights_dict):
+                weights_dict = {key.removeprefix("model."): value for key, value in weights_dict.items()}
+            model = config.tts_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)
+        abstract_leaves = [
+            f"{stringify_path(path)}: shape={leaf.shape}, dtype={leaf.dtype}"
+            for path, leaf in jax.tree_util.tree_flatten_with_path(model)[0]
+            if is_abstract_array(leaf)
+        ]
+        if abstract_leaves:
+            raise ValueError(
+                "Model contains abstract leaves after loading:\n" + "\n".join(abstract_leaves),
+            )
         tokenizer = Tokenizer.from_file(str(path / "tokenizer.json"))
         message_processor = TTSMessageProcessor(config.message_processor_config, tokenizer)
         return TTSGenerator(

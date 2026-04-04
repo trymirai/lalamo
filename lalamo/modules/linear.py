@@ -178,19 +178,10 @@ class Linear(LalamoModule[LinearConfig]):
     # sharding order specifies in which order do we attempt to shard
     sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
-    def __check_init__(self) -> None:
-        *_, weight_out, _weight_in = self.weights.materialize().shape
-        expected_out = sum(self.output_dims)
-        if weight_out != expected_out:
-            raise ValueError(f"Weight out_channels ({weight_out}) != sum(output_dims) ({expected_out})")
-        if self.biases is not None:
-            *_, bias_out = self.biases.shape
-            if bias_out != expected_out:
-                raise ValueError(f"Bias size ({bias_out}) != sum(output_dims) ({expected_out})")
-
     @property
     def input_dim(self) -> int:
-        return self.weights.materialize().shape[-1]
+        *_, _out, in_dim = self.weights.materialize().shape
+        return in_dim
 
     @property
     def has_biases(self) -> bool:
@@ -198,7 +189,13 @@ class Linear(LalamoModule[LinearConfig]):
 
     @property
     def mixture_size(self) -> int | None:
-        return self.weights.materialize().shape[0] if self.weights.materialize().ndim > 2 else None
+        match self.weights.materialize().shape:
+            case (mix, _, _):
+                return mix
+            case (_, _):
+                return None
+            case shape:
+                raise ValueError(f"Unexpected weight shape: {shape}")
 
     @property
     def num_outputs(self) -> int:

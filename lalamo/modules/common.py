@@ -52,13 +52,39 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = eqx.field(static=True)
 
     @abstractmethod
-    def export_weights(self) -> ParameterTree[Array]: ...
+    def activation_precision(self) -> DTypeLike: ...
+
+    def to_uzu(self) -> dict[str, Array]:
+        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(
+            self,
+            is_leaf=lambda x: ((isinstance(x, LalamoModule) and x is not self) or _is_uzu_leaf(x)),
+        )
+        result: dict[str, Array] = {}
+        for path, leaf in flat_with_path:
+            key = stringify_path(path)
+            if isinstance(leaf, LalamoModule):
+                for sub_key, array in leaf.to_uzu().items():
+                    result[f"{key}.{sub_key}"] = array
+            elif _is_uzu_leaf(leaf):
+                for sub_key, array in cast("Any", leaf).to_uzu().items():
+                    result[f"{key}.{sub_key}"] = array
+            else:
+                result[key] = leaf
+        return result
 
     def from_uzu(self, weights: Mapping[str, Array], prefix: str = "") -> Self:
         def restore(path: tuple[object, ...], leaf: object) -> object:
             key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
             if isinstance(leaf, LalamoModule):
                 return leaf.from_uzu(weights, prefix=key)
+            if _is_uzu_leaf(leaf):
+                relevant_weights = {
+                    sub_key.removeprefix(f"{key}."): value
+                    for sub_key, value in weights.items()
+                    if sub_key.startswith(f"{key}.")
+                }
+                if relevant_weights:
+                    return cast("Any", leaf).from_uzu(relevant_weights)
             if key in weights:
                 return weights[key]
             return leaf
@@ -66,8 +92,12 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
         return jax.tree_util.tree_map_with_path(
             restore,
             self,
-            is_leaf=lambda x: isinstance(x, LalamoModule) and x is not self,
+            is_leaf=lambda x: ((isinstance(x, LalamoModule) and x is not self) or _is_uzu_leaf(x)),
         )
+
+
+def _is_uzu_leaf(value: object) -> bool:
+    return hasattr(value, "to_uzu") and hasattr(value, "from_uzu") and not isinstance(value, LalamoModule)
 
 
 @dataclass

@@ -29,17 +29,25 @@ class CompressedEmbedding(eqx.Module):
     @abc.abstractmethod
     def dequantize(self) -> Float[Array, "vocabulary channels"]: ...
 
+    @abc.abstractmethod
+    def to_uzu(self) -> dict[str, Array]: ...
+
+    @abc.abstractmethod
+    def from_uzu(self, weights: dict[str, Array]) -> CompressedEmbedding: ...
+
 
 class FullPrecisionEmbedding(CompressedEmbedding):
     weights: Float[Array, "vocabulary channels"]
 
     @property
     def vocab_size(self) -> int:
-        return self.weights.shape[0]
+        vocab, _channels = self.weights.shape
+        return vocab
 
     @property
     def model_dim(self) -> int:
-        return self.weights.shape[1]
+        _vocab, channels = self.weights.shape
+        return channels
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -47,6 +55,12 @@ class FullPrecisionEmbedding(CompressedEmbedding):
 
     def dequantize(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
+
+    def to_uzu(self) -> dict[str, Array]:
+        return {"raw": self.weights}
+
+    def from_uzu(self, weights: dict[str, Array]) -> FullPrecisionEmbedding:
+        return type(self)(weights=weights["raw"])
 
 
 class MLXQuantizedEmbedding(CompressedEmbedding):
@@ -58,11 +72,13 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
 
     @property
     def vocab_size(self) -> int:
-        return self.weights.shape[0]
+        vocab, _channels = self.weights.shape
+        return vocab
 
     @property
     def model_dim(self) -> int:
-        return self.weights.shape[1]
+        _vocab, channels = self.weights.shape
+        return channels
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -88,3 +104,25 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
         if self.quantization_mode == QuantizationMode.UINT4:
             return jax_uint4_to_packed_uint8(casted)
         return casted
+
+    def to_uzu(self) -> dict[str, Array]:
+        return {
+            "qweight": self.pack(),
+            "scales": self.scales,
+            "biases": self.biases,
+        }
+
+    def from_uzu(self, weights: dict[str, Array]) -> MLXQuantizedEmbedding:
+        packed_weights = weights["qweight"]
+        unpacked_weights = packed_weights
+        if self.quantization_mode == QuantizationMode.UINT4:
+            from lalamo.utils import jax_uint8_to_unpacked_uint4
+
+            unpacked_weights = jax_uint8_to_unpacked_uint4(packed_weights)
+        return type(self)(
+            weights=unpacked_weights.astype(weights["scales"].dtype),
+            scales=weights["scales"],
+            biases=weights["biases"],
+            group_size=self.group_size,
+            quantization_mode=self.quantization_mode,
+        )
