@@ -1,3 +1,5 @@
+from functools import partial
+
 from dataclasses import dataclass
 
 import equinox as eqx
@@ -82,17 +84,22 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
+        forward_pass_config: MixerForwardPassConfig | None = None,
     ) -> TokenMixerResult[ShortConvStateLayer]:
+        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
 
-        pre_conv_gate, post_conv_gate, x = vmap(self.in_projection)(inputs)
+        pre_conv_gate, post_conv_gate, x = vmap(
+            partial(self.in_projection, forward_pass_config=forward_pass_config.in_arrays)
+        )(inputs)
 
         prev_conv_state = state.conv_state if state is not None else None
         conv_output = self.conv(x * pre_conv_gate, length_without_padding, prev_conv_state, return_updated_state)
 
-        (outputs,) = vmap(self.out_projection)(conv_output.outputs * post_conv_gate)
+        (outputs,) = vmap(partial(self.out_projection, forward_pass_config=forward_pass_config.out_arrays))(
+            conv_output.outputs * post_conv_gate
+        )
         updated_conv_state = conv_output.state
 
         if return_updated_state:

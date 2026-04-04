@@ -183,7 +183,7 @@ def load_linear_and_fuse_scaling(
 
     base = FullPrecisionArray(raw=weights.astype(module.activation_precision))
     new_weights = base
-    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias), is_leaf=lambda x: x is None)
+    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias))
 
 
 def load_transformer_block(
@@ -443,9 +443,7 @@ def load_vector_quantize(
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
     base = FullPrecisionArray(raw=out_proj_weight.astype(module.out_proj.activation_precision))
     new_weights = base
-    out_proj = eqx.tree_at(
-        lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias), is_leaf=lambda x: x is None
-    )
+    out_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias))
 
     return load_parameters(
         lambda m: (m.codebook, m.out_proj),
@@ -542,7 +540,6 @@ def load_convnext_block(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step1,
         (base1, pwconv1_bias),
-        is_leaf=lambda x: x is None,
     )
 
     # Load pointwise conv 2 (Linear layer), fusing layer scaling if present
@@ -558,7 +555,6 @@ def load_convnext_block(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step2,
         (base2, pwconv2_bias),
-        is_leaf=lambda x: x is None,
     )
 
     return load_parameters(

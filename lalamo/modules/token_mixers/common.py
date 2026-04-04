@@ -2,9 +2,11 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import NamedTuple
 
-from jaxtyping import Array, DTypeLike, Float, Int
+import equinox as eqx
+from jaxtyping import Array, Float, Int
 
-from lalamo.modules.common import Initializer, LalamoModule, ParameterTree, PositionalEmbeddingSelector
+from lalamo.arrays import ArrayForwardPassConfig
+from lalamo.modules.common import Initializer, LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
@@ -17,9 +19,10 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class MixerForwardPassConfig:
-    pass
+class MixerForwardPassConfig(eqx.Module):
+    in_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
+    gate_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
+    out_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):

@@ -13,6 +13,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
+from lalamo.arrays import ArrayForwardPassConfig
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
@@ -21,6 +22,8 @@ from lalamo.modules import (
     LalamoModule,
     ShardingConfig,
     State,
+    TransformerForwardPassConfig,
+    TransformerLayerForwardPassConfig,
     get_current_sharding_config,
     pad_and_apply_data_sharding,
 )
@@ -55,7 +58,27 @@ __all__ = [
 _COMPILED_PROMPT_LENGTHS = [256 * 2**i for i in range(12)]
 
 
-type ForwardPassConfig = DecoderForwardPassConfig
+class ForwardPassConfig(eqx.Module):
+    decoder: DecoderForwardPassConfig = DecoderForwardPassConfig()
+
+    @staticmethod
+    def init(
+        arrays: ArrayForwardPassConfig | None = None,
+        *,
+        stochastic_quantize_key: PRNGKeyArray | None = None,
+        moe_chunk_size_ratio: float = 0.2,
+    ) -> "ForwardPassConfig":
+        return ForwardPassConfig(
+            decoder=DecoderForwardPassConfig(
+                transformer=TransformerForwardPassConfig(
+                    layer=TransformerLayerForwardPassConfig.init(
+                        arrays=arrays,
+                        stochastic_quantize_key=stochastic_quantize_key,
+                        moe_chunk_size_ratio=moe_chunk_size_ratio,
+                    ),
+                ),
+            ),
+        )
 
 
 class PrefillResults(NamedTuple):
@@ -279,7 +302,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 return_updated_state=True,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=forward_pass_config,
+                forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
             )
             assert decoder_outputs.updated_state is not None
 
@@ -393,7 +416,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     return_updated_state=True,
                     return_activation_trace=trace_config is not None,
                     forward_pass_mode=forward_pass_mode,
-                    forward_pass_config=forward_pass_config,
+                    forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
                 )
                 assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
@@ -743,7 +766,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 sequence_tokenized,
                 generation_config=generation_config,
                 inference_config=bucket_inference_config,
-                forward_pass_config=forward_pass_config,
+                forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
                 keys=keys[np.array(sequence_ids)],
                 sharding_config=sharding_config,
             )

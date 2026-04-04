@@ -35,7 +35,8 @@ __all__ = [
 ]
 
 
-type DecoderForwardPassConfig = TransformerForwardPassConfig
+class DecoderForwardPassConfig(eqx.Module):
+    transformer: TransformerForwardPassConfig = TransformerForwardPassConfig()
 
 
 class DecoderActivationTrace(eqx.Module):
@@ -218,9 +219,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
-            attention_parent_indices=attention_parent_indices,
-            forward_pass_config=forward_pass_config,
-            per_layer_inputs=per_layer_inputs,
+            forward_pass_config=(forward_pass_config or DecoderForwardPassConfig()).transformer,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)

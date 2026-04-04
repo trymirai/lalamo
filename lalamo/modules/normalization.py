@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 from enum import Enum
 
 import equinox as eqx
@@ -23,8 +24,7 @@ class UpcastMode(Enum):
     FULL_LAYER = "full_layer"
 
 
-@dataclass(frozen=True)
-class NormalizationForwardPassConfig:
+class NormalizationForwardPassConfig(eqx.Module):
     accumulation_precision: DTypeLike | None = jnp.float32
 
 

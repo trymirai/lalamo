@@ -96,6 +96,7 @@ class AWQQuantArray(CompressedArray):
                     self.raw, self.scales, self.zero_points, group_size=self.group_size, bits=self.bits, key=key
                 )
         quantized = awq_dequantize_per_group(int_weights, self.scales, self.zero_points, group_size=self.group_size)
+        quantized = quantized.astype(self.raw.dtype)
         return self.raw + jax.lax.stop_gradient(quantized - self.raw)
 
     def __check_init__(self) -> None:

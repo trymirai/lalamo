@@ -1,3 +1,5 @@
+from functools import partial
+
 from dataclasses import dataclass
 
 import equinox as eqx
@@ -25,7 +27,6 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
 class AttentionForwardPassConfig(MixerForwardPassConfig):
     upcast_dtype: DTypeLike | None = jnp.float32
 
@@ -236,11 +237,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
+        forward_pass_config: MixerForwardPassConfig | None = None,
     ) -> AttentionResult:
-        queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
+        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
+        queries, keys, values = vmap(
+            partial(self.qkv_projection, forward_pass_config=forward_pass_config.in_arrays),
+            in_axes=0,
+        )(inputs)
         if self.gate_projection is not None:
-            (gate,) = vmap(self.gate_projection, in_axes=0)(inputs)
+            (gate,) = vmap(
+                partial(self.gate_projection, forward_pass_config=forward_pass_config.gate_arrays), in_axes=0
+            )(inputs)
         else:
             gate = None
 
@@ -323,7 +330,9 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
-        (result,) = vmap(self.out_projection, in_axes=0)(attention_output)
+        (result,) = vmap(partial(self.out_projection, forward_pass_config=forward_pass_config.out_arrays), in_axes=0)(
+            attention_output
+        )
 
         if not return_updated_state:
             updated_state = None

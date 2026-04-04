@@ -1,6 +1,6 @@
 from .classifier import ClassifierModel, ClassifierModelConfig
 from .common import BatchSizeInfo, BatchSizesComputedEvent
-from .language_model import GenerationConfig, GenerationTraceConfig, LanguageModel, LanguageModelConfig
+from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel, LanguageModelConfig
 from .tts_model import TTSGenerator, TTSGeneratorConfig
 
 __all__ = [
@@ -8,6 +8,7 @@ __all__ = [
     "BatchSizesComputedEvent",
     "ClassifierModel",
     "ClassifierModelConfig",
+    "ForwardPassConfig",
     "GenerationConfig",
     "GenerationTraceConfig",
     "LanguageModel",

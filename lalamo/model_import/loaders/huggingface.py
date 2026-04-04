@@ -168,12 +168,11 @@ def load_linear(
     sublayers_to_fuse: list[str] | None = None,
 ) -> Linear:
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
-    precision = module.activation_precision
     config = module.config
     match config.quant_format:
         case QuantFormat.FULL_PRECISION:
             raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
-            base = FullPrecisionArray.from_weight(raw_weights, dtype=precision)
+            return module.from_raw(raw_weights, bias)
 
         case QuantFormat.AWQ:
             assert config.bits is not None and config.group_size is not None
@@ -186,7 +185,7 @@ def load_linear(
                 qweights,
                 qzeros,
                 scales,
-                dtype=precision,
+                dtype=module.activation_precision,
                 group_size=config.group_size,
                 bits=config.bits,
             )
@@ -202,14 +201,13 @@ def load_linear(
                 qweights,
                 scales,
                 deq_biases,
-                dtype=precision,
+                dtype=module.activation_precision,
                 expected_in_channels=module.input_dim,
                 group_size=config.group_size,
                 bits=config.bits,
             )
 
-    new_weights = base
-    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias), is_leaf=lambda x: x is None)
+    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (base, bias))
 
 
 def load_mlp(
@@ -762,9 +760,7 @@ def load_delta_net_attention(
                     bits=in_proj_config.bits,
                 )
         new_weights = base
-        in_proj = eqx.tree_at(
-            lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None), is_leaf=lambda x: x is None
-        )
+        in_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None))
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj")
     norm = load_rmsnorm(module.norm, weights_dict, path / "norm")
@@ -1162,7 +1158,7 @@ def load_huggingface_classifier(
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
         new_weights = FullPrecisionArray.from_weight(shuffled_weights, dtype=module.activation_precision)
-        return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None), is_leaf=lambda x: x is None)
+        return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None))
 
     def load_attention_local(
         module: Attention,

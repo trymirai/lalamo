@@ -215,7 +215,6 @@ class Linear(LalamoModule[LinearConfig]):
             lambda module: (module.weights, module.biases),
             self,
             (new_weights, cast_biases),
-            is_leaf=lambda x: x is None,
         )
 
     @staticmethod

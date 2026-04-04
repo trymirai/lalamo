@@ -1,3 +1,5 @@
+from functools import partial
+
 from dataclasses import dataclass
 
 import equinox as eqx
@@ -163,8 +165,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     gate_bias: Float[Array, " inner_channels"]
 
     @property
-    def activation(self) -> Activation:
-        return self.config.activation
+    def activation_precision(self) -> DTypeLike:
+        return self.in_projection.activation_precision
 
     @property
     def num_heads(self) -> int:
@@ -179,16 +181,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         return self.config.head_dim
 
     @property
-    def state_dim(self) -> int:
-        return self.config.state_dim
-
-    @property
     def kernel_size(self) -> int:
         return self.config.kernel_size
-
-    @property
-    def chunk_size(self) -> int:
-        return self.config.chunk_size
 
     @property
     def model_dim(self) -> int:
@@ -200,7 +194,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
     @property
     def conv_dim(self) -> int:
-        return self.inner_dim + 2 * self.num_groups * self.state_dim
+        return self.inner_dim + 2 * self.num_groups * self.config.state_dim
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
@@ -235,17 +229,18 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         self,
         inputs: Float[Array, "1 channels"],
         state: SSMStateLayer,
+        forward_pass_config: MixerForwardPassConfig,
     ) -> Mamba2Result:
         """Optimized path for single-token decode without scan machinery."""
         token = inputs[0]
 
-        conv_in, gate, dt_log = self.in_projection(token)
+        conv_in, gate, dt_log = self.in_projection(token, forward_pass_config.in_arrays)
         conv_out, new_conv_state = self.conv.step(conv_in, state.conv_state)
-        conv_activated = self.activation(conv_out)
+        conv_activated = self.config.activation(conv_out)
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(
             conv_activated,
-            [self.inner_dim, self.inner_dim + self.num_groups * self.state_dim],
+            [self.inner_dim, self.inner_dim + self.num_groups * self.config.state_dim],
         )
         values = rearrange(values_flat, "(heads head_dim) -> heads head_dim", heads=self.num_heads)
         keys = rearrange(input_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.num_groups)
@@ -256,7 +251,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         y = y + self.skip_connection_weight[:, None] * values
         y = rearrange(y, "heads head_dim -> (heads head_dim)")
         gated = y * jax.nn.silu(gate + self.gate_bias)
-        (output,) = self.out_projection(gated)
+        (output,) = self.out_projection(gated, forward_pass_config.out_arrays)
 
         return Mamba2Result(
             outputs=output[None, :],
@@ -467,8 +462,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
+        forward_pass_config: MixerForwardPassConfig | None = None,
     ) -> Mamba2Result:
+        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
 
@@ -476,16 +472,18 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state = SSMStateLayer.init(
                 self.kernel_size,
                 self.conv_dim,
-                (self.num_heads, self.head_dim, self.state_dim),
+                (self.num_heads, self.head_dim, self.config.state_dim),
                 self.in_projection.activation_precision,
             )
 
         seq_len, _ = inputs.shape
 
         if seq_len == 1 and return_updated_state:
-            return self._decode_step(inputs, state)
+            return self._decode_step(inputs, state, forward_pass_config)
 
-        conv_inputs, gate_values, time_delta_log = vmap(self.in_projection)(inputs)
+        conv_inputs, gate_values, time_delta_log = vmap(
+            partial(self.in_projection, forward_pass_config=forward_pass_config.in_arrays)
+        )(inputs)
 
         conv_output, updated_conv_state = self.conv(
             conv_inputs,
@@ -493,13 +491,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             state.conv_state,
             return_updated_state=return_updated_state,
         )
-        conv_activated = self.activation(conv_output)
+        conv_activated = self.config.activation(conv_output)
 
         x_channels, input_proj_channels, output_proj_channels = jnp.split(
             conv_activated,
             [
                 self.inner_dim,
-                self.inner_dim + self.num_groups * self.state_dim,
+                self.inner_dim + self.num_groups * self.config.state_dim,
             ],
             axis=-1,
         )
@@ -541,7 +539,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             queries,
             dt,
             state.ssm_state,
-            self.chunk_size,
+            self.config.chunk_size,
             length_without_padding,
             d=self.skip_connection_weight,
             z=gate_values_reshaped,
@@ -552,7 +550,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             ssm_outputs,
             "suffix_tokens heads head_channels -> suffix_tokens (heads head_channels)",
         )
-        (outputs,) = vmap(self.out_projection)(ssm_outputs_flat)
+        (outputs,) = vmap(partial(self.out_projection, forward_pass_config=forward_pass_config.out_arrays))(
+            ssm_outputs_flat
+        )
 
         if return_updated_state:
             assert updated_conv_state is not None
@@ -569,6 +569,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         return SSMStateLayer.init(
             self.kernel_size,
             self.conv_dim,
-            (self.num_heads, self.head_dim, self.state_dim),
+            (self.num_heads, self.head_dim, self.config.state_dim),
             self.in_projection.activation_precision,
         )

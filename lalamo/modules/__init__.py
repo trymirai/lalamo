@@ -86,6 +86,7 @@ from .token_mixers import (
     StaticKVCacheLayer,
 )
 from .transformer import Transformer, TransformerConfig
+from .transformer import TransformerForwardPassConfig
 from .transformer_layer import (
     PLELayer,
     PLELayerConfig,
@@ -172,6 +173,7 @@ __all__ = [
     "TiedEmbeddingConfig",
     "Transformer",
     "TransformerConfig",
+    "TransformerForwardPassConfig",
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",

@@ -18,15 +18,18 @@ if TYPE_CHECKING:
 class CompositeArray(CompressedArray):
     parts: tuple[CompressedArray, ...] = eqx.field(default=())
 
+    @property
+    def is_abstract(self) -> bool:
+        return self.parts[0].is_abstract
+
     def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
         match forward_pass_config.quantize:
             case StochasticQuantize(key=key):
                 subkeys = jr.split(key, len(self.parts))
-                first = self.parts[0].materialize(
-                    replace(forward_pass_config, quantize=StochasticQuantize(key=subkeys[0]))
-                )
-                if is_abstract_array(first):
-                    return first
+                if self.is_abstract:
+                    return self.parts[0].materialize(
+                        replace(forward_pass_config, quantize=StochasticQuantize(key=subkeys[0]))
+                    )
                 return sum(
                     (
                         part.materialize(replace(forward_pass_config, quantize=StochasticQuantize(key=subkey)))
@@ -34,9 +37,8 @@ class CompositeArray(CompressedArray):
                     )
                 )
             case _:
-                first = self.parts[0].materialize(forward_pass_config)
-                if is_abstract_array(first):
-                    return first
+                if self.is_abstract:
+                    return self.parts[0].materialize(forward_pass_config)
                 return sum(part.materialize(forward_pass_config) for part in self.parts)
 
     def export_weights(self) -> ParameterTree:

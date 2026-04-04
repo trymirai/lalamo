@@ -22,11 +22,13 @@ from .transformer_layer import (
 __all__ = [
     "Transformer",
     "TransformerConfig",
+    "TransformerForwardPassConfig",
     "TransformerResult",
 ]
 
 
-type TransformerForwardPassConfig = TransformerLayerForwardPassConfig
+class TransformerForwardPassConfig(eqx.Module):
+    layer: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig()
 
 
 class TransformerResult(eqx.Module):
@@ -137,9 +139,11 @@ class Transformer(LalamoModule[TransformerConfig]):
                 f" got {token_positions.shape}",
             )
 
-        # Unpack compact state (only source layers) into a dict keyed by layer index
-        if state is not None:
-            state_by_layer = {idx: state[j] for j, idx in enumerate(self.source_layer_indices)}
+        forward_pass_config = forward_pass_config or TransformerForwardPassConfig()
+        maybe_state = state or ([None] * len(self.layers))
+
+        if self.global_rope is not None:
+            global_positional_embeddings = vmap(self.global_rope)(token_positions)
         else:
             state_by_layer: dict[int, None] = {}
 
@@ -173,9 +177,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
-                attention_parent_indices=attention_parent_indices,
-                forward_pass_config=forward_pass_config,
-                per_layer_input=per_layer_input,
+                forward_pass_config=forward_pass_config.layer,
             )
 
             inner_features = layer_result.outputs

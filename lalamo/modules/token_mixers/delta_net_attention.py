@@ -1,3 +1,5 @@
+from functools import partial
+
 from dataclasses import dataclass
 
 import einops
@@ -361,13 +363,16 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,  # noqa: ARG002
+        forward_pass_config: MixerForwardPassConfig | None = None,
     ) -> DeltaNetAttentionResult:
+        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
         num_tokens, *_ = inputs.shape
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap(self.in_proj)(inputs)
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap(
+            partial(self.in_proj, forward_pass_config=forward_pass_config.in_arrays)
+        )(inputs)
         assert proj_query.shape[0] == num_tokens
 
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
@@ -449,7 +454,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
         core_attn_out = core_attn_out.reshape(num_tokens, -1)
 
-        (outputs,) = vmap(self.out_proj)(core_attn_out)
+        (outputs,) = vmap(partial(self.out_proj, forward_pass_config=forward_pass_config.out_arrays))(core_attn_out)
 
         if return_updated_state:
             assert updated_conv_state is not None

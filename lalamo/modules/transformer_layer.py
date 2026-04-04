@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass, replace
 from functools import partial
 
 import equinox as eqx
@@ -7,6 +7,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.arrays import ArrayForwardPassConfig, StochasticQuantize
 from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
@@ -28,11 +29,52 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class TransformerLayerForwardPassConfig:
-    mixer: MixerForwardPassConfig = field(default_factory=MixerForwardPassConfig)
-    mlp: MLPForwardPassConfig = field(default_factory=MLPForwardPassConfig)
-    normalization: NormalizationForwardPassConfig = field(default_factory=NormalizationForwardPassConfig)
+class TransformerLayerForwardPassConfig(eqx.Module):
+    mixer: MixerForwardPassConfig = MixerForwardPassConfig()
+    mlp: MLPForwardPassConfig = MLPForwardPassConfig()
+    normalization: NormalizationForwardPassConfig = NormalizationForwardPassConfig()
+
+    @staticmethod
+    def init(
+        arrays: ArrayForwardPassConfig | None = None,
+        *,
+        stochastic_quantize_key: jax.Array | None = None,
+        moe_chunk_size_ratio: float = 0.2,
+        normalization: NormalizationForwardPassConfig = NormalizationForwardPassConfig(),  # noqa: B008
+    ) -> "TransformerLayerForwardPassConfig":
+        if arrays is not None and stochastic_quantize_key is not None:
+            raise ValueError("Pass either arrays or stochastic_quantize_key, not both.")
+        if stochastic_quantize_key is not None:
+            arrays = ArrayForwardPassConfig(quantize=StochasticQuantize(stochastic_quantize_key))
+        if arrays is None:
+            arrays = ArrayForwardPassConfig()
+
+        def split_array_forward_pass_config(num: int) -> tuple[ArrayForwardPassConfig, ...]:
+            match arrays.quantize:
+                case StochasticQuantize(key=key):
+                    return tuple(
+                        replace(arrays, quantize=StochasticQuantize(subkey)) for subkey in jax.random.split(key, num)
+                    )
+                case _:
+                    return (arrays,) * num
+
+        mixer_in_arrays, mixer_gate_arrays, mixer_out_arrays = split_array_forward_pass_config(3)
+        mlp_up_arrays, mlp_down_arrays, mlp_router_arrays, mlp_gate_arrays = split_array_forward_pass_config(4)
+        return TransformerLayerForwardPassConfig(
+            mixer=MixerForwardPassConfig(
+                in_arrays=mixer_in_arrays,
+                gate_arrays=mixer_gate_arrays,
+                out_arrays=mixer_out_arrays,
+            ),
+            mlp=MLPForwardPassConfig(
+                moe_chunk_size_ratio=moe_chunk_size_ratio,
+                up_arrays=mlp_up_arrays,
+                down_arrays=mlp_down_arrays,
+                router_arrays=mlp_router_arrays,
+                gate_arrays=mlp_gate_arrays,
+            ),
+            normalization=normalization,
+        )
 
 
 class TransformerLayerActivationTrace(eqx.Module):
