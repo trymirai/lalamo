@@ -155,6 +155,14 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     # Audio
     ("fishaudio/s1-mini", ModelTier.EXTRA),
     ("nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-0.6B-Base", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-0.6B-Base", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", ModelTier.EXTRA),
+    ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", ModelTier.EXTRA),
     # Other
     ("trymirai/chat-moderation-router", ModelTier.EXTRA),
     ("amd/PARD-Qwen3-0.6B", ModelTier.EXTRA),
