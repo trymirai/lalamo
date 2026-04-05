@@ -28,8 +28,8 @@ def train_speculator(
         else:
             end = None
         token_ids = trace.completion_token_ids[:end]
-        token_logits_ids = np.asarray(jax.device_get(trace.topk_token_ids[:end]), dtype=np.int32).tolist()
-        token_logits_values = np.asarray(jax.device_get(trace.topk_token_logits[:end]), dtype=np.float32).tolist()
+        token_logits_ids = np.asarray(jax.device_get(trace.raw_topk_token_ids[:end]), dtype=np.int32).tolist()
+        token_logits_values = np.asarray(jax.device_get(trace.raw_topk_token_logits[:end]), dtype=np.float32).tolist()
         token_logits = [
             dict(zip(ids, logits, strict=True))
             for ids, logits in zip(token_logits_ids, token_logits_values, strict=True)

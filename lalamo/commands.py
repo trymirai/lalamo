@@ -375,7 +375,7 @@ class CollectTracesCallbacks:
     model_path: Path
     dataset_path: Path
     output_path: Path
-    num_logits_per_token: int
+    raw_top_k: int
     trace_layers: tuple[int, ...]
     max_input_length: int
     max_output_length: int
@@ -406,7 +406,7 @@ def collect_traces(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    num_logits_per_token: int = 8,
+    raw_top_k: int = 8192,
     trace_layers: tuple[int, ...] = tuple(),
     max_input_length: int = 1024,
     max_output_length: int = 1024,
@@ -433,7 +433,7 @@ def collect_traces(
         model_path,
         dataset_path,
         output_path,
-        num_logits_per_token,
+        raw_top_k,
         trace_layers,
         max_input_length,
         max_output_length,
@@ -461,7 +461,7 @@ def collect_traces(
     traces = inference_collect_traces(
         model,
         dataset,
-        num_logits_per_token,
+        raw_top_k,
         trace_layers,
         batch_size,
         max_input_length,

@@ -19,7 +19,7 @@ class CollectTracesEvent(NamedTuple):
 def inference_collect_traces(
     model: LanguageModel,
     conversations: Iterable[Iterable[Message]],
-    num_top_logits_to_collect: int = 8,
+    raw_top_k: int = 8192,
     trace_layers: tuple[int, ...] = tuple(),
     batch_size: int = 1,
     max_input_length: int = 1024,
@@ -34,12 +34,11 @@ def inference_collect_traces(
 
     config = InferenceConfig(
         max_output_length=max_output_length,
-        num_top_logits_to_return=num_top_logits_to_collect,
         padded_length=max_input_length,
         batch_size=batch_size,
     )
     generation_trace_config = GenerationTraceConfig(
-        return_raw_logits=True,
+        raw_top_k=raw_top_k,
         return_output_norm_hidden=True,
         trace_layers=trace_layers,
     )
@@ -67,8 +66,8 @@ def inference_collect_traces(
 
         token_ids = token_ids[:seqlen]
 
-        assert generated.top_k_token_ids is not None and generated.top_k_token_logits is not None
-        assert generated.raw_logits is not None and generated.output_norm_hidden is not None
+        assert generated.raw_top_k_token_ids is not None and generated.raw_top_k_token_logits is not None
+        assert generated.output_norm_hidden is not None
         layer_hidden_states = None
         if generated.layer_hidden_states is not None:
             layer_hidden_states = rearrange(
@@ -79,9 +78,8 @@ def inference_collect_traces(
         yield TraceCompletionRecord(
             prefix_token_ids=filtered_prefixes[idx],
             completion_token_ids=token_ids,
-            topk_token_ids=generated.top_k_token_ids[:seqlen],
-            topk_token_logits=generated.top_k_token_logits[:seqlen],
-            raw_logits=generated.raw_logits[:seqlen],
+            raw_topk_token_ids=generated.raw_top_k_token_ids[:seqlen],
+            raw_topk_token_logits=generated.raw_top_k_token_logits[:seqlen],
             output_norm_hidden=generated.output_norm_hidden[:seqlen],
             layer_indices=resolved_trace_layers,
             layer_hidden_states=layer_hidden_states,

@@ -75,7 +75,8 @@ class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, " batch"]
     top_k_token_ids: Int[Array, " batch k"] | None
     top_k_token_logits: Float[Array, " batch k"] | None
-    raw_logits: Float[Array, " batch vocabulary"] | None
+    raw_top_k_token_ids: Int[Array, " batch raw_k"] | None
+    raw_top_k_token_logits: Float[Array, " batch raw_k"] | None
     output_norm_hidden: Float[Array, " batch hidden"] | None
     layer_hidden_states: Float[Array, " batch traced_layers hidden"] | None
 
@@ -84,14 +85,15 @@ class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
-    raw_logits: Float[Array, "batch response_tokens vocabulary"] | None
+    raw_top_k_token_ids: Int[Array, "batch response_tokens raw_k"] | None
+    raw_top_k_token_logits: Float[Array, "batch response_tokens raw_k"] | None
     output_norm_hidden: Float[Array, "batch response_tokens hidden"] | None
     layer_hidden_states: Float[Array, "batch response_tokens traced_layers hidden"] | None
 
 
 @dataclass(frozen=True)
 class GenerationTraceConfig:
-    return_raw_logits: bool = False
+    raw_top_k: int | None = None
     return_output_norm_hidden: bool = False
     trace_layers: tuple[int, ...] = tuple()
 
@@ -355,7 +357,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_ids,
                     next_top_k_token_ids,
                     next_top_k_token_logits,
-                    (upcasted_logits.astype(jnp.bfloat16) if trace_config.return_raw_logits else None),
+                    (
+                        (raw_top_k := jax.lax.top_k(upcasted_logits, trace_config.raw_top_k))[1]
+                        if trace_config.raw_top_k is not None
+                        else None
+                    ),
+                    (raw_top_k[0].astype(jnp.bfloat16) if trace_config.raw_top_k is not None else None),
                     (
                         decoder_outputs.activation_trace.output_norm.squeeze(1).astype(jnp.bfloat16)
                         if trace_config.return_output_norm_hidden
@@ -390,8 +397,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     top_k_token_ids,
                     top_k_token_logits,
                     (
-                        jnp.zeros((batch_size, self.model.vocab_size), dtype=jnp.bfloat16)
-                        if trace_config.return_raw_logits
+                        jnp.zeros((batch_size, trace_config.raw_top_k), dtype=jnp.int32)
+                        if trace_config.raw_top_k is not None
+                        else None
+                    ),
+                    (
+                        jnp.zeros((batch_size, trace_config.raw_top_k), dtype=jnp.bfloat16)
+                        if trace_config.raw_top_k is not None
                         else None
                     ),
                     (
@@ -428,8 +440,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             top_k_token_ids,
             top_k_token_logits,
             (
-                rearrange(generated.raw_logits, "iteration batch vocabulary -> batch iteration vocabulary")
-                if trace_config.return_raw_logits
+                rearrange(generated.raw_top_k_token_ids, "iteration batch raw_k -> batch iteration raw_k")
+                if trace_config.raw_top_k is not None
+                else None
+            ),
+            (
+                rearrange(generated.raw_top_k_token_logits, "iteration batch raw_k -> batch iteration raw_k")
+                if trace_config.raw_top_k is not None
                 else None
             ),
             (
@@ -502,7 +519,12 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 token_ids=results.token_ids[i],
                 top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
                 top_k_token_logits=results.top_k_token_logits[i] if results.top_k_token_logits is not None else None,
-                raw_logits=results.raw_logits[i] if results.raw_logits is not None else None,
+                raw_top_k_token_ids=(
+                    results.raw_top_k_token_ids[i] if results.raw_top_k_token_ids is not None else None
+                ),
+                raw_top_k_token_logits=(
+                    results.raw_top_k_token_logits[i] if results.raw_top_k_token_logits is not None else None
+                ),
                 output_norm_hidden=results.output_norm_hidden[i] if results.output_norm_hidden is not None else None,
                 layer_hidden_states=(
                     results.layer_hidden_states[i] if results.layer_hidden_states is not None else None

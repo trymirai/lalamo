@@ -8,16 +8,12 @@ from lalamo.models.language_model import GenerationTraceConfig
 
 def _build_record(prefix: list[int], completion: list[int], *, offset: int) -> TraceCompletionRecord:
     completion_length = len(completion)
-    topk_token_ids = jnp.asarray(
+    raw_topk_token_ids = jnp.asarray(
         [[offset + 10, offset + 11], [offset + 12, offset + 13]][:completion_length],
         dtype=jnp.int32,
     )
-    topk_token_logits = jnp.asarray(
+    raw_topk_token_logits = jnp.asarray(
         [[0.1, -0.2], [0.3, -0.4]][:completion_length],
-        dtype=jnp.float32,
-    )
-    raw_logits = jnp.asarray(
-        [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]][:completion_length],
         dtype=jnp.bfloat16,
     )
     output_norm_hidden = jnp.asarray(
@@ -34,9 +30,8 @@ def _build_record(prefix: list[int], completion: list[int], *, offset: int) -> T
     return TraceCompletionRecord(
         prefix_token_ids=prefix,
         completion_token_ids=completion,
-        topk_token_ids=topk_token_ids,
-        topk_token_logits=topk_token_logits,
-        raw_logits=raw_logits,
+        raw_topk_token_ids=raw_topk_token_ids,
+        raw_topk_token_logits=raw_topk_token_logits,
         output_norm_hidden=output_norm_hidden,
         layer_indices=(1, 3),
         layer_hidden_states=layer_hidden_states,
@@ -56,7 +51,7 @@ def test_trace_shard_roundtrip(tmp_path: Path) -> None:
     assert len(records) == 2
     assert records[0].prefix_token_ids == [1, 2]
     assert records[0].completion_token_ids == [3, 4]
-    assert records[0].raw_logits.dtype == jnp.bfloat16
+    assert records[0].raw_topk_token_logits.dtype == jnp.bfloat16
     assert records[0].output_norm_hidden.dtype == jnp.bfloat16
     assert records[0].layer_hidden_states is not None
     assert records[0].layer_hidden_states.shape == (2, 2, 2)

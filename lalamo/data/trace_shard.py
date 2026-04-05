@@ -12,9 +12,8 @@ from lalamo.safetensors import safe_read, safe_write
 TRACE_SHARD_PATTERN = "part-*.safetensors"
 DEFAULT_TRACE_SHARD_SIZE_BYTES = 512 * 1024 * 1024
 _PER_COMPLETION_TOKEN_FIELDS = (
-    "topk_token_ids",
-    "topk_token_logits",
-    "raw_logits",
+    "raw_topk_token_ids",
+    "raw_topk_token_logits",
     "output_norm_hidden",
 )
 
@@ -61,21 +60,18 @@ class RaggedTokens:
 class TraceCompletionRecord:
     prefix_token_ids: list[int]
     completion_token_ids: list[int]
-    topk_token_ids: Int[Array, "completion_tokens k"]
-    topk_token_logits: Float[Array, "completion_tokens k"]
-    raw_logits: Float[Array, "completion_tokens vocab"]
+    raw_topk_token_ids: Int[Array, "completion_tokens k"]
+    raw_topk_token_logits: Float[Array, "completion_tokens k"]
     output_norm_hidden: Float[Array, "completion_tokens hidden"]
     layer_indices: tuple[int, ...] = tuple()
     layer_hidden_states: Float[Array, "traced_layers completion_tokens hidden"] | None = None
 
     def __post_init__(self) -> None:
         completion_tokens = len(self.completion_token_ids)
-        if self.topk_token_ids.shape[0] != completion_tokens:
-            raise ValueError("topk_token_ids length must match completion_token_ids length.")
-        if self.topk_token_logits.shape != self.topk_token_ids.shape:
-            raise ValueError("topk_token_logits shape must match topk_token_ids shape.")
-        if self.raw_logits.shape[0] != completion_tokens:
-            raise ValueError("raw_logits length must match completion_token_ids length.")
+        if self.raw_topk_token_ids.shape[0] != completion_tokens:
+            raise ValueError("raw_topk_token_ids length must match completion_token_ids length.")
+        if self.raw_topk_token_logits.shape != self.raw_topk_token_ids.shape:
+            raise ValueError("raw_topk_token_logits shape must match raw_topk_token_ids shape.")
         if self.output_norm_hidden.shape[0] != completion_tokens:
             raise ValueError("output_norm_hidden length must match completion_token_ids length.")
         if self.layer_hidden_states is None:
@@ -105,9 +101,8 @@ class TraceCompletionRecord:
 class TraceShard:
     prefix: RaggedTokens
     completion: RaggedTokens
-    topk_token_ids: Int[Array, " total_completion_tokens k"]
-    topk_token_logits: Float[Array, " total_completion_tokens k"]
-    raw_logits: Float[Array, " total_completion_tokens vocab"]
+    raw_topk_token_ids: Int[Array, " total_completion_tokens k"]
+    raw_topk_token_logits: Float[Array, " total_completion_tokens k"]
     output_norm_hidden: Float[Array, " total_completion_tokens hidden"]
     layer_indices: Int[Array, " traced_layers"]
     layer_hidden_states: Float[Array, " traced_layers total_completion_tokens hidden"] | None = None

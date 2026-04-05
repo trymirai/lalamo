@@ -967,10 +967,10 @@ def collect_traces(
             metavar="OUTPUT_PATH",
         ),
     ],
-    num_logits_per_token: Annotated[
+    raw_top_k: Annotated[
         int,
-        Option(help="Record logits for this number of most probable tokens"),
-    ] = 8,
+        Option(help="Record raw logits for this number of most probable tokens"),
+    ] = 8192,
     trace_layers: Annotated[
         list[int] | None,
         Option(help="0-based transformer layer indices to additionally save as layer_hidden_states"),
@@ -1003,7 +1003,7 @@ def collect_traces(
         model_path,
         dataset_path,
         output_path,
-        num_logits_per_token,
+        raw_top_k,
         tuple(trace_layers or []),
         max_input_length,
         max_output_length,
