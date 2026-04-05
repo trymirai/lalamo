@@ -133,7 +133,7 @@ def test_collect_traces_answers(
     run_lalamo: RunLalamo,
 ) -> None:
     converted_model_dir = convert_model(model_repo, cached=True)
-    trace_path = tmp_path / "traces.bin"
+    trace_path = tmp_path / "traces"
 
     run_lalamo(
         "speculator",
@@ -149,6 +149,9 @@ def test_collect_traces_answers(
         "--max-output-length",
         "64",
     )
+
+    shard_paths = sorted(trace_path.glob("part-*.safetensors"))
+    assert shard_paths, "Expected collect-traces to emit safetensors shards"
 
     # view-traces detokenizes the completions; collect-traces shuffles so check unordered
     view_output = strip_ansi_escape(

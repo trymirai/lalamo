@@ -46,6 +46,7 @@ from .lm_helpers import (
 __all__ = [
     "ForwardPassConfig",
     "GenerationConfig",
+    "GenerationTraceConfig",
     "LanguageModel",
     "LanguageModelConfig",
 ]
@@ -74,12 +75,38 @@ class GenerationStepResults(NamedTuple):
     token_ids: Int[Array, " batch"]
     top_k_token_ids: Int[Array, " batch k"] | None
     top_k_token_logits: Float[Array, " batch k"] | None
+    raw_logits: Float[Array, " batch vocabulary"] | None
+    output_norm_hidden: Float[Array, " batch hidden"] | None
+    layer_hidden_states: Float[Array, " batch traced_layers hidden"] | None
 
 
 class GenerationResults(NamedTuple):
     token_ids: Int[Array, "batch response_tokens"]
     top_k_token_ids: Int[Array, "batch response_tokens k"] | None
     top_k_token_logits: Float[Array, "batch response_tokens k"] | None
+    raw_logits: Float[Array, "batch response_tokens vocabulary"] | None
+    output_norm_hidden: Float[Array, "batch response_tokens hidden"] | None
+    layer_hidden_states: Float[Array, "batch response_tokens traced_layers hidden"] | None
+
+
+@dataclass(frozen=True)
+class GenerationTraceConfig:
+    return_raw_logits: bool = False
+    return_output_norm_hidden: bool = False
+    trace_layers: tuple[int, ...] = tuple()
+
+    @property
+    def return_layer_outputs(self) -> bool:
+        return self.return_output_norm_hidden or bool(self.trace_layers)
+
+    def resolve_trace_layers(self, num_layers: int) -> tuple[int, ...]:
+        resolved_layers = tuple(layer if layer >= 0 else num_layers + layer for layer in self.trace_layers)
+        if any(layer < 0 or layer >= num_layers for layer in resolved_layers):
+            raise ValueError("trace_layers contains an index outside the transformer layer range.")
+        sorted_layers = tuple(sorted(resolved_layers))
+        if len(set(sorted_layers)) != len(sorted_layers):
+            raise ValueError("trace_layers must not contain duplicate layer indices after resolution.")
+        return sorted_layers
 
 
 @dataclass(frozen=True)
@@ -243,6 +270,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         num_top_logits_to_return: int | None = None,
+        generation_trace_config: GenerationTraceConfig | None = None,
         *,
         keys: Key[Array, " batch"] | None = None,
     ) -> GenerationResults:
@@ -251,11 +279,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
             sampling_policy = generation_config.default_policy()
+        trace_config = generation_trace_config or GenerationTraceConfig()
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
         if keys is None:
             keys = jax.random.split(jax.random.key(0), num=batch_size)
+        hidden_dim = self.model.transformer.config.model_dim
+        traced_layers = trace_config.resolve_trace_layers(len(self.model.transformer.layers))
 
         if len(keys) != batch_size:
             raise ValueError(
@@ -307,17 +338,43 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_indices[:, None],
                     state.state,
                     return_updated_state=True,
+                    return_activation_trace=trace_config.return_layer_outputs,
                     forward_pass_mode=forward_pass_mode,
                     forward_pass_config=forward_pass_config,
                 )
                 assert decoder_outputs.updated_state is not None, "updated_state should not be None"
+                if trace_config.return_layer_outputs:
+                    assert decoder_outputs.activation_trace is not None
                 new_state = DecodingState(
                     decoder_outputs.logits.squeeze(1).astype(jnp.float32),
                     next_token_indices,
                     decoder_outputs.updated_state,
                     stop_flags,
                 )
-                return new_state, GenerationStepResults(next_token_ids, next_top_k_token_ids, next_top_k_token_logits)
+                return new_state, GenerationStepResults(
+                    next_token_ids,
+                    next_top_k_token_ids,
+                    next_top_k_token_logits,
+                    (upcasted_logits.astype(jnp.bfloat16) if trace_config.return_raw_logits else None),
+                    (
+                        decoder_outputs.activation_trace.output_norm.squeeze(1).astype(jnp.bfloat16)
+                        if trace_config.return_output_norm_hidden
+                        else None
+                    ),
+                    (
+                        jnp.stack(
+                            [
+                                decoder_outputs.activation_trace.layer_results[layer_idx].outputs.squeeze(1).astype(
+                                    jnp.bfloat16,
+                                )
+                                for layer_idx in traced_layers
+                            ],
+                            axis=1,
+                        )
+                        if traced_layers
+                        else None
+                    ),
+                )
 
             def pad_and_repeat_state() -> tuple[DecodingState, GenerationStepResults]:
                 (batch_size,) = state.stop_flags.shape
@@ -328,7 +385,26 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 else:
                     top_k_token_ids = None
                     top_k_token_logits = None
-                return state, GenerationStepResults(pad_token, top_k_token_ids, top_k_token_logits)
+                return state, GenerationStepResults(
+                    pad_token,
+                    top_k_token_ids,
+                    top_k_token_logits,
+                    (
+                        jnp.zeros((batch_size, self.model.vocab_size), dtype=jnp.bfloat16)
+                        if trace_config.return_raw_logits
+                        else None
+                    ),
+                    (
+                        jnp.zeros((batch_size, hidden_dim), dtype=jnp.bfloat16)
+                        if trace_config.return_output_norm_hidden
+                        else None
+                    ),
+                    (
+                        jnp.zeros((batch_size, len(traced_layers), hidden_dim), dtype=jnp.bfloat16)
+                        if traced_layers
+                        else None
+                    ),
+                )
 
             return jax.lax.cond(jnp.all(state.stop_flags), pad_and_repeat_state, sample_and_update)
 
@@ -347,7 +423,32 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             top_k_token_ids = None
             top_k_token_logits = None
 
-        return GenerationResults(token_ids, top_k_token_ids, top_k_token_logits)
+        return GenerationResults(
+            token_ids,
+            top_k_token_ids,
+            top_k_token_logits,
+            (
+                rearrange(generated.raw_logits, "iteration batch vocabulary -> batch iteration vocabulary")
+                if trace_config.return_raw_logits
+                else None
+            ),
+            (
+                rearrange(
+                    generated.output_norm_hidden,
+                    "iteration batch hidden -> batch iteration hidden",
+                )
+                if trace_config.return_output_norm_hidden
+                else None
+            ),
+            (
+                rearrange(
+                    generated.layer_hidden_states,
+                    "iteration batch traced_layers hidden -> batch iteration traced_layers hidden",
+                )
+                if traced_layers
+                else None
+            ),
+        )
 
     def _generate_tokens_batch(
         self,
@@ -357,6 +458,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None,
         inference_config: InferenceConfig,
         forward_pass_config: ForwardPassConfig | None,
+        generation_trace_config: GenerationTraceConfig | None,
         sharding_config: ShardingConfig | None,
     ) -> Iterator[GenerationResults]:
         if sharding_config is None:
@@ -384,6 +486,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config,
             sharded_inference_config,
             forward_pass_config=forward_pass_config,
+            generation_trace_config=generation_trace_config,
             prompt_token_ids=padded_token_ids,
             prompt_lengths_without_padding=padded_lengths,
             keys=padded_keys,
@@ -399,6 +502,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 token_ids=results.token_ids[i],
                 top_k_token_ids=results.top_k_token_ids[i] if results.top_k_token_ids is not None else None,
                 top_k_token_logits=results.top_k_token_logits[i] if results.top_k_token_logits is not None else None,
+                raw_logits=results.raw_logits[i] if results.raw_logits is not None else None,
+                output_norm_hidden=results.output_norm_hidden[i] if results.output_norm_hidden is not None else None,
+                layer_hidden_states=(
+                    results.layer_hidden_states[i] if results.layer_hidden_states is not None else None
+                ),
             )
 
     def generate_tokens_many(
@@ -408,6 +516,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
@@ -432,6 +541,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     generation_config=generation_config,
                     inference_config=new_inference_config,
                     forward_pass_config=forward_pass_config,
+                    generation_trace_config=generation_trace_config,
                     sharding_config=sharding_config,
                 )
 
@@ -447,6 +557,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
         forward_pass_config: ForwardPassConfig | None = None,
+        generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
     ) -> int:
         if sharding_config is None:
@@ -470,6 +581,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             generation_config=generation_config,
             inference_config=replace(inference_config, batch_size=dummy_token_ids.shape[0]),
             forward_pass_config=forward_pass_config,
+            generation_trace_config=generation_trace_config,
             prompt_token_ids=dummy_token_ids,
             prompt_lengths_without_padding=dummy_lengths,
             keys=dummy_keys,

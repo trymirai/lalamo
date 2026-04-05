@@ -2,7 +2,10 @@ import random
 from collections.abc import Callable, Iterable
 from typing import NamedTuple
 
-from lalamo.data.lalamo_completions import LalamoCompletion
+import jax
+import numpy as np
+
+from lalamo.data.trace_shard import TraceCompletionRecord
 from lalamo.speculator.common import Speculator
 
 
@@ -13,7 +16,7 @@ class SpeculatorTrainingEvent(NamedTuple):
 
 def train_speculator(
     speculator: Speculator,
-    traces: Iterable[LalamoCompletion],
+    traces: Iterable[TraceCompletionRecord],
     tokens_to_train: int | None = None,
     progress_callback: Callable[[SpeculatorTrainingEvent], None] | None = None,
 ) -> None:
@@ -25,7 +28,12 @@ def train_speculator(
         else:
             end = None
         token_ids = trace.completion_token_ids[:end]
-        token_logits = trace.completion_token_logits[:end]
+        token_logits_ids = np.asarray(jax.device_get(trace.topk_token_ids[:end]), dtype=np.int32).tolist()
+        token_logits_values = np.asarray(jax.device_get(trace.topk_token_logits[:end]), dtype=np.float32).tolist()
+        token_logits = [
+            dict(zip(ids, logits, strict=True))
+            for ids, logits in zip(token_logits_ids, token_logits_values, strict=True)
+        ]
 
         speculator.train(token_ids, token_logits)
 

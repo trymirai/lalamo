@@ -2,10 +2,12 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import NamedTuple
 
-from lalamo.data.lalamo_completions import LalamoCompletion
+from einops import rearrange
+
+from lalamo.data.trace_shard import TraceCompletionRecord
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
-from lalamo.models import LanguageModel
+from lalamo.models import GenerationTraceConfig, LanguageModel
 from lalamo.models.common import InferenceConfig
 
 
@@ -18,12 +20,13 @@ def inference_collect_traces(
     model: LanguageModel,
     conversations: Iterable[Iterable[Message]],
     num_top_logits_to_collect: int = 8,
+    trace_layers: tuple[int, ...] = tuple(),
     batch_size: int = 1,
     max_input_length: int = 1024,
     max_output_length: int = 1024,
     tokens_to_generate: int | None = None,
     progress_callback: Callable[[CollectTracesEvent], None] | None = None,
-) -> Iterable[LalamoCompletion]:
+) -> Iterable[TraceCompletionRecord]:
     prefixes = chain.from_iterable(map(get_prefixes_ending_in_user_message, conversations))
     tokenized_prefixes = map(model.message_processor.tokenize_request, prefixes)
     filtered_prefixes = filter(lambda conv: len(conv) <= max_input_length, tokenized_prefixes)
@@ -35,6 +38,12 @@ def inference_collect_traces(
         padded_length=max_input_length,
         batch_size=batch_size,
     )
+    generation_trace_config = GenerationTraceConfig(
+        return_raw_logits=True,
+        return_output_norm_hidden=True,
+        trace_layers=trace_layers,
+    )
+    resolved_trace_layers = generation_trace_config.resolve_trace_layers(len(model.model.transformer.layers))
 
     tokens_generated = 0
 
@@ -42,6 +51,7 @@ def inference_collect_traces(
         model.generate_tokens_many(
             filtered_prefixes,
             inference_config=config,
+            generation_trace_config=generation_trace_config,
         ),
     ):
         token_ids = generated.token_ids.tolist()
@@ -58,15 +68,24 @@ def inference_collect_traces(
         token_ids = token_ids[:seqlen]
 
         assert generated.top_k_token_ids is not None and generated.top_k_token_logits is not None
-        token_logits_ids = generated.top_k_token_ids[:seqlen].tolist()
-        token_logits_values = generated.top_k_token_logits[:seqlen].tolist()
-        token_logits = [
-            dict(zip(keys, values, strict=True))
-            for keys, values in zip(token_logits_ids, token_logits_values, strict=True)
-        ]
+        assert generated.raw_logits is not None and generated.output_norm_hidden is not None
+        layer_hidden_states = None
+        if generated.layer_hidden_states is not None:
+            layer_hidden_states = rearrange(
+                generated.layer_hidden_states[:seqlen],
+                "tokens layers hidden -> layers tokens hidden",
+            )
 
-        # We need the original prompt tokens - get from indexed_inputs
-        yield LalamoCompletion(filtered_prefixes[idx], token_ids, token_logits)
+        yield TraceCompletionRecord(
+            prefix_token_ids=filtered_prefixes[idx],
+            completion_token_ids=token_ids,
+            topk_token_ids=generated.top_k_token_ids[:seqlen],
+            topk_token_logits=generated.top_k_token_logits[:seqlen],
+            raw_logits=generated.raw_logits[:seqlen],
+            output_norm_hidden=generated.output_norm_hidden[:seqlen],
+            layer_indices=resolved_trace_layers,
+            layer_hidden_states=layer_hidden_states,
+        )
 
         if progress_callback is not None:
             progress_callback(CollectTracesEvent(idx + 1, tokens_generated))

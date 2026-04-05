@@ -56,7 +56,7 @@ from lalamo.common import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
 )
-from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.data.trace_shard import DEFAULT_TRACE_SHARD_SIZE_BYTES, TraceShard
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec
 from lalamo.model_import.common import FileSpec
@@ -963,7 +963,7 @@ def collect_traces(
     output_path: Annotated[
         Path,
         Option(
-            help="File to save the trace to",
+            help="Directory to save sharded trace files to. Must be empty or not exist.",
             metavar="OUTPUT_PATH",
         ),
     ],
@@ -971,6 +971,10 @@ def collect_traces(
         int,
         Option(help="Record logits for this number of most probable tokens"),
     ] = 8,
+    trace_layers: Annotated[
+        list[int] | None,
+        Option(help="0-based transformer layer indices to additionally save as layer_hidden_states"),
+    ] = None,
     max_input_length: Annotated[
         int,
         Option(help="Filter prompts that have more than this number of tokens in context"),
@@ -990,16 +994,22 @@ def collect_traces(
             show_default="all",
         ),
     ] = None,
+    target_shard_size_mib: Annotated[
+        int,
+        Option(help="Approximate shard size budget in MiB before flushing a new safetensors shard"),
+    ] = DEFAULT_TRACE_SHARD_SIZE_BYTES // (1024 * 1024),
 ) -> None:
     _collect_traces(
         model_path,
         dataset_path,
         output_path,
         num_logits_per_token,
+        tuple(trace_layers or []),
         max_input_length,
         max_output_length,
         batch_size,
         num_tokens_to_generate,
+        target_shard_size_mib * 1024 * 1024,
         CliCollectTracesCallbacks,
     )
 
@@ -1009,7 +1019,7 @@ def view_traces(
     trace_path: Annotated[
         Path,
         Argument(
-            help="File of inference traces to view.",
+            help="Trace directory to view.",
             metavar="TRACE_PATH",
         ),
     ],
@@ -1028,25 +1038,23 @@ def view_traces(
     ] = None,
 ) -> None:
     model = LanguageModelConfig.load_model(model_path)
+    traces = TraceShard.iter_records(trace_path)
 
-    with open(trace_path, "rb") as trace_fd:
-        traces = LalamoCompletion.deserialize_many(trace_fd)
+    table = Table(
+        show_lines=True,
+        box=box.ROUNDED,
+    )
+    table.add_column("Prefix")
+    table.add_column("Completion")
 
-        table = Table(
-            show_lines=True,
-            box=box.ROUNDED,
-        )
-        table.add_column("Prefix")
-        table.add_column("Completion")
+    from rich.text import Text
 
-        from rich.text import Text
+    for completion in islice(traces, num_completions):
+        detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
+        detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
+        table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
 
-        for completion in islice(traces, num_completions):
-            detokenized_prefix = model.message_processor.detokenize(completion.prefix_token_ids)
-            detokenized_completion = model.message_processor.detokenize(completion.completion_token_ids)
-            table.add_row(Text(detokenized_prefix), Text(detokenized_completion))
-
-        console.print(table)
+    console.print(table)
 
 
 @dataclass
@@ -1091,7 +1099,7 @@ def train(
     trace_path: Annotated[
         Path,
         Argument(
-            help="File of llm inference traces to train the speculator on",
+            help="Trace directory to train the speculator on",
             metavar="TRACE_PATH",
         ),
     ],
