@@ -102,18 +102,38 @@ def download_file(
 ) -> Path:
     if progress_callback is not None:
         progress_callback(DownloadingFileEvent(file_spec))
-    result = huggingface_hub.hf_hub_download(
-        repo_id=file_spec.repo or model_repo,
-        local_dir=output_dir,
-        filename=file_spec.filename,
-    )
+    try:
+        result = huggingface_hub.hf_hub_download(
+            repo_id=file_spec.repo or model_repo,
+            local_dir=output_dir,
+            filename=file_spec.filename,
+        )
+    except (huggingface_hub.errors.OfflineModeIsEnabled, OSError):
+        result = huggingface_hub.try_to_load_from_cache(
+            repo_id=file_spec.repo or model_repo,
+            filename=file_spec.filename,
+        )
+        if result is None or isinstance(result, str) and not Path(result).exists():
+            raise
     if progress_callback is not None:
         progress_callback(FinishedDownloadingFileEvent(file_spec))
     return Path(result)
 
 
+def _list_cached_repo_files(model_repo: str) -> list[str]:
+    """List files available in the local HuggingFace cache for a given repo."""
+    cache_info = huggingface_hub.scan_cache_dir()
+    for repo_info in cache_info.repos:
+        if repo_info.repo_id == model_repo:
+            return [f.file_name for rev in repo_info.revisions for f in rev.files]
+    return []
+
+
 def list_weight_files(model_repo: str, weights_type: WeightsType) -> list[FileSpec]:
-    all_files = huggingface_hub.list_repo_files(model_repo)
+    try:
+        all_files = huggingface_hub.list_repo_files(model_repo)
+    except (huggingface_hub.errors.OfflineModeIsEnabled, OSError):
+        all_files = _list_cached_repo_files(model_repo)
     match weights_type:
         case WeightsType.SAFETENSORS:
             return [FileSpec(filename) for filename in all_files if filename.endswith(".safetensors")]
