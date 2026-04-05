@@ -4,6 +4,7 @@ Loads Qwen3.5-0.8B and measures forward pass latency with ~2048 token input.
 Run with: uv run pytest tests/speed/test_delta_net_ttft.py -v -s
 """
 
+import os
 import time
 
 import equinox as eqx
@@ -13,6 +14,8 @@ import pytest
 
 from lalamo.model_import.common import import_model
 from lalamo.modules.token_mixers.delta_net_attention import DeltaNetAttention
+
+_RUN_BENCHMARKS = os.environ.get("RUN_BENCHMARKS", "0") == "1"
 
 MODEL_REPO = "Qwen/Qwen3.5-0.8B"
 NUM_TOKENS = 2048
@@ -81,6 +84,8 @@ def _swap_chunk_size(decoder, chunk_size: int, min_chunk_len: int | None = None)
     return treedef.unflatten(new_leaves)
 
 
+@pytest.mark.benchmark
+@pytest.mark.skipif(not _RUN_BENCHMARKS, reason="Set RUN_BENCHMARKS=1 to run TTFT benchmarks")
 def test_full_model_ttft(qwen35_model) -> None:
     """Measure full model TTFT: chunked scan vs effectively-sequential (chunk_size > seq_len)."""
     token_ids = jnp.arange(0, NUM_TOKENS, dtype=jnp.int32)[None, :]
