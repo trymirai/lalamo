@@ -178,6 +178,11 @@ class TraceShardWriter:
     def __post_init__(self) -> None:
         if self.target_shard_size_bytes <= 0:
             raise ValueError("target_shard_size_bytes must be positive.")
+        if self.output_dir.exists() and not self.output_dir.is_dir():
+            raise RuntimeError(f"{self.output_dir} exists and is not a directory.")
+        if self.output_dir.exists() and any(self.output_dir.iterdir()):
+            raise RuntimeError(f"{self.output_dir} must be empty for collect-traces output.")
+        self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def add(self, record: TraceCompletionRecord) -> None:
         if self._records and record.layer_indices != self._records[0].layer_indices:
@@ -207,7 +212,6 @@ class TraceShardWriter:
                 axis=1,
             )
 
-        self.output_dir.mkdir(parents=True, exist_ok=True)
         shard_path = self.output_dir / f"part-{self.shard_index:05d}.safetensors"
         with shard_path.open("wb") as fd:
             safe_write(fd, tensors)

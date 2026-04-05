@@ -470,13 +470,7 @@ def collect_traces(
         progress_callback,
     )
 
-    if output_path.exists() and not output_path.is_dir():
-        raise RuntimeError(f"{output_path} exists and is not a directory.")
-    if output_path.exists() and any(output_path.iterdir()):
-        raise RuntimeError(f"{output_path} must be empty for collect-traces output.")
-    output_path.mkdir(parents=True, exist_ok=True)
-    output_dir = output_path
-    writer = TraceShardWriter(output_dir=output_dir, target_shard_size_bytes=target_shard_size_bytes)
+    writer = TraceShardWriter(output_dir=output_path, target_shard_size_bytes=target_shard_size_bytes)
     for trace in traces:
         writer.add(trace)
     writer.finish()
