@@ -13,6 +13,78 @@ from .common import StateLayerBase
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
 
+def _tree_positions(
+    prefix_length: Int[Array, ""] | int,
+    parent_indices: Int[Array, " suffix_tokens"],
+) -> Int[Array, " suffix_tokens"]:
+    prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
+    positions = jnp.zeros(parent_indices.shape, dtype=jnp.int32)
+    for node_offset in range(parent_indices.shape[0]):
+        parent_index = parent_indices[node_offset]
+        parent_is_tree_node = parent_index >= prefix_length
+        parent_offset = jnp.maximum(parent_index - prefix_length, 0)
+        parent_position = jnp.where(parent_is_tree_node, positions[parent_offset], parent_index)
+        positions = positions.at[node_offset].set(parent_position + 1)
+    return positions
+
+
+def _tree_ancestor_mask(
+    prefix_length: Int[Array, ""] | int,
+    parent_indices: Int[Array, " suffix_tokens"],
+) -> Bool[Array, "suffix_tokens suffix_tokens"]:
+    prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
+    suffix_length = parent_indices.shape[0]
+    ancestors = jnp.eye(suffix_length, dtype=jnp.bool)
+    empty_row = jnp.zeros((suffix_length,), dtype=jnp.bool)
+    for node_offset in range(suffix_length):
+        parent_index = parent_indices[node_offset]
+        parent_is_tree_node = parent_index >= prefix_length
+        parent_offset = jnp.maximum(parent_index - prefix_length, 0)
+        parent_ancestors = jnp.where(parent_is_tree_node, ancestors[parent_offset], empty_row)
+        ancestors = ancestors.at[node_offset].set(ancestors[node_offset] | parent_ancestors)
+    return ancestors
+
+
+def _build_tree_attention_mask(
+    total_num_tokens: int,
+    prefix_length: Int[Array, ""] | int,
+    parent_indices: Int[Array, " suffix_tokens"],
+    has_sinks: bool,
+    suffix_length_without_padding: Int[Array, ""] | int | None,
+    sliding_window_size: int | None,
+) -> Bool[Array, "suffix_tokens tokens"]:
+    prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
+    suffix_length = parent_indices.shape[0]
+    token_indices = jnp.arange(total_num_tokens, dtype=jnp.int32)
+    prefix_mask = token_indices < prefix_length
+
+    result = jnp.broadcast_to(prefix_mask[None, :], (suffix_length, total_num_tokens))
+
+    suffix_slot_indices = prefix_length + jnp.arange(suffix_length, dtype=jnp.int32)
+    tree_mask = _tree_ancestor_mask(prefix_length, parent_indices)
+    result = result.at[:, suffix_slot_indices].set(tree_mask)
+
+    if sliding_window_size is not None:
+        tree_positions = _tree_positions(prefix_length, parent_indices)
+        key_positions = token_indices
+        key_positions = key_positions.at[suffix_slot_indices].set(tree_positions)
+        within_window = tree_positions[:, None] < (key_positions[None, :] + sliding_window_size)
+        result = result & within_window
+
+    if has_sinks:
+        result = result.at[:, 0].set(True)
+
+    if suffix_length_without_padding is not None:
+        suffix_length_without_padding = jnp.asarray(suffix_length_without_padding, dtype=jnp.int32)
+        query_is_valid = jnp.arange(suffix_length, dtype=jnp.int32) < suffix_length_without_padding
+        fallback_row = jnp.zeros((total_num_tokens,), dtype=jnp.bool)
+        fallback_index = jnp.maximum(prefix_length - 1, 0)
+        fallback_row = fallback_row.at[fallback_index].set(True)
+        result = jnp.where(query_is_valid[:, None], result, fallback_row[None, :])
+
+    return result
+
+
 class KVCacheLayer(StateLayerBase):
     has_sinks: bool = eqx.field(static=True)
     keys: Float[Array, "*batch tokens groups head_channels"]
@@ -35,6 +107,10 @@ class KVCacheLayer(StateLayerBase):
                 "Attempted to call a method on a batched version of KVCacheLayer. Use vmap instead.",
             )
 
+    @property
+    @abstractmethod
+    def length(self) -> Int[Array, ""] | int: ...
+
     @abstractmethod
     def attention_mask(
         self,
@@ -52,6 +128,15 @@ class KVCacheLayer(StateLayerBase):
         added_length: Int[Array, ""] | int | None = None,
     ) -> Self: ...
 
+    @abstractmethod
+    def tree_attention_mask(
+        self,
+        prefix_length: Int[Array, ""] | int,
+        parent_indices: Int[Array, " suffix_tokens"],
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+        sliding_window_size: int | None = None,
+    ) -> Bool[Array, "suffix_tokens tokens"]: ...
+
     def export(self) -> ParameterTree:
         return dict(
             keys=self.keys,
@@ -61,6 +146,13 @@ class KVCacheLayer(StateLayerBase):
 
 class DynamicKVCacheLayer(KVCacheLayer):
     padding_mask: Bool[Array, " tokens"] | None = None
+
+    @property
+    def length(self) -> Int[Array, ""] | int:
+        self._raise_if_batched()
+        if self.padding_mask is None:
+            return self.keys.shape[0]
+        return jnp.sum(self.padding_mask, dtype=jnp.int32)
 
     @classmethod
     def init(
@@ -89,16 +181,23 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: (Int[Array, ""] | int | None) = None,  # noqa: ARG002
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
         total_num_tokens, _, _ = self.keys.shape
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
-            result = jnp.tril(result, k=total_num_tokens - suffix_length)
+            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            query_indices = self.length + query_offsets
+            key_indices = jnp.arange(total_num_tokens, dtype=jnp.int32)
+
+            result = query_indices[:, None] >= key_indices[None, :]
             if sliding_window_size is not None:
-                result = jnp.triu(result, k=1 - sliding_window_size)
+                result = result & (query_indices[:, None] < (key_indices[None, :] + sliding_window_size))
         elif sliding_window_size is not None:
             top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
             result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
@@ -134,9 +233,34 @@ class DynamicKVCacheLayer(KVCacheLayer):
         updated_padding_mask = jnp.concatenate([old_padding_mask, added_padding_mask], axis=0)
         return DynamicKVCacheLayer(self.has_sinks, updated_keys, updated_values, updated_padding_mask)
 
+    def tree_attention_mask(
+        self,
+        prefix_length: Int[Array, ""] | int,
+        parent_indices: Int[Array, " suffix_tokens"],
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+        sliding_window_size: int | None = None,
+    ) -> Bool[Array, "suffix_tokens tokens"]:
+        self._raise_if_batched()
+        result = _build_tree_attention_mask(
+            total_num_tokens=self.keys.shape[0],
+            prefix_length=prefix_length,
+            parent_indices=parent_indices,
+            has_sinks=self.has_sinks,
+            suffix_length_without_padding=suffix_length_without_padding,
+            sliding_window_size=sliding_window_size,
+        )
+        if self.padding_mask is None:
+            return result
+        return result & self.padding_mask[None, :]
+
 
 class StaticKVCacheLayer(KVCacheLayer):
     current_length: Int[Array, "*batch"]
+
+    @property
+    def length(self) -> Int[Array, ""] | int:
+        self._raise_if_batched()
+        return self.current_length
 
     def attention_mask(
         self,
@@ -214,6 +338,23 @@ class StaticKVCacheLayer(KVCacheLayer):
             values=updated_values,
             current_length=updated_sequence_length,
         )
+
+    def tree_attention_mask(
+        self,
+        prefix_length: Int[Array, ""] | int,
+        parent_indices: Int[Array, " suffix_tokens"],
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
+        sliding_window_size: int | None = None,
+    ) -> Bool[Array, "suffix_tokens tokens"]:
+        self._raise_if_batched()
+        return _build_tree_attention_mask(
+            total_num_tokens=self.capacity,
+            prefix_length=prefix_length,
+            parent_indices=parent_indices,
+            has_sinks=self.has_sinks,
+            suffix_length_without_padding=suffix_length_without_padding,
+            sliding_window_size=sliding_window_size,
+        ) & self.padding_mask[None, :]
 
     @classmethod
     def init(

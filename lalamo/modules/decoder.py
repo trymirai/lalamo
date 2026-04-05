@@ -143,6 +143,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderForwardPassConfig | None = None,
+        attention_parent_indices: Int[Array, "batch suffix_tokens"] | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -165,6 +166,7 @@ class Decoder(LalamoModule[DecoderConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
+            attention_parent_indices=attention_parent_indices,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)

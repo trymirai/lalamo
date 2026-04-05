@@ -116,7 +116,10 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
     ) -> TokenMixerResult[ShortConvStateLayer]:
+        if attention_parent_indices is not None:
+            raise NotImplementedError("Tree attention is not implemented for ShortConv state mixers.")
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
 

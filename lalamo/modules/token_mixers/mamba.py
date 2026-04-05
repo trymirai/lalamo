@@ -509,7 +509,12 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
     ) -> Mamba2Result:
+        if attention_parent_indices is not None:
+            raise NotImplementedError(
+                "Tree attention is not implemented for Mamba2 because it does not use a KV cache.",
+            )
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for Mamba2.")
 

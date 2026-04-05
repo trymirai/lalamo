@@ -63,6 +63,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

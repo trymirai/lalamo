@@ -73,6 +73,61 @@ def _soft_capped_attention_kernel(
     )
 
 
+def _attention_kernel(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    mask: Bool[Array, "dst_tokens src_tokens"] | None,
+    scale: float | None,
+    logit_soft_cap: float | None,
+    sink_bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    if logit_soft_cap is not None:
+        return _soft_capped_attention_kernel(
+            queries,
+            keys,
+            values,
+            mask=mask,
+            scale=scale,
+            logit_soft_cap=logit_soft_cap,
+        )
+    return jax.nn.dot_product_attention(
+        queries,
+        keys,
+        values,
+        bias=sink_bias,
+        mask=mask,
+        scale=scale,
+    )
+
+
+def _tree_attention_kernel(
+    queries: Float[Array, "dst_tokens heads head_channels"],
+    keys: Float[Array, "src_tokens groups head_channels"],
+    values: Float[Array, "src_tokens groups head_channels"],
+    mask: Bool[Array, "dst_tokens src_tokens"],
+    scale: float | None,
+    logit_soft_cap: float | None,
+    sink_bias: Float[Array, "heads dst_tokens src_tokens"] | None,
+) -> Float[Array, "dst_tokens heads head_channels"]:
+    outputs = []
+    for query_index in range(queries.shape[0]):
+        row_queries = queries[query_index : query_index + 1]
+        row_mask = mask[query_index : query_index + 1]
+        row_sink_bias = None if sink_bias is None else sink_bias[:, query_index : query_index + 1, :]
+        row_output = _attention_kernel(
+            row_queries,
+            keys,
+            values,
+            mask=row_mask,
+            scale=scale,
+            logit_soft_cap=logit_soft_cap,
+            sink_bias=row_sink_bias,
+        )
+        outputs.append(row_output[0])
+    return jnp.stack(outputs)
+
+
 AttentionResult = TokenMixerResult[KVCacheLayer]
 
 
@@ -377,7 +432,11 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
     ) -> AttentionResult:
+        if attention_parent_indices is not None and not self.is_causal:
+            raise NotImplementedError("Tree attention is only supported for causal attention.")
+
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
             (gate,) = vmap(self.gate_projection, in_axes=0)(inputs)
@@ -413,41 +472,52 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             queries = apply_positional_embeddings(queries)
             keys = apply_positional_embeddings(keys)
 
+        prefix_length = 0 if state is None else state.length
         if state is None:
             updated_state = DynamicKVCacheLayer.init(self.has_sinks, keys, values, length=length_without_padding)
         else:
             updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
-        mask = updated_state.attention_mask(
-            num_suffix_tokens,
-            self.is_causal,
-            length_without_padding,
-            self.sliding_window_size,
-        )
+        if attention_parent_indices is None:
+            mask = updated_state.attention_mask(
+                num_suffix_tokens,
+                self.is_causal,
+                length_without_padding,
+                self.sliding_window_size,
+            )
+        else:
+            mask = updated_state.tree_attention_mask(
+                prefix_length=prefix_length,
+                parent_indices=attention_parent_indices,
+                suffix_length_without_padding=length_without_padding,
+                sliding_window_size=self.sliding_window_size,
+            )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)
             sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
         else:
             sink_bias = None
 
-        if self.config.logit_soft_cap is not None:
-            attention_output = _soft_capped_attention_kernel(
+        if attention_parent_indices is not None:
+            attention_output = _tree_attention_kernel(
                 queries,
                 updated_state.keys,
                 updated_state.values,
                 mask=mask,
                 scale=self.scale,
                 logit_soft_cap=self.config.logit_soft_cap,
+                sink_bias=sink_bias,
             )
         else:
-            attention_output = jax.nn.dot_product_attention(
+            attention_output = _attention_kernel(
                 queries,
                 updated_state.keys,
                 updated_state.values,
-                bias=sink_bias,
                 mask=mask,
                 scale=self.scale,
+                logit_soft_cap=self.config.logit_soft_cap,
+                sink_bias=sink_bias,
             )
         attention_output = rearrange(
             attention_output,

@@ -213,6 +213,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+        attention_parent_indices: Int[Array, "batch suffix_tokens"] | None = None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -232,6 +233,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             positional_embeddings,
             state=state,
             length_without_padding=lengths_without_padding,
+            attention_parent_indices=attention_parent_indices,
         )
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
