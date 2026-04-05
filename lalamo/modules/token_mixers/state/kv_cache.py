@@ -89,16 +89,26 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: (Int[Array, ""] | int | None) = None,  # noqa: ARG002
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
         total_num_tokens, _, _ = self.keys.shape
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+
         result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
         if is_causal:
-            result = jnp.tril(result, k=total_num_tokens - suffix_length)
+            query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+            current_length = (
+                self.keys.shape[0] if self.padding_mask is None else jnp.sum(self.padding_mask, dtype=jnp.int32)
+            )
+            query_indices = current_length + query_offsets
+            key_indices = jnp.arange(total_num_tokens, dtype=jnp.int32)
+
+            result = query_indices[:, None] >= key_indices[None, :]
             if sliding_window_size is not None:
-                result = jnp.triu(result, k=1 - sliding_window_size)
+                result = result & (query_indices[:, None] < (key_indices[None, :] + sliding_window_size))
         elif sliding_window_size is not None:
             top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
             result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
