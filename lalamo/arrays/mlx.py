@@ -15,6 +15,7 @@ from .base import (
     DeterministicQuantize,
     NoQuantize,
     StochasticQuantize,
+    _grouped_init_stats,
     pack_uint_to_uint8,
     unpack_int32,
     unpack_uint8_to_uint,
@@ -144,6 +145,17 @@ class MLXQuantArray(CompressedArray):
             group_size=self.group_size,
             bits=self.bits,
         )
+
+    @classmethod
+    def from_raw(
+        cls,
+        raw: Float[Array, "... out_channels in_channels"],
+        *,
+        group_size: int,
+        bits: int,
+    ) -> MLXQuantArray:
+        group_mins, scales = _grouped_init_stats(raw, group_size, bits)
+        return cls(raw=raw, scales=scales, deq_biases=group_mins, group_size=group_size, bits=bits)
 
     @classmethod
     def init(

@@ -1,5 +1,6 @@
 import contextlib
 import contextvars
+import dataclasses
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Generator, Mapping
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import Any, Generic, Self, TypeVar, cast
 import equinox as eqx
 import jax
 import jax.sharding as shd
+import jax.tree_util as jtu
 from cattrs import Converter
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
@@ -20,6 +22,7 @@ from lalamo.common import ParameterTree, stringify_path
 __all__ = [
     "DummyUnionMember",
     "EmptyInitializer",
+    "FieldShardingInfo",
     "ForwardPassMode",
     "Initializer",
     "LalamoModule",
@@ -29,7 +32,9 @@ __all__ = [
     "ShardingConfig",
     "ShardingOrder",
     "TensorSharding",
+    "apply_parameter_sharding",
     "config_converter",
+    "field_sharding_from_path",
     "get_current_sharding_config",
     "pad_and_apply_data_sharding",
     "register_config_union",
@@ -67,31 +72,55 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
             elif _is_uzu_leaf(leaf):
                 for sub_key, array in cast("Any", leaf).to_uzu().items():
                     result[f"{key}.{sub_key}"] = array
-            else:
+            elif eqx.is_array(leaf):
                 result[key] = leaf
+            else:
+                raise TypeError(f"to_uzu: unexpected non-array leaf at {key}: {type(leaf)}")
         return result
 
-    def from_uzu(self, weights: Mapping[str, Array], prefix: str = "") -> Self:
+    def from_uzu(
+        self,
+        weights: Mapping[str, Array],
+        prefix: str = "",
+        sharding_config: "ShardingConfig | None" = None,
+    ) -> Self:
+        def _maybe_shard(value: object, path: tuple[object, ...]) -> object:
+            if sharding_config is None:
+                return value
+            info = field_sharding_from_path(self, path)
+            return jax.tree.map(
+                lambda x: apply_parameter_sharding(x, info, sharding_config) if eqx.is_array(x) else x,
+                value,
+            )
+
         def restore(path: tuple[object, ...], leaf: object) -> object:
             key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
             if isinstance(leaf, LalamoModule):
-                return leaf.from_uzu(weights, prefix=key)
+                return leaf.from_uzu(weights, prefix=key, sharding_config=sharding_config)
             if _is_uzu_leaf(leaf):
                 relevant_weights = {
-                    sub_key.removeprefix(f"{key}."): value
-                    for sub_key, value in weights.items()
+                    sub_key.removeprefix(f"{key}."): weights[sub_key]
+                    for sub_key in weights
                     if sub_key.startswith(f"{key}.")
                 }
                 if relevant_weights:
-                    return cast("Any", leaf).from_uzu(relevant_weights)
+                    return _maybe_shard(cast("Any", leaf).from_uzu(relevant_weights), path)
             if key in weights:
-                return weights[key]
+                return _maybe_shard(weights[key], path)
             return leaf
 
         return jax.tree_util.tree_map_with_path(
             restore,
             self,
             is_leaf=lambda x: ((isinstance(x, LalamoModule) and x is not self) or _is_uzu_leaf(x)),
+        )
+
+    def shard(self, sharding_config: "ShardingConfig") -> Self:
+        return jax.tree_util.tree_map_with_path(
+            lambda path, leaf: apply_parameter_sharding(leaf, field_sharding_from_path(self, path), sharding_config)
+            if eqx.is_array(leaf)
+            else leaf,
+            self,
         )
 
 
@@ -363,6 +392,75 @@ def sharded_field(
         metadata=merged_metadata,
         **kwargs,
     )
+
+
+@dataclass(frozen=True)
+class FieldShardingInfo:
+    tensor_sharding: TensorSharding
+    sharding_order: ShardingOrder | None
+    min_size_to_shard: int
+
+
+def field_sharding_from_path(
+    module: eqx.Module,
+    path: tuple[object, ...],
+) -> FieldShardingInfo | None:
+    cur: Any = module
+    owner: eqx.Module = module
+    owner_field: dataclasses.Field[Any] | None = None
+
+    for key in path:
+        if isinstance(key, jtu.GetAttrKey):
+            assert isinstance(cur, eqx.Module)
+            owner = cur
+            owner_field = next((f for f in dataclasses.fields(cur) if f.name == key.name), None)
+            cur = getattr(cur, key.name)
+        elif isinstance(key, jtu.SequenceKey):
+            cur = cur[key.idx]
+        elif isinstance(key, jtu.DictKey):
+            cur = cur[key.key]
+
+    if owner_field is None:
+        return None
+
+    tensor_sharding = owner_field.metadata.get("tensor_sharding")
+    if tensor_sharding is None:
+        return None
+
+    return FieldShardingInfo(
+        tensor_sharding,
+        sharding_order=getattr(owner, "sharding_order", None),
+        min_size_to_shard=owner_field.metadata.get("min_size_to_shard", 0),
+    )
+
+
+def apply_parameter_sharding(
+    array: Array,
+    info: FieldShardingInfo | None,
+    sharding_config: ShardingConfig | None,
+) -> Array:
+    if sharding_config is None or info is None or array.size < info.min_size_to_shard:
+        return array
+
+    parts: list[str | None] = [None] * array.ndim
+
+    tp_dim: int | None = None
+    tp_axis_size = sharding_config.tensor_axis_size
+    for dim in info.tensor_sharding.dims_to_try(info.sharding_order):
+        if dim < array.ndim and array.shape[dim] % tp_axis_size == 0:
+            parts[dim] = sharding_config.tensor_axis_name
+            tp_dim = dim
+            break
+
+    if sharding_config.fsdp:
+        dp_axis_size = sharding_config.data_axis_size
+        for dim in info.tensor_sharding.axes:
+            if dim != tp_dim and dim < array.ndim and array.shape[dim] % dp_axis_size == 0:
+                parts[dim] = sharding_config.data_axis_name
+                break
+
+    pspec = shd.PartitionSpec(*parts)
+    return jax.device_put(array, sharding_config.make_sharding(pspec))
 
 
 def shard_batch_axis(array: Array, sharding_config: ShardingConfig, *, batch_axis: int) -> Array:

@@ -6,7 +6,6 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.modules.activations import Identity
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
@@ -80,7 +79,7 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
                 has_biases=False,
             )
         else:
-            fast_model_projection = Identity()
+            fast_model_projection = None
 
         assert isinstance(embeddings_slow, TiedEmbedding)
         assert isinstance(embeddings_fast, TiedEmbedding)
@@ -119,7 +118,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     readout_fast: Linear
 
     codebook_embeddings: TiedEmbedding
-    fast_model_projection: Linear | Identity
+    fast_model_projection: Linear | None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -363,8 +362,8 @@ def decode_next_token(
     )
     assert slow_model_result.layer_results is not None
     hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
-    (hidden_states,) = vmap(model.fast_model_projection)(hidden_states)
-    hidden_states = hidden_states.reshape(hidden_states.shape[0], 1, -1)
+    if model.fast_model_projection is not None:
+        (hidden_states,) = vmap(model.fast_model_projection)(hidden_states)
 
     (logits,) = vmap_twice(model.readout_slow)(slow_model_result.outputs)
 

@@ -35,6 +35,20 @@ class ArrayForwardPassConfig(eqx.Module):
     quantize: Quantize = DeterministicQuantize()
 
 
+def _grouped_init_stats(
+    raw: Float[Array, "... out_channels in_channels"], group_size: int, bits: int
+) -> tuple[Float[Array, "... out_channels groups"], Float[Array, "... out_channels groups"]]:
+    *leading_dims, out_channels, in_channels = raw.shape
+    if in_channels % group_size != 0:
+        raise ValueError(f"in_channels ({in_channels}) must be divisible by group_size ({group_size})")
+    grouped = raw.reshape((*leading_dims, out_channels, in_channels // group_size, group_size))
+    group_mins = jnp.min(grouped, axis=-1)
+    group_maxs = jnp.max(grouped, axis=-1)
+    quant_levels = (2**bits) - 1
+    scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(raw.dtype).eps)
+    return group_mins, scales
+
+
 class CompressedArray(eqx.Module):
     @property
     @abc.abstractmethod
@@ -62,7 +76,7 @@ class CompressedArray(eqx.Module):
         def restore(path: tuple[object, ...], leaf: object) -> object:
             key = stringify_path(path)
             if isinstance(leaf, CompressedArray):
-                relevant = {k.removeprefix(f"{key}."): v for k, v in weights.items() if k.startswith(f"{key}.")}
+                relevant = {k.removeprefix(f"{key}."): weights[k] for k in weights if k.startswith(f"{key}.")}
                 return leaf.from_uzu(relevant)
             if key in weights:
                 return weights[key]

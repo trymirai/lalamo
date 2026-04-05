@@ -29,44 +29,16 @@ __all__ = [
 ]
 
 
-def _grouped_init_stats(raw: Array, group_size: int, bits: int) -> tuple[Array, Array]:
-    *leading_dims, out_channels, in_channels = raw.shape
-    if in_channels % group_size != 0:
-        raise ValueError(f"in_channels ({in_channels}) must be divisible by group_size ({group_size})")
-    grouped = raw.reshape((*leading_dims, out_channels, in_channels // group_size, group_size))
-    group_mins = jnp.min(grouped, axis=-1)
-    group_maxs = jnp.max(grouped, axis=-1)
-    quant_levels = (2**bits) - 1
-    scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(raw.dtype).eps)
-    return group_mins, scales
-
-
 def _array_from_raw(config: LinearConfig, raw: Array) -> CompressedArray:
     match config.quant_format:
         case QuantFormat.FULL_PRECISION:
             return FullPrecisionArray(raw=raw)
         case QuantFormat.AWQ:
             assert config.group_size is not None and config.bits is not None
-            group_mins, scales = _grouped_init_stats(raw, config.group_size, config.bits)
-            quant_levels = (2**config.bits) - 1
-            zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, quant_levels).astype(raw.dtype)
-            return AWQQuantArray(
-                raw=raw,
-                scales=scales,
-                zero_points=zero_points,
-                group_size=config.group_size,
-                bits=config.bits,
-            )
+            return AWQQuantArray.from_raw(raw, group_size=config.group_size, bits=config.bits)
         case QuantFormat.MLX:
             assert config.group_size is not None and config.bits is not None
-            group_mins, scales = _grouped_init_stats(raw, config.group_size, config.bits)
-            return MLXQuantArray(
-                raw=raw,
-                scales=scales,
-                deq_biases=group_mins,
-                group_size=config.group_size,
-                bits=config.bits,
-            )
+            return MLXQuantArray.from_raw(raw, group_size=config.group_size, bits=config.bits)
 
 
 @dataclass(frozen=True)

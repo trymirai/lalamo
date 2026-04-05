@@ -15,6 +15,7 @@ from .base import (
     DeterministicQuantize,
     NoQuantize,
     StochasticQuantize,
+    _grouped_init_stats,
     pack_uint_to_uint8,
     unpack_int32,
     unpack_uint8_to_uint,
@@ -41,7 +42,7 @@ def awq_quantize_per_group(
     group_size: int,
     bits: int,
 ) -> Array:
-    safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
+    safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
     expanded_zp = jnp.repeat(zero_points, group_size, axis=-1)
     return jnp.clip(jnp.round(weights / safe_scales + expanded_zp), 0, (2**bits) - 1)
 
@@ -55,7 +56,7 @@ def awq_stochastic_quantize_per_group(
     bits: int,
     key: PRNGKeyArray,
 ) -> Array:
-    safe_scales = jnp.repeat(jnp.maximum(scales, jnp.finfo(weights.dtype).eps), group_size, axis=-1)
+    safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
     expanded_zp = jnp.repeat(zero_points, group_size, axis=-1)
     pre_round = weights / safe_scales + expanded_zp
     return jnp.clip(jnp.floor(pre_round + jax.random.uniform(key, pre_round.shape)), 0, (2**bits) - 1)
@@ -79,6 +80,19 @@ class AWQQuantArray(CompressedArray):
     zero_points: Array
     group_size: int = eqx.field(static=True)
     bits: int = eqx.field(static=True, default=4)
+
+    @classmethod
+    def from_raw(
+        cls,
+        raw: Float[Array, "... out_channels in_channels"],
+        *,
+        group_size: int,
+        bits: int = 4,
+    ) -> AWQQuantArray:
+        group_mins, scales = _grouped_init_stats(raw, group_size, bits)
+        quant_levels = (2**bits) - 1
+        zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, quant_levels).astype(raw.dtype)
+        return cls(raw=raw, scales=scales, zero_points=zero_points, group_size=group_size, bits=bits)
 
     @property
     def is_abstract(self) -> bool:
@@ -176,10 +190,11 @@ class AWQQuantArray(CompressedArray):
         if bits == 4:
             unpacked_weights = _reverse_awq_uint4_order(unpacked_weights)
             unpacked_zero_points = _reverse_awq_uint4_order(unpacked_zero_points)
+        quantized_weights = unpacked_weights.T.astype(jnp.uint8)
         adjusted_scales = scales.T.astype(dtype)
         zero_points = unpacked_zero_points.T.astype(dtype)
         raw = awq_dequantize_per_group(
-            unpacked_weights.T.astype(dtype),
+            quantized_weights.astype(dtype),
             adjusted_scales,
             zero_points,
             group_size=group_size,

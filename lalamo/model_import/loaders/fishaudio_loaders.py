@@ -14,11 +14,11 @@ from jaxtyping import Array, Float
 from tokenizers import Tokenizer
 
 from lalamo.arrays import FullPrecisionArray
+from lalamo.arrays.embedding import FullPrecisionEmbedding
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
     DenseMLP,
-    Identity,
     Linear,
     MLPBase,
     Normalization,
@@ -429,10 +429,13 @@ def load_vector_quantize(
     """
     # Load codebook weights
     codebook_weight = weights_dict[path / "codebook" / "weight"]
+    embedding = FullPrecisionEmbedding(
+        weights=codebook_weight.astype(module.codebook.activation_precision),
+    )
     codebook = load_parameters(
-        lambda m: (m.weights,),
+        lambda m: (m.embedding,),
         module.codebook,
-        (codebook_weight,),
+        (embedding,),
     )
 
     # Load out_proj with weight norm fusion
@@ -914,7 +917,7 @@ def load_fishaudio_text_decoder(
         )
         assert isinstance(fast_model_projection, Linear)
     else:
-        fast_model_projection = Identity()
+        fast_model_projection = None
 
     return load_parameters(
         lambda m: (

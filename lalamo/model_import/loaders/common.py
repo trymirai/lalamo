@@ -1,10 +1,8 @@
 import dataclasses
 from collections.abc import Callable, Iterable
-from dataclasses import dataclass
 
 import equinox as eqx
 import jax
-import jax.sharding as shd
 import jax.tree_util as jtu
 from jax._src.api import ShapeDtypeStruct
 from jax.tree import leaves_with_path
@@ -12,9 +10,8 @@ from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
 from lalamo.modules.common import (
-    ShardingConfig,
-    ShardingOrder,
-    TensorSharding,
+    FieldShardingInfo,
+    apply_parameter_sharding,
     get_current_sharding_config,
 )
 
@@ -23,23 +20,16 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class FieldShardingInfo:
-    tensor_sharding: TensorSharding
-    sharding_order: ShardingOrder | None
-    min_size_to_shard: int
-
-
-def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo | None:
+def find_field_sharding(module: eqx.Module, target: object) -> FieldShardingInfo | None:
     flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda x: x is target)
 
     for path, leaf in flat_with_path:
         if leaf is not target:
             continue
 
-        cur: eqx.Module | Array = module
+        cur: object = module
         owner: eqx.Module = module
-        owner_field: dataclasses.Field | None = None
+        owner_field: dataclasses.Field[object] | None = None
 
         for key in path:
             if isinstance(key, jtu.GetAttrKey):
@@ -68,35 +58,6 @@ def find_field_sharding(module: eqx.Module, target: Array) -> FieldShardingInfo 
         )
 
     return None
-
-
-def _apply_parameter_sharding(
-    array: Array,
-    info: FieldShardingInfo | None,
-    sharding_config: ShardingConfig | None,
-) -> Array:
-    if sharding_config is None or info is None or array.size < info.min_size_to_shard:
-        return array
-
-    parts: list[str | None] = [None] * array.ndim
-
-    tp_dim: int | None = None
-    tp_axis_size = sharding_config.tensor_axis_size
-    for dim in info.tensor_sharding.dims_to_try(info.sharding_order):
-        if dim < array.ndim and array.shape[dim] % tp_axis_size == 0:
-            parts[dim] = sharding_config.tensor_axis_name
-            tp_dim = dim
-            break
-
-    if sharding_config.fsdp:
-        dp_axis_size = sharding_config.data_axis_size
-        for dim in info.tensor_sharding.axes:
-            if dim != tp_dim and dim < array.ndim and array.shape[dim] % dp_axis_size == 0:
-                parts[dim] = sharding_config.data_axis_name
-                break
-
-    pspec = shd.PartitionSpec(*parts)
-    return jax.device_put(array, sharding_config.make_sharding(pspec))
 
 
 def _get_name(leaf: PyTree, tree: PyTree) -> str:
@@ -136,10 +97,13 @@ def load_parameters[M: eqx.Module](
         _check_compatible(old_value, new_value, module)
         if isinstance(old_value, (Array, ShapeDtypeStruct)) and isinstance(new_value, Array):
             new_value = new_value.astype(old_value.dtype)  # noqa: PLW2901
-            new_value = _apply_parameter_sharding(  # noqa: PLW2901
+
+        if sharding_config is not None:
+            info = find_field_sharding(module, old_value)
+            new_value = jax.tree.map(  # noqa: PLW2901
+                lambda x: apply_parameter_sharding(x, info, sharding_config) if eqx.is_array(x) else x,
                 new_value,
-                find_field_sharding(module, old_value),
-                sharding_config,
             )
+
         casted_new_values.append(new_value)
     return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)

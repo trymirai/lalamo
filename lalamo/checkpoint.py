@@ -9,8 +9,8 @@ import jax.numpy as jnp
 import orbax.checkpoint as ocp
 
 from lalamo.common import stringify_path
-from lalamo.model_import.loaders.common import _apply_parameter_sharding, find_field_sharding
-from lalamo.modules.common import EmptyInitializer, LalamoModule, ShardingConfig, config_converter
+from lalamo.model_import.loaders.common import find_field_sharding
+from lalamo.modules.common import EmptyInitializer, LalamoModule, ShardingConfig, apply_parameter_sharding, config_converter
 
 __all__ = ["CheckpointManager"]
 
@@ -52,7 +52,7 @@ class CheckpointManager:
 
         target = jax.tree_util.tree_map_with_path(
             lambda path, leaf: (
-                _apply_parameter_sharding(
+                apply_parameter_sharding(
                     jnp.zeros(
                         leaf.shape,
                         config_converter.structure(array_dtypes[stringify_path(path)], jnp.dtype),
