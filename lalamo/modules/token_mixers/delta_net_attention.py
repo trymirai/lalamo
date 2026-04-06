@@ -166,11 +166,11 @@ class DeltaNetScanResult(NamedTuple):
 
 
 class DeltaNetScanInputs(NamedTuple):
-    queries: Float[Array, "*batch heads key_channels"]
-    keys: Float[Array, "*batch heads key_channels"]
-    values: Float[Array, "*batch heads value_channels"]
-    decay_factor: Float[Array, "*batch heads"]
-    beta: Float[Array, "*batch heads"]
+    queries: Float[Array, "tokens heads key_channels"]
+    keys: Float[Array, "tokens heads key_channels"]
+    values: Float[Array, "tokens heads value_channels"]
+    decay_factor: Float[Array, "tokens heads"]
+    beta: Float[Array, "tokens heads"]
 
 
 class DeltaNetTokenStepOutput(NamedTuple):
@@ -277,7 +277,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     ) -> DeltaNetScanResult:
         chunk_size = self.config.chunk_size
         min_chunk_len = self.config.min_chunk_len
-        num_tokens = queries.shape[0]
+        num_tokens, _, _ = queries.shape
         num_steps_arr = jnp.asarray(num_steps, dtype=jnp.int32)
         dtype = queries.dtype
 
@@ -305,7 +305,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             decay_factor = jnp.pad(decay_factor, ((0, pad_len), (0, 0)))
             beta = jnp.pad(beta, ((0, pad_len), (0, 0)))
 
-        padded_len = queries.shape[0]
+        padded_len, _, _ = queries.shape
         valid_mask = (jnp.arange(padded_len) < num_steps_arr).astype(dtype)
         keys = keys * valid_mask[:, None, None]
         values = values * valid_mask[:, None, None]
