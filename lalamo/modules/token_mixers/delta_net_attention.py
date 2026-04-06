@@ -161,28 +161,28 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
 
 
 class DeltaNetScanResult(NamedTuple):
-    outputs: Float[Array, "tokens heads head_v_dim"]
-    final_state: Float[Array, "heads head_v_dim head_k_dim"]
+    outputs: Float[Array, "tokens heads value_channels"]
+    final_state: Float[Array, "heads value_channels key_channels"]
 
 
 class DeltaNetScanInputs(NamedTuple):
-    queries: Float[Array, "*batch heads k_dim"]
-    keys: Float[Array, "*batch heads k_dim"]
-    values: Float[Array, "*batch heads v_dim"]
+    queries: Float[Array, "*batch heads key_channels"]
+    keys: Float[Array, "*batch heads key_channels"]
+    values: Float[Array, "*batch heads value_channels"]
     decay_factor: Float[Array, "*batch heads"]
     beta: Float[Array, "*batch heads"]
 
 
 class DeltaNetTokenStepOutput(NamedTuple):
-    local_output: Float[Array, "heads v_dim"]
-    correction_vec: Float[Array, "heads k_dim"]
+    local_output: Float[Array, "heads value_channels"]
+    correction_vec: Float[Array, "heads key_channels"]
 
 
 class DeltaNetChunkScanResult(NamedTuple):
-    chunk_outputs: Float[Array, "chunk_size heads v_dim"]
-    correction_vecs: Float[Array, "chunk_size heads k_dim"]
-    end_state: Float[Array, "heads v_dim k_dim"]
-    end_prop: Float[Array, "heads k_dim k_dim"]
+    chunk_outputs: Float[Array, "chunk_size heads value_channels"]
+    correction_vecs: Float[Array, "chunk_size heads key_channels"]
+    end_state: Float[Array, "heads value_channels key_channels"]
+    end_prop: Float[Array, "heads key_channels key_channels"]
 
 
 class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
@@ -224,26 +224,26 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
     def _scan(
         self,
-        queries: Float[Array, "tokens heads head_k_dim"],
-        keys: Float[Array, "tokens heads head_k_dim"],
-        values: Float[Array, "tokens heads head_v_dim"],
+        queries: Float[Array, "tokens heads key_channels"],
+        keys: Float[Array, "tokens heads key_channels"],
+        values: Float[Array, "tokens heads value_channels"],
         decay_factor: Float[Array, "tokens heads"],
         beta: Float[Array, "tokens heads"],
-        initial_state: Float[Array, "heads head_v_dim head_k_dim"],
+        initial_state: Float[Array, "heads value_channels key_channels"],
         num_steps: Int[Array, ""] | int,
     ) -> DeltaNetScanResult:
         def scan_fn(
-            index_and_state: tuple[Int[Array, ""], Float[Array, "heads head_v_dim head_k_dim"]],
+            index_and_state: tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
             step_inputs: tuple[
-                Float[Array, "heads head_k_dim"],
-                Float[Array, "heads head_k_dim"],
-                Float[Array, "heads head_v_dim"],
+                Float[Array, "heads key_channels"],
+                Float[Array, "heads key_channels"],
+                Float[Array, "heads value_channels"],
                 Float[Array, " heads"],
                 Float[Array, " heads"],
             ],
         ) -> tuple[
-            tuple[Int[Array, ""], Float[Array, "heads head_v_dim head_k_dim"]],
-            Float[Array, "heads head_v_dim"],
+            tuple[Int[Array, ""], Float[Array, "heads value_channels key_channels"]],
+            Float[Array, "heads value_channels"],
         ]:
             index, carry_state = index_and_state
             query_t, key_t, value_t, decay_factor_t, beta_t = step_inputs
@@ -253,7 +253,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             value_delta = value_t - jnp.sum(decayed_state * key_t[:, None, :], axis=-1)
             value_delta = value_delta * beta_t[:, None]
             updated_state = decayed_state + value_delta[:, :, None] * key_t[:, None, :]
-            output_t = einops.einsum(query_t, updated_state, "heads k_dim, heads v_dim k_dim -> heads v_dim")
+            output_t = einops.einsum(query_t, updated_state, "heads key_channels, heads value_channels key_channels -> heads value_channels")
 
             propagated_state = jax.lax.cond(index < num_steps, lambda: updated_state, lambda: carry_state)
             return (index + 1, propagated_state), output_t
@@ -267,12 +267,12 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
     def _chunked_scan(
         self,
-        queries: Float[Array, "tokens heads head_k_dim"],
-        keys: Float[Array, "tokens heads head_k_dim"],
-        values: Float[Array, "tokens heads head_v_dim"],
+        queries: Float[Array, "tokens heads key_channels"],
+        keys: Float[Array, "tokens heads key_channels"],
+        values: Float[Array, "tokens heads value_channels"],
         decay_factor: Float[Array, "tokens heads"],
         beta: Float[Array, "tokens heads"],
-        initial_state: Float[Array, "heads head_v_dim head_k_dim"],
+        initial_state: Float[Array, "heads value_channels key_channels"],
         num_steps: Int[Array, ""] | int,
     ) -> DeltaNetScanResult:
         chunk_size = self.config.chunk_size
@@ -321,10 +321,10 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
         # Phase 1: intra-chunk scan (parallel across chunks via vmap)
         def _intra_chunk_token_step(
-            carry: tuple[Float[Array, "heads v_dim k_dim"], Float[Array, "heads k_dim k_dim"]],
+            carry: tuple[Float[Array, "heads value_channels key_channels"], Float[Array, "heads key_channels key_channels"]],
             token_inputs: DeltaNetScanInputs,
         ) -> tuple[
-            tuple[Float[Array, "heads v_dim k_dim"], Float[Array, "heads k_dim k_dim"]],
+            tuple[Float[Array, "heads value_channels key_channels"], Float[Array, "heads key_channels key_channels"]],
             DeltaNetTokenStepOutput,
         ]:
             state, prop = carry
@@ -337,11 +337,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             new_state = decayed_state + value_delta[:, :, None] * token_inputs.keys[:, None, :]
 
             decayed_prop = prop * decay
-            prop_dot_key = einops.einsum(decayed_prop, token_inputs.keys, "heads k_out k_in, heads k_in -> heads k_out")
+            prop_dot_key = einops.einsum(decayed_prop, token_inputs.keys, "heads key_channels_out key_channels_in, heads key_channels_in -> heads key_channels_out")
             new_prop = decayed_prop - token_inputs.beta[:, None, None] * prop_dot_key[:, :, None] * token_inputs.keys[:, None, :]
 
-            local_output = einops.einsum(token_inputs.queries, new_state, "heads k_dim, heads v_dim k_dim -> heads v_dim")
-            correction_vec = einops.einsum(new_prop, token_inputs.queries, "heads k_out k_in, heads k_in -> heads k_out")
+            local_output = einops.einsum(token_inputs.queries, new_state, "heads key_channels, heads value_channels key_channels -> heads value_channels")
+            correction_vec = einops.einsum(new_prop, token_inputs.queries, "heads key_channels_out key_channels_in, heads key_channels_in -> heads key_channels_out")
 
             return (new_state, new_prop), DeltaNetTokenStepOutput(local_output, correction_vec)
 
@@ -359,11 +359,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
         # Phase 2: inter-chunk state propagation (sequential over num_chunks)
         def _inter_chunk_step(
-            actual_state: Float[Array, "heads v_dim k_dim"],
-            chunk_data: tuple[Float[Array, "heads v_dim k_dim"], Float[Array, "heads k_dim k_dim"]],
-        ) -> tuple[Float[Array, "heads v_dim k_dim"], Float[Array, "heads v_dim k_dim"]]:
+            actual_state: Float[Array, "heads value_channels key_channels"],
+            chunk_data: tuple[Float[Array, "heads value_channels key_channels"], Float[Array, "heads key_channels key_channels"]],
+        ) -> tuple[Float[Array, "heads value_channels key_channels"], Float[Array, "heads value_channels key_channels"]]:
             local_end, prop_matrix = chunk_data
-            next_state = local_end + einops.einsum(actual_state, prop_matrix, "heads v_dim k_in, heads k_in k_out -> heads v_dim k_out")
+            next_state = local_end + einops.einsum(actual_state, prop_matrix, "heads value_channels key_channels_in, heads key_channels_in key_channels_out -> heads value_channels key_channels_out")
             return next_state, actual_state
 
         final_state, chunk_initials = jax.lax.scan(
@@ -371,7 +371,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         )
 
         # Phase 3: apply corrections (parallel batched matmul)
-        corrections = einops.einsum(chunk_initials, chunk_results.correction_vecs, "chunk heads v_dim k_dim, chunk time heads k_dim -> chunk time heads v_dim")
+        corrections = einops.einsum(chunk_initials, chunk_results.correction_vecs, "chunk heads value_channels key_channels, chunk time heads key_channels -> chunk time heads value_channels")
         outputs = chunk_results.chunk_outputs + corrections
         outputs = outputs.reshape(padded_len, self.num_heads, self.value_head_dim)[:num_chunked_tokens]
 
