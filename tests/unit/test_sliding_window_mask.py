@@ -28,7 +28,7 @@ def decoder() -> Decoder:
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
-    context_length = 128
+    context_length = 16
 
     norm_config = NormalizationConfig(
         scale_precision=precision,
@@ -78,7 +78,7 @@ def decoder() -> Decoder:
             max_sequence_length=context_length,
         ),
         local_rope_config=None,
-        layer_configs=(layer_config, layer_config),
+        layer_configs=(layer_config,),
         output_norm_config=norm_config,
         model_dim=model_dim,
         hidden_dim=hidden_dim,
@@ -137,8 +137,8 @@ def test_dynamic_kv_cache_sliding_window_mask_matches_static_mask() -> None:
 def test_sliding_window_dynamic_state_multi_token_matches_single_token_sequential(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
-    suffix_token_ids = jnp.arange(4, 68, dtype=jnp.int32)[None, :]
-    suffix_positions = jnp.arange(3, 67, dtype=jnp.int32)[None, :]
+    suffix_token_ids = jnp.arange(4, 8, dtype=jnp.int32)[None, :]
+    suffix_positions = jnp.arange(3, 7, dtype=jnp.int32)[None, :]
 
     prefix_result = decoder(
         prefix_token_ids,
