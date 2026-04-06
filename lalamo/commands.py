@@ -17,7 +17,7 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters, get_default_device_bytes
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -372,6 +372,7 @@ class CollectTracesCallbacks:
     dataset_path: Path
     output_path: Path
     num_logits_per_token: int
+    trace_layers: tuple[int, ...]
     max_input_length: int
     max_output_length: int
     batch_size: int
@@ -400,30 +401,20 @@ def collect_traces(
     model_path: Path,
     dataset_path: Path,
     output_path: Path,
-    num_logits_per_token: int = 8,
+    num_logits_per_token: int = 1024,
+    trace_layers: tuple[int, ...] = tuple(),
     max_input_length: int = 1024,
     max_output_length: int = 1024,
     batch_size: int = 1,
     num_tokens_to_generate: int | None = None,
-    callbacks_type: Callable[
-        [
-            Path,
-            Path,
-            Path,
-            int,
-            int,
-            int,
-            int,
-            int | None,
-        ],
-        CollectTracesCallbacks,
-    ] = CollectTracesCallbacks,
+    callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
 ) -> None:
     callbacks = callbacks_type(
         model_path,
         dataset_path,
         output_path,
         num_logits_per_token,
+        trace_layers,
         max_input_length,
         max_output_length,
         batch_size,
@@ -450,6 +441,7 @@ def collect_traces(
         model,
         dataset,
         num_logits_per_token,
+        trace_layers,
         batch_size,
         max_input_length,
         max_output_length,
@@ -457,11 +449,19 @@ def collect_traces(
         progress_callback,
     )
 
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as output_fd:
-        for trace in traces:
-            blob = trace.serialize()
-            output_fd.write(blob)
+    if output_path.exists() and any(output_path.iterdir()):
+        raise RuntimeError(f"{output_path} must be empty or not exist.")
+    output_path.mkdir(parents=True, exist_ok=True)
+    shard: list[LalamoCompletion] = []
+    shard_idx = 0
+    for trace in traces:
+        shard.append(trace)
+        if len(shard) >= 64:
+            save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
+            shard.clear()
+            shard_idx += 1
+    if shard:
+        save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
 
     callbacks.finished_inference()
 
@@ -525,14 +525,13 @@ def train(
 
     callbacks.started()
 
-    with open(trace_path, "rb") as trace_fd:
-        traces = LalamoCompletion.deserialize_many(trace_fd)
-        speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
+    traces = iter_completions(trace_path)
+    speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
 
-        def progress_callback(event: SpeculatorTrainingEvent) -> None:
-            callbacks.training_progress(event.trained_tokens)
+    def progress_callback(event: SpeculatorTrainingEvent) -> None:
+        callbacks.training_progress(event.trained_tokens)
 
-        train_speculator(speculator, traces, subsample_size, progress_callback)
+    train_speculator(speculator, traces, subsample_size, progress_callback)
 
     speculator.compress()
     callbacks.finished_training()
