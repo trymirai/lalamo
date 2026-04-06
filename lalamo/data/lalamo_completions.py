@@ -38,7 +38,10 @@ class LalamoCompletion:
     def completion_token_logits(self) -> list[dict[int, float]]:
         ids = np.asarray(jax.device_get(self.top_k_ids), dtype=np.int32)
         vals = np.asarray(jax.device_get(self.top_k_logits), dtype=np.float32)
-        return [dict(zip(row_ids.tolist(), row_vals.tolist(), strict=True)) for row_ids, row_vals in zip(ids, vals)]
+        return [
+            dict(zip(row_ids.tolist(), row_vals.tolist(), strict=True))
+            for row_ids, row_vals in zip(ids, vals, strict=True)
+        ]
 
 
 def _pack_ragged(sequences: list[list[int]]) -> tuple[Array, Array]:
@@ -96,7 +99,9 @@ def load_completions(path: Path) -> list[LalamoCompletion]:
             logsumexp=tensors["logsumexp"][int(comp_off[i]) : int(comp_off[i + 1])],
             activation_output=tensors["activation_output"][int(comp_off[i]) : int(comp_off[i + 1])],
             layer_indices=layer_indices,
-            layer_output=tensors["layer_output"][:, int(comp_off[i]) : int(comp_off[i + 1]), :] if has_layers else None,
+            layer_output=(
+                tensors["layer_output"][:, int(comp_off[i]) : int(comp_off[i + 1]), :] if has_layers else None
+            ),
         )
         for i, (prefix, comp_tok) in enumerate(zip(prefixes, completions_tok, strict=True))
     ]

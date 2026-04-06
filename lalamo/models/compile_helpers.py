@@ -48,7 +48,10 @@ def compile_generate_tokens(
     from .language_model import LanguageModel
 
     model_id = id(model)
-    key = (generation_config, inference_config, forward_pass_config, generation_trace_config, prompt_token_ids.sharding)
+    key = (
+        generation_config, inference_config, forward_pass_config,
+        generation_trace_config, prompt_token_ids.sharding,
+    )
     if model_id not in _compile_cache:
         _compile_cache[model_id] = {}
         weakref.finalize(model, _make_weak_finalizer, model_id)
