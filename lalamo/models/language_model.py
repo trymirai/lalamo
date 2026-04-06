@@ -2,7 +2,7 @@ from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
-from typing import NamedTuple, Self
+from typing import NamedTuple
 
 import equinox as eqx
 import jax
@@ -79,7 +79,7 @@ class StepTrace(NamedTuple):
     layer_output: Float[Array, "batch n_layers hidden"]
     layer_indices: Int[Array, " n_layers"]
 
-    def rearrange_from_scan(self) -> Self:
+    def rearrange_from_scan(self) -> "StepTrace":
         return StepTrace(
             top_k_ids=rearrange(self.top_k_ids, "i b k -> b i k"),
             top_k_logits=rearrange(self.top_k_logits, "i b k -> b i k"),
