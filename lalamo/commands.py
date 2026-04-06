@@ -449,9 +449,7 @@ def collect_traces(
         progress_callback,
     )
 
-    if output_path.exists() and not output_path.is_dir():
-        raise RuntimeError(f"{output_path} exists and is not a directory.")
-    if output_path.is_dir() and any(output_path.iterdir()):
+    if output_path.exists() and any(output_path.iterdir()):
         raise RuntimeError(f"{output_path} must be empty or not exist.")
     output_path.mkdir(parents=True, exist_ok=True)
     shard: list[LalamoCompletion] = []

@@ -80,16 +80,13 @@ class StepTrace(NamedTuple):
     layer_indices: Int[Array, " n_layers"]
 
     def rearrange_from_scan(self) -> "StepTrace":
-        # layer_indices is constant across scan iterations (shape: iterations x n_layers).
-        # Take the first iteration's value to recover (n_layers,).
-        first_layer_indices, *_ = self.layer_indices
         return StepTrace(
-            top_k_ids=rearrange(self.top_k_ids, "iter batch k -> batch iter k"),
-            top_k_logits=rearrange(self.top_k_logits, "iter batch k -> batch iter k"),
-            logsumexp=rearrange(self.logsumexp, "iter batch -> batch iter"),
-            activation_output=rearrange(self.activation_output, "iter batch hidden -> batch iter hidden"),
-            layer_output=rearrange(self.layer_output, "iter batch layers hidden -> batch layers iter hidden"),
-            layer_indices=first_layer_indices,
+            top_k_ids=rearrange(self.top_k_ids, "i b k -> b i k"),
+            top_k_logits=rearrange(self.top_k_logits, "i b k -> b i k"),
+            logsumexp=rearrange(self.logsumexp, "i b -> b i"),
+            activation_output=rearrange(self.activation_output, "i b h -> b i h"),
+            layer_output=rearrange(self.layer_output, "i b l h -> b l i h"),
+            layer_indices=self.layer_indices[0],
         )
 
 
