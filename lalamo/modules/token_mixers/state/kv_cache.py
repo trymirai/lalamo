@@ -89,23 +89,38 @@ class DynamicKVCacheLayer(KVCacheLayer):
         self,
         suffix_length: int,
         is_causal: bool,
-        suffix_length_without_padding: (Int[Array, ""] | int | None) = None,  # noqa: ARG002
+        suffix_length_without_padding: Int[Array, ""] | int | None = None,
         sliding_window_size: int | None = None,
     ) -> Bool[Array, "suffix_tokens tokens"]:
         self._raise_if_batched()
-        total_num_tokens, _, _ = self.keys.shape
-        result = jnp.ones((suffix_length, total_num_tokens), dtype=jnp.bool)
+        num_tokens, _, _ = self.keys.shape
+        if suffix_length_without_padding is None:
+            suffix_length_without_padding = suffix_length
+
+        result = jnp.ones((suffix_length, num_tokens), dtype=jnp.bool)
         if is_causal:
-            result = jnp.tril(result, k=total_num_tokens - suffix_length)
+            if self.padding_mask is None:
+                query_offsets = jnp.arange(0, suffix_length, dtype=jnp.int32) - suffix_length_without_padding
+                query_positions = num_tokens + query_offsets
+                key_positions = jnp.arange(num_tokens, dtype=jnp.int32)
+            else:
+                key_positions = jnp.cumsum(self.padding_mask.astype(jnp.int32)) - 1
+                query_physical_indices = num_tokens - suffix_length + jnp.arange(suffix_length, dtype=jnp.int32)
+                query_positions = key_positions[query_physical_indices]
+
+            result = query_positions[:, None] >= key_positions[None, :]
             if sliding_window_size is not None:
-                result = jnp.triu(result, k=1 - sliding_window_size)
+                result = jnp.logical_and(
+                    result,
+                    query_positions[:, None] < (key_positions[None, :] + sliding_window_size),
+                )
         elif sliding_window_size is not None:
             top_zeroed = jnp.tril(result, k=sliding_window_size // 2)
             result = jnp.triu(top_zeroed, k=-sliding_window_size // 2)
         if self.has_sinks:
             result = result.at[:, 0].set(True)
         if self.padding_mask is not None:
-            result = result & self.padding_mask[None, :]
+            result = jnp.logical_and(result, self.padding_mask[None, :])
         return result
 
     def extend(
