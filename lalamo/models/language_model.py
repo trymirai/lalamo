@@ -79,14 +79,26 @@ class StepTrace(NamedTuple):
     layer_output: Float[Array, "batch n_layers hidden"]
     layer_indices: Int[Array, " n_layers"]
 
+    def _collapse_scan_layer_indices(self) -> Int[Array, " n_layers"]:
+        first_step_layer_indices = self.layer_indices[0]
+        if not jnp.all(self.layer_indices == first_step_layer_indices[None, :]):
+            raise ValueError("layer_indices must stay constant across generation steps.")
+        return first_step_layer_indices
+
     def rearrange_from_scan(self) -> "StepTrace":
         return StepTrace(
-            top_k_ids=rearrange(self.top_k_ids, "i b k -> b i k"),
-            top_k_logits=rearrange(self.top_k_logits, "i b k -> b i k"),
-            logsumexp=rearrange(self.logsumexp, "i b -> b i"),
-            activation_output=rearrange(self.activation_output, "i b h -> b i h"),
-            layer_output=rearrange(self.layer_output, "i b l h -> b l i h"),
-            layer_indices=self.layer_indices[0],
+            top_k_ids=rearrange(self.top_k_ids, "generation_step batch top_k -> batch generation_step top_k"),
+            top_k_logits=rearrange(self.top_k_logits, "generation_step batch top_k -> batch generation_step top_k"),
+            logsumexp=rearrange(self.logsumexp, "generation_step batch -> batch generation_step"),
+            activation_output=rearrange(
+                self.activation_output,
+                "generation_step batch hidden -> batch generation_step hidden",
+            ),
+            layer_output=rearrange(
+                self.layer_output,
+                "generation_step batch traced_layer hidden -> batch traced_layer generation_step hidden",
+            ),
+            layer_indices=self._collapse_scan_layer_indices(),
         )
 
 

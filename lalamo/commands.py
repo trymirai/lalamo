@@ -29,7 +29,7 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import GenerationConfig, LanguageModelConfig
+from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
@@ -329,7 +329,7 @@ def estimate_batchsize(
     mem: int,
     max_input_length: int = 1024,
     max_output_length: int = 1024,
-    num_logits_per_token: int = 8,
+    num_logits_per_token: int = 1024,
     callbacks_type: Callable[
         [
             Path,
@@ -351,10 +351,14 @@ def estimate_batchsize(
         inference_config = InferenceConfig(
             max_output_length=max_output_length,
             padded_length=max_input_length,
-            num_top_logits_to_return=num_logits_per_token,
             batch_size=batch_size,
         )
-        return model.estimate_memory_consumption(inference_config=inference_config)
+        return model.estimate_memory_consumption(
+            inference_config=inference_config,
+            generation_trace_config=GenerationTraceConfig(
+                num_logits_per_token=num_logits_per_token,
+            ),
+        )
 
     bs = estimate_batchsize_from_bytes(
         memory_per_batchsize,
@@ -449,8 +453,11 @@ def collect_traces(
         progress_callback,
     )
 
-    if output_path.exists() and any(output_path.iterdir()):
-        raise RuntimeError(f"{output_path} must be empty or not exist.")
+    if output_path.exists():
+        if not output_path.is_dir():
+            raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
+        if any(output_path.iterdir()):
+            raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
     output_path.mkdir(parents=True, exist_ok=True)
     shard: list[LalamoCompletion] = []
     shard_idx = 0

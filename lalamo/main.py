@@ -863,7 +863,7 @@ def estimate_batchsize(
     num_logits_per_token: Annotated[
         int,
         Option(help="Number of top logits that will be recorded."),
-    ] = 8,
+    ] = 1024,
     vram_gb: Annotated[
         int | None,
         Option(

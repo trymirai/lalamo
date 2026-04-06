@@ -2,7 +2,6 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array, Float, Int
@@ -27,8 +26,12 @@ class LalamoCompletion:
             raise ValueError("top_k_ids first dim must match completion length.")
         if self.top_k_logits.shape != self.top_k_ids.shape:
             raise ValueError("top_k_logits shape must match top_k_ids shape.")
+        if self.logsumexp.shape[0] != n:
+            raise ValueError("logsumexp first dim must match completion length.")
         if self.activation_output.shape[0] != n:
             raise ValueError("activation_output first dim must match completion length.")
+        if self.layer_output is None and self.layer_indices:
+            raise ValueError("layer_indices must be empty when layer_output is None.")
         if self.layer_output is not None:
             expected = (len(self.layer_indices), n, self.activation_output.shape[-1])
             if self.layer_output.shape != expected:
@@ -36,8 +39,8 @@ class LalamoCompletion:
 
     @property
     def completion_token_logits(self) -> list[dict[int, float]]:
-        ids = np.asarray(jax.device_get(self.top_k_ids), dtype=np.int32)
-        vals = np.asarray(jax.device_get(self.top_k_logits), dtype=np.float32)
+        ids = np.asarray(self.top_k_ids, dtype=np.int32)
+        vals = np.asarray(self.top_k_logits, dtype=np.float32)
         return [
             dict(zip(row_ids.tolist(), row_vals.tolist(), strict=True))
             for row_ids, row_vals in zip(ids, vals, strict=True)
@@ -51,14 +54,29 @@ def _pack_ragged(sequences: list[list[int]]) -> tuple[Array, Array]:
 
 
 def _unpack_ragged(offsets: Array, flat: Array) -> list[list[int]]:
-    off = np.asarray(jax.device_get(offsets))
-    arr = np.asarray(jax.device_get(flat), dtype=np.int32)
-    return [arr[off[i] : off[i + 1]].tolist() for i in range(len(off) - 1)]
+    offset_array = np.asarray(offsets, dtype=np.int64)
+    flat_array = np.asarray(flat, dtype=np.int32)
+    return [flat_array[offset_array[i] : offset_array[i + 1]].tolist() for i in range(len(offset_array) - 1)]
+
+
+def _validate_shared_trace_layout(completions: list[LalamoCompletion]) -> tuple[tuple[int, ...], bool]:
+    first_completion, *remaining_completions = completions
+    has_layer_output = first_completion.layer_output is not None
+    layer_indices = first_completion.layer_indices
+
+    for completion in remaining_completions:
+        if completion.layer_indices != layer_indices:
+            raise ValueError("All completions must use the same layer_indices.")
+        if (completion.layer_output is not None) != has_layer_output:
+            raise ValueError("All completions must either include layer_output or omit it.")
+
+    return layer_indices, has_layer_output
 
 
 def save_completions(path: Path, completions: list[LalamoCompletion]) -> None:
     if not completions:
         return
+    layer_indices, has_layer_output = _validate_shared_trace_layout(completions)
     prefix_off, prefix_flat = _pack_ragged([c.prefix_token_ids for c in completions])
     comp_off, comp_flat = _pack_ragged([c.completion_token_ids for c in completions])
     tensors: dict[str, Array] = {
@@ -70,9 +88,9 @@ def save_completions(path: Path, completions: list[LalamoCompletion]) -> None:
         "top_k_logits": jnp.concatenate([c.top_k_logits for c in completions], axis=0),
         "logsumexp": jnp.concatenate([c.logsumexp for c in completions], axis=0),
         "activation_output": jnp.concatenate([c.activation_output for c in completions], axis=0),
-        "layer_indices": jnp.asarray(completions[0].layer_indices, dtype=jnp.int32),
+        "layer_indices": jnp.asarray(layer_indices, dtype=jnp.int32),
     }
-    if completions[0].layer_output is not None:
+    if has_layer_output:
         tensors["layer_output"] = jnp.concatenate(
             [c.layer_output for c in completions if c.layer_output is not None],
             axis=1,
@@ -88,24 +106,30 @@ def load_completions(path: Path) -> list[LalamoCompletion]:
         tensors = {k: lazy[k] for k in lazy}  # eagerly materialize before fd closes
     prefixes = _unpack_ragged(tensors["prefix_offsets"], tensors["prefix_tokens"])
     completions_tok = _unpack_ragged(tensors["completion_offsets"], tensors["completion_tokens"])
-    layer_indices = tuple(np.asarray(jax.device_get(tensors["layer_indices"]), dtype=np.int32).tolist())
+    layer_indices = tuple(np.asarray(tensors["layer_indices"], dtype=np.int32).tolist())
     has_layers = "layer_output" in tensors
-    comp_off = np.asarray(jax.device_get(tensors["completion_offsets"]))
-    return [
-        LalamoCompletion(
-            prefix_token_ids=prefix,
-            completion_token_ids=comp_tok,
-            top_k_ids=tensors["top_k_ids"][int(comp_off[i]) : int(comp_off[i + 1])],
-            top_k_logits=tensors["top_k_logits"][int(comp_off[i]) : int(comp_off[i + 1])],
-            logsumexp=tensors["logsumexp"][int(comp_off[i]) : int(comp_off[i + 1])],
-            activation_output=tensors["activation_output"][int(comp_off[i]) : int(comp_off[i + 1])],
-            layer_indices=layer_indices,
-            layer_output=(
-                tensors["layer_output"][:, int(comp_off[i]) : int(comp_off[i + 1]), :] if has_layers else None
+    completion_offsets = np.asarray(tensors["completion_offsets"], dtype=np.int64)
+    loaded_completions: list[LalamoCompletion] = []
+
+    for index, (prefix_token_ids, completion_token_ids) in enumerate(zip(prefixes, completions_tok, strict=True)):
+        token_slice = slice(
+            int(completion_offsets[index]),
+            int(completion_offsets[index + 1]),
+        )
+        loaded_completions.append(
+            LalamoCompletion(
+                prefix_token_ids=prefix_token_ids,
+                completion_token_ids=completion_token_ids,
+                top_k_ids=tensors["top_k_ids"][token_slice],
+                top_k_logits=tensors["top_k_logits"][token_slice],
+                logsumexp=tensors["logsumexp"][token_slice],
+                activation_output=tensors["activation_output"][token_slice],
+                layer_indices=layer_indices,
+                layer_output=tensors["layer_output"][:, token_slice, :] if has_layers else None,
             ),
         )
-        for i, (prefix, comp_tok) in enumerate(zip(prefixes, completions_tok, strict=True))
-    ]
+
+    return loaded_completions
 
 
 def iter_completions(trace_dir: Path) -> Iterator[LalamoCompletion]:
