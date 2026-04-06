@@ -1,26 +1,33 @@
-from __future__ import annotations
+from collections.abc import Mapping
+from typing import Any
 
-from typing import TYPE_CHECKING
+from jaxtyping import Array, Float
 
-from lalamo.common import is_abstract_array
+from lalamo.modules.common import Initializer
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
-if TYPE_CHECKING:
-    from jaxtyping import Array, DTypeLike, Float
 
-    from lalamo.modules.common import Initializer
+class FullPrecisionArray(CompressedArray, kind="full_precision"):
+    weights: Float[Array, "... out_channels in_channels"]
 
+    def materialize(self) -> Float[Array, "... out_channels in_channels"]:
+        return self.weights
 
-class FullPrecisionArray(CompressedArray):
-    raw: Float[Array, "... out_channels in_channels"]
+    def dot(
+        self,
+        vector: Float[Array, " in_channels"],
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
+    ) -> Float[Array, "... out_channels"]:
+        return self.weights @ vector
 
-    @property
-    def is_abstract(self) -> bool:
-        return is_abstract_array(self.raw)
+    @classmethod
+    def compress(cls, weights: Float[Array, "... out_channels in_channels"]) -> "FullPrecisionArray":
+        return cls(weights=weights)
 
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
-        return self.raw
+    @classmethod
+    def from_uzu(cls, data: Mapping[str, Any]) -> "FullPrecisionArray":
+        return cls(weights=data["weights"])
 
     @classmethod
     def init(
@@ -29,14 +36,11 @@ class FullPrecisionArray(CompressedArray):
         leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
-    ) -> FullPrecisionArray:
-        return cls(raw=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision))
-
-    @classmethod
-    def from_weight(
-        cls,
-        weights: Array,
-        *,
-        dtype: DTypeLike,
-    ) -> FullPrecisionArray:
-        return cls(raw=weights.astype(dtype))
+    ) -> "FullPrecisionArray":
+        return cls(
+            weights=initializer.normal(
+                1.0,
+                (*leading_dims, out_channels, in_channels),
+                initializer.precision,
+            )
+        )

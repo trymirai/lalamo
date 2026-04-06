@@ -78,10 +78,16 @@ def safe_read(fd: BufferedReader) -> tuple[dict[str, str] | None, LazyDict[str, 
     return (metadata, lazy_tensors)
 
 
-def safe_write(fd: BufferedWriter, tensors: Mapping[str, Array]) -> None:
+def safe_write(
+    fd: BufferedWriter,
+    tensors: Mapping[str, Array],
+    metadata: dict[str, str] | None = None,
+) -> None:
     sorted_tensors = dict(sorted(tensors.items(), key=lambda x: (-x[1].dtype.alignment, x[0])))
 
-    header_dict = {}
+    header_dict: dict[str, Any] = {}
+    if metadata:
+        header_dict["__metadata__"] = metadata
     offset = 0
     for key, tensor in sorted_tensors.items():
         assert offset % tensor.dtype.alignment == 0

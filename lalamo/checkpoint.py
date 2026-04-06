@@ -10,7 +10,13 @@ import orbax.checkpoint as ocp
 
 from lalamo.common import stringify_path
 from lalamo.model_import.loaders.common import find_field_sharding
-from lalamo.modules.common import EmptyInitializer, LalamoModule, ShardingConfig, apply_parameter_sharding, config_converter
+from lalamo.modules.common import (
+    EmptyInitializer,
+    LalamoModule,
+    ShardingConfig,
+    apply_parameter_sharding,
+    config_converter,
+)
 
 __all__ = ["CheckpointManager"]
 

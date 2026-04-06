@@ -18,6 +18,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree, stringify_path
+from lalamo.serialization import Serializable, strip_uzu_prefix
 
 __all__ = [
     "DummyUnionMember",
@@ -52,35 +53,15 @@ class ForwardPassMode(Enum):
 ConfigT_co = TypeVar("ConfigT_co", covariant=True)
 
 
-class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
+class LalamoModule(Serializable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = eqx.field(static=True)
 
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
 
-    def to_uzu(self) -> dict[str, Array]:
-        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(
-            self,
-            is_leaf=lambda x: ((isinstance(x, LalamoModule) and x is not self) or _is_uzu_leaf(x)),
-        )
-        result: dict[str, Array] = {}
-        for path, leaf in flat_with_path:
-            key = stringify_path(path)
-            if isinstance(leaf, LalamoModule):
-                for sub_key, array in leaf.to_uzu().items():
-                    result[f"{key}.{sub_key}"] = array
-            elif _is_uzu_leaf(leaf):
-                for sub_key, array in cast("Any", leaf).to_uzu().items():
-                    result[f"{key}.{sub_key}"] = array
-            elif eqx.is_array(leaf):
-                result[key] = leaf
-            else:
-                raise TypeError(f"to_uzu: unexpected non-array leaf at {key}: {type(leaf)}")
-        return result
-
     def from_uzu(
         self,
-        weights: Mapping[str, Array],
+        weights: Mapping[str, Any],
         prefix: str = "",
         sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
@@ -97,22 +78,14 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
             key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
             if isinstance(leaf, LalamoModule):
                 return leaf.from_uzu(weights, prefix=key, sharding_config=sharding_config)
-            if _is_uzu_leaf(leaf):
-                relevant_weights = {
-                    sub_key.removeprefix(f"{key}."): weights[sub_key]
-                    for sub_key in weights
-                    if sub_key.startswith(f"{key}.")
-                }
-                if relevant_weights:
-                    return _maybe_shard(cast("Any", leaf).from_uzu(relevant_weights), path)
+            if isinstance(leaf, Serializable):
+                return _maybe_shard(type(leaf).from_uzu(strip_uzu_prefix(weights, key)), path)
             if key in weights:
                 return _maybe_shard(weights[key], path)
             return leaf
 
         return jax.tree_util.tree_map_with_path(
-            restore,
-            self,
-            is_leaf=lambda x: ((isinstance(x, LalamoModule) and x is not self) or _is_uzu_leaf(x)),
+            restore, self, is_leaf=lambda x: isinstance(x, Serializable) and x is not self
         )
 
     def shard(self, sharding_config: "ShardingConfig") -> Self:
@@ -122,10 +95,6 @@ class LalamoModule(eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
             else leaf,
             self,
         )
-
-
-def _is_uzu_leaf(value: object) -> bool:
-    return hasattr(value, "to_uzu") and hasattr(value, "from_uzu") and not isinstance(value, LalamoModule)
 
 
 @dataclass

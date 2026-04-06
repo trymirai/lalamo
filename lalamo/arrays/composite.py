@@ -1,52 +1,36 @@
-from __future__ import annotations
+from collections.abc import Mapping
+from typing import Any
 
-from dataclasses import replace
-from typing import TYPE_CHECKING
+from jaxtyping import Array, Float
 
-import equinox as eqx
-import jax.random as jr
+from lalamo.serialization import strip_uzu_prefix
 
-from .base import ArrayForwardPassConfig, CompressedArray, StochasticQuantize
-from .lora import LoraArray
-
-if TYPE_CHECKING:
-    from jaxtyping import Array, PRNGKeyArray
+from .base import ArrayForwardPassConfig, CompressedArray
 
 
-class CompositeArray(CompressedArray):
-    parts: tuple[CompressedArray, ...] = eqx.field(default=())
+class CompositeArray(CompressedArray, kind="composite"):
+    parts: tuple[CompressedArray, ...]
 
-    @property
-    def is_abstract(self) -> bool:
-        return self.parts[0].is_abstract
+    def materialize(self) -> Float[Array, "... out_channels in_channels"]:
+        assert len(self.parts) != 0, "CompositeArray must be non-empty to materialize"
+        return sum(part.materialize() for part in self.parts)
 
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: B008
-        match forward_pass_config.quantize:
-            case StochasticQuantize(key=key):
-                part_configs = tuple(
-                    replace(forward_pass_config, quantize=StochasticQuantize(key=subkey))
-                    for subkey in jr.split(key, len(self.parts))
-                )
-            case _:
-                part_configs = (forward_pass_config,) * len(self.parts)
+    def dot(
+        self,
+        vector: Float[Array, " in_channels"],
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
+    ) -> Float[Array, "... out_channels"]:
+        assert len(self.parts) != 0, "CompositeArray must be non-empty to dot"
+        return sum(part.dot(vector, forward_pass_config) for part in self.parts)
 
-        materialized_parts = [
-            part.materialize(part_forward_pass_config)
-            for part, part_forward_pass_config in zip(self.parts, part_configs, strict=True)
-        ]
-        first_part, *remaining_parts = materialized_parts
-        if self.is_abstract:
-            return first_part
-        return sum(remaining_parts, start=first_part)
+    @classmethod
+    def from_uzu(cls, data: Mapping[str, Any]) -> "CompositeArray":
+        parts = []
+        i = 0
+        while f"parts.{i}.__kind__" in data:
+            parts.append(CompressedArray.from_uzu(strip_uzu_prefix(data, f"parts.{i}")))
+            i += 1
+        return cls(parts=tuple(parts))
 
-    @staticmethod
-    def from_compressed(base: CompressedArray) -> CompositeArray:
-        return CompositeArray(parts=(base,))
-
-    def add_part(self, part: CompressedArray) -> CompositeArray:
+    def add_part(self, part: CompressedArray) -> "CompositeArray":
         return CompositeArray(parts=(*self.parts, part))
-
-    def add_lora(self, *, rank: int, key: PRNGKeyArray) -> CompositeArray:
-        *_, out_channels, in_channels = self.materialize().shape
-        lora = LoraArray.from_rank(out_channels, in_channels, rank=rank, key=key)
-        return self.add_part(lora)

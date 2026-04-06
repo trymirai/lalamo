@@ -1,10 +1,4 @@
-from __future__ import annotations
-
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from .base import CompressedArray
 
 
 class QuantFormat(Enum):
@@ -13,7 +7,7 @@ class QuantFormat(Enum):
     MLX = "mlx"
 
     @property
-    def array_class(self) -> type[CompressedArray]:
+    def array_class(self) -> "type[CompressedArray]":
         from .awq import AWQQuantArray
         from .full_precision import FullPrecisionArray
         from .mlx import MLXQuantArray

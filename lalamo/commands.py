@@ -9,6 +9,7 @@ from itertools import chain
 from pathlib import Path
 from typing import cast
 
+import equinox as eqx
 import polars as pl
 import requests
 import thefuzz.fuzz
@@ -225,11 +226,13 @@ def convert(
 
     model.message_processor.tokenizer.save(str(output_dir / "tokenizer.json"))
     serializable_model = model.tts_model if isinstance(model, TTSGenerator) else model
-    weights = cast("LalamoModule", serializable_model).to_uzu()
+    uzu = cast("LalamoModule", serializable_model).to_uzu()
     del model
+    tensors = {k: v for k, v in uzu.items() if eqx.is_array(v)}
+    metadata = {k: str(v) for k, v in uzu.items() if not eqx.is_array(v)}
 
     with Path(output_dir / "model.safetensors").open("wb") as fd:
-        safe_write(fd, weights)
+        safe_write(fd, tensors, metadata=metadata or None)
 
     config_json = config_converter.unstructure(metadata, ModelMetadata)
     with open(output_dir / "config.json", "w") as file:

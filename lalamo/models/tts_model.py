@@ -133,8 +133,9 @@ class TTSGenerator(eqx.Module):
         config = config_converter.structure(config_json["model_config"], TTSGeneratorConfig)
         assert isinstance(config, TTSGeneratorConfig)
         with Path(path / "model.safetensors").open("rb") as fd:
-            _, weights_dict = safe_read(fd)
-            if all(key.startswith("model.") for key in weights_dict):
+            metadata, tensors = safe_read(fd)
+            weights_dict = {**tensors, **(metadata or {})}
+            if all(key.startswith("model.") for key in tensors):
                 weights_dict = {key.removeprefix("model."): value for key, value in weights_dict.items()}
             model = config.tts_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)
         abstract_leaves = [

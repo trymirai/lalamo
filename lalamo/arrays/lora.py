@@ -1,31 +1,18 @@
-from __future__ import annotations
+from collections.abc import Mapping
+from typing import Any
 
-from typing import TYPE_CHECKING
+from jaxtyping import Array, Float
 
-import jax.numpy as jnp
-import jax.random as jr
-
-from lalamo.common import dummy_array, is_abstract_array
+from lalamo.modules.common import Initializer
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
-if TYPE_CHECKING:
-    from jaxtyping import Array, Float, PRNGKeyArray
 
-
-class LoraArray(CompressedArray):
+class LoRAArray(CompressedArray, kind="lora"):
     down: Float[Array, "... out_channels rank"]
     up: Float[Array, "... rank in_channels"]
 
-    @property
-    def is_abstract(self) -> bool:
-        return is_abstract_array(self.down)
-
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array:  # noqa: ARG002, B008
-        if self.is_abstract:
-            *leading_dims, out_channels, _rank = self.down.shape
-            _leading_dims2, _rank2, in_channels = self.up.shape
-            return dummy_array((*leading_dims, out_channels, in_channels), self.down.dtype)
+    def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         return self.down @ self.up
 
     def dot(
@@ -33,21 +20,19 @@ class LoraArray(CompressedArray):
         vector: Float[Array, " in_channels"],
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, " out_channels"]:
-        if self.is_abstract:
-            *leading_dims, out_channels, _rank = self.down.shape
-            return dummy_array((*leading_dims, out_channels), self.down.dtype)
         return self.down @ (self.up @ vector)
 
-    @staticmethod
-    def from_rank(
+    @classmethod
+    def init(
+        cls,
+        initializer: Initializer,
+        leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
         *,
         rank: int,
-        key: PRNGKeyArray,
-    ) -> LoraArray:
-        key_down, _key_up = jr.split(key)
-        return LoraArray(
-            down=jr.normal(key_down, (out_channels, rank)) / rank,
-            up=jnp.zeros((rank, in_channels)),
+    ) -> "LoRAArray":
+        return cls(
+            down=initializer.zeros((*leading_dims, out_channels, rank), initializer.precision),
+            up=initializer.zeros((*leading_dims, rank, in_channels), initializer.precision),
         )

@@ -1,16 +1,11 @@
-from __future__ import annotations
-
 import abc
-from typing import TYPE_CHECKING
 
 import equinox as eqx
 from einops import rearrange
+from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.quantization import QuantizationMode, quantize_weights
 from lalamo.utils import jax_uint4_to_packed_uint8
-
-if TYPE_CHECKING:
-    from jaxtyping import Array, DTypeLike, Float, Int
 
 
 class CompressedEmbedding(eqx.Module):
@@ -33,7 +28,7 @@ class CompressedEmbedding(eqx.Module):
     def to_uzu(self) -> dict[str, Array]: ...
 
     @abc.abstractmethod
-    def from_uzu(self, weights: dict[str, Array]) -> CompressedEmbedding: ...
+    def from_uzu(self, weights: dict[str, Array]) -> "CompressedEmbedding": ...
 
 
 class FullPrecisionEmbedding(CompressedEmbedding):
@@ -59,7 +54,7 @@ class FullPrecisionEmbedding(CompressedEmbedding):
     def to_uzu(self) -> dict[str, Array]:
         return {"raw": self.weights}
 
-    def from_uzu(self, weights: dict[str, Array]) -> FullPrecisionEmbedding:
+    def from_uzu(self, weights: dict[str, Array]) -> "FullPrecisionEmbedding":
         return type(self)(weights=weights["raw"])
 
 
@@ -112,7 +107,7 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
             "biases": self.biases,
         }
 
-    def from_uzu(self, weights: dict[str, Array]) -> MLXQuantizedEmbedding:
+    def from_uzu(self, weights: dict[str, Array]) -> "MLXQuantizedEmbedding":
         packed_weights = weights["qweight"]
         unpacked_weights = packed_weights
         if self.quantization_mode == QuantizationMode.UINT4:

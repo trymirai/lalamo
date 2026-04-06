@@ -1,19 +1,13 @@
-from __future__ import annotations
-
 import functools
 import weakref
-from typing import TYPE_CHECKING
 
 import jax
+from jax._src.stages import Compiled
+from jax.sharding import Sharding
+from jaxtyping import Array, Int, Key
 
 from .common import InferenceConfig
-
-if TYPE_CHECKING:
-    from jax._src.stages import Compiled
-    from jax.sharding import Sharding
-    from jaxtyping import Array, Int, Key
-
-    from .language_model import ForwardPassConfig, GenerationConfig, GenerationTraceConfig, LanguageModel
+from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 
 _compile_cache: dict[
     int,

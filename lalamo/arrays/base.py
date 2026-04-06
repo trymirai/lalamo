@@ -1,99 +1,65 @@
-from __future__ import annotations
-
-import abc
-from typing import TYPE_CHECKING
+from abc import abstractmethod
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 import equinox as eqx
-import jax
 import jax.numpy as jnp
 from einops import rearrange
+from jaxtyping import Array, Float, PRNGKeyArray
 
-from lalamo.common import stringify_path
-
-if TYPE_CHECKING:
-    from jaxtyping import Array, Float, PRNGKeyArray
+from lalamo.serialization import Serializable
 
 from lalamo.common import ParameterTree
 
 
-class NoQuantize(eqx.Module):
+class GradientEstimator(eqx.Module):
     pass
 
 
-class DeterministicQuantize(eqx.Module):
-    pass
-
-
-class StochasticQuantize(eqx.Module):
+class StochasticST(GradientEstimator):
     key: PRNGKeyArray
 
 
-Quantize = NoQuantize | DeterministicQuantize | StochasticQuantize
+class DeterministicST(GradientEstimator):
+    pass
+
+
+class NoGradient(GradientEstimator):
+    pass
 
 
 class ArrayForwardPassConfig(eqx.Module):
-    quantize: Quantize = DeterministicQuantize()
+    gradient_estimator: GradientEstimator = eqx.field(default_factory=DeterministicST)
 
 
-def _grouped_init_stats(
-    raw: Float[Array, "... out_channels in_channels"], group_size: int, bits: int
-) -> tuple[Float[Array, "... out_channels groups"], Float[Array, "... out_channels groups"]]:
-    *leading_dims, out_channels, in_channels = raw.shape
-    if in_channels % group_size != 0:
-        raise ValueError(f"in_channels ({in_channels}) must be divisible by group_size ({group_size})")
-    grouped = raw.reshape((*leading_dims, out_channels, in_channels // group_size, group_size))
-    group_mins = jnp.min(grouped, axis=-1)
-    group_maxs = jnp.max(grouped, axis=-1)
-    quant_levels = (2**bits) - 1
-    scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(raw.dtype).eps)
-    return group_mins, scales
+class CompressedArray(Serializable, eqx.Module):
+    _registry: ClassVar[dict[str, type["CompressedArray"]]] = {}
+    kind: ClassVar[str]
 
+    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        CompressedArray._registry[kind] = cls
+        cls.kind = kind
 
-class CompressedArray(eqx.Module):
-    @property
-    @abc.abstractmethod
-    def is_abstract(self) -> bool: ...
+    @abstractmethod
+    def materialize(self) -> Float[Array, "... out_channels in_channels"]: ...
 
-    @abc.abstractmethod
-    def materialize(self, forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig()) -> Array: ...  # noqa: B008
-
-    def to_uzu(self) -> dict[str, Array]:
-        flat_with_path, _ = jax.tree_util.tree_flatten_with_path(
-            self,
-            is_leaf=lambda x: isinstance(x, CompressedArray) and x is not self,
-        )
-        result: dict[str, Array] = {}
-        for path, leaf in flat_with_path:
-            key = stringify_path(path)
-            if isinstance(leaf, CompressedArray):
-                for sub_key, array in leaf.to_uzu().items():
-                    result[f"{key}.{sub_key}"] = array
-            else:
-                result[key] = leaf
-        return result
-
-    def from_uzu(self, weights: dict[str, Array]) -> CompressedArray:
-        def restore(path: tuple[object, ...], leaf: object) -> object:
-            key = stringify_path(path)
-            if isinstance(leaf, CompressedArray):
-                relevant = {k.removeprefix(f"{key}."): weights[k] for k in weights if k.startswith(f"{key}.")}
-                return leaf.from_uzu(relevant)
-            if key in weights:
-                return weights[key]
-            return leaf
-
-        return jax.tree_util.tree_map_with_path(
-            restore,
-            self,
-            is_leaf=lambda x: isinstance(x, CompressedArray) and x is not self,
-        )
-
+    @abstractmethod
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
-    ) -> Float[Array, " out_channels"]:
-        return self.materialize(forward_pass_config) @ vector
+    ) -> Float[Array, "... out_channels"]: ...
+
+    def to_uzu(self) -> dict[str, Any]:
+        return {"__kind__": self.kind, **super().to_uzu()}
+
+    @classmethod
+    def from_uzu(cls, data: Mapping[str, Any]) -> "CompressedArray":
+        kind = data["__kind__"]
+        if not isinstance(kind, str):
+            raise TypeError(f"Expected string kind, got {type(kind)}")
+        return cls._registry[kind].from_uzu(data)
 
     @abc.abstractmethod
     def export_weights(self) -> ParameterTree: ...

@@ -1,109 +1,27 @@
-from __future__ import annotations
-
 import math
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax.numpy as jnp
+from jaxtyping import Array, DTypeLike, Float
 
 from lalamo.arrays import ArrayForwardPassConfig, CompressedArray, FullPrecisionArray
-from lalamo.arrays.awq import AWQQuantArray
-from lalamo.arrays.mlx import MLXQuantArray
-from lalamo.arrays.quant_format import QuantFormat
-from lalamo.common import is_abstract_array
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
 from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, sharded_field
 
-if TYPE_CHECKING:
-    from jaxtyping import Array, DTypeLike, Float
-
 __all__ = [
     "Linear",
     "LinearConfig",
-    "QuantFormat",
 ]
-
-
-def _array_from_raw(config: LinearConfig, raw: Array) -> CompressedArray:
-    match config.quant_format:
-        case QuantFormat.FULL_PRECISION:
-            return FullPrecisionArray(raw=raw)
-        case QuantFormat.AWQ:
-            assert config.group_size is not None and config.bits is not None
-            return AWQQuantArray.from_raw(raw, group_size=config.group_size, bits=config.bits)
-        case QuantFormat.MLX:
-            assert config.group_size is not None and config.bits is not None
-            return MLXQuantArray.from_raw(raw, group_size=config.group_size, bits=config.bits)
 
 
 @dataclass(frozen=True)
 class LinearConfig:
-    quant_format: QuantFormat = QuantFormat.FULL_PRECISION
-    group_size: int | None = None
-    bits: int | None = None
     activation_quantization_mode: QuantizationMode | None = None
-
-    def __post_init__(self) -> None:
-        if self.quant_format == QuantFormat.FULL_PRECISION:
-            if self.group_size is not None or self.bits is not None:
-                raise ValueError("group_size and bits must be None for FULL_PRECISION format")
-        elif self.group_size is None or self.bits is None:
-            raise ValueError(f"group_size and bits are required for {self.quant_format.name} format")
-
-    def from_array(
-        self,
-        weights: CompressedArray,
-        output_dims: tuple[int, ...],
-        biases: Float[Array, "*batch total_out_channels"] | None,
-    ) -> Linear:
-        return Linear(config=self, output_dims=output_dims, weights=weights, biases=biases)
-
-    def init_array(
-        self,
-        initializer: Initializer,
-        leading_dims: tuple[int, ...],
-        out_channels: int,
-        in_channels: int,
-    ) -> CompressedArray:
-        match self.quant_format:
-            case QuantFormat.FULL_PRECISION:
-                return FullPrecisionArray.init(initializer, leading_dims, out_channels, in_channels)
-            case QuantFormat.AWQ:
-                assert self.group_size is not None and self.bits is not None
-                return AWQQuantArray.init(
-                    initializer,
-                    leading_dims,
-                    out_channels,
-                    in_channels,
-                    group_size=self.group_size,
-                    bits=self.bits,
-                )
-            case QuantFormat.MLX:
-                assert self.group_size is not None and self.bits is not None
-                return MLXQuantArray.init(
-                    initializer,
-                    leading_dims,
-                    out_channels,
-                    in_channels,
-                    group_size=self.group_size,
-                    bits=self.bits,
-                )
-
-    def array_from_raw(self, raw: Array) -> CompressedArray:
-        return _array_from_raw(self, raw)
-
-    def from_raw(
-        self,
-        raw: Array,
-        output_dims: tuple[int, ...],
-        biases: Float[Array, "*batch total_out_channels"] | None,
-    ) -> Linear:
-        return self.from_array(weights=self.array_from_raw(raw), output_dims=output_dims, biases=biases)
 
     def init(
         self,
@@ -111,18 +29,17 @@ class LinearConfig:
         input_dim: int,
         output_dims: tuple[int, ...],
         has_biases: bool,
-    ) -> Linear:
+    ) -> "Linear":
         total_out = sum(output_dims)
         scale = 1 / math.sqrt(input_dim)
-        raw = initializer.normal(scale, (total_out, input_dim), initializer.precision)
         biases = initializer.zeros((total_out,), initializer.precision) if has_biases else None
-        if is_abstract_array(raw):
-            return self.from_array(
-                weights=self.init_array(initializer, (), total_out, input_dim),
-                output_dims=output_dims,
-                biases=biases,
-            )
-        return self.from_raw(raw=raw, output_dims=output_dims, biases=biases)
+        weights = FullPrecisionArray(initializer.normal(scale, (total_out, input_dim), initializer.precision))
+        return Linear(
+            config=self,
+            weights=weights,
+            biases=biases,
+            output_dims=output_dims,
+        )
 
     def init_mixture(
         self,
@@ -131,18 +48,14 @@ class LinearConfig:
         input_dim: int,
         output_dims: tuple[int, ...],
         has_biases: bool,
-    ) -> Linear:
+    ) -> "Linear":
         total_out = sum(output_dims)
         scale = 1 / math.sqrt(input_dim)
-        raw = initializer.normal(scale, (mixture_size, total_out, input_dim), initializer.precision)
+        weights = FullPrecisionArray(
+            initializer.normal(scale, (mixture_size, total_out, input_dim), initializer.precision)
+        )
         biases = initializer.zeros((mixture_size, total_out), initializer.precision) if has_biases else None
-        if is_abstract_array(raw):
-            return self.from_array(
-                weights=self.init_array(initializer, (mixture_size,), total_out, input_dim),
-                output_dims=output_dims,
-                biases=biases,
-            )
-        return self.from_raw(raw=raw, output_dims=output_dims, biases=biases)
+        return Linear(config=self, output_dims=output_dims, weights=weights, biases=biases)
 
 
 class Linear(LalamoModule[LinearConfig]):
@@ -160,16 +73,6 @@ class Linear(LalamoModule[LinearConfig]):
         return self.biases is not None
 
     @property
-    def mixture_size(self) -> int | None:
-        match self.weights.materialize().shape:
-            case (mix, _, _):
-                return mix
-            case (_, _):
-                return None
-            case shape:
-                raise ValueError(f"Unexpected weight shape: {shape}")
-
-    @property
     def num_outputs(self) -> int:
         return len(self.output_dims)
 
@@ -182,20 +85,6 @@ class Linear(LalamoModule[LinearConfig]):
         self,
         inputs: Float[Array, " in_channels"],
     ) -> tuple[Float[Array, " out_channels"], ...]: ...
-
-    def from_raw(
-        self,
-        raw_weights: Array,
-        biases: Float[Array, "*batch total_out_channels"] | None,
-    ) -> Linear:
-        cast_weights = raw_weights.astype(self.activation_precision)
-        cast_biases = None if biases is None else biases.astype(self.activation_precision)
-        new_weights = self.config.array_from_raw(cast_weights)
-        return eqx.tree_at(
-            lambda module: (module.weights, module.biases),
-            self,
-            (new_weights, cast_biases),
-        )
 
     @staticmethod
     def get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:
@@ -305,11 +194,9 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         inputs: Float[Array, " in_channels"],
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> tuple[Float[Array, " out_channels"], ...]:
-        if self.mixture_size is not None:
-            raise ValueError(
-                "Mixtures of linear layers cannot be called directly. Use eqx.filter_vmap or lax.scan instead.",
-            )
-        result = jnp.dot(self.weights, inputs)
+        if self.config.activation_quantization_mode is not None:
+            inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
+        result = self.weights.dot(inputs, forward_pass_config)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))
