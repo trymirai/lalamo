@@ -195,7 +195,7 @@ def test_chunked_scan_matches_sequential(
         else jnp.zeros(state_shape, dtype=jnp.float32)
     )
 
-    out_seq, state_seq = module._scan(
+    out_seq, state_seq = module._recurrent_scan(
         queries, keys, values, decay_factor, beta, initial_state, num_steps,
     )
     out_chunk, state_chunk = module._chunked_scan(
@@ -289,7 +289,7 @@ def test_delta_net_chunked_with_gqa() -> None:
     beta = jax.nn.sigmoid(jax.random.normal(k5, (seq_len, 4)))
     initial_state = jax.random.normal(k6, (4, 8, 8)) * 0.1
 
-    out_seq, state_seq = module_seq._scan(
+    out_seq, state_seq = module_seq._recurrent_scan(
         queries, keys, values, decay_factor, beta, initial_state, seq_len,
     )
     out_chunk, state_chunk = module_seq._chunked_scan(
@@ -358,7 +358,7 @@ def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
     beta = jax.nn.sigmoid(jax.random.normal(k5, (seq_len, module.num_heads)))
     initial_state = jax.random.normal(k6, (module.num_heads, module.value_head_dim, module.head_dim)) * 0.1
 
-    out_seq, state_seq = module._scan(
+    out_seq, state_seq = module._recurrent_scan(
         queries, keys, values, decay_factor, beta, initial_state, seq_len,
     )
     out_chunk, state_chunk = module._chunked_scan(

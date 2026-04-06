@@ -222,7 +222,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     def conv_dim(self) -> int:
         return self.key_dim * 2 + self.value_dim
 
-    def _scan(
+    def _recurrent_scan(
         self,
         queries: Float[Array, "tokens heads key_channels"],
         keys: Float[Array, "tokens heads key_channels"],
@@ -377,7 +377,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
         if has_short_tail:
             tail_num_steps = jnp.clip(num_steps_arr - num_chunked_tokens, 0, remainder)
-            tail_result = self._scan(
+            tail_result = self._recurrent_scan(
                 tail_queries, tail_keys, tail_values, tail_decay, tail_beta,
                 final_state, tail_num_steps,
             )
@@ -452,7 +452,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         length_without_padding = jnp.clip(length_without_padding, 0, num_tokens)
 
         if num_tokens < self.config.min_chunk_len:
-            core_attn_out, final_state = self._scan(
+            core_attn_out, final_state = self._recurrent_scan(
                 query, key, value, decay_factor, beta,
                 state.ssm_state, length_without_padding,
             )
