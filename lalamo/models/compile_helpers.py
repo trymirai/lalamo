@@ -49,8 +49,11 @@ def compile_generate_tokens(
 
     model_id = id(model)
     key = (
-        generation_config, inference_config, forward_pass_config,
-        generation_trace_config, prompt_token_ids.sharding,
+        generation_config,
+        inference_config,
+        forward_pass_config,
+        generation_trace_config,
+        prompt_token_ids.sharding,
     )
     if model_id not in _compile_cache:
         _compile_cache[model_id] = {}

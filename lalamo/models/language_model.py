@@ -388,7 +388,10 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                         layer_indices=traced_layers_array,
                     )
                 return new_state, GenerationStepResults(
-                    next_token_ids, next_top_k_token_ids, next_top_k_token_logits, trace,
+                    next_token_ids,
+                    next_top_k_token_ids,
+                    next_top_k_token_logits,
+                    trace,
                 )
 
             def pad_and_repeat_state() -> tuple[DecodingState, GenerationStepResults]:

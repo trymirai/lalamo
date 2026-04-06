@@ -74,7 +74,8 @@ def save_completions(path: Path, completions: list[LalamoCompletion]) -> None:
     }
     if completions[0].layer_output is not None:
         tensors["layer_output"] = jnp.concatenate(
-            [c.layer_output for c in completions if c.layer_output is not None], axis=1,
+            [c.layer_output for c in completions if c.layer_output is not None],
+            axis=1,
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as fd:
