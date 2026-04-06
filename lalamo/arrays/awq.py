@@ -3,12 +3,12 @@ from typing import Any
 
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Float, Int
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 from lalamo.modules.common import Initializer
+from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 
 from .base import (
-    ArrayForwardPassConfig,
     CompressedArray,
     pack_uint_to_uint8,
     unpack_uint8_to_uint,
@@ -60,7 +60,9 @@ class AWQQuantArray(CompressedArray, kind="awq"):
     def dot(
         self,
         vector: Float[Array, " in_channels"],
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,  # noqa: ARG002
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, "... out_channels"]:
         return self.materialize() @ vector
 

@@ -6,12 +6,13 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.arrays import ArrayForwardPassConfig, CompressedArray, FullPrecisionArray
+from lalamo.arrays import CompressedArray, FullPrecisionArray
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
 from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, sharded_field
+from .forward_pass_config import ArrayForwardPassConfig
 
 __all__ = [
     "Linear",
@@ -192,11 +193,13 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
     def __call__(
         self,
         inputs: Float[Array, " in_channels"],
+        *,
+        key: PRNGKeyArray | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> tuple[Float[Array, " out_channels"], ...]:
         if self.config.activation_quantization_mode is not None:
             inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
-        result = self.weights.dot(inputs, forward_pass_config)
+        result = self.weights.dot(inputs, key=key, forward_pass_config=forward_pass_config)
         if self.biases is not None:
             result = result + self.biases
         return tuple(jnp.split(result, self.get_split_points(self.output_dims)))

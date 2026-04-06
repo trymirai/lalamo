@@ -1,6 +1,6 @@
 import math
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from functools import partial
 from typing import Self
 
@@ -9,10 +9,9 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.arrays import ArrayForwardPassConfig
-from lalamo.modules.utils import vmap_twice
+from lalamo.modules.utils import vmap_twice, vmap_with_key
 
 from .activations import Activation
 from .common import (
@@ -23,6 +22,7 @@ from .common import (
     ShardingOrder,
     register_config_union,
 )
+from .forward_pass_config import ArrayForwardPassConfig
 from .linear import Linear, LinearConfig
 
 __all__ = [
@@ -41,12 +41,10 @@ __all__ = [
 _SENTINEL = 2**31 - 1
 
 
-class MLPForwardPassConfig(eqx.Module):
+@dataclass(frozen=True)
+class MLPForwardPassConfig:
     moe_chunk_size_ratio: float = 0.2
-    up_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
-    down_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
-    router_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
-    gate_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
+    arrays: ArrayForwardPassConfig = field(default_factory=ArrayForwardPassConfig)
 
 
 class MLPBase[ConfigT: "MLPConfig"](LalamoModule[ConfigT]):
@@ -64,7 +62,9 @@ class MLPBase[ConfigT: "MLPConfig"](LalamoModule[ConfigT]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -190,30 +190,38 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,  # noqa: ARG002
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,  # noqa: ARG002
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
-        return vmap_twice(partial(self.call_unbatched, forward_pass_config=forward_pass_config))(inputs)
+        return vmap(
+            lambda batch: vmap_with_key(
+                partial(self.call_unbatched, forward_pass_config=forward_pass_config),
+                batch,
+                key=key,
+            )
+        )(inputs)
 
     @eqx.filter_jit
     def call_unbatched(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, " channels"]:
-        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
         if self.mixture_size is not None:
             raise ValueError(
                 "Mixtures of linear layers cannot be called directly."
                 "They are intended to be used with methods eqx.filter_vmap or lax.scan instead.",
             )
-        up_proj, gate = self.up_projection(inputs, forward_pass_config.up_arrays)
+        up_proj, gate = self.up_projection(inputs, key=key, forward_pass_config=forward_pass_config.arrays)
         if self.config.gate_clipping:
             gate = jnp.clip(gate, *self.config.gate_clipping)
         if self.config.up_clipping:
             up_proj = jnp.clip(up_proj, *self.config.up_clipping)
         gate = self.config.activation(gate)
-        (result,) = self.down_projection(up_proj * gate, forward_pass_config.down_arrays)
+        (result,) = self.down_projection(up_proj * gate, key=key, forward_pass_config=forward_pass_config.arrays)
 
         return result
 
@@ -387,22 +395,25 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_mode:
             case ForwardPassMode.MULTI_TOKEN:
-                return self.call_prefill_mode(inputs, lengths_without_padding, forward_pass_config)
+                return self.call_prefill_mode(inputs, lengths_without_padding, forward_pass_config, key=key)
             case ForwardPassMode.SINGLE_TOKEN:
-                return self.call_decode_mode(inputs, forward_pass_config)
+                return self.call_decode_mode(inputs, forward_pass_config, key=key)
 
     def _shared_expert_weight(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: MLPForwardPassConfig,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, " one"]:
-        """Compute the weight for shared experts: sigmoid(gate(x)) if gated, else 1."""
         if self.gate is not None:
-            (gate_value,) = self.gate(inputs, forward_pass_config.gate_arrays)
+            (gate_value,) = self.gate(inputs, key=key, forward_pass_config=forward_pass_config.arrays)
             return jax.nn.sigmoid(gate_value)
         return jnp.ones((1,), dtype=inputs.dtype)
 
@@ -410,12 +421,12 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
     def call_decode_mode(
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
-
         def per_token(token_input: Float[Array, " channels"]) -> Float[Array, " channels"]:
-            (router_logits,) = self.router(token_input, forward_pass_config.router_arrays)
+            (router_logits,) = self.router(token_input, key=key, forward_pass_config=forward_pass_config.arrays)
             routing = self.config.routing_function.call_unbatched(
                 router_logits,
                 num_active=self.num_active_routed_experts,
@@ -424,7 +435,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             if self.num_shared_experts > 0:
                 shared_mask = jnp.ones(self.num_shared_experts, dtype=bool)
                 expert_mask = jnp.concatenate([routing.expert_mask, shared_mask])
-                shared_weight = self._shared_expert_weight(token_input, forward_pass_config)
+                shared_weight = self._shared_expert_weight(token_input, forward_pass_config, key=key)
                 shared_weights = jnp.broadcast_to(shared_weight, (self.num_shared_experts,))
                 expert_weights = jnp.concatenate([routing.expert_weights, shared_weights])
             else:
@@ -443,7 +454,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                     lambda leaf: jax.lax.dynamic_index_in_dim(leaf, idx, axis=0, keepdims=False),
                     self.experts,
                 )
-                return selected_expert.call_unbatched(token_input, forward_pass_config) * weight
+                return selected_expert.call_unbatched(token_input, forward_pass_config, key=key) * weight
 
             return vmap(apply_one)(active_indices, active_weights).sum(axis=0)
 
@@ -454,9 +465,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         self,
         inputs: Float[Array, "batch suffix_tokens channels"],
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: MLPForwardPassConfig | None = None,
+        forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        forward_pass_config = forward_pass_config or MLPForwardPassConfig()
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length
         if lengths_without_padding is None:
@@ -466,8 +478,10 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         flattened_inputs = rearrange(inputs, "batch suffix_tokens channels -> (batch suffix_tokens) channels")
         flattened_padding_mask = rearrange(padding_mask, "batch suffix_tokens -> (batch suffix_tokens)")
 
-        (router_logits,) = vmap(partial(self.router, forward_pass_config=forward_pass_config.router_arrays))(
-            flattened_inputs
+        (router_logits,) = vmap_with_key(
+            partial(self.router, forward_pass_config=forward_pass_config.arrays),
+            flattened_inputs,
+            key=key,
         )
         routing_map = self.config.routing_function(router_logits, self.num_active_routed_experts)
 
@@ -515,7 +529,11 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
                 ) -> Float[Array, "tokens_per_chunk channels"]:
                     chunk_inputs = flattened_inputs.at[indices].get(mode="fill", fill_value=0.0)
                     return (
-                        vmap(partial(expert.call_unbatched, forward_pass_config=forward_pass_config))(chunk_inputs)
+                        vmap_with_key(
+                            partial(expert.call_unbatched, forward_pass_config=forward_pass_config),
+                            chunk_inputs,
+                            key=key,
+                        )
                         * weights[:, None]
                     )
 
@@ -543,14 +561,18 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         expert_result = routed_expert_result
         if self.num_shared_experts > 0:
             shared_experts = self.experts.slice_mixture(self.num_routed_experts, self.mixture_size)
-            shared_weights = vmap(partial(self._shared_expert_weight, forward_pass_config=forward_pass_config))(
-                flattened_inputs
+            shared_weights = vmap_with_key(
+                partial(self._shared_expert_weight, forward_pass_config=forward_pass_config),
+                flattened_inputs,
+                key=key,
             )
             shared_weights = jnp.where(flattened_padding_mask[:, None], shared_weights, 0.0)
 
             shared_outputs = vmap(
-                lambda expert: vmap(partial(expert.call_unbatched, forward_pass_config=forward_pass_config))(
-                    flattened_inputs
+                lambda expert: vmap_with_key(
+                    partial(expert.call_unbatched, forward_pass_config=forward_pass_config),
+                    flattened_inputs,
+                    key=key,
                 )
             )(shared_experts)
             expert_result = routed_expert_result + shared_weights * shared_outputs.sum(axis=0)

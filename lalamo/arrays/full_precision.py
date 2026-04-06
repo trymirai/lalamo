@@ -1,11 +1,12 @@
 from collections.abc import Mapping
 from typing import Any
 
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PRNGKeyArray
 
 from lalamo.modules.common import Initializer
+from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 
-from .base import ArrayForwardPassConfig, CompressedArray
+from .base import CompressedArray
 
 
 class FullPrecisionArray(CompressedArray, kind="full_precision"):
@@ -17,6 +18,8 @@ class FullPrecisionArray(CompressedArray, kind="full_precision"):
     def dot(
         self,
         vector: Float[Array, " in_channels"],
+        *,
+        key: PRNGKeyArray | None,  # noqa: ARG002
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, "... out_channels"]:
         return self.weights @ vector

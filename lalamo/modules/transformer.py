@@ -1,8 +1,11 @@
 from dataclasses import dataclass
 
 import equinox as eqx
+import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from dataclasses import field
+
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.token_mixers import AttentionConfig
@@ -27,8 +30,9 @@ __all__ = [
 ]
 
 
-class TransformerForwardPassConfig(eqx.Module):
-    layer: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig()
+@dataclass(frozen=True)
+class TransformerForwardPassConfig:
+    layer: TransformerLayerForwardPassConfig = field(default_factory=TransformerLayerForwardPassConfig)
 
 
 class TransformerResult(eqx.Module):
@@ -124,9 +128,9 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
-        forward_pass_config: TransformerForwardPassConfig | None,
-        per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -138,8 +142,6 @@ class Transformer(LalamoModule[TransformerConfig]):
                 "token_positions must be a 2D array of size (batch_size, sequence_length),"
                 f" got {token_positions.shape}",
             )
-
-        forward_pass_config = forward_pass_config or TransformerForwardPassConfig()
         maybe_state = state or ([None] * len(self.layers))
 
         if self.global_rope is not None:
@@ -147,27 +149,18 @@ class Transformer(LalamoModule[TransformerConfig]):
         else:
             state_by_layer: dict[int, None] = {}
 
-        rope_embeddings = tuple(vmap(rope)(token_positions) for rope in self.ropes)
-
-        # When KV sharing is active, source layers must always return updated state
-        # so shared layers can use the source's extended KV cache
-        has_kv_sharing = len(self.source_layer_indices) < len(self.layers)
-        must_return_state = return_updated_state or has_kv_sharing
-
-        updated_states = {}
+        layer_keys = jax.random.split(key, len(self.layers)) if key is not None else [None] * len(self.layers)
+        updated_state_layers = []
         layer_results = []
 
-        for i, layer in enumerate(self.layers):
-            rope_idx = self.rope_indices[i]
-            positional_embeddings = rope_embeddings[rope_idx] if rope_idx >= 0 else None
-
-            per_layer_input = per_layer_inputs[i] if per_layer_inputs is not None else None
-
-            kv_source = layer.config.kv_source_layer
-            if kv_source is not None:
-                effective_state = updated_states.get(kv_source, state_by_layer.get(kv_source))
-            else:
-                effective_state = state_by_layer.get(i)
+        for layer, state_layer, layer_key in zip(self.layers, maybe_state, layer_keys, strict=True):
+            match layer.positional_embedding_selector:
+                case PositionalEmbeddingSelector.LOCAL:
+                    positional_embeddings_to_use = local_positional_embeddings
+                case PositionalEmbeddingSelector.GLOBAL:
+                    positional_embeddings_to_use = global_positional_embeddings
+                case PositionalEmbeddingSelector.NONE:
+                    positional_embeddings_to_use = None
 
             layer_result = layer(
                 inner_features,
@@ -178,6 +171,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
                 forward_pass_config=forward_pass_config.layer,
+                key=layer_key,
             )
 
             inner_features = layer_result.outputs

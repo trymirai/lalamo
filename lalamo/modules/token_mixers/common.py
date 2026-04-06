@@ -1,17 +1,19 @@
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import NamedTuple
 
 import equinox as eqx
-from jaxtyping import Array, Float, Int
+from jax import numpy as jnp
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.arrays import ArrayForwardPassConfig
 from lalamo.modules.common import Initializer, LalamoModule, PositionalEmbeddingSelector
+from lalamo.modules.forward_pass_config import ArrayForwardPassConfig, AttentionImplementation
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
 
 __all__ = [
+    "AttentionForwardPassConfig",
     "MixerForwardPassConfig",
     "TokenMixerBase",
     "TokenMixerConfigBase",
@@ -19,10 +21,14 @@ __all__ = [
 ]
 
 
-class MixerForwardPassConfig(eqx.Module):
-    in_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
-    gate_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
-    out_arrays: ArrayForwardPassConfig = ArrayForwardPassConfig()
+@dataclass(frozen=True)
+class AttentionForwardPassConfig:
+    implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
+    upcast_dtype: DTypeLike | None = jnp.float32
+    arrays: ArrayForwardPassConfig = field(default_factory=ArrayForwardPassConfig)
+
+
+MixerForwardPassConfig = AttentionForwardPassConfig
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):
@@ -53,7 +59,9 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         state: StateLayerT | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

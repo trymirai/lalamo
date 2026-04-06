@@ -2,7 +2,9 @@ from dataclasses import dataclass
 
 import equinox as eqx
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from dataclasses import field
+
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 
@@ -35,8 +37,9 @@ __all__ = [
 ]
 
 
-class DecoderForwardPassConfig(eqx.Module):
-    transformer: TransformerForwardPassConfig = TransformerForwardPassConfig()
+@dataclass(frozen=True)
+class DecoderForwardPassConfig:
+    transformer: TransformerForwardPassConfig = field(default_factory=TransformerForwardPassConfig)
 
 
 class DecoderActivationTrace(eqx.Module):
@@ -191,8 +194,9 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: DecoderForwardPassConfig | None = None,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -219,7 +223,8 @@ class Decoder(LalamoModule[DecoderConfig]):
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
-            forward_pass_config=(forward_pass_config or DecoderForwardPassConfig()).transformer,
+            forward_pass_config=forward_pass_config.transformer,
+            key=key,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)

@@ -7,29 +7,10 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, Float, PRNGKeyArray
 
+from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 from lalamo.serialization import Serializable
 
 from lalamo.common import ParameterTree
-
-
-class GradientEstimator(eqx.Module):
-    pass
-
-
-class StochasticST(GradientEstimator):
-    key: PRNGKeyArray
-
-
-class DeterministicST(GradientEstimator):
-    pass
-
-
-class NoGradient(GradientEstimator):
-    pass
-
-
-class ArrayForwardPassConfig(eqx.Module):
-    gradient_estimator: GradientEstimator = eqx.field(default_factory=DeterministicST)
 
 
 class CompressedArray(Serializable, eqx.Module):
@@ -48,6 +29,8 @@ class CompressedArray(Serializable, eqx.Module):
     def dot(
         self,
         vector: Float[Array, " in_channels"],
+        *,
+        key: PRNGKeyArray | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]: ...
 

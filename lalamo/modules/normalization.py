@@ -13,7 +13,6 @@ from .common import Initializer, LalamoModule
 __all__ = [
     "Normalization",
     "NormalizationConfig",
-    "NormalizationForwardPassConfig",
     "UpcastMode",
 ]
 
@@ -21,10 +20,6 @@ __all__ = [
 class UpcastMode(Enum):
     ONLY_NORMALIZATION = "only_normalization"
     FULL_LAYER = "full_layer"
-
-
-class NormalizationForwardPassConfig(eqx.Module):
-    accumulation_precision: DTypeLike | None = jnp.float32
 
 
 @dataclass(frozen=True)
@@ -61,10 +56,9 @@ class Normalization(LalamoModule[NormalizationConfig]):
     def __call__(
         self,
         inputs: Float[Array, " channels"],
-        forward_pass_config: NormalizationForwardPassConfig | None = None,
+        accumulation_precision: DTypeLike | None = jnp.float32,
     ) -> Float[Array, " channels"]:
-        forward_pass_config = forward_pass_config or NormalizationForwardPassConfig()
-        accumulation_precision = forward_pass_config.accumulation_precision or inputs.dtype
+        accumulation_precision = accumulation_precision or inputs.dtype
         upcasted_inputs = inputs.astype(accumulation_precision)
 
         if self.config.subtract_mean:

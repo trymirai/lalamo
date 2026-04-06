@@ -12,13 +12,7 @@ from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 _compile_cache: dict[
     int,
     dict[
-        tuple[
-            GenerationConfig | None,
-            InferenceConfig | None,
-            ForwardPassConfig | None,
-            GenerationTraceConfig | None,
-            Sharding | None,
-        ],
+        tuple[GenerationConfig | None, InferenceConfig | None, ForwardPassConfig, Sharding | None],
         Compiled,
     ],
 ] = {}
@@ -33,8 +27,7 @@ def compile_generate_tokens(
     generation_config: GenerationConfig | None = None,
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
-    forward_pass_config: ForwardPassConfig | None = None,
-    generation_trace_config: GenerationTraceConfig | None = None,
+    forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],

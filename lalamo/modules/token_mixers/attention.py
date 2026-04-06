@@ -6,14 +6,14 @@ import jax
 from einops import einsum, rearrange
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import require_mapping
 from lalamo.modules.common import Initializer, ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import apply_soft_capping
+from lalamo.modules.utils import apply_soft_capping, vmap_with_key
 
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
@@ -21,13 +21,8 @@ from .state import DynamicKVCacheLayer, KVCacheLayer, StaticKVCacheLayer
 __all__ = [
     "Attention",
     "AttentionConfig",
-    "AttentionForwardPassConfig",
     "AttentionResult",
 ]
-
-
-class AttentionForwardPassConfig(MixerForwardPassConfig):
-    upcast_dtype: DTypeLike | None = jnp.float32
 
 
 def _repeat_kv(
@@ -236,17 +231,22 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> AttentionResult:
-        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
-        queries, keys, values = vmap(
-            partial(self.qkv_projection, forward_pass_config=forward_pass_config.in_arrays),
-            in_axes=0,
-        )(inputs)
+        qkv_key, gate_key, out_key = jax.random.split(key, 3) if key is not None else (None, None, None)
+        queries, keys, values = vmap_with_key(
+            partial(self.qkv_projection, forward_pass_config=forward_pass_config.arrays),
+            inputs,
+            key=qkv_key,
+        )
         if self.gate_projection is not None:
-            (gate,) = vmap(
-                partial(self.gate_projection, forward_pass_config=forward_pass_config.gate_arrays), in_axes=0
-            )(inputs)
+            (gate,) = vmap_with_key(
+                partial(self.gate_projection, forward_pass_config=forward_pass_config.arrays),
+                inputs,
+                key=gate_key,
+            )
         else:
             gate = None
 
@@ -329,8 +329,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
-        (result,) = vmap(partial(self.out_projection, forward_pass_config=forward_pass_config.out_arrays), in_axes=0)(
-            attention_output
+        (result,) = vmap_with_key(
+            partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
+            attention_output,
+            key=out_key,
         )
 
         if not return_updated_state:

@@ -1,21 +1,20 @@
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from functools import partial
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.arrays import ArrayForwardPassConfig, StochasticQuantize
 from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .normalization import Normalization, NormalizationConfig, NormalizationForwardPassConfig
+from .token_mixers.common import MixerForwardPassConfig
+from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
-from .token_mixers.common import MixerForwardPassConfig
 from .utils import vmap_twice
 
 __all__ = [
@@ -29,53 +28,10 @@ __all__ = [
 ]
 
 
-class TransformerLayerForwardPassConfig(eqx.Module):
-    mixer: MixerForwardPassConfig = MixerForwardPassConfig()
-    mlp: MLPForwardPassConfig = MLPForwardPassConfig()
-    normalization: NormalizationForwardPassConfig = NormalizationForwardPassConfig()
-
-    @staticmethod
-    def init(
-        arrays: ArrayForwardPassConfig | None = None,
-        *,
-        stochastic_quantize_key: jax.Array | None = None,
-        moe_chunk_size_ratio: float = 0.2,
-        normalization: NormalizationForwardPassConfig = NormalizationForwardPassConfig(),  # noqa: B008
-    ) -> "TransformerLayerForwardPassConfig":
-        if arrays is not None and stochastic_quantize_key is not None:
-            raise ValueError("Pass either arrays or stochastic_quantize_key, not both.")
-        if stochastic_quantize_key is not None:
-            arrays = ArrayForwardPassConfig(quantize=StochasticQuantize(stochastic_quantize_key))
-        if arrays is None:
-            arrays = ArrayForwardPassConfig()
-
-        def split_array_forward_pass_config(num: int) -> tuple[ArrayForwardPassConfig, ...]:
-            match arrays.quantize:
-                case StochasticQuantize(key=key):
-                    return tuple(
-                        replace(arrays, quantize=StochasticQuantize(subkey))  # type: ignore[invalid-argument-type]
-                        for subkey in jax.random.split(key, num)
-                    )
-                case _:
-                    return (arrays,) * num
-
-        mixer_in_arrays, mixer_gate_arrays, mixer_out_arrays = split_array_forward_pass_config(3)
-        mlp_up_arrays, mlp_down_arrays, mlp_router_arrays, mlp_gate_arrays = split_array_forward_pass_config(4)
-        return TransformerLayerForwardPassConfig(
-            mixer=MixerForwardPassConfig(
-                in_arrays=mixer_in_arrays,
-                gate_arrays=mixer_gate_arrays,
-                out_arrays=mixer_out_arrays,
-            ),
-            mlp=MLPForwardPassConfig(
-                moe_chunk_size_ratio=moe_chunk_size_ratio,
-                up_arrays=mlp_up_arrays,
-                down_arrays=mlp_down_arrays,
-                router_arrays=mlp_router_arrays,
-                gate_arrays=mlp_gate_arrays,
-            ),
-            normalization=normalization,
-        )
+@dataclass(frozen=True)
+class TransformerLayerForwardPassConfig:
+    mixer: MixerForwardPassConfig = field(default_factory=MixerForwardPassConfig)
+    mlp: MLPForwardPassConfig = field(default_factory=MLPForwardPassConfig)
 
 
 class TransformerLayerActivationTrace(eqx.Module):
@@ -257,24 +213,19 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerLayerForwardPassConfig | None = None,
-        per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
+        forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
                 f"Inputs to decoder layers must be a 3D arrays of size (batch_size, sequence_length, hidden_dim),"
                 f" got {inputs.shape}",
             )
-        fpc = forward_pass_config or TransformerLayerForwardPassConfig()
-
-        def apply_norm(
-            norm: Normalization, x: Float[Array, "batch tokens channels"]
-        ) -> Float[Array, "batch tokens channels"]:
-            return vmap_twice(partial(norm, forward_pass_config=fpc.normalization))(x)
+        mixer_key, mlp_key = jax.random.split(key) if key is not None else (None, None)
 
         if self.pre_mixer_norm is not None:
-            normalized_mixer_inputs = apply_norm(self.pre_mixer_norm, inputs)
+            normalized_mixer_inputs = vmap_twice(self.pre_mixer_norm)(inputs)
         else:
             normalized_mixer_inputs = inputs
 
@@ -282,7 +233,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             partial(
                 self.mixer,
                 return_updated_state=return_updated_state or return_activation_trace,
-                forward_pass_config=fpc.mixer,
+                forward_pass_config=forward_pass_config.mixer,
+                key=mixer_key,
             ),
         )
         mixer_outputs, updated_state = batched_mixer_fn(
@@ -292,23 +244,24 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             length_without_padding=lengths_without_padding,
         )
         if self.post_mixer_norm is not None:
-            normalized_mixer_outputs = apply_norm(self.post_mixer_norm, mixer_outputs)
+            normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs
         else:
             normalized_mixer_outputs = None
             mlp_inputs = inputs + mixer_outputs
 
         normalized_mlp_inputs = (
-            apply_norm(self.pre_mlp_norm, mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
+            vmap_twice(self.pre_mlp_norm)(mlp_inputs) if self.pre_mlp_norm is not None else mlp_inputs
         )
         mlp_outputs = self.mlp(
             normalized_mlp_inputs,
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
-            forward_pass_config=fpc.mlp,
+            forward_pass_config=forward_pass_config.mlp,
+            key=mlp_key,
         )
         if self.post_mlp_norm is not None:
-            normalized_mlp_outputs = apply_norm(self.post_mlp_norm, mlp_outputs)
+            normalized_mlp_outputs = vmap_twice(self.post_mlp_norm)(mlp_outputs)
             outputs = mlp_inputs + normalized_mlp_outputs
         else:
             normalized_mlp_outputs = None

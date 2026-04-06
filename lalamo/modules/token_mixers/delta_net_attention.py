@@ -6,13 +6,14 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_mapping, require_tree
 from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.utils import vmap_with_key
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
 
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
@@ -362,16 +363,20 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> DeltaNetAttentionResult:
-        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
 
+        in_key, out_key = jax.random.split(key) if key is not None else (None, None)
         num_tokens, *_ = inputs.shape
-        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap(
-            partial(self.in_proj, forward_pass_config=forward_pass_config.in_arrays)
-        )(inputs)
+        proj_query, proj_key, proj_value, gate, beta_logits, decay_input = vmap_with_key(
+            partial(self.in_proj, forward_pass_config=forward_pass_config.arrays),
+            inputs,
+            key=in_key,
+        )
         assert proj_query.shape[0] == num_tokens
 
         mixed_qkv = jnp.concatenate([proj_query, proj_key, proj_value], axis=-1)
@@ -453,7 +458,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
         core_attn_out = core_attn_out.reshape(num_tokens, -1)
 
-        (outputs,) = vmap(partial(self.out_proj, forward_pass_config=forward_pass_config.out_arrays))(core_attn_out)
+        (outputs,) = vmap_with_key(
+            partial(self.out_proj, forward_pass_config=forward_pass_config.arrays),
+            core_attn_out,
+            key=out_key,
+        )
 
         if return_updated_state:
             assert updated_conv_state is not None

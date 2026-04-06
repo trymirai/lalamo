@@ -2,13 +2,15 @@ from dataclasses import dataclass
 from functools import partial
 
 import equinox as eqx
+import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.modules.utils import vmap_with_key
 
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
@@ -83,21 +85,27 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         state: ShortConvStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
-        forward_pass_config: MixerForwardPassConfig | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
+        *,
+        key: PRNGKeyArray | None,
     ) -> TokenMixerResult[ShortConvStateLayer]:
-        forward_pass_config = forward_pass_config or MixerForwardPassConfig()
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")
 
-        pre_conv_gate, post_conv_gate, x = vmap(
-            partial(self.in_projection, forward_pass_config=forward_pass_config.in_arrays)
-        )(inputs)
+        in_key, out_key = jax.random.split(key) if key is not None else (None, None)
+        pre_conv_gate, post_conv_gate, x = vmap_with_key(
+            partial(self.in_projection, forward_pass_config=forward_pass_config.arrays),
+            inputs,
+            key=in_key,
+        )
 
         prev_conv_state = state.conv_state if state is not None else None
         conv_output = self.conv(x * pre_conv_gate, length_without_padding, prev_conv_state, return_updated_state)
 
-        (outputs,) = vmap(partial(self.out_projection, forward_pass_config=forward_pass_config.out_arrays))(
-            conv_output.outputs * post_conv_gate
+        (outputs,) = vmap_with_key(
+            partial(self.out_projection, forward_pass_config=forward_pass_config.arrays),
+            conv_output.outputs * post_conv_gate,
+            key=out_key,
         )
         updated_conv_state = conv_output.state
 

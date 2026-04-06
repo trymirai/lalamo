@@ -1,5 +1,5 @@
 from collections.abc import Callable, Iterable, Iterator
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
@@ -12,21 +12,20 @@ from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
-from lalamo.arrays import ArrayForwardPassConfig
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
-    DecoderForwardPassConfig,
     ForwardPassMode,
     LalamoModule,
     ShardingConfig,
     State,
-    TransformerForwardPassConfig,
-    TransformerLayerForwardPassConfig,
     get_current_sharding_config,
     pad_and_apply_data_sharding,
 )
+from lalamo.modules.decoder import DecoderForwardPassConfig
+from lalamo.modules.transformer import TransformerForwardPassConfig
+from lalamo.modules.transformer_layer import TransformerLayerForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import (
@@ -58,26 +57,51 @@ __all__ = [
 _COMPILED_PROMPT_LENGTHS = [256 * 2**i for i in range(12)]
 
 
-class ForwardPassConfig(eqx.Module):
-    decoder: DecoderForwardPassConfig = DecoderForwardPassConfig()
+@dataclass(frozen=True)
+class ForwardPassConfig:
+    decoder: DecoderForwardPassConfig = field(default_factory=DecoderForwardPassConfig)
+    deterministic_ops: bool = False
+    xla_autotune_level: int = 0
 
     @staticmethod
     def init(
-        arrays: ArrayForwardPassConfig | None = None,
         *,
-        stochastic_quantize_key: PRNGKeyArray | None = None,
+        attention_implementation: "AttentionImplementation | None" = None,
+        attention_upcast_dtype: "jnp.dtype | None" = jnp.float32,
         moe_chunk_size_ratio: float = 0.2,
+        gradient_estimator: "GradientEstimator | None" = None,
+        deterministic_ops: bool = False,
+        xla_autotune_level: int = 0,
     ) -> "ForwardPassConfig":
+        from lalamo.modules.forward_pass_config import (
+            ArrayForwardPassConfig,
+            AttentionImplementation,
+            GradientEstimator,
+        )
+        from lalamo.modules.mlp import MLPForwardPassConfig
+        from lalamo.modules.token_mixers.common import AttentionForwardPassConfig
+
+        arrays = ArrayForwardPassConfig(
+            gradient_estimator=gradient_estimator or GradientEstimator.DETERMINISTIC,
+        )
         return ForwardPassConfig(
             decoder=DecoderForwardPassConfig(
                 transformer=TransformerForwardPassConfig(
-                    layer=TransformerLayerForwardPassConfig.init(
-                        arrays=arrays,
-                        stochastic_quantize_key=stochastic_quantize_key,
-                        moe_chunk_size_ratio=moe_chunk_size_ratio,
+                    layer=TransformerLayerForwardPassConfig(
+                        mixer=AttentionForwardPassConfig(
+                            implementation=attention_implementation or AttentionImplementation.STABLE_REDUCTION,
+                            upcast_dtype=attention_upcast_dtype,
+                            arrays=arrays,
+                        ),
+                        mlp=MLPForwardPassConfig(
+                            moe_chunk_size_ratio=moe_chunk_size_ratio,
+                            arrays=arrays,
+                        ),
                     ),
                 ),
             ),
+            deterministic_ops=deterministic_ops,
+            xla_autotune_level=xla_autotune_level,
         )
 
 
@@ -277,7 +301,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
         lengths_without_padding: Int[Array, " batch"] | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
         batch_size, sequence_length = token_ids.shape
@@ -302,7 +326,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 return_updated_state=True,
                 lengths_without_padding=chunk.sequence_ends,
                 forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-                forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
+                forward_pass_config=forward_pass_config.decoder,
+                key=None,
             )
             assert decoder_outputs.updated_state is not None
 
@@ -326,7 +351,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         prompt_lengths_without_padding: Int[Array, " batch"] | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         num_top_logits_to_return: int | None = None,
         generation_trace_config: GenerationTraceConfig | None = None,
         *,
@@ -416,7 +441,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     return_updated_state=True,
                     return_activation_trace=trace_config is not None,
                     forward_pass_mode=forward_pass_mode,
-                    forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
+                    forward_pass_config=forward_pass_config.decoder,
+                    key=None,
                 )
                 assert decoder_outputs.updated_state is not None, "updated_state should not be None"
                 new_state = DecodingState(
@@ -567,8 +593,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
-        generation_trace_config: GenerationTraceConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
@@ -608,8 +633,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
-        generation_trace_config: GenerationTraceConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
         sharding_config: ShardingConfig | None = None,
     ) -> int:
         if sharding_config is None:
@@ -661,7 +685,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
         sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
@@ -692,7 +716,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         vram_bytes: int | None = None,
@@ -781,7 +805,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[str]:
@@ -807,7 +831,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig | None = None,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
@@ -866,7 +890,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 state.state,
                 return_updated_state=True,
                 forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
-                forward_pass_config=(forward_pass_config or ForwardPassConfig()).decoder,
+                forward_pass_config=forward_pass_config.decoder,
+                key=None,
             )
             assert decoder_outputs.updated_state is not None, "updated_state should not be None"
             state = DecodingState(

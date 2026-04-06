@@ -1,11 +1,12 @@
 from collections.abc import Mapping
 from typing import Any
 
-from jaxtyping import Array, Float
+from jaxtyping import Array, Float, PRNGKeyArray
 
+from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 from lalamo.serialization import strip_uzu_prefix
 
-from .base import ArrayForwardPassConfig, CompressedArray
+from .base import CompressedArray
 
 
 class CompositeArray(CompressedArray, kind="composite"):
@@ -18,10 +19,12 @@ class CompositeArray(CompressedArray, kind="composite"):
     def dot(
         self,
         vector: Float[Array, " in_channels"],
+        *,
+        key: PRNGKeyArray | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
         assert len(self.parts) != 0, "CompositeArray must be non-empty to dot"
-        return sum(part.dot(vector, forward_pass_config) for part in self.parts)
+        return sum(part.dot(vector, key=key, forward_pass_config=forward_pass_config) for part in self.parts)
 
     @classmethod
     def from_uzu(cls, data: Mapping[str, Any]) -> "CompositeArray":
