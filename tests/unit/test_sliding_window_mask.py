@@ -134,6 +134,29 @@ def test_dynamic_kv_cache_sliding_window_mask_matches_static_mask() -> None:
     assert jnp.array_equal(dynamic_mask, static_mask)
 
 
+def test_dynamic_kv_cache_sliding_window_mask_respects_logical_positions_after_padded_prefill() -> None:
+    state = DynamicKVCacheLayer.init(
+        has_sinks=False,
+        keys=jnp.zeros((4, 1, 1), dtype=jnp.float32),
+        values=jnp.zeros((4, 1, 1), dtype=jnp.float32),
+        length=2,
+    )
+    state = state.extend(
+        jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        jnp.zeros((1, 1, 1), dtype=jnp.float32),
+        added_length=1,
+    )
+
+    mask = state.attention_mask(
+        suffix_length=1,
+        is_causal=True,
+        sliding_window_size=2,
+    )
+
+    expected = jnp.array([[False, True, False, False, True]], dtype=jnp.bool)
+    assert jnp.array_equal(mask, expected)
+
+
 def test_sliding_window_dynamic_state_multi_token_matches_single_token_sequential(decoder: Decoder) -> None:
     prefix_token_ids = jnp.array([[1, 2, 3]], dtype=jnp.int32)
     prefix_positions = jnp.array([[0, 1, 2]], dtype=jnp.int32)
