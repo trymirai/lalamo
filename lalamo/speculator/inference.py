@@ -2,7 +2,6 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import NamedTuple
 
-import jax
 import numpy as np
 
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -66,7 +65,7 @@ def inference_collect_traces(
 
         assert generated.trace is not None
         trace = generated.trace
-        layer_indices = tuple(np.asarray(jax.device_get(trace.layer_indices), dtype=np.int32).tolist())
+        layer_indices = tuple(np.asarray(trace.layer_indices, dtype=np.int32).tolist())
 
         yield LalamoCompletion(
             prefix_token_ids=filtered_prefixes[idx],
