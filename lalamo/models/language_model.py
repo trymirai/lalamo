@@ -81,9 +81,11 @@ class StepTrace(NamedTuple):
 
     def _collapse_scan_layer_indices(self) -> Int[Array, " n_layers"]:
         first_step_layer_indices = self.layer_indices[0]
-        if not jnp.all(self.layer_indices == first_step_layer_indices[None, :]):
-            raise ValueError("layer_indices must stay constant across generation steps.")
-        return first_step_layer_indices
+        return eqx.error_if(
+            first_step_layer_indices,
+            jnp.logical_not(jnp.all(self.layer_indices == first_step_layer_indices[None, :])),
+            "layer_indices must stay constant across generation steps.",
+        )
 
     def rearrange_from_scan(self) -> "StepTrace":
         return StepTrace(
