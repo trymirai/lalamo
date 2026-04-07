@@ -52,6 +52,7 @@ def test_short_conv_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=seqlen,
+        key=None,
     )
 
     reference_result = short_conv(
@@ -60,6 +61,7 @@ def test_short_conv_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=None,
+        key=None,
     )
 
     assert padded_result.state is not None

@@ -8,7 +8,7 @@ from lalamo.modules import (
     DenseMLPConfig,
     DynamicKVCacheLayer,
     ForwardPassMode,
-    FullPrecisionLinearConfig,
+    LinearConfig,
     Identity,
     NormalizationConfig,
     StaticKVCacheLayer,
@@ -45,8 +45,8 @@ def decoder() -> Decoder:
         head_dim=4,
     )
     attention_config = AttentionConfig(
-        qkv_projection_config=FullPrecisionLinearConfig(precision=precision),
-        out_projection_config=FullPrecisionLinearConfig(precision=precision),
+        qkv_projection_config=LinearConfig(),
+        out_projection_config=LinearConfig(),
         query_norm_config=None,
         key_norm_config=None,
         num_heads=2,
@@ -61,7 +61,7 @@ def decoder() -> Decoder:
         has_out_biases=False,
     )
     mlp_config = DenseMLPConfig(
-        linear_config=FullPrecisionLinearConfig(precision=precision),
+        linear_config=LinearConfig(),
         activation=Identity(),
         has_up_biases=False,
         has_down_biases=False,

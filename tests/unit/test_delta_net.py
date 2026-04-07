@@ -107,6 +107,7 @@ def test_delta_net_attention_matches_hf() -> None:
         state=None,
         return_updated_state=False,
         length_without_padding=None,
+        key=None,
     ).outputs
 
     assert_close(
