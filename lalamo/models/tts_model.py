@@ -88,15 +88,26 @@ class TTSGenerator(eqx.Module):
             raise ValueError(f"Expected exactly 1 message, got {len(messages_list)}")
         message = messages_list[0]
 
+        config = self.tts_model.text_decoder.config
+        # Fill in defaults so the chat template renders correct special tokens
+        # (e.g. <|interleave|> instead of <|None|>).
+        message = TTSMessage(
+            content=message.content,
+            speaker_id=message.speaker_id or config.default_speaker,
+            style=message.style or config.default_style,
+            language=message.language or config.default_language,
+            voice_prompt=message.voice_prompt,
+        )
+
         context = TTSDecodingContext.resolve(
             message_speaker=message.speaker_id,
             message_style=message.style,
             message_language=message.language,
-            config=self.tts_model.text_decoder.config,
+            config=config,
             tokenize=self.message_processor.tokenize_text,
         )
 
-        text_tokens = self.tokenize_text(messages_list)
+        text_tokens = self.tokenize_text([message])
         random_key = random_key if random_key is not None else jax.random.key(123)
 
         codes = self.tts_model.text_decoder.decode_utterance(

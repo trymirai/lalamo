@@ -346,6 +346,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
 
         input_pos = jnp.arange(prompt_length)[None, :]
         embeddings = self.embed(prompt)
+
         first_codes, state_slow = decode_next_token(
             model=self,
             x=embeddings,
