@@ -1,5 +1,8 @@
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from lalamo.modules.common import ShardingConfig
 
 import equinox as eqx
 import jax
@@ -7,13 +10,11 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.modules.common import Initializer
-
 from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
 from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
 
 
-class MLXQuantArray(CompressedArray, kind="mlx"):
+class MLXQuantArray(CompressedArray):
     weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     biases: Float[Array, "... out_channels groups"]
@@ -92,7 +93,7 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
     def to_uzu(self) -> dict[str, Any]:
         int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
         return {
-            "__kind__": self.kind,
+            "__class__": type(self).__name__,
             "bits": self.bits,
             "group_size": self.group_size,
             "weights": pack_uint_to_uint8(int_weights, self.bits),
@@ -100,36 +101,21 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
             "biases": self.biases,
         }
 
-    @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:
-        if str(data.get("__kind__")) != cls.kind:
-            return CompressedArray.from_uzu(data)
-        bits = int(data["bits"])
-        group_size = int(data["group_size"])
-        return cls(
-            weights=unpack_uint8_to_uint(data["weights"], bits).astype(data["scales"].dtype),
-            scales=data["scales"],
-            biases=data["biases"],
-            bits=bits,
-            group_size=group_size,
-        )
+    def from_uzu(
+        self,
+        data: Mapping[str, Any],
+        prefix: str = "",
+        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG002
+    ) -> Self:
+        def _key(name: str) -> str:
+            return f"{prefix}.{name}" if prefix else name
 
-    @classmethod
-    def init(
-        cls,
-        initializer: Initializer,
-        leading_dims: tuple[int, ...],
-        out_channels: int,
-        in_channels: int,
-        *,
-        bits: int,
-        group_size: int,
-    ) -> "MLXQuantArray":
-        num_groups = in_channels // group_size
-        return cls(
-            weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
-            scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
-            biases=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
+        bits = int(data[_key("bits")])
+        group_size = int(data[_key("group_size")])
+        return type(self)(
+            weights=unpack_uint8_to_uint(data[_key("weights")], bits).astype(data[_key("scales")].dtype),
+            scales=data[_key("scales")],
+            biases=data[_key("biases")],
             bits=bits,
             group_size=group_size,
         )

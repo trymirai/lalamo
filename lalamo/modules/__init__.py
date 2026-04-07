@@ -1,5 +1,3 @@
-from lalamo.arrays import QuantFormat
-
 from .activations import GELU, Activation, Identity, SiLU
 from .audio.audio_decoder import TTSAudioDecoder
 from .audio.text_decoder import TTSTextDecoder
@@ -137,8 +135,6 @@ __all__ = [
     "PLEModelConfig",
     "PerLayerEmbedding",
     "PositionalEmbeddings",
-    "QLoRALinear",
-    "QLoRALinearConfig",
     "RandomInitializer",
     "RoPE",
     "RoPEConfig",

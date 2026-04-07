@@ -1,25 +1,26 @@
 import abc
 from collections.abc import Mapping
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar, Self
+
+if TYPE_CHECKING:
+    from lalamo.modules.common import ShardingConfig
 
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.serialization import Serializable
+from lalamo.serialization import UzuSerializable
 
 from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
 
 
-class CompressedEmbedding(Serializable, eqx.Module):
+class CompressedEmbedding(UzuSerializable, eqx.Module):
     _registry: ClassVar[dict[str, type["CompressedEmbedding"]]] = {}
-    kind: ClassVar[str]
 
-    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:  # noqa: ANN401
+    def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401
         super().__init_subclass__(**kwargs)
-        CompressedEmbedding._registry[kind] = cls
-        cls.kind = kind
+        CompressedEmbedding._registry[cls.__name__] = cls
 
     @property
     @abc.abstractmethod
@@ -40,17 +41,24 @@ class CompressedEmbedding(Serializable, eqx.Module):
     def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]: ...
 
     def to_uzu(self) -> dict[str, Any]:
-        return {"__kind__": self.kind, **super().to_uzu()}
+        return {"__class__": type(self).__name__, **super().to_uzu()}
 
-    @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> "CompressedEmbedding":
-        kind = data["__kind__"]
-        if not isinstance(kind, str):
-            raise TypeError(f"Expected string kind, got {type(kind)}")
-        return cls._registry[kind].from_uzu(data)
+    def from_uzu(
+        self,
+        data: Mapping[str, Any],
+        prefix: str = "",
+        sharding_config: "ShardingConfig | None" = None,
+    ) -> Self:
+        class_key = f"{prefix}.__class__" if prefix else "__class__"
+        stored_class_name = data.get(class_key)
+        if isinstance(stored_class_name, str) and stored_class_name != type(self).__name__:
+            target_cls = CompressedEmbedding._registry[stored_class_name]
+            placeholder = target_cls.__new__(target_cls)
+            return placeholder.from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[return-value]
+        return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[invalid-return-type]
 
 
-class FullPrecisionEmbedding(CompressedEmbedding, kind="full_precision_embedding"):
+class FullPrecisionEmbedding(CompressedEmbedding):
     weights: Float[Array, "vocabulary channels"]
 
     @property
@@ -73,14 +81,8 @@ class FullPrecisionEmbedding(CompressedEmbedding, kind="full_precision_embedding
     def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
         return self.weights[token_ids]
 
-    @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedEmbedding:
-        if str(data.get("__kind__")) != cls.kind:
-            return CompressedEmbedding.from_uzu(data)
-        return cls(weights=data["weights"])
 
-
-class MLXQuantizedEmbedding(CompressedEmbedding, kind="mlx_embedding"):
+class MLXQuantizedEmbedding(CompressedEmbedding):
     weights: Float[Array, "vocabulary channels"]
     scales: Float[Array, "vocabulary groups"]
     biases: Float[Array, "vocabulary groups"]
@@ -120,7 +122,7 @@ class MLXQuantizedEmbedding(CompressedEmbedding, kind="mlx_embedding"):
     def to_uzu(self) -> dict[str, Any]:
         int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
         return {
-            "__kind__": self.kind,
+            "__class__": type(self).__name__,
             "qweight": pack_uint_to_uint8(int_weights, self.bits),
             "scales": self.scales,
             "biases": self.biases,
@@ -128,17 +130,22 @@ class MLXQuantizedEmbedding(CompressedEmbedding, kind="mlx_embedding"):
             "group_size": self.group_size,
         }
 
-    @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedEmbedding:
-        if str(data.get("__kind__")) != cls.kind:
-            return CompressedEmbedding.from_uzu(data)
-        bits = int(data["bits"])
-        group_size = int(data["group_size"])
-        weights = unpack_uint8_to_uint(data["qweight"], bits)
-        return cls(
-            weights=weights.astype(data["scales"].dtype),
-            scales=data["scales"],
-            biases=data["biases"],
+    def from_uzu(
+        self,
+        data: Mapping[str, Any],
+        prefix: str = "",
+        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG002
+    ) -> Self:
+        def _key(name: str) -> str:
+            return f"{prefix}.{name}" if prefix else name
+
+        bits = int(data[_key("bits")])
+        group_size = int(data[_key("group_size")])
+        weights = unpack_uint8_to_uint(data[_key("qweight")], bits)
+        return type(self)(
+            weights=weights.astype(data[_key("scales")].dtype),
+            scales=data[_key("scales")],
+            biases=data[_key("biases")],
             group_size=group_size,
             bits=bits,
         )

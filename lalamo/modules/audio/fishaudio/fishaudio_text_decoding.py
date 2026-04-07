@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import jax
@@ -330,7 +331,7 @@ def decode_next_token(
     assert slow_model_result.layer_results is not None
     hidden_states = slow_model_result.layer_results[-1].outputs[:, -1:]
     if model.fast_model_projection is not None:
-        (hidden_states,) = vmap(model.fast_model_projection)(hidden_states)
+        (hidden_states,) = vmap(partial(model.fast_model_projection, key=None))(hidden_states)
 
     (logits,) = vmap_twice(lambda x: model.readout_slow(x, key=None))(slow_model_result.outputs)
 

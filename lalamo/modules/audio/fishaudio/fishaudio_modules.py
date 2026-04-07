@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import partial
 
 import jax
 from jax import numpy as jnp
@@ -112,9 +113,9 @@ class ConvNeXtBlock(LalamoModule[ConvNeXtBlockConfig]):
 
         x = self.depthwise_conv(x)
         x = jax.vmap(jax.vmap(self.norm))(x)
-        (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step1))(x)
+        (x,) = jax.vmap(jax.vmap(partial(self.pointwise_conv_step1, key=None)))(x)
         x = jax.vmap(jax.vmap(self.config.activation))(x)
-        (x,) = jax.vmap(jax.vmap(self.pointwise_conv_step2))(x)
+        (x,) = jax.vmap(jax.vmap(partial(self.pointwise_conv_step2, key=None)))(x)
         if apply_residual:
             x = residual + x
 

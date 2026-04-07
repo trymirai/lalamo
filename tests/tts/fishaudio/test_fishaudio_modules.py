@@ -39,6 +39,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
 from lalamo.modules import GELU, ForwardPassMode
+from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
@@ -1224,7 +1225,7 @@ def test_single_text_transformer_layer(fish_audio_local_model_path: Path) -> Non
     assert len(lalamo_transformer.ropes) > 0
     pos_emb_lalamo = vmap(lalamo_transformer.ropes[0])(input_pos_lalamo)
     lalamo_layer = lalamo_transformer.layers[0]
-    lalamo_layer_result = lalamo_layer(embedded_input_lalamo, pos_emb_lalamo)
+    lalamo_layer_result = lalamo_layer(embedded_input_lalamo, pos_emb_lalamo, key=None)
 
     # Compare outputs per token position
     fish_output_jax = torch_to_jax(fish_layer_result)
@@ -1320,7 +1321,8 @@ def test_audio_transformer_inference() -> None:
         return_positional_embeddings=False,
         lengths_without_padding=None,
         forward_pass_mode=ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config=None,
+        forward_pass_config=TransformerForwardPassConfig(),
+        key=None,
     )
     lalamo_output = lalamo_result.outputs
 

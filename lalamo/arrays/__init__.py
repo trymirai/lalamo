@@ -2,11 +2,15 @@ from .awq import AWQQuantArray as AWQQuantArray
 from .base import ArrayForwardPassConfig as ArrayForwardPassConfig
 from .base import CompressedArray as CompressedArray
 from .base import GradientEstimator as GradientEstimator
-from .composite import CompositeArray as CompositeArray
+from .composite import MixtureArray as MixtureArray
 from .embedding import CompressedEmbedding as CompressedEmbedding
 from .embedding import FullPrecisionEmbedding as FullPrecisionEmbedding
 from .embedding import MLXQuantizedEmbedding as MLXQuantizedEmbedding
 from .full_precision import FullPrecisionArray as FullPrecisionArray
 from .lora import LoRAArray as LoRAArray
 from .mlx import MLXQuantArray as MLXQuantArray
-from .quant_format import QuantFormat as QuantFormat
+from .specs import AWQSpec as AWQSpec
+from .specs import CompressedArraySpec as CompressedArraySpec
+from .specs import FullPrecisionSpec as FullPrecisionSpec
+from .specs import LoRASpec as LoRASpec
+from .specs import MLXSpec as MLXSpec

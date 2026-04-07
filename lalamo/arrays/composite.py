@@ -1,42 +1,35 @@
-from collections.abc import Mapping
-from typing import Any
-
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
-
-from lalamo.serialization import strip_uzu_prefix
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
 
-class CompositeArray(CompressedArray, kind="composite"):
+class MixtureArray(CompressedArray):
     parts: tuple[CompressedArray, ...]
+    coefficients: tuple[float, ...]
 
     @property
     def shape(self) -> tuple[int, ...]:
-        assert len(self.parts) != 0, "CompositeArray must be non-empty"
+        assert len(self.parts) != 0, "MixtureArray must be non-empty"
         first, *rest = self.parts
         result = first.shape
         for part in rest:
             if part.shape != result:
                 raise ValueError(
-                    f"CompositeArray parts have mismatched shapes: {result} vs {part.shape}",
+                    f"MixtureArray parts have mismatched shapes: {result} vs {part.shape}",
                 )
         return result
 
     @property
     def dtype(self) -> DTypeLike:
-        assert len(self.parts) != 0, "CompositeArray must be non-empty"
+        assert len(self.parts) != 0, "MixtureArray must be non-empty"
         return jnp.result_type(*(part.dtype for part in self.parts))
 
-    def dequantize(
-        self, quantized_weights: Float[Array, "... out_channels in_channels"]
-    ) -> Float[Array, "... out_channels in_channels"]:
-        raise NotImplementedError("CompositeArray does not support dequantize directly — use individual parts")
-
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
-        assert len(self.parts) != 0, "CompositeArray must be non-empty to materialize"
-        return sum(part.materialize() for part in self.parts)  # type: ignore[return-value]
+        assert len(self.parts) != 0, "MixtureArray must be non-empty to materialize"
+        return sum(  # type: ignore[return-value]
+            coeff * part.materialize() for coeff, part in zip(self.coefficients, self.parts, strict=False)
+        )
 
     def dot(
         self,
@@ -45,19 +38,14 @@ class CompositeArray(CompressedArray, kind="composite"):
         key: PRNGKeyArray | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
-        assert len(self.parts) != 0, "CompositeArray must be non-empty to dot"
-        return sum(part.dot(vector, key=key, forward_pass_config=forward_pass_config) for part in self.parts)  # type: ignore[return-value]
+        assert len(self.parts) != 0, "MixtureArray must be non-empty to dot"
+        return sum(  # type: ignore[return-value]
+            coeff * part.dot(vector, key=key, forward_pass_config=forward_pass_config)
+            for coeff, part in zip(self.coefficients, self.parts, strict=False)
+        )
 
-    @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:
-        if str(data.get("__kind__")) != cls.kind:
-            return CompressedArray.from_uzu(data)
-        parts = []
-        i = 0
-        while f"parts.{i}.__kind__" in data:
-            parts.append(CompressedArray.from_uzu(strip_uzu_prefix(data, f"parts.{i}")))
-            i += 1
-        return cls(parts=tuple(parts))
-
-    def add_part(self, part: CompressedArray) -> "CompositeArray":
-        return CompositeArray(parts=(*self.parts, part))
+    def add_part(self, part: CompressedArray, coefficient: float = 1.0) -> "MixtureArray":
+        return MixtureArray(
+            parts=(*self.parts, part),
+            coefficients=(*self.coefficients, coefficient),
+        )

@@ -18,7 +18,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree, stringify_path
-from lalamo.serialization import Serializable, strip_uzu_prefix
+from lalamo.serialization import UzuSerializable
 
 __all__ = [
     "DummyUnionMember",
@@ -53,7 +53,7 @@ class ForwardPassMode(Enum):
 ConfigT_co = TypeVar("ConfigT_co", covariant=True)
 
 
-class LalamoModule(Serializable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
+class LalamoModule(UzuSerializable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP046
     config: ConfigT_co = eqx.field(static=True)
 
     @abstractmethod
@@ -61,7 +61,7 @@ class LalamoModule(Serializable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP04
 
     def from_uzu(
         self,
-        weights: Mapping[str, Any],
+        data: Mapping[str, Any],
         prefix: str = "",
         sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
@@ -77,15 +77,15 @@ class LalamoModule(Serializable, eqx.Module, Generic[ConfigT_co]):  # noqa: UP04
         def restore(path: tuple[object, ...], leaf: object) -> object:
             key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
             if isinstance(leaf, LalamoModule):
-                return leaf.from_uzu(weights, prefix=key, sharding_config=sharding_config)
-            if isinstance(leaf, Serializable):
-                return _maybe_shard(type(leaf).from_uzu(strip_uzu_prefix(weights, key)), path)
-            if key in weights:
-                return _maybe_shard(weights[key], path)
+                return leaf.from_uzu(data, prefix=key, sharding_config=sharding_config)
+            if isinstance(leaf, UzuSerializable):
+                return _maybe_shard(leaf.from_uzu(data, prefix=key, sharding_config=sharding_config), path)
+            if key in data:
+                return _maybe_shard(data[key], path)
             return leaf
 
         return jax.tree_util.tree_map_with_path(
-            restore, self, is_leaf=lambda x: isinstance(x, Serializable) and x is not self
+            restore, self, is_leaf=lambda x: isinstance(x, UzuSerializable) and x is not self
         )
 
     def shard(self, sharding_config: "ShardingConfig") -> Self:

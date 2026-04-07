@@ -80,10 +80,10 @@ class PredictionHead(LalamoModule[PredictionHeadConfig]):
         self,
         inner_features: Float[Array, " in_channels"],
     ) -> Float[Array, " logits"]:
-        (dense_outs,) = self.dense(inner_features)
+        (dense_outs,) = self.dense(inner_features, key=None)
         dense_outs = self.activation(dense_outs)
         norm_outs = self.norm(dense_outs)
-        (result,) = self.readout(norm_outs)
+        (result,) = self.readout(norm_outs, key=None)
         return result
 
     def export_weights(self) -> ParameterTree:
@@ -213,6 +213,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
             forward_pass_config=forward_pass_config,
+            key=None,
         )
 
         if self.config.classifier_pooling == PoolingType.CLS:

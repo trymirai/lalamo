@@ -1,5 +1,8 @@
 from collections.abc import Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any, Self
+
+if TYPE_CHECKING:
+    from lalamo.modules.common import ShardingConfig
 
 import equinox as eqx
 import jax
@@ -7,13 +10,11 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.modules.common import Initializer
-
 from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
 from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
 
 
-class AWQQuantArray(CompressedArray, kind="awq"):
+class AWQQuantArray(CompressedArray):
     weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     zero_points: Float[Array, "... out_channels groups"]
@@ -56,7 +57,7 @@ class AWQQuantArray(CompressedArray, kind="awq"):
         quant_levels = (2**bits) - 1
 
         scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(weights.dtype).eps)
-        zero_points = jnp.round(-group_mins / scales)
+        zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, (2**bits) - 1)
 
         safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
         expanded_zero_points = jnp.repeat(zero_points, group_size, axis=-1)
@@ -94,7 +95,7 @@ class AWQQuantArray(CompressedArray, kind="awq"):
         int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
         int_zero_points = quantize_to_grid(self.zero_points, self.bits).astype(jnp.uint8)
         return {
-            "__kind__": self.kind,
+            "__class__": type(self).__name__,
             "bits": self.bits,
             "group_size": self.group_size,
             "weights": pack_uint_to_uint8(int_weights, self.bits),
@@ -102,36 +103,21 @@ class AWQQuantArray(CompressedArray, kind="awq"):
             "zero_points": pack_uint_to_uint8(int_zero_points, self.bits),
         }
 
-    @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:
-        if str(data.get("__kind__")) != cls.kind:
-            return CompressedArray.from_uzu(data)
-        bits = int(data["bits"])
-        group_size = int(data["group_size"])
-        return cls(
-            weights=unpack_uint8_to_uint(data["weights"], bits).astype(data["scales"].dtype),
-            scales=data["scales"],
-            zero_points=unpack_uint8_to_uint(data["zero_points"], bits).astype(data["scales"].dtype),
-            bits=bits,
-            group_size=group_size,
-        )
+    def from_uzu(
+        self,
+        data: Mapping[str, Any],
+        prefix: str = "",
+        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG002
+    ) -> Self:
+        def _key(name: str) -> str:
+            return f"{prefix}.{name}" if prefix else name
 
-    @classmethod
-    def init(
-        cls,
-        initializer: Initializer,
-        leading_dims: tuple[int, ...],
-        out_channels: int,
-        in_channels: int,
-        *,
-        bits: int,
-        group_size: int,
-    ) -> "AWQQuantArray":
-        num_groups = in_channels // group_size
-        return cls(
-            weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
-            scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
-            zero_points=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
+        bits = int(data[_key("bits")])
+        group_size = int(data[_key("group_size")])
+        return type(self)(
+            weights=unpack_uint8_to_uint(data[_key("weights")], bits).astype(data[_key("scales")].dtype),
+            scales=data[_key("scales")],
+            zero_points=unpack_uint8_to_uint(data[_key("zero_points")], bits).astype(data[_key("scales")].dtype),
             bits=bits,
             group_size=group_size,
         )
