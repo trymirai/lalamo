@@ -1,22 +1,12 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from jaxtyping import Array, Float
 
 from lalamo.arrays.awq import AWQQuantArray
 from lalamo.arrays.composite import MixtureArray
 from lalamo.arrays.full_precision import FullPrecisionArray
 from lalamo.arrays.lora import LoRAArray
-
-
-def _assert_materialized_close(
-    original: Float[Array, "..."],
-    restored: Float[Array, "..."],
-    *,
-    atol: float = 1e-6,
-) -> None:
-    assert original.shape == restored.shape
-    assert jnp.allclose(original, restored, atol=atol)
+from tests.common import assert_close
 
 
 @pytest.mark.fast
@@ -24,7 +14,7 @@ def test_full_precision_round_trip() -> None:
     arr = FullPrecisionArray(weights=jnp.ones((4, 8)))
     data = arr.to_uzu()
     restored = arr.from_uzu(data)
-    _assert_materialized_close(arr.materialize(), restored.materialize())
+    assert_close(result=restored.materialize(), reference=arr.materialize())
 
 
 @pytest.mark.fast
@@ -33,7 +23,7 @@ def test_awq_round_trip() -> None:
     arr = AWQQuantArray.compress(jax.random.normal(key, (4, 8)), bits=4, group_size=4)
     data = arr.to_uzu()
     restored = arr.from_uzu(data)
-    _assert_materialized_close(arr.materialize(), restored.materialize())
+    assert_close(result=restored.materialize(), reference=arr.materialize())
 
 
 @pytest.mark.fast
@@ -44,7 +34,7 @@ def test_lora_round_trip() -> None:
     )
     data = arr.to_uzu()
     restored = arr.from_uzu(data)
-    _assert_materialized_close(arr.materialize(), restored.materialize())
+    assert_close(result=restored.materialize(), reference=arr.materialize())
 
 
 @pytest.mark.fast
@@ -55,7 +45,7 @@ def test_mixture_full_precision_and_lora_round_trip() -> None:
 
     data = mixture.to_uzu()
     restored = mixture.from_uzu(data)
-    _assert_materialized_close(mixture.materialize(), restored.materialize())
+    assert_close(result=restored.materialize(), reference=mixture.materialize())
 
 
 @pytest.mark.fast
@@ -66,4 +56,4 @@ def test_mixture_full_precision_and_awq_round_trip() -> None:
 
     data = mixture.to_uzu()
     restored = mixture.from_uzu(data)
-    _assert_materialized_close(mixture.materialize(), restored.materialize())
+    assert_close(result=restored.materialize(), reference=mixture.materialize())
