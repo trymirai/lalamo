@@ -105,13 +105,13 @@ def load_completions(path: Path) -> list[LalamoCompletion]:
         _, lazy = safe_read(fd)
         tensors = {k: lazy[k] for k in lazy}  # eagerly materialize before fd closes
     prefixes = _unpack_ragged(tensors["prefix_offsets"], tensors["prefix_tokens"])
-    completions_tok = _unpack_ragged(tensors["completion_offsets"], tensors["completion_tokens"])
+    completion_tokens = _unpack_ragged(tensors["completion_offsets"], tensors["completion_tokens"])
     layer_indices = tuple(np.asarray(tensors["layer_indices"], dtype=np.int32).tolist())
     has_layers = "layer_output" in tensors
     completion_offsets = np.asarray(tensors["completion_offsets"], dtype=np.int64)
     loaded_completions: list[LalamoCompletion] = []
 
-    for index, (prefix_token_ids, completion_token_ids) in enumerate(zip(prefixes, completions_tok, strict=True)):
+    for index, (prefix_token_ids, completion_token_ids) in enumerate(zip(prefixes, completion_tokens, strict=True)):
         token_slice = slice(
             int(completion_offsets[index]),
             int(completion_offsets[index + 1]),

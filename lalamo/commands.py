@@ -380,6 +380,7 @@ class CollectTracesCallbacks:
     max_input_length: int
     max_output_length: int
     batch_size: int
+    shard_size: int
     num_tokens_to_generate: int | None
 
     def loading_model(self) -> None:
@@ -410,6 +411,7 @@ def collect_traces(
     max_input_length: int = 1024,
     max_output_length: int = 1024,
     batch_size: int = 1,
+    shard_size: int = 64,
     num_tokens_to_generate: int | None = None,
     callbacks_type: Callable[..., CollectTracesCallbacks] = CollectTracesCallbacks,
 ) -> None:
@@ -422,6 +424,7 @@ def collect_traces(
         max_input_length,
         max_output_length,
         batch_size,
+        shard_size,
         num_tokens_to_generate,
     )
 
@@ -453,17 +456,14 @@ def collect_traces(
         progress_callback,
     )
 
-    if output_path.exists():
-        if not output_path.is_dir():
-            raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
-        if any(output_path.iterdir()):
-            raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
+    if output_path.exists() and (not output_path.is_dir() or any(output_path.iterdir())):
+        raise RuntimeError(f"{output_path} must be an empty directory or not exist.")
     output_path.mkdir(parents=True, exist_ok=True)
     shard: list[LalamoCompletion] = []
     shard_idx = 0
     for trace in traces:
         shard.append(trace)
-        if len(shard) >= 64:
+        if len(shard) >= shard_size:
             save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
             shard.clear()
             shard_idx += 1

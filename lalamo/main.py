@@ -987,6 +987,10 @@ def collect_traces(
         int,
         Option(help="Number of sequences in one batch"),
     ] = 1,
+    shard_size: Annotated[
+        int,
+        Option(help="Number of completions to store in each output shard"),
+    ] = 64,
     num_tokens_to_generate: Annotated[
         int | None,
         Option(
@@ -1004,6 +1008,7 @@ def collect_traces(
         max_input_length,
         max_output_length,
         batch_size,
+        shard_size,
         num_tokens_to_generate,
         CliCollectTracesCallbacks,
     )
