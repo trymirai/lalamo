@@ -387,13 +387,15 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         tag_ids = self._build_codec_tag_ids(speaker_codec_id=speaker_codec_id, language_codec_id=language_codec_id)
         codec_prefill_embed = vmap(self.codec_embedding.embed)(jnp.asarray([tag_ids], dtype=jnp.int32))
 
-        # Split text into role tokens (first 3) and content tokens (rest).
+        # Split text into role tokens (first 3), content tokens, and the
+        # trailing <|im_end|> token (last 1) which must be excluded from content
+        # to avoid vocalizing it.
         # The prompt interleaves text and codec embeddings: positions that carry both
         # text and codec information are summed element-wise.
         role_length = min(3, text_length)
         role_hidden = text_hidden[:, :role_length, :]
 
-        content_hidden = text_hidden[:, role_length:, :]
+        content_hidden = text_hidden[:, role_length:-1, :]
         content_length = int(content_hidden.shape[1])
         first_content = content_hidden[:, :1, :] if content_length > 0 else tts_pad_embed
         trailing_content = (

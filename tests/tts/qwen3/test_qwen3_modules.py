@@ -15,6 +15,7 @@ from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
 )
 
 from lalamo.common import ParameterPath
+from tests.common import assert_close
 from lalamo.model_import.loaders.nanocodec_loaders import load_causal_transpose_conv1d
 from lalamo.model_import.loaders.qwen3_tts_loaders import (
     load_qwen3_tts_euclidean_codebook,
@@ -88,7 +89,11 @@ def test_causal_transpose_conv1d_matches_torch() -> None:
 
     output_lalamo_nct = np.transpose(np.array(lalamo_conv(jnp.array(inputs_nsc))), (0, 2, 1))
 
-    np.testing.assert_allclose(output_lalamo_nct, output_torch_nct, rtol=1e-5, atol=1e-5)
+    assert_close(
+        result=jnp.array(output_lalamo_nct),
+        reference=jnp.array(output_torch_nct),
+        operation_name="test_causal_transpose_conv1d_matches_torch",
+    )
 
 
 def test_residual_unit_matches_torch() -> None:
