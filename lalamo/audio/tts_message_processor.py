@@ -10,7 +10,7 @@ from tokenizers import Tokenizer
 
 @dataclass(frozen=True)
 class VoicePrompt:
-    waveform: Float[Array, "*"]
+    waveform: Float[Array, " audio_samples"]
     sampling_rate: int
 
 
@@ -63,7 +63,7 @@ class TTSMessageProcessor:
             prompt_text = prompt_text[1:]
         return prompt_text
 
-    def preprocess(self, text: str, language: str = "en") -> str:  # noqa: ARG002
+    def preprocess(self, text: str, language: str) -> str:  # noqa: ARG002
         return text
 
     def tokenize_text(self, text: str) -> list[int]:

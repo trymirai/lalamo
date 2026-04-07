@@ -96,8 +96,7 @@ class VectorQuantizationConfig:
     codebook_config: EuclideanCodebookConfig
     project_out_config: FullPrecisionLinearConfig
 
-    def empty(self, dim: int, codebook_size: int, codebook_dim: int | None = None) -> "VectorQuantization":
-        codebook_dim = dim if codebook_dim is None else codebook_dim
+    def empty(self, dim: int, codebook_size: int, codebook_dim: int) -> "VectorQuantization":
         codebook = self.codebook_config.empty(dim=codebook_dim, codebook_size=codebook_size)
         if codebook_dim == dim:
             project_out = None
@@ -118,12 +117,11 @@ class VectorQuantizationConfig:
         self,
         dim: int,
         codebook_size: int,
-        codebook_dim: int | None,
+        codebook_dim: int,
         *,
         key: PRNGKeyArray,
     ) -> "VectorQuantization":
         key_codebook, key_project = jax.random.split(key)
-        codebook_dim = dim if codebook_dim is None else codebook_dim
         codebook = self.codebook_config.random_init(dim=codebook_dim, codebook_size=codebook_size, key=key_codebook)
         if codebook_dim == dim:
             project_out = None
@@ -162,15 +160,10 @@ class VectorQuantization(LalamoModule[VectorQuantizationConfig]):
         return quantized
 
     def export_weights(self) -> ParameterTree[Array]:
-        project_out_weights: ParameterTree[Array]
-        if self.project_out is None:
-            project_out_weights = {}
-        else:
-            project_out_weights = self.project_out.export_weights()
-        return {
-            "codebook": self.codebook.export_weights(),
-            "project_out": project_out_weights,
-        }
+        result: dict[str, ParameterTree[Array]] = {"codebook": self.codebook.export_weights()}
+        if self.project_out is not None:
+            result["project_out"] = self.project_out.export_weights()
+        return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)

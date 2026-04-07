@@ -357,7 +357,7 @@ def tts(
         str | None,
         Option(
             help="Speaker ID for speech synthesis.",
-            show_default="First available speaker from the model",
+            show_default="A pre-selected speaker available for the specified model",
         ),
     ] = None,
     style: Annotated[

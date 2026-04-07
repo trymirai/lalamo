@@ -64,6 +64,10 @@ class FishAudioTextDecoderConfig(TTSTextDecoderConfigBase):
     short_logits_size: int = SHORT_LOGITS_SIZE
     repeat_window_size: int = REPEAT_WINDOW_SIZE
 
+    @classmethod
+    def format_instruction(cls, style: str) -> str | None:  # noqa: ARG003
+        return None
+
     def empty(self) -> "FishAudioTextDecoder":
         embeddings_slow = self.slow_embeddings_config.empty(self.vocab_size, self.slow_model_dim)
         embeddings_fast = self.fast_embeddings_config.empty(self.codebook_size, self.fast_model_dim)

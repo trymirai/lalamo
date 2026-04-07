@@ -88,22 +88,12 @@ class TTSGenerator(eqx.Module):
             raise ValueError(f"Expected exactly 1 message, got {len(messages_list)}")
         message = messages_list[0]
 
-        config = self.tts_model.text_decoder.config
-        speaker = message.speaker_id or config.default_speaker
-        style = message.style or config.default_style
-        language = message.language or config.default_language
-
-        instruction_text = config.format_instruction(style) if style is not None else None
-        instruction_tokens = (
-            jnp.asarray(self.message_processor.tokenize_text(instruction_text))[None, :]
-            if instruction_text is not None
-            else None
-        )
-
-        context = TTSDecodingContext(
-            speaker=speaker,
-            language=language,
-            instruction_tokens=instruction_tokens,
+        context = TTSDecodingContext.resolve(
+            message_speaker=message.speaker_id,
+            message_style=message.style,
+            message_language=message.language,
+            config=self.tts_model.text_decoder.config,
+            tokenize=self.message_processor.tokenize_text,
         )
 
         text_tokens = self.tokenize_text(messages_list)

@@ -45,6 +45,13 @@ def load_third_party_specs(group: str) -> tuple[ModelSpec, ...]:
     return tuple(specs)
 
 
+_PLUGIN_GROUP = "lalamo_plugins.specs.v1"
+
+
+def ensure_plugins_loaded() -> None:
+    load_third_party_specs(_PLUGIN_GROUP)
+
+
 @dataclass(frozen=True)
 class ModelRegistry:
     models: tuple[ModelSpec, ...]

@@ -310,7 +310,7 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
             input_channel=self.latent_dim,
             channels=self.decoder_dim,
             rates=self.upsample_rates,
-            d_out=1,
+            out_channels=1,
         )
 
     def empty(self) -> "Qwen3TTSAudioDecoder":
@@ -340,7 +340,7 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
                     upsample_kernel_size=factor,
                     upsample_stride=factor,
                 ),
-                ConvNeXtSpatialParams(),
+                ConvNeXtSpatialParams(mlp_ratio=4.0, kernel_size=7, dilation=1),
             )
             for factor in self.upsampling_ratios
         )
@@ -397,7 +397,7 @@ class Qwen3TTSAudioDecoderConfig(TTSAudioDecoderConfigBase):
                     upsample_kernel_size=factor,
                     upsample_stride=factor,
                 ),
-                ConvNeXtSpatialParams(),
+                ConvNeXtSpatialParams(mlp_ratio=4.0, kernel_size=7, dilation=1),
                 key=block_key,
             )
             for factor, block_key in zip(self.upsampling_ratios, upsample_keys, strict=True)

@@ -102,19 +102,31 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     def n_codebooks(self) -> int:
         return self.quantizer.num_groups
 
+    def encode(
+        self,
+        inputs: Float[Array, "batch channels seq"],
+        *,
+        n_semantic: int = 1,
+    ) -> CodebookCodes:
+        indices = self.quantizer.encode(inputs)
+        return CodebookCodes(
+            semantic=indices[:n_semantic],
+            acoustic=indices[n_semantic:],
+        )
+
+    def decode(
+        self,
+        codes: CodebookCodes,
+    ) -> Float[Array, "batch audio_samples"]:
+        return self(codes)
+
     def __call__(
         self,
         codes: CodebookCodes,
     ) -> Float[Array, "batch audio_samples"]:
-        """Decode discrete tokens to audio waveform."""
         indices = jnp.concatenate([codes.semantic, codes.acoustic], axis=1)
-        # Transpose from [B, C, T] to [B, T, C] for Lalamo quantizer (NSC format)
         indices_nsc = indices.transpose((0, 2, 1))
-
-        # Decode indices to continuous representation [B, T, D]
         z = self.quantizer.decode(indices_nsc)
-
-        # Decode to audio [B, T_audio]
         audio = self.decoder(z)
 
         return audio

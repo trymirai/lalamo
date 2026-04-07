@@ -902,17 +902,6 @@ class CausalHiFiGANDecoderConfig:
 
 
 class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
-    """Causal HiFi-GAN decoder for audio generation.
-
-    Converts quantized representations to audio waveforms using:
-    1. Pre-conv to expand to base_channels
-    2. Multiple stages of: activation -> upsample -> res_layer
-    3. Post-conv to produce single-channel audio
-    4. Tanh over result as substitute for clipping
-
-    Returns audio waveform in (batch, audio_length) format
-    """
-
     pre_conv: Conv1d
     activations: tuple[HalfSnake, ...]
     upsample_convs: tuple[CausalTransposeConv1d, ...]

@@ -140,7 +140,7 @@ class Conv1d(LalamoModule[Conv1dConfig]):
         self,
         x: Float[Array, "batch sequence in_channels"],
     ) -> Float[Array, "batch sequence_out out_channels"]:
-        length = x.shape[1]
+        _, length, _ = x.shape
         pad = self.causal_padding
         extra_padding = _get_extra_padding_for_conv1d(length, self.effective_kernel_size, self.stride, pad)
         x_padded = jnp.pad(x, ((0, 0), (pad, extra_padding), (0, 0)), mode="constant", constant_values=0)
@@ -181,6 +181,8 @@ class Conv1d(LalamoModule[Conv1dConfig]):
                 output = self._call_causal(x)
             case Conv1dPadding.SYMMETRIC:
                 output = self._call_symmetric(x)
+            case _:
+                raise ValueError(f"Unsupported padding mode: {self.padding_mode}")
 
         if self.biases is not None:
             output = output + self.biases[None, None, :]
@@ -418,7 +420,7 @@ class Snake1d(LalamoModule[Snake1dConfig]):
 class SnakeBetaConfig:
     precision: DTypeLike
     alpha_init: float = 1.0
-    no_div_by_zero: float = 1e-9
+    eps: float = 1e-9
 
     def empty(self, channels: int) -> "SnakeBeta":
         alpha = jnp.full((channels,), self.alpha_init, dtype=self.precision)
@@ -443,7 +445,7 @@ class SnakeBeta(LalamoModule[SnakeBetaConfig]):
     ) -> Float[Array, "batch tokens channels"]:
         alpha = jnp.exp(self.alpha)[None, None, :]
         beta = jnp.exp(self.beta)[None, None, :]
-        return x + (jnp.reciprocal(beta + self.config.no_div_by_zero) * jnp.square(jnp.sin(x * alpha)))
+        return x + (jnp.reciprocal(beta + self.config.eps) * jnp.square(jnp.sin(x * alpha)))
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
@@ -684,7 +686,9 @@ class ResidualUnit(LalamoModule[ResidualUnitConfig]):
         y = self.act2(y)
         y = self.conv2(y)
 
-        pad = x.shape[1] - y.shape[1]
+        _, x_length, _ = x.shape
+        _, y_length, _ = y.shape
+        pad = x_length - y_length
         if pad > 0:
             x = x[:, :-pad, :]
 
@@ -835,9 +839,9 @@ class TransposeConvSpatialParams:
 
 @dataclass(frozen=True)
 class ConvNeXtSpatialParams:
-    mlp_ratio: float = 4.0
-    kernel_size: int = 7
-    dilation: int = 1
+    mlp_ratio: float
+    kernel_size: int
+    dilation: int
 
 
 @dataclass(frozen=True)
@@ -939,7 +943,7 @@ class DACDecoderSpatialParams:
     input_channel: int
     channels: int
     rates: tuple[int, ...]
-    d_out: int = 1
+    out_channels: int = 1
 
 
 @dataclass(frozen=True)
@@ -960,7 +964,7 @@ class DACDecoderConfig:
         input_channel = spatial_params.input_channel
         channels = spatial_params.channels
         rates = spatial_params.rates
-        d_out = spatial_params.d_out
+        out_channels = spatial_params.out_channels
 
         first_conv = self.conv_config.empty(
             in_channels=input_channel,
@@ -990,7 +994,7 @@ class DACDecoderConfig:
 
         final_conv = self.conv_config.empty(
             in_channels=final_dim,
-            out_channels=d_out,
+            out_channels=out_channels,
             kernel_size=7,
             stride=1,
             dilation=1,
@@ -1017,10 +1021,9 @@ class DACDecoderConfig:
         input_channel = spatial_params.input_channel
         channels = spatial_params.channels
         rates = spatial_params.rates
-        d_out = spatial_params.d_out
+        out_channels = spatial_params.out_channels
 
-        num_keys = 2 + len(rates)
-        keys = jax.random.split(key, num_keys)
+        first_conv_key, final_conv_key, *decoder_keys = jax.random.split(key, 2 + len(rates))
 
         first_conv = self.conv_config.random_init(
             in_channels=input_channel,
@@ -1029,7 +1032,7 @@ class DACDecoderConfig:
             stride=1,
             dilation=1,
             groups=1,
-            key=keys[0],
+            key=first_conv_key,
         )
 
         decoder_blocks: list[DecoderBlock] = []
@@ -1042,7 +1045,7 @@ class DACDecoderConfig:
                 output_dim=block_output_dim,
                 stride=stride,
             )
-            block = self.decoder_block_config.random_init(spatial_params=block_spatial, key=keys[1 + i])
+            block = self.decoder_block_config.random_init(spatial_params=block_spatial, key=decoder_keys[i])
             decoder_blocks.append(block)
 
         final_dim = channels // (2 ** len(rates))
@@ -1051,12 +1054,12 @@ class DACDecoderConfig:
 
         final_conv = self.conv_config.random_init(
             in_channels=final_dim,
-            out_channels=d_out,
+            out_channels=out_channels,
             kernel_size=7,
             stride=1,
             dilation=1,
             groups=1,
-            key=keys[-1],
+            key=final_conv_key,
         )
 
         return DACDecoder(
@@ -1083,7 +1086,7 @@ class DACDecoder(LalamoModule[DACDecoderConfig]):
         return self.first_conv.in_channels
 
     @property
-    def output_channels(self) -> int:
+    def out_channels(self) -> int:
         return self.final_conv.out_channels
 
     @property

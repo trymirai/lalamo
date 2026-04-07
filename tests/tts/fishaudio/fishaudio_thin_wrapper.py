@@ -535,7 +535,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
 
         return torch_to_jax(new_token_codes)
 
-    def decode_utterance(
+    def decode_utterance(  # Thin wrapper around PyTorch — extra params match the interface but are not forwarded.
         self,
         text_tokens: Int[Array, "batch tokens"],
         *,

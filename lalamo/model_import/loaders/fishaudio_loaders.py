@@ -44,7 +44,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
 )
 
 from .audio_loaders import (
-    load_convnext_block,  # noqa: F401 - re-exported for tests
     load_dac_decoder,
     load_upsampling_block,
 )

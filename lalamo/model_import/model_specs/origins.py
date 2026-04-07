@@ -181,8 +181,6 @@ def extract_nemo_archive(nemo_path: Path) -> tuple[tuple[Path, ...], Path]:
 
 @dataclass(frozen=True)
 class NemoOrigin(Origin):
-    """NVIDIA NeMo models: .nemo tar archives from HuggingFace containing torch checkpoints."""
-
     repo: str
 
     def resolve_file(

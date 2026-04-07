@@ -139,7 +139,7 @@ class Qwen3TTSTalkerConfig:
     code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
     spk_id: dict[str, int]
     codec_language_id: dict[str, int]
-    layer_types: tuple[str, ...] | None = None
+    layer_types: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -157,6 +157,9 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     tts_pad_token_id: int
     tts_bos_token_id: int
     tts_eos_token_id: int
+
+    default_speaker: str = "aiden"
+    default_language: str = "english"
 
     def to_tts_config(
         self,
@@ -360,15 +363,15 @@ def _build_text_decoder_config(
 ) -> Qwen3TTSTextDecoderConfig:
     predictor = talker.code_predictor_config
 
-    if talker.hidden_act != "silu":
-        raise ValueError(f"Only talker hidden_act=silu is supported, got {talker.hidden_act!r}.")
-    if predictor.hidden_act != "silu":
-        raise ValueError(f"Only predictor hidden_act=silu is supported, got {predictor.hidden_act!r}.")
+    if talker.hidden_act != "silu" or predictor.hidden_act != "silu":
+        raise ValueError(
+            f"Only hidden_act=silu is supported, got talker={talker.hidden_act!r}, predictor={predictor.hidden_act!r}."
+        )
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
 
-    talker_layer_types = talker.layer_types or ("full_attention",) * talker.num_hidden_layers
-    predictor_layer_types = predictor.layer_types or ("full_attention",) * predictor.num_hidden_layers
+    talker_layer_types = talker.layer_types
+    predictor_layer_types = predictor.layer_types
 
     talker_transformer_config = build_transformer_config(
         precision=precision,
@@ -404,8 +407,8 @@ def _build_text_decoder_config(
     )
 
     return Qwen3TTSTextDecoderConfig(
-        default_speaker="aiden",
-        default_language="english",
+        default_speaker=top_level_config.default_speaker,
+        default_language=top_level_config.default_language,
         precision=precision,
         codec_embedding_config=embedding_config,
         text_embedding_config=embedding_config,

@@ -1,5 +1,5 @@
-from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
 
@@ -11,6 +11,7 @@ from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
+    load_tokenizer_from_fishaudio_tiktoken,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import (
@@ -292,11 +293,37 @@ class FishAudioConfig(ForeignTTSConfig):
     use_gradient_checkpointing: bool
     vocab_size: int
 
-    # NOTE: these fields are used during inference but must be retrieved from
-    # tokenizer config files
+    # These fields are populated from tokenizer config files during import, not from config.json.
     semantic_token_begin_id: int = -1
     semantic_token_end_id: int = -1
     im_end_token_id: int = -1
+
+    # Defaults for TTS generation — read from config.json if present, otherwise fall back.
+    default_speaker: str = "speaker:0"
+    default_style: str = "interleave"
+
+    def prepare_tokenizer(
+        self,
+        model_spec: "ModelSpec",  # noqa: F821  # ty: ignore[unresolved-reference]
+        progress_callback: "Callable[[StatusEvent], None] | None" = None,  # noqa: F821  # ty: ignore[unresolved-reference]
+    ) -> "tuple[Self, Tokenizer]":  # noqa: F821  # ty: ignore[unresolved-reference]
+        from lalamo.model_import.model_specs.common import FileSpec
+
+        assert isinstance(model_spec.configs.tokenizer, FileSpec)
+        tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
+        special_tokens_path = model_spec.origin.resolve_file(
+            FileSpec(filename="special_tokens.json"), progress_callback
+        )
+        tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
+            tokenizer_path, special_tokens_path
+        )
+        updated = replace(
+            self,
+            semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
+            semantic_token_end_id=special_inference_tokens.semantic_end_id,
+            im_end_token_id=special_inference_tokens.im_end_token_id,
+        )
+        return updated, tokenizer
 
     def extract_textual_transformer_configs(
         self,
@@ -424,8 +451,8 @@ class FishAudioConfig(ForeignTTSConfig):
         else:
             fast_model_projection_config = FullPrecisionLinearConfig(activation_precision)
         text_decoder_config = FishAudioTextDecoderConfig(
-            default_speaker="speaker:0",
-            default_style="interleave",
+            default_speaker=self.default_speaker,
+            default_style=self.default_style,
             slow_embeddings_config=slow_embedding_cfg,
             slow_model_config=slow_transformer_cfg,
             slow_readout_config=slow_readout_cfg,

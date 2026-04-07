@@ -37,8 +37,9 @@ def _sample_token_ids(
     sampling_policy: SamplingPolicy,
     key: PRNGKeyArray,
 ) -> Int[Array, " batch"]:
+    batch_size, _ = logits.shape
     processed_logits = vmap(sampling_policy.process_logits)(logits)
-    sample_keys = jax.random.split(key, logits.shape[0])
+    sample_keys = jax.random.split(key, batch_size)
     return jax.vmap(lambda k, row: jax.random.categorical(k, row))(sample_keys, processed_logits).astype(jnp.int32)
 
 
@@ -334,6 +335,36 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         (y,) = vmap(vmap(self.talker_to_predictor_projection))(x)
         return y
 
+    def _embed_special_text_tokens(
+        self,
+    ) -> tuple[
+        Float[Array, "batch 1 channels"],
+        Float[Array, "batch 1 channels"],
+        Float[Array, "batch 1 channels"],
+    ]:
+        ids = jnp.asarray(
+            [[self.config.tts_bos_token_id, self.config.tts_eos_token_id, self.config.tts_pad_token_id]],
+            dtype=jnp.int32,
+        )
+        hidden = self._project_text_embeddings(ids)
+        bos, eos, pad = jnp.split(hidden, 3, axis=1)
+        return bos, eos, pad
+
+    def _build_codec_tag_ids(
+        self,
+        *,
+        speaker_codec_id: int | None,
+        language_codec_id: int | None,
+    ) -> tuple[int, ...]:
+        cfg = self.config
+        if language_codec_id is None:
+            tags = (cfg.codec_nothink_id, cfg.codec_think_bos_id, cfg.codec_think_eos_id)
+        else:
+            tags = (cfg.codec_think_id, cfg.codec_think_bos_id, language_codec_id, cfg.codec_think_eos_id)
+        if speaker_codec_id is not None:
+            tags = (*tags, speaker_codec_id)
+        return (*tags, cfg.codec_pad_id, cfg.codec_bos_id)
+
     def _build_talker_prompt(
         self,
         text_tokens: Int[Array, "batch tokens"],
@@ -348,42 +379,30 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
     ]:
         text_hidden = self._project_text_embeddings(text_tokens)
         _, text_length, _ = text_hidden.shape
+        batch_size, _, hidden_dim = text_hidden.shape
 
-        special_text_tokens = jnp.asarray(
-            [[self.config.tts_bos_token_id, self.config.tts_eos_token_id, self.config.tts_pad_token_id]],
-            dtype=jnp.int32,
-        )
-        special_hidden = self._project_text_embeddings(special_text_tokens)
-        tts_bos_embed, tts_eos_embed, tts_pad_embed = jnp.split(special_hidden, 3, axis=1)
+        tts_bos_embed, tts_eos_embed, tts_pad_embed = self._embed_special_text_tokens()
 
-        if language_codec_id is None:
-            tag_ids = (self.config.codec_nothink_id, self.config.codec_think_bos_id, self.config.codec_think_eos_id)
-        else:
-            tag_ids = (
-                self.config.codec_think_id,
-                self.config.codec_think_bos_id,
-                language_codec_id,
-                self.config.codec_think_eos_id,
-            )
-        if speaker_codec_id is not None:
-            tag_ids = (*tag_ids, speaker_codec_id)
-        tag_ids = (*tag_ids, self.config.codec_pad_id, self.config.codec_bos_id)
+        # Codec prefill: tag sequence embedded through codec_embedding
+        tag_ids = self._build_codec_tag_ids(speaker_codec_id=speaker_codec_id, language_codec_id=language_codec_id)
+        codec_prefill_embed = vmap(self.codec_embedding.embed)(jnp.asarray([tag_ids], dtype=jnp.int32))
 
-        codec_prefill_ids = jnp.asarray([tag_ids], dtype=jnp.int32)
-        codec_prefill_embed = vmap(self.codec_embedding.embed)(codec_prefill_ids)
-
+        # Split text into role tokens (first 3) and content tokens (rest).
+        # The prompt interleaves text and codec embeddings: positions that carry both
+        # text and codec information are summed element-wise.
         role_length = min(3, text_length)
         role_hidden = text_hidden[:, :role_length, :]
 
         content_hidden = text_hidden[:, role_length:, :]
         content_length = int(content_hidden.shape[1])
-        first_text_hidden = content_hidden[:, :1, :] if content_length > 0 else tts_pad_embed
-        trailing_text_hidden_core = (
+        first_content = content_hidden[:, :1, :] if content_length > 0 else tts_pad_embed
+        trailing_content = (
             content_hidden[:, 1:, :]
             if content_length > 1
-            else jnp.zeros((text_hidden.shape[0], 0, text_hidden.shape[-1]), dtype=text_hidden.dtype)
+            else jnp.zeros((batch_size, 0, hidden_dim), dtype=text_hidden.dtype)
         )
 
+        # Build the codec prompt: pad-biased prefill body summed with [pad..., bos]
         codec_prefill_body = codec_prefill_embed[:, :-1, :]
         left_pad_count = int(codec_prefill_body.shape[1]) - 1
         codec_bias = jnp.concatenate(
@@ -392,12 +411,14 @@ class Qwen3TTSTextDecoder(TTSTextDecoder[Qwen3TTSTextDecoderConfig]):
         )
         codec_prompt = codec_bias + codec_prefill_body
 
-        first_codec_plus_text = first_text_hidden + codec_prefill_embed[:, -1:, :]
-        prompt_parts = (role_hidden, codec_prompt, first_codec_plus_text)
+        # First content position gets both text and the last codec prefill token summed
+        first_position = first_content + codec_prefill_embed[:, -1:, :]
+
+        prompt_parts = (role_hidden, codec_prompt, first_position)
         if instruction_tokens is not None:
             prompt_parts = (self._project_text_embeddings(instruction_tokens), *prompt_parts)
         prompt = jnp.concatenate(prompt_parts, axis=1)
-        trailing_text_hidden = jnp.concatenate([trailing_text_hidden_core, tts_eos_embed], axis=1)
+        trailing_text_hidden = jnp.concatenate([trailing_content, tts_eos_embed], axis=1)
         return prompt, trailing_text_hidden, tts_pad_embed
 
     def _decode_code_groups(

@@ -47,12 +47,9 @@ def _registry_structure(base_cls: type[RegistryABC]) -> Callable[[dict | None, t
         name_to_type = {t.__name__: t for t in base_cls.__descendants__()}
         target_type = name_to_type.get(type_name)
         if target_type is None:
-            # Plugin config classes are often registered via import-time side effects.
-            # When loading a converted model directly, those entry points may not have
-            # been imported yet, so load them lazily and retry resolution once.
-            from lalamo.model_registry import load_third_party_specs
+            from lalamo.model_registry import ensure_plugins_loaded
 
-            load_third_party_specs("lalamo_plugins.specs.v1")
+            ensure_plugins_loaded()
             name_to_type = {t.__name__: t for t in base_cls.__descendants__()}
             target_type = name_to_type[type_name]
         return make_dict_structure_fn(target_type, config_converter)(new_data, target_type)

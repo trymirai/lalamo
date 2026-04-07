@@ -16,6 +16,7 @@ from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessagePr
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
+from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
     ClassifierModel,
@@ -85,10 +86,12 @@ def token_ids_to_text(tokenizer: Tokenizer, token_ids: int | list[int] | None) -
     match token_ids:
         case int(tid):
             return tokenizer.decode([tid], skip_special_tokens=False)
-        case [int(tid), *_]:
-            return tokenizer.decode([tid], skip_special_tokens=False)
+        case [int(), *_] as ids if all(isinstance(i, int) for i in ids):
+            return tokenizer.decode([ids[0]], skip_special_tokens=False)
         case None:
             return None
+        case _:
+            raise ValueError(f"Expected int, list[int], or None, got {token_ids!r}")
 
 
 def _instantiate_tokenizer_from_model_spec(
@@ -96,11 +99,15 @@ def _instantiate_tokenizer_from_model_spec(
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> Tokenizer:
     match model_spec.configs.tokenizer:
-        case None:
-            return Tokenizer.from_str(dummy_char_level_tokenizer_config())
         case FileSpec() as file_spec:
             tokenizer_file = model_spec.origin.resolve_file(file_spec, progress_callback)
             return Tokenizer.from_file(str(tokenizer_file))
+        case None if model_spec.config_type is NanoCodecForeignConfig:
+            return Tokenizer.from_str(dummy_char_level_tokenizer_config())
+        case None:
+            raise ValueError(f"Model {model_spec.name} has no tokenizer configured but is not a NanoCodec model.")
+        case _:
+            raise ValueError(f"Expected FileSpec or None for tokenizer, got {type(model_spec.configs.tokenizer)}")
 
 
 def import_message_processor(
@@ -164,6 +171,8 @@ def import_message_processor(
             system_prompt_text = sp
         case None:
             pass
+        case _:
+            raise ValueError(f"Unexpected system_prompt type: {type(model_spec.configs.system_prompt)}")
 
     message_processor_config = MessageProcessorConfig(
         prompt_template=prompt_template,
@@ -329,25 +338,9 @@ def _import_tts_model(
     foreign_tts_config = model_spec.config_type.from_json(config_path, extra_config_paths)
     if precision is None:
         precision = foreign_tts_config.default_precision
-    if model_spec.vendor == "FishAudio" and model_spec.family == "openaudio":
-        from lalamo.model_import.loaders.fishaudio_loaders import load_tokenizer_from_fishaudio_tiktoken
-
-        assert isinstance(model_spec.configs.tokenizer, FileSpec)
-        tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
-        tokenizer_special_tokens_path = model_spec.origin.resolve_file(
-            FileSpec(filename="special_tokens.json"), progress_callback
-        )
-        tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
-            tokenizer_path,
-            tokenizer_special_tokens_path,
-        )
-        assert isinstance(foreign_tts_config, FishAudioConfig)
-        foreign_tts_config = replace(
-            foreign_tts_config,
-            semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
-            semantic_token_end_id=special_inference_tokens.semantic_end_id,
-            im_end_token_id=special_inference_tokens.im_end_token_id,
-        )
+    # TODO @knyazer: transition to tokenizer enum so this FishAudio special-case goes away
+    if isinstance(foreign_tts_config, FishAudioConfig):
+        foreign_tts_config, tokenizer = foreign_tts_config.prepare_tokenizer(model_spec, progress_callback)
     else:
         tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, progress_callback)
 

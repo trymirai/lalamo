@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 from jax import numpy as jnp
+from jaxtyping import Float
 from scipy.interpolate import CubicSpline
 
 from lalamo.modules.torch_interop import torch_to_jax
@@ -41,8 +42,10 @@ def pink_noise_via_fft(n: int) -> np.ndarray:
     return np.fft.irfft(spectrum, n)
 
 
-def generate_envelope_with_formants(fir_size: int) -> tuple[np.ndarray, np.ndarray]:
-    """Generate a spectral envelope filter with format-like characteristics.
+def generate_envelope_with_formants(
+    fir_size: int,
+) -> tuple[Float[np.ndarray, " fir_size"], Float[np.ndarray, " fir_size"]]:
+    """Generate a spectral envelope filter with formant-like characteristics.
 
     Returns:
         Tuple of (fir_coefficients, envelope)
@@ -90,7 +93,7 @@ def generate_harmonic_row(
     num_harmonics: int = 50,
     flat_frequency: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Generate a harmonic signal with varying f0 and format filtering.
+    """Generate a harmonic signal with varying f0 and formant filtering.
 
     Args:
         fs: Sample rate in Hz

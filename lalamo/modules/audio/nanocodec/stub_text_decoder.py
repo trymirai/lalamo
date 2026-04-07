@@ -31,6 +31,10 @@ class StubTextDecoderConfig(TTSTextDecoderConfigBase):
     codebook_size: int
     precision: DTypeLike
 
+    @classmethod
+    def format_instruction(cls, style: str) -> str | None:  # noqa: ARG003
+        return None
+
     def empty(self) -> "StubTextDecoder":
         return StubTextDecoder(config=self, seed=123)
 
@@ -53,7 +57,6 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
         key: PRNGKeyArray,
     ) -> CodebookCodes:
-        """Generate random codebook indices with length derived from input tokens."""
         batch_size = text_tokens.shape[0]
         output_length = text_tokens.shape[1]
         n_sem = 1

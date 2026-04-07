@@ -19,17 +19,20 @@ from jax import vmap
 
 from lalamo import FileSpec
 from lalamo.common import ParameterPath
-from lalamo.model_import.loaders.audio_loaders import load_dac_decoder, load_decoder_block
+from lalamo.model_import.loaders.audio_loaders import (
+    load_convnext_block,
+    load_dac_decoder,
+    load_decoder_block,
+    load_upsampling_block,
+)
 from lalamo.model_import.loaders.fishaudio_loaders import (
     _permute_for_rope_rotate_half,
-    load_convnext_block,
     load_residual_unit,
     load_residual_vector_quantize,
     load_snake1d,
     load_tokenizer_from_fishaudio_tiktoken,
     load_transformer_block,
     load_upsampler,
-    load_upsampling_block,
     load_vector_quantize,
 )
 from lalamo.model_import.loaders.nanocodec_loaders import transform_pytorch_transpose_conv_weights
@@ -1114,7 +1117,7 @@ def test_audio_decoder_matches_pytorch() -> None:
     input_channel = 512  # latent dim from quantizer
     channels = 1536  # decoder_dim
     upsampling_rates = (8, 8, 4, 2)
-    d_out = 1
+    out_channels = 1
     seq_length = 10  # Short sequence for testing
 
     # Create PyTorch module (causal=True, no transformers)
@@ -1122,7 +1125,7 @@ def test_audio_decoder_matches_pytorch() -> None:
         input_channel=input_channel,
         channels=channels,
         rates=list(upsampling_rates),
-        d_out=d_out,
+        d_out=out_channels,
         causal=True,
         n_transformer_layers=[0, 0, 0, 0],
     )
@@ -1153,7 +1156,7 @@ def test_audio_decoder_matches_pytorch() -> None:
         input_channel=input_channel,
         channels=channels,
         rates=upsampling_rates,
-        d_out=d_out,
+        out_channels=out_channels,
     )
     lalamo_decoder = lalamo_config.empty(spatial_params=spatial_params)
 

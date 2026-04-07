@@ -159,16 +159,16 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", ModelTier.EXTRA),
     ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", ModelTier.EXTRA),
     ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", ModelTier.EXTRA),
-    ("Qwen/Qwen3-TTS-12Hz-0.6B-Base", ModelTier.EXTRA),
-    ("Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice", ModelTier.EXTRA),
-    ("Qwen/Qwen3-TTS-12Hz-1.7B-Base", ModelTier.EXTRA),
-    ("Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice", ModelTier.EXTRA),
     # Other
     ("trymirai/chat-moderation-router", ModelTier.EXTRA),
     ("amd/PARD-Qwen3-0.6B", ModelTier.EXTRA),
     # Bonsai
     ("prism-ml/Bonsai-4B-mlx-1bit", ModelTier.EXTRA),
 )
+
+_repos = [repo for repo, _ in MODEL_TIERS]
+_duplicate_repos = [repo for repo in _repos if _repos.count(repo) > 1]
+assert not _duplicate_repos, f"Duplicate repos in MODEL_TIERS: {sorted(set(_duplicate_repos))}"
 
 TIER_BY_REPO: dict[str, ModelTier] = dict(MODEL_TIERS)
 

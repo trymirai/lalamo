@@ -1,5 +1,3 @@
-"""Tests comparing Lalamo and PyTorch implementations of Qwen3 TTS modules."""
-
 import jax.numpy as jnp
 import numpy as np
 import torch

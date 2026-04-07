@@ -155,7 +155,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
             codebook_size=codebook_size,
             codebook_dim=[codebook_dim] * n_codebooks,
         )
-        convnext_params = ConvNeXtSpatialParams()
+        convnext_params = ConvNeXtSpatialParams(mlp_ratio=4.0, kernel_size=7, dilation=1)
         upsample_conv_params = tuple(
             [
                 TransposeConvSpatialParams(
@@ -171,7 +171,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
             input_channel=latent_dim,
             channels=decoder_dim,
             rates=tuple(decoder_rates),
-            d_out=1,
+            out_channels=1,
         )
 
         return (
