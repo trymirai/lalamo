@@ -60,17 +60,6 @@ class HFGemma4TextConfig:
     use_double_wide_mlp: bool
     tie_word_embeddings: bool
 
-    def _kv_source_layer(self, layer_idx: int) -> int | None:
-        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
-        if layer_idx < first_kv_shared or first_kv_shared <= 0:
-            return None
-        prev_types = self.layer_types[:first_kv_shared]
-        target_type = self.layer_types[layer_idx]
-        for j in range(len(prev_types) - 1, -1, -1):
-            if prev_types[j] == target_type:
-                return j
-        return None
-
     def to_decoder_config(
         self,
         context_length: int | None,
@@ -140,17 +129,23 @@ class HFGemma4TextConfig:
                 norm_config=rms_norm_config,
             )
 
+        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
+        last_of_type: dict[str, int] = {}
+        kv_source_per_layer: dict[int, int | None] = {}
+        for i, lt in enumerate(self.layer_types):
+            if i < first_kv_shared or first_kv_shared <= 0:
+                kv_source_per_layer[i] = None
+                last_of_type[lt] = i
+            else:
+                kv_source_per_layer[i] = last_of_type.get(lt)
+
         layer_configs = []
         for i, layer_type in enumerate(self.layer_types):
-            if layer_type == "sliding_attention":
-                sliding_window_size = self.sliding_window
-            else:
-                sliding_window_size = None
-            if layer_type == "full_attention":
-                layer_head_dim = self.global_head_dim
-            else:
-                layer_head_dim = self.head_dim
-            kv_source = self._kv_source_layer(i)
+            sliding_window_size = self.sliding_window if layer_type == "sliding_attention" else None
+            layer_head_dim = self.global_head_dim if layer_type == "full_attention" else self.head_dim
+
+            kv_source = kv_source_per_layer[i]
+
             if self.use_double_wide_mlp and kv_source is not None:
                 layer_intermediate = self.intermediate_size * 2
             else:
@@ -199,6 +194,9 @@ class HFGemma4TextConfig:
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             context_length=max_seq_len,
+            global_rope_dim=self.head_dim,
+            local_rope_dim=self.head_dim,
+            global_head_dim=self.global_head_dim,
         )
 
         return DecoderConfig(

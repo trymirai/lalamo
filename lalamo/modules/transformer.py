@@ -63,57 +63,36 @@ class TransformerConfig:
     model_dim: int
     hidden_dim: int
     context_length: int
+    global_rope_dim: int | None = None
+    local_rope_dim: int | None = None
+    global_head_dim: int | None = None
 
-    def _rope_dims_by_selector(self) -> dict[PositionalEmbeddingSelector, int]:
-        result: dict[PositionalEmbeddingSelector, int] = {}
-        for layer in self.layer_configs:
-            rope_dim = layer.rope_dim
-            if rope_dim is None:
-                continue
-            # Determine selector from config fields (the property is on the Module, not Config)
-            mixer = layer.mixer_config
-            if isinstance(mixer, AttentionConfig):
-                if not mixer.use_rope:
-                    selector = PositionalEmbeddingSelector.NONE
-                elif mixer.sliding_window_size is not None:
-                    selector = PositionalEmbeddingSelector.LOCAL
-                else:
-                    selector = PositionalEmbeddingSelector.GLOBAL
-            else:
-                continue
-            if selector in result:
-                assert result[selector] == rope_dim, (
-                    f"Conflicting rope_dim for {selector}: {result[selector]} vs {rope_dim}"
-                )
-            else:
-                result[selector] = rope_dim
-        return result
+    def _resolve_rope_dims(self) -> tuple[int | None, int | None, int | None]:
+        """Return (global_rope_dim, local_rope_dim, global_head_dim), falling back to scanning layers."""
+        if self.global_rope_dim is not None or self.local_rope_dim is not None:
+            return self.global_rope_dim, self.local_rope_dim, self.global_head_dim
 
-    def _head_dims_by_selector(self) -> dict[PositionalEmbeddingSelector, int]:
-        result: dict[PositionalEmbeddingSelector, int] = {}
+        global_rope_dim: int | None = None
+        local_rope_dim: int | None = None
+        global_head_dim: int | None = None
         for layer in self.layer_configs:
             mixer = layer.mixer_config
             if not isinstance(mixer, AttentionConfig) or not mixer.use_rope:
                 continue
-            selector = (
-                PositionalEmbeddingSelector.LOCAL
-                if mixer.sliding_window_size is not None
-                else PositionalEmbeddingSelector.GLOBAL
-            )
-            result.setdefault(selector, mixer.head_dim)
-        return result
+            if mixer.sliding_window_size is not None:
+                local_rope_dim = local_rope_dim or mixer.rope_dim
+            else:
+                global_rope_dim = global_rope_dim or mixer.rope_dim
+                global_head_dim = global_head_dim or mixer.head_dim
+        return global_rope_dim, local_rope_dim, global_head_dim
 
     def _init_ropes(self) -> tuple[RoPE | None, RoPE | None]:
-        rope_dims = self._rope_dims_by_selector()
-        head_dims = self._head_dims_by_selector()
-        global_rope_dim = rope_dims.get(PositionalEmbeddingSelector.GLOBAL)
-        local_rope_dim = rope_dims.get(PositionalEmbeddingSelector.LOCAL)
-        global_head_dim = head_dims.get(PositionalEmbeddingSelector.GLOBAL)
+        global_rope_dim, local_rope_dim, global_head_dim = self._resolve_rope_dims()
 
+        global_rope = None
         if self.global_rope_config:
             rope_dim = global_rope_dim or local_rope_dim
             assert rope_dim is not None
-            # When global head_dim > rope_dim, use padded partial rotary
             if global_head_dim and global_head_dim > rope_dim:
                 rotary_dim: int | None = rope_dim
                 head_dim_for_rope = global_head_dim
@@ -125,9 +104,8 @@ class TransformerConfig:
                 num_timesteps=self.context_length,
                 rotary_dim=rotary_dim,
             )
-        else:
-            global_rope = None
 
+        local_rope = None
         if self.local_rope_config:
             rope_dim = local_rope_dim or global_rope_dim
             assert rope_dim is not None
@@ -135,8 +113,6 @@ class TransformerConfig:
                 head_dim=rope_dim,
                 num_timesteps=self.context_length,
             )
-        else:
-            local_rope = None
 
         return global_rope, local_rope
 
