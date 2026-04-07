@@ -103,9 +103,9 @@ def main() -> None:
     language_model = import_model("LiquidAI/LFM2-350M").model
     decoder = language_model.model
 
-    texts = load_lmsys_calibration_texts(num_sequences=300)
+    texts = load_lmsys_calibration_texts(num_sequences=50)
     eval_ids, eval_pos = tokenize_batch(texts[:8], language_model.message_processor, seq_len=128)
-    calib_batches = [tokenize_batch([t], language_model.message_processor, seq_len=128) for t in texts[8:264]]
+    calib_batches = [tokenize_batch([t], language_model.message_processor, seq_len=128) for t in texts[8:40]]
     key = jax.random.key(0)
 
     @eqx.filter_jit

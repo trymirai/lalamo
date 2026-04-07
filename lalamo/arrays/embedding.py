@@ -16,7 +16,7 @@ class CompressedEmbedding(Serializable, eqx.Module):
     _registry: ClassVar[dict[str, type["CompressedEmbedding"]]] = {}
     kind: ClassVar[str]
 
-    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:
+    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:  # noqa: ANN401
         super().__init_subclass__(**kwargs)
         CompressedEmbedding._registry[kind] = cls
         cls.kind = kind

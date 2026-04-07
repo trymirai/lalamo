@@ -24,7 +24,7 @@ def vmap_with_key(
     inputs: Array,
     *,
     key: PRNGKeyArray | None,
-) -> Any:
+) -> Any:  # noqa: ANN401
     if key is None:
         return vmap(partial(fn, key=None))(inputs)
     keys = jax.random.split(key, inputs.shape[0])

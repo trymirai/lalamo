@@ -1,5 +1,7 @@
 from enum import Enum
 
+from .base import CompressedArray
+
 
 class QuantFormat(Enum):
     FULL_PRECISION = "full_precision"
@@ -7,7 +9,7 @@ class QuantFormat(Enum):
     MLX = "mlx"
 
     @property
-    def array_class(self) -> "type[CompressedArray]":
+    def array_class(self) -> type[CompressedArray]:
         from .awq import AWQQuantArray
         from .full_precision import FullPrecisionArray
         from .mlx import MLXQuantArray

@@ -101,7 +101,7 @@ def load_parameters[M: eqx.Module](
         if sharding_config is not None:
             info = find_field_sharding(module, old_value)
             new_value = jax.tree.map(  # noqa: PLW2901
-                lambda x: apply_parameter_sharding(x, info, sharding_config) if eqx.is_array(x) else x,
+                lambda x, info=info: apply_parameter_sharding(x, info, sharding_config) if eqx.is_array(x) else x,
                 new_value,
             )
 

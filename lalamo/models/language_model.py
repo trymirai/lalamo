@@ -12,6 +12,7 @@ from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
+from lalamo.arrays.base import GradientEstimator
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
@@ -24,6 +25,7 @@ from lalamo.modules import (
     pad_and_apply_data_sharding,
 )
 from lalamo.modules.decoder import DecoderForwardPassConfig
+from lalamo.modules.token_mixers.common import AttentionImplementation
 from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.transformer_layer import TransformerLayerForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
@@ -66,10 +68,10 @@ class ForwardPassConfig:
     @staticmethod
     def init(
         *,
-        attention_implementation: "AttentionImplementation | None" = None,
+        attention_implementation: AttentionImplementation | None = None,
         attention_upcast_dtype: "jnp.dtype | None" = jnp.float32,
         moe_chunk_size_ratio: float = 0.2,
-        gradient_estimator: "GradientEstimator | None" = None,
+        gradient_estimator: GradientEstimator | None = None,
         deterministic_ops: bool = False,
         xla_autotune_level: int = 0,
     ) -> "ForwardPassConfig":

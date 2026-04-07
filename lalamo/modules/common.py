@@ -385,9 +385,9 @@ def field_sharding_from_path(
             owner_field = next((f for f in dataclasses.fields(cur) if f.name == key.name), None)
             cur = getattr(cur, key.name)
         elif isinstance(key, jtu.SequenceKey):
-            cur = cur[key.idx]
+            cur = cur[key.idx]  # type: ignore[index]
         elif isinstance(key, jtu.DictKey):
-            cur = cur[key.key]
+            cur = cur[key.key]  # type: ignore[index]
 
     if owner_field is None:
         return None

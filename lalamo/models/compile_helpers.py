@@ -15,11 +15,11 @@ def _make_weak_finalizer(model_id: int) -> None:
 
 
 def compile_generate_tokens(
-    model: "LanguageModel",
-    generation_config: "GenerationConfig | None" = None,
+    model: "LanguageModel",  # noqa: F821  # type: ignore[name-defined]
+    generation_config: "GenerationConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
-    forward_pass_config: "ForwardPassConfig | None" = None,
+    forward_pass_config: "ForwardPassConfig | None" = None,  # noqa: F821  # type: ignore[name-defined]
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],

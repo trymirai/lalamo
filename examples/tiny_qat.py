@@ -34,13 +34,14 @@ def main() -> None:
     teacher = language_model.model
     student = quantize_model(teacher)
 
-    conversations = load_lmsys_conversations(num_sequences=1020)
-    eval_batch = make_batch(conversations[:20], language_model.message_processor)
+    conversations = load_lmsys_conversations(num_sequences=80)
+    eval_batch = make_batch(conversations[:8], language_model.message_processor)
 
     print(f"KL before: {eval_kl(teacher, student, eval_batch):.4f}")
 
-    num_train = len(conversations) - 50
-    num_batches = num_train // 8
+    num_train = 48
+    batch_size = 4
+    num_batches = num_train // batch_size
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(2e-5, weight_decay=0.01))
     opt_state = optimizer.init(eqx.filter(student, eqx.is_inexact_array))
     stochastic_fpc = ForwardPassConfig.init(gradient_estimator=GradientEstimator.STOCHASTIC).decoder
@@ -66,14 +67,13 @@ def main() -> None:
         return eqx.apply_updates(student, updates), new_opt_state, loss
 
     key = jax.random.key(42)
-    for epoch in range(20):
-        for batch_idx, batch_start in enumerate(range(20, 20 + num_train, 8)):
-            batch = make_batch(conversations[batch_start : batch_start + 8], language_model.message_processor)
+    for epoch in range(3):
+        for batch_idx, batch_start in enumerate(range(8, 8 + num_train, batch_size)):
+            batch = make_batch(conversations[batch_start : batch_start + batch_size], language_model.message_processor)
             teacher_logits = teacher(batch.token_ids[:, :-1], batch.positions[:, :-1]).logits
             key, subkey = jax.random.split(key)
             student, opt_state, loss = step(student, opt_state, teacher_logits, batch, subkey)
-            if batch_idx % 25 == 0:
-                print(f"epoch={epoch} batch={batch_idx}/{num_batches} kl={float(loss):.4f}")
+            print(f"epoch={epoch} batch={batch_idx}/{num_batches} kl={float(loss):.4f}")
 
     print(f"KL after: {eval_kl(teacher, student, eval_batch):.4f}")
 

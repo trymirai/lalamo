@@ -252,7 +252,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         y = y + self.skip_connection_weight[:, None] * values
         y = rearrange(y, "heads head_dim -> (heads head_dim)")
         gated = y * jax.nn.silu(gate + self.gate_bias)
-        (output,) = self.out_projection(gated, forward_pass_config.out_arrays)
+        (output,) = self.out_projection(gated, key=key, forward_pass_config=forward_pass_config.arrays)
 
         return Mamba2Result(
             outputs=output[None, :],

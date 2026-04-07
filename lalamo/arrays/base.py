@@ -28,7 +28,7 @@ class CompressedArray(Serializable, eqx.Module):
     _registry: ClassVar[dict[str, type["CompressedArray"]]] = {}
     kind: ClassVar[str]
 
-    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:
+    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:  # noqa: ANN401
         super().__init_subclass__(**kwargs)
         CompressedArray._registry[kind] = cls
         cls.kind = kind

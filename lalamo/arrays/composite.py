@@ -31,7 +31,7 @@ class CompositeArray(CompressedArray, kind="composite"):
 
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         assert len(self.parts) != 0, "CompositeArray must be non-empty to materialize"
-        return sum(part.materialize() for part in self.parts)
+        return sum(part.materialize() for part in self.parts)  # type: ignore[return-value]
 
     def dot(
         self,
@@ -41,7 +41,7 @@ class CompositeArray(CompressedArray, kind="composite"):
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
         assert len(self.parts) != 0, "CompositeArray must be non-empty to dot"
-        return sum(part.dot(vector, key=key, forward_pass_config=forward_pass_config) for part in self.parts)
+        return sum(part.dot(vector, key=key, forward_pass_config=forward_pass_config) for part in self.parts)  # type: ignore[return-value]
 
     @classmethod
     def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:

@@ -312,7 +312,11 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_bias, gate_bias = deinterleave_pairwise_columns(gate_up_bias, first="odd")
         combined_up_gate_biases = jnp.concatenate([up_bias + 1.0, gate_bias], axis=-1)
 
-        up_projection = module.experts.up_projection.from_raw(combined_up_gate_weights, combined_up_gate_biases)
+        up_projection = eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (FullPrecisionArray(weights=combined_up_gate_weights), combined_up_gate_biases),
+        )
 
         down_weights = decode_mxfp4(
             weights_dict[experts_path / "down_proj_blocks"],
@@ -325,7 +329,11 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         if down_biases.ndim == 1:
             down_biases = jnp.broadcast_to(down_biases, (*down_weights.shape[:-1], down_biases.shape[0]))
 
-        down_projection = module.experts.down_projection.from_raw(down_weights, down_biases)
+        down_projection = eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (FullPrecisionArray(weights=down_weights), down_biases),
+        )
 
         experts = load_parameters(
             lambda m: (m.up_projection, m.down_projection),
@@ -372,9 +380,17 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
 
-        up_projection = module.experts.up_projection.from_raw(combined_up_gate_weights, None)
+        up_projection = eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (FullPrecisionArray(weights=combined_up_gate_weights), None),
+        )
 
-        down_projection = module.experts.down_projection.from_raw(down_weights, None)
+        down_projection = eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (FullPrecisionArray(weights=down_weights), None),
+        )
 
         experts = load_parameters(
             lambda m: (m.up_projection, m.down_projection),
@@ -424,11 +440,19 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             stacked_gate_biases = jnp.stack(gate_bias_list, axis=0)
             combined_up_gate_biases = jnp.concatenate([stacked_up_biases, stacked_gate_biases], axis=1)
 
-        up_projection = module.experts.up_projection.from_raw(combined_up_gate_weights, combined_up_gate_biases)
+        up_projection = eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module.experts.up_projection,
+            (FullPrecisionArray(weights=combined_up_gate_weights), combined_up_gate_biases),
+        )
 
         stacked_down = jnp.stack(down_weight_list, axis=0)
         stacked_down_biases = jnp.stack(down_bias_list, axis=0) if down_bias_list is not None else None
-        down_projection = module.experts.down_projection.from_raw(stacked_down, stacked_down_biases)
+        down_projection = eqx.tree_at(
+            lambda m: (m.weights, m.biases),
+            module.experts.down_projection,
+            (FullPrecisionArray(weights=stacked_down), stacked_down_biases),
+        )
 
         experts = load_parameters(
             lambda m: (m.up_projection, m.down_projection),
