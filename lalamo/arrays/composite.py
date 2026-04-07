@@ -6,7 +6,7 @@ from .base import ArrayForwardPassConfig, CompressedArray
 
 class MixtureArray(CompressedArray):
     parts: tuple[CompressedArray, ...]
-    coefficients: tuple[float, ...]
+    coefficients: Float[Array, " num_parts"]
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -47,5 +47,5 @@ class MixtureArray(CompressedArray):
     def add_part(self, part: CompressedArray, coefficient: float = 1.0) -> "MixtureArray":
         return MixtureArray(
             parts=(*self.parts, part),
-            coefficients=(*self.coefficients, coefficient),
+            coefficients=jnp.append(self.coefficients, coefficient),
         )

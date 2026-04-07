@@ -51,7 +51,7 @@ def test_lora_round_trip() -> None:
 def test_mixture_full_precision_and_lora_round_trip() -> None:
     fp = FullPrecisionArray(weights=jnp.ones((4, 8)))
     lora = LoRAArray(down=jnp.ones((4, 2)), up=jnp.ones((2, 8)))
-    mixture = MixtureArray(parts=(fp, lora), coefficients=(1.0, 0.5))
+    mixture = MixtureArray(parts=(fp, lora), coefficients=jnp.array([1.0, 0.5]))
 
     data = mixture.to_uzu()
     restored = mixture.from_uzu(data)
@@ -62,7 +62,7 @@ def test_mixture_full_precision_and_lora_round_trip() -> None:
 def test_mixture_full_precision_and_awq_round_trip() -> None:
     fp = FullPrecisionArray(weights=jnp.ones((4, 8)))
     awq = AWQQuantArray.compress(jax.random.normal(jax.random.PRNGKey(0), (4, 8)), bits=4, group_size=4)
-    mixture = MixtureArray(parts=(fp, awq), coefficients=(1.0, 1.0))
+    mixture = MixtureArray(parts=(fp, awq), coefficients=jnp.array([1.0, 1.0]))
 
     data = mixture.to_uzu()
     restored = mixture.from_uzu(data)
