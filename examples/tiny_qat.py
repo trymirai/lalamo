@@ -44,7 +44,7 @@ def main() -> None:
     num_batches = num_train // batch_size
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(2e-5, weight_decay=0.01))
     opt_state = optimizer.init(eqx.filter(student, eqx.is_inexact_array))
-    stochastic_fpc = ForwardPassConfig.init(gradient_estimator=GradientEstimator.STOCHASTIC).decoder
+    stochastic_fpc = ForwardPassConfig.init(gradient_estimator=GradientEstimator.STOCHASTIC_DROPOUT).decoder
 
     @eqx.filter_jit
     def step(

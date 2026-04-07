@@ -15,7 +15,7 @@ from lalamo.common import ParameterTree
 class GradientEstimator(Enum):
     NONE = "none"
     DETERMINISTIC = "deterministic"
-    STOCHASTIC = "stochastic"
+    STOCHASTIC_DROPOUT = "stochastic_dropout"
 
 
 @dataclass(frozen=True)

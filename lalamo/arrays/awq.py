@@ -10,12 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 from lalamo.modules.common import Initializer
 
 from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
-from .quantization_helpers import (
-    pack_uint_to_uint8,
-    quantize_to_grid,
-    stochastic_quantize_to_grid,
-    unpack_uint8_to_uint,
-)
+from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
 
 
 class AWQQuantArray(CompressedArray, kind="awq"):
@@ -82,10 +77,15 @@ class AWQQuantArray(CompressedArray, kind="awq"):
             case GradientEstimator.DETERMINISTIC:
                 q = quantize_to_grid(self.weights, self.bits)
                 q = self.weights + jax.lax.stop_gradient(q - self.weights)
-            case GradientEstimator.STOCHASTIC:
+            case GradientEstimator.STOCHASTIC_DROPOUT:
                 assert key is not None
-                q = stochastic_quantize_to_grid(self.weights, self.bits, key)
+                q = quantize_to_grid(self.weights, self.bits)
                 q = self.weights + jax.lax.stop_gradient(q - self.weights)
+                mean = self.dequantize(q) @ vector
+                error_sq = jax.lax.stop_gradient((self.weights - q) ** 2)
+                expanded_scales_sq = jnp.repeat(self.scales**2, self.group_size, axis=-1)
+                variance = (error_sq * expanded_scales_sq) @ (vector**2)
+                return mean + jnp.sqrt(variance) * jax.random.normal(key, mean.shape, dtype=mean.dtype)
             case _:
                 raise ValueError(f"Unhandled gradient estimator: {forward_pass_config.gradient_estimator}")
         return self.dequantize(q) @ vector
