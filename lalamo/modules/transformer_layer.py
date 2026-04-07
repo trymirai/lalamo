@@ -11,10 +11,10 @@ from lalamo.common import ParameterTree
 
 from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
-from .token_mixers.common import MixerForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
+from .token_mixers.common import MixerForwardPassConfig
 from .utils import vmap_twice
 
 __all__ = [

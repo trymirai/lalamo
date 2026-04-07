@@ -9,7 +9,6 @@ from lalamo.modules import (
     EmbeddingQuantConfig,
     LinearConfig,
     NormalizationConfig,
-    QuantFormat,
     SiLU,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -18,7 +17,6 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -64,7 +62,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
         if isinstance(quantization, MLXQuantizationConfig):
             quant_config = EmbeddingQuantConfig(
                 group_size=quantization.group_size,
-                quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                bits=quantization.bits,
             )
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
@@ -104,24 +102,7 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        if quantization is None:
-            linear_config = FullPrecisionLinearConfig()
-        elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
-        else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.AWQ,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
+        linear_config = LinearConfig()
 
         layer_head_dim = self.hidden_size // self.num_attention_heads
         if len(self.no_rope_layers) < self.num_hidden_layers:

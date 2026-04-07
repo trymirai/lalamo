@@ -1,5 +1,7 @@
 from .awq import AWQQuantArray as AWQQuantArray
+from .base import ArrayForwardPassConfig as ArrayForwardPassConfig
 from .base import CompressedArray as CompressedArray
+from .base import GradientEstimator as GradientEstimator
 from .composite import CompositeArray as CompositeArray
 from .embedding import CompressedEmbedding as CompressedEmbedding
 from .embedding import FullPrecisionEmbedding as FullPrecisionEmbedding

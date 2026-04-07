@@ -12,7 +12,6 @@ from lalamo.modules import (
     EmbeddingQuantConfig,
     LinearConfig,
     NormalizationConfig,
-    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -22,7 +21,6 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -88,7 +86,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
         if isinstance(quantization, MLXQuantizationConfig):
             quant_config = EmbeddingQuantConfig(
                 group_size=quantization.group_size,
-                quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                bits=quantization.bits,
             )
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
@@ -139,24 +137,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        if quantization is None:
-            linear_config = FullPrecisionLinearConfig()
-        elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
-        else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.AWQ,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
+        linear_config = LinearConfig()
 
         partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
 

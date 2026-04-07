@@ -30,7 +30,6 @@ from lalamo.modules import (
 )
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.mlp import MixtureOfExperts, MLPBase
-from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
@@ -57,33 +56,28 @@ def _reverse_uint4_order(array: Array, reverse_order: Array) -> Array:
     return rearrange(array_reordered, "... group pack_factor -> ... (group pack_factor)")
 
 
-def unpack_int32(packed_weights: Array, mode: QuantizationMode) -> Array:
-    assert packed_weights.dtype in (
-        jnp.int32,
-        jnp.uint32,
-    ), f"Expected packed_weights to be of dtype jnp.(u)int32, got {packed_weights.dtype}"
-    assert 32 % mode.bits == 0
+def unpack_int32(packed_weights: Array, bits: int) -> Array:
+    assert packed_weights.dtype in (jnp.int32, jnp.uint32)
+    assert 32 % bits == 0
 
-    shifts = jnp.arange(0, 32, mode.bits)
-    mask = (2**mode.bits) - 1
+    shifts = jnp.arange(0, 32, bits)
+    mask = (2**bits) - 1
     unpacked = jnp.bitwise_and(jnp.right_shift(packed_weights[:, :, None], shifts[None, None, :]), mask)
-    unpacked = rearrange(
+    return rearrange(
         unpacked,
-        "out_channels packed_groups packed_values -> out_channels (packed_groups packed_values)",
+        "rows packed_groups packed_values -> rows (packed_groups packed_values)",
     )
-
-    return unpacked
 
 
 def _process_quantized_tensor(
     quantized: Array,
-    weight_quantization: QuantizationMode,
+    bits: int,
     activation_precision: DTypeLike,
     reverse_order: Array | None = None,
 ) -> Array:
-    unpacked = unpack_int32(quantized, weight_quantization)
+    unpacked = unpack_int32(quantized, bits)
     if reverse_order is not None:
-        assert weight_quantization == QuantizationMode.UINT4, "reverse order only supported on uint4 quant type"
+        assert bits == 4, "reverse order only supported on 4-bit quantization"
         unpacked = _reverse_uint4_order(unpacked, reverse_order)
 
     return unpacked.astype(activation_precision)
@@ -157,6 +151,75 @@ def _load_bias(
     return bias.astype(module.activation_precision)
 
 
+def _detect_hf_quant_format(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+) -> QuantFormat:
+    probe = path / sublayers_to_fuse[0] if sublayers_to_fuse else path
+    if (probe / "qweight") in weights_dict:
+        return QuantFormat.AWQ
+    if (probe / "scales") in weights_dict:
+        return QuantFormat.MLX
+    return QuantFormat.FULL_PRECISION
+
+
+def _load_awq_array(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+) -> AWQQuantArray:
+    packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
+    # AWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
+    out_channels = scales.shape[1]
+    num_groups = scales.shape[0]
+    pack_factor = out_channels // packed_qweights.shape[1]
+    bits = 32 // pack_factor
+    group_size = packed_qweights.shape[0] // num_groups
+
+    unpacked_weights = unpack_int32(packed_qweights, bits)
+    unpacked_zeros = unpack_int32(packed_qzeros, bits)
+    if bits == 4:
+        unpacked_weights = _reverse_uint4_order(unpacked_weights, AWQ_UINT4_REVERSE_ORDER)
+        unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
+
+    return AWQQuantArray(
+        weights=unpacked_weights.T.astype(jnp.int32),
+        scales=scales.T.astype(scales.dtype),
+        zero_points=unpacked_zeros.T.astype(jnp.int32),
+        bits=bits,
+        group_size=group_size,
+    )
+
+
+def _load_mlx_array(
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+    sublayers_to_fuse: list[str] | None,
+    expected_in_channels: int,
+) -> MLXQuantArray:
+    packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
+    # MLX HF layout: weight [out_channels, packed_in], scales [out_channels, num_groups]
+    packed_in = packed_weights.shape[-1]
+    num_groups = scales.shape[-1]
+    for bits in (4, 8):
+        if packed_in * (32 // bits) == expected_in_channels:
+            break
+    else:
+        raise ValueError(f"Cannot infer MLX bits: packed_in={packed_in}, expected_in={expected_in_channels}")
+
+    group_size = expected_in_channels // num_groups
+    unpacked_weights = unpack_int32(packed_weights, bits)
+
+    return MLXQuantArray(
+        weights=unpacked_weights.astype(jnp.int32),
+        scales=scales,
+        biases=deq_biases,
+        bits=bits,
+        group_size=group_size,
+    )
+
+
 def load_linear(
     module: Linear,
     weights_dict: Mapping[str, Array],
@@ -164,46 +227,17 @@ def load_linear(
     sublayers_to_fuse: list[str] | None = None,
 ) -> Linear:
     bias = _load_bias(module, weights_dict, path, sublayers_to_fuse)
-    config = module.config
-    match config.quant_format:
+    quant_format = _detect_hf_quant_format(weights_dict, path, sublayers_to_fuse)
+
+    match quant_format:
         case QuantFormat.FULL_PRECISION:
-            raw_weights = _fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
-            return module.from_raw(raw_weights, bias)
-
+            weights = FullPrecisionArray(_fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse))
         case QuantFormat.AWQ:
-            assert config.bits is not None and config.group_size is not None
-            qweights, qzeros, scales = _fuse_awq_weights(
-                weights_dict,
-                path,
-                sublayers_to_fuse,
-            )
-            base = AWQQuantArray.from_packed(
-                qweights,
-                qzeros,
-                scales,
-                dtype=module.activation_precision,
-                group_size=config.group_size,
-                bits=config.bits,
-            )
-
+            weights = _load_awq_array(weights_dict, path, sublayers_to_fuse)
         case QuantFormat.MLX:
-            assert config.bits is not None and config.group_size is not None
-            qweights, deq_biases, scales = _fuse_mlx_weights(
-                weights_dict,
-                path,
-                sublayers_to_fuse,
-            )
-            base = MLXQuantArray.from_packed(
-                qweights,
-                scales,
-                deq_biases,
-                dtype=module.activation_precision,
-                expected_in_channels=module.input_dim,
-                group_size=config.group_size,
-                bits=config.bits,
-            )
+            weights = _load_mlx_array(weights_dict, path, sublayers_to_fuse, module.input_dim)
 
-    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (base, bias))
+    return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, bias))
 
 
 def load_mlp(
@@ -724,8 +758,9 @@ def load_delta_net_attention(
                 (ba_path, _delta_net_ba_perm()),
             ]
 
-        in_proj_config = module.in_proj.config
-        match in_proj_config.quant_format:
+        first_branch_path, _ = projection_branches[0]
+        quant_format = _detect_hf_quant_format(weights_dict, first_branch_path, None)
+        match quant_format:
             case QuantFormat.FULL_PRECISION:
                 merged = jnp.concatenate(
                     [
@@ -734,11 +769,10 @@ def load_delta_net_attention(
                     ],
                     axis=0,
                 )
-                base = FullPrecisionArray.from_weight(merged, dtype=module.in_proj.activation_precision)
+                new_weights = FullPrecisionArray(merged)
             case QuantFormat.AWQ:
                 raise ValueError("DeltaNetAttention does not support AWQ quantization.")
             case QuantFormat.MLX:
-                assert in_proj_config.bits is not None and in_proj_config.group_size is not None
                 per_branch = [
                     tuple(_permute_rows(tensor, perm) for tensor in _fuse_mlx_weights(weights_dict, bp, None))
                     for bp, perm in projection_branches
@@ -746,16 +780,25 @@ def load_delta_net_attention(
                 fused_qweights = jnp.concatenate([qw for qw, _, _ in per_branch], axis=0)
                 fused_deq_biases = jnp.concatenate([db for _, db, _ in per_branch], axis=0)
                 fused_scales = jnp.concatenate([s for _, _, s in per_branch], axis=0)
-                base = MLXQuantArray.from_packed(
-                    fused_qweights,
-                    fused_scales,
-                    fused_deq_biases,
-                    dtype=module.in_proj.activation_precision,
-                    expected_in_channels=module.in_proj.input_dim,
-                    group_size=in_proj_config.group_size,
-                    bits=in_proj_config.bits,
+                expected_in_channels = module.in_proj.input_dim
+                packed_in = fused_qweights.shape[-1]
+                num_groups = fused_scales.shape[-1]
+                for bits in (4, 8):
+                    if packed_in * (32 // bits) == expected_in_channels:
+                        break
+                else:
+                    raise ValueError(
+                        f"Cannot infer MLX bits: packed_in={packed_in}, expected_in={expected_in_channels}"
+                    )
+                group_size = expected_in_channels // num_groups
+                unpacked_weights = unpack_int32(fused_qweights, bits)
+                new_weights = MLXQuantArray(
+                    weights=unpacked_weights.astype(jnp.int32),
+                    scales=fused_scales,
+                    biases=fused_deq_biases,
+                    bits=bits,
+                    group_size=group_size,
                 )
-        new_weights = base
         in_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None))
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
     out_proj = load_linear(module.out_proj, weights_dict, path / "out_proj")
@@ -904,7 +947,7 @@ def _load_compressed_embedding(
     if isinstance(embedding, MLXQuantizedEmbedding):
         weights = _process_quantized_tensor(
             weights_dict[path / "weight"],
-            embedding.quantization_mode,
+            embedding.bits,
             embedding.activation_precision,
             None,
         )
@@ -915,7 +958,7 @@ def _load_compressed_embedding(
             scales=scales,
             biases=biases,
             group_size=embedding.group_size,
-            quantization_mode=embedding.quantization_mode,
+            bits=embedding.bits,
         )
     raise TypeError(f"Unsupported embedding type: {type(embedding)}")
 
@@ -1079,7 +1122,7 @@ def load_huggingface_classifier(
         weights = weights_dict[path / "weight"]
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
-        new_weights = FullPrecisionArray.from_weight(shuffled_weights, dtype=module.activation_precision)
+        new_weights = FullPrecisionArray(shuffled_weights)
         return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None))
 
     def load_attention_local(

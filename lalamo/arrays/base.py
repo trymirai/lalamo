@@ -1,16 +1,27 @@
 from abc import abstractmethod
 from collections.abc import Mapping
+from dataclasses import dataclass
+from enum import Enum
 from typing import Any, ClassVar
 
 import equinox as eqx
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 from lalamo.serialization import Serializable
 
 from lalamo.common import ParameterTree
+
+
+class GradientEstimator(Enum):
+    DETERMINISTIC = "deterministic"
+    STOCHASTIC = "stochastic"
+
+
+@dataclass(frozen=True)
+class ArrayForwardPassConfig:
+    gradient_estimator: GradientEstimator = GradientEstimator.DETERMINISTIC
 
 
 class CompressedArray(Serializable, eqx.Module):
@@ -21,6 +32,14 @@ class CompressedArray(Serializable, eqx.Module):
         super().__init_subclass__(**kwargs)
         CompressedArray._registry[kind] = cls
         cls.kind = kind
+
+    @property
+    @abstractmethod
+    def shape(self) -> tuple[int, ...]: ...
+
+    @property
+    @abstractmethod
+    def dtype(self) -> DTypeLike: ...
 
     @abstractmethod
     def materialize(self) -> Float[Array, "... out_channels in_channels"]: ...
@@ -46,13 +65,6 @@ class CompressedArray(Serializable, eqx.Module):
 
     @abc.abstractmethod
     def export_weights(self) -> ParameterTree: ...
-
-
-def unpack_int32(packed: Array, bits: int) -> Array:
-    shifts = jnp.arange(0, 32, bits)
-    mask = (2**bits) - 1
-    unpacked = jnp.bitwise_and(jnp.right_shift(packed[:, :, None], shifts[None, None, :]), mask)
-    return rearrange(unpacked, "rows packed_groups packed_vals -> rows (packed_groups packed_vals)")
 
 
 def pack_uint_to_uint8(unpacked: Array, bits: int) -> Array:

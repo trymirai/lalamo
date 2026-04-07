@@ -1,3 +1,5 @@
+from lalamo.arrays import QuantFormat
+
 from .activations import GELU, Activation, Identity, SiLU
 from .audio.audio_decoder import TTSAudioDecoder
 from .audio.text_decoder import TTSTextDecoder
@@ -40,7 +42,6 @@ from .embedding import (
 from .linear import (
     Linear,
     LinearConfig,
-    QuantFormat,
 )
 from .mlp import (
     DenseMLP,

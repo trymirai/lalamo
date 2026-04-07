@@ -67,9 +67,7 @@ def _compute_gen_prompt_len(tokenizer: MessageProcessor) -> int:
     return len(tokenizer.tokenize_text(with_prompt[len(without_prompt) :]))
 
 
-def make_batch(
-    conversations: list[list[Message]], tokenizer: MessageProcessor, seq_len: int = 256
-) -> Batch:
+def make_batch(conversations: list[list[Message]], tokenizer: MessageProcessor, seq_len: int = 256) -> Batch:
     """Tokenize conversations into a batch with loss mask on assistant tokens."""
     gen_prompt_len = _compute_gen_prompt_len(tokenizer)
 
@@ -113,7 +111,9 @@ def kl_divergence(
     mask: Bool[Array, "batch seq_len"] | None = None,
 ) -> Float[Array, ""]:
     teacher_probs = jax.nn.softmax(teacher_logits)
-    kl_per_position = (teacher_probs * (jax.nn.log_softmax(teacher_logits) - jax.nn.log_softmax(student_logits))).sum(-1)
+    kl_per_position = (teacher_probs * (jax.nn.log_softmax(teacher_logits) - jax.nn.log_softmax(student_logits))).sum(
+        -1
+    )
     if mask is None:
         return kl_per_position.mean()
     return (kl_per_position * mask).sum() / mask.sum()

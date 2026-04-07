@@ -1,16 +1,23 @@
 from collections.abc import Mapping
 from typing import Any
 
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.modules.common import Initializer
-from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 
-from .base import CompressedArray
+from .base import ArrayForwardPassConfig, CompressedArray
 
 
 class FullPrecisionArray(CompressedArray, kind="full_precision"):
     weights: Float[Array, "... out_channels in_channels"]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.weights.shape
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.weights.dtype
 
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         return self.weights
@@ -29,7 +36,9 @@ class FullPrecisionArray(CompressedArray, kind="full_precision"):
         return cls(weights=weights)
 
     @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> "FullPrecisionArray":
+    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:
+        if str(data.get("__kind__")) != cls.kind:
+            return CompressedArray.from_uzu(data)
         return cls(weights=data["weights"])
 
     @classmethod

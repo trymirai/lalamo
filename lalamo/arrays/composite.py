@@ -1,16 +1,33 @@
 from collections.abc import Mapping
 from typing import Any
 
-from jaxtyping import Array, Float, PRNGKeyArray
+import jax.numpy as jnp
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
-from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 from lalamo.serialization import strip_uzu_prefix
 
-from .base import CompressedArray
+from .base import ArrayForwardPassConfig, CompressedArray
 
 
 class CompositeArray(CompressedArray, kind="composite"):
     parts: tuple[CompressedArray, ...]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        assert len(self.parts) != 0, "CompositeArray must be non-empty"
+        first, *rest = self.parts
+        result = first.shape
+        for part in rest:
+            if part.shape != result:
+                raise ValueError(
+                    f"CompositeArray parts have mismatched shapes: {result} vs {part.shape}",
+                )
+        return result
+
+    @property
+    def dtype(self) -> DTypeLike:
+        assert len(self.parts) != 0, "CompositeArray must be non-empty"
+        return jnp.result_type(*(part.dtype for part in self.parts))
 
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         assert len(self.parts) != 0, "CompositeArray must be non-empty to materialize"
@@ -27,7 +44,9 @@ class CompositeArray(CompressedArray, kind="composite"):
         return sum(part.dot(vector, key=key, forward_pass_config=forward_pass_config) for part in self.parts)
 
     @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> "CompositeArray":
+    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:
+        if str(data.get("__kind__")) != cls.kind:
+            return CompressedArray.from_uzu(data)
         parts = []
         i = 0
         while f"parts.{i}.__kind__" in data:

@@ -8,7 +8,6 @@ from lalamo.modules import (
     DenseMLPConfig,
     LinearConfig,
     NormalizationConfig,
-    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -90,16 +89,8 @@ class HFQwen2Config(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig()
-        else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.AWQ,
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-            )
+        linear_config = LinearConfig()
+        head_dim = self.hidden_size // self.num_attention_heads
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),

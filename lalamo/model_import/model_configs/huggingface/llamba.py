@@ -10,7 +10,6 @@ from lalamo.modules import (
     LinearConfig,
     Mamba2Config,
     NormalizationConfig,
-    QuantFormat,
     SeparableCausalConvConfig,
     SiLU,
     TiedEmbeddingConfig,
@@ -19,7 +18,6 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig
 
@@ -72,9 +70,7 @@ class HFLlambaConfig(HuggingFaceLMConfig):
                 logit_soft_cap=None,
                 output_quantization=EmbeddingQuantConfig(
                     group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                    quantization_mode=QuantizationMode.from_num_bits(
-                        int(metadata_dict["quantization_kwargs.bits"]),
-                    ),
+                    bits=int(metadata_dict["quantization_kwargs.bits"]),
                 ),
             )
         elif self.tie_embeddings:
@@ -95,18 +91,7 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             subtract_mean=False,
         )
 
-        if metadata_dict and "quantization_kwargs.group_size" in metadata_dict:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=int(metadata_dict["quantization_kwargs.group_size"]),
-                weight_quantization_mode=QuantizationMode.from_num_bits(
-                    int(metadata_dict["quantization_kwargs.bits"]),
-                ),
-                activation_quantization_mode=None,
-            )
-        else:
-            linear_config = FullPrecisionLinearConfig()
+        linear_config = LinearConfig()
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,

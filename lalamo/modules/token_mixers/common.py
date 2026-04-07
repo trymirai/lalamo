@@ -1,24 +1,32 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import NamedTuple
 
-import equinox as eqx
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
+from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.modules.common import Initializer, LalamoModule, PositionalEmbeddingSelector
-from lalamo.modules.forward_pass_config import ArrayForwardPassConfig, AttentionImplementation
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
 
 __all__ = [
     "AttentionForwardPassConfig",
+    "AttentionImplementation",
     "MixerForwardPassConfig",
     "TokenMixerBase",
     "TokenMixerConfigBase",
     "TokenMixerResult",
 ]
+
+
+class AttentionImplementation(Enum):
+    STABLE_REDUCTION = "stable_reduction"
+    STANDARD = "standard"
+    CUDNN = "cudnn"
+    TOKAMAX = "tokamax"
 
 
 @dataclass(frozen=True)

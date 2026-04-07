@@ -1,17 +1,23 @@
-from collections.abc import Mapping
-from typing import Any
-
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.modules.common import Initializer
-from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 
-from .base import CompressedArray
+from .base import ArrayForwardPassConfig, CompressedArray
 
 
 class LoRAArray(CompressedArray, kind="lora"):
     down: Float[Array, "... out_channels rank"]
     up: Float[Array, "... rank in_channels"]
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        *leading, out_channels, _rank = self.down.shape
+        *_, in_channels = self.up.shape
+        return (*leading, out_channels, in_channels)
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.down.dtype
 
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         return self.down @ self.up

@@ -5,7 +5,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import einsum, rearrange
-from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_mapping, require_tree
@@ -13,8 +12,8 @@ from lalamo.modules.activations import Activation
 from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
-from lalamo.modules.utils import vmap_with_key
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
+from lalamo.modules.utils import vmap_with_key
 
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig

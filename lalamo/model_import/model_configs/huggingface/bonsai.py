@@ -9,7 +9,6 @@ from lalamo.modules import (
     EmbeddingQuantConfig,
     LinearConfig,
     NormalizationConfig,
-    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -18,7 +17,6 @@ from lalamo.modules import (
     YARNRoPEConfig,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -67,11 +65,9 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
         assert isinstance(self.quantization, MLXQuantizationConfig), "HFBonsaiConfig requires MLX quantization config"
         assert not self.use_sliding_window, "Sliding window attention is not supported for Bonsai"
         quantization = self.quantization
-        quantization_mode = QuantizationMode.from_num_bits(quantization.bits)
-
         quant_config = EmbeddingQuantConfig(
             group_size=quantization.group_size,
-            quantization_mode=quantization_mode,
+            bits=quantization.bits,
         )
         if self.tie_word_embeddings:
             embedding_config = TiedEmbeddingConfig(
@@ -103,11 +99,7 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        linear_config = MLXQuantizedLinearConfig(
-            group_size=quantization.group_size,
-            weight_quantization_mode=quantization_mode,
-            activation_quantization_mode=None,
-        )
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),

@@ -10,7 +10,6 @@ from lalamo.modules import (
     LinearConfig,
     LlamaRoPEConfig,
     NormalizationConfig,
-    QuantFormat,
     SiLU,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -20,7 +19,6 @@ from lalamo.modules import (
     UpcastMode,
     YARNRoPEConfig,
 )
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -86,7 +84,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
         if isinstance(quantization, MLXQuantizationConfig):
             quant_config = EmbeddingQuantConfig(
                 group_size=quantization.group_size,
-                quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                bits=quantization.bits,
             )
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
@@ -147,24 +145,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        if quantization is None:
-            linear_config = FullPrecisionLinearConfig()
-        elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
-        else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.AWQ,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
+        linear_config = LinearConfig()
         attention_config = AttentionConfig(
             qkv_projection_config=linear_config,
             out_projection_config=linear_config,

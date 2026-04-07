@@ -3,19 +3,11 @@ import weakref
 
 import jax
 from jax._src.stages import Compiled
-from jax.sharding import Sharding
 from jaxtyping import Array, Int, Key
 
 from .common import InferenceConfig
-from .language_model import ForwardPassConfig, GenerationConfig, LanguageModel
 
-_compile_cache: dict[
-    int,
-    dict[
-        tuple[GenerationConfig | None, InferenceConfig | None, ForwardPassConfig, Sharding | None],
-        Compiled,
-    ],
-] = {}
+_compile_cache: dict[int, dict[tuple, Compiled]] = {}
 
 
 def _make_weak_finalizer(model_id: int) -> None:
@@ -23,16 +15,19 @@ def _make_weak_finalizer(model_id: int) -> None:
 
 
 def compile_generate_tokens(
-    model: LanguageModel,
-    generation_config: GenerationConfig | None = None,
+    model: "LanguageModel",
+    generation_config: "GenerationConfig | None" = None,
     inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
     *,
-    forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
+    forward_pass_config: "ForwardPassConfig | None" = None,
     prompt_token_ids: Int[Array, "batch length"],
     prompt_lengths_without_padding: Int[Array, " batch"],
     keys: Key[Array, " batch"],
 ) -> Compiled:
-    from .language_model import LanguageModel
+    from .language_model import ForwardPassConfig, LanguageModel
+
+    if forward_pass_config is None:
+        forward_pass_config = ForwardPassConfig()
 
     model_id = id(model)
     key = (

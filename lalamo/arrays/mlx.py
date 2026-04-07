@@ -3,12 +3,12 @@ from typing import Any
 
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.modules.common import Initializer
-from lalamo.modules.forward_pass_config import ArrayForwardPassConfig
 
 from .base import (
+    ArrayForwardPassConfig,
     CompressedArray,
     pack_uint_to_uint8,
     unpack_uint8_to_uint,
@@ -21,6 +21,14 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
     biases: Float[Array, "... out_channels groups"]
     bits: int
     group_size: int
+
+    @property
+    def shape(self) -> tuple[int, ...]:
+        return self.weights.shape
+
+    @property
+    def dtype(self) -> DTypeLike:
+        return self.scales.dtype
 
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         expanded_scales = jnp.repeat(self.scales, self.group_size, axis=-1)
@@ -72,7 +80,9 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
         }
 
     @classmethod
-    def from_uzu(cls, data: Mapping[str, Any]) -> "MLXQuantArray":
+    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedArray:
+        if str(data.get("__kind__")) != cls.kind:
+            return CompressedArray.from_uzu(data)
         bits = int(data["bits"])
         group_size = int(data["group_size"])
         return cls(

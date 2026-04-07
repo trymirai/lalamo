@@ -28,7 +28,7 @@ class HessianPair(eqx.Module):
 
 
 def is_quantizable_weight(leaf: object) -> bool:
-    return isinstance(leaf, FullPrecisionArray) and leaf.raw.ndim == 2
+    return isinstance(leaf, FullPrecisionArray) and leaf.weights.ndim == 2
 
 
 is_weight_or_hessian = lambda x: isinstance(x, (FullPrecisionArray, HessianPair))
@@ -68,8 +68,8 @@ def yaqa_round(
     weight_min = original_weights.min()
     scale = jnp.maximum((original_weights.max() - weight_min) / qmax, jnp.finfo(original_weights.dtype).eps)
 
-    def quantize(weights: Float[Array, "out_channels in_channels"]) -> Float[Array, "out_channels in_channels"]:
-        return jnp.clip(jnp.round((weights - weight_min) / scale), 0, qmax) * scale + weight_min
+    def quantize(w: Float[Array, "out_channels in_channels"]) -> Float[Array, "out_channels in_channels"]:
+        return jnp.clip(jnp.round((w - weight_min) / scale), 0, qmax) * scale + weight_min
 
     def step(_: int, rounded: Float[Array, "out_channels in_channels"]) -> Float[Array, "out_channels in_channels"]:
         error = original_weights - rounded
@@ -82,89 +82,82 @@ def yaqa_round(
 def init_hessian(leaf: object) -> HessianPair | object:
     if not is_quantizable_weight(leaf):
         return leaf
+    out_ch, in_ch = leaf.weights.shape
     return HessianPair(
-        input_hessian=jnp.zeros((leaf.raw.shape[1],) * 2, dtype=jnp.float32),
-        output_hessian=jnp.zeros((leaf.raw.shape[0],) * 2, dtype=jnp.float32),
+        input_hessian=jnp.zeros((in_ch, in_ch), dtype=jnp.float32),
+        output_hessian=jnp.zeros((out_ch, out_ch), dtype=jnp.float32),
     )
 
 
 def accumulate_hessian(hessian_leaf: HessianPair | object, grad_leaf: object) -> HessianPair | object:
     if not isinstance(hessian_leaf, HessianPair):
         return hessian_leaf
-    weight_grad = grad_leaf.raw.astype(jnp.float32)
+    g = grad_leaf.weights.astype(jnp.float32)
     return HessianPair(
-        input_hessian=hessian_leaf.input_hessian + weight_grad.T @ weight_grad,
-        output_hessian=hessian_leaf.output_hessian + weight_grad @ weight_grad.T,
+        input_hessian=hessian_leaf.input_hessian + g.T @ g,
+        output_hessian=hessian_leaf.output_hessian + g @ g.T,
     )
 
 
 def main() -> None:
     language_model = import_model("LiquidAI/LFM2-350M").model
-    original_decoder = language_model.model
+    decoder = language_model.model
 
     texts = load_lmsys_calibration_texts(num_sequences=300)
-    eval_token_ids, eval_positions = tokenize_batch(texts[:8], language_model.message_processor, seq_len=128)
-    calib_batches = [
-        tokenize_batch([text], language_model.message_processor, seq_len=128)
-        for text in texts[8:264]
-    ]
+    eval_ids, eval_pos = tokenize_batch(texts[:8], language_model.message_processor, seq_len=128)
+    calib_batches = [tokenize_batch([t], language_model.message_processor, seq_len=128) for t in texts[8:264]]
     key = jax.random.key(0)
 
     @eqx.filter_jit
     def fisher_grads(
-        decoder: eqx.Module,
-        token_ids: Int[Array, "batch seq_len"],
-        positions: Int[Array, "batch seq_len"],
-        seq_key: PRNGKeyArray,
+        d: eqx.Module, token_ids: Int[Array, "1 seq"], positions: Int[Array, "1 seq"], seq_key: PRNGKeyArray
     ) -> eqx.Module:
-        def loss_fn(current_decoder: eqx.Module) -> Float[Array, ""]:
-            logits = current_decoder(token_ids, positions).logits
-            sampled = jax.random.categorical(seq_key, logits)
-            return optax.softmax_cross_entropy_with_integer_labels(logits, sampled).mean()
+        def loss_fn(d: eqx.Module) -> Float[Array, ""]:
+            logits = d(token_ids, positions).logits
+            return optax.softmax_cross_entropy_with_integer_labels(
+                logits, jax.random.categorical(seq_key, logits)
+            ).mean()
 
-        return eqx.filter_grad(loss_fn)(decoder)
+        return eqx.filter_grad(loss_fn)(d)
 
-    num_batches = len(calib_batches)
-    decoder = original_decoder
+    num_calib = len(calib_batches)
+    rounded_decoder = decoder
 
-    for layer_idx in range(len(original_decoder.transformer.layers)):
-        layer = original_decoder.transformer.layers[layer_idx]
-        layer_hessians = jax.tree.map(init_hessian, layer, is_leaf=is_quantizable_weight)
+    for layer_idx in range(len(decoder.transformer.layers)):
+        layer = decoder.transformer.layers[layer_idx]
+        hessians = jax.tree.map(init_hessian, layer, is_leaf=is_quantizable_weight)
 
-        for batch_idx, (token_ids, positions) in enumerate(calib_batches):
-            grads = fisher_grads(original_decoder, token_ids, positions, jax.random.fold_in(key, batch_idx))
-            grad_layer = grads.transformer.layers[layer_idx]
-            layer_hessians = jax.tree.map(
-                accumulate_hessian, layer_hessians, grad_layer, is_leaf=is_weight_or_hessian
+        for i, (ids, pos) in enumerate(calib_batches):
+            grads = fisher_grads(decoder, ids, pos, jax.random.fold_in(key, i))
+            hessians = jax.tree.map(
+                accumulate_hessian, hessians, grads.transformer.layers[layer_idx], is_leaf=is_weight_or_hessian
             )
 
-        def yaqa_round_leaf(hessian_leaf: HessianPair | object, model_leaf: object) -> object:
-            if not isinstance(hessian_leaf, HessianPair):
-                return model_leaf
-            original_weights = model_leaf.raw.astype(jnp.float32)
-            out_channels, in_channels = original_weights.shape
-            input_factor, _ = ldl(hessian_leaf.input_hessian / (num_batches * out_channels))
-            output_factor, _ = ldl(hessian_leaf.output_hessian / (num_batches * in_channels))
-            rounded = yaqa_round(original_weights, output_factor, input_factor)
-            return FullPrecisionArray(raw=rounded.astype(model_leaf.raw.dtype))
+        def apply_yaqa(h: HessianPair | object, w: object) -> object:
+            if not isinstance(h, HessianPair):
+                return w
+            raw = w.weights.astype(jnp.float32)
+            out_ch, in_ch = raw.shape
+            out_factor, _ = ldl(h.output_hessian / (num_calib * in_ch))
+            in_factor, _ = ldl(h.input_hessian / (num_calib * out_ch))
+            return FullPrecisionArray(weights=yaqa_round(raw, out_factor, in_factor).astype(w.weights.dtype))
 
-        rounded_layer = jax.tree.map(yaqa_round_leaf, layer_hessians, layer, is_leaf=is_weight_or_hessian)
-        decoder = eqx.tree_at(lambda d, i=layer_idx: d.transformer.layers[i], decoder, rounded_layer)
-
-        del layer_hessians, rounded_layer
+        rounded_layer = jax.tree.map(apply_yaqa, hessians, layer, is_leaf=is_weight_or_hessian)
+        rounded_decoder = eqx.tree_at(lambda d, i=layer_idx: d.transformer.layers[i], rounded_decoder, rounded_layer)
+        del hessians, rounded_layer
         gc.collect()
-        print(f"  Layer {layer_idx + 1}/{len(original_decoder.transformer.layers)}")
+        print(f"  Layer {layer_idx + 1}/{len(decoder.transformer.layers)}")
 
-    print(f"YAQA KL:  {eval_kl(original_decoder, decoder, eval_token_ids, eval_positions):.4f}")
+    print(f"YAQA KL:  {eval_kl(decoder, rounded_decoder, eval_ids, eval_pos):.4f}")
 
-    naive_decoder = jax.tree.map(
-        lambda leaf: FullPrecisionArray(raw=round_to_grid(leaf.raw.astype(jnp.float32)).astype(leaf.raw.dtype))
-        if is_quantizable_weight(leaf)
-        else leaf,
-        original_decoder,
+    naive = jax.tree.map(
+        lambda l: FullPrecisionArray(weights=round_to_grid(l.weights.astype(jnp.float32)).astype(l.weights.dtype))
+        if is_quantizable_weight(l)
+        else l,
+        decoder,
         is_leaf=is_quantizable_weight,
     )
-    print(f"Naive KL: {eval_kl(original_decoder, naive_decoder, eval_token_ids, eval_positions):.4f}")
+    print(f"Naive KL: {eval_kl(decoder, naive, eval_ids, eval_pos):.4f}")
 
 
 if __name__ == "__main__":

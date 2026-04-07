@@ -9,10 +9,10 @@ import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.arrays import CompressedArray, FullPrecisionArray
+from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
 from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, sharded_field
-from .forward_pass_config import ArrayForwardPassConfig
 
 __all__ = [
     "Linear",
@@ -66,7 +66,7 @@ class Linear(LalamoModule[LinearConfig]):
 
     @property
     def input_dim(self) -> int:
-        *_, _out, in_dim = self.weights.materialize().shape
+        *_, _out, in_dim = self.weights.shape
         return in_dim
 
     @property
@@ -78,14 +78,16 @@ class Linear(LalamoModule[LinearConfig]):
         return len(self.output_dims)
 
     @property
-    @abstractmethod
-    def has_biases(self) -> bool: ...
+    def mixture_size(self) -> int | None:
+        match self.weights.shape:
+            case [num_components, _, _]:
+                return num_components
+            case _:
+                return None
 
-    @abstractmethod
-    def __call__(
-        self,
-        inputs: Float[Array, " in_channels"],
-    ) -> tuple[Float[Array, " out_channels"], ...]: ...
+    @property
+    def activation_precision(self) -> DTypeLike:
+        return self.weights.dtype
 
     @staticmethod
     def get_split_points(output_dims: Sequence[int]) -> tuple[int, ...]:

@@ -11,6 +11,7 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
+from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.modules.utils import vmap_twice, vmap_with_key
 
 from .activations import Activation
@@ -22,7 +23,6 @@ from .common import (
     ShardingOrder,
     register_config_union,
 )
-from .forward_pass_config import ArrayForwardPassConfig
 from .linear import Linear, LinearConfig
 
 __all__ = [

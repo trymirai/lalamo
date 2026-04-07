@@ -12,7 +12,6 @@ from lalamo.modules import (
     EmbeddingQuantConfig,
     LinearConfig,
     NormalizationConfig,
-    QuantFormat,
     SeparableCausalConvConfig,
     ShortConvConfig,
     SiLU,
@@ -23,7 +22,6 @@ from lalamo.modules import (
     UntiedEmbeddingConfig,
     UpcastMode,
 )
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig
 
@@ -126,7 +124,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
                 logit_soft_cap=None,
                 quantization=EmbeddingQuantConfig(
                     group_size=self.quantization_config.group_size,
-                    quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                    bits=self.quantization_config.bits,
                 ),
             )
         elif self.tie_embedding:
@@ -146,16 +144,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
             head_dim=self.hidden_size // self.num_heads,
         )
 
-        if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig()
-        else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-            )
+        linear_config = LinearConfig()
 
         block_norm_config = NormalizationConfig(
             epsilon=self.block_norm_eps,

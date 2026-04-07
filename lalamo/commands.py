@@ -229,10 +229,10 @@ def convert(
     uzu = cast("LalamoModule", serializable_model).to_uzu()
     del model
     tensors = {k: v for k, v in uzu.items() if eqx.is_array(v)}
-    metadata = {k: str(v) for k, v in uzu.items() if not eqx.is_array(v)}
+    uzu_metadata = {k: str(v) for k, v in uzu.items() if not eqx.is_array(v)}
 
     with Path(output_dir / "model.safetensors").open("wb") as fd:
-        safe_write(fd, tensors, metadata=metadata or None)
+        safe_write(fd, tensors, metadata=uzu_metadata or None)
 
     config_json = config_converter.unstructure(metadata, ModelMetadata)
     with open(output_dir / "config.json", "w") as file:

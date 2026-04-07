@@ -3,7 +3,6 @@ from functools import partial
 
 import equinox as eqx
 import jax
-from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree

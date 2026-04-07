@@ -8,7 +8,6 @@ from lalamo.modules import (
     DecoderConfig,
     EmbeddingQuantConfig,
     LinearConfig,
-    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
 )
@@ -18,7 +17,6 @@ from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.rope import LinearScalingRoPEConfig, UnscaledRoPEConfig, YARNRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -100,7 +98,7 @@ class HFGemma3TextConfigRaw:
                 logit_soft_cap=self.final_logit_softcapping,
                 quantization=EmbeddingQuantConfig(
                     group_size=quantization.group_size,
-                    quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
+                    bits=quantization.bits,
                 ),
             )
         else:
@@ -145,18 +143,7 @@ class HFGemma3TextConfigRaw:
             head_dim=self.head_dim,
         )
 
-        if quantization is None:
-            linear_config = FullPrecisionLinearConfig()
-        elif isinstance(quantization, MLXQuantizationConfig):
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=quantization.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(quantization.bits),
-                activation_quantization_mode=None,
-            )
-        else:
-            raise RuntimeError(f"Unsupported quantization format: {type(quantization)}")
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=GELU(),

@@ -1,9 +1,7 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import equinox as eqx
 from jax import vmap
-from dataclasses import field
-
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
@@ -196,7 +194,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: DecoderForwardPassConfig = DecoderForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: PRNGKeyArray | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(

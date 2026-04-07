@@ -9,7 +9,6 @@ from lalamo.modules import (
     EmbeddingQuantConfig,
     LinearConfig,
     NormalizationConfig,
-    QuantFormat,
     TiedEmbeddingConfig,
     TransformerConfig,
     TransformerLayerConfig,
@@ -18,7 +17,6 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.quantization import QuantizationMode
 
 from .common import HuggingFaceLMConfig, MLXQuantizationConfig, QuantizationConfigType
 
@@ -73,7 +71,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
         if isinstance(self.quantization_config, MLXQuantizationConfig):
             quant_config = EmbeddingQuantConfig(
                 group_size=self.quantization_config.group_size,
-                quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
+                bits=self.quantization_config.bits,
             )
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
@@ -110,24 +108,7 @@ class HFQwen3Config(HuggingFaceLMConfig):
             upcast_mode=UpcastMode.ONLY_NORMALIZATION,
             subtract_mean=False,
         )
-        if self.quantization_config is None:
-            linear_config = FullPrecisionLinearConfig()
-        elif isinstance(self.quantization_config, MLXQuantizationConfig):
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.MLX,
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-            )
-        else:
-            linear_config = LinearConfig(
-                precision=activation_precision,
-                quant_format=QuantFormat.AWQ,
-                group_size=self.quantization_config.group_size,
-                weight_quantization_mode=QuantizationMode.from_num_bits(self.quantization_config.bits),
-                activation_quantization_mode=None,
-            )
+        linear_config = LinearConfig()
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
             activation=SiLU(),

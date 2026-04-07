@@ -73,13 +73,9 @@ class ForwardPassConfig:
         deterministic_ops: bool = False,
         xla_autotune_level: int = 0,
     ) -> "ForwardPassConfig":
-        from lalamo.modules.forward_pass_config import (
-            ArrayForwardPassConfig,
-            AttentionImplementation,
-            GradientEstimator,
-        )
+        from lalamo.arrays.base import ArrayForwardPassConfig, GradientEstimator
         from lalamo.modules.mlp import MLPForwardPassConfig
-        from lalamo.modules.token_mixers.common import AttentionForwardPassConfig
+        from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, AttentionImplementation
 
         arrays = ArrayForwardPassConfig(
             gradient_estimator=gradient_estimator or GradientEstimator.DETERMINISTIC,
@@ -593,7 +589,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
     ) -> Iterator[GenerationResults]:
@@ -633,7 +629,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
     ) -> int:
         if sharding_config is None:
@@ -685,7 +681,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
         key: PRNGKeyArray | None = None,
     ) -> AssistantMessage:
@@ -716,7 +712,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
         *,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         vram_bytes: int | None = None,
@@ -805,7 +801,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         messages: Iterable[Message],
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[str]:
@@ -831,7 +827,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_config: GenerationConfig | None = None,
         max_output_length: int = 8192,
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
-        forward_pass_config: ForwardPassConfig = ForwardPassConfig()  # noqa: B008,
+        forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:

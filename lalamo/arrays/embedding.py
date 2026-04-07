@@ -1,14 +1,26 @@
 import abc
+from collections.abc import Mapping
+from typing import Any, ClassVar
 
 import equinox as eqx
+import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.quantization import QuantizationMode, quantize_weights
-from lalamo.utils import jax_uint4_to_packed_uint8
+from lalamo.serialization import Serializable
+
+from .base import pack_uint_to_uint8, unpack_uint8_to_uint
 
 
-class CompressedEmbedding(eqx.Module):
+class CompressedEmbedding(Serializable, eqx.Module):
+    _registry: ClassVar[dict[str, type["CompressedEmbedding"]]] = {}
+    kind: ClassVar[str]
+
+    def __init_subclass__(cls, kind: str, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        CompressedEmbedding._registry[kind] = cls
+        cls.kind = kind
+
     @property
     @abc.abstractmethod
     def vocab_size(self) -> int: ...
@@ -22,16 +34,23 @@ class CompressedEmbedding(eqx.Module):
     def activation_precision(self) -> DTypeLike: ...
 
     @abc.abstractmethod
-    def dequantize(self) -> Float[Array, "vocabulary channels"]: ...
+    def materialize(self) -> Float[Array, "vocabulary channels"]: ...
 
     @abc.abstractmethod
-    def to_uzu(self) -> dict[str, Array]: ...
+    def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]: ...
 
-    @abc.abstractmethod
-    def from_uzu(self, weights: dict[str, Array]) -> "CompressedEmbedding": ...
+    def to_uzu(self) -> dict[str, Any]:
+        return {"__kind__": self.kind, **super().to_uzu()}
+
+    @classmethod
+    def from_uzu(cls, data: Mapping[str, Any]) -> "CompressedEmbedding":
+        kind = data["__kind__"]
+        if not isinstance(kind, str):
+            raise TypeError(f"Expected string kind, got {type(kind)}")
+        return cls._registry[kind].from_uzu(data)
 
 
-class FullPrecisionEmbedding(CompressedEmbedding):
+class FullPrecisionEmbedding(CompressedEmbedding, kind="full_precision_embedding"):
     weights: Float[Array, "vocabulary channels"]
 
     @property
@@ -48,22 +67,25 @@ class FullPrecisionEmbedding(CompressedEmbedding):
     def activation_precision(self) -> DTypeLike:
         return self.weights.dtype
 
-    def dequantize(self) -> Float[Array, "vocabulary channels"]:
+    def materialize(self) -> Float[Array, "vocabulary channels"]:
         return self.weights
 
-    def to_uzu(self) -> dict[str, Array]:
-        return {"raw": self.weights}
+    def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        return self.weights[token_ids]
 
-    def from_uzu(self, weights: dict[str, Array]) -> "FullPrecisionEmbedding":
-        return type(self)(weights=weights["raw"])
+    @classmethod
+    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedEmbedding:
+        if str(data.get("__kind__")) != cls.kind:
+            return CompressedEmbedding.from_uzu(data)
+        return cls(weights=data["weights"])
 
 
-class MLXQuantizedEmbedding(CompressedEmbedding):
+class MLXQuantizedEmbedding(CompressedEmbedding, kind="mlx_embedding"):
     weights: Float[Array, "vocabulary channels"]
     scales: Float[Array, "vocabulary groups"]
     biases: Float[Array, "vocabulary groups"]
     group_size: int = eqx.field(static=True)
-    quantization_mode: QuantizationMode = eqx.field(static=True)
+    bits: int = eqx.field(static=True)
 
     @property
     def vocab_size(self) -> int:
@@ -79,10 +101,9 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
     def activation_precision(self) -> DTypeLike:
         return self.scales.dtype
 
-    def dequantize(self) -> Float[Array, "vocabulary channels"]:
-        quantized_weights = quantize_weights(self.weights, self.quantization_mode)
+    def materialize(self) -> Float[Array, "vocabulary channels"]:
         grouped = rearrange(
-            quantized_weights,
+            self.weights,
             "vocab (groups elements) -> vocab groups elements",
             elements=self.group_size,
         )
@@ -93,31 +114,30 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
             "vocab groups elements -> vocab (groups elements)",
         )
 
-    def pack(self) -> Int[Array, "vocabulary channels"]:
-        quantized = quantize_weights(self.weights, self.quantization_mode)
-        casted = quantized.astype(self.quantization_mode.dtype)
-        if self.quantization_mode == QuantizationMode.UINT4:
-            return jax_uint4_to_packed_uint8(casted)
-        return casted
+    def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
+        return self.materialize()[token_ids]
 
-    def to_uzu(self) -> dict[str, Array]:
+    def to_uzu(self) -> dict[str, Any]:
         return {
-            "qweight": self.pack(),
+            "__kind__": self.kind,
+            "qweight": pack_uint_to_uint8(self.weights.astype(jnp.uint8), self.bits),
             "scales": self.scales,
             "biases": self.biases,
+            "bits": self.bits,
+            "group_size": self.group_size,
         }
 
-    def from_uzu(self, weights: dict[str, Array]) -> "MLXQuantizedEmbedding":
-        packed_weights = weights["qweight"]
-        unpacked_weights = packed_weights
-        if self.quantization_mode == QuantizationMode.UINT4:
-            from lalamo.utils import jax_uint8_to_unpacked_uint4
-
-            unpacked_weights = jax_uint8_to_unpacked_uint4(packed_weights)
-        return type(self)(
-            weights=unpacked_weights.astype(weights["scales"].dtype),
-            scales=weights["scales"],
-            biases=weights["biases"],
-            group_size=self.group_size,
-            quantization_mode=self.quantization_mode,
+    @classmethod
+    def from_uzu(cls, data: Mapping[str, Any]) -> CompressedEmbedding:
+        if str(data.get("__kind__")) != cls.kind:
+            return CompressedEmbedding.from_uzu(data)
+        bits = int(data["bits"])
+        group_size = int(data["group_size"])
+        weights = unpack_uint8_to_uint(data["qweight"], bits)
+        return cls(
+            weights=weights.astype(data["scales"].dtype),
+            scales=data["scales"],
+            biases=data["biases"],
+            group_size=group_size,
+            bits=bits,
         )

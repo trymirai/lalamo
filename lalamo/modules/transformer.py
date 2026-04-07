@@ -1,10 +1,8 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import equinox as eqx
 import jax
 from jax import vmap
-from dataclasses import field
-
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree

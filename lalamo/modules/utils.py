@@ -8,8 +8,8 @@ from jaxtyping import Array, Float, PRNGKeyArray
 
 __all__ = [
     "apply_soft_capping",
-    "vmap_with_key",
     "vmap_twice",
+    "vmap_with_key",
 ]
 
 

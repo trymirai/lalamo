@@ -29,7 +29,7 @@ __all__ = [
 @dataclass(frozen=True)
 class EmbeddingQuantConfig:
     group_size: int
-    quantization_mode: QuantizationMode
+    bits: int
 
 
 def _make_embedding(
@@ -46,7 +46,7 @@ def _make_embedding(
             scales=initializer.ones((vocab_size, model_groups), initializer.precision),
             biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
             group_size=quantization.group_size,
-            quantization_mode=quantization.quantization_mode,
+            bits=quantization.bits,
         )
     return FullPrecisionEmbedding(
         weights=initializer.normal(1.0, (vocab_size, model_dim), initializer.precision),
@@ -130,10 +130,10 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
         return self.embedding.vocab_size
 
     def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.embedding.dequantize()
+        return self.embedding.materialize()
 
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.embedding.dequantize()
+        return self.embedding.materialize()
 
 
 @dataclass(frozen=True)
@@ -173,10 +173,10 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
         return self.input_embedding.vocab_size
 
     def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.input_embedding.dequantize()
+        return self.input_embedding.materialize()
 
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]:
-        return self.output_embedding.dequantize()
+        return self.output_embedding.materialize()
 
 
 EmbeddingConfig = TiedEmbeddingConfig | UntiedEmbeddingConfig
