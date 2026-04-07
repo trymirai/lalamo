@@ -139,7 +139,7 @@ class Qwen3TTSTalkerConfig:
     code_predictor_config: Qwen3TTSTalkerCodePredictorConfig
     spk_id: dict[str, int]
     codec_language_id: dict[str, int]
-    layer_types: tuple[str, ...]
+    layer_types: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -370,8 +370,8 @@ def _build_text_decoder_config(
     linear_config = FullPrecisionLinearConfig(precision=precision)
     embedding_config = TiedEmbeddingConfig(input_scale=None, logit_soft_cap=None, precision=precision)
 
-    talker_layer_types = talker.layer_types
-    predictor_layer_types = predictor.layer_types
+    talker_layer_types = talker.layer_types or ("full_attention",) * talker.num_hidden_layers
+    predictor_layer_types = predictor.layer_types or ("full_attention",) * predictor.num_hidden_layers
 
     talker_transformer_config = build_transformer_config(
         precision=precision,

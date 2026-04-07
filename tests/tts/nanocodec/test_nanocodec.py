@@ -419,7 +419,7 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
     # Lalamo forward using audio_from_codes
     tokens_jax = jnp.array(tokens_np)
     codes = CodebookCodes(semantic=tokens_jax[:1, :], acoustic=tokens_jax[1:, :])
-    audio_lalamo = lalamo_model.decode(codes)
+    audio_lalamo = lalamo_model.audio_from_codes(codes)
 
     # Compare outputs
     # Use relaxed tolerances for end-to-end test as small numerical differences
