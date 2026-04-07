@@ -28,7 +28,7 @@ class MixtureArray(CompressedArray):
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         assert len(self.parts) != 0, "MixtureArray must be non-empty to materialize"
         return sum(  # type: ignore[return-value]
-            coeff * part.materialize() for coeff, part in zip(self.coefficients, self.parts, strict=False)
+            coeff * part.materialize() for coeff, part in zip(self.coefficients, self.parts, strict=True)
         )
 
     def dot(
@@ -41,7 +41,7 @@ class MixtureArray(CompressedArray):
         assert len(self.parts) != 0, "MixtureArray must be non-empty to dot"
         return sum(  # type: ignore[return-value]
             coeff * part.dot(vector, key=key, forward_pass_config=forward_pass_config)
-            for coeff, part in zip(self.coefficients, self.parts, strict=False)
+            for coeff, part in zip(self.coefficients, self.parts, strict=True)
         )
 
     def add_part(self, part: CompressedArray, coefficient: float = 1.0) -> "MixtureArray":
