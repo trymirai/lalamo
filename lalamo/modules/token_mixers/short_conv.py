@@ -3,7 +3,7 @@ from functools import partial
 
 import equinox as eqx
 import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
@@ -86,7 +86,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> TokenMixerResult[ShortConvStateLayer]:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for ShortConv.")

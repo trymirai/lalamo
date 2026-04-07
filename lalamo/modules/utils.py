@@ -4,7 +4,7 @@ from typing import Any
 
 import jax
 from jax import vmap
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Key
 
 __all__ = [
     "apply_soft_capping",
@@ -23,7 +23,7 @@ def vmap_with_key(
     fn: Callable[..., Any],
     inputs: Array,
     *,
-    key: PRNGKeyArray | None,
+    key: Key[Array, ""] | None,
 ) -> Any:  # noqa: ANN401
     if key is None:
         return vmap(partial(fn, key=None))(inputs)

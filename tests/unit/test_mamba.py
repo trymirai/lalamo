@@ -34,7 +34,7 @@ def make_mamba() -> Mamba2:
         has_out_biases=True,
     )
     model_dim = 4
-    return config.init(RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)), model_dim=model_dim)
+    return config.init(RandomInitializer(precision=jnp.float32, key=jax.random.key(0)), model_dim=model_dim)
 
 
 @settings(max_examples=10, deadline=None)
@@ -53,7 +53,7 @@ def test_mamba_state_respects_length_without_padding(
     full_seqlen = seqlen + padding
 
     full_input = jax.random.normal(
-        jax.random.PRNGKey(seed),
+        jax.random.key(seed),
         (full_seqlen, model_dim),
         dtype=jnp.float32,
     )
@@ -87,7 +87,7 @@ def test_mamba_state_respects_length_without_padding(
 @pytest.mark.parametrize("seq_len", [4, 64, 256])
 def test_exp_segsum_numerical_properties(seq_len: int) -> None:
     """Test that exp_segsum handles edge cases correctly."""
-    key = jax.random.PRNGKey(123)
+    key = jax.random.key(123)
     x = jax.random.uniform(key, (2, 3, seq_len), dtype=jnp.float32, minval=-5.0, maxval=-0.1)
 
     result = exp_segsum(x)
@@ -126,7 +126,7 @@ def test_fused_ssd_intra_chunk_matches_reference(chunk_size: int, num_chunks: in
     state_dim = 16
     head_dim = 32
 
-    key = jax.random.PRNGKey(42)
+    key = jax.random.key(42)
     keys = jax.random.split(key, 4)
 
     a = -jnp.abs(jax.random.normal(keys[0], (groups, heads_per_group, num_chunks, chunk_size), dtype=jnp.float32))
@@ -158,7 +158,7 @@ def test_fused_ssd_preserves_causality(chunk_size: int) -> None:
     head_dim = 16
     num_chunks = 1
 
-    key = jax.random.PRNGKey(999)
+    key = jax.random.key(999)
     keys = jax.random.split(key, 4)
 
     a = -jnp.abs(jax.random.normal(keys[0], (groups, heads_per_group, num_chunks, chunk_size), dtype=jnp.float32))

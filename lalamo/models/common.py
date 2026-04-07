@@ -8,7 +8,7 @@ from typing import Self
 import equinox as eqx
 import jax
 from jax import numpy as jnp
-from jaxtyping import PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Key
 from tokenizers import Tokenizer
 
 from lalamo.common import is_abstract_array, stringify_path
@@ -28,7 +28,7 @@ __all__ = [
 ]
 
 
-def split_into_rolling_keys(key: PRNGKeyArray, num: int = 2) -> PRNGKeyArray:
+def split_into_rolling_keys(key: Key[Array, ""], num: int = 2) -> Key[Array, " num"]:
     """Equivalent to jax.random.split(), but uses lax.scan to produce keys
     sequentially (rolling), so that keys share consistent prefixes."""
     if not isinstance(num, int):
@@ -36,7 +36,7 @@ def split_into_rolling_keys(key: PRNGKeyArray, num: int = 2) -> PRNGKeyArray:
     if num < 0:
         raise ValueError(f"Expected non-negative 'num', got {num}")
 
-    def split_once(carry: PRNGKeyArray, _: None) -> tuple[PRNGKeyArray, PRNGKeyArray]:
+    def split_once(carry: Key[Array, ""], _: None) -> tuple[Key[Array, ""], Key[Array, ""]]:
         next_carry, sample_key = jax.random.split(carry)
         return next_carry, sample_key
 

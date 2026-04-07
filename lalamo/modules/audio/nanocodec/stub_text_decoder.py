@@ -9,7 +9,7 @@ from dataclasses import dataclass
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Int, Key
 
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
 from lalamo.modules.common import Initializer
@@ -41,11 +41,11 @@ class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
-        key: PRNGKeyArray | None = None,
+        key: Key[Array, ""] | None = None,
     ) -> Int[Array, "batch num_codebooks tokens"]:
         """Generate random codebook indices with length derived from input tokens."""
         if key is None:
-            key = jax.random.PRNGKey(self.seed)
+            key = jax.random.key(self.seed)
 
         batch_size = text_tokens.shape[0]
         output_length = text_tokens.shape[1]

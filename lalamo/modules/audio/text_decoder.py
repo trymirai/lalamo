@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-from jaxtyping import Array, PRNGKeyArray
+from jaxtyping import Array, Key
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import Initializer, LalamoModule
@@ -20,5 +20,5 @@ class TTSTextDecoder[ConfigT: TTSTextDecoderConfigBase](LalamoModule[ConfigT]):
         self,
         text_tokens: Array,
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray | None = None,
+        key: Key[Array, ""] | None = None,
     ) -> Array: ...

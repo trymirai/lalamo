@@ -6,7 +6,7 @@ import jax
 from einops import einsum, rearrange
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.common import require_mapping
 from lalamo.modules.common import Initializer, ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
@@ -209,7 +209,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> AttentionResult:
         qkv_key, gate_key, out_key = jax.random.split(key, 3) if key is not None else (None, None, None)
         queries, keys, values = vmap_with_key(

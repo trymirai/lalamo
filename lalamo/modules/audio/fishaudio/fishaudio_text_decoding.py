@@ -5,7 +5,7 @@ from typing import Any
 import jax
 from jax import numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -132,7 +132,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
     ) -> FishAudioTextDecoderResult:
@@ -200,7 +200,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray | None = None,
+        key: Key[Array, ""] | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
         Generate semantic tokens for a full utterance given text tokens in an autoregressive
@@ -222,7 +222,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
         if sampling_policy is None:
             sampling_policy = default_fishaudio_sampling_policy()
         if key is None:
-            key = jax.random.PRNGKey(123)
+            key = jax.random.key(123)
 
         max_new_tokens = max_seq_len - prompt_length
 
@@ -310,7 +310,7 @@ def decode_next_token(
     state_slow: State | None,
     input_pos: Array,
     sampling_policy: SamplingPolicy,
-    key: PRNGKeyArray,
+    key: Key[Array, ""],
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
 ) -> tuple[Int[Array, "batch codes"], State | None]:
     batch_size = x.shape[0]

@@ -8,7 +8,7 @@ if TYPE_CHECKING:
     from lalamo.modules.common import ShardingConfig
 
 import equinox as eqx
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.serialization import UzuSerializable
 
@@ -54,7 +54,7 @@ class CompressedArray(UzuSerializable, eqx.Module):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]: ...
 

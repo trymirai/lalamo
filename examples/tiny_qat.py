@@ -2,7 +2,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Key
 
 from lalamo.arrays import FullPrecisionArray
 from lalamo.arrays.awq import AWQQuantArray
@@ -17,7 +17,7 @@ from utils import Batch, kl_divergence, load_lmsys_conversations, make_batch
 is_quantized = lambda x: isinstance(x, (MLXQuantArray, AWQQuantArray))
 
 
-def perturb_quantized_weights(model: eqx.Module, key: PRNGKeyArray) -> eqx.Module:
+def perturb_quantized_weights(model: eqx.Module, key: Key[Array, ""]) -> eqx.Module:
     leaves = jax.tree.leaves(model, is_leaf=is_quantized)
     keys = iter(jax.random.split(key, sum(1 for l in leaves if is_quantized(l))))
 
@@ -70,7 +70,7 @@ def main() -> None:
         opt_state: optax.OptState,
         teacher_logits: Float[Array, "batch seq_len vocab"],
         batch: Batch,
-        key: PRNGKeyArray,
+        key: Key[Array, ""],
     ) -> tuple[eqx.Module, optax.OptState, Float[Array, ""]]:
         mask = batch.loss_mask[:, 1:]
 

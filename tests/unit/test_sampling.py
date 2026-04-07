@@ -65,7 +65,7 @@ def test_logit_processing(spec: ModelSpec) -> None:
     )
 
     for i in range(256):
-        key = jax.random.PRNGKey(i)
+        key = jax.random.key(i)
 
         logits = jax.random.normal(key, (256,), dtype=jnp.float32)
 

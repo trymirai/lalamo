@@ -8,7 +8,7 @@ import jax
 import numpy as np
 from jax import Array
 from jax import numpy as jnp
-from jaxtyping import Float, Int, PRNGKeyArray
+from jaxtyping import Float, Int, Key
 from tokenizers import Tokenizer
 
 from lalamo.audio.audio_rendering import AudioEncoding, AudioRenderingSettings
@@ -24,7 +24,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_consts import (
     DEFAULT_FISH_AUDIO_REPETITION_PENALTY,
-    DEFAULT_FISHAUDIO_RANDOM_SEED,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_text_decoding import (
     FishAudioTextDecoder,
@@ -75,9 +74,9 @@ class TTSGenerator(eqx.Module):
         text_tokens: Array,
         sampling_policy: SamplingPolicy,
         repetition_penalty: float,  # noqa: ARG002, reserved for near future
-        random_key: PRNGKeyArray | None = None,
+        random_key: Key[Array, ""] | None = None,
     ) -> Array:
-        random_key = jax.random.PRNGKey(123) if random_key is None else random_key
+        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,
@@ -104,7 +103,7 @@ class TTSGenerator(eqx.Module):
         messages: Iterable[TTSMessage],
         sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
-        random_key: PRNGKeyArray | None = None,
+        random_key: Key[Array, ""] | None = None,
     ) -> TTSGenerationResult:
         text_tokens = self.tokenize_text(messages)
 
@@ -162,13 +161,13 @@ class FishAudioTTSGenerator(TTSGenerator):
         text_tokens: Int[Array, "batch sequence"],
         sampling_policy: SamplingPolicy | None = None,
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
-        random_key: PRNGKeyArray | None = None,
+        random_key: Key[Array, ""] | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:
         assert isinstance(self.tts_model.text_decoder, FishAudioTextDecoder)
 
         sampling_policy = sampling_policy if sampling_policy is not None else default_fishaudio_sampling_policy()
 
-        random_key = jax.random.PRNGKey(DEFAULT_FISHAUDIO_RANDOM_SEED) if random_key is None else random_key
+        random_key = jax.random.key(123) if random_key is None else random_key
         return self.tts_model.text_decoder.decode_utterance(
             text_tokens,
             sampling_policy=sampling_policy,

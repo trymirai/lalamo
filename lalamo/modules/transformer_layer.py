@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree
 
@@ -215,7 +215,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig = TransformerLayerForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(

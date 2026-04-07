@@ -10,7 +10,7 @@ import jax.numpy as jnp
 import numpy as np
 from einops import rearrange, repeat
 from jax import vmap
-from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
+from jaxtyping import Array, Bool, Float, Int, Key
 
 from lalamo.arrays.base import ArrayForwardPassConfig, GradientEstimator
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
@@ -678,7 +678,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         *,
         forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         sharding_config: ShardingConfig | None = None,
-        key: PRNGKeyArray | None = None,
+        key: Key[Array, ""] | None = None,
     ) -> AssistantMessage:
         if sharding_config is None:
             sharding_config = get_current_sharding_config()
@@ -798,7 +798,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         max_output_length: int = 8192,
         forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None = None,
+        key: Key[Array, ""] | None = None,
     ) -> Iterable[str]:
         formatted_messages = self.message_processor.render_request(messages)
         token_ids = jnp.array(self.message_processor.tokenize_text(formatted_messages), dtype=jnp.int32)
@@ -824,7 +824,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         eos_token_ids: Int[Array, " eos_tokens"] | None = None,
         forward_pass_config: ForwardPassConfig = ForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None = None,
+        key: Key[Array, ""] | None = None,
     ) -> Iterable[Int[Array, ""]]:
         sampling_policy = self.default_sampling_policy()
         if generation_config is not None:

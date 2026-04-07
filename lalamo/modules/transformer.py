@@ -3,7 +3,7 @@ from dataclasses import dataclass, field
 import equinox as eqx
 import jax
 from jax import vmap
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree
 from lalamo.modules.token_mixers import AttentionConfig
@@ -128,7 +128,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(

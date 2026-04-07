@@ -19,7 +19,7 @@ def test_full_precision_round_trip() -> None:
 
 @pytest.mark.fast
 def test_awq_round_trip() -> None:
-    key = jax.random.PRNGKey(0)
+    key = jax.random.key(0)
     arr = AWQQuantArray.compress(jax.random.normal(key, (4, 8)), bits=4, group_size=4)
     data = arr.to_uzu()
     restored = arr.from_uzu(data)
@@ -51,7 +51,7 @@ def test_mixture_full_precision_and_lora_round_trip() -> None:
 @pytest.mark.fast
 def test_mixture_full_precision_and_awq_round_trip() -> None:
     fp = FullPrecisionArray(weights=jnp.ones((4, 8)))
-    awq = AWQQuantArray.compress(jax.random.normal(jax.random.PRNGKey(0), (4, 8)), bits=4, group_size=4)
+    awq = AWQQuantArray.compress(jax.random.normal(jax.random.key(0), (4, 8)), bits=4, group_size=4)
     mixture = MixtureArray(parts=(fp, awq), coefficients=jnp.array([1.0, 1.0]))
 
     data = mixture.to_uzu()

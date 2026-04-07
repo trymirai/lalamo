@@ -22,7 +22,7 @@ def make_short_conv() -> ShortConv:
         kernel_size=3,
     )
     model_dim = 4
-    return config.init(RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)), model_dim=model_dim)
+    return config.init(RandomInitializer(precision=jnp.float32, key=jax.random.key(0)), model_dim=model_dim)
 
 
 @settings(max_examples=10, deadline=None)
@@ -41,7 +41,7 @@ def test_short_conv_state_respects_length_without_padding(
     full_seqlen = seqlen + padding
 
     full_input = jax.random.normal(
-        jax.random.PRNGKey(seed),
+        jax.random.key(seed),
         (full_seqlen, model_dim),
         dtype=jnp.float32,
     )

@@ -49,7 +49,7 @@ def test_moe_prefill_vs_decode_match() -> None:
     )
 
     # Initialize MoE
-    key = jax.random.PRNGKey(0)
+    key = jax.random.key(0)
     moe = moe_config.init(
         RandomInitializer(precision=jnp.bfloat16, key=key), model_dim=model_dim, hidden_dim=hidden_dim
     )
@@ -57,7 +57,7 @@ def test_moe_prefill_vs_decode_match() -> None:
     # Random inputs
     batch = 2
     suffix_tokens = 16
-    inputs_key = jax.random.PRNGKey(1)
+    inputs_key = jax.random.key(1)
     inputs = jax.random.normal(inputs_key, (batch, suffix_tokens, model_dim), dtype=jnp.float32)
 
     # Compare PREFILL vs DECODE
@@ -91,7 +91,7 @@ def test_load_moe_gpt_oss_fused_weights_wraps_linear_arrays(
         expert_hidden_dim=hidden_dim,
     )
     module = moe_config.init(
-        RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)),
+        RandomInitializer(precision=jnp.float32, key=jax.random.key(0)),
         model_dim=model_dim,
         hidden_dim=hidden_dim,
     )

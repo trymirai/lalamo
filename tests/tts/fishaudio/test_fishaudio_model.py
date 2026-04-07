@@ -56,7 +56,7 @@ def test_decode_one_token_matches_pytorch(fish_audio_local_model_path: Path) -> 
     )
 
     sampling_policy = GreedyPolicy()
-    key = jax.random.PRNGKey(123)
+    key = jax.random.key(123)
 
     # Prepare inputs
     tokenized_text = jnp.array(pytorch_tts_generator.message_processor.tokenize_request([tts_message]))[None, :]

@@ -68,7 +68,7 @@ def _make_lalamo_delta_net(hf_config: Any):
         kernel_size=hf_config.linear_conv_kernel_dim,
     )
     return config.init(
-        RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)), model_dim=hf_config.hidden_size
+        RandomInitializer(precision=jnp.float32, key=jax.random.key(0)), model_dim=hf_config.hidden_size
     )
 
 

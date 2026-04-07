@@ -8,7 +8,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
 from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
@@ -69,7 +69,7 @@ class AWQQuantArray(CompressedArray):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
         match forward_pass_config.gradient_estimator:

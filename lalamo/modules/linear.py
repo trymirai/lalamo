@@ -6,7 +6,7 @@ from itertools import accumulate
 
 import equinox as eqx
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.arrays import CompressedArray, FullPrecisionArray
 from lalamo.arrays.base import ArrayForwardPassConfig
@@ -196,7 +196,7 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         self,
         inputs: Float[Array, " in_channels"],
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> tuple[Float[Array, " out_channels"], ...]:
         if self.config.activation_quantization_mode is not None:

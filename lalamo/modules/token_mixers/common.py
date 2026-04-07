@@ -4,7 +4,7 @@ from enum import Enum
 from typing import NamedTuple
 
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.modules.common import Initializer, LalamoModule, PositionalEmbeddingSelector
@@ -69,7 +69,7 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
         length_without_padding: Int[Array, ""] | int | None = None,
         forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> TokenMixerResult[StateLayerT]: ...
 
     @abstractmethod

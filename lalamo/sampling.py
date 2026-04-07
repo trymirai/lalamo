@@ -7,7 +7,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int, Key
 
 __all__ = [
     "BanTokensPolicy",
@@ -30,13 +30,7 @@ class SamplingPolicy(eqx.Module):
     @abstractmethod
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]: ...
 
-    def init(self, prompt_token_ids: Int[Array, " tokens"], prompt_length: Int[Array, ""]) -> Self:  # noqa: ARG002
-        return self
-
-    def update(self, next_token: Int[Array, ""]) -> Self:  # noqa: ARG002
-        return self
-
-    def __call__(self, logits: Float[Array, " vocabulary"], *, key: PRNGKeyArray) -> Int[Array, ""]:
+    def __call__(self, logits: Float[Array, " vocabulary"], *, key: Key[Array, ""]) -> Int[Array, ""]:
         return jax.random.categorical(key, self.process_logits(logits))
 
 

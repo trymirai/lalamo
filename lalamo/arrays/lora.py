@@ -1,4 +1,4 @@
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
@@ -24,7 +24,7 @@ class LoRAArray(CompressedArray):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: PRNGKeyArray | None,  # noqa: ARG002
+        key: Key[Array, ""] | None,  # noqa: ARG002
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, " out_channels"]:
         return self.down @ (self.up @ vector)

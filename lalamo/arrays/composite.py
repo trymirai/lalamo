@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Key
 
 from .base import ArrayForwardPassConfig, CompressedArray
 
@@ -35,7 +35,7 @@ class MixtureArray(CompressedArray):
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
         assert len(self.parts) != 0, "MixtureArray must be non-empty to dot"

@@ -15,7 +15,7 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import IM_END_TOKEN, FishTokenizer
 from hydra.utils import instantiate
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, Int, Key
 from omegaconf import DictConfig
 from torch._tensor import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
@@ -520,7 +520,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder):
         self,
         text_tokens: Int[Array, "batch tokens"],
         sampling_policy: SamplingPolicy | None = None,
-        key: PRNGKeyArray | None = None,  # noqa: ARG002
+        key: Key[Array, ""] | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)
         sampling_params = sampling_params_from_policy(sampling_policy)

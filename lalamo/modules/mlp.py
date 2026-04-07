@@ -9,7 +9,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from jax import vmap
-from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
 from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.modules.utils import vmap_twice, vmap_with_key
@@ -64,7 +64,7 @@ class MLPBase[ConfigT: "MLPConfig"](LalamoModule[ConfigT]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, "batch suffix_tokens channels"]: ...
 
 
@@ -192,7 +192,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,  # noqa: ARG002
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         return vmap(
             lambda batch: vmap_with_key(
@@ -208,7 +208,7 @@ class DenseMLP(MLPBase[DenseMLPConfig]):
         inputs: Float[Array, " channels"],
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, " channels"]:
         if self.mixture_size is not None:
             raise ValueError(
@@ -381,7 +381,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         match forward_pass_mode:
             case ForwardPassMode.MULTI_TOKEN:
@@ -394,7 +394,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         inputs: Float[Array, " channels"],
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, " one"]:
         if self.gate is not None:
             (gate_value,) = self.gate(inputs, key=key, forward_pass_config=forward_pass_config.arrays)
@@ -407,7 +407,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         inputs: Float[Array, "batch suffix_tokens channels"],
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         def per_token(token_input: Float[Array, " channels"]) -> Float[Array, " channels"]:
             (router_logits,) = self.router(token_input, key=key, forward_pass_config=forward_pass_config.arrays)
@@ -451,7 +451,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: MLPForwardPassConfig = MLPForwardPassConfig(),  # noqa: B008
         *,
-        key: PRNGKeyArray | None,
+        key: Key[Array, ""] | None,
     ) -> Float[Array, "batch suffix_tokens channels"]:
         batch_size, sequence_length, _ = inputs.shape
         num_tokens = batch_size * sequence_length

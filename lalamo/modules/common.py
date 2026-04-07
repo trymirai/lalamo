@@ -15,7 +15,7 @@ import jax.tree_util as jtu
 from cattrs import Converter
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
-from jaxtyping import Array, DTypeLike, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Key
 
 from lalamo.common import ParameterTree, stringify_path
 from lalamo.serialization import UzuSerializable
@@ -130,7 +130,7 @@ class EmptyInitializer(Initializer):
 
 @dataclass
 class RandomInitializer(Initializer):
-    key: PRNGKeyArray
+    key: Key[Array, ""]
 
     def normal(self, std: float, shape: tuple[int, ...], dtype: DTypeLike) -> Array:
         self.key, key = jax.random.split(self.key)

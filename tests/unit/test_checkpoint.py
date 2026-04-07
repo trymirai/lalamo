@@ -83,7 +83,7 @@ def _tiny_decoder_config() -> DecoderConfig:
 @pytest.mark.fast
 def test_checkpoint_save_restore() -> None:
     config = _tiny_decoder_config()
-    model = config.init(RandomInitializer(precision=jnp.float32, key=jax.random.PRNGKey(0)))
+    model = config.init(RandomInitializer(precision=jnp.float32, key=jax.random.key(0)))
 
     with tempfile.TemporaryDirectory() as tmp:
         manager = CheckpointManager(directory=Path(tmp))
@@ -99,7 +99,7 @@ def test_checkpoint_save_restore() -> None:
 @pytest.mark.fast
 def test_checkpoint_restore_preserves_saved_dtypes() -> None:
     config = _tiny_decoder_config()
-    model = config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.PRNGKey(0)))
+    model = config.init(RandomInitializer(precision=jnp.bfloat16, key=jax.random.key(0)))
 
     with tempfile.TemporaryDirectory() as tmp:
         manager = CheckpointManager(directory=Path(tmp))

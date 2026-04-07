@@ -1,14 +1,14 @@
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, Float, PRNGKeyArray
+from jaxtyping import Array, Float, Key
 
 
 def quantize_to_grid(weights: Float[Array, "..."], bits: int) -> Float[Array, "..."]:
     return jnp.clip(jnp.round(weights), 0, (2**bits) - 1)
 
 
-def stochastic_quantize_to_grid(weights: Float[Array, "..."], bits: int, key: PRNGKeyArray) -> Float[Array, "..."]:
+def stochastic_quantize_to_grid(weights: Float[Array, "..."], bits: int, key: Key[Array, ""]) -> Float[Array, "..."]:
     qmax = (2**bits) - 1
     floored = jnp.floor(weights)
     frac = weights - floored

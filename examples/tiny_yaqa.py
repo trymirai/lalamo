@@ -5,7 +5,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import optax
-from jaxtyping import Array, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int, Key
 
 from lalamo.arrays import FullPrecisionArray
 from lalamo.model_import import import_model
@@ -101,7 +101,7 @@ def main() -> None:
 
     @eqx.filter_jit
     def fisher_grads(
-        d: eqx.Module, token_ids: Int[Array, "1 seq"], positions: Int[Array, "1 seq"], seq_key: PRNGKeyArray
+        d: eqx.Module, token_ids: Int[Array, "1 seq"], positions: Int[Array, "1 seq"], seq_key: Key[Array, ""]
     ) -> eqx.Module:
         def loss_fn(d: eqx.Module) -> Float[Array, ""]:
             logits = d(token_ids, positions).logits
