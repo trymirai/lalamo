@@ -5,12 +5,30 @@ import optax
 from jaxtyping import Array, Float, PRNGKeyArray
 
 from lalamo.arrays import FullPrecisionArray
+from lalamo.arrays.awq import AWQQuantArray
+from lalamo.arrays.base import GradientEstimator
 from lalamo.arrays.mlx import MLXQuantArray
+from lalamo.arrays.quantization_helpers import stochastic_quantize_to_grid
 from lalamo.model_import import import_model
 from lalamo.models import ForwardPassConfig
-from lalamo.arrays.base import GradientEstimator
 
 from utils import Batch, kl_divergence, load_lmsys_conversations, make_batch
+
+is_quantized = lambda x: isinstance(x, (MLXQuantArray, AWQQuantArray))
+
+
+def perturb_quantized_weights(model: eqx.Module, key: PRNGKeyArray) -> eqx.Module:
+    leaves = jax.tree.leaves(model, is_leaf=is_quantized)
+    keys = iter(jax.random.split(key, sum(1 for l in leaves if is_quantized(l))))
+
+    def perturb_leaf(leaf: object) -> object:
+        if not is_quantized(leaf):
+            return leaf
+        rounded = stochastic_quantize_to_grid(leaf.weights, leaf.bits, next(keys))
+        ste = leaf.weights + jax.lax.stop_gradient(rounded - leaf.weights)
+        return eqx.tree_at(lambda l: l.weights, leaf, ste)
+
+    return jax.tree.map(perturb_leaf, model, is_leaf=is_quantized)
 
 
 def quantize_model(model: eqx.Module, group_size: int = 64, bits: int = 4) -> eqx.Module:
@@ -44,7 +62,7 @@ def main() -> None:
     num_batches = num_train // batch_size
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(2e-5, weight_decay=0.01))
     opt_state = optimizer.init(eqx.filter(student, eqx.is_inexact_array))
-    stochastic_fpc = ForwardPassConfig.init(gradient_estimator=GradientEstimator.STOCHASTIC_DROPOUT).decoder
+    deterministic_fpc = ForwardPassConfig.init(gradient_estimator=GradientEstimator.DETERMINISTIC).decoder
 
     @eqx.filter_jit
     def step(
@@ -57,8 +75,9 @@ def main() -> None:
         mask = batch.loss_mask[:, 1:]
 
         def loss_fn(s: eqx.Module) -> Float[Array, ""]:
-            logits = s(
-                batch.token_ids[:, :-1], batch.positions[:, :-1], forward_pass_config=stochastic_fpc, key=key
+            perturbed = perturb_quantized_weights(s, key)
+            logits = perturbed(
+                batch.token_ids[:, :-1], batch.positions[:, :-1], forward_pass_config=deterministic_fpc
             ).logits
             return kl_divergence(teacher_logits, logits, mask)
 
