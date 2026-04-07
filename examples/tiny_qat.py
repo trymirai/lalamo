@@ -40,7 +40,7 @@ def main() -> None:
     print(f"KL before: {eval_kl(teacher, student, eval_batch):.4f}")
 
     num_train = 48
-    batch_size = 4
+    batch_size = 2
     num_batches = num_train // batch_size
     optimizer = optax.chain(optax.clip_by_global_norm(1.0), optax.adamw(2e-5, weight_decay=0.01))
     opt_state = optimizer.init(eqx.filter(student, eqx.is_inexact_array))

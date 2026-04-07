@@ -1,5 +1,3 @@
-"""Shared utilities for lalamo examples."""
-
 import equinox as eqx
 import huggingface_hub
 import jax
@@ -20,7 +18,6 @@ class Batch(eqx.Module):
 
 
 def load_lmsys_calibration_texts(num_sequences: int = 32) -> list[str]:
-    """Load first user messages from LMSYS-Chat-1M as calibration data."""
     raw_conversations = _load_raw_conversations(num_sequences * 10)
 
     texts: list[str] = []
@@ -35,7 +32,6 @@ def load_lmsys_calibration_texts(num_sequences: int = 32) -> list[str]:
 
 
 def load_lmsys_conversations(num_sequences: int = 100) -> list[list[Message]]:
-    """Load multi-turn conversations from LMSYS-Chat-1M as Message objects."""
     raw_conversations = _load_raw_conversations(num_sequences * 10)
 
     conversations: list[list[Message]] = []
@@ -58,7 +54,6 @@ def _load_raw_conversations(num_rows: int) -> list:
 
 
 def _compute_gen_prompt_len(tokenizer: MessageProcessor) -> int:
-    """Compute the number of tokens in the generation prompt appended by tokenize_request."""
     request = tokenizer.request_to_dict([UserMessage("test")])
     with_prompt = tokenizer.prompt_template.render({**request, "strftime_now": lambda _: ""})
     without_prompt = tokenizer.prompt_template.render(
@@ -68,7 +63,6 @@ def _compute_gen_prompt_len(tokenizer: MessageProcessor) -> int:
 
 
 def make_batch(conversations: list[list[Message]], tokenizer: MessageProcessor, seq_len: int = 256) -> Batch:
-    """Tokenize conversations into a batch with loss mask on assistant tokens."""
     gen_prompt_len = _compute_gen_prompt_len(tokenizer)
 
     all_token_ids: list[list[int]] = []
@@ -98,7 +92,6 @@ def make_batch(conversations: list[list[Message]], tokenizer: MessageProcessor, 
 def tokenize_batch(
     texts: list[str], tokenizer: MessageProcessor, seq_len: int = 256
 ) -> tuple[Int[Array, "batch seq_len"], Int[Array, "batch seq_len"]]:
-    """Tokenize raw texts (no chat template, no mask). Used by calibration scripts."""
     token_lists = [tokenizer.tokenize_text(text)[:seq_len] for text in texts]
     padded = jnp.array([tokens + [0] * (seq_len - len(tokens)) for tokens in token_lists], dtype=jnp.int32)
     positions = jnp.broadcast_to(jnp.arange(seq_len, dtype=jnp.int32), padded.shape)

@@ -80,7 +80,7 @@ class ForwardPassConfig:
         from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, AttentionImplementation
 
         arrays = ArrayForwardPassConfig(
-            gradient_estimator=gradient_estimator or GradientEstimator.DETERMINISTIC,
+            gradient_estimator=gradient_estimator or GradientEstimator.NONE,
         )
         return ForwardPassConfig(
             decoder=DecoderForwardPassConfig(

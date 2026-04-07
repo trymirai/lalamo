@@ -1,26 +1,29 @@
 from collections.abc import Mapping
 from typing import Any
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 from einops import rearrange
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.modules.common import Initializer
 
-from .base import (
-    ArrayForwardPassConfig,
-    CompressedArray,
+from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
+from .quantization_helpers import (
     pack_uint_to_uint8,
+    quantize_to_grid,
+    stochastic_quantize_to_grid,
     unpack_uint8_to_uint,
 )
 
 
 class MLXQuantArray(CompressedArray, kind="mlx"):
-    weights: Int[Array, "... out_channels in_channels"]
+    weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     biases: Float[Array, "... out_channels groups"]
-    bits: int
-    group_size: int
+    bits: int = eqx.field(static=True)
+    group_size: int = eqx.field(static=True)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -30,10 +33,15 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
     def dtype(self) -> DTypeLike:
         return self.scales.dtype
 
-    def materialize(self) -> Float[Array, "... out_channels in_channels"]:
+    def dequantize(
+        self, quantized_weights: Float[Array, "... out_channels in_channels"]
+    ) -> Float[Array, "... out_channels in_channels"]:
         expanded_scales = jnp.repeat(self.scales, self.group_size, axis=-1)
         expanded_biases = jnp.repeat(self.biases, self.group_size, axis=-1)
-        return self.weights.astype(self.scales.dtype) * expanded_scales + expanded_biases
+        return quantized_weights * expanded_scales + expanded_biases
+
+    def materialize(self) -> Float[Array, "... out_channels in_channels"]:
+        return self.dequantize(quantize_to_grid(self.weights, self.bits))
 
     @classmethod
     def compress(
@@ -56,25 +64,38 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
 
         safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
         expanded_biases = jnp.repeat(group_mins, group_size, axis=-1)
-        int_weights = jnp.clip(jnp.round((weights - expanded_biases) / safe_scales), 0, quant_levels).astype(jnp.int32)
+        float_weights = quantize_to_grid((weights - expanded_biases) / safe_scales, bits)
 
-        return cls(weights=int_weights, scales=scales, biases=group_mins, bits=bits, group_size=group_size)
+        return cls(weights=float_weights, scales=scales, biases=group_mins, bits=bits, group_size=group_size)
 
     def dot(
         self,
         vector: Float[Array, " in_channels"],
         *,
-        key: PRNGKeyArray | None,  # noqa: ARG002
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
+        key: PRNGKeyArray | None,
+        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
     ) -> Float[Array, "... out_channels"]:
-        return self.materialize() @ vector
+        match forward_pass_config.gradient_estimator:
+            case GradientEstimator.NONE:
+                q = quantize_to_grid(self.weights, self.bits)
+            case GradientEstimator.DETERMINISTIC:
+                q = quantize_to_grid(self.weights, self.bits)
+                q = self.weights + jax.lax.stop_gradient(q - self.weights)
+            case GradientEstimator.STOCHASTIC:
+                assert key is not None
+                q = stochastic_quantize_to_grid(self.weights, self.bits, key)
+                q = self.weights + jax.lax.stop_gradient(q - self.weights)
+            case _:
+                raise ValueError(f"Unhandled gradient estimator: {forward_pass_config.gradient_estimator}")
+        return self.dequantize(q) @ vector
 
     def to_uzu(self) -> dict[str, Any]:
+        int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
         return {
             "__kind__": self.kind,
             "bits": self.bits,
             "group_size": self.group_size,
-            "weights": pack_uint_to_uint8(self.weights.astype(jnp.uint8), self.bits),
+            "weights": pack_uint_to_uint8(int_weights, self.bits),
             "scales": self.scales,
             "biases": self.biases,
         }
@@ -86,7 +107,7 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
         bits = int(data["bits"])
         group_size = int(data["group_size"])
         return cls(
-            weights=unpack_uint8_to_uint(data["weights"], bits).astype(jnp.int32),
+            weights=unpack_uint8_to_uint(data["weights"], bits).astype(data["scales"].dtype),
             scales=data["scales"],
             biases=data["biases"],
             bits=bits,
@@ -106,7 +127,7 @@ class MLXQuantArray(CompressedArray, kind="mlx"):
     ) -> "MLXQuantArray":
         num_groups = in_channels // group_size
         return cls(
-            weights=initializer.zeros((*leading_dims, out_channels, in_channels), jnp.int32),
+            weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
             scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
             biases=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
             bits=bits,

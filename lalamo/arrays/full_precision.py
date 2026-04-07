@@ -19,6 +19,11 @@ class FullPrecisionArray(CompressedArray, kind="full_precision"):
     def dtype(self) -> DTypeLike:
         return self.weights.dtype
 
+    def dequantize(
+        self, quantized_weights: Float[Array, "... out_channels in_channels"]
+    ) -> Float[Array, "... out_channels in_channels"]:
+        return quantized_weights
+
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         return self.weights
 

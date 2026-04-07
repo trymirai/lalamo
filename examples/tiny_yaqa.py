@@ -1,12 +1,3 @@
-"""Tiny YAQA: Model-Preserving Adaptive Rounding (Tseng et al., 2025)
-
-Sketch B computes Kronecker-factored Hessians per layer via weight gradients:
-  HI = E[(nabla_W l)^T (nabla_W l)] / m,  HO = E[(nabla_W l)(nabla_W l)^T] / n
-
-YAQA rounds with symmetric input/output feedback (Eq. 5):
-  W = Q(W* + L'_O^T Delta L'_I + L'_O^T Delta + Delta L'_I)
-"""
-
 import gc
 from functools import partial
 

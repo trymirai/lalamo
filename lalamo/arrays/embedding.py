@@ -9,7 +9,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.serialization import Serializable
 
-from .base import pack_uint_to_uint8, unpack_uint8_to_uint
+from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
 
 
 class CompressedEmbedding(Serializable, eqx.Module):
@@ -118,9 +118,10 @@ class MLXQuantizedEmbedding(CompressedEmbedding, kind="mlx_embedding"):
         return self.materialize()[token_ids]
 
     def to_uzu(self) -> dict[str, Any]:
+        int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
         return {
             "__kind__": self.kind,
-            "qweight": pack_uint_to_uint8(self.weights.astype(jnp.uint8), self.bits),
+            "qweight": pack_uint_to_uint8(int_weights, self.bits),
             "scales": self.scales,
             "biases": self.biases,
             "bits": self.bits,

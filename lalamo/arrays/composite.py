@@ -29,6 +29,11 @@ class CompositeArray(CompressedArray, kind="composite"):
         assert len(self.parts) != 0, "CompositeArray must be non-empty"
         return jnp.result_type(*(part.dtype for part in self.parts))
 
+    def dequantize(
+        self, quantized_weights: Float[Array, "... out_channels in_channels"]
+    ) -> Float[Array, "... out_channels in_channels"]:
+        raise NotImplementedError("CompositeArray does not support dequantize directly — use individual parts")
+
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
         assert len(self.parts) != 0, "CompositeArray must be non-empty to materialize"
         return sum(part.materialize() for part in self.parts)  # type: ignore[return-value]
