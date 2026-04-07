@@ -133,7 +133,7 @@ def test_collect_traces_answers(
     run_lalamo: RunLalamo,
 ) -> None:
     converted_model_dir = convert_model(model_repo, cached=True)
-    trace_path = tmp_path / "traces.bin"
+    trace_path = tmp_path / "traces"
 
     run_lalamo(
         "speculator",
