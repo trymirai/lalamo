@@ -3,6 +3,7 @@ import shutil
 import tempfile
 from collections.abc import Callable, Generator
 from pathlib import Path
+from typing import Any
 
 import jax
 import pytest
@@ -58,7 +59,7 @@ SIZE_MARKS: dict[ModelSize, pytest.MarkDecorator] = {
 }
 
 
-def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[ModelSpec | pytest.param]:
+def mark_by_size(specs: tuple[ModelSpec, ...]) -> list[Any]:
     return [pytest.param(spec, marks=SIZE_MARKS[model_size(spec)]) for spec in specs]
 
 
