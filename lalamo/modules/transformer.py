@@ -8,7 +8,6 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.token_mixers import AttentionConfig
 from lalamo.modules.utils import vmap_twice
 
 from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
@@ -67,35 +66,14 @@ class TransformerConfig:
     local_rope_dim: int | None = None
     global_head_dim: int | None = None
 
-    def _resolve_rope_dims(self) -> tuple[int | None, int | None, int | None]:
-        """Return (global_rope_dim, local_rope_dim, global_head_dim), falling back to scanning layers."""
-        if self.global_rope_dim is not None or self.local_rope_dim is not None:
-            return self.global_rope_dim, self.local_rope_dim, self.global_head_dim
-
-        global_rope_dim: int | None = None
-        local_rope_dim: int | None = None
-        global_head_dim: int | None = None
-        for layer in self.layer_configs:
-            mixer = layer.mixer_config
-            if not isinstance(mixer, AttentionConfig) or not mixer.use_rope:
-                continue
-            if mixer.sliding_window_size is not None:
-                local_rope_dim = local_rope_dim or mixer.rope_dim
-            else:
-                global_rope_dim = global_rope_dim or mixer.rope_dim
-                global_head_dim = global_head_dim or mixer.head_dim
-        return global_rope_dim, local_rope_dim, global_head_dim
-
-    def _init_ropes(self) -> tuple[RoPE | None, RoPE | None]:
-        global_rope_dim, local_rope_dim, global_head_dim = self._resolve_rope_dims()
-
+    def init_ropes(self) -> tuple[RoPE | None, RoPE | None]:
         global_rope = None
         if self.global_rope_config:
-            rope_dim = global_rope_dim or local_rope_dim
+            rope_dim = self.global_rope_dim or self.local_rope_dim
             assert rope_dim is not None
-            if global_head_dim and global_head_dim > rope_dim:
+            if self.global_head_dim and self.global_head_dim > rope_dim:
                 rotary_dim: int | None = rope_dim
-                head_dim_for_rope = global_head_dim
+                head_dim_for_rope = self.global_head_dim
             else:
                 rotary_dim = None
                 head_dim_for_rope = rope_dim
@@ -107,7 +85,7 @@ class TransformerConfig:
 
         local_rope = None
         if self.local_rope_config:
-            rope_dim = local_rope_dim or global_rope_dim
+            rope_dim = self.local_rope_dim or self.global_rope_dim
             assert rope_dim is not None
             local_rope = self.local_rope_config.init(
                 head_dim=rope_dim,
@@ -117,7 +95,7 @@ class TransformerConfig:
         return global_rope, local_rope
 
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
-        global_rope, local_rope = self._init_ropes()
+        global_rope, local_rope = self.init_ropes()
 
         layers_keys = jax.random.split(key, num=len(self.layer_configs))
         layers = tuple(
@@ -139,7 +117,7 @@ class TransformerConfig:
         )
 
     def empty(self) -> "Transformer":
-        global_rope, local_rope = self._init_ropes()
+        global_rope, local_rope = self.init_ropes()
 
         layers = tuple(
             layer_config.empty(
