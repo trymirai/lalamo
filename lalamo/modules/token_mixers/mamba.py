@@ -168,32 +168,16 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         return self.in_projection.activation_precision
 
     @property
-    def num_heads(self) -> int:
-        return self.config.num_heads
-
-    @property
-    def num_groups(self) -> int:
-        return self.config.num_groups
-
-    @property
-    def head_dim(self) -> int:
-        return self.config.head_dim
-
-    @property
-    def kernel_size(self) -> int:
-        return self.config.kernel_size
-
-    @property
     def model_dim(self) -> int:
         return self.in_projection.input_dim
 
     @property
     def inner_dim(self) -> int:
-        return self.num_heads * self.head_dim
+        return self.config.num_heads * self.config.head_dim
 
     @property
     def conv_dim(self) -> int:
-        return self.inner_dim + 2 * self.num_groups * self.config.state_dim
+        return self.inner_dim + 2 * self.config.num_groups * self.config.state_dim
 
     @property
     def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
@@ -208,7 +192,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         state: Float[Array, "heads head_dim state_dim"],
     ) -> tuple[Float[Array, "heads head_dim"], Float[Array, "heads head_dim state_dim"]]:
         """Single-token SSM state update without scan overhead."""
-        heads_per_group = self.num_heads // self.num_groups
+        heads_per_group = self.config.num_heads // self.config.num_groups
 
         dt = jax.nn.softplus(dt_log)
         decay = jnp.exp(-dt)[:, None, None]
@@ -241,11 +225,11 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         values_flat, input_proj_flat, output_proj_flat = jnp.split(
             conv_activated,
-            [self.inner_dim, self.inner_dim + self.num_groups * self.config.state_dim],
+            [self.inner_dim, self.inner_dim + self.config.num_groups * self.config.state_dim],
         )
-        values = rearrange(values_flat, "(heads head_dim) -> heads head_dim", heads=self.num_heads)
-        keys = rearrange(input_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.num_groups)
-        queries = rearrange(output_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.num_groups)
+        values = rearrange(values_flat, "(heads head_dim) -> heads head_dim", heads=self.config.num_heads)
+        keys = rearrange(input_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.config.num_groups)
+        queries = rearrange(output_proj_flat, "(groups state_dim) -> groups state_dim", groups=self.config.num_groups)
 
         y, new_ssm_state = self._step(values, keys, queries, dt_log, state.ssm_state)
 
@@ -300,13 +284,13 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             "(chunks chunk_size) (groups heads_per_group) head_dim"
             " -> chunks chunk_size groups heads_per_group head_dim",
             chunk_size=chunk_size,
-            groups=self.num_groups,
+            groups=self.config.num_groups,
         )
         log_decay = rearrange(
             -dt,
             "(chunks chunk_size) (groups heads_per_group) -> groups heads_per_group chunks chunk_size",
             chunk_size=chunk_size,
-            groups=self.num_groups,
+            groups=self.config.num_groups,
         )
         keys_chunked = rearrange(
             keys,
@@ -340,7 +324,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         initial_state_grouped = rearrange(
             initial_state,
             "(groups heads_per_group) head_dim state_dim -> groups heads_per_group head_dim state_dim",
-            groups=self.num_groups,
+            groups=self.config.num_groups,
         )
         states = jnp.concatenate([initial_state_grouped[None, ...], states], axis=0)
         log_decay_chunk_ends = jnp.pad(log_decay_cumsum[:, :, :, -1], ((0, 0), (0, 0), (1, 0)))
@@ -367,7 +351,11 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         y = y_diag + y_off
         if d is not None:
-            d_grouped = rearrange(d, "(groups heads_per_group) -> groups heads_per_group", groups=self.num_groups)
+            d_grouped = rearrange(
+                d,
+                "(groups heads_per_group) -> groups heads_per_group",
+                groups=self.config.num_groups,
+            )
             y = y + d_grouped[None, None, :, :, None] * values
         y = rearrange(
             y,
@@ -406,7 +394,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         chunk_size: int,
     ) -> Float[Array, "heads head_dim state_dim"]:
         """Compute the exact final state at position num_steps using precomputed chunk_states."""
-        heads_per_group = self.num_heads // self.num_groups
+        heads_per_group = self.config.num_heads // self.config.num_groups
 
         chunk_idx = num_steps // chunk_size
         pos_in_chunk = num_steps % chunk_size
@@ -472,9 +460,9 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
         if state is None:
             state = SSMStateLayer.init(
-                self.kernel_size,
+                self.config.kernel_size,
                 self.conv_dim,
-                (self.num_heads, self.head_dim, self.config.state_dim),
+                (self.config.num_heads, self.config.head_dim, self.config.state_dim),
                 self.in_projection.activation_precision,
             )
 
@@ -502,7 +490,7 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
             conv_activated,
             [
                 self.inner_dim,
-                self.inner_dim + self.num_groups * self.config.state_dim,
+                self.inner_dim + self.config.num_groups * self.config.state_dim,
             ],
             axis=-1,
         )
@@ -510,17 +498,17 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         values = rearrange(
             x_channels,
             "suffix_tokens (heads head_channels) -> suffix_tokens heads head_channels",
-            heads=self.num_heads,
+            heads=self.config.num_heads,
         )
         keys = rearrange(
             input_proj_channels,
             "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
-            groups=self.num_groups,
+            groups=self.config.num_groups,
         )
         queries = rearrange(
             output_proj_channels,
             "suffix_tokens (groups state_channels) -> suffix_tokens groups state_channels",
-            groups=self.num_groups,
+            groups=self.config.num_groups,
         )
 
         if length_without_padding is None:
@@ -529,12 +517,12 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
         gate_values_reshaped = rearrange(
             gate_values,
             "suffix_tokens (heads head_channels) -> suffix_tokens heads head_channels",
-            heads=self.num_heads,
+            heads=self.config.num_heads,
         )
         gate_bias_reshaped = rearrange(
             self.gate_bias,
             "(heads head_channels) -> heads head_channels",
-            heads=self.num_heads,
+            heads=self.config.num_heads,
         )
 
         dt = jax.nn.softplus(time_delta_log)
@@ -574,8 +562,8 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
 
     def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
         return SSMStateLayer.init(
-            self.kernel_size,
+            self.config.kernel_size,
             self.conv_dim,
-            (self.num_heads, self.head_dim, self.config.state_dim),
+            (self.config.num_heads, self.config.head_dim, self.config.state_dim),
             self.in_projection.activation_precision,
         )

@@ -180,44 +180,20 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.qkv_projection.input_dim
 
     @property
-    def num_heads(self) -> int:
-        return self.config.num_heads
-
-    @property
-    def num_groups(self) -> int:
-        return self.config.num_groups
-
-    @property
-    def head_dim(self) -> int:
-        return self.config.head_dim
-
-    @property
-    def is_causal(self) -> bool:
-        return self.config.is_causal
-
-    @property
-    def scale(self) -> float | None:
-        return self.config.scale
-
-    @property
-    def sliding_window_size(self) -> int | None:
-        return self.config.sliding_window_size
-
-    @property
-    def logit_soft_cap(self) -> float | None:
-        return self.config.logit_soft_cap
-
-    @property
-    def use_rope(self) -> bool:
-        return self.config.use_rope
-
-    @property
     def group_size(self) -> int:
-        return self.num_heads // self.num_groups
+        return self.config.num_heads // self.config.num_groups
 
     @property
     def use_sliding_window(self) -> bool:
-        return self.sliding_window_size is not None
+        return self.config.sliding_window_size is not None
+
+    @property
+    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
+        if not self.config.use_rope:
+            return PositionalEmbeddingSelector.NONE
+        if self.use_sliding_window:
+            return PositionalEmbeddingSelector.LOCAL
+        return PositionalEmbeddingSelector.GLOBAL
 
     @property
     def has_sinks(self) -> bool:
@@ -253,20 +229,20 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         queries = rearrange(
             queries,
             "tokens (heads head_channels) -> tokens heads head_channels",
-            heads=self.num_heads,
-            head_channels=self.head_dim,
+            heads=self.config.num_heads,
+            head_channels=self.config.head_dim,
         )
         keys = rearrange(
             keys,
             "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.num_groups,
-            head_channels=self.head_dim,
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
         )
         values = rearrange(
             values,
             "tokens (groups head_channels) -> tokens groups head_channels",
-            groups=self.num_groups,
-            head_channels=self.head_dim,
+            groups=self.config.num_groups,
+            head_channels=self.config.head_dim,
         )
 
         if self.query_norm is not None:
@@ -288,29 +264,26 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
-        if attention_parent_indices is not None:
-            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
-        else:
-            mask = updated_state.attention_mask(
-                num_suffix_tokens,
-                self.is_causal,
-                length_without_padding,
-                self.sliding_window_size,
-            )
+        mask = updated_state.attention_mask(
+            num_suffix_tokens,
+            self.config.is_causal,
+            length_without_padding,
+            self.config.sliding_window_size,
+        )
         if self.sinks is not None:
-            sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)
+            sink_bias = jnp.zeros((self.config.num_heads, *mask.shape), dtype=queries.dtype)
             sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
         else:
             sink_bias = None
 
-        if self.logit_soft_cap is not None:
+        if self.config.logit_soft_cap is not None:
             attention_output = _soft_capped_attention_kernel(
                 queries,
                 updated_state.keys,
                 updated_state.values,
                 mask=mask,
-                scale=self.scale,
-                logit_soft_cap=self.logit_soft_cap,
+                scale=self.config.scale,
+                logit_soft_cap=self.config.logit_soft_cap,
             )
         else:
             attention_output = jax.nn.dot_product_attention(
@@ -319,13 +292,13 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
                 updated_state.values,
                 bias=sink_bias,
                 mask=mask,
-                scale=self.scale,
+                scale=self.config.scale,
             )
         attention_output = rearrange(
             attention_output,
             "tokens heads head_channels -> tokens (heads head_channels)",
-            heads=self.num_heads,
-            head_channels=self.head_dim,
+            heads=self.config.num_heads,
+            head_channels=self.config.head_dim,
         )
         if gate is not None:
             attention_output = attention_output * jax.nn.sigmoid(gate)
@@ -347,7 +320,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return StaticKVCacheLayer.init(
             self.has_sinks,
             capacity,
-            self.num_groups,
-            self.head_dim,
+            self.config.num_groups,
+            self.config.head_dim,
             self.qkv_projection.activation_precision,
         )

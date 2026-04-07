@@ -53,7 +53,7 @@ def inference_collect_traces(
     ):
         token_ids = generated.token_ids.tolist()
         seqlen = next(
-            (i + 1 for i, t in enumerate(token_ids) if t in model.stop_token_ids),
+            (i + 1 for i, t in enumerate(token_ids) if t in model.config.generation_config.stop_token_ids),
             len(token_ids),
         )
 

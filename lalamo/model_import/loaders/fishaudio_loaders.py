@@ -209,9 +209,9 @@ def load_transformer_block(
         # Permute QKV weights from interleaved RoPE format to rotate-half format
         permuted_qkv_weights = _permute_qkv_for_rope_rotate_half(
             qkv_projection.weights.materialize(),
-            num_heads=attn_module.num_heads,
-            num_groups=attn_module.num_groups,
-            head_dim=attn_module.head_dim,
+            num_heads=attn_module.config.num_heads,
+            num_groups=attn_module.config.num_groups,
+            head_dim=attn_module.config.head_dim,
         )
         base = FullPrecisionArray(weights=permuted_qkv_weights.astype(qkv_projection.activation_precision))
         new_weights = base

@@ -28,7 +28,7 @@ def test_eager_generation(language_model: LanguageModel, num_top_logits_to_retur
         num_top_logits_to_return=num_top_logits_to_return,
     )
     token_ids = result.token_ids.squeeze(0)
-    eos_ids = language_model.stop_token_ids
+    eos_ids = language_model.config.generation_config.stop_token_ids
     eos_idx = next((i for i, tok in enumerate(token_ids.tolist()) if tok in eos_ids), None)
     if num_top_logits_to_return is not None:
         assert result.top_k_token_ids is not None

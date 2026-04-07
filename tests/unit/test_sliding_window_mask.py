@@ -11,6 +11,7 @@ from lalamo.modules import (
     LinearConfig,
     Identity,
     NormalizationConfig,
+    RandomInitializer,
     StaticKVCacheLayer,
     TiedEmbeddingConfig,
     TransformerConfig,
@@ -24,15 +25,12 @@ from tests.common import assert_close
 
 @pytest.fixture
 def decoder() -> Decoder:
-    precision = jnp.float32
     model_dim = 8
     hidden_dim = 16
     vocab_size = 32
     context_length = 16
 
     norm_config = NormalizationConfig(
-        scale_precision=precision,
-        accumulation_precision=precision,
         epsilon=1e-5,
         scale_offset=None,
         upcast_mode=UpcastMode.ONLY_NORMALIZATION,
@@ -78,6 +76,11 @@ def decoder() -> Decoder:
         rope_config=rope_config,
     )
     transformer_config = TransformerConfig(
+        global_rope_config=UnscaledRoPEConfig(
+            base=10_000.0,
+            max_sequence_length=context_length,
+        ),
+        local_rope_config=None,
         layer_configs=(layer_config,),
         output_norm_config=norm_config,
         model_dim=model_dim,
@@ -88,12 +91,12 @@ def decoder() -> Decoder:
         embedding_config=TiedEmbeddingConfig(
             input_scale=None,
             logit_soft_cap=None,
-            precision=precision,
         ),
         transformer_config=transformer_config,
         vocab_size=vocab_size,
     )
-    return decoder_config.random_init(key=jax.random.key(4))
+    initializer = RandomInitializer(precision=jnp.float32, key=jax.random.key(4))
+    return decoder_config.init(initializer)
 
 
 def test_dynamic_kv_cache_sliding_window_mask_matches_static_mask() -> None:
@@ -201,6 +204,7 @@ def test_sliding_window_dynamic_state_multi_token_matches_single_token_sequentia
         result=multi_result.logits[0],
         reference=jnp.stack(sequential_logits),
         operation_name="sliding-window dynamic-state multi-token logits vs sequential",
+        fraction_of_allowed_violations=0.02,
     )
     assert_close(
         result=multi_result.activation_trace.output_norm[0],

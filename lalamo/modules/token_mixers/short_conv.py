@@ -69,8 +69,8 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     out_projection: Linear
 
     @property
-    def kernel_size(self) -> int:
-        return self.config.kernel_size
+    def activation_precision(self) -> DTypeLike:
+        return self.in_projection.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -118,7 +118,7 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
 
     def init_static_state(self, capacity: int) -> ShortConvStateLayer:  # noqa: ARG002
         return ShortConvStateLayer.init(
-            self.kernel_size,
+            self.config.kernel_size,
             self.in_projection.input_dim,
             self.in_projection.activation_precision,
         )

@@ -347,22 +347,6 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         return self.experts.activation_precision
 
     @property
-    def mixture_size(self) -> int:
-        return self.config.mixture_size
-
-    @property
-    def num_active_routed_experts(self) -> int:
-        return self.config.num_active_routed_experts
-
-    @property
-    def num_shared_experts(self) -> int:
-        return self.config.num_shared_experts
-
-    @property
-    def num_routed_experts(self) -> int:
-        return self.config.num_routed_experts
-
-    @property
     def model_dim(self) -> int:
         return self.experts.model_dim
 
@@ -378,16 +362,16 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             )
 
         (router_output_dim,) = self.router.output_dims
-        if router_output_dim != self.num_routed_experts:
+        if router_output_dim != self.config.num_routed_experts:
             raise ValueError(
                 f"Router output dimension ({router_output_dim}) must equal"
-                f" number of routed experts ({self.num_routed_experts}).",
+                f" number of routed experts ({self.config.num_routed_experts}).",
             )
 
-        if self.experts.mixture_size != self.mixture_size:
+        if self.experts.mixture_size != self.config.mixture_size:
             raise ValueError(
                 f"Experts mixture_size ({self.experts.mixture_size}) does not match specified mixture_size"
-                f" ({self.mixture_size}).",
+                f" ({self.config.mixture_size}).",
             )
 
     def __call__(
@@ -429,20 +413,20 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             (router_logits,) = self.router(token_input, key=key, forward_pass_config=forward_pass_config.arrays)
             routing = self.config.routing_function.call_unbatched(
                 router_logits,
-                num_active=self.num_active_routed_experts,
+                num_active=self.config.num_active_routed_experts,
             )
 
-            if self.num_shared_experts > 0:
-                shared_mask = jnp.ones(self.num_shared_experts, dtype=bool)
+            if self.config.num_shared_experts > 0:
+                shared_mask = jnp.ones(self.config.num_shared_experts, dtype=bool)
                 expert_mask = jnp.concatenate([routing.expert_mask, shared_mask])
                 shared_weight = self._shared_expert_weight(token_input, forward_pass_config, key=key)
-                shared_weights = jnp.broadcast_to(shared_weight, (self.num_shared_experts,))
+                shared_weights = jnp.broadcast_to(shared_weight, (self.config.num_shared_experts,))
                 expert_weights = jnp.concatenate([routing.expert_weights, shared_weights])
             else:
                 expert_mask = routing.expert_mask
                 expert_weights = routing.expert_weights
 
-            num_active = self.num_active_routed_experts + self.num_shared_experts
+            num_active = self.config.num_active_routed_experts + self.config.num_shared_experts
             active_indices = jnp.flatnonzero(expert_mask, size=num_active)
             active_weights = expert_weights[active_indices]
 
@@ -483,7 +467,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             flattened_inputs,
             key=key,
         )
-        routing_map = self.config.routing_function(router_logits, self.num_active_routed_experts)
+        routing_map = self.config.routing_function(router_logits, self.config.num_active_routed_experts)
 
         token_mask = rearrange(
             routing_map.expert_mask & flattened_padding_mask[:, None],
@@ -494,7 +478,7 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
             "tokens experts -> experts tokens",
         )
         expert_weights = jnp.where(token_mask, expert_weights, 0.0)
-        routed_experts = self.experts.slice_mixture(0, self.num_routed_experts)
+        routed_experts = self.experts.slice_mixture(0, self.config.num_routed_experts)
 
         chunk_size = math.ceil(num_tokens * forward_pass_config.moe_chunk_size_ratio)
         num_padded_tokens = math.ceil(num_tokens / chunk_size) * chunk_size
@@ -559,8 +543,8 @@ class MixtureOfExperts(MLPBase[MixtureOfExpertsConfig]):
         )
 
         expert_result = routed_expert_result
-        if self.num_shared_experts > 0:
-            shared_experts = self.experts.slice_mixture(self.num_routed_experts, self.mixture_size)
+        if self.config.num_shared_experts > 0:
+            shared_experts = self.experts.slice_mixture(self.config.num_routed_experts, self.config.mixture_size)
             shared_weights = vmap_with_key(
                 partial(self._shared_expert_weight, forward_pass_config=forward_pass_config),
                 flattened_inputs,

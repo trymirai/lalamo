@@ -86,7 +86,7 @@ def test_fsq_decode_matches_torch() -> None:
     torch_quantizer = nanocodec_torch.FiniteScalarQuantizer(num_levels=num_levels, eps=1e-3)
 
     # Test all codebook entries
-    codebook_size = lalamo_quantizer.codebook_size
+    codebook_size = lalamo_quantizer.config.codebook_size
     indices_np = np.arange(codebook_size).reshape(1, -1).astype(np.int32)
 
     # Lalamo
@@ -121,7 +121,7 @@ def test_group_fsq_encode_matches_torch() -> None:
     )
 
     batch_size, seq_len = 2, 10
-    channels = lalamo_quantizer.codebook_dim  # 52
+    channels = lalamo_quantizer.config.codebook_dim  # 52
     inputs_np = random_normal(batch_size, channels, seq_len)
 
     # Lalamo

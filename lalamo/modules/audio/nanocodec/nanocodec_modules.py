@@ -89,14 +89,6 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
     def activation_precision(self) -> DTypeLike:
         return jnp.float32
 
-    @property
-    def dim(self) -> int:
-        return self.config.dim
-
-    @property
-    def codebook_size(self) -> int:
-        return self.config.codebook_size
-
     def _compress(self, inputs: Float[Array, "batch dim seq"]) -> Float[Array, "batch dim seq"]:
         """Apply tanh compression to map continuous values to quantization range.
 
@@ -149,7 +141,7 @@ class FiniteScalarQuantizer(LalamoModule[FiniteScalarQuantizerConfig]):
         offset = scale
         return scale[None, :, None] * codes + offset[None, :, None]
 
-    def _nonnegative_to_codes(self, codes_nonneg: Float[Array, "dim"]) -> Float[Array, "dim"]:
+    def _nonnegative_to_codes(self, codes_nonneg: Float[Array, " dim"]) -> Float[Array, " dim"]:
         """Convert nonnegative indices back to codes centered around zero."""
         scale = (self.num_levels_buffer // 2).astype(codes_nonneg.dtype)
         offset = scale
@@ -242,25 +234,13 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
     def activation_precision(self) -> DTypeLike:
         return self.quantizers[0].activation_precision
 
-    @property
-    def num_groups(self) -> int:
-        return self.config.num_groups
-
-    @property
-    def codebook_dim(self) -> int:
-        return self.config.codebook_dim
-
-    @property
-    def codebook_dim_per_group(self) -> int:
-        return self.config.codebook_dim_per_group
-
     def encode(
         self,
         inputs: Float[Array, "batch channels seq"],
     ) -> Int[Array, "num_groups batch seq"]:
         """Encode inputs to indices for each group."""
         # Split input along channel dimension into groups
-        inputs_grouped = jnp.split(inputs, self.num_groups, axis=1)
+        inputs_grouped = jnp.split(inputs, self.config.num_groups, axis=1)
 
         indices_list = []
         for in_group, quantizer in zip(inputs_grouped, self.quantizers, strict=True):
@@ -276,7 +256,7 @@ class GroupFiniteScalarQuantizer(LalamoModule[GroupFiniteScalarQuantizerConfig])
     ) -> Float[Array, "batch seq channels"]:
         """Decode batch of indices vectors back to continuous representation."""
         # # Split indices along group dimension
-        indices_grouped = jnp.split(indices, self.num_groups, axis=2)
+        indices_grouped = jnp.split(indices, self.config.num_groups, axis=2)
 
         dequantized_list = []
         for idx_group, quantizer in zip(indices_grouped, self.quantizers, strict=True):

@@ -59,16 +59,16 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     decoder: CausalHiFiGANDecoder
 
     @property
-    def samplerate(self) -> int:
-        return self.config.samplerate
-
-    @property
     def activation_precision(self) -> DTypeLike:
         return self.decoder.activation_precision
 
     @property
+    def samplerate(self) -> int:
+        return self.config.samplerate
+
+    @property
     def n_codebooks(self) -> int:
-        return self.quantizer.num_groups
+        return self.quantizer.config.num_groups
 
     def __call__(
         self,

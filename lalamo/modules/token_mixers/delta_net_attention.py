@@ -110,24 +110,8 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     a_log: Float[Array, " heads"]
 
     @property
-    def num_heads(self) -> int:
-        return self.config.num_heads
-
-    @property
-    def num_groups(self) -> int:
-        return self.config.num_groups
-
-    @property
-    def head_dim(self) -> int:
-        return self.config.head_dim
-
-    @property
-    def value_head_dim(self) -> int:
-        return self.config.value_head_dim
-
-    @property
-    def kernel_size(self) -> int:
-        return self.config.kernel_size
+    def activation_precision(self) -> DTypeLike:
+        return self.in_proj.activation_precision
 
     @property
     def model_dim(self) -> int:
@@ -135,11 +119,11 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
     @property
     def key_dim(self) -> int:
-        return self.num_groups * self.head_dim
+        return self.config.num_groups * self.config.head_dim
 
     @property
     def value_dim(self) -> int:
-        return self.num_heads * self.value_head_dim
+        return self.config.num_heads * self.config.value_head_dim
 
     @property
     def conv_dim(self) -> int:
@@ -383,9 +367,9 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
         if state is None:
             state = SSMStateLayer.init(
-                self.kernel_size,
+                self.config.kernel_size,
                 self.conv_dim,
-                (self.num_heads, self.value_head_dim, self.head_dim),
+                (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
                 self.in_proj.activation_precision,
             )
 
@@ -400,9 +384,9 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
         query, key, value = jnp.split(conv_output, [self.key_dim, 2 * self.key_dim], axis=-1)
 
-        query = query.reshape(num_tokens, self.num_groups, self.head_dim)
-        key = key.reshape(num_tokens, self.num_groups, self.head_dim)
-        value = value.reshape(num_tokens, self.num_heads, self.value_head_dim)
+        query = query.reshape(num_tokens, self.config.num_groups, self.config.head_dim)
+        key = key.reshape(num_tokens, self.config.num_groups, self.config.head_dim)
+        value = value.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
 
         # since we work with exponentials, we (possibly?) uplift dtype to make sure numbers are nice
         decay_factor = -jnp.exp(self.a_log.astype(jnp.float32)) * jax.nn.softplus(
@@ -410,13 +394,13 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         )
         decay_factor = decay_factor.astype(inputs.dtype)
 
-        repeat_factor = self.num_heads // self.num_groups
+        repeat_factor = self.config.num_heads // self.config.num_groups
         if repeat_factor > 1:
             query = jnp.repeat(query, repeat_factor, axis=1)
             key = jnp.repeat(key, repeat_factor, axis=1)
 
         eps = jnp.array(1e-6, dtype=query.dtype)
-        scale = jnp.array(self.head_dim**-0.5, dtype=query.dtype)
+        scale = jnp.array(self.config.head_dim**-0.5, dtype=query.dtype)
         query = query * jax.lax.rsqrt((query * query).sum(axis=-1, keepdims=True) + eps)
         key = key * jax.lax.rsqrt((key * key).sum(axis=-1, keepdims=True) + eps)
         query = query * scale
@@ -453,7 +437,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
             return self.norm(x) * jax.nn.silu(gate)
 
         num_tokens, *_ = gate.shape
-        gate = gate.reshape(num_tokens, self.num_heads, self.value_head_dim)
+        gate = gate.reshape(num_tokens, self.config.num_heads, self.config.value_head_dim)
         core_attn_out = jax.vmap(jax.vmap(norm_gate))(core_attn_out, gate)
         core_attn_out = core_attn_out.reshape(num_tokens, -1)
 
@@ -473,8 +457,8 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
 
     def init_static_state(self, capacity: int) -> SSMStateLayer:  # noqa: ARG002
         return SSMStateLayer.init(
-            self.kernel_size,
+            self.config.kernel_size,
             self.conv_dim,
-            (self.num_heads, self.value_head_dim, self.head_dim),
+            (self.config.num_heads, self.config.value_head_dim, self.config.head_dim),
             self.in_proj.activation_precision,
         )

@@ -93,7 +93,7 @@ class TTSGenerator(eqx.Module):
     def get_generated_audio_params(self) -> AudioRenderingSettings:
         # NOTE: think if this could be moved to config level or made mandatory via abstract
         return AudioRenderingSettings(
-            samplerate=self.tts_model.audio_decoder.samplerate,
+            samplerate=self.tts_model.audio_decoder.config.samplerate,
             output_channels=1,
             bitwidth=16,
             encoding=AudioEncoding.PCM,
@@ -186,7 +186,7 @@ class FishAudioTTSGenerator(TTSGenerator):
 
     def get_generated_audio_params(self) -> AudioRenderingSettings:
         return AudioRenderingSettings(
-            samplerate=self.tts_model.audio_decoder.samplerate,
+            samplerate=self.tts_model.audio_decoder.config.samplerate,
             output_channels=1,
             bitwidth=16,
             encoding=AudioEncoding.PCM,

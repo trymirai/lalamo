@@ -37,14 +37,6 @@ class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
     def activation_precision(self) -> DTypeLike:
         return jnp.int32
 
-    @property
-    def num_codebooks(self) -> int:
-        return self.config.num_codebooks
-
-    @property
-    def codebook_size(self) -> int:
-        return self.config.codebook_size
-
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch sequence"],
@@ -60,8 +52,8 @@ class StubTextDecoder(TTSTextDecoder[StubTextDecoderConfig]):
 
         return jax.random.randint(
             key,
-            shape=(batch_size, self.num_codebooks, output_length),
+            shape=(batch_size, self.config.num_codebooks, output_length),
             minval=0,
-            maxval=self.codebook_size,
+            maxval=self.config.codebook_size,
             dtype=jnp.int32,
         )

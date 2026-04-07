@@ -12,7 +12,7 @@ from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
 
-from lalamo.arrays.base import GradientEstimator
+from lalamo.arrays.base import ArrayForwardPassConfig, GradientEstimator
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
@@ -25,7 +25,8 @@ from lalamo.modules import (
     pad_and_apply_data_sharding,
 )
 from lalamo.modules.decoder import DecoderForwardPassConfig
-from lalamo.modules.token_mixers.common import AttentionImplementation
+from lalamo.modules.mlp import MLPForwardPassConfig
+from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, AttentionImplementation
 from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.transformer_layer import TransformerLayerForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
@@ -68,26 +69,22 @@ class ForwardPassConfig:
     @staticmethod
     def init(
         *,
-        attention_implementation: AttentionImplementation | None = None,
+        attention_implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION,
         attention_upcast_dtype: "jnp.dtype | None" = jnp.float32,
         moe_chunk_size_ratio: float = 0.2,
-        gradient_estimator: GradientEstimator | None = None,
+        gradient_estimator: GradientEstimator = GradientEstimator.NONE,
         deterministic_ops: bool = False,
         xla_autotune_level: int = 0,
     ) -> "ForwardPassConfig":
-        from lalamo.arrays.base import ArrayForwardPassConfig, GradientEstimator
-        from lalamo.modules.mlp import MLPForwardPassConfig
-        from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, AttentionImplementation
-
         arrays = ArrayForwardPassConfig(
-            gradient_estimator=gradient_estimator or GradientEstimator.NONE,
+            gradient_estimator=gradient_estimator,
         )
         return ForwardPassConfig(
             decoder=DecoderForwardPassConfig(
                 transformer=TransformerForwardPassConfig(
                     layer=TransformerLayerForwardPassConfig(
                         mixer=AttentionForwardPassConfig(
-                            implementation=attention_implementation or AttentionImplementation.STABLE_REDUCTION,
+                            implementation=attention_implementation,
                             upcast_dtype=attention_upcast_dtype,
                             arrays=arrays,
                         ),
@@ -229,10 +226,6 @@ class Chunk(eqx.Module):
 
 
 class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
-    @property
-    def stop_token_ids(self) -> tuple[int, ...]:
-        return self.config.generation_config.stop_token_ids
-
     def default_sampling_policy(self) -> SamplingPolicy:
         return self.config.generation_config.default_policy(self.model.vocab_size)
 
@@ -365,7 +358,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
-            eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
+            eos_token_ids = jnp.array(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
         if keys is None:
             keys = jax.random.split(jax.random.key(0), num=batch_size)
 
@@ -672,9 +665,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         )
 
     def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
-        if not self.stop_token_ids:
+        if not self.config.generation_config.stop_token_ids:
             return token_ids
-        stop_set = set(self.stop_token_ids)
+        stop_set = set(self.config.generation_config.stop_token_ids)
         end = next((i for i, token_id in enumerate(token_ids) if token_id in stop_set), len(token_ids))
         return token_ids[: end + 1]
 
@@ -838,7 +831,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
-            eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
+            eos_token_ids = jnp.array(self.config.generation_config.stop_token_ids, dtype=jnp.int32)
 
         (input_length,) = prompt_token_ids.shape
 

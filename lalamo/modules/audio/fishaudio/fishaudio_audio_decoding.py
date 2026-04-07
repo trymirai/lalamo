@@ -149,12 +149,12 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
     decoder: DACDecoder
 
     @property
-    def samplerate(self) -> int:
-        return self.config.samplerate
-
-    @property
     def activation_precision(self) -> DTypeLike:
         return self.decoder.activation_precision
+
+    @property
+    def samplerate(self) -> int:
+        return self.config.samplerate
 
     @property
     def semantic_codebook_size(self) -> int:

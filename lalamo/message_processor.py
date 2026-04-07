@@ -115,36 +115,16 @@ class MessageProcessor:
             return None
         return re.compile(self.config.output_parser_regex)
 
-    @property
-    def system_role_name(self) -> str:
-        return self.config.system_role_name
-
-    @property
-    def user_role_name(self) -> str:
-        return self.config.user_role_name
-
-    @property
-    def assistant_role_name(self) -> str:
-        return self.config.assistant_role_name
-
-    @property
-    def bos_token(self) -> str | None:
-        return self.config.bos_token
-
-    @property
-    def eos_token(self) -> str | None:
-        return self.config.eos_token
-
     def message_to_dict(self, message: Message) -> HuggingFaceMessage:
         match message:
             case SystemMessage(content=content):
                 assert isinstance(content, str)
-                return HuggingFaceMessage(role=self.system_role_name, content=content)
+                return HuggingFaceMessage(role=self.config.system_role_name, content=content)
             case UserMessage(content=content):
                 assert isinstance(content, str)
-                return HuggingFaceMessage(role=self.user_role_name, content=content)
+                return HuggingFaceMessage(role=self.config.user_role_name, content=content)
             case AssistantMessage(chain_of_thought=chain_of_thought, response=response):
-                result = HuggingFaceMessage(role=self.assistant_role_name, content=response)
+                result = HuggingFaceMessage(role=self.config.assistant_role_name, content=response)
                 if chain_of_thought:
                     result["reasoning_content"] = chain_of_thought
                 return result
@@ -158,16 +138,16 @@ class MessageProcessor:
     ) -> HuggingFaceRequest:
         converted_messages = [self.message_to_dict(message) for message in messages]
         if self.config.default_system_prompt is not None:  # noqa: SIM102
-            if not converted_messages or converted_messages[0]["role"] != self.system_role_name:
+            if not converted_messages or converted_messages[0]["role"] != self.config.system_role_name:
                 converted_messages = [
-                    HuggingFaceMessage(role=self.system_role_name, content=self.config.default_system_prompt),
+                    HuggingFaceMessage(role=self.config.system_role_name, content=self.config.default_system_prompt),
                     *converted_messages,
                 ]
         result = HuggingFaceRequest(
             add_generation_prompt=True,
             messages=converted_messages,
-            bos_token=self.bos_token,
-            eos_token=self.eos_token,
+            bos_token=self.config.bos_token,
+            eos_token=self.config.eos_token,
         )
         if enable_thinking is not None:
             result["enable_thinking"] = enable_thinking

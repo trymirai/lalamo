@@ -280,8 +280,8 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         router_path = path / "router"
     router = load_linear(module.router, weights_dict, router_path)
 
-    num_routed = module.num_routed_experts
-    num_shared = module.num_shared_experts
+    num_routed = module.config.num_routed_experts
+    num_shared = module.config.num_shared_experts
     has_up_biases = module.experts.up_projection.has_biases
     has_down_biases = module.experts.down_projection.has_biases
 
@@ -542,7 +542,7 @@ def load_attention(
         raise NotImplementedError("Can't determine attention output projection name")
 
     if module.gate_projection is not None:
-        num_heads, head_dim = module.num_heads, module.head_dim
+        num_heads, head_dim = module.config.num_heads, module.config.head_dim
         q_overrides, gate_weights = _extract_gate_weights(
             weights_dict,
             path,
@@ -730,22 +730,22 @@ def load_delta_net_attention(
         return jnp.take(array, permutation, axis=0)
 
     def _delta_net_qkvz_perm() -> Array:
-        v_per_k = module.num_heads // module.num_groups
-        key_block = 2 * module.head_dim
-        value_block = module.value_head_dim * v_per_k
+        v_per_k = module.config.num_heads // module.config.num_groups
+        key_block = 2 * module.config.head_dim
+        value_block = module.config.value_head_dim * v_per_k
         per_group = key_block + 2 * value_block
 
-        base = jnp.arange(module.num_groups, dtype=jnp.int32) * per_group
-        q = base[:, None] + jnp.arange(module.head_dim, dtype=jnp.int32)[None, :]
-        k = base[:, None] + module.head_dim + jnp.arange(module.head_dim, dtype=jnp.int32)[None, :]
+        base = jnp.arange(module.config.num_groups, dtype=jnp.int32) * per_group
+        q = base[:, None] + jnp.arange(module.config.head_dim, dtype=jnp.int32)[None, :]
+        k = base[:, None] + module.config.head_dim + jnp.arange(module.config.head_dim, dtype=jnp.int32)[None, :]
         v = base[:, None] + key_block + jnp.arange(value_block, dtype=jnp.int32)[None, :]
         z = base[:, None] + key_block + value_block + jnp.arange(value_block, dtype=jnp.int32)[None, :]
         return jnp.concatenate([q.reshape(-1), k.reshape(-1), v.reshape(-1), z.reshape(-1)], axis=0)
 
     def _delta_net_ba_perm() -> Array:
-        v_per_k = module.num_heads // module.num_groups
+        v_per_k = module.config.num_heads // module.config.num_groups
         per_group = 2 * v_per_k
-        base = jnp.arange(module.num_groups, dtype=jnp.int32) * per_group
+        base = jnp.arange(module.config.num_groups, dtype=jnp.int32) * per_group
         b = base[:, None] + jnp.arange(v_per_k, dtype=jnp.int32)[None, :]
         a = base[:, None] + v_per_k + jnp.arange(v_per_k, dtype=jnp.int32)[None, :]
         return jnp.concatenate([b.reshape(-1), a.reshape(-1)], axis=0)
