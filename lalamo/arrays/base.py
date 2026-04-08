@@ -10,6 +10,7 @@ if TYPE_CHECKING:
 import equinox as eqx
 from jaxtyping import Array, DTypeLike, Float, Key
 
+from lalamo.common import ParameterPath
 from lalamo.serialization import UzuSerializable
 
 from lalamo.common import ParameterTree
@@ -67,10 +68,8 @@ class CompressedArray(UzuSerializable, eqx.Module):
         prefix: str = "",
         sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
-        class_key = f"{prefix}.__class__" if prefix else "__class__"
-        stored_class_name = data.get(class_key)
+        stored_class_name = data.get(ParameterPath(prefix) / "__class__")
         if isinstance(stored_class_name, str) and stored_class_name != type(self).__name__:
             target_cls = CompressedArray._registry[stored_class_name]
-            placeholder = target_cls.__new__(target_cls)
-            return placeholder.from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[return-value]
+            return target_cls.from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[return-value]
         return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[invalid-return-type]

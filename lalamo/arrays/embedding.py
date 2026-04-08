@@ -10,6 +10,7 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.common import ParameterPath
 from lalamo.serialization import UzuSerializable
 
 from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
@@ -49,12 +50,11 @@ class CompressedEmbedding(UzuSerializable, eqx.Module):
         prefix: str = "",
         sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
-        class_key = f"{prefix}.__class__" if prefix else "__class__"
-        stored_class_name = data.get(class_key)
+        key = ParameterPath(prefix)
+        stored_class_name = data.get(key / "__class__")
         if isinstance(stored_class_name, str) and stored_class_name != type(self).__name__:
             target_cls = CompressedEmbedding._registry[stored_class_name]
-            placeholder = target_cls.__new__(target_cls)
-            return placeholder.from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[return-value]
+            return target_cls.from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[return-value]
         return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[invalid-return-type]
 
 
@@ -130,22 +130,21 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
             "group_size": self.group_size,
         }
 
+    @classmethod
     def from_uzu(
-        self,
+        cls,
         data: Mapping[str, Any],
         prefix: str = "",
-        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG002
+        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG003
     ) -> Self:
-        def _key(name: str) -> str:
-            return f"{prefix}.{name}" if prefix else name
-
-        bits = int(data[_key("bits")])
-        group_size = int(data[_key("group_size")])
-        weights = unpack_uint8_to_uint(data[_key("qweight")], bits)
-        return type(self)(
-            weights=weights.astype(data[_key("scales")].dtype),
-            scales=data[_key("scales")],
-            biases=data[_key("biases")],
+        key = ParameterPath(prefix)
+        bits = int(data[key / "bits"])
+        group_size = int(data[key / "group_size"])
+        weights = unpack_uint8_to_uint(data[key / "qweight"], bits)
+        return cls(
+            weights=weights.astype(data[key / "scales"].dtype),
+            scales=data[key / "scales"],
+            biases=data[key / "biases"],
             group_size=group_size,
             bits=bits,
         )

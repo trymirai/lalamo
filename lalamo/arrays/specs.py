@@ -5,7 +5,11 @@ from jaxtyping import Array, Float
 
 from lalamo.modules.common import Initializer
 
+from .awq import AWQQuantArray
 from .base import CompressedArray
+from .full_precision import FullPrecisionArray
+from .lora import LoRAArray
+from .mlx import MLXQuantArray
 
 
 @dataclass(frozen=True)
@@ -26,8 +30,6 @@ class CompressedArraySpec:
 @dataclass(frozen=True)
 class FullPrecisionSpec(CompressedArraySpec):
     def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> CompressedArray:
-        from .full_precision import FullPrecisionArray
-
         return FullPrecisionArray.compress(weights)
 
     def init(
@@ -37,8 +39,6 @@ class FullPrecisionSpec(CompressedArraySpec):
         out_channels: int,
         in_channels: int,
     ) -> CompressedArray:
-        from .full_precision import FullPrecisionArray
-
         return FullPrecisionArray(
             weights=initializer.normal(1.0, (*leading_dims, out_channels, in_channels), initializer.precision),
         )
@@ -50,8 +50,6 @@ class AWQSpec(CompressedArraySpec):
     group_size: int
 
     def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> CompressedArray:
-        from .awq import AWQQuantArray
-
         return AWQQuantArray.compress(weights, bits=self.bits, group_size=self.group_size)
 
     def init(
@@ -61,8 +59,6 @@ class AWQSpec(CompressedArraySpec):
         out_channels: int,
         in_channels: int,
     ) -> CompressedArray:
-        from .awq import AWQQuantArray
-
         num_groups = in_channels // self.group_size
         return AWQQuantArray(
             weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
@@ -79,8 +75,6 @@ class MLXSpec(CompressedArraySpec):
     group_size: int
 
     def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> CompressedArray:
-        from .mlx import MLXQuantArray
-
         return MLXQuantArray.compress(weights, bits=self.bits, group_size=self.group_size)
 
     def init(
@@ -90,8 +84,6 @@ class MLXSpec(CompressedArraySpec):
         out_channels: int,
         in_channels: int,
     ) -> CompressedArray:
-        from .mlx import MLXQuantArray
-
         num_groups = in_channels // self.group_size
         return MLXQuantArray(
             weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
@@ -116,8 +108,6 @@ class LoRASpec(CompressedArraySpec):
         out_channels: int,
         in_channels: int,
     ) -> CompressedArray:
-        from .lora import LoRAArray
-
         return LoRAArray(
             down=initializer.zeros((*leading_dims, out_channels, self.rank), initializer.precision),
             up=initializer.zeros((*leading_dims, self.rank, in_channels), initializer.precision),

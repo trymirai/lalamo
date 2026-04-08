@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, Any, Self
 
 import jax
 
-from lalamo.common import stringify_path
+from lalamo.common import ParameterPath, stringify_path
 
 if TYPE_CHECKING:
     from lalamo.modules.common import ShardingConfig
@@ -31,8 +31,7 @@ class UzuSerializable:
         sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
         def _make_key(path: tuple[object, ...]) -> str:
-            key = stringify_path(path)
-            return f"{prefix}.{key}" if prefix else key
+            return ParameterPath(prefix) / stringify_path(path)
 
         def restore(path: tuple[object, ...], leaf: object) -> object:
             key = _make_key(path)

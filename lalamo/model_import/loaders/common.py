@@ -27,20 +27,20 @@ def find_field_sharding(module: eqx.Module, target: object) -> FieldShardingInfo
         if leaf is not target:
             continue
 
-        cur: object = module
+        current_node: eqx.Module | object = module
         owner: eqx.Module = module
-        owner_field: dataclasses.Field[object] | None = None
+        owner_field: dataclasses.Field | None = None
 
         for key in path:
             if isinstance(key, jtu.GetAttrKey):
-                assert isinstance(cur, eqx.Module)
-                owner = cur
-                owner_field = next((f for f in dataclasses.fields(cur) if f.name == key.name), None)
-                cur = getattr(cur, key.name)
+                assert isinstance(current_node, eqx.Module)
+                owner = current_node
+                owner_field = next((f for f in dataclasses.fields(current_node) if f.name == key.name), None)
+                current_node = getattr(current_node, key.name)
             elif isinstance(key, jtu.SequenceKey):
-                cur = cur[key.idx]  # type: ignore[index]
+                current_node = current_node[key.idx]  # type: ignore[index]
             elif isinstance(key, jtu.DictKey):
-                cur = cur[key.key]  # type: ignore[index]
+                current_node = current_node[key.key]  # type: ignore[index]
             else:
                 raise TypeError(f"Unexpected key type: at {path}, key {key}")
 

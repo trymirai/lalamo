@@ -10,6 +10,8 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Key
 
+from lalamo.common import ParameterPath
+
 from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
 from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
 
@@ -101,21 +103,20 @@ class MLXQuantArray(CompressedArray):
             "biases": self.biases,
         }
 
+    @classmethod
     def from_uzu(
-        self,
+        cls,
         data: Mapping[str, Any],
         prefix: str = "",
-        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG002
+        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG003
     ) -> Self:
-        def _key(name: str) -> str:
-            return f"{prefix}.{name}" if prefix else name
-
-        bits = int(data[_key("bits")])
-        group_size = int(data[_key("group_size")])
-        return type(self)(
-            weights=unpack_uint8_to_uint(data[_key("weights")], bits).astype(data[_key("scales")].dtype),
-            scales=data[_key("scales")],
-            biases=data[_key("biases")],
+        key = ParameterPath(prefix)
+        bits = int(data[key / "bits"])
+        group_size = int(data[key / "group_size"])
+        return cls(
+            weights=unpack_uint8_to_uint(data[key / "weights"], bits).astype(data[key / "scales"].dtype),
+            scales=data[key / "scales"],
+            biases=data[key / "biases"],
             bits=bits,
             group_size=group_size,
         )
