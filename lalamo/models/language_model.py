@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from itertools import batched
 from pathlib import Path
@@ -524,7 +525,18 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
+        continuous_batching_block_size: int = 128,
     ) -> Iterator[GenerationResults]:
+        """
+        This implement a block-continuous batching. We keep two KV caches active,
+        the prefilled kv cache and the currently active kv cache.
+
+        Each 128 generated tokens, we look at the unrolls that are finished (emitted eot), evict
+        them from kv cache, replace the slice of kv cache with the prefill kv cache, mark the slice
+        in the prefill kv cache as stale and then continue.
+
+        As soon as the prefill kv cache only has the stale values, we run a prefill on the next batch of inputs.
+        """
         tokenized = list(tokenized)  # load eagerly to RAM
 
         if keys is None:
@@ -649,8 +661,13 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         sharding_config: ShardingConfig | None = None,
         keys: Key[Array, " num_sequences"] | None = None,
         vram_bytes: int | None = None,
+        model_path: Path | str | None = None,
         batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
+        precompilation_workers: int = 2,
     ) -> Iterator[tuple[int, AssistantMessage]]:
+        if sharding_config is None:
+            sharding_config = get_current_sharding_config()
+
         messages = list(messages)  # eagerly load the dataset into RAM
 
         if keys is None:
@@ -683,17 +700,15 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if inference_config.batch_size is not None:
             batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
         else:
+            assert model_path is not None, "model_path is required when vram_bytes is set"
             batch_size_per_bucket = estimate_batchsizes_from_vram(
-                lambda config: self.estimate_memory_consumption(
-                    inference_config=config,
-                    sharding_config=sharding_config,
-                ),
+                model_path,
                 sorted_lengths,
                 vram_bytes,  # type: ignore
                 inference_config,
             )
 
-        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=2)
+        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=20)
         assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
 
         if batch_sizes_callback is not None:
@@ -706,6 +721,24 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 for padded_length in sorted(buckets.keys())
             )
             batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
+
+        # Precompile all bucket configs in parallel before starting inference.
+        # XLA's .compile() releases the GIL, so threading gives near-linear speedup.
+        precompile_configs = [
+            replace(inference_config, batch_size=batch_size_per_bucket[pl], padded_length=pl)
+            for pl in sorted(buckets.keys())
+        ]
+
+        def _precompile(ic: InferenceConfig) -> None:
+            self.estimate_memory_consumption(
+                generation_config=generation_config,
+                inference_config=ic,
+                forward_pass_config=forward_pass_config,
+                sharding_config=sharding_config,
+            )
+
+        with ThreadPoolExecutor(max_workers=precompilation_workers) as pool:
+            list(pool.map(_precompile, precompile_configs))
 
         # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
         for padded_length in sorted(buckets.keys(), reverse=True):

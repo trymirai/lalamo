@@ -693,12 +693,9 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
         assert self.loading_task is not None
         self.progress.remove_task(self.loading_task)
 
-    def estimating_batchsize(self, sequence_length: int, lo: int, hi: int | None) -> None:
+    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
         assert self.progress is not None
-        hi_str = str(hi) if hi is not None else "?"
-        description = (
-            f"📐 [cyan]Computing batch size for the prompt length of {sequence_length}... ({lo}..{hi_str})[/cyan]"
-        )
+        description = f"📐 [cyan]Compiling memory probes... ({num_done + 1}/{num_total})[/cyan]"
         if self.estimating_task is None:
             self.estimating_task = self.progress.add_task(description)
         else:
@@ -811,34 +808,25 @@ app.add_typer(speculator_app, name="speculator", help="Train a speculator for a 
 @dataclass
 class CliEstimateBatchsizeCallbacks(EstimateBatchsizeCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
-    loading_task: TaskID | None = None
+    progress: Progress | None = None
     estimating_task: TaskID | None = None
 
-    def loading_model(self) -> None:
-        self.progress = self.stack.enter_context(
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                transient=True,
-            ),
-        )
-        self.loading_task = self.progress.add_task("[cyan]Loading model...[/cyan]")
-
-    def finished_loading_model(self) -> None:
-        assert self.loading_task is not None
-        self.progress.remove_task(self.loading_task)
-
-    def estimating_batchsize(self, lo: int, hi: int | None) -> None:
-        hi_str = str(hi) if hi is not None else "?"
-        description = f"[cyan]Estimating batch size... ({lo}..{hi_str})[/cyan]"
+    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
+        description = f"[cyan]Compiling memory probes... ({num_done + 1}/{num_total})[/cyan]"
+        if self.progress is None:
+            self.progress = self.stack.enter_context(
+                Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    transient=True,
+                ),
+            )
         if self.estimating_task is None:
             self.estimating_task = self.progress.add_task(description)
         else:
             self.progress.update(self.estimating_task, description=description)
 
     def finished_estimating_batchsize(self, batchsize: int) -> None:
-        if self.estimating_task is not None:
-            self.progress.remove_task(self.estimating_task)
         self.stack.close()
         console.print(f"Found maximum batch size: [cyan]{batchsize}[/cyan]")
 
