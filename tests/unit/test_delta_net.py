@@ -15,7 +15,7 @@ from lalamo.modules import (
     SeparableCausalConvConfig,
     UpcastMode,
 )
-from lalamo.modules.token_mixers.delta_net_attention import DeltaNetAttention
+from lalamo.modules.token_mixers.delta_net_attention import DeltaNetAttention, DeltaNetForwardPassConfig
 from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 
@@ -116,7 +116,6 @@ def test_delta_net_attention_matches_hf() -> None:
 
 
 def _make_delta_net(
-    chunk_size: int = 4,
     num_heads: int = 2,
     num_groups: int = 2,
 ) -> DeltaNetAttention:
@@ -139,7 +138,6 @@ def _make_delta_net(
         head_dim=8,
         value_head_dim=8,
         kernel_size=3,
-        chunk_size=chunk_size,
     )
     return config.random_init(model_dim=64, key=jax.random.PRNGKey(42))
 
@@ -177,9 +175,13 @@ def _make_delta_net(
     ],
 )
 def test_chunked_scan_matches_sequential(
-    seq_len: int, num_steps: int, chunk_size: int, use_nonzero_state: bool,
+    seq_len: int,
+    num_steps: int,
+    chunk_size: int,
+    use_nonzero_state: bool,
 ) -> None:
-    module = _make_delta_net(chunk_size=chunk_size)
+    module = _make_delta_net()
+    fpc = DeltaNetForwardPassConfig(chunk_size=chunk_size)
     k1, k2, k3, k4, k5, k6 = jax.random.split(jax.random.PRNGKey(0), 6)
 
     queries = jax.random.normal(k1, (seq_len, module.num_heads, module.head_dim))
@@ -190,16 +192,27 @@ def test_chunked_scan_matches_sequential(
 
     state_shape = (module.num_heads, module.value_head_dim, module.head_dim)
     initial_state = (
-        jax.random.normal(k6, state_shape) * 0.1
-        if use_nonzero_state
-        else jnp.zeros(state_shape, dtype=jnp.float32)
+        jax.random.normal(k6, state_shape) * 0.1 if use_nonzero_state else jnp.zeros(state_shape, dtype=jnp.float32)
     )
 
     out_seq, state_seq = module._recurrent_scan(
-        queries, keys, values, decay_factor, beta, initial_state, num_steps,
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        num_steps,
     )
     out_chunk, state_chunk = module._chunked_scan(
-        queries, keys, values, decay_factor, beta, initial_state, num_steps,
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        num_steps,
+        fpc,
     )
 
     valid = max(num_steps, 0)
@@ -219,7 +232,8 @@ def test_delta_net_state_respects_length_without_padding(
     padding: int,
     seed: int,
 ) -> None:
-    module = _make_delta_net(chunk_size=4)
+    module = _make_delta_net()
+    fpc = DeltaNetForwardPassConfig(chunk_size=4)
     full_input = jax.random.normal(
         jax.random.PRNGKey(seed),
         (seqlen + padding, module.model_dim),
@@ -232,6 +246,7 @@ def test_delta_net_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=seqlen,
+        forward_pass_config=fpc,
     )
     reference_result = module(
         full_input[:seqlen],
@@ -239,6 +254,7 @@ def test_delta_net_state_respects_length_without_padding(
         state=None,
         return_updated_state=True,
         length_without_padding=None,
+        forward_pass_config=fpc,
     )
 
     assert padded_result.state is not None
@@ -251,16 +267,17 @@ def test_delta_net_state_respects_length_without_padding(
 
 @pytest.mark.parametrize("seq_len", [8, 16])
 def test_delta_net_chunked_preserves_causality(seq_len: int) -> None:
-    module = _make_delta_net(chunk_size=4)
+    module = _make_delta_net()
+    fpc = DeltaNetForwardPassConfig(chunk_size=4)
     inputs = jax.random.normal(jax.random.PRNGKey(123), (seq_len, module.model_dim))
 
-    result_original = module(inputs, positional_embeddings=None)
+    result_original = module(inputs, positional_embeddings=None, forward_pass_config=fpc)
 
     midpoint = seq_len // 2
     modified_inputs = inputs.at[midpoint:].set(
         jax.random.normal(jax.random.PRNGKey(999), (seq_len - midpoint, module.model_dim)),
     )
-    result_modified = module(modified_inputs, positional_embeddings=None)
+    result_modified = module(modified_inputs, positional_embeddings=None, forward_pass_config=fpc)
 
     assert_close(
         result=result_modified.outputs[:midpoint],
@@ -269,16 +286,17 @@ def test_delta_net_chunked_preserves_causality(seq_len: int) -> None:
 
 
 def test_delta_net_chunked_with_gqa() -> None:
-    module = _make_delta_net(chunk_size=4, num_heads=4, num_groups=2)
+    module = _make_delta_net(num_heads=4, num_groups=2)
+    fpc = DeltaNetForwardPassConfig(chunk_size=4)
     inputs = jax.random.normal(jax.random.PRNGKey(7), (12, module.model_dim))
 
-    result = module(inputs, positional_embeddings=None, return_updated_state=True)
+    result = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc)
     assert result.outputs.shape == (12, module.model_dim)
     assert result.state is not None
 
     # Verify chunked matches sequential with GQA by running the scan-level comparison
     # after __call__ projections (the repeat happens before _scan/_chunked_scan)
-    module_seq = _make_delta_net(chunk_size=4, num_heads=4, num_groups=2)
+    module_seq = _make_delta_net(num_heads=4, num_groups=2)
     k1, k2, k3, k4, k5, k6 = jax.random.split(jax.random.PRNGKey(3), 6)
     seq_len = 9
 
@@ -290,10 +308,23 @@ def test_delta_net_chunked_with_gqa() -> None:
     initial_state = jax.random.normal(k6, (4, 8, 8)) * 0.1
 
     out_seq, state_seq = module_seq._recurrent_scan(
-        queries, keys, values, decay_factor, beta, initial_state, seq_len,
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        seq_len,
     )
     out_chunk, state_chunk = module_seq._chunked_scan(
-        queries, keys, values, decay_factor, beta, initial_state, seq_len,
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        seq_len,
+        fpc,
     )
 
     assert_close(result=out_chunk, reference=out_seq, atol=1e-5)
@@ -301,22 +332,40 @@ def test_delta_net_chunked_with_gqa() -> None:
 
 
 def test_delta_net_multi_step_generation() -> None:
-    module = _make_delta_net(chunk_size=4)
+    module = _make_delta_net()
+    fpc = DeltaNetForwardPassConfig(chunk_size=4)
     k1, k2, k3 = jax.random.split(jax.random.PRNGKey(42), 3)
     chunk1 = jax.random.normal(k1, (6, module.model_dim))
     chunk2 = jax.random.normal(k2, (5, module.model_dim))
     chunk3 = jax.random.normal(k3, (7, module.model_dim))
 
     # Multi-step: process chunks sequentially, passing state forward
-    result1 = module(chunk1, positional_embeddings=None, return_updated_state=True)
+    result1 = module(
+        chunk1,
+        positional_embeddings=None,
+        return_updated_state=True,
+        forward_pass_config=fpc,
+    )
     assert result1.state is not None
-    result2 = module(chunk2, positional_embeddings=None, state=result1.state, return_updated_state=True)
+    result2 = module(
+        chunk2,
+        positional_embeddings=None,
+        state=result1.state,
+        return_updated_state=True,
+        forward_pass_config=fpc,
+    )
     assert result2.state is not None
-    result3 = module(chunk3, positional_embeddings=None, state=result2.state, return_updated_state=True)
+    result3 = module(
+        chunk3,
+        positional_embeddings=None,
+        state=result2.state,
+        return_updated_state=True,
+        forward_pass_config=fpc,
+    )
 
     # Single-step: process all at once
     full_input = jnp.concatenate([chunk1, chunk2, chunk3], axis=0)
-    result_full = module(full_input, positional_embeddings=None, return_updated_state=True)
+    result_full = module(full_input, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc)
 
     # Outputs must match
     multi_outputs = jnp.concatenate([result1.outputs, result2.outputs, result3.outputs], axis=0)
@@ -333,22 +382,23 @@ def test_delta_net_multi_step_generation() -> None:
     [(1, 4), (2, 8), (3, 7), (4, 16)],
 )
 def test_delta_net_output_invariant_to_chunk_size(chunk_size_a: int, chunk_size_b: int) -> None:
-    module_a = _make_delta_net(chunk_size=chunk_size_a)
-    module_b = _make_delta_net(chunk_size=chunk_size_b)
-    inputs = jax.random.normal(jax.random.PRNGKey(0), (12, module_a.model_dim))
+    module = _make_delta_net()
+    fpc_a = DeltaNetForwardPassConfig(chunk_size=chunk_size_a)
+    fpc_b = DeltaNetForwardPassConfig(chunk_size=chunk_size_b)
+    inputs = jax.random.normal(jax.random.PRNGKey(0), (12, module.model_dim))
 
-    result_a = module_a(inputs, positional_embeddings=None, return_updated_state=True)
-    result_b = module_b(inputs, positional_embeddings=None, return_updated_state=True)
+    result_a = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc_a)
+    result_b = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc_b)
 
     assert_close(result=result_a.outputs, reference=result_b.outputs, atol=1e-5)
-    assert result_a.state is not None
-    assert result_b.state is not None
+    assert result_a.state is not None and result_b.state is not None
     assert_close(result=result_a.state.ssm_state, reference=result_b.state.ssm_state, atol=1e-5)
 
 
 @pytest.mark.parametrize("seq_len", [128, 512])
 def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
-    module = _make_delta_net(chunk_size=64)
+    module = _make_delta_net()
+    fpc = DeltaNetForwardPassConfig(chunk_size=64)
     k1, k2, k3, k4, k5, k6 = jax.random.split(jax.random.PRNGKey(0), 6)
 
     queries = jax.random.normal(k1, (seq_len, module.num_heads, module.head_dim))
@@ -359,10 +409,23 @@ def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
     initial_state = jax.random.normal(k6, (module.num_heads, module.value_head_dim, module.head_dim)) * 0.1
 
     out_seq, state_seq = module._recurrent_scan(
-        queries, keys, values, decay_factor, beta, initial_state, seq_len,
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        seq_len,
     )
     out_chunk, state_chunk = module._chunked_scan(
-        queries, keys, values, decay_factor, beta, initial_state, seq_len,
+        queries,
+        keys,
+        values,
+        decay_factor,
+        beta,
+        initial_state,
+        seq_len,
+        fpc,
     )
 
     assert_close(result=out_chunk, reference=out_seq, atol=2e-3, fraction_of_allowed_violations=0.01)
@@ -373,7 +436,11 @@ def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
     ("seq_len", "chunk_size", "min_chunk_len"),
     [
         # seq_len < min_chunk_len: __call__ routes entirely to _scan
-        (3, 8, 4, ),
+        (
+            3,
+            8,
+            4,
+        ),
         (1, 4, 2),
         # Tail falls back to _scan: remainder=2 < min_chunk_len=3
         (10, 8, 3),
@@ -388,30 +455,15 @@ def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
     ],
 )
 def test_min_chunk_len_matches_sequential(seq_len: int, chunk_size: int, min_chunk_len: int) -> None:
-    from dataclasses import replace as dc_replace
-
-    module = _make_delta_net(chunk_size=chunk_size)
-    module_with_min = DeltaNetAttention(
-        dc_replace(module.config, min_chunk_len=min_chunk_len),
-        in_proj=module.in_proj,
-        conv=module.conv,
-        out_proj=module.out_proj,
-        norm=module.norm,
-        dt_bias=module.dt_bias,
-        a_log=module.a_log,
-        num_heads=module.num_heads,
-        num_groups=module.num_groups,
-        head_dim=module.head_dim,
-        value_head_dim=module.value_head_dim,
-        kernel_size=module.kernel_size,
-    )
+    module = _make_delta_net()
+    fpc_with_min = DeltaNetForwardPassConfig(chunk_size=chunk_size, min_chunk_len=min_chunk_len)
+    fpc_default = DeltaNetForwardPassConfig(chunk_size=chunk_size)
 
     inputs = jax.random.normal(jax.random.PRNGKey(0), (seq_len, module.model_dim))
 
-    result = module_with_min(inputs, positional_embeddings=None, return_updated_state=True)
-    reference = module(inputs, positional_embeddings=None, return_updated_state=True)
+    result = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc_with_min)
+    reference = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc_default)
 
     assert_close(result=result.outputs, reference=reference.outputs, atol=1e-5)
-    assert result.state is not None
-    assert reference.state is not None
+    assert result.state is not None and reference.state is not None
     assert_close(result=result.state.ssm_state, reference=reference.state.ssm_state, atol=1e-5)
