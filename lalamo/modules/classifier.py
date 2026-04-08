@@ -198,7 +198,7 @@ class Classifier(LalamoModule[ClassifierConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: TransformerForwardPassConfig | None = None,
+        forward_pass_config: TransformerForwardPassConfig = TransformerForwardPassConfig(),  # noqa: B008
     ) -> ClassifierResult:
         inner_features = self.embedding.embed(token_ids)
         normalized_embeddings = vmap_twice(self.embedding_norm)(inner_features)
