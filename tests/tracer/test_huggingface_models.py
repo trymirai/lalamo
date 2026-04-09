@@ -6,7 +6,7 @@ from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
 MODEL_LIST = [
-    ModelTestSpec("google/gemma-4-E2B-it", DType.FLOAT32, num_tokens=8, token_stride=1),
+    ModelTestSpec("google/gemma-4-E2B-it", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
     ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),

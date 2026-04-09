@@ -7,7 +7,6 @@ from .classifier import Classifier, ClassifierConfig
 from .common import (
     ForwardPassMode,
     LalamoModule,
-    PositionalEmbeddingSelector,
     ShardingConfig,
     ShardingOrder,
     TensorSharding,
@@ -153,7 +152,6 @@ __all__ = [
     "PLELayerConfig",
     "PLEModelConfig",
     "PerLayerEmbedding",
-    "PositionalEmbeddingSelector",
     "PositionalEmbeddings",
     "QLoRALinear",
     "QLoRALinearConfig",

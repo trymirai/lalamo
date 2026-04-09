@@ -46,8 +46,7 @@ class DecoderActivationTrace(eqx.Module):
     token_positions: Int[Array, "batch suffix_tokens"]
     state: State | None
 
-    local_positional_embeddings: PositionalEmbeddings | None
-    global_positional_embeddings: PositionalEmbeddings | None
+    rope_embeddings: tuple[PositionalEmbeddings, ...] | None
 
     layer_results: tuple[TransformerLayerResult, ...]
 
@@ -62,10 +61,8 @@ class DecoderActivationTrace(eqx.Module):
         )
         if self.state is not None:
             result["state"] = [state_layer.export() for state_layer in self.state]
-        if self.local_positional_embeddings is not None:
-            result["local_positional_embeddings"] = self.local_positional_embeddings.export()
-        if self.global_positional_embeddings is not None:
-            result["global_positional_embeddings"] = self.global_positional_embeddings.export()
+        if self.rope_embeddings is not None:
+            result["rope_embeddings"] = [emb.export() for emb in self.rope_embeddings]
         return result
 
 
@@ -269,8 +266,7 @@ class Decoder(LalamoModule[DecoderConfig]):
                 token_ids=token_ids,
                 token_positions=token_positions,
                 state=state,
-                global_positional_embeddings=transformer_result.global_positional_embeddings,
-                local_positional_embeddings=transformer_result.local_positional_embeddings,
+                rope_embeddings=transformer_result.rope_embeddings,
                 layer_results=transformer_result.layer_results,
                 output_norm=transformer_result.outputs,
             )
@@ -287,7 +283,7 @@ class Decoder(LalamoModule[DecoderConfig]):
         return self.transformer.init_static_state(batch_size, capacity)
 
     def export_weights(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
+        result = dict(
             embedding=self.embedding.export_weights(),
             transformer=self.transformer.export_weights(),
         )

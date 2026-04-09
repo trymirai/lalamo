@@ -148,6 +148,8 @@ class HFLFM2Config(HuggingFaceLMConfig):
             precision=activation_precision,
             base=self.resolved_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=self.hidden_size // self.num_heads,
+            rotary_dim=None,
         )
 
         if self.quantization_config is None:
@@ -219,6 +221,7 @@ class HFLFM2Config(HuggingFaceLMConfig):
                 pre_mlp_norm_config=block_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
+                rope_config=rope_config if layer_type == "full_attention" else None,
             )
             for layer_type in layer_types
         ]
@@ -241,8 +244,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             )
 
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=output_norm_config,
             model_dim=self.hidden_size,

@@ -45,7 +45,7 @@ class HFGemma4TextConfig:
     attention_bias: bool
     num_attention_heads: int
     num_key_value_heads: int
-    num_global_key_value_heads: int | None
+    num_global_key_value_heads: int
     head_dim: int
     global_head_dim: int
     max_position_embeddings: int
@@ -98,36 +98,37 @@ class HFGemma4TextConfig:
             precision=activation_precision,
             base=self.rope_parameters.get("full_attention", {}).get("rope_theta", 10000.0),
             max_sequence_length=max_seq_len,
+            head_dim=self.global_head_dim,
+            rotary_dim=self.head_dim,
         )
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_parameters.get("sliding_attention", {}).get("rope_theta", 10000.0),
             max_sequence_length=max_seq_len,
+            head_dim=self.head_dim,
+            rotary_dim=None,
         )
 
-        ple_layer_config = None
-        ple_model_config = None
-        if self.hidden_size_per_layer_input > 0:
-            ple_embed_scale = self.hidden_size_per_layer_input**0.5
-            model_projection_scale = self.hidden_size**-0.5
-            input_scale = 2.0**-0.5
-            ple_layer_config = PLELayerConfig(
-                linear_config=linear_config,
-                norm_config=rms_norm_config,
-                ple_dim=self.hidden_size_per_layer_input,
-                activation=GELU(),
-                has_layer_scalar=True,
-            )
-            ple_model_config = PLEModelConfig(
-                ple_dim=self.hidden_size_per_layer_input,
-                num_layers=self.num_hidden_layers,
-                ple_vocab_size=self.vocab_size_per_layer_input,
-                ple_embed_scale=ple_embed_scale,
-                model_projection_scale=model_projection_scale,
-                input_scale=input_scale,
-                linear_config=linear_config,
-                norm_config=rms_norm_config,
-            )
+        ple_embed_scale = self.hidden_size_per_layer_input**0.5
+        inverse_hidden_scale = self.hidden_size**-0.5
+        two_input_mixing_scale = 2.0**-0.5
+        ple_layer_config = PLELayerConfig(
+            linear_config=linear_config,
+            norm_config=rms_norm_config,
+            ple_dim=self.hidden_size_per_layer_input,
+            activation=GELU(),
+            has_layer_scalar=True,
+        )
+        ple_model_config = PLEModelConfig(
+            ple_dim=self.hidden_size_per_layer_input,
+            num_layers=self.num_hidden_layers,
+            ple_vocab_size=self.vocab_size_per_layer_input,
+            ple_embed_scale=ple_embed_scale,
+            model_projection_scale=inverse_hidden_scale,
+            input_scale=two_input_mixing_scale,
+            linear_config=linear_config,
+            norm_config=rms_norm_config,
+        )
 
         first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
         last_of_type: dict[str, int] = {}
@@ -141,8 +142,10 @@ class HFGemma4TextConfig:
 
         layer_configs = []
         for i, layer_type in enumerate(self.layer_types):
-            sliding_window_size = self.sliding_window if layer_type == "sliding_attention" else None
-            layer_head_dim = self.global_head_dim if layer_type == "full_attention" else self.head_dim
+            is_global = layer_type == "full_attention"
+            sliding_window_size = None if is_global else self.sliding_window
+            layer_head_dim = self.global_head_dim if is_global else self.head_dim
+            layer_rope_config = global_rope_config if is_global else local_rope_config
 
             kv_source = kv_source_per_layer[i]
 
@@ -152,7 +155,7 @@ class HFGemma4TextConfig:
                 layer_intermediate = self.intermediate_size
 
             num_kv_heads = self.num_key_value_heads
-            if sliding_window_size is None and self.num_global_key_value_heads is not None:
+            if is_global:
                 num_kv_heads = self.num_global_key_value_heads
 
             attention_config = AttentionConfig(
@@ -183,20 +186,16 @@ class HFGemma4TextConfig:
                 hidden_dim=layer_intermediate,
                 ple_config=ple_layer_config,
                 kv_source_layer=kv_source,
+                rope_config=layer_rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
             layer_configs=tuple(layer_configs),
             output_norm_config=rms_norm_config,
             model_dim=self.hidden_size,
             hidden_dim=self.intermediate_size,
             context_length=max_seq_len,
-            global_rope_dim=self.head_dim,
-            local_rope_dim=self.head_dim,
-            global_head_dim=self.global_head_dim,
         )
 
         return DecoderConfig(
@@ -212,14 +211,13 @@ class HFGemma4Config(HuggingFaceLMConfig):
     text_config: HFGemma4TextConfig
     initializer_range: float
     transformers_version: str
-    torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
-    dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
-    architectures: list[str] = field(default_factory=list)
-    model_type: Literal["gemma4"] = "gemma4"
-    tie_word_embeddings: bool = True
-    eos_token_id: int | list[int] = field(default_factory=lambda: [1])
+    torch_dtype: Literal["bfloat16", "float16", "float32"]
+    dtype: Literal["bfloat16", "float16", "float32"]
+    architectures: list[str]
+    model_type: Literal["gemma4"]
+    tie_word_embeddings: bool
+    eos_token_id: int | list[int]
 
-    # Multimodal fields (ignored for text-only)
     vision_config: dict[str, Any] | None = field(default_factory=dict)
     audio_config: dict[str, Any] | None = field(default_factory=dict)
     image_token_id: int | None = None

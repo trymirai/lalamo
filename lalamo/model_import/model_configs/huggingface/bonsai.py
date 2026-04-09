@@ -98,7 +98,9 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             original_context_length=self.rope_scaling.original_max_position_embeddings,
             beta_fast=self.rope_scaling.beta_fast,
             beta_slow=self.rope_scaling.beta_slow,
+            head_dim=self.head_dim,
             truncate=True,
+            rotary_dim=None,
         )
 
         rmsnorm_config = NormalizationConfig(
@@ -149,11 +151,10 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
+                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

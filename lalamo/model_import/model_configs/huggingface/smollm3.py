@@ -104,6 +104,8 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
             precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=self.hidden_size // self.num_attention_heads,
+            rotary_dim=None,
         )
 
         rmsnorm_config = NormalizationConfig(
@@ -162,7 +164,6 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
                 is_causal=True,
                 scale=None,
                 sliding_window_size=None,
-                use_rope=use_rope,
             )
             mlp_config = DenseMLPConfig(
                 linear_config=linear_config,
@@ -180,12 +181,11 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
                     pre_mlp_norm_config=rmsnorm_config,
                     mlp_config=mlp_config,
                     post_mlp_norm_config=None,
+                    rope_config=rope_config if use_rope else None,
                 ),
             )
 
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

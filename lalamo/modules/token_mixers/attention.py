@@ -9,7 +9,7 @@ from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import dummy_array, require_mapping
-from lalamo.modules.common import ParameterTree, PositionalEmbeddingSelector, require_array, require_tree
+from lalamo.modules.common import ParameterTree, require_array, require_tree
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -104,17 +104,8 @@ class AttentionConfig(TokenMixerConfigBase):
     has_qkv_biases: bool
     has_out_biases: bool
     gate_projection_config: LinearConfig | None = None
-    use_rope: bool = True
-    # Per-head rotary dimension; if set smaller than head_dim; RoPE is applied to the start of the embedding
-    partial_rope_dim: int | None = None
     # Scale-free RMS normalization on values
     normalize_values: bool = False
-
-    @property
-    def rope_dim(self) -> int | None:
-        if not self.use_rope:
-            return None
-        return self.partial_rope_dim if self.partial_rope_dim is not None else self.head_dim
 
     def random_init(
         self,
@@ -185,7 +176,6 @@ class AttentionConfig(TokenMixerConfigBase):
             is_causal=self.is_causal,
             scale=self.scale,
             sliding_window_size=self.sliding_window_size,
-            use_rope=self.use_rope,
         )
 
     def empty(
@@ -251,7 +241,6 @@ class AttentionConfig(TokenMixerConfigBase):
             is_causal=self.is_causal,
             scale=self.scale,
             sliding_window_size=self.sliding_window_size,
-            use_rope=self.use_rope,
         )
 
 
@@ -273,7 +262,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
     scale: float | None = eqx.field(static=True)
     sliding_window_size: int | None = eqx.field(static=True)
-    use_rope: bool = eqx.field(static=True)
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -292,22 +280,10 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return self.sliding_window_size is not None
 
     @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        if not self.use_rope:
-            return PositionalEmbeddingSelector.NONE
-        if self.use_sliding_window:
-            return PositionalEmbeddingSelector.LOCAL
-        return PositionalEmbeddingSelector.GLOBAL
-
-    @property
     def has_sinks(self) -> bool:
         return self.sinks is not None
 
     def __post_init__(self) -> None:
-        if self.use_rope != self.config.use_rope:
-            raise ValueError(
-                f"use_rope {self.use_rope} does not match the specified config use_rope {self.config.use_rope}",
-            )
         if self.qkv_projection.has_biases != self.config.has_qkv_biases:
             raise ValueError(
                 f"QKV projection has_biases {self.qkv_projection.has_biases} does not match"

@@ -11,11 +11,11 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 from lalamo.common import ParameterTree, dummy_array, require_mapping, require_tree
 
 from .activations import Activation
-from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
+from .common import ForwardPassMode, LalamoModule
 from .linear import LinearBase, LinearConfig
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings
+from .rope import PositionalEmbeddings, RoPEConfig
 from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
 from .utils import vmap_twice
 
@@ -174,10 +174,7 @@ class TransformerLayerConfig:
     hidden_dim: int | None = None
     ple_config: PLELayerConfig | None = None
     kv_source_layer: int | None = None
-
-    @property
-    def rope_dim(self) -> int | None:
-        return self.mixer_config.rope_dim
+    rope_config: RoPEConfig | None = None
 
     def random_init(
         self,
@@ -268,10 +265,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     @property
     def activation_precision(self) -> DTypeLike:
         return self.mixer.activation_precision
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return self.mixer.positional_embedding_selector
 
     def __post_init__(self) -> None:
         if self.pre_mixer_norm is not None:
@@ -386,7 +379,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         )
 
     def export_weights(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = dict(
+        result = dict(
             mixer=self.mixer.export_weights(),
             mlp=self.mlp.export_weights(),
         )

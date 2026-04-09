@@ -4,7 +4,7 @@ from typing import NamedTuple, Self
 
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.modules.common import LalamoModule, ParameterTree, PositionalEmbeddingSelector
+from lalamo.modules.common import LalamoModule, ParameterTree
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase
@@ -23,10 +23,6 @@ class TokenMixerResult[StateLayerT](NamedTuple):
 
 @dataclass(frozen=True)
 class TokenMixerConfigBase(ABC):
-    @property
-    @abstractmethod
-    def rope_dim(self) -> int | None: ...
-
     @abstractmethod
     def random_init(
         self,
@@ -50,10 +46,6 @@ class TokenMixerBase[ConfigT, StateLayerT: StateLayerBase](LalamoModule[ConfigT]
     @property
     @abstractmethod
     def model_dim(self) -> int: ...
-
-    @property
-    @abstractmethod
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector: ...
 
     @abstractmethod
     def __call__(

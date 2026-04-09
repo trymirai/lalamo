@@ -77,6 +77,8 @@ class RoPEConfigBase:
     precision: DTypeLike
     base: float
     max_sequence_length: int
+    head_dim: int
+    rotary_dim: int | None
 
     @property
     def _attention_scaling_factor(self) -> float:
@@ -90,12 +92,10 @@ class RoPEConfigBase:
     ) -> Float[Array, " tokens"]:
         return inverse_frequencies
 
-    def init(
-        self,
-        head_dim: int,
-        num_timesteps: int,
-        rotary_dim: int | None = None,
-    ) -> "RoPE":
+    def init(self) -> "RoPE":
+        head_dim = self.head_dim
+        rotary_dim = self.rotary_dim
+        num_timesteps = self.max_sequence_length
         freq_dim = rotary_dim or head_dim
         timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
         channel_indices = jnp.arange(0, freq_dim, 2, dtype=jnp.int32)

@@ -1,6 +1,6 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Self
+from typing import Any, Self
 
 import torch
 from jaxtyping import Array
@@ -43,12 +43,9 @@ class LFM2DecoderTracer(
     def embedding(self, token_ids: Tensor) -> Tensor:
         return self.hf_model.model.embed_tokens.forward(token_ids)
 
-    def global_rope(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]:
-        return self.hf_model.model.rotary_emb.forward(x, position_ids)
-
-    def local_rope(self, x: Tensor, position_ids: Tensor) -> tuple[Tensor, Tensor]:
-        hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
-        return hf_rope.forward(x, position_ids)
+    def rope_fns(self) -> list[tuple[str, Any]]:
+        global_rope = self.hf_model.model.rotary_emb
+        return [("Global", lambda x, pos: global_rope.forward(x, pos))]
 
     def rmsnorm(self, rmsnorm: Lfm2RMSNorm, x: Tensor) -> Tensor:
         return rmsnorm.forward(x)

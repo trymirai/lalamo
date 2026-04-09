@@ -310,12 +310,16 @@ class HFDecoderTracer(
         embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
         return self.hf_model.model.embed_tokens.forward(token_ids.to(embed_device))
 
-    def global_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        return _rope_forward(self.hf_model.model.rotary_emb, x, position_ids, "full_attention", self.device)
-
-    def local_rope(self, x: torch.Tensor, position_ids: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        hf_rope = getattr(self.hf_model.model, "rotary_emb_local", self.hf_model.model.rotary_emb)
-        return _rope_forward(hf_rope, x, position_ids, "sliding_attention", self.device)
+    def rope_fns(self) -> list[tuple[str, Any]]:
+        result: list[tuple[str, Any]] = []
+        global_rope = self.hf_model.model.rotary_emb
+        result.append(("Global", lambda x, pos: _rope_forward(global_rope, x, pos, "full_attention", self.device)))
+        local_rope = getattr(self.hf_model.model, "rotary_emb_local", None)
+        if local_rope is not None:
+            result.append(
+                ("Local", lambda x, pos: _rope_forward(local_rope, x, pos, "sliding_attention", self.device))
+            )
+        return result
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
         rmsnorm_device = _module_device(rmsnorm, self.device)  # type: ignore[arg-type]
@@ -645,13 +649,8 @@ class ModernBertTracer(
             fraction_of_allowed_violations=FRACTION_OF_ALLOWED_VIOLATIONS,
         )
 
-    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
-        # NOTE: currently in ModernBERT rope's are compared in per-layer tracing function
-        pass
-
-    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
-        # NOTE: currently in ModernBERT rope's are compared in per-layer tracing function
-        pass
+    def rope_fns(self) -> list[tuple[str, Any]]:
+        return []
 
     def iterate_layers(self) -> Iterable[ModernBertEncoderLayer]:
         return self.hf_model.model.layers

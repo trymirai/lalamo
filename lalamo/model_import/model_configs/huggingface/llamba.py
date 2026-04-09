@@ -163,8 +163,6 @@ class HFLlambaConfig(HuggingFaceLMConfig):
             post_mlp_norm_config=None,
         )
         transformer_config = TransformerConfig(
-            global_rope_config=None,
-            local_rope_config=None,
             layer_configs=(transformer_layer_config,) * self.n_layer,
             output_norm_config=rmsnorm_config,
             model_dim=self.d_model,
