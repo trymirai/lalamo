@@ -1,6 +1,8 @@
 """Foreign config for NanoCodec TTS models from NVIDIA NeMo."""
 
-from collections.abc import Mapping, Sequence
+from collections import ChainMap
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -9,6 +11,7 @@ import numpy as np
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
+from lalamo.common import WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.model_import.model_configs import ForeignTTSConfig
@@ -69,6 +72,16 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     out_kernel_size: int
     resblock_kernel_sizes: tuple[int, ...]
     resblock_dilation_sizes: tuple[int, ...]
+
+    @contextmanager
+    def load_weight_files(
+        self,
+        weight_paths: Sequence[Path],
+        precision: DTypeLike,
+    ) -> Iterator[Sequence[WeightShard]]:
+        from lalamo.model_import.model_specs.origins import load_torch_weights
+
+        yield [load_torch_weights(path, precision) for path in weight_paths]
 
     def to_tts_config(
         self,
@@ -142,12 +155,13 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule:
         assert isinstance(model, TTSModel)
         assert isinstance(model.text_decoder, StubTextDecoder)
         assert isinstance(model.audio_decoder, NanoCodec)
 
+        weights_dict: Mapping[str, Array] = ChainMap(*[w for w, _ in weight_shards])  # type: ignore[arg-type]
         loaded_audio_decoder = load_nanocodec(model.audio_decoder, weights_dict)
 
         return load_parameters(

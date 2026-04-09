@@ -11,12 +11,15 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.utils import MapDictValues, MapSequence
 
+type WeightShard = tuple[Mapping[str, Array], Mapping[str, str]]
+
 __all__ = [
     "DEFAULT_PRECISION",
     "ArrayLike",
     "LalamoWarning",
     "ParameterPath",
     "ParameterTree",
+    "WeightShard",
     "dummy_array",
     "flatten_parameters",
     "require_array",

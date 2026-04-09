@@ -1,4 +1,6 @@
-from collections.abc import Callable, Mapping, Sequence
+from collections import ChainMap
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
@@ -6,7 +8,7 @@ from typing import Any, Self
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterPath
+from lalamo.common import ParameterPath, WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
@@ -302,6 +304,16 @@ class FishAudioConfig(ForeignTTSConfig):
     default_speaker: str = "speaker:0"
     default_style: str = "interleave"
 
+    @contextmanager
+    def load_weight_files(
+        self,
+        weight_paths: Sequence[Path],
+        precision: DTypeLike,
+    ) -> Iterator[Sequence[WeightShard]]:
+        from lalamo.model_import.model_specs.origins import load_torch_weights
+
+        yield [load_torch_weights(path, precision) for path in weight_paths]
+
     def prepare_tokenizer(
         self,
         model_spec: "ModelSpec",  # noqa: F821  # ty: ignore[unresolved-reference]
@@ -483,9 +495,11 @@ class FishAudioConfig(ForeignTTSConfig):
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule:
         assert isinstance(model, TTSModel)
+
+        weights_dict: Mapping[str, Array] = ChainMap(*[w for w, _ in weight_shards])  # type: ignore[arg-type]
 
         assert isinstance(model.text_decoder, FishAudioTextDecoder)
         loaded_text_decoder = load_fishaudio_text_decoder(model.text_decoder, weights_dict, ParameterPath())

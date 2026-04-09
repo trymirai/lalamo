@@ -1,13 +1,16 @@
 import json
 from abc import abstractmethod
-from collections.abc import Mapping, Sequence
+from collections import ChainMap
+from collections.abc import Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
-from jaxtyping import Array, DTypeLike
+from jaxtyping import DTypeLike
 
+from lalamo.common import WeightShard
 from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
 from lalamo.modules.audio.latent_tts import LatentTTSConfig
 from lalamo.modules.common import LalamoModule
@@ -41,11 +44,22 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls._converter.structure(config, cls)
 
+    @contextmanager
+    def load_weight_files(
+        self,
+        weight_paths: Sequence[Path],
+        precision: DTypeLike,
+    ) -> Iterator[Sequence[WeightShard]]:
+        from lalamo.model_import.model_specs.origins import load_safetensors
+
+        with ExitStack() as stack:
+            yield [stack.enter_context(load_safetensors(path, precision)) for path in weight_paths]
+
     @abstractmethod
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule: ...
 
     @abstractmethod
@@ -62,12 +76,13 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        weights_dict: Mapping[str, Array],
-        metadata_dict: Mapping[str, str],
+        weight_paths: Sequence[Path],
     ) -> LalamoModule[ConfigT]:
-        config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
-        model = config.empty()
-        return self._load_weights(model, weights_dict)
+        with self.load_weight_files(weight_paths, activation_precision) as weight_shards:
+            metadata_dict: Mapping[str, str] = ChainMap(*[m for _, m in weight_shards])  # type: ignore[arg-type]
+            config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
+            model = config.empty()
+            return self._load_weights(model, weight_shards)
 
 
 @dataclass(frozen=True)

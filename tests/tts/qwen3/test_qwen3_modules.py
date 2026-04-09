@@ -15,7 +15,6 @@ from qwen_tts.core.tokenizer_12hz.modeling_qwen3_tts_tokenizer_v2 import (
 )
 
 from lalamo.common import ParameterPath
-from tests.common import assert_close
 from lalamo.model_import.loaders.nanocodec_loaders import load_causal_transpose_conv1d
 from lalamo.model_import.loaders.qwen3_tts_loaders import (
     load_qwen3_tts_euclidean_codebook,
@@ -32,6 +31,7 @@ from lalamo.modules.audio.common_modules import (
 from lalamo.modules.audio.qwen3_tts.qwen3_tts_modules import (
     EuclideanCodebookConfig,
 )
+from tests.common import assert_close
 from tests.tts.utils import prepare_state_dict_for_lalamo_loaders
 
 

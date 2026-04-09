@@ -1,14 +1,11 @@
 import importlib.metadata
 import json
-from collections import ChainMap
 from collections.abc import Callable
-from contextlib import ExitStack
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
 
 import jax.numpy as jnp
-from jax import Array
 from jaxtyping import DTypeLike
 from tokenizers import Tokenizer
 
@@ -199,7 +196,6 @@ def _resolve_weights_and_config(
 
 
 def _load_main_processing_module(
-    model_spec: ModelSpec,
     weights_paths: list[Path],
     precision: DTypeLike,
     foreign_config: ForeignConfig,
@@ -207,30 +203,15 @@ def _load_main_processing_module(
     context_length: int | None = None,
     accumulation_precision: DTypeLike = jnp.float32,
 ) -> LalamoModule:
-    with ExitStack() as stack:
-        weights_shards = []
-        metadata_shards = []
-        for weights_path in weights_paths:
-            weights_shard, metadata_shard = stack.enter_context(
-                model_spec.origin.load_weights(weights_path, precision)
-            )
-            weights_shards.append(weights_shard)
-            metadata_shards.append(metadata_shard)
-        weights_dict: ChainMap[str, Array] = ChainMap(*weights_shards)
-        metadata_dict: ChainMap[str, str] = ChainMap(*metadata_shards)
+    if progress_callback is not None:
+        progress_callback(InitializingModelEvent())
 
-        if progress_callback is not None:
-            progress_callback(InitializingModelEvent())
-
-        processing_module = foreign_config.load(
-            context_length,
-            precision,
-            accumulation_precision,
-            weights_dict,
-            metadata_dict,
-        )
-
-    return processing_module
+    return foreign_config.load(
+        context_length,
+        precision,
+        accumulation_precision,
+        weights_paths,
+    )
 
 
 def _import_language_model(
@@ -248,7 +229,6 @@ def _import_language_model(
     if precision is None:
         precision = foreign_decoder_config.default_precision
     decoder = _load_main_processing_module(
-        model_spec,
         model_weights_paths,
         precision,
         foreign_decoder_config,
@@ -303,7 +283,6 @@ def _import_classifier(
         precision = foreign_classifier_config.default_precision
 
     classifier = _load_main_processing_module(
-        model_spec,
         model_weights_paths,
         precision,
         foreign_classifier_config,
@@ -345,7 +324,6 @@ def _import_tts_model(
         tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, progress_callback)
 
     tts_model = _load_main_processing_module(
-        model_spec,
         model_weights_paths,
         precision,
         foreign_tts_config,
@@ -394,7 +372,6 @@ def _import_latent_tts_model(
     tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, progress_callback)
 
     latent_tts_model = _load_main_processing_module(
-        model_spec,
         model_weights_paths,
         precision,
         foreign_config,

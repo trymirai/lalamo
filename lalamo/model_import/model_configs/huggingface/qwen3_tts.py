@@ -1,11 +1,12 @@
 import math
-from collections.abc import Mapping
+from collections import ChainMap
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterPath
+from lalamo.common import ParameterPath, WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.qwen3_tts_loaders import (
     load_qwen3_tts_audio_decoder,
@@ -203,12 +204,13 @@ class Qwen3TTSTokenizer12HzConfig(ForeignTTSConfig):
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule:
         assert isinstance(model, TTSModel)
         assert isinstance(model.audio_decoder, Qwen3TTSAudioDecoder)
         assert isinstance(model.text_decoder, Qwen3TTSTextDecoder)
 
+        weights_dict: Mapping[str, Array] = ChainMap(*[w for w, _ in weight_shards])  # type: ignore[arg-type]
         loaded_audio_decoder = load_qwen3_tts_audio_decoder(
             model.audio_decoder, weights_dict, ParameterPath("decoder")
         )

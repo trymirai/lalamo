@@ -1,22 +1,44 @@
+import dataclasses
 import functools
 import json
 import tarfile
 import tempfile
 from abc import abstractmethod
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import huggingface_hub
-import jax.numpy as jnp
 from jaxtyping import DTypeLike
 
-from lalamo.common import cast_if_float
+from lalamo.common import WeightShard, cast_if_float
 from lalamo.registry_abc import RegistryABC
 from lalamo.safetensors import safe_read
 from lalamo.utils import MapDictValues
+
+
+@contextmanager
+def load_safetensors(path: Path, float_dtype: DTypeLike) -> Iterator[WeightShard]:
+    with path.open("rb") as fd:
+        metadata, lazy_weights = safe_read(fd)
+        yield MapDictValues(lambda v: cast_if_float(v, float_dtype), lazy_weights), metadata or {}
+
+
+def load_torch_weights(path: Path, float_dtype: DTypeLike, *, weights_only: bool = True) -> WeightShard:
+    import torch
+
+    from lalamo.modules.torch_interop import torch_to_jax
+
+    torch_weights = torch.load(path, map_location="cpu", weights_only=weights_only)
+    return MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
+
+
+class WeightFormat(Enum):
+    SAFETENSORS = ".safetensors"
+    TORCH = ".pth"
 
 
 @dataclass(frozen=True)
@@ -60,17 +82,26 @@ class Origin(RegistryABC):
         progress_callback: Callable[[StatusEvent], None] | None = None,
     ) -> list[Path]: ...
 
-    @abstractmethod
-    @contextmanager
-    def load_weights(
-        self,
-        path: Path,
-        float_dtype: DTypeLike,
-    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]: ...
-
     @property
     @abstractmethod
     def description(self) -> str: ...
+
+    @classmethod
+    def from_json(cls, data: dict[str, Any]) -> "Origin":
+        data = dict(data)
+        type_name = data.pop("type")
+        name_to_type = {t.__name__: t for t in cls.__descendants__()}
+        origin_type = name_to_type.get(type_name)
+        if origin_type is None:
+            available = ", ".join(sorted(name_to_type))
+            raise ValueError(f"Unknown origin type: {type_name!r}. Available: {available}")
+        for field in dataclasses.fields(origin_type):
+            if field.name in data:
+                if isinstance(data[field.name], list):
+                    data[field.name] = tuple(data[field.name])
+                elif isinstance(field.type, type) and issubclass(field.type, Enum):
+                    data[field.name] = field.type(data[field.name])
+        return origin_type(**data)
 
 
 def hf_resolve_file(
@@ -101,6 +132,7 @@ def hf_resolve_weights(
 @dataclass(frozen=True)
 class HuggingFaceOrigin(Origin):
     repo: str
+    weight_format: WeightFormat = WeightFormat.SAFETENSORS
 
     def resolve_file(
         self, file_spec: FileSpec, progress_callback: Callable[[StatusEvent], None] | None = None
@@ -108,47 +140,7 @@ class HuggingFaceOrigin(Origin):
         return hf_resolve_file(self.repo, file_spec, progress_callback)
 
     def resolve_weights(self, progress_callback: Callable[[StatusEvent], None] | None = None) -> list[Path]:
-        return hf_resolve_weights(self.repo, ".safetensors", progress_callback)
-
-    @contextmanager
-    def load_weights(
-        self,
-        path: Path,
-        float_dtype: DTypeLike,
-    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        with path.open("rb") as fd:
-            metadata, weights = safe_read(fd)
-            yield MapDictValues(lambda v: cast_if_float(v, float_dtype), weights), metadata or {}
-
-    @property
-    def description(self) -> str:
-        return self.repo
-
-
-@dataclass(frozen=True)
-class HuggingFaceTorchOrigin(Origin):
-    repo: str
-
-    def resolve_file(
-        self, file_spec: FileSpec, progress_callback: Callable[[StatusEvent], None] | None = None
-    ) -> Path:
-        return hf_resolve_file(self.repo, file_spec, progress_callback)
-
-    def resolve_weights(self, progress_callback: Callable[[StatusEvent], None] | None = None) -> list[Path]:
-        return hf_resolve_weights(self.repo, ".pth", progress_callback)
-
-    @contextmanager
-    def load_weights(
-        self,
-        path: Path,
-        float_dtype: DTypeLike,
-    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        import torch
-
-        from lalamo.modules.torch_interop import torch_to_jax
-
-        torch_weights = torch.load(path, map_location="cpu", weights_only=True)
-        yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
+        return hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
 
     @property
     def description(self) -> str:
@@ -197,19 +189,29 @@ class NemoOrigin(Origin):
         weights, _ = extract_nemo_archive(nemo_path)
         return list(weights)
 
-    @contextmanager
-    def load_weights(
-        self,
-        path: Path,
-        float_dtype: DTypeLike,
-    ) -> Iterator[tuple[Mapping[str, jnp.ndarray], Mapping[str, str]]]:
-        import torch
-
-        from lalamo.modules.torch_interop import torch_to_jax
-
-        torch_weights = torch.load(path, map_location="cpu", weights_only=True)
-        yield MapDictValues(lambda v: cast_if_float(torch_to_jax(v), float_dtype), torch_weights), {}
-
     @property
     def description(self) -> str:
         return self.repo
+
+
+@dataclass(frozen=True)
+class LocalOrigin(Origin):
+    root: str
+    weight_files: tuple[str, ...] = ()
+
+    def resolve_file(
+        self,
+        file_spec: FileSpec,
+        progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
+    ) -> Path:
+        return Path(self.root) / file_spec.filename
+
+    def resolve_weights(
+        self,
+        progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
+    ) -> list[Path]:
+        return [Path(self.root) / f for f in self.weight_files]
+
+    @property
+    def description(self) -> str:
+        return self.root

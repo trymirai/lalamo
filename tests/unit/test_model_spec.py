@@ -1,6 +1,10 @@
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.model_import.model_specs.common import ModelSpec
-from lalamo.model_import.model_specs.origins import HuggingFaceOrigin
+from lalamo.model_import.model_specs.origins import (
+    HuggingFaceOrigin,
+    LocalOrigin,
+    Origin,
+)
 
 EXAMPLE_JSON = {
     "vendor": "Meta",
@@ -50,3 +54,64 @@ def test_consistency() -> None:
     )
 
     assert ModelSpec.from_json(spec.to_json()) == spec
+
+
+def test_origin_from_json_huggingface() -> None:
+    data = {"type": "HuggingFaceOrigin", "repo": "meta-llama/Llama-3.2-1B-Instruct"}
+    origin = Origin.from_json(data)
+    assert isinstance(origin, HuggingFaceOrigin)
+    assert origin.repo == "meta-llama/Llama-3.2-1B-Instruct"
+
+
+def test_origin_from_json_local() -> None:
+    data = {
+        "type": "LocalOrigin",
+        "root": "/path/to/model",
+        "weight_files": ["model.safetensors"],
+    }
+    origin = Origin.from_json(data)
+    assert isinstance(origin, LocalOrigin)
+    assert origin.root == "/path/to/model"
+    assert origin.weight_files == ("model.safetensors",)
+
+
+def test_origin_from_json_local_defaults() -> None:
+    data = {"type": "LocalOrigin", "root": "/path/to/model"}
+    origin = Origin.from_json(data)
+    assert isinstance(origin, LocalOrigin)
+    assert origin.weight_files == ()
+
+
+def test_local_origin_resolve_weights() -> None:
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        (Path(tmpdir) / "model.safetensors").touch()
+        origin = LocalOrigin(root=tmpdir, weight_files=("model.safetensors",))
+        paths = origin.resolve_weights()
+        assert len(paths) == 1
+        assert paths[0] == Path(tmpdir) / "model.safetensors"
+
+
+def test_local_origin_serialization() -> None:
+    spec = ModelSpec(
+        vendor="Custom",
+        family="test",
+        name="test-model",
+        size="1B",
+        quantization=None,
+        origin=LocalOrigin(root="/path/to/model", weight_files=("weights.safetensors",)),
+        config_type=HFLlamaConfig,
+        use_cases=tuple(),
+    )
+
+    json_data = spec.to_json()
+    assert json_data["origin"]["type"] == "LocalOrigin"
+    assert json_data["origin"]["root"] == "/path/to/model"
+    assert json_data["origin"]["weight_files"] == ("weights.safetensors",)
+
+    restored = ModelSpec.from_json(json_data)
+    assert isinstance(restored.origin, LocalOrigin)
+    assert restored.origin.root == "/path/to/model"
+    assert restored == spec

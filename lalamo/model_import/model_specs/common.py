@@ -2,6 +2,7 @@ import dataclasses
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum, StrEnum
+from pathlib import Path
 from typing import Any, ClassVar, cast, get_args, get_origin
 
 import cattrs
@@ -111,14 +112,18 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
 def _structure_origin(data: object, _type: object) -> Origin:
     if isinstance(data, Origin):
         return data
-    data = dict(cast("dict[Any, Any]", data))
-    type_name = data.pop("type")
-    name_to_type = {t.__name__: t for t in Origin.__descendants__()}
-    return name_to_type[type_name](**data)
+    return Origin.from_json(cast("dict[Any, Any]", data))
 
 
 def _unstructure_origin(obj: Origin) -> dict:
-    fields = {f.name: getattr(obj, f.name) for f in dataclasses.fields(obj)}  # type: ignore[arg-type]
+    fields: dict[str, Any] = {}
+    for f in dataclasses.fields(obj):  # type: ignore[arg-type]
+        value = getattr(obj, f.name)
+        if isinstance(value, Path):
+            value = str(value)
+        elif isinstance(value, Enum):
+            value = value.value
+        fields[f.name] = value
     return {"type": type(obj).__name__, **fields}
 
 

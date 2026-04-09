@@ -4,7 +4,7 @@ import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from importlib.util import find_spec
 from itertools import islice
@@ -63,6 +63,7 @@ from lalamo.data.lalamo_completions import iter_completions
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec, ModelType
 from lalamo.model_import.common import FileSpec
+from lalamo.model_import.model_specs.origins import Origin
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
@@ -347,6 +348,13 @@ def tts(
         ),
     ],
     output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech")] = None,
+    message: Annotated[
+        str | None,
+        Option(
+            help="Text to synthesize in non-interactive mode. Generates speech and exits.",
+            show_default="None, run interactively",
+        ),
+    ] = None,
     replay: Annotated[
         bool,
         Option(
@@ -402,6 +410,15 @@ def tts(
             model = LatentTTSGenerator.load_model(model_path)
         case _:
             raise ValueError(f"Expected a TTS model, got: {model_type}")
+
+    if message is not None:
+        user_message = TTSMessage(content=message, speaker_id=speaker_id, style=style, voice_prompt=voice_prompt)
+        tts_result = model.generate_speech([user_message])
+        if replay:
+            play_mono_audio(tts_result.audio, tts_result.audio_params.samplerate)
+        sf.write(str(output_file), tts_result.audio, tts_result.audio_params.samplerate)
+        console.print(f"[green] ... saved generated audio to {output_file}[/green]")
+        return
 
     _stop_word = "/stop"
     while True:
@@ -475,6 +492,17 @@ def convert(
             show_default="Model's native maximum context length.",
         ),
     ] = None,
+    custom_origin: Annotated[
+        str | None,
+        Option(
+            "--custom-origin",
+            help=(
+                "Origin JSON to override the model's default origin."
+                ' Example: \'{"type": "LocalOrigin", "root": "/path/to/weights"}\''
+            ),
+            show_default="Use the model's default origin",
+        ),
+    ] = None,
     overwrite: Annotated[
         bool,
         Option(
@@ -482,6 +510,10 @@ def convert(
         ),
     ] = False,
 ) -> None:
+    if custom_origin is not None:
+        origin = Origin.from_json(json.loads(custom_origin))
+        model_repo = replace(model_repo, origin=origin)
+
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 

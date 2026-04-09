@@ -17,7 +17,6 @@ from lalamo.modules.audio.common_modules import (
     Snake1dConfig,
 )
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
-from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.audio.nanocodec.nanocodec_consts import (
     DEFAULT_AUDIO_DECODER_INPUT_CONV_SIZE,
     DEFAULT_AUDIO_DECODER_OUTPUT_CONV_SIZE,
@@ -36,6 +35,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlockConfig,
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
+from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.audio.text_to_speech import TTSModel
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
