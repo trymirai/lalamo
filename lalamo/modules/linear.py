@@ -990,7 +990,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> LinearBase:
-        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
+        group_quantized_linear = super()._empty_general(leading_dims, input_dim, output_dims, has_biases)
         assert isinstance(group_quantized_linear, GroupQuantizedLinear)
 
         hidden_lora_rank = len(output_dims) * self.lora_rank
