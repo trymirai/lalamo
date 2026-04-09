@@ -27,6 +27,7 @@ from lalamo.modules.linear import (
     GroupQuantizedLinearConfig,
     LinearConfig,
     MLXQuantizedLinearConfig,
+    QLoRALinearConfig,
 )
 from lalamo.quantization import QuantizationMode
 
@@ -94,7 +95,45 @@ def test_mlx_quantized_linear_import_weights_accepts_wrapped_saved_params() -> N
         assert jnp.array_equal(exported[key], loaded.export_weights()[key])
 
 
-def test_linear_config_structure_accepts_wrapped_inner_config() -> None:
+def test_group_quantized_linear_import_weights_accepts_rht_inner_linear() -> None:
+    layer = GroupQuantizedLinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+    ).random_init(4, (3, 5), has_biases=True, key=jax.random.key(28))
+
+    exported = layer.export_weights()
+    loaded = layer.import_weights({"inner_linear": exported})
+
+    assert loaded.export_weights().keys() == exported.keys()
+    for key in exported:
+        assert jnp.array_equal(exported[key], loaded.export_weights()[key])
+
+
+def test_q_lora_import_weights_fuses_rht_lora_out() -> None:
+    layer = QLoRALinearConfig(
+        group_size=2,
+        weight_quantization_mode=QuantizationMode.UINT4,
+        activation_quantization_mode=None,
+        activation_precision=jnp.float32,
+        lora_rank=2,
+        lora_scale=1.0,
+    ).random_init(4, (3, 5), has_biases=True, key=jax.random.key(29))
+
+    exported = layer.export_weights()
+    rht_up_weights = tuple(
+        jnp.swapaxes(weight, -1, -2)
+        for weight in jnp.split(exported["up_weights"], layer.get_split_points(layer.output_dims), axis=-2)
+    )
+    loaded = layer.import_weights({"inner_linear": {**exported, "up_weights": rht_up_weights}})
+
+    assert loaded.export_weights().keys() == exported.keys()
+    for key in exported:
+        assert jnp.array_equal(exported[key], loaded.export_weights()[key])
+
+
+def test_linear_config_structure_accepts_rht_wrapper() -> None:
     config = config_converter.structure(
         {
             "type": "RHTLinearWrapperConfig",

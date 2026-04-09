@@ -1052,10 +1052,16 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
         params = _linear_params(weights)
+        up_weights = params["up_weights"]
+        if isinstance(up_weights, Sequence):
+            up_weights = jnp.concatenate(
+                tuple(jnp.swapaxes(require_array(weight), -1, -2) for weight in up_weights),
+                axis=-2,
+            )
         return replace(
             base,
             lora_down_weights=require_array(params["down_weights"]),
-            lora_up_weights=require_array(params["up_weights"]),
+            lora_up_weights=require_array(up_weights),
         )
 
 
