@@ -22,6 +22,7 @@ __all__ = [
     "UseCase",
     "awq_model_spec",
     "build_quantized_models",
+    "structure_origin",
 ]
 
 
@@ -109,10 +110,17 @@ def _structure_chat_template(value: object, _type: object) -> FileSpec | JSONFie
     raise ValueError(f"Invalid chat_template value: {value}")
 
 
-def _structure_origin(data: object, _type: object) -> Origin:
+def structure_origin(data: dict[str, Any] | Origin) -> Origin:
     if isinstance(data, Origin):
         return data
-    return Origin.from_json(cast("dict[Any, Any]", data))
+    data = dict(data)
+    type_name = data.pop("type")
+    name_to_type = {t.__name__: t for t in Origin.__descendants__()}
+    origin_type = name_to_type.get(type_name)
+    if origin_type is None:
+        available = ", ".join(sorted(name_to_type))
+        raise ValueError(f"Unknown origin type: {type_name!r}. Available: {available}")
+    return cattrs.structure(data, origin_type)
 
 
 def _unstructure_origin(obj: Origin) -> dict:
@@ -135,7 +143,7 @@ class ModelSpec:
     _converter.register_unstructure_hook_factory(_is_foreign_config_type, _unstructure_foreign_config_factory)
     _converter.register_structure_hook(FileSpec | JSONFieldSpec | str | None, _structure_chat_template)
     _converter.register_structure_hook(FileSpec | str | None, _structure_system_prompt)
-    _converter.register_structure_hook(Origin, _structure_origin)
+    _converter.register_structure_hook(Origin, lambda data, _type: structure_origin(data))
     _converter.register_unstructure_hook(Origin, _unstructure_origin)
 
     vendor: str

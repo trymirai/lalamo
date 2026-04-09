@@ -63,7 +63,7 @@ from lalamo.data.lalamo_completions import iter_completions
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec, ModelType
 from lalamo.model_import.common import FileSpec
-from lalamo.model_import.model_specs.origins import Origin
+from lalamo.model_import.model_specs.common import structure_origin
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
@@ -511,7 +511,7 @@ def convert(
     ] = False,
 ) -> None:
     if custom_origin is not None:
-        origin = Origin.from_json(json.loads(custom_origin))
+        origin = structure_origin(json.loads(custom_origin))
         model_repo = replace(model_repo, origin=origin)
 
     if output_dir is None:

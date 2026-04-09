@@ -1,4 +1,3 @@
-import dataclasses
 import functools
 import json
 import tarfile
@@ -9,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import huggingface_hub
 from jaxtyping import DTypeLike
@@ -85,23 +84,6 @@ class Origin(RegistryABC):
     @property
     @abstractmethod
     def description(self) -> str: ...
-
-    @classmethod
-    def from_json(cls, data: dict[str, Any]) -> "Origin":
-        data = dict(data)
-        type_name = data.pop("type")
-        name_to_type = {t.__name__: t for t in cls.__descendants__()}
-        origin_type = name_to_type.get(type_name)
-        if origin_type is None:
-            available = ", ".join(sorted(name_to_type))
-            raise ValueError(f"Unknown origin type: {type_name!r}. Available: {available}")
-        for field in dataclasses.fields(origin_type):
-            if field.name in data:
-                if isinstance(data[field.name], list):
-                    data[field.name] = tuple(data[field.name])
-                elif isinstance(field.type, type) and issubclass(field.type, Enum):
-                    data[field.name] = field.type(data[field.name])
-        return origin_type(**data)
 
 
 def hf_resolve_file(

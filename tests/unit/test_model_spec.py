@@ -1,9 +1,8 @@
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
-from lalamo.model_import.model_specs.common import ModelSpec
+from lalamo.model_import.model_specs.common import ModelSpec, structure_origin
 from lalamo.model_import.model_specs.origins import (
     HuggingFaceOrigin,
     LocalOrigin,
-    Origin,
 )
 
 EXAMPLE_JSON = {
@@ -58,7 +57,7 @@ def test_consistency() -> None:
 
 def test_origin_from_json_huggingface() -> None:
     data = {"type": "HuggingFaceOrigin", "repo": "meta-llama/Llama-3.2-1B-Instruct"}
-    origin = Origin.from_json(data)
+    origin = structure_origin(data)
     assert isinstance(origin, HuggingFaceOrigin)
     assert origin.repo == "meta-llama/Llama-3.2-1B-Instruct"
 
@@ -69,7 +68,7 @@ def test_origin_from_json_local() -> None:
         "root": "/path/to/model",
         "weight_files": ["model.safetensors"],
     }
-    origin = Origin.from_json(data)
+    origin = structure_origin(data)
     assert isinstance(origin, LocalOrigin)
     assert origin.root == "/path/to/model"
     assert origin.weight_files == ("model.safetensors",)
@@ -77,7 +76,7 @@ def test_origin_from_json_local() -> None:
 
 def test_origin_from_json_local_defaults() -> None:
     data = {"type": "LocalOrigin", "root": "/path/to/model"}
-    origin = Origin.from_json(data)
+    origin = structure_origin(data)
     assert isinstance(origin, LocalOrigin)
     assert origin.weight_files == ()
 
