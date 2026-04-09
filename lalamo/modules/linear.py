@@ -1148,23 +1148,15 @@ LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuant
 
 register_config_union(LinearConfig)
 
+_lc_types = {t.__name__: t for t in LinearConfig.__args__}
 
-def _structure_linear_config(
-    config: dict | None,
-    _: type[LinearConfig | None],
-) -> LinearConfig | None:
+
+def _structure_linear_config(config: dict | None, _: type) -> LinearConfig | None:
     if config is None:
         return None
     if config.get("type") == "RHTLinearWrapperConfig":
         config = config["inner_config"]
-    type_name = config["type"]
-    target_type = {
-        "FullPrecisionLinearConfig": FullPrecisionLinearConfig,
-        "GroupQuantizedLinearConfig": GroupQuantizedLinearConfig,
-        "MLXQuantizedLinearConfig": MLXQuantizedLinearConfig,
-        "QLoRALinearConfig": QLoRALinearConfig,
-    }[type_name]
-    return config_converter.structure({k: v for k, v in config.items() if k != "type"}, target_type)
+    return config_converter.structure({k: v for k, v in config.items() if k != "type"}, _lc_types[config["type"]])
 
 
 config_converter.register_structure_hook(LinearConfig, _structure_linear_config)
