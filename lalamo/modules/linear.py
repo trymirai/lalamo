@@ -18,6 +18,7 @@ from .common import (
     LalamoModule,
     ShardingOrder,
     TensorSharding,
+    config_converter,
     register_config_union,
     sharded_field,
 )
@@ -1131,18 +1132,40 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         self,
         weights: ParameterTree[Array],
     ) -> "QLoRALinear":
-        base = super().import_weights(weights)
-        weights = require_mapping(weights)
-        assert isinstance(weights["up_weights"], Sequence)
-        result = replace(
+        params = require_mapping(weights)
+        if "inner_linear" in params:
+            params = require_mapping(params["inner_linear"])
+        base = super().import_weights(params)
+        return replace(
             base,
-            lora_down_weights=weights["down_weights"],
-            lora_up_weights=tuple(up_weights for up_weights in weights["up_weights"]),
+            lora_down_weights=require_array(params["down_weights"]),
+            lora_up_weights=tuple(require_array(w) for w in params["up_weights"]),
         )
-        return result
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig
 
 
 register_config_union(LinearConfig)
+
+
+def _structure_linear_config(
+    config: dict | None,
+    _: type[LinearConfig | None],
+) -> LinearConfig | None:
+    if config is None:
+        return None
+    if config.get("type") == "RHTLinearWrapperConfig":
+        config = config["inner_config"]
+    type_name = config["type"]
+    target_type = {
+        "FullPrecisionLinearConfig": FullPrecisionLinearConfig,
+        "GroupQuantizedLinearConfig": GroupQuantizedLinearConfig,
+        "MLXQuantizedLinearConfig": MLXQuantizedLinearConfig,
+        "QLoRALinearConfig": QLoRALinearConfig,
+    }[type_name]
+    return config_converter.structure({k: v for k, v in config.items() if k != "type"}, target_type)
+
+
+config_converter.register_structure_hook(LinearConfig, _structure_linear_config)
+config_converter.register_structure_hook(LinearConfig | None, _structure_linear_config)
