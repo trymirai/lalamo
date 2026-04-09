@@ -951,38 +951,6 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         subkeys = jax.random.split(key, mixture_size)
         return eqx.filter_vmap(lambda k: self.random_init(input_dim, output_dims, has_biases, key=k))(subkeys)
 
-    def empty(
-        self,
-        input_dim: int,
-        output_dims: tuple[int, ...],
-        has_biases: bool,
-    ) -> LinearBase:
-        group_quantized_linear = super().empty(input_dim, output_dims, has_biases)
-        assert isinstance(group_quantized_linear, GroupQuantizedLinear)
-        hidden_lora_rank = len(output_dims) * self.lora_rank
-        lora_down_weights = dummy_array(
-            (input_dim, hidden_lora_rank),
-            dtype=self.activation_precision,
-        )
-        lora_up_weights = tuple(
-            dummy_array(
-                (self.lora_rank, output_dim),
-                dtype=self.activation_precision,
-            )
-            for output_dim in output_dims
-        )
-
-        return QLoRALinear(
-            config=self,
-            output_dims=output_dims,
-            weights=group_quantized_linear.weights,
-            scales=group_quantized_linear.scales,
-            biases=group_quantized_linear.biases,
-            zero_points=group_quantized_linear.zero_points,
-            lora_down_weights=lora_down_weights,
-            lora_up_weights=lora_up_weights,
-        )
-
     def _empty_general(
         self,
         leading_dims: tuple[int, ...],
