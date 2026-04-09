@@ -166,7 +166,7 @@ def estimate_batchsize_from_bytes(
         else:
             lo = mid
 
-    return lo
+    return max(1, lo)
 
 
 def decrease_batchsize_on_oom[T](

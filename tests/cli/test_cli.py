@@ -82,7 +82,7 @@ def test_generate_replies(
         "64",
     )
 
-    _assert_has_london_and_four(pl.read_parquet(output_path).get_column("response").to_list())
+    _assert_has_london_and_yes(pl.read_parquet(output_path).get_column("response").to_list())
 
 
 @pytest.mark.parametrize("model_repo", MODELS)
