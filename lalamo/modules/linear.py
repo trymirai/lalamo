@@ -856,10 +856,11 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         assert isinstance(group_quantized_linear, GroupQuantizedLinear)
 
         down_key, up_key = jax.random.split(derived_key)
+        combined_lora_rank = self.lora_rank * len(output_dims)
         max_down_abs_value = 1 / math.sqrt(input_dim)
         lora_down_weights = jax.random.uniform(
             down_key,
-            (self.lora_rank, input_dim),
+            (combined_lora_rank, input_dim),
             minval=-max_down_abs_value,
             maxval=max_down_abs_value,
             dtype=self.activation_precision,
@@ -868,7 +869,7 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         max_up_abs_value = 1 / math.sqrt(self.lora_rank)
         lora_up_weights = jax.random.uniform(
             up_key,
-            (sum(output_dims), self.lora_rank),
+            (sum(output_dims), combined_lora_rank),
             minval=-max_up_abs_value,
             maxval=max_up_abs_value,
             dtype=self.activation_precision,
@@ -930,12 +931,13 @@ class QLoRALinearConfig(GroupQuantizedLinearConfig):
         else:
             biases = None
 
+        combined_lora_rank = self.lora_rank * len(output_dims)
         lora_down_weights = dummy_array(
-            (*leading_dims, self.lora_rank, input_dim),
+            (*leading_dims, combined_lora_rank, input_dim),
             dtype=self.activation_precision,
         )
         lora_up_weights = dummy_array(
-            (*leading_dims, sum(output_dims), self.lora_rank),
+            (*leading_dims, sum(output_dims), combined_lora_rank),
             dtype=self.activation_precision,
         )
 
@@ -982,11 +984,12 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 f" specified activation precision ({self.config.activation_precision})."
                 " Quantized layers require parameter dtypes to be equal to the activation precision.",
             )
+        combined_lora_rank = self.config.lora_rank * len(self.output_dims)
         *ld_num_components, lora_down_output_dim, lora_down_input_dim = self.lora_down_weights.shape
-        if lora_down_output_dim != self.config.lora_rank:
+        if lora_down_output_dim != combined_lora_rank:
             raise ValueError(
                 f"Number of output channels in LORA down weights ({lora_down_output_dim}) is not"
-                f" equal to lora_rank ({self.config.lora_rank}).",
+                f" equal to lora_rank * num_outputs ({combined_lora_rank}).",
             )
         if lora_down_input_dim != self.input_dim:
             raise ValueError(
@@ -1011,10 +1014,10 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
                 f"Number of output channels in LORA up weights ({lora_up_output_dim}) is not"
                 f" equal to sum of output dims ({sum(self.output_dims)}).",
             )
-        if lora_up_input_dim != self.config.lora_rank:
+        if lora_up_input_dim != combined_lora_rank:
             raise ValueError(
                 f"Number of input channels in LORA up weights ({lora_up_input_dim}) is not"
-                f" equal to lora_rank ({self.config.lora_rank}).",
+                f" equal to lora_rank * num_outputs ({combined_lora_rank}).",
             )
         if tuple(lu_num_components) != tuple(w_num_components):
             raise ValueError(
@@ -1038,8 +1041,6 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
         return tuple(jnp.split(joint_out, self.get_split_points(self.output_dims)))
 
     def export_weights(self) -> ParameterTree:
-        # Keep one explicit on-disk shape contract for QLoRA weights:
-        # down_weights = (lora_rank, input_dim), up_weights = (output_dim, lora_rank).
         return dict(
             down_weights=self.lora_down_weights,
             up_weights=self.lora_up_weights,
@@ -1052,11 +1053,28 @@ class QLoRALinear(GroupQuantizedLinearBase[QLoRALinearConfig]):
     ) -> "QLoRALinear":
         base = super().import_weights(weights)
         params = _linear_params(weights)
-        return replace(
-            base,
-            lora_down_weights=require_array(params["down_weights"]),
-            lora_up_weights=require_array(params["up_weights"]),
+        n_outs = len(self.output_dims)
+        lora_rank = self.config.lora_rank
+
+        down_weights = jnp.swapaxes(require_array(params["down_weights"]), -1, -2)
+
+        up_blocks = [jnp.swapaxes(require_array(w), -1, -2) for w in require_tree(params["up_weights"])]
+        up_weights = jnp.concatenate(
+            [
+                jnp.concatenate(
+                    [
+                        jnp.zeros((dim, lora_rank * i), dtype=up_blocks[i].dtype),
+                        up_blocks[i],
+                        jnp.zeros((dim, lora_rank * (n_outs - i - 1)), dtype=up_blocks[i].dtype),
+                    ],
+                    axis=-1,
+                )
+                for i, dim in enumerate(self.output_dims)
+            ],
+            axis=-2,
         )
+
+        return replace(base, lora_down_weights=down_weights, lora_up_weights=up_weights)
 
 
 LinearConfig = FullPrecisionLinearConfig | GroupQuantizedLinearConfig | MLXQuantizedLinearConfig | QLoRALinearConfig
