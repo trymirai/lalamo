@@ -1,15 +1,12 @@
 import dataclasses
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
 import equinox as eqx
 import jax
 
 from lalamo.common import ParameterPath
-
-if TYPE_CHECKING:
-    from lalamo.modules.common import ShardingConfig
 
 
 @dataclass(frozen=True)
@@ -118,7 +115,6 @@ class UzuSerializable:
         self,
         data: Mapping[str, Any],
         prefix: ParameterPath = ParameterPath(),  # noqa: B008
-        sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
         def restore(jax_path: tuple[object, ...], subtree: object) -> object:
             path = prefix / jax_path
@@ -132,7 +128,7 @@ class UzuSerializable:
                 )
 
             if isinstance(subtree, UzuSerializable):
-                return subtree.from_uzu(data, prefix=path, sharding_config=sharding_config)
+                return subtree.from_uzu(data, prefix=path)
 
             if metadata.from_uzu is not None:
                 return metadata.from_uzu(self, data[path])

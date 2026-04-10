@@ -7,7 +7,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 if TYPE_CHECKING:
-    from lalamo.modules.common import Initializer, ShardingConfig
+    from lalamo.modules.common import Initializer
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -115,9 +115,8 @@ class CompressedArray(UzuSerializable, RegistryABC, eqx.Module, Generic[Compress
         self,
         data: Mapping[str, Any],
         prefix: ParameterPath = ParameterPath(),  # noqa: B008
-        sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
         spec_key = prefix / "__spec__"
         if spec_key not in data:
-            return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)
+            return super().from_uzu(data, prefix=prefix)
         return cast("Self", CompressedArraySpec.from_json(data[spec_key]).from_uzu(data, prefix))

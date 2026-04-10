@@ -1,10 +1,7 @@
 from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
-
-if TYPE_CHECKING:
-    from lalamo.modules.common import ShardingConfig
+from typing import Any, Generic, Self, TypeVar, cast
 
 import equinox as eqx
 import jax.numpy as jnp
@@ -67,11 +64,10 @@ class CompressedEmbedding(
         self,
         data: Mapping[str, Any],
         prefix: ParameterPath = ParameterPath(),  # noqa: B008
-        sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
         spec_key = prefix / "__spec__"
         if spec_key not in data:
-            return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)
+            return super().from_uzu(data, prefix=prefix)
         return cast("Self", CompressedEmbeddingSpec.from_json(data[spec_key]).from_uzu(data, prefix))
 
 
