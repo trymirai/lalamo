@@ -66,9 +66,10 @@ class CompressedEmbedding(
         prefix: ParameterPath = ParameterPath(),  # noqa: B008
     ) -> Self:
         spec_key = prefix / "__spec__"
-        if spec_key not in data:
-            return super().from_uzu(data, prefix=prefix)
-        return cast("Self", CompressedEmbeddingSpec.from_json(data[spec_key]).from_uzu(data, prefix))
+        spec = CompressedEmbeddingSpec.from_json(data[spec_key]) if spec_key in data else self.spec
+        if spec is not None:
+            return cast("Self", spec.from_uzu(data, prefix))
+        return super().from_uzu(data, prefix=prefix)
 
 
 @dataclass(frozen=True)

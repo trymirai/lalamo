@@ -2,30 +2,20 @@ from collections.abc import Callable, Iterable
 
 import equinox as eqx
 import jax
-import jax.tree_util as jtu
 from jax._src.api import ShapeDtypeStruct
 from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
-from lalamo.common import ParameterPath
+from lalamo.field import find_field_metadata_by_value
 from lalamo.modules.common import (
     apply_parameter_sharding,
     get_current_sharding_config,
 )
-from lalamo.serialization import FieldMetadata, field_metadata_from_path
 
 __all__ = [
     "load_parameters",
 ]
-
-
-def find_field_metadata_by_value(module: eqx.Module, target: object) -> FieldMetadata | None:
-    flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda x: x is target)
-    for path, leaf in flat_with_path:
-        if leaf is target:
-            return field_metadata_from_path(module, ParameterPath("") / path)
-    return None
 
 
 def _get_name(leaf: PyTree, tree: PyTree) -> str:

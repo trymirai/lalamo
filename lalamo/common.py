@@ -2,14 +2,14 @@ import functools
 import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import Any, cast, overload
+from typing import cast
 
 import jax
 import jax.numpy as jnp
-import jax.tree_util as jtu
 from jax._src.api import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
 
+from lalamo.field import ParameterPath
 from lalamo.utils import MapDictValues, MapSequence
 
 __all__ = [
@@ -130,76 +130,6 @@ def unflatten_parameters[ArrayType: ArrayLike](flat_parameters: Mapping[str, Arr
     result = _recursive_map_dict(unflattened_keys, flat_parameters)
     assert not isinstance(result, (Array, ShapeDtypeStruct))
     return result
-
-
-class ParameterPath(str):
-    """
-    ParameterPath is a universal representation, allowing to index into either the pytree, or flattened
-    representations of modules. The invariant is as follows:
-
-    For any PyTree and any ParameterPath:
-    ```py
-    get_by_path(pytree, path) == get_by_path(pytree.to_uzu(), path)
-
-    jax.tree.map_with_path(lambda v, path: v == get_by_path(pytree, ParameterPath(path)), pytree)
-    ```
-
-    Basically ParameterPath is a universal str representation for any Path within any PyTree.
-
-    The only constraint is that you can't use dictionary keys with dots inside of them, if you try - we will throw up.
-    """
-
-    __slots__ = ()
-
-    # NOTE: plum-dispatch would be ideal here, but ty (type checker) can't see through @dispatch.
-    # Using @overload + match instead.
-
-    @overload
-    def __truediv__(self, other: str) -> "ParameterPath": ...
-    @overload
-    def __truediv__(self, other: int) -> "ParameterPath": ...
-    @overload
-    def __truediv__(self, other: jtu.GetAttrKey) -> "ParameterPath": ...
-    @overload
-    def __truediv__(self, other: jtu.SequenceKey) -> "ParameterPath": ...
-    @overload
-    def __truediv__(self, other: jtu.DictKey) -> "ParameterPath": ...
-    @overload
-    def __truediv__(self, other: jtu.FlattenedIndexKey) -> "ParameterPath": ...
-    @overload
-    def __truediv__(self, other: tuple[Any, ...]) -> "ParameterPath": ...
-
-    def __truediv__(  # noqa: PLR0911
-        self,
-        other: str | int | jtu.GetAttrKey | jtu.SequenceKey | jtu.DictKey | jtu.FlattenedIndexKey | tuple[Any, ...],
-    ) -> "ParameterPath":
-        match other:
-            case str():
-                if not self:
-                    return ParameterPath(other)
-                return ParameterPath(f"{self}.{other}")
-            case int():
-                return self / str(other)
-            case jtu.GetAttrKey(name):
-                return self / name
-            case jtu.SequenceKey(idx):
-                return self / str(idx)
-            case jtu.DictKey(key=key):
-                key_str = str(key)
-                if "." in key_str:
-                    raise ValueError(
-                        f"DictKey {key_str!r} contains dots, which would be ambiguous in a dot-separated path"
-                    )
-                return self / key_str
-            case jtu.FlattenedIndexKey(key):
-                return self / key
-            case tuple():
-                result = self
-                for element in other:
-                    result = result / element
-                return result
-            case _:
-                raise TypeError(f"Unsupported type for ParameterPath /: {type(other).__name__}")
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:
