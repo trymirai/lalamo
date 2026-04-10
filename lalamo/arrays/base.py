@@ -37,7 +37,7 @@ class ArraySpec:
         spec_dict: dict[str, Any] = {"__class__": type(self).__name__}
         for f in dataclasses.fields(self):
             value = getattr(self, f.name)
-            spec_dict[f.name] = str(jnp.dtype(value)) if f.name == "dtype" else value
+            spec_dict[f.name] = str(jnp.dtype(value)) if f.name == "float_dtype" else value
         return json.dumps(spec_dict)
 
     @classmethod

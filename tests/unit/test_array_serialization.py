@@ -20,7 +20,7 @@ def test_full_precision_round_trip() -> None:
 
 def test_awq_round_trip() -> None:
     key = jax.random.key(0)
-    arr = AWQSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    arr = AWQSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
     data = arr.to_uzu()
     restored = arr.from_uzu(data)
     assert_close(result=restored.materialize(), reference=arr.materialize())
@@ -48,7 +48,7 @@ def test_mixture_full_precision_and_lora_round_trip() -> None:
 
 def test_cross_type_awq_from_full_precision_skeleton() -> None:
     key = jax.random.key(42)
-    awq = AWQSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    awq = AWQSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
     data = awq.to_uzu()
     skeleton = FullPrecisionArray(spec=FullPrecisionSpec(), weights=jnp.zeros((4, 8)))
     restored = skeleton.from_uzu(data)
@@ -58,7 +58,7 @@ def test_cross_type_awq_from_full_precision_skeleton() -> None:
 
 def test_cross_type_mlx_from_full_precision_skeleton() -> None:
     key = jax.random.key(99)
-    mlx = MLXSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    mlx = MLXSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
     data = mlx.to_uzu()
     skeleton = FullPrecisionArray(spec=FullPrecisionSpec(), weights=jnp.zeros((4, 8)))
     restored = skeleton.from_uzu(data)
@@ -72,8 +72,8 @@ def test_cross_type_module_with_multiple_quant_types() -> None:
         layer_b: FullPrecisionArray | MLXArray
 
     key = jax.random.key(0)
-    awq = AWQSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
-    mlx = MLXSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (8, 4)))
+    awq = AWQSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    mlx = MLXSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (8, 4)))
 
     original = TwoLayerModule(layer_a=awq, layer_b=mlx)
     data = original.to_uzu()
@@ -97,7 +97,7 @@ def test_cross_type_module_partial_quantization() -> None:
         third: FullPrecisionArray | MLXArray
 
     key = jax.random.key(1)
-    mlx = MLXSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    mlx = MLXSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
     fp = FullPrecisionArray(spec=FullPrecisionSpec(), weights=jax.random.normal(key, (4, 4)))
 
     original = ThreeLayerModule(first=mlx, second=fp, third=mlx)
@@ -118,7 +118,7 @@ def test_cross_type_module_partial_quantization() -> None:
 
 def test_mixture_full_precision_and_awq_round_trip() -> None:
     fp = FullPrecisionArray(spec=FullPrecisionSpec(), weights=jnp.ones((4, 8)))
-    awq = AWQSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(jax.random.key(0), (4, 8)))
+    awq = AWQSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(jax.random.key(0), (4, 8)))
     mixture = MixtureArray(parts=(fp, awq), coefficients=jnp.array([1.0, 1.0]))
 
     data = mixture.to_uzu()
@@ -128,8 +128,8 @@ def test_mixture_full_precision_and_awq_round_trip() -> None:
 
 def test_mixture_cross_type_from_full_precision_skeleton() -> None:
     key = jax.random.key(7)
-    awq = AWQSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
-    mlx = MLXSpec(bits=4, group_size=4, dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    awq = AWQSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
+    mlx = MLXSpec(bits=4, group_size=4, float_dtype=jnp.float32).compress(jax.random.normal(key, (4, 8)))
     mixture = MixtureArray(parts=(awq, mlx), coefficients=jnp.array([0.6, 0.4]))
 
     data = mixture.to_uzu()

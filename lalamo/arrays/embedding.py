@@ -7,6 +7,7 @@ if TYPE_CHECKING:
     from lalamo.modules.common import ShardingConfig
 
 import equinox as eqx
+import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -108,12 +109,12 @@ class FullPrecisionEmbedding(CompressedEmbedding[FullPrecisionEmbeddingSpec]):
 class MLXEmbeddingSpec(CompressedEmbeddingSpec):
     bits: int
     group_size: int
-    dtype: DTypeLike
+    float_dtype: DTypeLike = jnp.float32
 
     def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "MLXQuantizedEmbedding":
         return MLXQuantizedEmbedding(
             spec=self,
-            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
+            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.float_dtype),
             scales=data[prefix / "scales"],
             biases=data[prefix / "biases"],
         )

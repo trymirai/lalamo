@@ -49,7 +49,7 @@ def _make_embedding(
         model_groups = model_dim // quantization.group_size
         return MLXQuantizedEmbedding(
             spec=MLXEmbeddingSpec(
-                bits=quantization.bits, group_size=quantization.group_size, dtype=initializer.precision
+                bits=quantization.bits, group_size=quantization.group_size, float_dtype=initializer.precision
             ),
             weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
             scales=initializer.ones((vocab_size, model_groups), initializer.precision),

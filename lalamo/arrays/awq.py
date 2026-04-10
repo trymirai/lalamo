@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 class AWQSpec(CompressedArraySpec):
     bits: int
     group_size: int
-    dtype: DTypeLike
+    float_dtype: DTypeLike = jnp.float32
 
     def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "AWQArray":
         grouped = rearrange(
@@ -61,9 +61,9 @@ class AWQSpec(CompressedArraySpec):
     def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "AWQArray":
         return AWQArray(
             spec=self,
-            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
+            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.float_dtype),
             scales=data[prefix / "scales"],
-            zero_points=unpack_quant_weights(data[prefix / "zero_points"], self.bits, self.dtype),
+            zero_points=unpack_quant_weights(data[prefix / "zero_points"], self.bits, self.float_dtype),
         )
 
 

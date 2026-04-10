@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 class MLXSpec(CompressedArraySpec):
     bits: int
     group_size: int
-    dtype: DTypeLike
+    float_dtype: DTypeLike = jnp.float32
 
     def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "MLXArray":
         grouped = rearrange(
@@ -60,7 +60,7 @@ class MLXSpec(CompressedArraySpec):
     def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "MLXArray":
         return MLXArray(
             spec=self,
-            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
+            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.float_dtype),
             scales=data[prefix / "scales"],
             biases=data[prefix / "biases"],
         )

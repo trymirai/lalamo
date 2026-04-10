@@ -33,7 +33,7 @@ def perturb_quantized_weights(model: eqx.Module, key: Key[Array, ""]) -> eqx.Mod
 def quantize_model(model: eqx.Module, group_size: int = 64, bits: int = 4) -> eqx.Module:
     def convert(leaf: object) -> object:
         if isinstance(leaf, FullPrecisionArray):
-            return MLXSpec(bits=bits, group_size=group_size, dtype=leaf.weights.dtype).compress(leaf.weights)
+            return MLXSpec(bits=bits, group_size=group_size, float_dtype=leaf.weights.dtype).compress(leaf.weights)
         return leaf
 
     return jax.tree.map(convert, model, is_leaf=lambda x: isinstance(x, FullPrecisionArray))

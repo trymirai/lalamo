@@ -187,7 +187,7 @@ def _load_awq_array(
         unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
     return AWQArray(
-        spec=AWQSpec(bits=bits, group_size=group_size, dtype=scales.dtype),
+        spec=AWQSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype),
         weights=unpacked_weights.T.astype(scales.dtype),
         scales=scales.T.astype(scales.dtype),
         zero_points=unpacked_zeros.T.astype(scales.dtype),
@@ -214,7 +214,7 @@ def _load_mlx_array(
     unpacked_weights = unpack_int32(packed_weights, bits)
 
     return MLXArray(
-        spec=MLXSpec(bits=bits, group_size=group_size, dtype=scales.dtype),
+        spec=MLXSpec(bits=bits, group_size=group_size, float_dtype=scales.dtype),
         weights=unpacked_weights.astype(scales.dtype),
         scales=scales,
         biases=deq_biases,
@@ -814,7 +814,7 @@ def load_delta_net_attention(
             group_size = expected_in_channels // num_groups
             unpacked_weights = unpack_int32(fused_qweights, bits)
             new_weights = MLXArray(
-                spec=MLXSpec(bits=bits, group_size=group_size, dtype=fused_scales.dtype),
+                spec=MLXSpec(bits=bits, group_size=group_size, float_dtype=fused_scales.dtype),
                 weights=unpacked_weights.astype(fused_scales.dtype),
                 scales=fused_scales,
                 biases=fused_deq_biases,
