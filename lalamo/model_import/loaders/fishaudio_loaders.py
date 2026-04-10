@@ -181,8 +181,7 @@ def load_linear_and_fuse_scaling(
         if bias is not None:
             bias = bias * scaling_to_fuse
 
-    base = FullPrecisionArray(weights=weights.astype(module.activation_precision))
-    new_weights = base
+    new_weights = FullPrecisionArray(weights=weights.astype(module.activation_precision))
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias))
 
 
@@ -213,8 +212,7 @@ def load_transformer_block(
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        base = FullPrecisionArray(weights=permuted_qkv_weights.astype(qkv_projection.activation_precision))
-        new_weights = base
+        new_weights = FullPrecisionArray(weights=permuted_qkv_weights.astype(qkv_projection.activation_precision))
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
 
@@ -444,8 +442,7 @@ def load_vector_quantize(
     out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
     # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
-    base = FullPrecisionArray(weights=out_proj_weight.astype(module.out_proj.activation_precision))
-    new_weights = base
+    new_weights = FullPrecisionArray(weights=out_proj_weight.astype(module.out_proj.activation_precision))
     out_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias))
 
     return load_parameters(

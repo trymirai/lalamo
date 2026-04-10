@@ -9,7 +9,6 @@ from fish_speech.models.text2semantic.llama import (
 )
 from fish_speech.tokenizer import FishTokenizer
 from jax import numpy as jnp
-
 from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 

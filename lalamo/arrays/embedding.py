@@ -1,6 +1,8 @@
-import abc
+import json
+from abc import abstractmethod
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, ClassVar, Self
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Self, cast
 
 if TYPE_CHECKING:
     from lalamo.modules.common import ShardingConfig
@@ -11,51 +13,65 @@ from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterPath
+from lalamo.registry_abc import RegistryABC
 from lalamo.serialization import UzuSerializable
 
-from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
+from .base import serialize_spec
+from .quantization_helpers import pack_quant_weights, unpack_quant_weights
 
 
-class CompressedEmbedding(UzuSerializable, eqx.Module):
-    _registry: ClassVar[dict[str, type["CompressedEmbedding"]]] = {}
+@dataclass(frozen=True)
+class CompressedEmbeddingSpec:
+    @abstractmethod
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "CompressedEmbedding": ...
 
-    def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401
-        super().__init_subclass__(**kwargs)
-        CompressedEmbedding._registry[cls.__name__] = cls
 
+def _deserialize_embedding_spec(spec_json: str) -> CompressedEmbeddingSpec:
+    spec_dict = json.loads(spec_json)
+    class_name = spec_dict.pop("__class__")
+    spec_types = {t.__name__: t for t in CompressedEmbeddingSpec.__subclasses__()}
+    if "dtype" in spec_dict:
+        spec_dict["dtype"] = jnp.dtype(spec_dict["dtype"])
+    return spec_types[class_name](**spec_dict)
+
+
+class CompressedEmbedding(UzuSerializable, RegistryABC, eqx.Module):
     @property
-    @abc.abstractmethod
+    @abstractmethod
     def vocab_size(self) -> int: ...
 
     @property
-    @abc.abstractmethod
+    @abstractmethod
     def model_dim(self) -> int: ...
 
     @property
-    @abc.abstractmethod
-    def activation_precision(self) -> DTypeLike: ...
+    @abstractmethod
+    def dtype(self) -> DTypeLike: ...
 
-    @abc.abstractmethod
+    @abstractmethod
     def materialize(self) -> Float[Array, "vocabulary channels"]: ...
 
-    @abc.abstractmethod
+    @abstractmethod
     def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]: ...
 
     def to_uzu(self) -> dict[str, Any]:
-        return {"__class__": type(self).__name__, **super().to_uzu()}
+        result: dict[str, Any] = {"__class__": type(self).__name__}
+        spec = getattr(self, "spec", None)
+        if spec is not None:
+            result["__spec__"] = serialize_spec(spec)
+        result.update(super().to_uzu())
+        return result
 
     def from_uzu(
         self,
         data: Mapping[str, Any],
-        prefix: str = "",
+        prefix: ParameterPath = ParameterPath(),  # noqa: B008
         sharding_config: "ShardingConfig | None" = None,
     ) -> Self:
-        key = ParameterPath(prefix)
-        stored_class_name = data.get(key / "__class__")
-        if isinstance(stored_class_name, str) and stored_class_name != type(self).__name__:
-            target_cls = CompressedEmbedding._registry[stored_class_name]
-            return target_cls.from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[return-value]
-        return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)  # type: ignore[invalid-return-type]
+        spec_key = prefix / "__spec__"
+        if spec_key not in data:
+            return cast("Self", super().from_uzu(data, prefix=prefix, sharding_config=sharding_config))
+        return cast("Self", _deserialize_embedding_spec(data[spec_key]).from_uzu(data, prefix))
 
 
 class FullPrecisionEmbedding(CompressedEmbedding):
@@ -72,7 +88,7 @@ class FullPrecisionEmbedding(CompressedEmbedding):
         return channels
 
     @property
-    def activation_precision(self) -> DTypeLike:
+    def dtype(self) -> DTypeLike:
         return self.weights.dtype
 
     def materialize(self) -> Float[Array, "vocabulary channels"]:
@@ -82,12 +98,26 @@ class FullPrecisionEmbedding(CompressedEmbedding):
         return self.weights[token_ids]
 
 
+@dataclass(frozen=True)
+class MLXEmbeddingSpec(CompressedEmbeddingSpec):
+    bits: int
+    group_size: int
+    dtype: DTypeLike
+
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "MLXQuantizedEmbedding":
+        return MLXQuantizedEmbedding(
+            spec=self,
+            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
+            scales=data[prefix / "scales"],
+            biases=data[prefix / "biases"],
+        )
+
+
 class MLXQuantizedEmbedding(CompressedEmbedding):
+    spec: MLXEmbeddingSpec = eqx.field(static=True)
     weights: Float[Array, "vocabulary channels"]
     scales: Float[Array, "vocabulary groups"]
     biases: Float[Array, "vocabulary groups"]
-    group_size: int = eqx.field(static=True)
-    bits: int = eqx.field(static=True)
 
     @property
     def vocab_size(self) -> int:
@@ -100,14 +130,19 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
         return channels
 
     @property
-    def activation_precision(self) -> DTypeLike:
+    def dtype(self) -> DTypeLike:
         return self.scales.dtype
+
+    def to_uzu(self) -> dict[str, Any]:
+        result = super().to_uzu()
+        result["weights"] = pack_quant_weights(self.weights, self.spec.bits)
+        return result
 
     def materialize(self) -> Float[Array, "vocabulary channels"]:
         grouped = rearrange(
             self.weights,
             "vocab (groups elements) -> vocab groups elements",
-            elements=self.group_size,
+            elements=self.spec.group_size,
         )
         scales = rearrange(self.scales, "vocab groups -> vocab groups 1")
         biases = rearrange(self.biases, "vocab groups -> vocab groups 1")
@@ -118,33 +153,3 @@ class MLXQuantizedEmbedding(CompressedEmbedding):
 
     def lookup(self, token_ids: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
         return self.materialize()[token_ids]
-
-    def to_uzu(self) -> dict[str, Any]:
-        int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
-        return {
-            "__class__": type(self).__name__,
-            "qweight": pack_uint_to_uint8(int_weights, self.bits),
-            "scales": self.scales,
-            "biases": self.biases,
-            "bits": self.bits,
-            "group_size": self.group_size,
-        }
-
-    @classmethod
-    def from_uzu(
-        cls,
-        data: Mapping[str, Any],
-        prefix: str = "",
-        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG003
-    ) -> Self:
-        key = ParameterPath(prefix)
-        bits = int(data[key / "bits"])
-        group_size = int(data[key / "group_size"])
-        weights = unpack_uint8_to_uint(data[key / "qweight"], bits)
-        return cls(
-            weights=weights.astype(data[key / "scales"].dtype),
-            scales=data[key / "scales"],
-            biases=data[key / "biases"],
-            group_size=group_size,
-            bits=bits,
-        )

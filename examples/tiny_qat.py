@@ -1,20 +1,19 @@
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import optax
 from jaxtyping import Array, Float, Key
+from utils import Batch, kl_divergence, load_lmsys_conversations, make_batch
 
-from lalamo.arrays import FullPrecisionArray
-from lalamo.arrays.awq import AWQQuantArray
+from lalamo.arrays import AWQQuantArray, FullPrecisionArray, MLXQuantArray
 from lalamo.arrays.base import GradientEstimator
-from lalamo.arrays.mlx import MLXQuantArray
+from lalamo.arrays.mlx import MLXSpec
 from lalamo.arrays.quantization_helpers import stochastic_quantize_to_grid
 from lalamo.model_import import import_model
 from lalamo.models import ForwardPassConfig
 
-from utils import Batch, kl_divergence, load_lmsys_conversations, make_batch
 
-is_quantized = lambda x: isinstance(x, (MLXQuantArray, AWQQuantArray))
+def is_quantized(x: object) -> bool:
+    return isinstance(x, (MLXQuantArray, AWQQuantArray))
 
 
 def perturb_quantized_weights(model: eqx.Module, key: Key[Array, ""]) -> eqx.Module:
@@ -34,7 +33,7 @@ def perturb_quantized_weights(model: eqx.Module, key: Key[Array, ""]) -> eqx.Mod
 def quantize_model(model: eqx.Module, group_size: int = 64, bits: int = 4) -> eqx.Module:
     def convert(leaf: object) -> object:
         if isinstance(leaf, FullPrecisionArray):
-            return MLXQuantArray.compress(leaf.weights, group_size=group_size, bits=bits)
+            return MLXSpec(bits=bits, group_size=group_size, dtype=leaf.weights.dtype).compress(leaf.weights)
         return leaf
 
     return jax.tree.map(convert, model, is_leaf=lambda x: isinstance(x, FullPrecisionArray))

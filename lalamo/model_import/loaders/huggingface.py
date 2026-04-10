@@ -6,7 +6,9 @@ from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
 from lalamo.arrays import AWQQuantArray, FullPrecisionArray, MLXQuantArray
+from lalamo.arrays.awq import AWQSpec
 from lalamo.arrays.embedding import CompressedEmbedding, FullPrecisionEmbedding, MLXQuantizedEmbedding
+from lalamo.arrays.mlx import MLXSpec
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
@@ -180,11 +182,10 @@ def _load_awq_array(
         unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
     return AWQQuantArray(
+        spec=AWQSpec(bits=bits, group_size=group_size, dtype=scales.dtype),
         weights=unpacked_weights.T.astype(scales.dtype),
         scales=scales.T.astype(scales.dtype),
         zero_points=unpacked_zeros.T.astype(scales.dtype),
-        bits=bits,
-        group_size=group_size,
     )
 
 
@@ -208,11 +209,10 @@ def _load_mlx_array(
     unpacked_weights = unpack_int32(packed_weights, bits)
 
     return MLXQuantArray(
+        spec=MLXSpec(bits=bits, group_size=group_size, dtype=scales.dtype),
         weights=unpacked_weights.astype(scales.dtype),
         scales=scales,
         biases=deq_biases,
-        bits=bits,
-        group_size=group_size,
     )
 
 
@@ -807,11 +807,10 @@ def load_delta_net_attention(
             group_size = expected_in_channels // num_groups
             unpacked_weights = unpack_int32(fused_qweights, bits)
             new_weights = MLXQuantArray(
+                spec=MLXSpec(bits=bits, group_size=group_size, dtype=fused_scales.dtype),
                 weights=unpacked_weights.astype(fused_scales.dtype),
                 scales=fused_scales,
                 biases=fused_deq_biases,
-                bits=bits,
-                group_size=group_size,
             )
         in_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.in_proj, (new_weights, None))
     conv = _load_conv(module.conv, weights_dict, path, permute_conv)
@@ -956,23 +955,22 @@ def _load_compressed_embedding(
     path: ParameterPath,
 ) -> CompressedEmbedding:
     if isinstance(embedding, FullPrecisionEmbedding):
-        weights = weights_dict[path / "weight"].astype(embedding.activation_precision)
+        weights = weights_dict[path / "weight"].astype(embedding.dtype)
         return FullPrecisionEmbedding(weights=weights)
     if isinstance(embedding, MLXQuantizedEmbedding):
         weights = _process_quantized_tensor(
             weights_dict[path / "weight"],
-            embedding.bits,
-            embedding.activation_precision,
+            embedding.spec.bits,
+            embedding.dtype,
             None,
         )
-        scales = weights_dict[path / "scales"].astype(embedding.activation_precision)
-        biases = weights_dict[path / "biases"].astype(embedding.activation_precision)
+        scales = weights_dict[path / "scales"].astype(embedding.dtype)
+        biases = weights_dict[path / "biases"].astype(embedding.dtype)
         return MLXQuantizedEmbedding(
+            spec=embedding.spec,
             weights=weights,
             scales=scales,
             biases=biases,
-            group_size=embedding.group_size,
-            bits=embedding.bits,
         )
     raise TypeError(f"Unsupported embedding type: {type(embedding)}")
 

@@ -1,10 +1,7 @@
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Any, Self
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:
-    from lalamo.modules.common import ShardingConfig
-
-import equinox as eqx
 import jax
 import jax.numpy as jnp
 from einops import rearrange
@@ -12,16 +9,68 @@ from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.common import ParameterPath
 
-from .base import ArrayForwardPassConfig, CompressedArray, GradientEstimator
-from .quantization_helpers import pack_uint_to_uint8, quantize_to_grid, unpack_uint8_to_uint
+from .base import ArrayForwardPassConfig, CompressedArray, CompressedArraySpec, GradientEstimator
+from .quantization_helpers import pack_quant_weights, quantize_to_grid, unpack_quant_weights
+
+if TYPE_CHECKING:
+    from lalamo.modules.common import Initializer
 
 
-class AWQQuantArray(CompressedArray):
+@dataclass(frozen=True)
+class AWQSpec(CompressedArraySpec):
+    bits: int
+    group_size: int
+    dtype: DTypeLike
+
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "AWQQuantArray":
+        grouped = rearrange(
+            weights,
+            "... out_channels (groups group_size) -> ... out_channels groups group_size",
+            group_size=self.group_size,
+        )
+        group_mins = jnp.min(grouped, axis=-1)
+        group_maxs = jnp.max(grouped, axis=-1)
+        quant_levels = (2**self.bits) - 1
+
+        scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(weights.dtype).eps)
+        zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, (2**self.bits) - 1)
+
+        safe_scales = jnp.repeat(
+            jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), self.group_size, axis=-1
+        )
+        expanded_zero_points = jnp.repeat(zero_points, self.group_size, axis=-1)
+        float_weights = quantize_to_grid(weights / safe_scales + expanded_zero_points, self.bits)
+
+        return AWQQuantArray(spec=self, weights=float_weights, scales=scales, zero_points=zero_points)
+
+    def init(
+        self,
+        initializer: "Initializer",
+        leading_dims: tuple[int, ...],
+        out_channels: int,
+        in_channels: int,
+    ) -> "AWQQuantArray":
+        num_groups = in_channels // self.group_size
+        return AWQQuantArray(
+            spec=self,
+            weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
+            scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
+            zero_points=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
+        )
+
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "AWQQuantArray":
+        return AWQQuantArray(
+            spec=self,
+            weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
+            scales=data[prefix / "scales"],
+            zero_points=unpack_quant_weights(data[prefix / "zero_points"], self.bits, self.dtype),
+        )
+
+
+class AWQQuantArray(CompressedArray[AWQSpec]):
     weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     zero_points: Float[Array, "... out_channels groups"]
-    bits: int = eqx.field(static=True)
-    group_size: int = eqx.field(static=True)
 
     @property
     def shape(self) -> tuple[int, ...]:
@@ -31,41 +80,21 @@ class AWQQuantArray(CompressedArray):
     def dtype(self) -> DTypeLike:
         return self.scales.dtype
 
+    def to_uzu(self) -> dict[str, Any]:
+        result = super().to_uzu()
+        result["weights"] = pack_quant_weights(self.weights, self.spec.bits)
+        result["zero_points"] = pack_quant_weights(self.zero_points, self.spec.bits)
+        return result
+
     def dequantize(
         self, quantized_weights: Float[Array, "... out_channels in_channels"]
     ) -> Float[Array, "... out_channels in_channels"]:
-        expanded_scales = jnp.repeat(self.scales, self.group_size, axis=-1)
-        expanded_zero_points = jnp.repeat(self.zero_points, self.group_size, axis=-1)
+        expanded_scales = jnp.repeat(self.scales, self.spec.group_size, axis=-1)
+        expanded_zero_points = jnp.repeat(self.zero_points, self.spec.group_size, axis=-1)
         return (quantized_weights - expanded_zero_points) * expanded_scales
 
     def materialize(self) -> Float[Array, "... out_channels in_channels"]:
-        return self.dequantize(quantize_to_grid(self.weights, self.bits))
-
-    @classmethod
-    def compress(
-        cls,
-        weights: Float[Array, "... out_channels in_channels"],
-        *,
-        bits: int,
-        group_size: int,
-    ) -> "AWQQuantArray":
-        grouped = rearrange(
-            weights,
-            "... out_channels (groups group_size) -> ... out_channels groups group_size",
-            group_size=group_size,
-        )
-        group_mins = jnp.min(grouped, axis=-1)
-        group_maxs = jnp.max(grouped, axis=-1)
-        quant_levels = (2**bits) - 1
-
-        scales = jnp.maximum((group_maxs - group_mins) / quant_levels, jnp.finfo(weights.dtype).eps)
-        zero_points = jnp.clip(jnp.round(-group_mins / scales), 0, (2**bits) - 1)
-
-        safe_scales = jnp.repeat(jnp.where(scales == 0, jnp.finfo(weights.dtype).eps, scales), group_size, axis=-1)
-        expanded_zero_points = jnp.repeat(zero_points, group_size, axis=-1)
-        float_weights = quantize_to_grid(weights / safe_scales + expanded_zero_points, bits)
-
-        return cls(weights=float_weights, scales=scales, zero_points=zero_points, bits=bits, group_size=group_size)
+        return self.dequantize(quantize_to_grid(self.weights, self.spec.bits))
 
     def dot(
         self,
@@ -76,49 +105,19 @@ class AWQQuantArray(CompressedArray):
     ) -> Float[Array, "... out_channels"]:
         match forward_pass_config.gradient_estimator:
             case GradientEstimator.NONE:
-                q = quantize_to_grid(self.weights, self.bits)
+                q = quantize_to_grid(self.weights, self.spec.bits)
             case GradientEstimator.DETERMINISTIC:
-                q = quantize_to_grid(self.weights, self.bits)
+                q = quantize_to_grid(self.weights, self.spec.bits)
                 q = self.weights + jax.lax.stop_gradient(q - self.weights)
             case GradientEstimator.STOCHASTIC_DROPOUT:
                 assert key is not None
-                q = quantize_to_grid(self.weights, self.bits)
+                q = quantize_to_grid(self.weights, self.spec.bits)
                 q = self.weights + jax.lax.stop_gradient(q - self.weights)
                 mean = self.dequantize(q) @ vector
                 error_sq = jax.lax.stop_gradient((self.weights - q) ** 2)
-                expanded_scales_sq = jnp.repeat(self.scales**2, self.group_size, axis=-1)
+                expanded_scales_sq = jnp.repeat(self.scales**2, self.spec.group_size, axis=-1)
                 variance = (error_sq * expanded_scales_sq) @ (vector**2)
                 return mean + jnp.sqrt(variance) * jax.random.normal(key, mean.shape, dtype=mean.dtype)
             case _:
                 raise ValueError(f"Unhandled gradient estimator: {forward_pass_config.gradient_estimator}")
         return self.dequantize(q) @ vector
-
-    def to_uzu(self) -> dict[str, Any]:
-        int_weights = quantize_to_grid(self.weights, self.bits).astype(jnp.uint8)
-        int_zero_points = quantize_to_grid(self.zero_points, self.bits).astype(jnp.uint8)
-        return {
-            "__class__": type(self).__name__,
-            "bits": self.bits,
-            "group_size": self.group_size,
-            "weights": pack_uint_to_uint8(int_weights, self.bits),
-            "scales": self.scales,
-            "zero_points": pack_uint_to_uint8(int_zero_points, self.bits),
-        }
-
-    @classmethod
-    def from_uzu(
-        cls,
-        data: Mapping[str, Any],
-        prefix: str = "",
-        sharding_config: "ShardingConfig | None" = None,  # noqa: ARG003
-    ) -> Self:
-        key = ParameterPath(prefix)
-        bits = int(data[key / "bits"])
-        group_size = int(data[key / "group_size"])
-        return cls(
-            weights=unpack_uint8_to_uint(data[key / "weights"], bits).astype(data[key / "scales"].dtype),
-            scales=data[key / "scales"],
-            zero_points=unpack_uint8_to_uint(data[key / "zero_points"], bits).astype(data[key / "scales"].dtype),
-            bits=bits,
-            group_size=group_size,
-        )

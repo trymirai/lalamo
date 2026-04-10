@@ -8,8 +8,7 @@ import jax
 import jax.numpy as jnp
 import orbax.checkpoint as ocp
 
-from lalamo.common import stringify_path
-from lalamo.model_import.loaders.common import find_field_sharding
+from lalamo.common import ParameterPath
 from lalamo.modules.common import (
     EmptyInitializer,
     LalamoModule,
@@ -17,6 +16,7 @@ from lalamo.modules.common import (
     apply_parameter_sharding,
     config_converter,
 )
+from lalamo.serialization import field_metadata_from_path
 
 __all__ = ["CheckpointManager"]
 
@@ -31,7 +31,9 @@ class CheckpointManager:
         checkpointer.save(self.directory / name / "state", arrays)
         checkpointer.wait_until_finished()
         flat_with_path, _ = jax.tree_util.tree_flatten_with_path(model)
-        array_dtypes = {stringify_path(path): str(leaf.dtype) for path, leaf in flat_with_path if eqx.is_array(leaf)}
+        array_dtypes = {
+            ParameterPath("") / path: str(leaf.dtype) for path, leaf in flat_with_path if eqx.is_array(leaf)
+        }
         config = model.config
         config_json = {
             "_type": f"{type(config).__module__}.{type(config).__qualname__}",
@@ -61,9 +63,9 @@ class CheckpointManager:
                 apply_parameter_sharding(
                     jnp.zeros(
                         leaf.shape,
-                        config_converter.structure(array_dtypes[stringify_path(path)], jnp.dtype),
+                        config_converter.structure(array_dtypes[ParameterPath("") / path], jnp.dtype),
                     ),
-                    find_field_sharding(empty, leaf),
+                    field_metadata_from_path(empty, ParameterPath("") / path),
                     sharding_config,
                 )
                 if is_restore_leaf(leaf)

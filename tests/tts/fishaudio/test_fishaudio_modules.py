@@ -39,7 +39,6 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
 from lalamo.modules import GELU, ForwardPassMode
-from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
 )
@@ -66,6 +65,7 @@ from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode
 from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.modules.transformer import TransformerForwardPassConfig
 from tests.common import assert_close
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
     FishAudioTextDecoder_Foreign,

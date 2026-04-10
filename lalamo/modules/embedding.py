@@ -5,7 +5,12 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.arrays.embedding import CompressedEmbedding, FullPrecisionEmbedding, MLXQuantizedEmbedding
+from lalamo.arrays.embedding import (
+    CompressedEmbedding,
+    FullPrecisionEmbedding,
+    MLXEmbeddingSpec,
+    MLXQuantizedEmbedding,
+)
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
 from .common import (
@@ -42,11 +47,12 @@ def _make_embedding(
         assert model_dim % quantization.group_size == 0
         model_groups = model_dim // quantization.group_size
         return MLXQuantizedEmbedding(
+            spec=MLXEmbeddingSpec(
+                bits=quantization.bits, group_size=quantization.group_size, dtype=initializer.precision
+            ),
             weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
             scales=initializer.ones((vocab_size, model_groups), initializer.precision),
             biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
-            group_size=quantization.group_size,
-            bits=quantization.bits,
         )
     return FullPrecisionEmbedding(
         weights=initializer.normal(1.0, (vocab_size, model_dim), initializer.precision),
@@ -119,7 +125,7 @@ class TiedEmbedding(EmbeddingBase[TiedEmbeddingConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.embedding.activation_precision
+        return self.embedding.dtype
 
     @property
     def model_dim(self) -> int:
@@ -162,7 +168,7 @@ class UntiedEmbedding(EmbeddingBase[UntiedEmbeddingConfig]):
 
     @property
     def activation_precision(self) -> DTypeLike:
-        return self.input_embedding.activation_precision
+        return self.input_embedding.dtype
 
     @property
     def model_dim(self) -> int:

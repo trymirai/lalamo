@@ -17,7 +17,7 @@ from lalamo.audio.tts_message_processor import (
     TTSMessageProcessor,
     TTSMessageProcessorConfig,
 )
-from lalamo.common import is_abstract_array, stringify_path
+from lalamo.common import ParameterPath, is_abstract_array
 from lalamo.modules import TTSModel, config_converter
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
@@ -138,7 +138,7 @@ class TTSGenerator(eqx.Module):
                 weights_dict = {key.removeprefix("model."): value for key, value in weights_dict.items()}
             model = config.tts_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)
         abstract_leaves = [
-            f"{stringify_path(path)}: shape={leaf.shape}, dtype={leaf.dtype}"
+            f"{ParameterPath('') / path}: shape={leaf.shape}, dtype={leaf.dtype}"
             for path, leaf in jax.tree_util.tree_flatten_with_path(model)[0]
             if is_abstract_array(leaf)
         ]

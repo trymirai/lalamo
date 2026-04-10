@@ -1,8 +1,7 @@
 import contextlib
 import contextvars
-import dataclasses
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Generator, Mapping
+from collections.abc import Generator
 from dataclasses import dataclass
 from enum import Enum
 from types import UnionType
@@ -11,19 +10,18 @@ from typing import Any, Generic, Self, TypeVar, cast
 import equinox as eqx
 import jax
 import jax.sharding as shd
-import jax.tree_util as jtu
 from cattrs import Converter
 from jax import ShapeDtypeStruct
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Key
 
-from lalamo.common import ParameterTree, stringify_path
-from lalamo.serialization import UzuSerializable
+from lalamo.common import ParameterPath, ParameterTree
+from lalamo.serialization import FieldMetadata, UzuSerializable, field, field_metadata_from_path
 
 __all__ = [
     "DummyUnionMember",
     "EmptyInitializer",
-    "FieldShardingInfo",
+    "FieldMetadata",
     "ForwardPassMode",
     "Initializer",
     "LalamoModule",
@@ -35,13 +33,11 @@ __all__ = [
     "TensorSharding",
     "apply_parameter_sharding",
     "config_converter",
-    "field_sharding_from_path",
+    "field",
+    "field_metadata_from_path",
     "get_current_sharding_config",
     "pad_and_apply_data_sharding",
     "register_config_union",
-    "require_array",
-    "require_tree",
-    "sharded_field",
 ]
 
 
@@ -59,38 +55,11 @@ class LalamoModule(UzuSerializable, eqx.Module, Generic[ConfigT_co]):  # noqa: U
     @abstractmethod
     def activation_precision(self) -> DTypeLike: ...
 
-    def from_uzu(
-        self,
-        data: Mapping[str, Any],
-        prefix: str = "",
-        sharding_config: "ShardingConfig | None" = None,
-    ) -> Self:
-        def _maybe_shard(value: object, path: tuple[object, ...]) -> object:
-            if sharding_config is None:
-                return value
-            info = field_sharding_from_path(self, path)
-            return jax.tree.map(
-                lambda x: apply_parameter_sharding(x, info, sharding_config) if eqx.is_array(x) else x,
-                value,
-            )
-
-        def restore(path: tuple[object, ...], leaf: object) -> object:
-            key = f"{prefix}.{stringify_path(path)}" if prefix else stringify_path(path)
-            if isinstance(leaf, LalamoModule):
-                return leaf.from_uzu(data, prefix=key, sharding_config=sharding_config)
-            if isinstance(leaf, UzuSerializable):
-                return _maybe_shard(leaf.from_uzu(data, prefix=key, sharding_config=sharding_config), path)
-            if key in data:
-                return _maybe_shard(data[key], path)
-            return leaf
-
-        return jax.tree_util.tree_map_with_path(
-            restore, self, is_leaf=lambda x: isinstance(x, UzuSerializable) and x is not self
-        )
-
     def shard(self, sharding_config: "ShardingConfig") -> Self:
         return jax.tree_util.tree_map_with_path(
-            lambda path, leaf: apply_parameter_sharding(leaf, field_sharding_from_path(self, path), sharding_config)
+            lambda path, leaf: apply_parameter_sharding(
+                leaf, field_metadata_from_path(self, ParameterPath("") / path), sharding_config
+            )
             if eqx.is_array(leaf)
             else leaf,
             self,
@@ -343,72 +312,12 @@ class TensorSharding:
         return (self.axes[pivot], *self.axes[:pivot], *self.axes[pivot + 1 :])
 
 
-def sharded_field(
-    tensor_sharding: TensorSharding | None = None,
-    min_size_to_shard: int = 2**18,
-    *,
-    converter: Callable[[Any], Any] | None = None,
-    static: bool = False,
-    metadata: Mapping[str, Any] | None = None,
-    **kwargs: Any,  # noqa: ANN401
-) -> Any:  # noqa: ANN401
-    merged_metadata = dict(metadata or {})
-    merged_metadata["tensor_sharding"] = tensor_sharding
-    merged_metadata["min_size_to_shard"] = min_size_to_shard
-    return eqx.field(
-        converter=converter,
-        static=static,
-        metadata=merged_metadata,
-        **kwargs,
-    )
-
-
-@dataclass(frozen=True)
-class FieldShardingInfo:
-    tensor_sharding: TensorSharding
-    sharding_order: ShardingOrder | None
-    min_size_to_shard: int
-
-
-def field_sharding_from_path(
-    module: eqx.Module,
-    path: tuple[object, ...],
-) -> FieldShardingInfo | None:
-    cur: Any = module
-    owner: eqx.Module = module
-    owner_field: dataclasses.Field[Any] | None = None
-
-    for key in path:
-        if isinstance(key, jtu.GetAttrKey):
-            assert isinstance(cur, eqx.Module)
-            owner = cur
-            owner_field = next((f for f in dataclasses.fields(cur) if f.name == key.name), None)
-            cur = getattr(cur, key.name)
-        elif isinstance(key, jtu.SequenceKey):
-            cur = cur[key.idx]  # type: ignore[index]
-        elif isinstance(key, jtu.DictKey):
-            cur = cur[key.key]  # type: ignore[index]
-
-    if owner_field is None:
-        return None
-
-    tensor_sharding = owner_field.metadata.get("tensor_sharding")
-    if tensor_sharding is None:
-        return None
-
-    return FieldShardingInfo(
-        tensor_sharding,
-        sharding_order=getattr(owner, "sharding_order", None),
-        min_size_to_shard=owner_field.metadata.get("min_size_to_shard", 0),
-    )
-
-
 def apply_parameter_sharding(
     array: Array,
-    info: FieldShardingInfo | None,
+    info: FieldMetadata,
     sharding_config: ShardingConfig | None,
 ) -> Array:
-    if sharding_config is None or info is None or array.size < info.min_size_to_shard:
+    if sharding_config is None or info.tensor_sharding is None or array.size < info.min_size_to_shard:
         return array
 
     parts: list[str | None] = [None] * array.ndim

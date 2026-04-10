@@ -1,9 +1,42 @@
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from .base import ArrayForwardPassConfig, CompressedArray
+from lalamo.common import ParameterPath
+
+from .base import ArrayForwardPassConfig, CompressedArray, CompressedArraySpec
+
+if TYPE_CHECKING:
+    from lalamo.modules.common import Initializer
 
 
-class LoRAArray(CompressedArray):
+@dataclass(frozen=True)
+class LoRASpec(CompressedArraySpec):
+    rank: int
+
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> CompressedArray:
+        raise NotImplementedError("LoRA does not support compression from full-precision weights")
+
+    def init(
+        self,
+        initializer: "Initializer",
+        leading_dims: tuple[int, ...],
+        out_channels: int,
+        in_channels: int,
+    ) -> "LoRAArray":
+        return LoRAArray(
+            spec=self,
+            down=initializer.zeros((*leading_dims, out_channels, self.rank), initializer.precision),
+            up=initializer.zeros((*leading_dims, self.rank, in_channels), initializer.precision),
+        )
+
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "LoRAArray":
+        return LoRAArray(spec=self, down=data[prefix / "down"], up=data[prefix / "up"])
+
+
+class LoRAArray(CompressedArray[LoRASpec]):
     down: Float[Array, "... out_channels rank"]
     up: Float[Array, "... rank in_channels"]
 

@@ -1,63 +1,38 @@
-from abc import ABC, ABCMeta
+from abc import ABC
 from typing import Any, Self
 from weakref import WeakSet
 
-__all__ = ["RegistryABC", "RegistryMeta"]
+__all__ = ["RegistryABC"]
 
 
-class RegistryMeta(ABCMeta):
+class RegistryABC(ABC):
     """
-    Metaclass that tracks, for each subclass of RegistryABC, a per-class WeakSet
-    of descendants (classes that have it in their MRO) while excluding any class
-    that directly lists `RegistryABC` among its bases.
-    """
-
-    _REG_ATTR: str = "__registry_descendants__"
-    _ROOT: type["RegistryABC"] | None = None
-
-    def __init__(
-        cls: type,
-        name: str,
-        bases: tuple[type, ...],
-        namespace: dict[str, object],
-        **kwargs: Any,  # noqa: ANN401
-    ) -> None:
-        super().__init__(name, bases, namespace, **kwargs)  # type: ignore[call-overload]
-
-        # Give *every* class its own WeakSet (shadow any inherited attribute)
-        setattr(cls, RegistryMeta._REG_ATTR, WeakSet())
-
-        # Detect and remember the root exactly once
-        if RegistryMeta._ROOT is None and name == "RegistryABC":
-            RegistryMeta._ROOT = cls
-            return
-
-        root = RegistryMeta._ROOT
-        if root is None:
-            # Extremely early import edge-case; nothing to register yet
-            return
-
-        # Exclude classes that directly list the root among bases
-        if any(b is root for b in cls.__bases__):
-            return
-
-        # Register this class on all qualifying ancestors below the root
-        for ancestor in cls.__mro__[1:]:
-            if isinstance(ancestor, RegistryMeta) and issubclass(ancestor, root):
-                getattr(ancestor, RegistryMeta._REG_ATTR).add(cls)
-
-
-class RegistryABC(ABC, metaclass=RegistryMeta):
-    """
-    Abstract base tracked by RegistryMeta.
+    Abstract base that tracks descendants via __init_subclass__.
 
     Any class defined as `class AbstractFoo(RegistryABC)` will expose a
-    class method `AbstractFoo.__get_descendants__()` that returns a list of
-    all classes having AbstractFoo in their MRO *except* those that directly
-    include `RegistryABC` among their bases.
+    class method `AbstractFoo.__descendants__()` that returns a tuple of
+    all concrete classes having AbstractFoo in their MRO, excluding classes
+    that directly list `RegistryABC` among their bases.
     """
+
+    __registry_descendants__: WeakSet[type["RegistryABC"]]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:  # noqa: ANN401
+        super().__init_subclass__(**kwargs)
+        cls.__registry_descendants__ = WeakSet()
+
+        for ancestor in cls.__mro__[1:]:
+            if (
+                ancestor is not RegistryABC
+                and issubclass(ancestor, RegistryABC)
+                and not any(b is RegistryABC for b in cls.__bases__)
+            ):
+                ancestor.__registry_descendants__.add(cls)
 
     @classmethod
     def __descendants__(cls) -> tuple[type[Self], ...]:
-        reg: WeakSet[type[Self]] = getattr(cls, RegistryMeta._REG_ATTR)  # noqa: SLF001
-        return tuple(reg)
+        return tuple(cls.__registry_descendants__)
+
+
+# bootstrap the root
+RegistryABC.__registry_descendants__ = WeakSet()

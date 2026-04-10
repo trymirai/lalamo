@@ -1,9 +1,39 @@
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
+
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from .base import ArrayForwardPassConfig, CompressedArray
+from lalamo.common import ParameterPath
+
+from .base import ArrayForwardPassConfig, CompressedArray, CompressedArraySpec
+
+if TYPE_CHECKING:
+    from lalamo.modules.common import Initializer
 
 
-class FullPrecisionArray(CompressedArray):
+@dataclass(frozen=True)
+class FullPrecisionSpec(CompressedArraySpec):
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "FullPrecisionArray":
+        return FullPrecisionArray(spec=self, weights=weights)
+
+    def init(
+        self,
+        initializer: "Initializer",
+        leading_dims: tuple[int, ...],
+        out_channels: int,
+        in_channels: int,
+    ) -> "FullPrecisionArray":
+        return FullPrecisionArray(
+            spec=self,
+            weights=initializer.normal(1.0, (*leading_dims, out_channels, in_channels), initializer.precision),
+        )
+
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "FullPrecisionArray":
+        return FullPrecisionArray(spec=self, weights=data[prefix / "weights"])
+
+
+class FullPrecisionArray(CompressedArray[FullPrecisionSpec]):
     weights: Float[Array, "... out_channels in_channels"]
 
     @property
@@ -30,7 +60,3 @@ class FullPrecisionArray(CompressedArray):
         forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: ARG002, B008
     ) -> Float[Array, "... out_channels"]:
         return self.weights @ vector
-
-    @classmethod
-    def compress(cls, weights: Float[Array, "... out_channels in_channels"]) -> "FullPrecisionArray":
-        return cls(weights=weights)

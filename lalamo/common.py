@@ -2,10 +2,11 @@ import functools
 import os
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
-from typing import cast
+from typing import Any, cast, overload
 
 import jax
 import jax.numpy as jnp
+import jax.tree_util as jtu
 from jax._src.api import ShapeDtypeStruct
 from jaxtyping import Array, DTypeLike
 
@@ -23,26 +24,10 @@ __all__ = [
     "require_array",
     "require_mapping",
     "require_tree",
-    "stringify_path",
     "unflatten_parameters",
 ]
 
 DEFAULT_PRECISION: DTypeLike = jnp.bfloat16
-
-
-def stringify_path(path: tuple[object, ...]) -> str:
-    parts: list[str] = []
-    for key in path:
-        match key:
-            case jax.tree_util.GetAttrKey(name):
-                parts.append(name)
-            case jax.tree_util.SequenceKey(idx):
-                parts.append(str(idx))
-            case jax.tree_util.DictKey(key=k):
-                parts.append(str(k))
-            case _:
-                parts.append(str(key))
-    return ".".join(parts)
 
 
 class LalamoWarning(UserWarning):
@@ -148,16 +133,73 @@ def unflatten_parameters[ArrayType: ArrayLike](flat_parameters: Mapping[str, Arr
 
 
 class ParameterPath(str):
+    """
+    ParameterPath is a universal representation, allowing to index into either the pytree, or flattened
+    representations of modules. The invariant is as follows:
+
+    For any PyTree and any ParameterPath:
+    ```py
+    get_by_path(pytree, path) == get_by_path(pytree.to_uzu(), path)
+
+    jax.tree.map_with_path(lambda v, path: v == get_by_path(pytree, ParameterPath(path)), pytree)
+    ```
+
+    Basically ParameterPath is a universal str representation for any Path within any PyTree.
+
+    The only constraint is that you can't use dictionary keys with dots inside of them, if you try - we will throw up.
+    """
+
     __slots__ = ()
 
-    @property
-    def components(self) -> tuple[str, ...]:
-        return tuple(self.split("."))
+    # NOTE: plum-dispatch would be ideal here, but ty (type checker) can't see through @dispatch.
+    # Using @overload + match instead.
 
-    def __truediv__(self, other: str | int) -> "ParameterPath":
-        if not self:
-            return ParameterPath(str(other))
-        return ParameterPath(self + "." + str(other))
+    @overload
+    def __truediv__(self, other: str) -> "ParameterPath": ...
+    @overload
+    def __truediv__(self, other: int) -> "ParameterPath": ...
+    @overload
+    def __truediv__(self, other: jtu.GetAttrKey) -> "ParameterPath": ...
+    @overload
+    def __truediv__(self, other: jtu.SequenceKey) -> "ParameterPath": ...
+    @overload
+    def __truediv__(self, other: jtu.DictKey) -> "ParameterPath": ...
+    @overload
+    def __truediv__(self, other: jtu.FlattenedIndexKey) -> "ParameterPath": ...
+    @overload
+    def __truediv__(self, other: tuple[Any, ...]) -> "ParameterPath": ...
+
+    def __truediv__(  # noqa: PLR0911
+        self,
+        other: str | int | jtu.GetAttrKey | jtu.SequenceKey | jtu.DictKey | jtu.FlattenedIndexKey | tuple[Any, ...],
+    ) -> "ParameterPath":
+        match other:
+            case str():
+                if not self:
+                    return ParameterPath(other)
+                return ParameterPath(f"{self}.{other}")
+            case int():
+                return self / str(other)
+            case jtu.GetAttrKey(name):
+                return self / name
+            case jtu.SequenceKey(idx):
+                return self / str(idx)
+            case jtu.DictKey(key=key):
+                key_str = str(key)
+                if "." in key_str:
+                    raise ValueError(
+                        f"DictKey {key_str!r} contains dots, which would be ambiguous in a dot-separated path"
+                    )
+                return self / key_str
+            case jtu.FlattenedIndexKey(key):
+                return self / key
+            case tuple():
+                result = self
+                for element in other:
+                    result = result / element
+                return result
+            case _:
+                raise TypeError(f"Unsupported type for ParameterPath /: {type(other).__name__}")
 
 
 def cast_if_float(array: Array, cast_to: DTypeLike) -> Array:

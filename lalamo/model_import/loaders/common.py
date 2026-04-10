@@ -1,4 +1,3 @@
-import dataclasses
 from collections.abc import Callable, Iterable
 
 import equinox as eqx
@@ -9,54 +8,23 @@ from jax.tree import leaves_with_path
 from jax.tree_util import keystr
 from jaxtyping import Array, PyTree
 
+from lalamo.common import ParameterPath
 from lalamo.modules.common import (
-    FieldShardingInfo,
     apply_parameter_sharding,
     get_current_sharding_config,
 )
+from lalamo.serialization import FieldMetadata, field_metadata_from_path
 
 __all__ = [
     "load_parameters",
 ]
 
 
-def find_field_sharding(module: eqx.Module, target: object) -> FieldShardingInfo | None:
+def find_field_metadata_by_value(module: eqx.Module, target: object) -> FieldMetadata | None:
     flat_with_path, _ = jtu.tree_flatten_with_path(module, is_leaf=lambda x: x is target)
-
     for path, leaf in flat_with_path:
-        if leaf is not target:
-            continue
-
-        current_node: eqx.Module | object = module
-        owner: eqx.Module = module
-        owner_field: dataclasses.Field | None = None
-
-        for key in path:
-            if isinstance(key, jtu.GetAttrKey):
-                assert isinstance(current_node, eqx.Module)
-                owner = current_node
-                owner_field = next((f for f in dataclasses.fields(current_node) if f.name == key.name), None)
-                current_node = getattr(current_node, key.name)
-            elif isinstance(key, jtu.SequenceKey):
-                current_node = current_node[key.idx]  # type: ignore[index]
-            elif isinstance(key, jtu.DictKey):
-                current_node = current_node[key.key]  # type: ignore[index]
-            else:
-                raise TypeError(f"Unexpected key type: at {path}, key {key}")
-
-        if owner_field is None:
-            raise ValueError(f"Attempting to shard root module ({module}), or field on {path} not found")
-
-        tensor_sharding = owner_field.metadata.get("tensor_sharding")
-        if tensor_sharding is None:
-            return None
-
-        return FieldShardingInfo(
-            tensor_sharding,
-            sharding_order=getattr(owner, "sharding_order", None),
-            min_size_to_shard=owner_field.metadata.get("min_size_to_shard", 0),
-        )
-
+        if leaf is target:
+            return field_metadata_from_path(module, ParameterPath("") / path)
     return None
 
 
@@ -99,11 +67,12 @@ def load_parameters[M: eqx.Module](
             new_value = new_value.astype(old_value.dtype)  # noqa: PLW2901
 
         if sharding_config is not None:
-            info = find_field_sharding(module, old_value)
-            new_value = jax.tree.map(  # noqa: PLW2901
-                lambda x, info=info: apply_parameter_sharding(x, info, sharding_config) if eqx.is_array(x) else x,
-                new_value,
-            )
+            metadata = find_field_metadata_by_value(module, old_value)
+            if metadata is not None:
+                new_value = jax.tree.map(  # noqa: PLW2901
+                    lambda x, m=metadata: apply_parameter_sharding(x, m, sharding_config) if eqx.is_array(x) else x,
+                    new_value,
+                )
 
         casted_new_values.append(new_value)
     return eqx.tree_at(selector, module, casted_new_values, is_leaf=lambda x: x is None)

@@ -11,7 +11,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Key
 from tokenizers import Tokenizer
 
-from lalamo.common import is_abstract_array, stringify_path
+from lalamo.common import ParameterPath, is_abstract_array
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
@@ -90,7 +90,7 @@ class TextModelConfig[ConfigT: ClassifierConfig | DecoderConfig](ABC):
                 weights_dict = {key.removeprefix("model."): value for key, value in weights_dict.items()}
             model = config.model_config.init(EmptyInitializer(precision=jnp.float32)).from_uzu(weights_dict)  # type: ignore
         abstract_leaves = [
-            f"{stringify_path(path)}: shape={leaf.shape}, dtype={leaf.dtype}"
+            f"{ParameterPath('') / path}: shape={leaf.shape}, dtype={leaf.dtype}"
             for path, leaf in jax.tree_util.tree_flatten_with_path(model)[0]
             if is_abstract_array(leaf)
         ]

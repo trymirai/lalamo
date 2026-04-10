@@ -6,11 +6,10 @@ import jax
 import jax.numpy as jnp
 import optax
 from jaxtyping import Array, Float, Int, Key
+from utils import eval_kl, load_lmsys_calibration_texts, tokenize_batch
 
 from lalamo.arrays import FullPrecisionArray
 from lalamo.model_import import import_model
-
-from utils import eval_kl, load_lmsys_calibration_texts, tokenize_batch
 
 
 class HessianPair(eqx.Module):

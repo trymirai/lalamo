@@ -12,7 +12,7 @@ from lalamo.arrays import CompressedArray, FullPrecisionArray
 from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
-from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, sharded_field
+from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, field
 
 __all__ = [
     "Linear",
@@ -61,7 +61,13 @@ class LinearConfig:
 
 class Linear(LalamoModule[LinearConfig]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
-    # sharding order specifies in which order do we attempt to shard
+    weights: CompressedArray = field(
+        tensor_sharding=TensorSharding(
+            axes=(-2, -1),
+            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
+        ),
+    )
+    biases: Float[Array, "*batch total_out_channels"] | None
     sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
     @property
