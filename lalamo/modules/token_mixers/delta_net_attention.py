@@ -22,17 +22,10 @@ __all__ = [
     "DeltaNetAttention",
     "DeltaNetAttentionConfig",
     "DeltaNetAttentionResult",
-    "DeltaNetForwardPassConfig",
 ]
 
 
 DeltaNetAttentionResult = TokenMixerResult[SSMStateLayer]
-
-
-@dataclass(frozen=True)
-class DeltaNetForwardPassConfig:
-    chunk_size: int = 32
-    min_chunk_len: int = 16
 
 
 def _delta_dims(
@@ -277,7 +270,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         beta: Float[Array, "tokens heads"],
         initial_state: Float[Array, "heads value_channels key_channels"],
         num_steps: Int[Array, ""] | int,
-        forward_pass_config: DeltaNetForwardPassConfig,
+        forward_pass_config: MixerForwardPassConfig,
     ) -> DeltaNetScanResult:
         chunk_size = forward_pass_config.chunk_size
         min_chunk_len = forward_pass_config.min_chunk_len

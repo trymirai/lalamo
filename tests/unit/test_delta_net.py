@@ -15,7 +15,8 @@ from lalamo.modules import (
     SeparableCausalConvConfig,
     UpcastMode,
 )
-from lalamo.modules.token_mixers.delta_net_attention import DeltaNetAttention, DeltaNetForwardPassConfig
+from lalamo.modules.token_mixers.common import MixerForwardPassConfig
+from lalamo.modules.token_mixers.delta_net_attention import DeltaNetAttention
 from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 
@@ -181,7 +182,7 @@ def test_chunked_scan_matches_sequential(
     use_nonzero_state: bool,
 ) -> None:
     module = _make_delta_net()
-    fpc = DeltaNetForwardPassConfig(chunk_size=chunk_size)
+    fpc = MixerForwardPassConfig(chunk_size=chunk_size)
     k1, k2, k3, k4, k5, k6 = jax.random.split(jax.random.PRNGKey(0), 6)
 
     queries = jax.random.normal(k1, (seq_len, module.num_heads, module.head_dim))
@@ -233,7 +234,7 @@ def test_delta_net_state_respects_length_without_padding(
     seed: int,
 ) -> None:
     module = _make_delta_net()
-    fpc = DeltaNetForwardPassConfig(chunk_size=4)
+    fpc = MixerForwardPassConfig(chunk_size=4)
     full_input = jax.random.normal(
         jax.random.PRNGKey(seed),
         (seqlen + padding, module.model_dim),
@@ -268,7 +269,7 @@ def test_delta_net_state_respects_length_without_padding(
 @pytest.mark.parametrize("seq_len", [8, 16])
 def test_delta_net_chunked_preserves_causality(seq_len: int) -> None:
     module = _make_delta_net()
-    fpc = DeltaNetForwardPassConfig(chunk_size=4)
+    fpc = MixerForwardPassConfig(chunk_size=4)
     inputs = jax.random.normal(jax.random.PRNGKey(123), (seq_len, module.model_dim))
 
     result_original = module(inputs, positional_embeddings=None, forward_pass_config=fpc)
@@ -287,7 +288,7 @@ def test_delta_net_chunked_preserves_causality(seq_len: int) -> None:
 
 def test_delta_net_chunked_with_gqa() -> None:
     module = _make_delta_net(num_heads=4, num_groups=2)
-    fpc = DeltaNetForwardPassConfig(chunk_size=4)
+    fpc = MixerForwardPassConfig(chunk_size=4)
     inputs = jax.random.normal(jax.random.PRNGKey(7), (12, module.model_dim))
 
     result = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc)
@@ -333,7 +334,7 @@ def test_delta_net_chunked_with_gqa() -> None:
 
 def test_delta_net_multi_step_generation() -> None:
     module = _make_delta_net()
-    fpc = DeltaNetForwardPassConfig(chunk_size=4)
+    fpc = MixerForwardPassConfig(chunk_size=4)
     k1, k2, k3 = jax.random.split(jax.random.PRNGKey(42), 3)
     chunk1 = jax.random.normal(k1, (6, module.model_dim))
     chunk2 = jax.random.normal(k2, (5, module.model_dim))
@@ -383,8 +384,8 @@ def test_delta_net_multi_step_generation() -> None:
 )
 def test_delta_net_output_invariant_to_chunk_size(chunk_size_a: int, chunk_size_b: int) -> None:
     module = _make_delta_net()
-    fpc_a = DeltaNetForwardPassConfig(chunk_size=chunk_size_a)
-    fpc_b = DeltaNetForwardPassConfig(chunk_size=chunk_size_b)
+    fpc_a = MixerForwardPassConfig(chunk_size=chunk_size_a)
+    fpc_b = MixerForwardPassConfig(chunk_size=chunk_size_b)
     inputs = jax.random.normal(jax.random.PRNGKey(0), (12, module.model_dim))
 
     result_a = module(inputs, positional_embeddings=None, return_updated_state=True, forward_pass_config=fpc_a)
@@ -398,7 +399,7 @@ def test_delta_net_output_invariant_to_chunk_size(chunk_size_a: int, chunk_size_
 @pytest.mark.parametrize("seq_len", [128, 512])
 def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
     module = _make_delta_net()
-    fpc = DeltaNetForwardPassConfig(chunk_size=64)
+    fpc = MixerForwardPassConfig(chunk_size=64)
     k1, k2, k3, k4, k5, k6 = jax.random.split(jax.random.PRNGKey(0), 6)
 
     queries = jax.random.normal(k1, (seq_len, module.num_heads, module.head_dim))
@@ -456,8 +457,8 @@ def test_chunked_scan_matches_sequential_large(seq_len: int) -> None:
 )
 def test_min_chunk_len_matches_sequential(seq_len: int, chunk_size: int, min_chunk_len: int) -> None:
     module = _make_delta_net()
-    fpc_with_min = DeltaNetForwardPassConfig(chunk_size=chunk_size, min_chunk_len=min_chunk_len)
-    fpc_default = DeltaNetForwardPassConfig(chunk_size=chunk_size)
+    fpc_with_min = MixerForwardPassConfig(chunk_size=chunk_size, min_chunk_len=min_chunk_len)
+    fpc_default = MixerForwardPassConfig(chunk_size=chunk_size)
 
     inputs = jax.random.normal(jax.random.PRNGKey(0), (seq_len, module.model_dim))
 

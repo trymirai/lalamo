@@ -19,7 +19,12 @@ __all__ = [
 
 @dataclass(frozen=True)
 class MixerForwardPassConfig:
-    pass
+    # DeltaNet chunked attention parameters.
+    chunk_size: int = 32
+    # Minimum tokens in the last chunk before it falls back to sequential scan.
+    # If the remainder after chunking is shorter than this, the tail is processed
+    # sequentially to avoid wasting compute on mostly-padded chunks.
+    min_chunk_len: int = 16
 
 
 class TokenMixerResult[StateLayerT](NamedTuple):
