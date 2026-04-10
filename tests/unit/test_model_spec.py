@@ -81,16 +81,13 @@ def test_origin_from_json_local_defaults() -> None:
     assert origin.weight_files == ()
 
 
-def test_local_origin_resolve_weights() -> None:
-    import tempfile
+def test_local_origin_resolve_file() -> None:
     from pathlib import Path
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        (Path(tmpdir) / "model.safetensors").touch()
-        origin = LocalOrigin(root=tmpdir, weight_files=("model.safetensors",))
-        paths = origin.resolve_weights()
-        assert len(paths) == 1
-        assert paths[0] == Path(tmpdir) / "model.safetensors"
+    from lalamo.model_import.model_specs.origins import FileSpec
+
+    origin = LocalOrigin(root="/tmp/models")
+    assert origin.resolve_file(FileSpec("config.json")) == Path("/tmp/models/config.json")
 
 
 def test_local_origin_serialization() -> None:

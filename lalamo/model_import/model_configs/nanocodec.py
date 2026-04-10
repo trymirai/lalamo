@@ -1,8 +1,7 @@
 """Foreign config for NanoCodec TTS models from NVIDIA NeMo."""
 
 from collections import ChainMap
-from collections.abc import Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Self
@@ -72,16 +71,6 @@ class NanoCodecForeignConfig(ForeignTTSConfig):
     out_kernel_size: int
     resblock_kernel_sizes: tuple[int, ...]
     resblock_dilation_sizes: tuple[int, ...]
-
-    @contextmanager
-    def load_weight_files(
-        self,
-        weight_paths: Sequence[Path],
-        precision: DTypeLike,
-    ) -> Iterator[Sequence[WeightShard]]:
-        from lalamo.model_import.model_specs.origins import load_torch_weights
-
-        yield [load_torch_weights(path, precision) for path in weight_paths]
 
     def to_tts_config(
         self,

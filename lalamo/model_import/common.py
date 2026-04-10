@@ -1,6 +1,6 @@
 import importlib.metadata
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import NamedTuple
@@ -11,6 +11,7 @@ from tokenizers import Tokenizer
 
 from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessageProcessorConfig
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
+from lalamo.common import WeightShard
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 from lalamo.model_import.model_configs.nanocodec import NanoCodecForeignConfig
@@ -184,19 +185,18 @@ def import_message_processor(
     return MessageProcessor(config=message_processor_config, tokenizer=tokenizer)
 
 
-def _resolve_weights_and_config(
+def _resolve_configs(
     model_spec: ModelSpec,
     progress_callback: Callable[[StatusEvent], None] | None = None,
-) -> tuple[list[Path], Path, tuple[Path, ...]]:
+) -> tuple[Path, tuple[Path, ...]]:
     origin = model_spec.origin
-    weights_paths = origin.resolve_weights(progress_callback)
     config_path = origin.resolve_file(model_spec.configs.model_config, progress_callback)
     extra_config_paths = tuple(origin.resolve_file(ec, progress_callback) for ec in model_spec.configs.extra_configs)
-    return (weights_paths, config_path, extra_config_paths)
+    return (config_path, extra_config_paths)
 
 
 def _load_main_processing_module(
-    weights_paths: list[Path],
+    weight_shards: Sequence[WeightShard],
     precision: DTypeLike,
     foreign_config: ForeignConfig,
     progress_callback: Callable[[StatusEvent], None] | None = None,
@@ -210,7 +210,7 @@ def _load_main_processing_module(
         context_length,
         precision,
         accumulation_precision,
-        weights_paths,
+        weight_shards,
     )
 
 
@@ -222,14 +222,15 @@ def _import_language_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[LanguageModel, LanguageModelConfig]:
-    model_weights_paths, config_path, extra_config_paths = _resolve_weights_and_config(model_spec, progress_callback)
+    config_path, extra_config_paths = _resolve_configs(model_spec, progress_callback)
     foreign_decoder_config = model_spec.config_type.from_json(config_path, extra_config_paths)
     assert isinstance(foreign_decoder_config, ForeignLMConfig)
 
     if precision is None:
         precision = foreign_decoder_config.default_precision
+    weight_shards = model_spec.origin.get_weights(precision, progress_callback)
     decoder = _load_main_processing_module(
-        model_weights_paths,
+        weight_shards,
         precision,
         foreign_decoder_config,
         progress_callback,
@@ -275,15 +276,16 @@ def _import_classifier(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[ClassifierModel, ClassifierModelConfig]:
-    model_weights_paths, config_path, extra_config_paths = _resolve_weights_and_config(model_spec, progress_callback)
+    config_path, extra_config_paths = _resolve_configs(model_spec, progress_callback)
     foreign_classifier_config = model_spec.config_type.from_json(config_path, extra_config_paths)
     assert isinstance(foreign_classifier_config, ForeignClassifierConfig)
 
     if precision is None:
         precision = foreign_classifier_config.default_precision
 
+    weight_shards = model_spec.origin.get_weights(precision, progress_callback)
     classifier = _load_main_processing_module(
-        model_weights_paths,
+        weight_shards,
         precision,
         foreign_classifier_config,
         progress_callback,
@@ -313,7 +315,7 @@ def _import_tts_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[TTSGenerator, TTSGeneratorConfig]:
-    model_weights_paths, config_path, extra_config_paths = _resolve_weights_and_config(model_spec, progress_callback)
+    config_path, extra_config_paths = _resolve_configs(model_spec, progress_callback)
     foreign_tts_config = model_spec.config_type.from_json(config_path, extra_config_paths)
     if precision is None:
         precision = foreign_tts_config.default_precision
@@ -323,8 +325,9 @@ def _import_tts_model(
     else:
         tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, progress_callback)
 
+    weight_shards = model_spec.origin.get_weights(precision, progress_callback)
     tts_model = _load_main_processing_module(
-        model_weights_paths,
+        weight_shards,
         precision,
         foreign_tts_config,
         progress_callback,
@@ -364,15 +367,16 @@ def _import_latent_tts_model(
     accumulation_precision: DTypeLike = jnp.float32,
     progress_callback: Callable[[StatusEvent], None] | None = None,
 ) -> tuple[LatentTTSGenerator, LatentTTSGeneratorConfig]:
-    model_weights_paths, config_path, extra_config_paths = _resolve_weights_and_config(model_spec, progress_callback)
+    config_path, extra_config_paths = _resolve_configs(model_spec, progress_callback)
     foreign_config = model_spec.config_type.from_json(config_path, extra_config_paths)
     if precision is None:
         precision = foreign_config.default_precision
 
     tokenizer = _instantiate_tokenizer_from_model_spec(model_spec, progress_callback)
 
+    weight_shards = model_spec.origin.get_weights(precision, progress_callback)
     latent_tts_model = _load_main_processing_module(
-        model_weights_paths,
+        weight_shards,
         precision,
         foreign_config,
         progress_callback,

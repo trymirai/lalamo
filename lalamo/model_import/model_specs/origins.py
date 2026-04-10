@@ -1,14 +1,14 @@
+import dataclasses
 import functools
 import json
 import tarfile
 import tempfile
 from abc import abstractmethod
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import huggingface_hub
 from jaxtyping import DTypeLike
@@ -19,11 +19,11 @@ from lalamo.safetensors import safe_read
 from lalamo.utils import MapDictValues
 
 
-@contextmanager
-def load_safetensors(path: Path, float_dtype: DTypeLike) -> Iterator[WeightShard]:
+def load_safetensors(path: Path, float_dtype: DTypeLike) -> WeightShard:
     with path.open("rb") as fd:
         metadata, lazy_weights = safe_read(fd)
-        yield MapDictValues(lambda v: cast_if_float(v, float_dtype), lazy_weights), metadata or {}
+        weights = {k: cast_if_float(v, float_dtype) for k, v in lazy_weights.items()}
+        return weights, metadata or {}
 
 
 def load_torch_weights(path: Path, float_dtype: DTypeLike, *, weights_only: bool = True) -> WeightShard:
@@ -67,6 +67,7 @@ type StatusEvent = (
 )
 
 
+# TODO(knyazer): move configs into origin
 class Origin(RegistryABC):
     @abstractmethod
     def resolve_file(
@@ -76,14 +77,33 @@ class Origin(RegistryABC):
     ) -> Path: ...
 
     @abstractmethod
-    def resolve_weights(
+    def get_weights(
         self,
+        precision: DTypeLike,
         progress_callback: Callable[[StatusEvent], None] | None = None,
-    ) -> list[Path]: ...
+    ) -> Sequence[WeightShard]: ...
 
     @property
     @abstractmethod
     def description(self) -> str: ...
+
+    @classmethod
+    def from_cli(cls, origin_type: str, kwargs: dict[str, str]) -> "Origin":
+        name_to_type = {t.__name__: t for t in cls.__descendants__()}
+        concrete_type = name_to_type.get(origin_type)
+        if concrete_type is None:
+            available = ", ".join(sorted(name_to_type))
+            raise ValueError(f"Unknown origin type: {origin_type!r}. Available: {available}")
+        coerced: dict[str, Any] = {}
+        for field in dataclasses.fields(concrete_type):
+            if field.name not in kwargs:
+                continue
+            value = kwargs[field.name]
+            if isinstance(field.type, type) and issubclass(field.type, Enum):
+                coerced[field.name] = field.type(value)
+            else:
+                coerced[field.name] = value
+        return concrete_type(**coerced)
 
 
 def hf_resolve_file(
@@ -121,8 +141,17 @@ class HuggingFaceOrigin(Origin):
     ) -> Path:
         return hf_resolve_file(self.repo, file_spec, progress_callback)
 
-    def resolve_weights(self, progress_callback: Callable[[StatusEvent], None] | None = None) -> list[Path]:
-        return hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
+    def get_weights(
+        self,
+        precision: DTypeLike,
+        progress_callback: Callable[[StatusEvent], None] | None = None,
+    ) -> Sequence[WeightShard]:
+        paths = hf_resolve_weights(self.repo, self.weight_format.value, progress_callback)
+        match self.weight_format:
+            case WeightFormat.SAFETENSORS:
+                return [load_safetensors(path, precision) for path in paths]
+            case WeightFormat.TORCH:
+                return [load_torch_weights(path, precision) for path in paths]
 
     @property
     def description(self) -> str:
@@ -166,10 +195,14 @@ class NemoOrigin(Origin):
             return config_path
         return hf_resolve_file(self.repo, file_spec, progress_callback)
 
-    def resolve_weights(self, progress_callback: Callable[[StatusEvent], None] | None = None) -> list[Path]:
+    def get_weights(
+        self,
+        precision: DTypeLike,
+        progress_callback: Callable[[StatusEvent], None] | None = None,
+    ) -> Sequence[WeightShard]:
         (nemo_path,) = hf_resolve_weights(self.repo, ".nemo", progress_callback)
-        weights, _ = extract_nemo_archive(nemo_path)
-        return list(weights)
+        weight_paths, _ = extract_nemo_archive(nemo_path)
+        return [load_torch_weights(path, precision) for path in weight_paths]
 
     @property
     def description(self) -> str:
@@ -188,11 +221,12 @@ class LocalOrigin(Origin):
     ) -> Path:
         return Path(self.root) / file_spec.filename
 
-    def resolve_weights(
+    def get_weights(
         self,
-        progress_callback: Callable[[StatusEvent], None] | None = None,  # noqa: ARG002
-    ) -> list[Path]:
-        return [Path(self.root) / f for f in self.weight_files]
+        precision: DTypeLike,
+        progress_callback: Callable[[StatusEvent], None] | None = None,
+    ) -> Sequence[WeightShard]:
+        raise NotImplementedError(f"{type(self).__name__} does not support loading weights.")
 
     @property
     def description(self) -> str:

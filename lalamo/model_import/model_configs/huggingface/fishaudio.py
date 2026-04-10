@@ -1,6 +1,5 @@
 from collections import ChainMap
-from collections.abc import Callable, Iterator, Mapping, Sequence
-from contextlib import contextmanager
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
@@ -303,16 +302,6 @@ class FishAudioConfig(ForeignTTSConfig):
     # Defaults for TTS generation — read from config.json if present, otherwise fall back.
     default_speaker: str = "speaker:0"
     default_style: str = "interleave"
-
-    @contextmanager
-    def load_weight_files(
-        self,
-        weight_paths: Sequence[Path],
-        precision: DTypeLike,
-    ) -> Iterator[Sequence[WeightShard]]:
-        from lalamo.model_import.model_specs.origins import load_torch_weights
-
-        yield [load_torch_weights(path, precision) for path in weight_paths]
 
     def prepare_tokenizer(
         self,
