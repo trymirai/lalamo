@@ -2,10 +2,12 @@ from collections.abc import Callable, Iterable
 from itertools import chain
 from typing import NamedTuple
 
+import numpy as np
+
 from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
-from lalamo.models import LanguageModel
+from lalamo.models import GenerationTraceConfig, LanguageModel
 from lalamo.models.common import InferenceConfig
 
 
@@ -17,7 +19,8 @@ class CollectTracesEvent(NamedTuple):
 def inference_collect_traces(
     model: LanguageModel,
     conversations: Iterable[Iterable[Message]],
-    num_top_logits_to_collect: int = 8,
+    num_logits_per_token: int = 1024,
+    trace_layers: tuple[int, ...] = tuple(),
     batch_size: int = 1,
     max_input_length: int = 1024,
     max_output_length: int = 1024,
@@ -31,9 +34,12 @@ def inference_collect_traces(
 
     config = InferenceConfig(
         max_output_length=max_output_length,
-        num_top_logits_to_return=num_top_logits_to_collect,
         padded_length=max_input_length,
         batch_size=batch_size,
+    )
+    trace_config = GenerationTraceConfig(
+        num_logits_per_token=num_logits_per_token,
+        trace_layers=trace_layers,
     )
 
     tokens_generated = 0
@@ -42,6 +48,7 @@ def inference_collect_traces(
         model.generate_tokens_many(
             filtered_prefixes,
             inference_config=config,
+            generation_trace_config=trace_config,
         ),
     ):
         token_ids = generated.token_ids.tolist()
@@ -54,19 +61,22 @@ def inference_collect_traces(
             seqlen = min(seqlen, tokens_to_generate - tokens_generated)
 
         tokens_generated += seqlen
-
         token_ids = token_ids[:seqlen]
 
-        assert generated.top_k_token_ids is not None and generated.top_k_token_logits is not None
-        token_logits_ids = generated.top_k_token_ids[:seqlen].tolist()
-        token_logits_values = generated.top_k_token_logits[:seqlen].tolist()
-        token_logits = [
-            dict(zip(keys, values, strict=True))
-            for keys, values in zip(token_logits_ids, token_logits_values, strict=True)
-        ]
+        assert generated.trace is not None
+        trace = generated.trace
+        layer_indices = tuple(np.asarray(trace.layer_indices, dtype=np.int32).tolist())
 
-        # We need the original prompt tokens - get from indexed_inputs
-        yield LalamoCompletion(filtered_prefixes[idx], token_ids, token_logits)
+        yield LalamoCompletion(
+            prefix_token_ids=filtered_prefixes[idx],
+            completion_token_ids=token_ids,
+            top_k_ids=trace.top_k_ids[:seqlen],
+            top_k_logits=trace.top_k_logits[:seqlen],
+            logsumexp=trace.logsumexp[:seqlen],
+            activation_output=trace.activation_output[:seqlen],
+            layer_indices=layer_indices,
+            layer_output=trace.layer_output[:, :seqlen, :] if layer_indices else None,
+        )
 
         if progress_callback is not None:
             progress_callback(CollectTracesEvent(idx + 1, tokens_generated))
