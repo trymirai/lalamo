@@ -32,7 +32,31 @@ class ArrayForwardPassConfig:
 
 
 @dataclass(frozen=True)
-class CompressedArraySpec:
+class ArraySpec:
+    def to_json(self) -> str:
+        spec_dict: dict[str, Any] = {"__class__": type(self).__name__}
+        for f in dataclasses.fields(self):
+            value = getattr(self, f.name)
+            spec_dict[f.name] = str(jnp.dtype(value)) if f.name == "dtype" else value
+        return json.dumps(spec_dict)
+
+    @classmethod
+    def from_json(cls, spec_json: str) -> Self:
+        spec_dict = json.loads(spec_json)
+        class_name = spec_dict.pop("__class__")
+        registry: dict[str, type[ArraySpec]] = {}
+        queue = list(cls.__subclasses__())
+        while queue:
+            sub = queue.pop()
+            queue.extend(sub.__subclasses__())
+            registry[sub.__name__] = sub
+        if "dtype" in spec_dict:
+            spec_dict["dtype"] = jnp.dtype(spec_dict["dtype"])
+        return cast("Self", registry[class_name](**spec_dict))
+
+
+@dataclass(frozen=True)
+class CompressedArraySpec(ArraySpec):
     @abstractmethod
     def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "CompressedArray": ...
 
@@ -47,23 +71,6 @@ class CompressedArraySpec:
 
     @abstractmethod
     def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "CompressedArray": ...
-
-
-def serialize_spec(spec: CompressedArraySpec) -> str:
-    spec_dict: dict[str, Any] = {"__class__": type(spec).__name__}
-    for f in dataclasses.fields(spec):
-        value = getattr(spec, f.name)
-        spec_dict[f.name] = str(jnp.dtype(value)) if f.name == "dtype" else value
-    return json.dumps(spec_dict)
-
-
-def deserialize_spec(spec_json: str) -> CompressedArraySpec:
-    spec_dict = json.loads(spec_json)
-    class_name = spec_dict.pop("__class__")
-    spec_types = {t.__name__: t for t in CompressedArraySpec.__subclasses__()}
-    if "dtype" in spec_dict:
-        spec_dict["dtype"] = jnp.dtype(spec_dict["dtype"])
-    return spec_types[class_name](**spec_dict)
 
 
 CompressedArraySpecT_co = TypeVar("CompressedArraySpecT_co", bound=CompressedArraySpec | None, covariant=True)
@@ -100,7 +107,7 @@ class CompressedArray(UzuSerializable, RegistryABC, eqx.Module, Generic[Compress
     def to_uzu(self) -> dict[str, Any]:
         result: dict[str, Any] = {"__class__": type(self).__name__}
         if self.spec is not None:
-            result["__spec__"] = serialize_spec(self.spec)
+            result["__spec__"] = self.spec.to_json()
         result.update(super().to_uzu())
         return result
 
@@ -113,4 +120,4 @@ class CompressedArray(UzuSerializable, RegistryABC, eqx.Module, Generic[Compress
         spec_key = prefix / "__spec__"
         if spec_key not in data:
             return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)
-        return cast("Self", deserialize_spec(data[spec_key]).from_uzu(data, prefix))
+        return cast("Self", CompressedArraySpec.from_json(data[spec_key]).from_uzu(data, prefix))

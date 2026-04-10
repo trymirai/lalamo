@@ -8,7 +8,7 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from lalamo.arrays import CompressedArray, FullPrecisionArray
+from lalamo.arrays import CompressedArray, FullPrecisionArray, FullPrecisionSpec
 from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
 
@@ -34,7 +34,9 @@ class LinearConfig:
         total_out = sum(output_dims)
         scale = 1 / math.sqrt(input_dim)
         biases = initializer.zeros((total_out,), initializer.precision) if has_biases else None
-        weights = FullPrecisionArray(initializer.normal(scale, (total_out, input_dim), initializer.precision))
+        weights = FullPrecisionArray(
+            spec=FullPrecisionSpec(), weights=initializer.normal(scale, (total_out, input_dim), initializer.precision)
+        )
         return Linear(
             config=self,
             weights=weights,

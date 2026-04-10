@@ -1,14 +1,12 @@
-import json
 from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 if TYPE_CHECKING:
     from lalamo.modules.common import ShardingConfig
 
 import equinox as eqx
-import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
@@ -16,26 +14,29 @@ from lalamo.common import ParameterPath
 from lalamo.registry_abc import RegistryABC
 from lalamo.serialization import UzuSerializable
 
-from .base import serialize_spec
+from .base import ArraySpec
 from .quantization_helpers import pack_quant_weights, unpack_quant_weights
 
 
 @dataclass(frozen=True)
-class CompressedEmbeddingSpec:
+class CompressedEmbeddingSpec(ArraySpec):
     @abstractmethod
     def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "CompressedEmbedding": ...
 
 
-def _deserialize_embedding_spec(spec_json: str) -> CompressedEmbeddingSpec:
-    spec_dict = json.loads(spec_json)
-    class_name = spec_dict.pop("__class__")
-    spec_types = {t.__name__: t for t in CompressedEmbeddingSpec.__subclasses__()}
-    if "dtype" in spec_dict:
-        spec_dict["dtype"] = jnp.dtype(spec_dict["dtype"])
-    return spec_types[class_name](**spec_dict)
+CompressedEmbeddingSpecT_co = TypeVar(
+    "CompressedEmbeddingSpecT_co", bound=CompressedEmbeddingSpec | None, covariant=True
+)
 
 
-class CompressedEmbedding(UzuSerializable, RegistryABC, eqx.Module):
+class CompressedEmbedding(
+    UzuSerializable,
+    RegistryABC,
+    eqx.Module,
+    Generic[CompressedEmbeddingSpecT_co],  # noqa: UP046
+):
+    spec: CompressedEmbeddingSpecT_co = eqx.field(static=True, default=None, kw_only=True)
+
     @property
     @abstractmethod
     def vocab_size(self) -> int: ...
@@ -56,9 +57,8 @@ class CompressedEmbedding(UzuSerializable, RegistryABC, eqx.Module):
 
     def to_uzu(self) -> dict[str, Any]:
         result: dict[str, Any] = {"__class__": type(self).__name__}
-        spec = getattr(self, "spec", None)
-        if spec is not None:
-            result["__spec__"] = serialize_spec(spec)
+        if self.spec is not None:
+            result["__spec__"] = self.spec.to_json()
         result.update(super().to_uzu())
         return result
 
@@ -70,11 +70,17 @@ class CompressedEmbedding(UzuSerializable, RegistryABC, eqx.Module):
     ) -> Self:
         spec_key = prefix / "__spec__"
         if spec_key not in data:
-            return cast("Self", super().from_uzu(data, prefix=prefix, sharding_config=sharding_config))
-        return cast("Self", _deserialize_embedding_spec(data[spec_key]).from_uzu(data, prefix))
+            return super().from_uzu(data, prefix=prefix, sharding_config=sharding_config)
+        return cast("Self", CompressedEmbeddingSpec.from_json(data[spec_key]).from_uzu(data, prefix))
 
 
-class FullPrecisionEmbedding(CompressedEmbedding):
+@dataclass(frozen=True)
+class FullPrecisionEmbeddingSpec(CompressedEmbeddingSpec):
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "FullPrecisionEmbedding":
+        return FullPrecisionEmbedding(spec=self, weights=data[prefix / "weights"])
+
+
+class FullPrecisionEmbedding(CompressedEmbedding[FullPrecisionEmbeddingSpec]):
     weights: Float[Array, "vocabulary channels"]
 
     @property
@@ -113,8 +119,7 @@ class MLXEmbeddingSpec(CompressedEmbeddingSpec):
         )
 
 
-class MLXQuantizedEmbedding(CompressedEmbedding):
-    spec: MLXEmbeddingSpec = eqx.field(static=True)
+class MLXQuantizedEmbedding(CompressedEmbedding[MLXEmbeddingSpec]):
     weights: Float[Array, "vocabulary channels"]
     scales: Float[Array, "vocabulary groups"]
     biases: Float[Array, "vocabulary groups"]

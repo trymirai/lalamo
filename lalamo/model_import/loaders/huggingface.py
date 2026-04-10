@@ -5,9 +5,14 @@ import jax.numpy as jnp
 from einops import rearrange
 from jaxtyping import Array, DTypeLike
 
-from lalamo.arrays import AWQQuantArray, FullPrecisionArray, MLXQuantArray
+from lalamo.arrays import AWQArray, FullPrecisionArray, FullPrecisionSpec, MLXArray
 from lalamo.arrays.awq import AWQSpec
-from lalamo.arrays.embedding import CompressedEmbedding, FullPrecisionEmbedding, MLXQuantizedEmbedding
+from lalamo.arrays.embedding import (
+    CompressedEmbedding,
+    FullPrecisionEmbedding,
+    FullPrecisionEmbeddingSpec,
+    MLXQuantizedEmbedding,
+)
 from lalamo.arrays.mlx import MLXSpec
 from lalamo.common import ParameterPath
 from lalamo.modules import (
@@ -166,7 +171,7 @@ def _load_awq_array(
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
-) -> AWQQuantArray:
+) -> AWQArray:
     packed_qweights, packed_qzeros, scales = _fuse_awq_weights(weights_dict, path, sublayers_to_fuse)
     # AWQ HF layout: qweight [in_channels, out_packed], scales [num_groups, out_channels]
     out_channels = scales.shape[1]
@@ -181,7 +186,7 @@ def _load_awq_array(
         unpacked_weights = _reverse_uint4_order(unpacked_weights, AWQ_UINT4_REVERSE_ORDER)
         unpacked_zeros = _reverse_uint4_order(unpacked_zeros, AWQ_UINT4_REVERSE_ORDER)
 
-    return AWQQuantArray(
+    return AWQArray(
         spec=AWQSpec(bits=bits, group_size=group_size, dtype=scales.dtype),
         weights=unpacked_weights.T.astype(scales.dtype),
         scales=scales.T.astype(scales.dtype),
@@ -194,7 +199,7 @@ def _load_mlx_array(
     path: ParameterPath,
     sublayers_to_fuse: list[str] | None,
     expected_in_channels: int,
-) -> MLXQuantArray:
+) -> MLXArray:
     packed_weights, deq_biases, scales = _fuse_mlx_weights(weights_dict, path, sublayers_to_fuse)
     # MLX HF layout: weight [out_channels, packed_in], scales [out_channels, num_groups]
     packed_in = packed_weights.shape[-1]
@@ -208,7 +213,7 @@ def _load_mlx_array(
     group_size = expected_in_channels // num_groups
     unpacked_weights = unpack_int32(packed_weights, bits)
 
-    return MLXQuantArray(
+    return MLXArray(
         spec=MLXSpec(bits=bits, group_size=group_size, dtype=scales.dtype),
         weights=unpacked_weights.astype(scales.dtype),
         scales=scales,
@@ -229,7 +234,9 @@ def load_linear(
     elif _is_mlx(weights_dict, path, sublayers_to_fuse):
         weights = _load_mlx_array(weights_dict, path, sublayers_to_fuse, module.input_dim)
     else:
-        weights = FullPrecisionArray(_fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse))
+        weights = FullPrecisionArray(
+            spec=FullPrecisionSpec(), weights=_fuse_full_precision_weights(weights_dict, path, sublayers_to_fuse)
+        )
 
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (weights, bias))
 
@@ -309,7 +316,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (FullPrecisionArray(weights=combined_up_gate_weights), combined_up_gate_biases),
+            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=combined_up_gate_weights), combined_up_gate_biases),
         )
 
         down_weights = decode_mxfp4(
@@ -326,7 +333,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (FullPrecisionArray(weights=down_weights), down_biases),
+            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=down_weights), down_biases),
         )
 
         experts = load_parameters(
@@ -377,13 +384,13 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (FullPrecisionArray(weights=combined_up_gate_weights), None),
+            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=combined_up_gate_weights), None),
         )
 
         down_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (FullPrecisionArray(weights=down_weights), None),
+            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=down_weights), None),
         )
 
         experts = load_parameters(
@@ -437,7 +444,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         up_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.up_projection,
-            (FullPrecisionArray(weights=combined_up_gate_weights), combined_up_gate_biases),
+            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=combined_up_gate_weights), combined_up_gate_biases),
         )
 
         stacked_down = jnp.stack(down_weight_list, axis=0)
@@ -445,7 +452,7 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         down_projection = eqx.tree_at(
             lambda m: (m.weights, m.biases),
             module.experts.down_projection,
-            (FullPrecisionArray(weights=stacked_down), stacked_down_biases),
+            (FullPrecisionArray(spec=FullPrecisionSpec(), weights=stacked_down), stacked_down_biases),
         )
 
         experts = load_parameters(
@@ -787,7 +794,7 @@ def load_delta_net_attention(
                 ],
                 axis=0,
             )
-            new_weights = FullPrecisionArray(merged)
+            new_weights = FullPrecisionArray(spec=FullPrecisionSpec(), weights=merged)
         else:
             per_branch = [
                 tuple(_permute_rows(tensor, perm) for tensor in _fuse_mlx_weights(weights_dict, bp, None))
@@ -806,7 +813,7 @@ def load_delta_net_attention(
                 raise ValueError(f"Cannot infer MLX bits: packed_in={packed_in}, expected_in={expected_in_channels}")
             group_size = expected_in_channels // num_groups
             unpacked_weights = unpack_int32(fused_qweights, bits)
-            new_weights = MLXQuantArray(
+            new_weights = MLXArray(
                 spec=MLXSpec(bits=bits, group_size=group_size, dtype=fused_scales.dtype),
                 weights=unpacked_weights.astype(fused_scales.dtype),
                 scales=fused_scales,
@@ -956,7 +963,7 @@ def _load_compressed_embedding(
 ) -> CompressedEmbedding:
     if isinstance(embedding, FullPrecisionEmbedding):
         weights = weights_dict[path / "weight"].astype(embedding.dtype)
-        return FullPrecisionEmbedding(weights=weights)
+        return FullPrecisionEmbedding(spec=FullPrecisionEmbeddingSpec(), weights=weights)
     if isinstance(embedding, MLXQuantizedEmbedding):
         weights = _process_quantized_tensor(
             weights_dict[path / "weight"],
@@ -1119,7 +1126,9 @@ def load_huggingface_classifier(
         decoder_path: ParameterPath,
     ) -> TiedEmbedding:
         weights = weights_dict[decoder_path / "embeddings" / "tok_embeddings" / "weight"]
-        embedding = FullPrecisionEmbedding(weights=weights.astype(module.activation_precision))
+        embedding = FullPrecisionEmbedding(
+            spec=FullPrecisionEmbeddingSpec(), weights=weights.astype(module.activation_precision)
+        )
         return load_parameters(lambda m: (m.embedding,), module, (embedding,))
 
     def load_linear_with_reshufling(
@@ -1134,7 +1143,7 @@ def load_huggingface_classifier(
         weights = weights_dict[path / "weight"]
         rows, _ = weights.shape
         shuffled_weights = jnp.vstack((weights[rows // 2 :, :], weights[: rows // 2, :]))
-        new_weights = FullPrecisionArray(shuffled_weights)
+        new_weights = FullPrecisionArray(spec=FullPrecisionSpec(), weights=shuffled_weights)
         return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, None))
 
     def load_attention_local(

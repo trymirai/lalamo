@@ -8,7 +8,7 @@ import optax
 from jaxtyping import Array, Float, Int, Key
 from utils import eval_kl, load_lmsys_calibration_texts, tokenize_batch
 
-from lalamo.arrays import FullPrecisionArray
+from lalamo.arrays import FullPrecisionArray, FullPrecisionSpec
 from lalamo.model_import import import_model
 
 
@@ -130,7 +130,9 @@ def main() -> None:
             out_ch, in_ch = raw.shape
             out_factor, _ = ldl(h.output_hessian / (num_calib * in_ch))
             in_factor, _ = ldl(h.input_hessian / (num_calib * out_ch))
-            return FullPrecisionArray(weights=yaqa_round(raw, out_factor, in_factor).astype(w.weights.dtype))
+            return FullPrecisionArray(
+                spec=FullPrecisionSpec(), weights=yaqa_round(raw, out_factor, in_factor).astype(w.weights.dtype)
+            )
 
         rounded_layer = jax.tree.map(apply_yaqa, hessians, layer, is_leaf=is_weight_or_hessian)
         rounded_decoder = eqx.tree_at(lambda d, i=layer_idx: d.transformer.layers[i], rounded_decoder, rounded_layer)
@@ -141,7 +143,9 @@ def main() -> None:
     print(f"YAQA KL:  {eval_kl(decoder, rounded_decoder, eval_ids, eval_pos):.4f}")
 
     naive = jax.tree.map(
-        lambda l: FullPrecisionArray(weights=round_to_grid(l.weights.astype(jnp.float32)).astype(l.weights.dtype))
+        lambda l: FullPrecisionArray(
+            spec=FullPrecisionSpec(), weights=round_to_grid(l.weights.astype(jnp.float32)).astype(l.weights.dtype)
+        )
         if is_quantizable_weight(l)
         else l,
         decoder,

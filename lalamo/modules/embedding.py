@@ -8,6 +8,7 @@ from jaxtyping import Array, DTypeLike, Float, Int
 from lalamo.arrays.embedding import (
     CompressedEmbedding,
     FullPrecisionEmbedding,
+    FullPrecisionEmbeddingSpec,
     MLXEmbeddingSpec,
     MLXQuantizedEmbedding,
 )
@@ -55,6 +56,7 @@ def _make_embedding(
             biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
         )
     return FullPrecisionEmbedding(
+        spec=FullPrecisionEmbeddingSpec(),
         weights=initializer.normal(1.0, (vocab_size, model_dim), initializer.precision),
     )
 

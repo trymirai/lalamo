@@ -22,7 +22,7 @@ class AWQSpec(CompressedArraySpec):
     group_size: int
     dtype: DTypeLike
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "AWQQuantArray":
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "AWQArray":
         grouped = rearrange(
             weights,
             "... out_channels (groups group_size) -> ... out_channels groups group_size",
@@ -41,7 +41,7 @@ class AWQSpec(CompressedArraySpec):
         expanded_zero_points = jnp.repeat(zero_points, self.group_size, axis=-1)
         float_weights = quantize_to_grid(weights / safe_scales + expanded_zero_points, self.bits)
 
-        return AWQQuantArray(spec=self, weights=float_weights, scales=scales, zero_points=zero_points)
+        return AWQArray(spec=self, weights=float_weights, scales=scales, zero_points=zero_points)
 
     def init(
         self,
@@ -49,17 +49,17 @@ class AWQSpec(CompressedArraySpec):
         leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
-    ) -> "AWQQuantArray":
+    ) -> "AWQArray":
         num_groups = in_channels // self.group_size
-        return AWQQuantArray(
+        return AWQArray(
             spec=self,
             weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
             scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
             zero_points=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
         )
 
-    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "AWQQuantArray":
-        return AWQQuantArray(
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "AWQArray":
+        return AWQArray(
             spec=self,
             weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
             scales=data[prefix / "scales"],
@@ -67,7 +67,7 @@ class AWQSpec(CompressedArraySpec):
         )
 
 
-class AWQQuantArray(CompressedArray[AWQSpec]):
+class AWQArray(CompressedArray[AWQSpec]):
     weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     zero_points: Float[Array, "... out_channels groups"]

@@ -4,7 +4,7 @@ import optax
 from jaxtyping import Array, Float, Key
 from utils import Batch, kl_divergence, load_lmsys_conversations, make_batch
 
-from lalamo.arrays import AWQQuantArray, FullPrecisionArray, MLXQuantArray
+from lalamo.arrays import AWQArray, FullPrecisionArray, MLXArray
 from lalamo.arrays.base import GradientEstimator
 from lalamo.arrays.mlx import MLXSpec
 from lalamo.arrays.quantization_helpers import stochastic_quantize_to_grid
@@ -13,7 +13,7 @@ from lalamo.models import ForwardPassConfig
 
 
 def is_quantized(x: object) -> bool:
-    return isinstance(x, (MLXQuantArray, AWQQuantArray))
+    return isinstance(x, (MLXArray, AWQArray))
 
 
 def perturb_quantized_weights(model: eqx.Module, key: Key[Array, ""]) -> eqx.Module:

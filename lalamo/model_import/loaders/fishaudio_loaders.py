@@ -13,8 +13,8 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float
 from tokenizers import Tokenizer
 
-from lalamo.arrays import FullPrecisionArray
-from lalamo.arrays.embedding import FullPrecisionEmbedding
+from lalamo.arrays import FullPrecisionArray, FullPrecisionSpec
+from lalamo.arrays.embedding import FullPrecisionEmbedding, FullPrecisionEmbeddingSpec
 from lalamo.common import ParameterPath
 from lalamo.modules import (
     Attention,
@@ -181,7 +181,7 @@ def load_linear_and_fuse_scaling(
         if bias is not None:
             bias = bias * scaling_to_fuse
 
-    new_weights = FullPrecisionArray(weights=weights.astype(module.activation_precision))
+    new_weights = FullPrecisionArray(spec=FullPrecisionSpec(), weights=weights.astype(module.activation_precision))
     return eqx.tree_at(lambda m: (m.weights, m.biases), module, (new_weights, bias))
 
 
@@ -212,7 +212,9 @@ def load_transformer_block(
             num_groups=attn_module.config.num_groups,
             head_dim=attn_module.config.head_dim,
         )
-        new_weights = FullPrecisionArray(weights=permuted_qkv_weights.astype(qkv_projection.activation_precision))
+        new_weights = FullPrecisionArray(
+            spec=FullPrecisionSpec(), weights=permuted_qkv_weights.astype(qkv_projection.activation_precision)
+        )
         qkv_projection = eqx.tree_at(lambda m: (m.weights,), qkv_projection, (new_weights,))
         assert isinstance(qkv_projection, Linear)
 
@@ -428,6 +430,7 @@ def load_vector_quantize(
     # Load codebook weights
     codebook_weight = weights_dict[path / "codebook" / "weight"]
     embedding = FullPrecisionEmbedding(
+        spec=FullPrecisionEmbeddingSpec(),
         weights=codebook_weight.astype(module.codebook.activation_precision),
     )
     codebook = load_parameters(
@@ -442,7 +445,9 @@ def load_vector_quantize(
     out_proj_weight, out_proj_bias = fuse_weight_norm_conv1d_as_linear(weights_dict, path / "out_proj")
     # Remove kernel dimension: (out_channels, in_channels, 1) -> (out_channels, in_channels)
     out_proj_weight = rearrange(out_proj_weight, "out_ch in_ch 1 -> out_ch in_ch")
-    new_weights = FullPrecisionArray(weights=out_proj_weight.astype(module.out_proj.activation_precision))
+    new_weights = FullPrecisionArray(
+        spec=FullPrecisionSpec(), weights=out_proj_weight.astype(module.out_proj.activation_precision)
+    )
     out_proj = eqx.tree_at(lambda m: (m.weights, m.biases), module.out_proj, (new_weights, out_proj_bias))
 
     return load_parameters(
@@ -535,7 +540,9 @@ def load_convnext_block(
     # PyTorch Linear weight is (out_features, in_features)
     pwconv1_weight = weights_dict[path / "pwconv1" / "weight"]
     pwconv1_bias = weights_dict[path / "pwconv1" / "bias"]
-    base1 = FullPrecisionArray(weights=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision))
+    base1 = FullPrecisionArray(
+        spec=FullPrecisionSpec(), weights=pwconv1_weight.astype(module.pointwise_conv_step1.activation_precision)
+    )
     pointwise_conv_step1 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step1,
@@ -550,7 +557,9 @@ def load_convnext_block(
         layer_scale = weights_dict[layer_scale_path]
         pwconv2_weight = pwconv2_weight * layer_scale[:, None]
         pwconv2_bias = pwconv2_bias * layer_scale
-    base2 = FullPrecisionArray(weights=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision))
+    base2 = FullPrecisionArray(
+        spec=FullPrecisionSpec(), weights=pwconv2_weight.astype(module.pointwise_conv_step2.activation_precision)
+    )
     pointwise_conv_step2 = eqx.tree_at(
         lambda m: (m.weights, m.biases),
         module.pointwise_conv_step2,

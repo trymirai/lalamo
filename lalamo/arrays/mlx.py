@@ -22,7 +22,7 @@ class MLXSpec(CompressedArraySpec):
     group_size: int
     dtype: DTypeLike
 
-    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "MLXQuantArray":
+    def compress(self, weights: Float[Array, "... out_channels in_channels"]) -> "MLXArray":
         grouped = rearrange(
             weights,
             "... out_channels (groups group_size) -> ... out_channels groups group_size",
@@ -40,7 +40,7 @@ class MLXSpec(CompressedArraySpec):
         expanded_biases = jnp.repeat(group_mins, self.group_size, axis=-1)
         float_weights = quantize_to_grid((weights - expanded_biases) / safe_scales, self.bits)
 
-        return MLXQuantArray(spec=self, weights=float_weights, scales=scales, biases=group_mins)
+        return MLXArray(spec=self, weights=float_weights, scales=scales, biases=group_mins)
 
     def init(
         self,
@@ -48,17 +48,17 @@ class MLXSpec(CompressedArraySpec):
         leading_dims: tuple[int, ...],
         out_channels: int,
         in_channels: int,
-    ) -> "MLXQuantArray":
+    ) -> "MLXArray":
         num_groups = in_channels // self.group_size
-        return MLXQuantArray(
+        return MLXArray(
             spec=self,
             weights=initializer.zeros((*leading_dims, out_channels, in_channels), initializer.precision),
             scales=initializer.ones((*leading_dims, out_channels, num_groups), initializer.precision),
             biases=initializer.zeros((*leading_dims, out_channels, num_groups), initializer.precision),
         )
 
-    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "MLXQuantArray":
-        return MLXQuantArray(
+    def from_uzu(self, data: Mapping[str, Any], prefix: ParameterPath) -> "MLXArray":
+        return MLXArray(
             spec=self,
             weights=unpack_quant_weights(data[prefix / "weights"], self.bits, self.dtype),
             scales=data[prefix / "scales"],
@@ -66,7 +66,7 @@ class MLXSpec(CompressedArraySpec):
         )
 
 
-class MLXQuantArray(CompressedArray[MLXSpec]):
+class MLXArray(CompressedArray[MLXSpec]):
     weights: Float[Array, "... out_channels in_channels"]
     scales: Float[Array, "... out_channels groups"]
     biases: Float[Array, "... out_channels groups"]
