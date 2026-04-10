@@ -14,7 +14,7 @@ from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
 
-from .common import TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
+from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerConfigBase, TokenMixerResult
 from .convolutions import SeparableCausalConv, SeparableCausalConvConfig
 
 __all__ = [
@@ -244,6 +244,7 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
         state: SSMStateLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        forward_pass_config: MixerForwardPassConfig = MixerForwardPassConfig(),  # noqa: ARG002, B008
     ) -> DeltaNetAttentionResult:
         if positional_embeddings is not None:
             raise ValueError("Positional embeddings are not supported for DeltaNetAttention.")
