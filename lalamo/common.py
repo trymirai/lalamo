@@ -11,7 +11,7 @@ from jaxtyping import Array, DTypeLike
 
 from lalamo.utils import MapDictValues, MapSequence
 
-type WeightShard = tuple[Mapping[str, Array], Mapping[str, str]]
+type WeightShard = tuple[Mapping[str, Array], dict[str, str]]
 
 __all__ = [
     "DEFAULT_PRECISION",

@@ -1,6 +1,7 @@
-import dataclasses
 import functools
 import json
+import mmap
+import struct
 import tarfile
 import tempfile
 from abc import abstractmethod
@@ -8,22 +9,37 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, NamedTuple
+from typing import NamedTuple
 
 import huggingface_hub
-from jaxtyping import DTypeLike
+import jax.numpy as jnp
+import numpy as np
+from jaxtyping import Array, DTypeLike
 
 from lalamo.common import WeightShard, cast_if_float
 from lalamo.registry_abc import RegistryABC
-from lalamo.safetensors import safe_read
-from lalamo.utils import MapDictValues
+from lalamo.safetensors import SFTensorInfo
+from lalamo.utils import LazyDict, MapDictValues
 
 
+# mmap is at least as fast as lazy fd reads, while not requiring an open descriptor.
+# See https://arxiv.org/abs/2505.23072v1 for analysis of safetensors I/O patterns.
 def load_safetensors(path: Path, float_dtype: DTypeLike) -> WeightShard:
-    with path.open("rb") as fd:
-        metadata, lazy_weights = safe_read(fd)
-        weights = {k: cast_if_float(v, float_dtype) for k, v in lazy_weights.items()}
-        return weights, metadata or {}
+    fd = path.open("rb")
+    mm = mmap.mmap(fd.fileno(), 0, access=mmap.ACCESS_READ)
+    fd.close()
+
+    header_size = struct.unpack("<Q", mm[:8])[0]
+    header: dict[str, dict] = json.loads(mm[8 : 8 + header_size])
+    metadata: dict[str, str] = header.pop("__metadata__", None) or {}
+    data_offset = 8 + header_size
+
+    def _load_tensor(key: str) -> Array:
+        info = SFTensorInfo.from_dict(header[key])
+        buf = mm[data_offset + info.start : data_offset + info.end]
+        return cast_if_float(jnp.asarray(np.frombuffer(buf, dtype=info.dtype).reshape(info.shape)), float_dtype)
+
+    return LazyDict(set(header.keys()), _load_tensor), metadata
 
 
 def load_torch_weights(path: Path, float_dtype: DTypeLike, *, weights_only: bool = True) -> WeightShard:
@@ -92,18 +108,8 @@ class Origin(RegistryABC):
         name_to_type = {t.__name__: t for t in cls.__descendants__()}
         concrete_type = name_to_type.get(origin_type)
         if concrete_type is None:
-            available = ", ".join(sorted(name_to_type))
-            raise ValueError(f"Unknown origin type: {origin_type!r}. Available: {available}")
-        coerced: dict[str, Any] = {}
-        for field in dataclasses.fields(concrete_type):
-            if field.name not in kwargs:
-                continue
-            value = kwargs[field.name]
-            if isinstance(field.type, type) and issubclass(field.type, Enum):
-                coerced[field.name] = field.type(value)
-            else:
-                coerced[field.name] = value
-        return concrete_type(**coerced)
+            raise ValueError(f"Unknown origin type: {origin_type!r}. Available: {', '.join(sorted(name_to_type))}")
+        return concrete_type(**kwargs)
 
 
 def hf_resolve_file(

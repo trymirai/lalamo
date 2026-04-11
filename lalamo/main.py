@@ -63,7 +63,7 @@ from lalamo.data.lalamo_completions import iter_completions
 from lalamo.message_processor import UserMessage
 from lalamo.model_import import ModelSpec, ModelType
 from lalamo.model_import.common import FileSpec
-from lalamo.model_import.model_specs.common import structure_origin
+from lalamo.model_import.model_specs.origins import Origin
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
@@ -455,8 +455,12 @@ def tts(
         console.print()
 
 
-@app.command(help="Convert the model for use with the Uzu inference engine.")
+@app.command(
+    help="Convert the model for use with the Uzu inference engine.",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def convert(
+    ctx: Context,
     model_repo: Annotated[
         ModelSpec,
         Argument(
@@ -492,15 +496,12 @@ def convert(
             show_default="Model's native maximum context length.",
         ),
     ] = None,
-    custom_origin: Annotated[
+    origin_type: Annotated[
         str | None,
         Option(
-            "--custom-origin",
-            help=(
-                "Origin JSON to override the model's default origin."
-                ' Example: \'{"type": "LocalOrigin", "root": "/path/to/weights"}\''
-            ),
-            show_default="Use the model's default origin",
+            "--origin",
+            help="Origin class name to use instead of the model's default.",
+            show_default="Uses the model's default origin",
         ),
     ] = None,
     overwrite: Annotated[
@@ -510,8 +511,14 @@ def convert(
         ),
     ] = False,
 ) -> None:
-    if custom_origin is not None:
-        origin = structure_origin(json.loads(custom_origin))
+    if origin_type is not None or ctx.args:
+        origin_kwargs: dict[str, str] = {}
+        it = iter(ctx.args)
+        for token in it:
+            if token.startswith("--origin."):
+                key = token.removeprefix("--origin.")
+                origin_kwargs[key] = next(it)
+        origin = Origin.from_cli(origin_type or type(model_repo.origin).__name__, origin_kwargs)
         model_repo = replace(model_repo, origin=origin)
 
     if output_dir is None:
