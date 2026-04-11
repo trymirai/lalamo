@@ -43,6 +43,7 @@ class MedusaDrafter(Drafter):
 
     heads: MedusaHeads
     width: int = 4
+    budget: int = 64
 
     @property
     def depth(self) -> int:
@@ -66,9 +67,11 @@ class MedusaDrafter(Drafter):
         gseed: GumbelSeed,
         counter: list[int],
     ) -> None:
-        if head_idx >= len(candidates_per_head):
+        if head_idx >= len(candidates_per_head) or counter[0] >= self.budget:
             return
         for tok in candidates_per_head[head_idx]:
+            if counter[0] >= self.budget:
+                return
             counter[0] += 1
             child = node.add_child(tok, seed=gseed.derive(counter[0]).value)
             self._expand(child, candidates_per_head, head_idx + 1, gseed, counter)
