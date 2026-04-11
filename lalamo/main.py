@@ -1145,53 +1145,6 @@ def train(
     )
 
 
-@speculator_app.command(help="Run speculator as an autoregressive llm")
-def test(
-    speculator_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the speculator file.",
-            metavar="SPECULATOR_PATH",
-        ),
-    ],
-    model_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the model directory for detokenization.",
-            metavar="MODEL_PATH",
-        ),
-    ],
-    seed: Annotated[
-        int | None,
-        Option(help="Set seed for deterministic sampling"),
-    ] = None,
-    num_sequences: Annotated[
-        int,
-        Option(help="Number of sequences to generate"),
-    ] = 8,
-) -> None:
-    model = LanguageModelConfig.load_model(model_path)
-
-    with open(speculator_path, "rb") as fd:
-        drafter = NGramDrafter.deserialize(fd.read())
-
-    table = Table(
-        show_header=False,
-        show_lines=True,
-        box=box.ROUNDED,
-    )
-
-    if seed is not None:
-        random.seed(seed)
-
-    for _ in range(num_sequences):
-        sequence = drafter.sample()
-        detokenized = model.message_processor.detokenize(sequence)
-        table.add_row(detokenized)
-
-    console.print(table)
-
-
 @speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")
 def speculate_eval(
     model_path: Annotated[
@@ -1224,6 +1177,10 @@ def speculate_eval(
         int,
         Option(help="Number of MT-Bench questions to evaluate"),
     ] = 80,
+    cache_path: Annotated[
+        Path,
+        Option(help="Path to cache MT-Bench questions"),
+    ] = Path("mtbench_questions.jsonl"),
 ) -> None:
     from lalamo.speculator.speculate import SamplerConfig
     from lalamo.speculator.eval import load_mtbench, print_results, run_mtbench
@@ -1239,7 +1196,7 @@ def speculate_eval(
         drafter = NGramDrafter.deserialize(fd.read(), width=width, depth=depth)
 
     config = SamplerConfig(width=width, K=depth, max_tokens=max_tokens)
-    questions = load_mtbench()[:num_questions]
+    questions = load_mtbench(cache_path)[:num_questions]
 
     print(
         f"Evaluating {len(questions)} questions | width={width} K={depth} max_tokens={max_tokens}",

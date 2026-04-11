@@ -4,34 +4,30 @@ import json
 import sys
 import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 from tqdm import tqdm
 
-from lalamo.message_processor import UserMessage
+from lalamo.message_processor import MessageProcessor, UserMessage
+from lalamo.modules.decoder import Decoder
+from lalamo.speculator.drafter import Drafter
 from lalamo.speculator.speculate import (
+    SamplerConfig,
     SpeculationContext,
     SpeculationRun,
     SpeculativeDecodingResult,
 )
 
-if TYPE_CHECKING:
-    from lalamo.message_processor import MessageProcessor
-    from lalamo.modules.decoder import Decoder
-    from lalamo.speculator.drafter import Drafter, SamplerConfig
-
 MTBENCH_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
-MTBENCH_CACHE = Path(".hikettei/mtbench_questions.jsonl")
 
 
-def load_mtbench() -> list[dict]:
-    """Load MT-Bench first-turn questions (80 total)."""
-    if not MTBENCH_CACHE.exists():
-        MTBENCH_CACHE.parent.mkdir(parents=True, exist_ok=True)
+def load_mtbench(cache_path: Path | str) -> list[dict]:
+    cache_path = Path(cache_path)
+    if not cache_path.exists():
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
         print("Downloading MT-Bench questions...", file=sys.stderr)
-        urllib.request.urlretrieve(MTBENCH_URL, MTBENCH_CACHE)
+        urllib.request.urlretrieve(MTBENCH_URL, cache_path)
     questions = []
-    with open(MTBENCH_CACHE) as f:
+    with open(cache_path) as f:
         for line in f:
             d = json.loads(line)
             questions.append(
