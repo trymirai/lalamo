@@ -472,7 +472,7 @@ def collect_traces(
 
 
 @dataclass
-class TrainingCallbacks:
+class TrainCallbacks:
     output_path: Path
     subsample_size: int | None
 

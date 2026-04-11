@@ -41,7 +41,7 @@ from lalamo.commands import (
     Precision,
     PullCallbacks,
     TraceCallbacks,
-    TrainingCallbacks,
+    TrainCallbacks,
     _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
@@ -1056,7 +1056,7 @@ def view_traces(
 
 
 @dataclass
-class CliTrainingCallbacks(TrainingCallbacks):
+class CliTrainCallbacks(TrainCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
     training_task: TaskID | None = None
 
@@ -1088,7 +1088,7 @@ class CliTrainingCallbacks(TrainingCallbacks):
 
 
 for drafter_cls in Drafter._registry.values():  # noqa: SLF001
-    drafter_cls.train_command(speculator_app, CliTrainingCallbacks)
+    drafter_cls.train_command(speculator_app, CliTrainCallbacks)
 
 
 @speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")

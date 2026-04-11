@@ -12,7 +12,6 @@ from lalamo.commands import (
     collect_traces,
     convert,
     estimate_batchsize,
-    train,
 )
 from lalamo.message_processor import (
     AssistantMessage,
@@ -62,5 +61,4 @@ __all__ = [
     "estimate_batchsize",
     "import_model",
     "pad_and_apply_data_sharding",
-    "train",
 ]

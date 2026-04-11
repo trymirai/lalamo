@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from jaxtyping import PRNGKeyArray
 from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
@@ -24,7 +25,7 @@ class MedusaHeads(eqx.Module):
     d_model: int = eqx.field(static=True)
     vocab_size: int = eqx.field(static=True)
 
-    def __init__(self, num_heads: int, d_model: int, vocab_size: int, *, key: jax.random.PRNGKey) -> None:
+    def __init__(self, num_heads: int, d_model: int, vocab_size: int, *, key: PRNGKeyArray) -> None:
         keys = jax.random.split(key, num_heads)
         self.heads = tuple(eqx.nn.Linear(d_model, vocab_size, use_bias=False, key=k) for k in keys)
         self.num_heads = num_heads
@@ -142,7 +143,7 @@ def train_medusa(
     learning_rate: float = 1e-3,
     numepochs: int = 1,
     progress_callback: Callable[[MedusaTrainingEvent], None] | None = None,
-    key: jax.random.PRNGKey | None = None,
+    key: PRNGKeyArray | None = None,
 ) -> Self:
     if key is None:
         key = jax.random.key(0)
