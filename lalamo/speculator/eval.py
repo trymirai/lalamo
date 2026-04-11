@@ -71,18 +71,13 @@ def run_mtbench(
         cat = q["category"]
 
         result = evaluate_prompt(
-            decoder,
-            mp,
-            drafter,
-            config,
-            q["prompt"],
-            eos_set,
-            seed=42 + i,
+            decoder, mp, drafter, config,
+            q["prompt"], eos_set, seed=42 + i,
         )
 
         n_tok = len(result.generated)
         n_step = result.num_steps
-        mae = result.mean_draft_accepted
+        draft_acc = result.mean_draft_accepted
 
         if cat not in results_by_cat:
             results_by_cat[cat] = {"tokens": 0, "steps": 0, "accepted": 0, "proposed": 0, "count": 0}
@@ -98,12 +93,12 @@ def run_mtbench(
         total_accepted += result.total_accepted
         total_proposed += result.total_proposed
 
-        running_mae = total_accepted / max(total_steps, 1)
-        pbar.set_description(f"MT-Bench (mae={running_mae:.2f})")
-        pbar.set_postfix_str(f"{cat}: mae={mae:.2f}")
+        running_acc = total_accepted / max(total_steps, 1)
+        pbar.set_description(f"MT-Bench (draft_acc={running_acc:.2f})")
+        pbar.set_postfix_str(f"{cat}: draft_acc={draft_acc:.2f}")
         print(
             f"  [{i + 1:2d}] {cat:12s} | {n_tok:4d} tok, {n_step:3d} steps, "
-            f"mae={mae:.2f}, tok/step={result.tokens_per_step:.2f} | {q['prompt'][:50]}",
+            f"draft_acc={draft_acc:.2f}, tok/step={result.tokens_per_step:.2f} | {q['prompt'][:50]}",
             file=sys.stderr,
         )
 
@@ -118,20 +113,20 @@ def run_mtbench(
 
 def print_results(results: dict, label: str = "") -> None:
     prefix = f" [{label}]" if label else ""
-    print(f"\n{'=' * 70}{prefix}")
-    print(f"{'Category':>15s}  {'tok/step':>10s}  {'mae':>10s}  {'acc_rate':>10s}  {'questions':>10s}")
-    print(f"{'-' * 70}")
+    print(f"\n{'=' * 78}{prefix}")
+    print(f"{'Category':>15s}  {'tok/step':>10s}  {'draft_acc':>10s}  {'acc_rate':>10s}  {'questions':>10s}")
+    print(f"{'-' * 78}")
     for cat in sorted(results["by_category"]):
         r = results["by_category"][cat]
         ts = r["tokens"] / max(r["steps"], 1)
-        mae_cat = r["accepted"] / max(r["steps"], 1) if r["steps"] else 0
+        da = r["accepted"] / max(r["steps"], 1) if r["steps"] else 0
         acc = r["accepted"] / max(r["proposed"], 1) if r["proposed"] else 0
-        print(f"{cat:>15s}  {ts:>10.2f}  {mae_cat:>10.2f}  {acc:>10.2%}  {r['count']:>10d}")
+        print(f"{cat:>15s}  {ts:>10.2f}  {da:>10.2f}  {acc:>10.2%}  {r['count']:>10d}")
 
     ts = results["total_tokens"] / max(results["total_steps"], 1)
-    mae = results["total_accepted"] / max(results["total_steps"], 1)
+    da = results["total_accepted"] / max(results["total_steps"], 1)
     acc = results["total_accepted"] / max(results["total_proposed"], 1)
-    print(f"{'-' * 70}")
+    print(f"{'-' * 78}")
     total_count = sum(r["count"] for r in results["by_category"].values())
-    print(f"{'OVERALL':>15s}  {ts:>10.2f}  {mae:>10.2f}  {acc:>10.2%}  {total_count:>10d}")
-    print(f"{'=' * 70}")
+    print(f"{'OVERALL':>15s}  {ts:>10.2f}  {da:>10.2f}  {acc:>10.2%}  {total_count:>10d}")
+    print(f"{'=' * 78}")
