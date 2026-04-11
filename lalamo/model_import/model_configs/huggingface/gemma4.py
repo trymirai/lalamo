@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Literal, Self
 
+from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
 from lalamo.common import ParameterPath
@@ -45,7 +46,7 @@ class HFGemma4TextConfig:
     attention_bias: bool
     num_attention_heads: int
     num_key_value_heads: int
-    num_global_key_value_heads: int
+    num_global_key_value_heads: int | None  # None for E2B/E4B, 4 for 31B
     head_dim: int
     global_head_dim: int
     max_position_embeddings: int
@@ -94,19 +95,20 @@ class HFGemma4TextConfig:
         )
 
         max_seq_len = context_length or self.max_position_embeddings
+        full_attention_params = self.rope_parameters.get("full_attention", {})
+        partial_rotary_factor = full_attention_params.get("partial_rotary_factor", 1.0)
         global_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=self.rope_parameters.get("full_attention", {}).get("rope_theta", 10000.0),
+            base=full_attention_params.get("rope_theta", 10000.0),
             max_sequence_length=max_seq_len,
             head_dim=self.global_head_dim,
-            rotary_dim=self.head_dim,
+            partial_rotary_dim=int(partial_rotary_factor * self.global_head_dim),
         )
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_parameters.get("sliding_attention", {}).get("rope_theta", 10000.0),
             max_sequence_length=max_seq_len,
             head_dim=self.head_dim,
-            rotary_dim=None,
         )
 
         ple_embed_scale = self.hidden_size_per_layer_input**0.5
@@ -155,7 +157,7 @@ class HFGemma4TextConfig:
                 layer_intermediate = self.intermediate_size
 
             num_kv_heads = self.num_key_value_heads
-            if is_global:
+            if is_global and self.num_global_key_value_heads is not None:
                 num_kv_heads = self.num_global_key_value_heads
 
             attention_config = AttentionConfig(
@@ -211,7 +213,6 @@ class HFGemma4Config(HuggingFaceLMConfig):
     text_config: HFGemma4TextConfig
     initializer_range: float
     transformers_version: str
-    torch_dtype: Literal["bfloat16", "float16", "float32"]
     dtype: Literal["bfloat16", "float16", "float32"]
     architectures: list[str]
     model_type: Literal["gemma4"]
@@ -232,6 +233,10 @@ class HFGemma4Config(HuggingFaceLMConfig):
 
     quantization: QuantizationConfigType = None
     quantization_config: QuantizationConfigType = None
+
+    @property
+    def default_precision(self) -> DTypeLike:
+        return jnp.dtype(self.dtype)
 
     @classmethod
     def from_json(cls, json_path: Path | str) -> Self:

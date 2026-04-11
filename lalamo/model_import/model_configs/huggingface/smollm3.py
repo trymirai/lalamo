@@ -105,7 +105,6 @@ class HFSmolLM3Config(HuggingFaceLMConfig):
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=self.hidden_size // self.num_attention_heads,
-            rotary_dim=None,
         )
 
         rmsnorm_config = NormalizationConfig(

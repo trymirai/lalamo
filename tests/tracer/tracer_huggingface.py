@@ -300,6 +300,11 @@ class HFDecoderTracer(
     hf_model: HFModelForCausalLM
     device: torch.device
 
+    @property
+    def text_model(self) -> Any:
+        model = self.hf_model.model
+        return getattr(model, "language_model", model)
+
     def from_jax(self, array: Array) -> torch.Tensor:
         return jax_to_torch(array)
 
@@ -307,18 +312,27 @@ class HFDecoderTracer(
         return torch_to_jax(array)
 
     def embedding(self, token_ids: torch.Tensor) -> torch.Tensor:
-        embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
-        return self.hf_model.model.embed_tokens.forward(token_ids.to(embed_device))
+        embed_device = _module_device(self.text_model.embed_tokens, self.device)
+        return self.text_model.embed_tokens.forward(token_ids.to(embed_device))
 
     def rope_fns(self) -> list[tuple[str, Any]]:
+        rope = self.text_model.rotary_emb
+        fns = {
+            "full_attention": ("Global", lambda x, pos: _rope_forward(rope, x, pos, "full_attention", self.device)),
+            "sliding_attention": (
+                "Local",
+                lambda x, pos: _rope_forward(rope, x, pos, "sliding_attention", self.device),
+            ),
+        }
+        # Return rope functions in layer-encounter order, matching _init_ropes() deduplication
+        seen: set[str] = set()
         result: list[tuple[str, Any]] = []
-        global_rope = self.hf_model.model.rotary_emb
-        result.append(("Global", lambda x, pos: _rope_forward(global_rope, x, pos, "full_attention", self.device)))
-        local_rope = getattr(self.hf_model.model, "rotary_emb_local", None)
-        if local_rope is not None:
-            result.append(
-                ("Local", lambda x, pos: _rope_forward(local_rope, x, pos, "sliding_attention", self.device))
-            )
+        for layer in self.text_model.layers:
+            attn = self.layer_attention(layer)
+            layer_type = "sliding_attention" if getattr(attn, "is_sliding", False) else "full_attention"
+            if layer_type not in seen:
+                seen.add(layer_type)
+                result.append(fns[layer_type])
         return result
 
     def rmsnorm(self, rmsnorm: HFRMSNorm, x: torch.Tensor) -> torch.Tensor:
@@ -417,10 +431,10 @@ class HFDecoderTracer(
         return getattr(layer, "post_feedforward_layernorm", None)
 
     def iterate_layers(self) -> Iterable[HFTransformerLayer | Gemma3DecoderLayer]:
-        return self.hf_model.model.layers
+        return self.text_model.layers
 
     def output_norm(self) -> HFRMSNorm:
-        return self.hf_model.model.norm
+        return self.text_model.norm
 
     def readout(self, x: torch.Tensor) -> torch.Tensor:
         head_device = _module_device(self.hf_model.lm_head, self.device)
@@ -431,7 +445,7 @@ class HFDecoderTracer(
         input_ids: torch.Tensor,
         position_ids: torch.Tensor,
     ) -> tuple[tuple[torch.Tensor, ...], torch.Tensor, torch.Tensor]:
-        embed_device = _module_device(self.hf_model.model.embed_tokens, self.device)
+        embed_device = _module_device(self.text_model.embed_tokens, self.device)
         input_ids = input_ids.to(embed_device)
         position_ids = position_ids.to(embed_device)
         attention_mask = torch.ones_like(input_ids, dtype=torch.bool, device=embed_device)
@@ -464,10 +478,11 @@ class HFDecoderTracer(
 
         # Correct the bug in the HF Gemma implementation
         # See https://github.com/huggingface/transformers/issues/38702
-        if hasattr(hf_model.model.embed_tokens, "embed_scale"):
-            wrong_scale = hf_model.model.embed_tokens.embed_scale
+        text_model = getattr(hf_model.model, "language_model", hf_model.model)
+        if hasattr(text_model.embed_tokens, "embed_scale"):
+            wrong_scale = text_model.embed_tokens.embed_scale
             correct_scale = wrong_scale.to(torch.bfloat16).to(wrong_scale.dtype)
-            hf_model.model.embed_tokens.embed_scale = correct_scale
+            text_model.embed_tokens.embed_scale = correct_scale
 
         return cls(hf_model, device)
 

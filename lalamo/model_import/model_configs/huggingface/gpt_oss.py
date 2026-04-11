@@ -106,7 +106,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
                 head_dim=head_dim,
-                rotary_dim=None,
             )
         else:
             rope_config = YARNRoPEConfig(
@@ -119,7 +118,6 @@ class HFGPTOssConfig(HuggingFaceLMConfig):
                 beta_slow=1.0,
                 truncate=True,
                 head_dim=head_dim,
-                rotary_dim=None,
             )
 
         rmsnorm_config = NormalizationConfig(

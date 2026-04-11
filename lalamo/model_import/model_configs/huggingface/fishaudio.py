@@ -73,7 +73,6 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         base=config["rope_base"],
         max_sequence_length=config["block_size"],
         head_dim=config["head_dim"],
-        rotary_dim=None,
     )
 
     norm_config_pre = NormalizationConfig(
@@ -318,7 +317,6 @@ class FishAudioConfig(ForeignTTSConfig):
             base=self.rope_base,
             max_sequence_length=self.max_seq_len,
             head_dim=head_dim,
-            rotary_dim=None,
         )
 
         norm_config = NormalizationConfig(

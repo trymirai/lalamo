@@ -91,7 +91,6 @@ class HFQwen2Config(HuggingFaceLMConfig):
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=head_dim,
-            rotary_dim=None,
         )
         rmsnorm_config = NormalizationConfig(
             scale_precision=activation_precision,

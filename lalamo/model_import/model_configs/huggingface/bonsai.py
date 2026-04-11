@@ -100,7 +100,6 @@ class HFBonsaiConfig(HuggingFaceLMConfig):
             beta_slow=self.rope_scaling.beta_slow,
             head_dim=self.head_dim,
             truncate=True,
-            rotary_dim=None,
         )
 
         rmsnorm_config = NormalizationConfig(

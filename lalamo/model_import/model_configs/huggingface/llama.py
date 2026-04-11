@@ -127,7 +127,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
-                rotary_dim=None,
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             rope_config = YARNRoPEConfig(
@@ -140,7 +139,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
                 head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
-                rotary_dim=None,
             )
         elif isinstance(self.rope_scaling, LlamaRopeScalingConfig):
             rope_config = LlamaRoPEConfig(
@@ -152,7 +150,6 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 low_frequency_factor=self.rope_scaling.low_freq_factor,
                 high_frequency_factor=self.rope_scaling.high_freq_factor,
                 head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
-                rotary_dim=None,
             )
         else:
             raise ValueError("Unsupported rope_scaling configuration")

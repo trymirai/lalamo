@@ -125,7 +125,6 @@ class HFGemma3TextConfigRaw:
                 max_sequence_length=self.max_position_embeddings,
                 scaling_factor=self.rope_scaling.factor,
                 head_dim=self.head_dim,
-                rotary_dim=None,
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             global_rope_config = YARNRoPEConfig(
@@ -138,7 +137,6 @@ class HFGemma3TextConfigRaw:
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
                 head_dim=self.head_dim,
-                rotary_dim=None,
             )
         elif self.rope_scaling is None:
             global_rope_config = UnscaledRoPEConfig(
@@ -146,7 +144,6 @@ class HFGemma3TextConfigRaw:
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
                 head_dim=self.head_dim,
-                rotary_dim=None,
             )
         else:
             raise ValueError("Invalid rope scaling configuration")
@@ -156,7 +153,6 @@ class HFGemma3TextConfigRaw:
             base=self.rope_local_base_freq,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=self.head_dim,
-            rotary_dim=None,
         )
 
         if quantization is None:

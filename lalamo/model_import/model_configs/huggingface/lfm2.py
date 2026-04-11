@@ -149,7 +149,6 @@ class HFLFM2Config(HuggingFaceLMConfig):
             base=self.resolved_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
             head_dim=self.hidden_size // self.num_heads,
-            rotary_dim=None,
         )
 
         if self.quantization_config is None:

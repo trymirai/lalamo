@@ -132,8 +132,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
             precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
-            head_dim=self.head_dim,
-            rotary_dim=int(self.head_dim * self.partial_rotary_factor),
+            head_dim=int(self.head_dim * self.partial_rotary_factor),
         )
 
         rmsnorm_config = NormalizationConfig(
@@ -263,7 +262,7 @@ class HFQwen3NextConfig(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
-                rope_config=rope_config,
+                rope_config=rope_config if layer_type != "linear_attention" else None,
             )
             layer_configs.append(transformer_layer_config)
 

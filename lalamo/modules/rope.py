@@ -16,7 +16,7 @@
 # limitations under the License.
 
 import math
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import equinox as eqx
 from jax import numpy as jnp
@@ -78,7 +78,7 @@ class RoPEConfigBase:
     base: float
     max_sequence_length: int
     head_dim: int
-    rotary_dim: int | None
+    partial_rotary_dim: int | None = field(default=None, kw_only=True)
 
     @property
     def _attention_scaling_factor(self) -> float:
@@ -92,25 +92,27 @@ class RoPEConfigBase:
     ) -> Float[Array, " tokens"]:
         return inverse_frequencies
 
+    def _mask_inverse_frequencies(
+        self,
+        inverse_frequencies: Float[Array, " tokens"],
+        head_dim: int,
+    ) -> Float[Array, " tokens"]:
+        if self.partial_rotary_dim is None or self.partial_rotary_dim >= head_dim:
+            return inverse_frequencies
+        rope_angles = self.partial_rotary_dim // 2
+        mask = jnp.arange(head_dim // 2) < rope_angles
+        return inverse_frequencies * mask
+
     def init(self) -> "RoPE":
         head_dim = self.head_dim
-        rotary_dim = self.rotary_dim
         num_timesteps = self.max_sequence_length
-        freq_dim = rotary_dim or head_dim
         timesteps = jnp.arange(num_timesteps, dtype=jnp.float32)
-        channel_indices = jnp.arange(0, freq_dim, 2, dtype=jnp.int32)
-        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / freq_dim))
-        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, freq_dim, self.max_sequence_length)
+        channel_indices = jnp.arange(0, head_dim, 2, dtype=jnp.int32)
+        inverse_frequencies = 1.0 / (self.base ** (channel_indices.astype(jnp.float32) / head_dim))
+        inverse_frequencies = self._scale_inverse_frequencies(inverse_frequencies, head_dim, self.max_sequence_length)
+        inverse_frequencies = self._mask_inverse_frequencies(inverse_frequencies, head_dim)
         outer_inverse_frequencies = jnp.outer(timesteps, inverse_frequencies)
-        if rotary_dim is not None and rotary_dim < head_dim:
-            # Pad the rotary embeddings to full head_dim.
-            # Structure: [active, identity, active, identity] so that
-            # rotate_half correctly pairs active dims across the two halves.
-            half_pad = jnp.zeros((num_timesteps, head_dim // 2 - rotary_dim // 2), dtype=jnp.float32)
-            padded_half = jnp.concatenate((outer_inverse_frequencies, half_pad), axis=-1)
-            embeddings = jnp.concatenate((padded_half, padded_half), axis=-1)
-        else:
-            embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
+        embeddings = jnp.concatenate((outer_inverse_frequencies, outer_inverse_frequencies), axis=-1)
         cosines = (jnp.cos(embeddings) * self._attention_scaling_factor).astype(self.precision)
         sines = (jnp.sin(embeddings) * self._attention_scaling_factor).astype(self.precision)
         return RoPE(config=self, cosines=cosines, sines=sines)

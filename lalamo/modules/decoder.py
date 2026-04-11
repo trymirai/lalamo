@@ -166,12 +166,26 @@ class DecoderConfig:
             key=embedding_key,
         )
         transformer = self.transformer_config.random_init(key=transformer_key)
+        per_layer_embedding = None
+        if self.ple_model_config is not None:
+            cfg = self.ple_model_config
+            total_ple_dim = cfg.num_layers * cfg.ple_dim
+            per_layer_embedding = PerLayerEmbedding(
+                config=cfg,
+                token_embedding=dummy_array((cfg.ple_vocab_size, total_ple_dim), jnp.bfloat16),
+                model_projection=cfg.linear_config.empty(
+                    self.transformer_config.model_dim,
+                    (total_ple_dim,),
+                    has_biases=False,
+                ),
+                projection_norm=cfg.norm_config.empty(cfg.ple_dim),
+            )
 
         return Decoder(
             config=self,
             embedding=embedding,
             transformer=transformer,
-            per_layer_embedding=None,
+            per_layer_embedding=per_layer_embedding,
         )
 
     def empty(self) -> "Decoder":

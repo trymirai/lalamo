@@ -74,6 +74,9 @@ class TransformerConfig:
                 ropes.append(rc.init())
         return tuple(ropes), tuple(rope_indices)
 
+    def _source_layer_indices(self) -> tuple[int, ...]:
+        return tuple(i for i, lc in enumerate(self.layer_configs) if lc.kv_source_layer is None)
+
     def random_init(self, *, key: PRNGKeyArray) -> "Transformer":
         ropes, rope_indices = self._init_ropes()
 
@@ -92,6 +95,7 @@ class TransformerConfig:
             config=self,
             ropes=ropes,
             rope_indices=rope_indices,
+            source_layer_indices=self._source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
@@ -112,6 +116,7 @@ class TransformerConfig:
             config=self,
             ropes=ropes,
             rope_indices=rope_indices,
+            source_layer_indices=self._source_layer_indices(),
             layers=layers,
             output_norm=output_norm,
         )
@@ -120,6 +125,7 @@ class TransformerConfig:
 class Transformer(LalamoModule[TransformerConfig]):
     ropes: tuple[RoPE, ...]
     rope_indices: tuple[int, ...] = eqx.field(static=True)
+    source_layer_indices: tuple[int, ...] = eqx.field(static=True)
     layers: tuple[TransformerLayer, ...]
     output_norm: Normalization
 
@@ -152,27 +158,39 @@ class Transformer(LalamoModule[TransformerConfig]):
                 f" got {token_positions.shape}",
             )
 
-        maybe_state = state or ([None] * len(self.layers))
+        # Unpack compact state (only source layers) into a dict keyed by layer index
+        if state is not None:
+            state_by_layer = {idx: state[j] for j, idx in enumerate(self.source_layer_indices)}
+        else:
+            state_by_layer: dict[int, None] = {}
 
         rope_embeddings = tuple(vmap(rope)(token_positions) for rope in self.ropes)
 
-        updated_state_layers: list = []
+        # When KV sharing is active, source layers must always return updated state
+        # so shared layers can use the source's extended KV cache
+        has_kv_sharing = len(self.source_layer_indices) < len(self.layers)
+        must_return_state = return_updated_state or has_kv_sharing
+
+        updated_states = {}
         layer_results = []
 
-        for i, (layer, state_layer) in enumerate(zip(self.layers, maybe_state, strict=True)):
+        for i, layer in enumerate(self.layers):
             rope_idx = self.rope_indices[i]
             positional_embeddings = rope_embeddings[rope_idx] if rope_idx >= 0 else None
 
             per_layer_input = per_layer_inputs[i] if per_layer_inputs is not None else None
 
             kv_source = layer.config.kv_source_layer
-            effective_state = updated_state_layers[kv_source] if kv_source is not None else state_layer
+            if kv_source is not None:
+                effective_state = updated_states.get(kv_source, state_by_layer.get(kv_source))
+            else:
+                effective_state = state_by_layer.get(i)
 
             layer_result = layer(
                 inner_features,
                 positional_embeddings,
                 state=effective_state,
-                return_updated_state=return_updated_state,
+                return_updated_state=must_return_state,
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
@@ -183,22 +201,24 @@ class Transformer(LalamoModule[TransformerConfig]):
             inner_features = layer_result.outputs
             layer_results.append(layer_result)
 
-            if kv_source is not None:
-                updated_state_layers.append(updated_state_layers[kv_source])
-            else:
-                updated_state_layers.append(layer_result.updated_state)
+            if kv_source is None:
+                updated_states[i] = layer_result.updated_state
 
         normalized_outputs = vmap_twice(self.output_norm)(inner_features)
 
+        if return_updated_state:
+            compact_state = State(updated_states[i] for i in self.source_layer_indices)
+        else:
+            compact_state = None
         return TransformerResult(
             outputs=normalized_outputs,
-            updated_state=(State(updated_state_layers) if return_updated_state else None),
+            updated_state=compact_state,
             layer_results=tuple(layer_results) if return_layer_results else None,
             rope_embeddings=rope_embeddings if return_positional_embeddings else None,
         )
 
     def init_static_state(self, batch_size: int, capacity: int) -> State:
-        return State(layer.init_static_state(batch_size, capacity) for layer in self.layers)
+        return State(self.layers[i].init_static_state(batch_size, capacity) for i in self.source_layer_indices)
 
     def export_weights(self) -> ParameterTree:
         return dict(
