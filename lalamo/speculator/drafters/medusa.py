@@ -141,10 +141,10 @@ def train_medusa(
     num_heads: int = 4,
     width: int = 4,
     learning_rate: float = 1e-3,
-    numepochs: int = 1,
+    num_epochs: int = 1,
     progress_callback: Callable[[MedusaTrainingEvent], None] | None = None,
     key: PRNGKeyArray | None = None,
-) -> Self:
+) -> MedusaDrafter:
     if key is None:
         key = jax.random.key(0)
 
@@ -199,7 +199,7 @@ def train_medusa(
     num_batches = (len(all_hiddens) + batch_size - 1) // batch_size
     global_step = 0
 
-    for _epoch in range(numepochs):
+    for _epoch in range(num_epochs):
         perm = jax.random.permutation(jax.random.key(global_step), len(all_hiddens))
         shuffled_h = all_hiddens[perm]
         shuffled_t = all_targets[perm]
