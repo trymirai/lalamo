@@ -10,14 +10,6 @@ from pathlib import Path
 from typing import Annotated, Self
 
 import xxhash
-from rich.progress import (
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
 from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
@@ -370,7 +362,7 @@ class NGramDrafter(Drafter):
         return seq
 
     @staticmethod
-    def train_command(app: Typer) -> None:
+    def train_command(app: Typer, callbacks_type: type) -> None:
         @app.command(name="train-ngram", help="Train an n-gram drafter from inference traces")
         def train_ngram_cmd(
             trace_path: Annotated[Path, Argument(help="Trace directory", metavar="TRACE_PATH")],
@@ -383,28 +375,21 @@ class NGramDrafter(Drafter):
             depth: Annotated[int, Option(help="Max speculation depth")] = 8,
             subsample_size: Annotated[int | None, Option(help="Stop after this many tokens")] = None,
         ) -> None:
+            callbacks = callbacks_type(output_path=output_path, subsample_size=subsample_size)
             traces = iter_completions(trace_path)
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
-                task = progress.add_task("Training n-gram...", total=subsample_size)
-                drafter = train_ngram(
-                    traces,
-                    hashtable_size=hashtable_size,
-                    num_logits_per_token=num_logits_per_token,
-                    max_order=max_order,
-                    discount=discount,
-                    tokens_to_train=subsample_size,
-                    width=width,
-                    depth=depth,
-                    progress_callback=lambda e: progress.update(task, completed=e.trained_tokens),
-                )
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(drafter.serialize())
+            drafter = train_ngram(
+                traces,
+                hashtable_size=hashtable_size,
+                num_logits_per_token=num_logits_per_token,
+                max_order=max_order,
+                discount=discount,
+                tokens_to_train=subsample_size,
+                width=width,
+                depth=depth,
+                progress_callback=lambda e: callbacks.training_progress(e.trained_tokens),
+            )
+            callbacks.finished_training()
+            callbacks.save_drafter(drafter.serialize())
 
 
 class NGramTrainingEvent:

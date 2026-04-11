@@ -9,14 +9,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from rich.progress import (
-    MofNCompleteColumn,
-    Progress,
-    SpinnerColumn,
-    TextColumn,
-    TimeElapsedColumn,
-    TimeRemainingColumn,
-)
 from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
@@ -105,7 +97,7 @@ class MedusaDrafter(Drafter):
         return cls(heads=heads, width=width)
 
     @staticmethod
-    def train_command(app: Typer) -> None:
+    def train_command(app: Typer, callbacks_type: type) -> None:
         @app.command(name="train-medusa", help="Train Medusa heads from inference traces")
         def train_medusa_cmd(
             trace_path: Annotated[Path, Argument(help="Trace directory", metavar="TRACE_PATH")],
@@ -117,29 +109,20 @@ class MedusaDrafter(Drafter):
             learning_rate: Annotated[float, Option(help="Learning rate")] = 1e-3,
             num_epochs: Annotated[int, Option(help="Training epochs")] = 1,
         ) -> None:
+            callbacks = callbacks_type(output_path=output_path, subsample_size=None)
             traces = iter_completions(trace_path)
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            ) as progress:
-                task = progress.add_task("Training Medusa...", total=None)
-                drafter = train_medusa(
-                    traces,
-                    d_model=d_model,
-                    vocab_size=vocab_size,
-                    num_heads=num_heads,
-                    width=width,
-                    learning_rate=learning_rate,
-                    num_epochs=num_epochs,
-                    progress_callback=lambda e: progress.update(
-                        task, description=f"Training Medusa (loss={e.loss:.4f})"
-                    ),
-                )
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_bytes(drafter.serialize())
+            drafter = train_medusa(
+                traces,
+                d_model=d_model,
+                vocab_size=vocab_size,
+                num_heads=num_heads,
+                width=width,
+                learning_rate=learning_rate,
+                num_epochs=num_epochs,
+                progress_callback=lambda e: callbacks.training_progress(e.step),
+            )
+            callbacks.finished_training()
+            callbacks.save_drafter(drafter.serialize())
 
 
 class MedusaTrainingEvent:

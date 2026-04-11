@@ -59,5 +59,5 @@ class Drafter(ABC):
     def serialize(self) -> bytes: ...
 
     @staticmethod
-    def train_command(app: Typer) -> None:  # noqa: B027
+    def train_command(app: Typer, callbacks_type: type) -> None:  # noqa: B027
         """Override to register a training CLI command on app."""

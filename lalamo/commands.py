@@ -472,6 +472,30 @@ def collect_traces(
 
 
 @dataclass
+class TrainingCallbacks:
+    output_path: Path
+    subsample_size: int | None
+
+    def training_progress(self, trained_tokens: int) -> None:
+        pass
+
+    def finished_training(self) -> None:
+        pass
+
+    def saving(self) -> None:
+        pass
+
+    def finished_saving(self) -> None:
+        pass
+
+    def save_drafter(self, drafter_bytes: bytes) -> None:
+        self.saving()
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.output_path.write_bytes(drafter_bytes)
+        self.finished_saving()
+
+
+@dataclass
 class GenerateRepliesCallbacks:
     model_path: Path
     dataset_path: Path

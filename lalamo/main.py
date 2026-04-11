@@ -41,6 +41,7 @@ from lalamo.commands import (
     Precision,
     PullCallbacks,
     TraceCallbacks,
+    TrainingCallbacks,
     _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
@@ -1054,8 +1055,40 @@ def view_traces(
     console.print(table)
 
 
+@dataclass
+class CliTrainingCallbacks(TrainingCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    training_task: TaskID | None = None
+
+    def training_progress(self, trained_tokens: int) -> None:
+        if self.training_task is None:
+            self.progress = self.stack.enter_context(
+                Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                ),
+            )
+            self.training_task = self.progress.add_task(
+                "🔮 [cyan]Training speculator...[/cyan]",
+                total=self.subsample_size,
+            )
+        self.progress.update(self.training_task, completed=trained_tokens)
+
+    def finished_training(self) -> None:
+        if self.training_task is not None:
+            self.progress.update(self.training_task, description="✅ Completed")
+            self.progress.remove_task(self.training_task)
+            self.stack.close()
+
+    def finished_saving(self) -> None:
+        console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
+
+
 for drafter_cls in Drafter._registry.values():  # noqa: SLF001
-    drafter_cls.train_command(speculator_app)
+    drafter_cls.train_command(speculator_app, CliTrainingCallbacks)
 
 
 @speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")
