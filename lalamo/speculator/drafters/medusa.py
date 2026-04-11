@@ -55,7 +55,7 @@ class MedusaDrafter(Drafter):
 
         gseed = GumbelSeed(seed)
         root = TrieNode(token=lm.bonus, seed=gseed.derive(1).value)
-        self._expand(root, candidates_per_head, head_idx=0, gseed=gseed)
+        self._expand(root, candidates_per_head, head_idx=0, gseed=gseed, counter=[1])
         return root
 
     def _expand(
@@ -64,13 +64,14 @@ class MedusaDrafter(Drafter):
         candidates_per_head: list[list[int]],
         head_idx: int,
         gseed: GumbelSeed,
+        counter: list[int],
     ) -> None:
         if head_idx >= len(candidates_per_head):
             return
-        node_seed = gseed.derive(head_idx + 2).value
         for tok in candidates_per_head[head_idx]:
-            child = node.add_child(tok, seed=node_seed)
-            self._expand(child, candidates_per_head, head_idx + 1, gseed)
+            counter[0] += 1
+            child = node.add_child(tok, seed=gseed.derive(counter[0]).value)
+            self._expand(child, candidates_per_head, head_idx + 1, gseed, counter)
 
     def serialize(self) -> bytes:
         header = struct.pack("<3I", self.heads.num_heads, self.heads.d_model, self.heads.vocab_size)

@@ -106,6 +106,7 @@ class VerifyResult:
     accepted_tokens: list[int]
     accepted_indices: np.ndarray
     all_seeds: np.ndarray
+    num_draft_nodes: int
 
 
 @dataclass(frozen=True)
@@ -153,11 +154,14 @@ class SpeculationContext:
             bonus=seed.sample(logits),
         )
 
+    @property
+    def budget(self) -> int:
+        return self.config.width * self.config.K
+
     def tree_forward(self, lm: LMState, trie: TrieNode) -> tuple[DecoderResult, FlatTrie]:
         flat = trie.linearize(include_root=False)
         cache_len = int(lm.kv_cache[0].current_length[0])
-        budget = self.config.width * self.config.K
-        max_fwd = 1 + budget
+        max_fwd = 1 + max(self.budget, flat.num_nodes)
 
         tok_ids = jnp.array(
             _pad(np.concatenate([[lm.bonus], flat.token_ids]), max_fwd, 0)[None, :],
@@ -191,12 +195,12 @@ class SpeculationContext:
         fwd: DecoderResult,
         flat: FlatTrie,
     ) -> VerifyResult:
-        budget = self.config.width * self.config.K
+        max_fwd = 1 + max(self.budget, flat.num_nodes)
 
         root_logits = fwd.logits[0, 0].astype(jnp.float32)
         all_logits = jnp.concatenate([root_logits[None, :], fwd.logits[0, 1:]], axis=0).astype(jnp.float32)
         all_seeds = np.concatenate([np.array([trie.seed], dtype=np.uint64), flat.seeds])
-        padded_seeds = _pad(all_seeds, budget + 1, 0)
+        padded_seeds = _pad(all_seeds, max_fwd, 0)
 
         sampled_all = np.asarray(
             GumbelSeed.sample_batch(all_logits, jnp.array(padded_seeds & 0xFFFFFFFF, dtype=jnp.uint32))
@@ -209,7 +213,7 @@ class SpeculationContext:
             parent_indices=np.concatenate([[-1], flat.parent_indices + 1]),
         )
         accepted_tokens, accepted_indices = full_flat.accept(sampled_all[: flat.num_nodes + 1])
-        return VerifyResult(accepted_tokens, accepted_indices, all_seeds)
+        return VerifyResult(accepted_tokens, accepted_indices, all_seeds, flat.num_nodes)
 
     def build_next_state(
         self,
@@ -227,7 +231,7 @@ class SpeculationContext:
             ]
         )
         total_kept = 1 + num_accepted
-        max_compact = self.config.K + 1
+        max_compact = 1 + max(self.budget, result.num_draft_nodes)
 
         new_kv = compact_kv_cache(
             fwd.updated_state,

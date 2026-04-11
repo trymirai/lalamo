@@ -312,21 +312,21 @@ class NGramDrafter(Drafter):
         root = TrieNode(token=lm.bonus, seed=gseed.derive(1).value)
 
         candidates = top_k_from_logits(lm.logits, self.width)
-        node_seed = gseed.derive(2).value
-        for tok in candidates:
-            root.add_child(tok, seed=node_seed)
+        for i, tok in enumerate(candidates):
+            root.add_child(tok, seed=gseed.derive(2 + i).value)
 
         chain_node = root.get_child(candidates[0])
         ctx = list(self.context) + [lm.bonus, candidates[0]]
+        node_offset = 2 + self.width
 
         for k in range(1, self.depth):
             probs = self.model.probs(ctx)
             if not probs:
                 break
             next_candidates = top_k_from_probs(probs, self.width)
-            node_seed = gseed.derive(k + 2).value
-            for tok in next_candidates:
-                chain_node.add_child(tok, seed=node_seed)
+            for i, tok in enumerate(next_candidates):
+                chain_node.add_child(tok, seed=gseed.derive(node_offset + i).value)
+            node_offset += self.width
             chain_node = chain_node.get_child(next_candidates[0])
             ctx.append(next_candidates[0])
 
