@@ -1,3 +1,7 @@
+from __future__ import annotations
+
+import dataclasses
+import random
 import struct
 from array import array
 from collections.abc import Callable, Iterable
@@ -6,9 +10,14 @@ from itertools import chain, repeat, tee
 from math import exp
 from typing import Self
 
+import numpy as np
 import xxhash
 
-from .common import Speculator
+from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.speculator.drafter import Drafter
+from lalamo.speculator.speculate import GumbelSeed, LMState
+from lalamo.speculator.trie import TrieNode
+from lalamo.speculator.utils import top_k_from_logits
 
 
 def padded_sliding_window(seq: Iterable[int], size: int, pad: int) -> Iterable[tuple[int, ...]]:
@@ -52,7 +61,7 @@ def seqhash(tokens: Iterable[int], size: int) -> tuple[int, int]:
     return h % size, h // size
 
 
-def _discount_and_interpolate(
+def discount_and_interpolate(
     dist: dict[int, float],
     lower_dist: dict[int, float],
     discount: float,
@@ -65,7 +74,7 @@ def _discount_and_interpolate(
     return smoothed
 
 
-def _write_top_k(dist: dict[int, float], keys: array, values: array, idx: int, ngram_k: int) -> None:
+def write_top_k(dist: dict[int, float], keys: array, values: array, idx: int, ngram_k: int) -> None:
     top = sorted(dist.items(), key=lambda x: (-x[1], x[0]))[:ngram_k]
     total = sum(v for _, v in top)
     if total <= 0:
@@ -95,11 +104,8 @@ class TaggedNGramTable:
     ngram_n: int
     ngram_pad: int
 
-    # Training phase: exact data (interior mutability)
     _exact_data: dict[tuple[int, int], ExactBucket] = field(default_factory=dict, repr=False)
     _context_tokens: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict, repr=False)
-
-    # Inference phase: tagged hash table (populated by compress())
     _tags: array = field(default_factory=lambda: array("Q"), repr=False)
     _keys: array = field(default_factory=lambda: array("I"), repr=False)
     _values: array = field(default_factory=lambda: array("f"), repr=False)
@@ -108,12 +114,7 @@ class TaggedNGramTable:
 
     @classmethod
     def init(cls, hashtable_size: int, ngram_k: int, ngram_n: int, ngram_pad: int = 2**32 - 1) -> Self:
-        return cls(
-            hashtable_size=hashtable_size,
-            ngram_k=ngram_k,
-            ngram_n=ngram_n,
-            ngram_pad=ngram_pad,
-        )
+        return cls(hashtable_size=hashtable_size, ngram_k=ngram_k, ngram_n=ngram_n, ngram_pad=ngram_pad)
 
     def _context_for(self, seq: Iterable[int]) -> list[int]:
         seq = list(seq)
@@ -124,10 +125,7 @@ class TaggedNGramTable:
 
     def train(self, token_ids: Iterable[int], token_logits: Iterable[dict[int, float]]) -> None:
         ngram_ctx = self.ngram_n - 1
-        if ngram_ctx > 0:
-            contexts = padded_sliding_window(token_ids, ngram_ctx, self.ngram_pad)
-        else:
-            contexts = repeat(())
+        contexts = padded_sliding_window(token_ids, ngram_ctx, self.ngram_pad) if ngram_ctx > 0 else repeat(())
 
         for ctx, cur_logits in zip(contexts, token_logits, strict=False):
             ctx_tuple = tuple(ctx)
@@ -136,11 +134,9 @@ class TaggedNGramTable:
             if key not in self._context_tokens:
                 self._context_tokens[key] = ctx_tuple
             bucket = self._exact_data.get(key)
-
             if bucket is None:
                 bucket = ExactBucket()
                 self._exact_data[key] = bucket
-
             bucket.count += 1
             sample = dict(zip(cur_logits.keys(), softmax(cur_logits.values()), strict=True))
             update_probs(bucket.probs, sample, bucket.count, self.ngram_k)
@@ -149,13 +145,13 @@ class TaggedNGramTable:
         tags = array("Q", repeat(0, self.hashtable_size))
         keys = array("I", repeat(0, self.hashtable_size * self.ngram_k))
         values = array("f", repeat(0.0, self.hashtable_size * self.ngram_k))
-        bucket_counts: array = array("I", repeat(0, self.hashtable_size))
+        bucket_counts = array("I", repeat(0, self.hashtable_size))
 
         for (idx, tag), bucket in self._exact_data.items():
             if bucket.count > bucket_counts[idx]:
                 bucket_counts[idx] = bucket.count
                 tags[idx] = tag
-                _write_top_k(bucket.probs, keys, values, idx, self.ngram_k)
+                write_top_k(bucket.probs, keys, values, idx, self.ngram_k)
 
         self._tags[:] = tags
         self._keys[:] = keys
@@ -167,16 +163,13 @@ class TaggedNGramTable:
         assert self._compressed[0], "call compress() before probs()"
         ctx = self._context_for(seq)
         idx, tag = seqhash(ctx, self.hashtable_size)
-
         if self._tags[idx] != tag:
             return {}
-
         k_start = idx * self.ngram_k
         k_end = k_start + self.ngram_k
         return {k: v for k, v in zip(self._keys[k_start:k_end], self._values[k_start:k_end], strict=True) if v > 0.0}
 
     def exact_dist_for(self, seq: Iterable[int]) -> dict[int, float] | None:
-        """Look up exact (pre-compress) distribution for a context."""
         key = seqhash(self._context_for(seq), self.hashtable_size)
         bucket = self._exact_data.get(key)
         return dict(bucket.probs) if bucket is not None else None
@@ -186,7 +179,6 @@ class TaggedNGramTable:
         discount: float,
         lower_order_fn: Callable[[tuple[int, ...]], dict[int, float]],
     ) -> None:
-        """Re-smooth compressed buckets using lower-order interpolation."""
         for (idx, tag), bucket in self._exact_data.items():
             if self._tags[idx] != tag:
                 continue
@@ -194,8 +186,8 @@ class TaggedNGramTable:
             if ctx_tokens is None:
                 continue
             lower_dist = lower_order_fn(ctx_tokens)
-            smoothed = _discount_and_interpolate(bucket.probs, lower_dist, discount)
-            _write_top_k(smoothed, self._keys, self._values, idx, self.ngram_k)
+            smoothed = discount_and_interpolate(bucket.probs, lower_dist, discount)
+            write_top_k(smoothed, self._keys, self._values, idx, self.ngram_k)
 
     def serialize(self) -> bytes:
         assert self._compressed[0], "call compress() before serialize()"
@@ -206,28 +198,18 @@ class TaggedNGramTable:
     def deserialize(cls, blob: bytes) -> Self:
         offset = 16
         hashtable_size, ngram_k, ngram_n, ngram_pad = struct.unpack("<4I", blob[:offset])
-
         tag_len = 8 * hashtable_size
         tags = array("Q", blob[offset : offset + tag_len])
         offset += tag_len
-
         kv_len = 4 * ngram_k * hashtable_size
         keys = array("I", blob[offset : offset + kv_len])
         offset += kv_len
-
         values = array("f", blob[offset : offset + kv_len])
         offset += kv_len
-
         count_len = 4 * hashtable_size
         counts = array("I", blob[offset : offset + count_len])
         offset += count_len
-
-        instance = cls(
-            hashtable_size=hashtable_size,
-            ngram_k=ngram_k,
-            ngram_n=ngram_n,
-            ngram_pad=ngram_pad,
-        )
+        instance = cls(hashtable_size=hashtable_size, ngram_k=ngram_k, ngram_n=ngram_n, ngram_pad=ngram_pad)
         instance._tags[:] = tags
         instance._keys[:] = keys
         instance._values[:] = values
@@ -236,7 +218,7 @@ class TaggedNGramTable:
         return instance
 
 
-def _deserialize_tagged_tables(blob: bytes, offset: int, max_order: int) -> tuple[list[TaggedNGramTable], int]:
+def deserialize_tables(blob: bytes, offset: int, max_order: int) -> tuple[list[TaggedNGramTable], int]:
     tables: list[TaggedNGramTable] = []
     for _ in range(max_order):
         (length,) = struct.unpack("<Q", blob[offset : offset + 8])
@@ -246,8 +228,11 @@ def _deserialize_tagged_tables(blob: bytes, offset: int, max_order: int) -> tupl
     return tables, offset
 
 
+
 @dataclass(frozen=True, eq=False)
-class NGramSpeculator(Speculator):
+class NGramModel:
+    """Multi-order n-gram with Kneser-Ney smoothing."""
+
     max_order: int
     tables: tuple[TaggedNGramTable, ...]
     discount: float = 0.002
@@ -264,7 +249,6 @@ class NGramSpeculator(Speculator):
             table.train(ids, logits)
 
     def _get_best_lower_order_dist(self, ctx_tokens: tuple[int, ...], max_lower_order: int) -> dict[int, float]:
-        """Find the highest available lower-order distribution for backoff."""
         for order in range(max_lower_order, 0, -1):
             table = self.tables[order - 1]
             shorter_ctx = ctx_tokens[-(order - 1) :] if order > 1 else ()
@@ -276,7 +260,6 @@ class NGramSpeculator(Speculator):
     def compress(self) -> None:
         for table in self.tables:
             table.compress()
-
         for order_idx in range(1, len(self.tables)):
             table = self.tables[order_idx]
             table.apply_smoothing(
@@ -302,8 +285,126 @@ class NGramSpeculator(Speculator):
 
     @classmethod
     def deserialize(cls, blob: bytes) -> Self:
-        offset = 0
-        max_order, discount = struct.unpack("<If", blob[offset : offset + 8])
-        offset += 8
-        tables, _ = _deserialize_tagged_tables(blob, offset, max_order)
+        max_order, discount = struct.unpack("<If", blob[:8])
+        tables, _ = deserialize_tables(blob, 8, max_order)
         return cls(max_order, tuple(tables), discount)
+
+
+
+def top_k_from_probs(probs: dict[int, float], k: int) -> list[int]:
+    return [tok for tok, _ in sorted(probs.items(), key=lambda x: -x[1])[:k]]
+
+
+@Drafter.register("ngram")
+@dataclass(frozen=True)
+class NGramDrafter(Drafter):
+    """N-gram drafter: queries n-gram model to build a speculation tree.
+
+    Level 0: candidates from LM logits (top-width).
+    Level 1+: candidates from n-gram backoff lookup.
+    Greedy chain follows top-1, width fan-out at every depth.
+    """
+
+    model: NGramModel
+    width: int = 4
+    depth: int = 8
+    context: tuple[int, ...] = ()
+
+    def draft(self, lm: LMState, seed: int) -> TrieNode:
+        gseed = GumbelSeed(seed)
+        root = TrieNode(token=lm.bonus, seed=gseed.derive(1).value)
+
+        candidates = top_k_from_logits(lm.logits, self.width)
+        node_seed = gseed.derive(2).value
+        for tok in candidates:
+            root.add_child(tok, seed=node_seed)
+
+        chain_node = root.get_child(candidates[0])
+        ctx = list(self.context) + [lm.bonus, candidates[0]]
+
+        for k in range(1, self.depth):
+            probs = self.model.probs(ctx)
+            if not probs:
+                break
+            next_candidates = top_k_from_probs(probs, self.width)
+            node_seed = gseed.derive(k + 2).value
+            for tok in next_candidates:
+                chain_node.add_child(tok, seed=node_seed)
+            chain_node = chain_node.get_child(next_candidates[0])
+            ctx.append(next_candidates[0])
+
+        return root
+
+    def update_after_verify(
+        self, prev_lm: LMState, accepted: list[int], bonus: int, new_lm: LMState,
+    ) -> NGramDrafter:
+        new_context = self.context + (prev_lm.bonus,) + tuple(accepted)
+        max_ctx = self.model.max_order - 1
+        return dataclasses.replace(self, context=new_context[-max_ctx:] if max_ctx > 0 else ())
+
+    def serialize(self) -> bytes:
+        return self.model.serialize()
+
+    @classmethod
+    def _deserialize(cls, data: bytes, **kwargs: object) -> NGramDrafter:
+        width = int(kwargs.get("width", 4))
+        depth = int(kwargs.get("depth", 8))
+        return cls(model=NGramModel.deserialize(data), width=width, depth=depth)
+
+    def sample(self, context: Iterable[int] = (), max_length: int = 32) -> list[int]:
+        """Autoregressive sampling from the n-gram model (for testing)."""
+        seq = list(context)
+        for _ in range(max_length):
+            probs = self.model.probs(seq)
+            if not probs or sum(probs.values()) == 0:
+                break
+            seq.append(random.choices(list(probs.keys()), weights=list(probs.values()), k=1)[0])
+        return seq
+
+
+
+class NGramTrainingEvent:
+    __slots__ = ("trained_sequences", "trained_tokens")
+
+    def __init__(self, trained_sequences: int, trained_tokens: int) -> None:
+        self.trained_sequences = trained_sequences
+        self.trained_tokens = trained_tokens
+
+
+def train_ngram(
+    traces: Iterable[LalamoCompletion],
+    hashtable_size: int = 65536,
+    num_logits_per_token: int = 8,
+    max_order: int = 4,
+    discount: float = 0.002,
+    tokens_to_train: int | None = None,
+    width: int = 4,
+    depth: int = 8,
+    progress_callback: Callable[[NGramTrainingEvent], None] | None = None,
+) -> NGramDrafter:
+    """Train an n-gram drafter from LLM inference traces.
+
+    Returns a ready-to-use NGramDrafter with compressed hash tables.
+    """
+    model = NGramModel.init(hashtable_size, num_logits_per_token, max_order, discount)
+    trained_tokens = 0
+
+    for trained_sequences, trace in enumerate(traces, start=1):
+        if tokens_to_train is not None and trained_tokens + len(trace.completion_token_ids) > tokens_to_train:
+            end = tokens_to_train - trained_tokens
+        else:
+            end = None
+        token_ids = trace.completion_token_ids[:end]
+        token_logits = trace.completion_token_logits[:end]
+
+        model.train(token_ids, token_logits)
+        trained_tokens += len(token_ids)
+
+        if progress_callback is not None:
+            progress_callback(NGramTrainingEvent(trained_sequences, trained_tokens))
+
+        if tokens_to_train is not None and trained_tokens >= tokens_to_train:
+            break
+
+    model.compress()
+    return NGramDrafter(model=model, width=width, depth=depth)

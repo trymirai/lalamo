@@ -1,9 +1,3 @@
-"""Draft trie for tree-structured speculative decoding.
-
-TrieNode: mutable tree for draft construction.
-FlatTrie: linearized (DFS order) for tree attention forward pass.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -61,7 +55,7 @@ class TrieNode:
             parent_indices.append(parent_idx)
             stack.extend((child, cur_idx) for child in reversed(node.children))
 
-        if not include_root and len(token_ids) > 1:
+        if not include_root:
             token_ids = token_ids[1:]
             seeds = seeds[1:]
             depths = [d - 1 for d in depths[1:]]

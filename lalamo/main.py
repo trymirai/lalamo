@@ -65,8 +65,7 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import test_speculator
+from lalamo.speculator.drafters.ngram import NGramDrafter
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -1174,7 +1173,7 @@ def test(
     model = LanguageModelConfig.load_model(model_path)
 
     with open(speculator_path, "rb") as fd:
-        speculator = NGramSpeculator.deserialize(fd.read())
+        drafter = NGramDrafter.deserialize(fd.read())
 
     table = Table(
         show_header=False,
@@ -1186,7 +1185,7 @@ def test(
         random.seed(seed)
 
     for _ in range(num_sequences):
-        sequence = test_speculator(speculator)
+        sequence = drafter.sample()
         detokenized = model.message_processor.detokenize(sequence)
         table.add_row(detokenized)
 
@@ -1225,14 +1224,9 @@ def speculate_eval(
         int,
         Option(help="Number of MT-Bench questions to evaluate"),
     ] = 80,
-    use_gumbel: Annotated[
-        bool,
-        Option(help="Use Gumbel sampling instead of greedy"),
-    ] = False,
 ) -> None:
-    from lalamo.speculator.drafter import SamplerConfig
+    from lalamo.speculator.speculate import SamplerConfig
     from lalamo.speculator.eval import load_mtbench, print_results, run_mtbench
-    from lalamo.speculator.ngram_drafter import NGramDrafter
 
     print(f"Loading model: {model_path}...", file=sys.stderr)
     llm = LanguageModelConfig.load_model(model_path)
@@ -1242,28 +1236,17 @@ def speculate_eval(
 
     print(f"Loading speculator: {speculator_path}...", file=sys.stderr)
     with open(speculator_path, "rb") as fd:
-        speculator = NGramSpeculator.deserialize(fd.read())
+        drafter = NGramDrafter.deserialize(fd.read(), width=width, depth=depth)
 
-    drafter = NGramDrafter(speculator=speculator, width=width, depth=depth)
-    config = SamplerConfig(width=width, K=depth)
+    config = SamplerConfig(width=width, K=depth, max_tokens=max_tokens)
     questions = load_mtbench()[:num_questions]
 
-    sampling_mode = "gumbel" if use_gumbel else "greedy"
     print(
-        f"Evaluating {len(questions)} questions | width={width} K={depth} sampling={sampling_mode}",
+        f"Evaluating {len(questions)} questions | width={width} K={depth} max_tokens={max_tokens}",
         file=sys.stderr,
     )
 
-    results = run_mtbench(
-        decoder,
-        mp,
-        drafter,
-        config,
-        eos_set,
-        questions,
-        max_tokens=max_tokens,
-        use_gumbel=use_gumbel,
-    )
+    results = run_mtbench(decoder, mp, drafter, config, eos_set, questions)
     print_results(results)
 
 

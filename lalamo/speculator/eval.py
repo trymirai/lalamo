@@ -1,8 +1,3 @@
-"""Evaluate speculative decoding on MT-Bench.
-
-Reports MAE (mean accepted length), acceptance rate, tokens/step.
-"""
-
 from __future__ import annotations
 
 import json
@@ -55,16 +50,12 @@ def evaluate_prompt(
     drafter: Drafter,
     config: SamplerConfig,
     prompt: str,
-    max_tokens: int,
     eos_set: set[int],
-    use_gumbel: bool = False,
     seed: int = 42,
 ) -> SpeculativeDecodingResult:
-    """Run one prompt through the full speculative decoding pipeline."""
     prompt_ids = mp.tokenize_request([UserMessage(content=prompt)])
-
-    ctx = SpeculationContext.create(decoder, drafter, config, eos_set, use_gumbel)
-    session = SpeculationRun(ctx, prompt_ids, max_tokens, seed=seed)
+    ctx = SpeculationContext.create(decoder, drafter, config, eos_set)
+    session = SpeculationRun(ctx, prompt_ids, seed=seed)
     for _ in session:
         pass
     return session.result
@@ -77,10 +68,7 @@ def run_mtbench(
     config: SamplerConfig,
     eos_set: set[int],
     questions: list[dict],
-    max_tokens: int = 2048,
-    use_gumbel: bool = False,
 ) -> dict:
-    """Run MT-Bench evaluation, return per-category and overall statistics."""
     results_by_cat: dict[str, dict] = {}
     total_tokens, total_steps, total_accepted, total_proposed = 0, 0, 0, 0
 
@@ -89,15 +77,8 @@ def run_mtbench(
         cat = q["category"]
 
         result = evaluate_prompt(
-            decoder,
-            mp,
-            drafter,
-            config,
-            q["prompt"],
-            max_tokens,
-            eos_set,
-            use_gumbel=use_gumbel,
-            seed=42 + i,
+            decoder, mp, drafter, config,
+            q["prompt"], eos_set, seed=42 + i,
         )
 
         n_tok = len(result.generated)

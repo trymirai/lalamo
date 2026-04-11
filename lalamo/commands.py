@@ -35,9 +35,8 @@ from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
+from lalamo.speculator.drafters.ngram import NGramTrainingEvent, train_ngram
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
 
 
 @dataclass
@@ -533,20 +532,25 @@ def train(
     callbacks.started()
 
     traces = iter_completions(trace_path)
-    speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
 
-    def progress_callback(event: SpeculatorTrainingEvent) -> None:
+    def progress_callback(event: NGramTrainingEvent) -> None:
         callbacks.training_progress(event.trained_tokens)
 
-    train_speculator(speculator, traces, subsample_size, progress_callback)
-
-    speculator.compress()
+    drafter = train_ngram(
+        traces,
+        hashtable_size=hashtable_size,
+        num_logits_per_token=num_logits_per_token,
+        max_order=max_order,
+        discount=discount,
+        tokens_to_train=subsample_size,
+        progress_callback=progress_callback,
+    )
     callbacks.finished_training()
 
     callbacks.saving_speculator()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "wb") as fd:
-        fd.write(speculator.serialize())
+        fd.write(drafter.serialize())
     callbacks.finished_saving_speculator()
 
 

@@ -1,46 +1,58 @@
-"""Drafter protocol and core state for speculative decoding."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, ClassVar, Self
+
+from lalamo.speculator.trie import TrieNode
 
 if TYPE_CHECKING:
-    import jax.numpy as jnp
-
-    from lalamo.modules.token_mixers.state.common import State
-    from lalamo.speculator.trie import TrieNode
+    from lalamo.speculator.speculate import LMState
 
 
-@dataclass(frozen=True)
-class LMState:
-    """Immutable snapshot after the last verified token.
+class Drafter(ABC):
+    """Base class for all drafters. Name-based serialization registry."""
+    _registry: ClassVar[dict[str, type[Drafter]]] = {}
 
-    ``hiddens`` stores per-layer hidden states at the head position.
-    The last entry (``hiddens[-1]``) is the output-norm result — equivalent
-    to the old ``h_i``.  Earlier entries are intermediate layer outputs,
-    available for EAGLE-style drafters that condition on multiple layers.
-    """
+    @classmethod
+    def register(cls, name: str) -> type[Drafter]:
+        def decorator(subcls: type[Drafter]) -> type[Drafter]:
+            cls._registry[name] = subcls
+            return subcls
 
-    kv_cache: State
-    hiddens: tuple[jnp.ndarray, ...]  # per-layer (d,); hiddens[-1] = output norm
-    logits: jnp.ndarray  # (vocab,) — next-token distribution at head
-    position: int  # tokens written to the KV cache so far
-    context: tuple[int, ...] = ()  # verified token history (n-gram suffix lookup)
+        return decorator
 
+    @classmethod
+    def deserialize(cls, name: str, data: bytes, **kwargs: object) -> Drafter:
+        """Deserialize a drafter by name from a binary blob.
 
-@dataclass(frozen=True)
-class SamplerConfig:
-    width: int = 4  # max children per trie node
-    K: int = 8  # max speculation depth
+        Requires that the drafter module has been imported (to trigger
+        registration). This happens automatically when importing from
+        ``lalamo.speculator``.
+        """
+        subcls = cls._registry.get(name)
+        if subcls is None:
+            known = ", ".join(cls._registry)
+            raise ValueError(f"Unknown drafter {name!r}. Registered: {known}")
+        return subcls._deserialize(data, **kwargs)
 
+    @classmethod
+    @abstractmethod
+    def _deserialize(cls, data: bytes, **kwargs: object) -> Self: ...
 
-class Drafter(Protocol):
-    """Produce a draft tree from the current LM state.
+    @abstractmethod
+    def draft(self, lm: LMState, seed: int) -> TrieNode:
+        """Root token must be ``lm.bonus``. Children are continuations after it."""
+        ...
 
-    ``last_token`` is the bonus token from the previous verify step
-    (= ``lm.context[-1]``). Passed explicitly so neural drafters can
-    index into the embedding table without slicing context.
-    """
+    def update_after_verify(
+        self,
+        prev_lm: LMState,
+        accepted: list[int],
+        bonus: int,
+        new_lm: LMState,
+    ) -> Drafter:
+        """Post-verify lifecycle hook. Returns updated drafter."""
+        return self
 
-    def draft(self, lm: LMState, last_token: int, seed: int) -> TrieNode: ...
+    @abstractmethod
+    def serialize(self) -> bytes: ...
