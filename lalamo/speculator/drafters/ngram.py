@@ -319,7 +319,7 @@ class NGramDrafter(Drafter):
         ctx = list(self.context) + [lm.bonus, candidates[0]]
         node_offset = 2 + self.width
 
-        for k in range(1, self.depth):
+        for _k in range(1, self.depth):
             probs = self.model.probs(ctx)
             if not probs:
                 break
@@ -376,7 +376,7 @@ class NGramDrafter(Drafter):
             subsample_size: Annotated[int | None, Option(help="Stop after this many tokens")] = None,
         ) -> None:
             callbacks = callbacks_type(output_path=output_path, subsample_size=subsample_size)
-            traces = iter_completions(trace_path)
+            traces = iter_completions(trace_path, exclude={"activation_output", "layer_output", "logsumexp"})
             drafter = train_ngram(
                 traces,
                 hashtable_size=hashtable_size,

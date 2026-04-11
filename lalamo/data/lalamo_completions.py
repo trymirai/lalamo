@@ -15,10 +15,10 @@ class LalamoCompletion:
     completion_token_ids: list[int]
     top_k_ids: Int[Array, "tokens k"]
     top_k_logits: Float[Array, "tokens k"]
-    logsumexp: Float[Array, " tokens"]
-    activation_output: Float[Array, "tokens hidden"]
-    layer_indices: tuple[int, ...]
-    layer_output: Float[Array, "n_layers tokens hidden"] | None
+    logsumexp: Float[Array, " tokens"] | None = None
+    activation_output: Float[Array, "tokens hidden"] | None = None
+    layer_indices: tuple[int, ...] = ()
+    layer_output: Float[Array, "n_layers tokens hidden"] | None = None
 
     def __post_init__(self) -> None:
         n = len(self.completion_token_ids)
@@ -26,13 +26,13 @@ class LalamoCompletion:
             raise ValueError("top_k_ids first dim must match completion length.")
         if self.top_k_logits.shape != self.top_k_ids.shape:
             raise ValueError("top_k_logits shape must match top_k_ids shape.")
-        if self.logsumexp.shape[0] != n:
+        if self.logsumexp is not None and self.logsumexp.shape[0] != n:
             raise ValueError("logsumexp first dim must match completion length.")
-        if self.activation_output.shape[0] != n:
+        if self.activation_output is not None and self.activation_output.shape[0] != n:
             raise ValueError("activation_output first dim must match completion length.")
         if self.layer_output is None and self.layer_indices:
             raise ValueError("layer_indices must be empty when layer_output is None.")
-        if self.layer_output is not None:
+        if self.layer_output is not None and self.activation_output is not None:
             expected = (len(self.layer_indices), n, self.activation_output.shape[-1])
             if self.layer_output.shape != expected:
                 raise ValueError(f"layer_output shape {self.layer_output.shape} != expected {expected}.")
@@ -100,41 +100,44 @@ def save_completions(path: Path, completions: list[LalamoCompletion]) -> None:
         safe_write(fd, tensors)
 
 
-def load_completions(path: Path) -> list[LalamoCompletion]:
+def load_completions(path: Path, exclude: set[str] | None = None) -> list[LalamoCompletion]:
     with path.open("rb") as fd:
         _, lazy = safe_read(fd)
-        tensors = {k: lazy[k] for k in lazy}  # eagerly materialize before fd closes
+        tensors = {k: lazy[k] for k in lazy if not exclude or k not in exclude}
     prefixes = _unpack_ragged(tensors["prefix_offsets"], tensors["prefix_tokens"])
-    completion_tokens = _unpack_ragged(tensors["completion_offsets"], tensors["completion_tokens"])
-    layer_indices = tuple(np.asarray(tensors["layer_indices"], dtype=np.int32).tolist())
-    has_layers = "layer_output" in tensors
-    completion_offsets = np.asarray(tensors["completion_offsets"], dtype=np.int64)
-    loaded_completions: list[LalamoCompletion] = []
+    completions = _unpack_ragged(tensors["completion_offsets"], tensors["completion_tokens"])
+    offsets = np.asarray(tensors["completion_offsets"], dtype=np.int64)
+    layer_indices_tensor = tensors.get("layer_indices")
+    layer_indices = (
+        tuple(np.asarray(layer_indices_tensor, dtype=np.int32).tolist()) if layer_indices_tensor is not None else ()
+    )
 
-    for index, (prefix_token_ids, completion_token_ids) in enumerate(zip(prefixes, completion_tokens, strict=True)):
-        token_slice = slice(
-            int(completion_offsets[index]),
-            int(completion_offsets[index + 1]),
-        )
-        loaded_completions.append(
+    def sliced(key: str, token_slice: slice) -> np.ndarray | None:
+        t = tensors.get(key)
+        return t[token_slice] if t is not None else None
+
+    loaded: list[LalamoCompletion] = []
+    for i, (prefix, completion) in enumerate(zip(prefixes, completions, strict=True)):
+        s = slice(int(offsets[i]), int(offsets[i + 1]))
+        layer_output = tensors.get("layer_output")
+        loaded.append(
             LalamoCompletion(
-                prefix_token_ids=prefix_token_ids,
-                completion_token_ids=completion_token_ids,
-                top_k_ids=tensors["top_k_ids"][token_slice],
-                top_k_logits=tensors["top_k_logits"][token_slice],
-                logsumexp=tensors["logsumexp"][token_slice],
-                activation_output=tensors["activation_output"][token_slice],
+                prefix_token_ids=prefix,
+                completion_token_ids=completion,
+                top_k_ids=tensors["top_k_ids"][s],
+                top_k_logits=tensors["top_k_logits"][s],
+                logsumexp=sliced("logsumexp", s),
+                activation_output=sliced("activation_output", s),
                 layer_indices=layer_indices,
-                layer_output=tensors["layer_output"][:, token_slice, :] if has_layers else None,
-            ),
+                layer_output=layer_output[:, s, :] if layer_output is not None else None,
+            )
         )
+    return loaded
 
-    return loaded_completions
 
-
-def iter_completions(trace_dir: Path) -> Iterator[LalamoCompletion]:
+def iter_completions(trace_dir: Path, exclude: set[str] | None = None) -> Iterator[LalamoCompletion]:
     shard_paths = sorted(trace_dir.glob("part-*.safetensors"))
     if not shard_paths:
         raise RuntimeError(f"No trace shards found in {trace_dir}.")
     for shard_path in shard_paths:
-        yield from load_completions(shard_path)
+        yield from load_completions(shard_path, exclude=exclude)
