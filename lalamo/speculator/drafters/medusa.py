@@ -110,8 +110,9 @@ class MedusaDrafter(Drafter):
             width: Annotated[int, Option(help="Max children per trie node")] = 4,
             learning_rate: Annotated[float, Option(help="Learning rate")] = 1e-3,
             num_epochs: Annotated[int, Option(help="Training epochs")] = 1,
+            subsample_size: Annotated[int | None, Option(help="Stop after this many tokens")] = None,
         ) -> None:
-            callbacks = callbacks_type(output_path=output_path, subsample_size=None)
+            callbacks = callbacks_type(output_path=output_path, subsample_size=subsample_size)
             traces = iter_completions(trace_path)
             drafter = train_medusa(
                 traces,
@@ -121,6 +122,7 @@ class MedusaDrafter(Drafter):
                 width=width,
                 learning_rate=learning_rate,
                 num_epochs=num_epochs,
+                tokens_to_train=subsample_size,
                 progress_callback=lambda e: callbacks.training_progress(e.step),
             )
             callbacks.finished_training()
@@ -143,6 +145,7 @@ def train_medusa(
     width: int = 4,
     learning_rate: float = 1e-3,
     num_epochs: int = 1,
+    tokens_to_train: int | None = None,
     progress_callback: Callable[[MedusaTrainingEvent], None] | None = None,
     key: PRNGKeyArray | None = None,
 ) -> MedusaDrafter:
@@ -155,6 +158,7 @@ def train_medusa(
 
     hiddens_list: list[np.ndarray] = []
     targets_list: list[np.ndarray] = []
+    collected_tokens = 0
 
     for trace in traces:
         h = np.asarray(trace.activation_output)
@@ -166,6 +170,9 @@ def train_medusa(
         hiddens_list.append(h[:valid_len])
         targets = np.stack([toks[k + 1 : k + 1 + valid_len] for k in range(num_heads)], axis=1)
         targets_list.append(targets)
+        collected_tokens += valid_len
+        if tokens_to_train is not None and collected_tokens >= tokens_to_train:
+            break
 
     if not hiddens_list:
         return MedusaDrafter(heads=heads, width=width)
