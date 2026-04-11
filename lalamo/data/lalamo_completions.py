@@ -119,7 +119,7 @@ def load_completions(path: Path, exclude: set[str] | None = None) -> list[Lalamo
     loaded: list[LalamoCompletion] = []
     for i, (prefix, completion) in enumerate(zip(prefixes, completions, strict=True)):
         s = slice(int(offsets[i]), int(offsets[i + 1]))
-        layer_output = tensors.get("layer_output")
+        layer_output_tensor = tensors.get("layer_output")
         loaded.append(
             LalamoCompletion(
                 prefix_token_ids=prefix,
@@ -128,8 +128,8 @@ def load_completions(path: Path, exclude: set[str] | None = None) -> list[Lalamo
                 top_k_logits=tensors["top_k_logits"][s],
                 logsumexp=sliced("logsumexp", s),
                 activation_output=sliced("activation_output", s),
-                layer_indices=layer_indices,
-                layer_output=layer_output[:, s, :] if layer_output is not None else None,
+                layer_indices=layer_indices if layer_output_tensor is not None else (),
+                layer_output=layer_output_tensor[:, s, :] if layer_output_tensor is not None else None,
             )
         )
     return loaded
