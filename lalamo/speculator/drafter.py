@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Self
 
@@ -11,18 +9,19 @@ if TYPE_CHECKING:
 
 class Drafter(ABC):
     """Base class for all drafters. Name-based serialization registry."""
-    _registry: ClassVar[dict[str, type[Drafter]]] = {}
+
+    _registry: ClassVar[dict[str, "type[Drafter]"]] = {}
 
     @classmethod
-    def register(cls, name: str) -> type[Drafter]:
-        def decorator(subcls: type[Drafter]) -> type[Drafter]:
+    def register(cls, name: str) -> "type[Drafter]":
+        def decorator(subcls: "type[Drafter]") -> "type[Drafter]":
             cls._registry[name] = subcls
             return subcls
 
         return decorator
 
     @classmethod
-    def deserialize(cls, name: str, data: bytes, **kwargs: object) -> Drafter:
+    def deserialize(cls, name: str, data: bytes, **kwargs: object) -> "Drafter":
         """Deserialize a drafter by name from a binary blob.
 
         Requires that the drafter module has been imported (to trigger
@@ -33,24 +32,24 @@ class Drafter(ABC):
         if subcls is None:
             known = ", ".join(cls._registry)
             raise ValueError(f"Unknown drafter {name!r}. Registered: {known}")
-        return subcls._deserialize(data, **kwargs)
+        return subcls.deserialize_impl(data, **kwargs)
 
     @classmethod
     @abstractmethod
-    def _deserialize(cls, data: bytes, **kwargs: object) -> Self: ...
+    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self: ...
 
     @abstractmethod
-    def draft(self, lm: LMState, seed: int) -> TrieNode:
+    def draft(self, lm: "LMState", seed: int) -> TrieNode:
         """Root token must be ``lm.bonus``. Children are continuations after it."""
         ...
 
     def update_after_verify(
         self,
-        prev_lm: LMState,
-        accepted: list[int],
-        bonus: int,
-        new_lm: LMState,
-    ) -> Drafter:
+        prev_lm: "LMState",  # noqa: ARG002
+        accepted: list[int],  # noqa: ARG002
+        bonus: int,  # noqa: ARG002
+        new_lm: "LMState",  # noqa: ARG002
+    ) -> "Drafter":
         """Post-verify lifecycle hook. Returns updated drafter."""
         return self
 

@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import sys
 import urllib.request
@@ -73,8 +71,13 @@ def run_mtbench(
         cat = q["category"]
 
         result = evaluate_prompt(
-            decoder, mp, drafter, config,
-            q["prompt"], eos_set, seed=42 + i,
+            decoder,
+            mp,
+            drafter,
+            config,
+            q["prompt"],
+            eos_set,
+            seed=42 + i,
         )
 
         n_tok = len(result.generated)

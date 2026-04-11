@@ -1,4 +1,3 @@
-import random
 import re
 import shutil
 import sys
@@ -1182,8 +1181,8 @@ def speculate_eval(
         Option(help="Path to cache MT-Bench questions"),
     ] = Path("mtbench_questions.jsonl"),
 ) -> None:
-    from lalamo.speculator.speculate import SamplerConfig
     from lalamo.speculator.eval import load_mtbench, print_results, run_mtbench
+    from lalamo.speculator.speculate import SamplerConfig
 
     print(f"Loading model: {model_path}...", file=sys.stderr)
     llm = LanguageModelConfig.load_model(model_path)

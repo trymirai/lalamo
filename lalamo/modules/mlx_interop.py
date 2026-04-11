@@ -1,5 +1,6 @@
 import jax.numpy as jnp
 import mlx.core as mx  # type: ignore
+import numpy as np
 from jaxtyping import Array
 
 __all__ = ["jax_to_mlx", "mlx_to_jax"]
@@ -14,6 +15,6 @@ def mlx_to_jax(a: mx.array) -> Array:
 
 def jax_to_mlx(a: Array) -> mx.array:
     if a.dtype == jnp.bfloat16:
-        return mx.array(a.view(jnp.uint16)).view(mx.bfloat16)
+        return mx.array(np.asarray(a.view(jnp.uint16))).view(mx.bfloat16)
 
-    return mx.array(a)
+    return mx.array(np.asarray(a))

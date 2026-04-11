@@ -1,72 +1,6 @@
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 
 import numpy as np
-
-
-@dataclass
-class TrieNode:
-    token: int
-    seed: int
-    depth: int = 0
-    children: list[TrieNode] = field(default_factory=list)
-
-    def add_child(self, token: int, seed: int) -> TrieNode:
-        child = TrieNode(token=token, seed=seed, depth=self.depth + 1)
-        self.children.append(child)
-        return child
-
-    def get_child(self, token: int) -> TrieNode | None:
-        for child in self.children:
-            if child.token == token:
-                return child
-        return None
-
-    def total_nodes(self) -> int:
-        return 1 + sum(child.total_nodes() for child in self.children)
-
-    def max_depth(self) -> int:
-        if not self.children:
-            return self.depth
-        return max(child.max_depth() for child in self.children)
-
-    def linearize(self, *, include_root: bool = True) -> FlatTrie:
-        """Flatten to FlatTrie in DFS order.
-
-        Args:
-            include_root: if False, exclude the root node. Children of
-                root get parent_index = -1 (they attend only to prefix).
-                Depths are shifted down by 1 (root children become depth 0).
-        """
-        token_ids: list[int] = []
-        seeds: list[int] = []
-        depths: list[int] = []
-        parent_indices: list[int] = []
-
-        stack: list[tuple[TrieNode, int]] = [(self, -1)]
-
-        while stack:
-            node, parent_idx = stack.pop()
-            cur_idx = len(token_ids)
-            token_ids.append(node.token)
-            seeds.append(node.seed)
-            depths.append(node.depth)
-            parent_indices.append(parent_idx)
-            stack.extend((child, cur_idx) for child in reversed(node.children))
-
-        if not include_root:
-            token_ids = token_ids[1:]
-            seeds = seeds[1:]
-            depths = [d - 1 for d in depths[1:]]
-            parent_indices = [-1 if p == 0 else p - 1 for p in parent_indices[1:]]
-
-        return FlatTrie(
-            token_ids=np.array(token_ids, dtype=np.int32),
-            seeds=np.array(seeds, dtype=np.uint64),
-            depths=np.array(depths, dtype=np.int32),
-            parent_indices=np.array(parent_indices, dtype=np.int32),
-        )
 
 
 @dataclass(frozen=True)
@@ -122,3 +56,60 @@ class FlatTrie:
             accepted_indices.append(child_idx)
 
         return accepted_tokens, np.array(accepted_indices, dtype=np.int32)
+
+
+@dataclass
+class TrieNode:
+    token: int
+    seed: int
+    depth: int = 0
+    children: list["TrieNode"] = field(default_factory=list)
+
+    def add_child(self, token: int, seed: int) -> "TrieNode":
+        child = TrieNode(token=token, seed=seed, depth=self.depth + 1)
+        self.children.append(child)
+        return child
+
+    def get_child(self, token: int) -> "TrieNode | None":
+        for child in self.children:
+            if child.token == token:
+                return child
+        return None
+
+    def total_nodes(self) -> int:
+        return 1 + sum(child.total_nodes() for child in self.children)
+
+    def max_depth(self) -> int:
+        if not self.children:
+            return self.depth
+        return max(child.max_depth() for child in self.children)
+
+    def linearize(self, *, include_root: bool = True) -> FlatTrie:
+        token_ids: list[int] = []
+        seeds: list[int] = []
+        depths: list[int] = []
+        parent_indices: list[int] = []
+
+        stack: list[tuple[TrieNode, int]] = [(self, -1)]
+
+        while stack:
+            node, parent_idx = stack.pop()
+            cur_idx = len(token_ids)
+            token_ids.append(node.token)
+            seeds.append(node.seed)
+            depths.append(node.depth)
+            parent_indices.append(parent_idx)
+            stack.extend((child, cur_idx) for child in reversed(node.children))
+
+        if not include_root:
+            token_ids = token_ids[1:]
+            seeds = seeds[1:]
+            depths = [d - 1 for d in depths[1:]]
+            parent_indices = [-1 if p == 0 else p - 1 for p in parent_indices[1:]]
+
+        return FlatTrie(
+            token_ids=np.array(token_ids, dtype=np.int32),
+            seeds=np.array(seeds, dtype=np.uint64),
+            depths=np.array(depths, dtype=np.int32),
+            parent_indices=np.array(parent_indices, dtype=np.int32),
+        )

@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 import dataclasses
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from typing import Self
 
 import jax
 import jax.numpy as jnp
@@ -73,13 +72,13 @@ class SpeculativeDecodingResult:
 class GumbelSeed:
     value: int
 
-    def derive(self, depth: int) -> GumbelSeed:
+    def derive(self, depth: int) -> Self:
         h = self.value + depth * 2654435761
         h = ((h >> 16) ^ h) * 0x45D9F3B37197344D & 0xFFFFFFFFFFFFFFFF
         h = ((h >> 16) ^ h) * 0x45D9F3B37197344D & 0xFFFFFFFFFFFFFFFF
         return GumbelSeed(((h >> 16) ^ h) & 0xFFFFFFFFFFFFFFFF)
 
-    def advance(self, context_len: int) -> GumbelSeed:
+    def advance(self, context_len: int) -> Self:
         return GumbelSeed((self.value * 2654435761 ^ context_len) & 0xFFFFFFFFFFFFFFFF)
 
     def sample(self, logits: jnp.ndarray) -> int:
@@ -123,7 +122,7 @@ class SpeculationContext:
         drafter: Drafter,
         config: SamplerConfig,
         eos_set: set[int],
-    ) -> SpeculationContext:
+    ) -> Self:
         return cls(
             decoder=decoder,
             drafter=drafter,
@@ -187,7 +186,7 @@ class SpeculationContext:
 
     def sample_and_accept(
         self,
-        lm: LMState,
+        lm: LMState,  # noqa: ARG002
         trie: TrieNode,
         fwd: DecoderResult,
         flat: FlatTrie,
@@ -221,10 +220,12 @@ class SpeculationContext:
         cache_len = int(lm.kv_cache[0].current_length[0])
         num_accepted = len(result.accepted_tokens)
 
-        kept_fwd = np.concatenate([
-            np.array([0], dtype=np.int32),
-            result.accepted_indices.astype(np.int32),
-        ])
+        kept_fwd = np.concatenate(
+            [
+                np.array([0], dtype=np.int32),
+                result.accepted_indices.astype(np.int32),
+            ]
+        )
         total_kept = 1 + num_accepted
         max_compact = self.config.K + 1
 

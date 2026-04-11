@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 import struct
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -77,7 +76,7 @@ class MedusaDrafter(Drafter):
         return header + body
 
     @classmethod
-    def _deserialize(cls, data: bytes, **kwargs: object) -> MedusaDrafter:
+    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
         width = int(kwargs.get("width", 4))
         num_heads, d_model, vocab_size = struct.unpack("<3I", data[:12])
         heads = MedusaHeads(num_heads, d_model, vocab_size, key=jax.random.key(0))
@@ -114,7 +113,7 @@ def train_medusa(
     numepochs: int = 1,
     progress_callback: Callable[[MedusaTrainingEvent], None] | None = None,
     key: jax.random.PRNGKey | None = None,
-) -> MedusaDrafter:
+) -> Self:
     if key is None:
         key = jax.random.key(0)
 
@@ -146,16 +145,19 @@ def train_medusa(
     def loss_fn(heads: MedusaHeads, hiddens: jnp.ndarray, targets: jnp.ndarray) -> jnp.ndarray:
         def per_sample(h: jnp.ndarray, t: jnp.ndarray) -> jnp.ndarray:
             logits = heads.predict(h)
-            losses = jnp.stack([
-                optax.softmax_cross_entropy_with_integer_labels(logits[k], t[k])
-                for k in range(heads.num_heads)
-            ])
+            losses = jnp.stack(
+                [optax.softmax_cross_entropy_with_integer_labels(logits[k], t[k]) for k in range(heads.num_heads)]
+            )
             return jnp.mean(losses)
+
         return jnp.mean(jax.vmap(per_sample)(hiddens, targets))
 
     @eqx.filter_jit
     def step(
-        heads: MedusaHeads, opt_state: optax.OptState, hiddens: jnp.ndarray, targets: jnp.ndarray,
+        heads: MedusaHeads,
+        opt_state: optax.OptState,
+        hiddens: jnp.ndarray,
+        targets: jnp.ndarray,
     ) -> tuple[MedusaHeads, optax.OptState, jnp.ndarray]:
         loss, grads = eqx.filter_value_and_grad(loss_fn)(heads, hiddens, targets)
         updates, opt_state = optimizer.update(grads, opt_state, eqx.filter(heads, eqx.is_array))
@@ -166,7 +168,7 @@ def train_medusa(
     num_batches = (len(all_hiddens) + batch_size - 1) // batch_size
     global_step = 0
 
-    for epoch in range(numepochs):
+    for _epoch in range(numepochs):
         perm = jax.random.permutation(jax.random.key(global_step), len(all_hiddens))
         shuffled_h = all_hiddens[perm]
         shuffled_t = all_targets[perm]

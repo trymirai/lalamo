@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import dataclasses
 import random
 import struct
@@ -10,7 +8,6 @@ from itertools import chain, repeat, tee
 from math import exp
 from typing import Self
 
-import numpy as np
 import xxhash
 
 from lalamo.data.lalamo_completions import LalamoCompletion
@@ -228,7 +225,6 @@ def deserialize_tables(blob: bytes, offset: int, max_order: int) -> tuple[list[T
     return tables, offset
 
 
-
 @dataclass(frozen=True, eq=False)
 class NGramModel:
     """Multi-order n-gram with Kneser-Ney smoothing."""
@@ -290,7 +286,6 @@ class NGramModel:
         return cls(max_order, tuple(tables), discount)
 
 
-
 def top_k_from_probs(probs: dict[int, float], k: int) -> list[int]:
     return [tok for tok, _ in sorted(probs.items(), key=lambda x: -x[1])[:k]]
 
@@ -336,8 +331,12 @@ class NGramDrafter(Drafter):
         return root
 
     def update_after_verify(
-        self, prev_lm: LMState, accepted: list[int], bonus: int, new_lm: LMState,
-    ) -> NGramDrafter:
+        self,
+        prev_lm: LMState,
+        accepted: list[int],
+        bonus: int,  # noqa: ARG002
+        new_lm: LMState,  # noqa: ARG002
+    ) -> Self:
         new_context = self.context + (prev_lm.bonus,) + tuple(accepted)
         max_ctx = self.model.max_order - 1
         return dataclasses.replace(self, context=new_context[-max_ctx:] if max_ctx > 0 else ())
@@ -346,7 +345,7 @@ class NGramDrafter(Drafter):
         return self.model.serialize()
 
     @classmethod
-    def _deserialize(cls, data: bytes, **kwargs: object) -> NGramDrafter:
+    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
         width = int(kwargs.get("width", 4))
         depth = int(kwargs.get("depth", 8))
         return cls(model=NGramModel.deserialize(data), width=width, depth=depth)
@@ -360,7 +359,6 @@ class NGramDrafter(Drafter):
                 break
             seq.append(random.choices(list(probs.keys()), weights=list(probs.values()), k=1)[0])
         return seq
-
 
 
 class NGramTrainingEvent:
@@ -381,7 +379,7 @@ def train_ngram(
     width: int = 4,
     depth: int = 8,
     progress_callback: Callable[[NGramTrainingEvent], None] | None = None,
-) -> NGramDrafter:
+) -> Self:
     """Train an n-gram drafter from LLM inference traces.
 
     Returns a ready-to-use NGramDrafter with compressed hash tables.

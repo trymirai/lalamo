@@ -81,9 +81,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
     ) -> DecoderConfig:
         quantization = self.quantization or self.quantization_config
 
-        is_mlx = isinstance(quantization, MLXQuantizationConfig)
-
-        if is_mlx:
+        if isinstance(quantization, MLXQuantizationConfig):
             if self.tie_word_embeddings:
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
                     input_scale=None,
@@ -102,6 +100,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     activation_quantization_mode=None,
                     activation_precision=activation_precision,
                 )
+            is_mlx = True
         else:  # noqa: PLR5501
             if self.tie_word_embeddings:
                 embedding_config = TiedEmbeddingConfig(
@@ -115,6 +114,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     logit_soft_cap=None,
                     precision=activation_precision,
                 )
+            is_mlx = False
 
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,

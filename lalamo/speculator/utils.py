@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import functools
 
 import jax
@@ -17,9 +15,7 @@ def extract_hiddens(
     token: int,
 ) -> tuple[jnp.ndarray, ...]:
     """Extract per-layer hidden states + output norm at a single position."""
-    return tuple(lr.outputs[batch, token] for lr in trace.layer_results) + (
-        trace.output_norm[batch, token],
-    )
+    return tuple(lr.outputs[batch, token] for lr in trace.layer_results) + (trace.output_norm[batch, token],)
 
 
 def top_k_from_logits(logits: jnp.ndarray, k: int) -> list[int]:

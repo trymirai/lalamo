@@ -1,7 +1,14 @@
 from .drafter import Drafter
 from .drafters import MedusaDrafter, NGramDrafter
 from .inference import CollectTracesEvent, inference_collect_traces
-from .speculate import LMState, SamplerConfig, SpeculationContext, SpeculationRun, SpeculationStep, SpeculativeDecodingResult
+from .speculate import (
+    LMState,
+    SamplerConfig,
+    SpeculationContext,
+    SpeculationRun,
+    SpeculationStep,
+    SpeculativeDecodingResult,
+)
 from .trie import FlatTrie, TrieNode
 
 __all__ = [
