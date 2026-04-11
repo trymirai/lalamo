@@ -25,7 +25,16 @@ from lalamo.speculator.drafter import Drafter, LMState, SamplerConfig
 from lalamo.speculator.trie import FlatTrie, TrieNode
 
 if TYPE_CHECKING:
-    from lalamo.modules.decoder import Decoder
+    from lalamo.modules.decoder import Decoder, DecoderActivationTrace
+
+
+def _extract_hiddens(
+    trace: DecoderActivationTrace, batch: int, token: int,
+) -> tuple[jnp.ndarray, ...]:
+    """Extract per-layer hidden states + output norm at a single position."""
+    return tuple(
+        lr.outputs[batch, token] for lr in trace.layer_results
+    ) + (trace.output_norm[batch, token],)
 
 
 # ── Data types ──────────────────────────────────────────────────
@@ -142,8 +151,8 @@ class SpeculationContext:
         eos_set: set[int],
         use_gumbel: bool = True,
     ) -> SpeculationContext:
-        lm_w = jnp.array(np.asarray(decoder.embedding.output_weights).astype(np.float32))
-        embed_w = jnp.array(np.asarray(decoder.embedding.input_weights).astype(np.float32))
+        lm_w = jnp.array(np.asarray(decoder.embedding.unembedding_matrix).astype(np.float32))
+        embed_w = jnp.array(np.asarray(decoder.embedding.embedding_matrix).astype(np.float32))
         return cls(
             decoder=decoder,
             drafter=drafter,
@@ -168,7 +177,7 @@ class SpeculationContext:
         )
         return LMState(
             kv_cache=fwd.updated_state,
-            h_i=fwd.activation_trace.output_norm[0, -1],
+            hiddens=_extract_hiddens(fwd.activation_trace, 0, -1),
             logits=fwd.logits[0, -1],
             position=len(prompt_ids),
             context=tuple(prompt_ids),
@@ -189,7 +198,7 @@ class SpeculationContext:
         )
         return LMState(
             kv_cache=fwd.updated_state,
-            h_i=fwd.activation_trace.output_norm[0, 0],
+            hiddens=_extract_hiddens(fwd.activation_trace, 0, 0),
             logits=fwd.logits[0, 0],
             position=pos + 1,
             context=lm.context + (token,),
@@ -300,7 +309,7 @@ class SpeculationContext:
             last_fwd_idx = int(fwd_indices[-1])
             new_lm = LMState(
                 kv_cache=new_kv,
-                h_i=jnp.array(fwd.activation_trace.output_norm[0, last_fwd_idx]),
+                hiddens=_extract_hiddens(fwd.activation_trace, 0, last_fwd_idx),
                 logits=jnp.array(fwd.logits[0, last_fwd_idx]),
                 position=cache_len + num_accepted,
                 context=lm.context + tuple(accepted_tokens),

@@ -64,11 +64,11 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]: ...
 
     @property
-    def input_weights(self) -> Float[Array, "vocabulary channels"]:
+    def embedding_matrix(self) -> Float[Array, "vocabulary channels"]:
         return self._prepare_input_weights()
 
     @property
-    def output_weights(self) -> Float[Array, "vocabulary channels"]:
+    def unembedding_matrix(self) -> Float[Array, "vocabulary channels"]:
         return self._prepare_output_weights()
 
     @property

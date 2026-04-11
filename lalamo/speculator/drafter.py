@@ -14,10 +14,16 @@ if TYPE_CHECKING:
 
 @dataclass(frozen=True)
 class LMState:
-    """Immutable snapshot after the last verified token."""
+    """Immutable snapshot after the last verified token.
+
+    ``hiddens`` stores per-layer hidden states at the head position.
+    The last entry (``hiddens[-1]``) is the output-norm result — equivalent
+    to the old ``h_i``.  Earlier entries are intermediate layer outputs,
+    available for EAGLE-style drafters that condition on multiple layers.
+    """
 
     kv_cache: State
-    h_i: jnp.ndarray  # (d,)     — hidden state at head
+    hiddens: tuple[jnp.ndarray, ...]  # per-layer (d,); hiddens[-1] = output norm
     logits: jnp.ndarray  # (vocab,) — next-token distribution at head
     position: int  # tokens written to the KV cache so far
     context: tuple[int, ...] = ()  # verified token history (n-gram suffix lookup)
