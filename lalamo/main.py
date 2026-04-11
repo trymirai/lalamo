@@ -1123,6 +1123,10 @@ def speculate_eval(
         int,
         Option(help="Number of MT-Bench questions to evaluate"),
     ] = 80,
+    drafter_name: Annotated[
+        str,
+        Option(help="Drafter type (ngram, medusa)"),
+    ] = "ngram",
     cache_path: Annotated[
         Path,
         Option(help="Path to cache MT-Bench questions"),
@@ -1137,9 +1141,9 @@ def speculate_eval(
     mp = llm.message_processor
     eos_set = {int(e) for e in llm.stop_token_ids}
 
-    print(f"Loading speculator: {speculator_path}...", file=sys.stderr)
+    print(f"Loading drafter ({drafter_name}): {speculator_path}...", file=sys.stderr)
     with open(speculator_path, "rb") as fd:
-        drafter = Drafter.deserialize("ngram", fd.read(), width=width, depth=depth)
+        drafter = Drafter.deserialize(drafter_name, fd.read(), width=width, depth=depth)
 
     config = SamplerConfig(width=width, K=depth, max_tokens=max_tokens)
     questions = load_mtbench(cache_path)[:num_questions]

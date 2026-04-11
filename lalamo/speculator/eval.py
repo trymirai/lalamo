@@ -82,7 +82,7 @@ def run_mtbench(
 
         n_tok = len(result.generated)
         n_step = result.num_steps
-        mae = result.mean_accepted_length
+        mae = result.mean_draft_accepted
 
         if cat not in results_by_cat:
             results_by_cat[cat] = {"tokens": 0, "steps": 0, "accepted": 0, "proposed": 0, "count": 0}
