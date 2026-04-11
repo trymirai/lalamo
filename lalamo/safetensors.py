@@ -11,7 +11,7 @@ import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Array
 
-from lalamo.utils import LazyDict
+from lalamo.utils.lazy_collections import LazyDict
 
 SF2J = {
     "BOOL": jnp.dtype(jnp.bool_),

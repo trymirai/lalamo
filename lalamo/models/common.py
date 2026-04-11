@@ -13,9 +13,9 @@ from tokenizers import Tokenizer
 
 from lalamo.common import ParameterPath, is_abstract_array
 from lalamo.message_processor import Message, MessageProcessor, MessageProcessorConfig, UserMessage
+from lalamo.module import EmptyInitializer
 from lalamo.modules import Classifier, Decoder, LalamoModule, config_converter
 from lalamo.modules.classifier import ClassifierConfig, ClassifierResult
-from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.decoder import DecoderConfig, DecoderResult
 from lalamo.safetensors import safe_read
 

@@ -3,7 +3,7 @@ import os
 # Must run before importing jax / tensorflow, this hides the XLA optimization logs
 os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "3")
 
-from lalamo.checkpoint import CheckpointManager
+from lalamo.checkpoint_manager import CheckpointManager
 from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
@@ -27,8 +27,7 @@ from lalamo.message_processor import (
 from lalamo.model_import import ModelSpec, import_model
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelType, UseCase, WeightsType
 from lalamo.models import ClassifierModel, LanguageModel
-from lalamo.modules.common import ShardingConfig, pad_and_apply_data_sharding
-from lalamo.quantization import QuantizationMode
+from lalamo.module import ShardingConfig, pad_and_apply_data_sharding
 from lalamo.speculator import (
     CollectTracesEvent,
     SpeculatorTrainingEvent,
@@ -54,7 +53,6 @@ __all__ = [
     "ModelSpec",
     "ModelType",
     "Precision",
-    "QuantizationMode",
     "ShardingConfig",
     "SpeculatorTrainingEvent",
     "SystemMessage",

@@ -11,8 +11,8 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Int, Key
 
+from lalamo.module import Initializer
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
-from lalamo.modules.common import Initializer
 from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]

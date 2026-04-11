@@ -1,15 +1,13 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.common import ParameterPath
+from lalamo.modules.common import Initializer
 
 from .base import ArrayForwardPassConfig, CompressedArray, CompressedArraySpec
-
-if TYPE_CHECKING:
-    from lalamo.modules.common import Initializer
 
 
 @dataclass(frozen=True)

@@ -7,12 +7,12 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
+from lalamo.module import ForwardPassMode, Initializer
 from lalamo.modules.audio.fishaudio.fishaudio_common import (
     default_fishaudio_sampling_policy,
 )
 from lalamo.modules.audio.fishaudio.fishaudio_consts import REPEAT_WINDOW_SIZE, SHORT_LOGITS_SIZE
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
-from lalamo.modules.common import ForwardPassMode, Initializer
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.token_mixers.state.common import State

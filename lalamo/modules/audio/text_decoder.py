@@ -3,8 +3,7 @@ from dataclasses import dataclass
 
 from jaxtyping import Array, Key
 
-from lalamo.common import ParameterTree
-from lalamo.modules.common import Initializer, LalamoModule
+from lalamo.module import Initializer, LalamoModule
 from lalamo.sampling import SamplingPolicy
 
 

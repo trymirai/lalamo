@@ -30,8 +30,8 @@ from lalamo.models import (
     TTSGenerator,
     TTSGeneratorConfig,
 )
+from lalamo.module import ShardingConfig, use_sharding
 from lalamo.modules import Classifier, Decoder, LalamoModule, TTSModel
-from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.utils import process_chat_template
 

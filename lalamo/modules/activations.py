@@ -5,7 +5,7 @@ import jax.numpy as jnp
 from attr import dataclass
 from jaxtyping import Array, Float
 
-from lalamo.modules.common import register_config_union
+from lalamo.module import register_config_union
 
 __all__ = [
     "GELU",

@@ -6,6 +6,7 @@ from jax import numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.module import ForwardPassMode, Initializer, LalamoModule
 from lalamo.modules.activations import Activation
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
@@ -15,7 +16,6 @@ from lalamo.modules.audio.common_modules import (
     Snake1d,
     Snake1dConfig,
 )
-from lalamo.modules.common import ForwardPassMode, Initializer, LalamoModule
 from lalamo.modules.embedding import TiedEmbedding, TiedEmbeddingConfig
 from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig

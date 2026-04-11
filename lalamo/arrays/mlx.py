@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import jax
 import jax.numpy as jnp
@@ -8,12 +8,10 @@ from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.common import ParameterPath
+from lalamo.module import Initializer
 
 from .base import ArrayForwardPassConfig, CompressedArray, CompressedArraySpec, GradientEstimator
 from .quantization_helpers import pack_quant_weights, quantize_to_grid, unpack_quant_weights
-
-if TYPE_CHECKING:
-    from lalamo.modules.common import Initializer
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,3 @@
-import re
 from collections.abc import (
     Callable,
     Collection,
@@ -13,15 +12,14 @@ from collections.abc import (
 from dataclasses import dataclass
 from typing import overload
 
-import einops
-import jax.numpy as jnp
-from jaxtyping import Array
-
 __all__ = [
+    "LazyDict",
+    "MapCollection",
     "MapDictValues",
+    "MapIterable",
     "MapSequence",
-    "jax_uint4_to_packed_uint8",
-    "process_chat_template",
+    "MapValuesView",
+    "MapView",
 ]
 
 
@@ -107,49 +105,3 @@ class MapDictValues[K, OldV, NewV](Mapping[K, NewV]):
 
     def __len__(self) -> int:
         return len(self.collection)
-
-
-def jax_uint4_to_packed_uint8(array: Array) -> Array:
-    if array.dtype != jnp.uint4:
-        raise ValueError(f"Input array must have dtype jnp.uint4, but got {array.dtype}")
-
-    if not array.shape:
-        raise ValueError("Input array cannot be a scalar and must have at least one dimension.")
-
-    *_, last_dim = array.shape
-    if last_dim % 2 != 0:
-        raise ValueError(f"The last dimension of the input array must be even, but got shape {array.shape}")
-
-    low_nibbles, high_nibbles = einops.rearrange(
-        array.astype(jnp.uint8),
-        "... (dim_half two) -> two ... dim_half",
-        two=2,
-    )
-
-    packed = (high_nibbles << 4) | low_nibbles
-
-    return packed.astype(jnp.uint8)
-
-
-def jax_uint8_to_unpacked_uint4(array: Array) -> Array:
-    if array.dtype != jnp.uint8:
-        raise ValueError(f"Input array must have dtype jnp.uint8, but got {array.dtype}")
-
-    if not array.shape:
-        raise ValueError("Input array cannot be a scalar and must have at least one dimension.")
-
-    low_nibbles = array & 0x0F
-    high_nibbles = (array >> 4) & 0xF
-
-    unpacked = einops.rearrange(
-        jnp.stack([low_nibbles, high_nibbles]),
-        "two ... dim_half -> ... (dim_half two)",
-        two=2,
-    )
-
-    return unpacked.astype(jnp.uint4)
-
-
-def process_chat_template(template: str) -> str:
-    generation_block_tag_regex = re.compile(r"{%-?\s*(?:generation|endgeneration)\s*-?%}")
-    return generation_block_tag_regex.sub("", template)

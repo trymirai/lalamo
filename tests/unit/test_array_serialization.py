@@ -3,11 +3,11 @@ import jax
 import jax.numpy as jnp
 
 from lalamo.arrays.awq import AWQArray, AWQSpec
-from lalamo.arrays.mixture import MixtureArray
 from lalamo.arrays.full_precision import FullPrecisionArray, FullPrecisionSpec
 from lalamo.arrays.lora import LoRAArray
+from lalamo.arrays.mixture import MixtureArray
 from lalamo.arrays.mlx import MLXArray, MLXSpec
-from lalamo.serialization import UzuSerializable
+from lalamo.exportable import UzuSerializable
 from tests.common import assert_close
 
 

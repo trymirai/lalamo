@@ -11,9 +11,9 @@ from lalamo.model_import.loaders import (
     load_huggingface_decoder,
 )
 from lalamo.model_import.model_configs import ForeignClassifierConfig, ForeignLMConfig
+from lalamo.module import LalamoModule
 from lalamo.modules import Decoder
 from lalamo.modules.classifier import Classifier
-from lalamo.modules.common import LalamoModule
 
 __all__ = [
     "AWQQuantizationConfig",

@@ -3,8 +3,7 @@ from dataclasses import dataclass
 import equinox as eqx
 from jaxtyping import Array
 
-from lalamo.common import ParameterTree, require_tree
-from lalamo.modules.common import Initializer, LalamoModule, register_config_union
+from lalamo.module import Initializer, LalamoModule, register_config_union
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .audio_decoder import TTSAudioDecoder

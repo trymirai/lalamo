@@ -9,8 +9,7 @@ from einops import rearrange
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterPath
-from lalamo.registry_abc import RegistryABC
-from lalamo.serialization import UzuSerializable
+from lalamo.utils.registry_abc import RegistryABC
 
 from .base import ArraySpec
 from .quantization_helpers import pack_quant_weights, unpack_quant_weights

@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from enum import StrEnum
 from functools import partial
 
 import equinox as eqx
@@ -9,7 +10,7 @@ from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree
 
-from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
+from .common import ForwardPassMode, Initializer, LalamoModule
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
@@ -18,14 +19,19 @@ from .token_mixers.common import MixerForwardPassConfig
 from .utils import vmap_twice
 
 __all__ = [
-    "PLELayer",
-    "PLELayerConfig",
+    "PositionalEmbeddingSelector",
     "TransformerLayer",
     "TransformerLayerActivationTrace",
     "TransformerLayerConfig",
     "TransformerLayerForwardPassConfig",
     "TransformerLayerResult",
 ]
+
+
+class PositionalEmbeddingSelector(StrEnum):
+    GLOBAL = "global"
+    LOCAL = "sliding_window"
+    NONE = "none"
 
 
 @dataclass(frozen=True)

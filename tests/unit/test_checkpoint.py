@@ -6,7 +6,8 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from lalamo.checkpoint import CheckpointManager
+from lalamo.checkpoint_manager import CheckpointManager
+from lalamo.module import RandomInitializer
 from lalamo.modules import (
     DenseMLPConfig,
     FullPrecisionLinearConfig,
@@ -14,7 +15,6 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.activations import SiLU
-from lalamo.modules.common import RandomInitializer
 from lalamo.modules.decoder import DecoderConfig
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.rope import UnscaledRoPEConfig

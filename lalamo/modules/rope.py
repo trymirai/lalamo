@@ -23,8 +23,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
 from lalamo.common import ParameterTree
-
-from .common import Initializer, LalamoModule, register_config_union
+from lalamo.module import Initializer, LalamoModule, register_config_union
 
 __all__ = [
     "LinearScalingRoPEConfig",

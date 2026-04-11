@@ -7,22 +7,21 @@ dependencies = [
     "click>=8.1.8",
     "einops>=0.8.0",
     "equinox>=0.11.11",
-    "huggingface-hub[hf-transfer]>=0.27.1",
+    "huggingface-hub>=0.27.1",
     "jax>=0.8.1",
     "jaxtyping>=0.2.36",
     "jinja2>=3.1.6",
     "ml-dtypes>=0.5.1",
     "optax>=0.2.4",
+    "orbax-checkpoint>=0.11.33",
+    "polars>=1.33.1",
+    "requests>=2.32.5",
     "rich>=14.0.0",
+    "soundfile>=0.13.1",
     "thefuzz>=0.22.1",
     "tokenizers>=0.21.2",
     "typer>=0.15.1",
-    "polars>=1.33.1",
     "xxhash>=3.5.0",
-    # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
-    "requests>=2.32.5",
-    "soundfile>=0.13.1",
-    "orbax-checkpoint>=0.11.33",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
@@ -30,41 +29,40 @@ dynamic = ["version"]
 [project.optional-dependencies]
 cpu = ["jax[cpu]>=0.8.1"]
 cuda = ["jax[cuda]>=0.8.1"]
-tpu = ["jax[tpu]>=0.8.1"]
-pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
 nanocodec = ["torch>=2.8.0"]
-server = ["fastapi>=0.135.3", "uvicorn>=0.44.0"]
+pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
+tpu = ["jax[tpu]>=0.8.1"]
 
 [dependency-groups]
 dev = [
     "accelerate>=1.7.0",
     "autoawq>=0.2.9; platform_system == 'Linux' and platform_machine == 'x86_64'",
     "beartype>=0.19.0",
+    "bidict>=0.23.1",
+    "blobfile>=3.1.0",
     "cartesia-metal ; sys_platform == 'darwin'",
     "cartesia-mlx ; sys_platform == 'darwin'",
+    "fish-speech",
+    "httpx>=0.28.0",
+    "hypothesis>=6.150.0",
     "ipykernel>=6.29.5",
     "ipywidgets>=8.1.5",
     "kernels>=0.10.2",
     "memray>=1.17.2",
     "mlx-lm>=0.28.3 ; sys_platform == 'darwin'",
+    "omegaconf>=2.3.0",
+    "pyrefly>=0.60.2",
     "pytest-env>=1.1.5",
+    "pytest-xdist>=3.8.0",
     "pytest>=8.3.4",
+    "ruff>=0.14.0",
+    "tiktoken>=0.12.0",
     "torch>=2.8.0",
-    "torchaudio>=2.8.0",
     "torchao>=0.7.0",
+    "torchaudio>=2.8.0",
     "transformers>=5.2.0",
     "twine>=6.1.0",
-    "ruff>=0.14.0",
-    "ty>=0.0.4",
-    "pytest-xdist>=3.8.0",
-    "hypothesis>=6.150.0",
-    "fish-speech",
-    "bidict>=0.23.1",
-    "tiktoken>=0.12.0",
-    "omegaconf>=2.3.0",
-    "blobfile>=3.1.0",
-    "httpx>=0.28.0",
 ]
 
 [project.scripts]
@@ -102,6 +100,8 @@ torchaudio = { index = "torch-cpu" }
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="035939e9" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="035939e9" , subdirectory = "cartesia-mlx" }
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
+orbax-checkpoint = { git = "https://github.com/google/orbax.git", subdirectory = "checkpoint" }  # TODO(norpadon): Remove it when they fix the flax dependency
+equinox = { git = "https://github.com/patrick-kidger/equinox.git" }  # TODO(norpadon): Remove it when they fix the __new__ and __call__ return types in metaclasses
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
@@ -120,12 +120,6 @@ JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
 TORCH_COMPILE_DISABLE = "1"
 
-[tool.pyright]
-venv = "."
-venvPath = ".venv"
-pythonVersion = "3.12"
-typeCheckingMode = "standard"
-
 [tool.ruff]
 target-version = "py312"
 line-length = 119
@@ -133,42 +127,48 @@ line-length = 119
 [tool.ruff.lint]
 select = ["ALL"]
 ignore = [
-    "C408",
-    "C901",
-    "D",
-    "EM101",
-    "EM102",
-    "ERA001",
-    "FIX002",
-    "F722",
-    "FBT001",
-    "FBT002",
-    "N812",
-    "PD008",
-    "PGH003",
-    "PLC0415",
-    "PLR0904",
-    "PLR0912",
-    "PLR0913",
-    "PLR0915",
-    "PLR0917",
-    "PLR2004",
-    "PLR6301",
-    "PLW0108",
-    "PT",
-    "PTH123",
-    "RET503",
-    "RET504",
-    "RUF005",
-    "S",
-    "SIM108",
-    "T20",
-    "TD003",
-    "TRY003",
-    "CPY001",
-    "COM812",
-    "TC003",
-    "PLW0108"
+    # Documentation and file metadata.
+    "D",        # pydocstyle rules: require docstrings and enforce docstring formatting.
+    "CPY001",   # Require a copyright notice at the top of each file.
+
+    # Exceptions and error reporting.
+    "EM101",    # Disallow raw string literals directly in exception constructors.
+    "EM102",    # Disallow f-string literals directly in exception constructors.
+    "TRY003",   # Require long exception messages to live on the exception type itself.
+
+    # Typing and import hygiene.
+    "F722",     # Flag syntax errors inside forward annotations.
+    "TC001",    # Move application import into a type-checking block.
+    "TC003",    # Move stdlib imports used only for typing into `if TYPE_CHECKING:`.
+
+    # Testing and security rule families.
+    "PT",       # flake8-pytest-style rules: enforce pytest fixture, marker, and assertion conventions.
+    "S",        # flake8-bandit rules: flag likely security issues.
+
+    # Complexity, signatures, and object design.
+    "C901",     # Flag overly complex functions.
+    "FBT001",   # Flag boolean-typed positional parameters.
+    "FBT002",   # Flag positional parameters whose default value is boolean.
+    "PLR0904",  # Flag classes with too many public methods.
+    "PLR0911",  # Flag functions with too many return statements.
+    "PLR0912",  # Flag functions with too many branches.
+    "PLR0913",  # Flag functions with too many parameters.
+    "PLR0915",  # Flag functions with too many statements.
+    "PLR0917",  # Flag functions with too many positional parameters.
+    "PLR2004",  # Flag magic numbers in comparisons.
+    "PLR6301",  # Flag instance methods that never use `self`.
+
+    # Formatting and simplification rewrites.
+    "SIM108",   # Prefer a ternary expression over a simple `if`/`else` assignment block.
+    "COM812",   # Require trailing commas in multiline literals and calls.
+
+    # Comments, TODOs, and debug output.r
+    "FIX002",   # Flag TODO comments.
+    "T20",      # flake8-print rules: flag `print()` and `pprint()` calls.
+    "TD003",    # Require TODO comments to include an issue link.
+
+    # Library API conventions.
+    "PTH123",   # Prefer `Path.open()` over builtin `open()`.
 ]
 
 [tool.typos.default.extend-words]
@@ -180,3 +180,9 @@ pard = "pard"
 ba = "ba"
 PARD = "PARD"
 pard = "pard"
+
+[tool.pyrefly]
+python-version = "3.12.0"
+infer-with-first-use = false
+python-interpreter-path = ".venv/bin/python"
+project-includes = ["./"]

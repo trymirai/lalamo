@@ -5,6 +5,7 @@ from einops import einsum as einops_einsum
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from lalamo.module import RandomInitializer
 from lalamo.modules import (
     Identity,
     LinearConfig,
@@ -12,7 +13,6 @@ from lalamo.modules import (
     Mamba2Config,
     SeparableCausalConvConfig,
 )
-from lalamo.modules.common import RandomInitializer
 from lalamo.modules.token_mixers.mamba import exp_segsum, fused_ssd_intra_chunk
 from tests.common import assert_close
 

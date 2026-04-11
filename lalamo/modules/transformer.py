@@ -6,19 +6,19 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.common import ParameterTree
-from lalamo.modules.token_mixers import AttentionConfig
-from lalamo.modules.utils import vmap_twice
 
-from .common import ForwardPassMode, Initializer, LalamoModule, PositionalEmbeddingSelector
+from .common import ForwardPassMode, Initializer, LalamoModule
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPE, RoPEConfig
-from .token_mixers import State
+from .token_mixers import AttentionConfig, State
 from .transformer_layer import (
+    PositionalEmbeddingSelector,
     TransformerLayer,
     TransformerLayerConfig,
     TransformerLayerForwardPassConfig,
     TransformerLayerResult,
 )
+from .utils import vmap_twice
 
 __all__ = [
     "Transformer",
@@ -157,7 +157,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                     positional_embeddings_to_use = local_positional_embeddings
                 case PositionalEmbeddingSelector.GLOBAL:
                     positional_embeddings_to_use = global_positional_embeddings
-                case PositionalEmbeddingSelector.NONE:
+                case PositionalEmbeddingSelector.NONE | _:
                     positional_embeddings_to_use = None
 
             layer_result = layer(

@@ -15,8 +15,8 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     instantiate_dac_config_from_fishaudio_config,
     load_fishaudio_text_decoder,
 )
+from lalamo.module import EmptyInitializer
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
-from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import GreedyPolicy
 from tests.common import assert_close, skip_on_gpu

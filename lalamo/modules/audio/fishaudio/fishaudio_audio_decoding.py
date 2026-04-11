@@ -3,8 +3,8 @@ from dataclasses import dataclass
 
 from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.module import Initializer
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
-from lalamo.modules.common import Initializer
 
 from .fishaudio_modules import (
     ConvNeXtSpatialParams,

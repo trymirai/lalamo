@@ -10,6 +10,7 @@ pytest.importorskip("torch")
 
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.huggingface import load_delta_net_attention
+from lalamo.module import RandomInitializer
 from lalamo.modules import (
     DeltaNetAttentionConfig,
     LinearConfig,
@@ -17,7 +18,6 @@ from lalamo.modules import (
     SeparableCausalConvConfig,
     UpcastMode,
 )
-from lalamo.modules.common import RandomInitializer
 from lalamo.modules.torch_interop import torch_to_jax
 from tests.common import assert_close
 

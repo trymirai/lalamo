@@ -5,9 +5,8 @@ import equinox as eqx
 import jax
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.common import Initializer, PositionalEmbeddingSelector
-from lalamo.modules.linear import LinearBase, LinearConfig
+from lalamo.module import Initializer, PositionalEmbeddingSelector
+from lalamo.modules.linear import Linear, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.utils import vmap_with_key
 

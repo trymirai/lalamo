@@ -4,18 +4,15 @@ from abc import abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
-
-if TYPE_CHECKING:
-    from lalamo.modules.common import Initializer
+from typing import Any, Generic, Self, TypeVar, cast
 
 import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Key
 
 from lalamo.common import ParameterPath
-from lalamo.registry_abc import RegistryABC
-from lalamo.serialization import UzuSerializable
+from lalamo.module import Initializer
+from lalamo.utils.registry_abc import RegistryABC
 
 from lalamo.common import ParameterTree
 

@@ -1,4 +1,4 @@
-from lalamo.modules.common import register_config_union
+from lalamo.module import register_config_union
 
 from .attention import Attention, AttentionConfig, AttentionResult
 from .common import MixerForwardPassConfig, TokenMixerBase, TokenMixerResult

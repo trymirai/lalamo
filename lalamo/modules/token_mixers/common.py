@@ -7,7 +7,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
 from lalamo.arrays.base import ArrayForwardPassConfig
-from lalamo.modules.common import Initializer, LalamoModule, PositionalEmbeddingSelector
+from lalamo.module import Initializer, LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
 
 from .state.common import StateLayerBase

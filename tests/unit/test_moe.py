@@ -5,6 +5,7 @@ import pytest
 from lalamo.arrays import FullPrecisionArray
 from lalamo.common import ParameterPath
 from lalamo.model_import.loaders.huggingface import load_moe
+from lalamo.module import RandomInitializer
 from lalamo.modules import (
     GELU,
     DenseMLPConfig,
@@ -13,7 +14,6 @@ from lalamo.modules import (
     MixtureOfExpertsConfig,
     SoftmaxRouting,
 )
-from lalamo.modules.common import RandomInitializer
 from tests.common import assert_close
 
 

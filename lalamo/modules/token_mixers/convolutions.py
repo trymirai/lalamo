@@ -7,8 +7,7 @@ import jax.numpy as jnp
 from einops import einsum
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.common import ParameterTree, require_array, require_mapping
-from lalamo.modules.common import Initializer, LalamoModule
+from lalamo.module import Initializer, LalamoModule
 
 __all__ = [
     "CausalConvResult",

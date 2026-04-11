@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 
-from lalamo.modules import AttentionConfig, FullPrecisionLinearConfig
-from lalamo.modules.common import RandomInitializer
+from lalamo.module import RandomInitializer
+from lalamo.modules import AttentionConfig, LinearConfig
 
 
 def test_gated_attention_export_import_roundtrip() -> None:

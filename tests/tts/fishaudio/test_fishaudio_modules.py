@@ -38,6 +38,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
     lalamo_transformer_cfg_from_fish_audio_codec_cfg,
 )
 from lalamo.model_import.model_specs.fishaudio import FISHAUDIO_TTS_MODELS
+from lalamo.module import EmptyInitializer
 from lalamo.modules import GELU, ForwardPassMode
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -60,7 +61,6 @@ from lalamo.modules.audio.fishaudio.fishaudio_modules import (
     UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
-from lalamo.modules.common import EmptyInitializer
 from lalamo.modules.embedding import TiedEmbeddingConfig
 from lalamo.modules.linear import LinearConfig
 from lalamo.modules.normalization import NormalizationConfig, UpcastMode

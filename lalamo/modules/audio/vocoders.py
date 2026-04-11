@@ -2,8 +2,7 @@ from dataclasses import dataclass
 
 from jaxtyping import Array, Float
 
-from lalamo.common import ParameterTree
-from lalamo.modules.common import Initializer, LalamoModule
+from lalamo.module import Initializer, LalamoModule
 
 
 @dataclass(frozen=True)

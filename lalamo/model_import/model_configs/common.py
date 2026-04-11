@@ -8,9 +8,9 @@ from typing import ClassVar, Self
 import cattrs
 from jaxtyping import Array, DTypeLike
 
+from lalamo.module import EmptyInitializer, LalamoModule
 from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
-from lalamo.modules.common import EmptyInitializer, LalamoModule
-from lalamo.registry_abc import RegistryABC
+from lalamo.utils.registry_abc import RegistryABC
 
 __all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
 

@@ -6,8 +6,7 @@ import jax.numpy as jnp
 from jax import lax
 from jaxtyping import Array, Float
 
-from lalamo.common import ParameterTree
-from lalamo.modules.common import Initializer, LalamoModule
+from lalamo.module import Initializer, LalamoModule
 
 
 def _get_extra_padding_for_conv1d(length: int, kernel_size: int, stride: int, padding_total: int = 0) -> int:

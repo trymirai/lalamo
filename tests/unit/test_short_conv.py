@@ -3,13 +3,13 @@ import jax.numpy as jnp
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from lalamo.module import RandomInitializer
 from lalamo.modules import (
     LinearConfig,
     SeparableCausalConvConfig,
     ShortConv,
     ShortConvConfig,
 )
-from lalamo.modules.common import RandomInitializer
 from tests.common import assert_close
 
 

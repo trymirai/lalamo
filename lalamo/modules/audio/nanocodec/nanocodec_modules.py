@@ -11,6 +11,7 @@ import jax
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
+from lalamo.module import Initializer, LalamoModule
 from lalamo.modules.audio.common_modules import (
     CausalConv1d,
     CausalConv1dConfig,
@@ -19,7 +20,6 @@ from lalamo.modules.audio.common_modules import (
     Snake1d,
     Snake1dConfig,
 )
-from lalamo.modules.common import Initializer, LalamoModule
 
 __all__ = [
     "CausalHiFiGANDecoder",

@@ -2,7 +2,7 @@
 import gc
 import weakref
 
-from lalamo.registry_abc import RegistryABC
+from lalamo.utils.registry_abc import RegistryABC
 
 
 def test_basic_registration_and_multilevel() -> None:
