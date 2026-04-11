@@ -1193,6 +1193,80 @@ def test(
     console.print(table)
 
 
+@speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")
+def speculate_eval(
+    model_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the lalamo model directory",
+            metavar="MODEL_PATH",
+        ),
+    ],
+    speculator_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the trained speculator file",
+            metavar="SPECULATOR_PATH",
+        ),
+    ],
+    width: Annotated[
+        int,
+        Option(help="Max children per trie node"),
+    ] = 4,
+    depth: Annotated[
+        int,
+        Option(help="Max speculation depth (K)"),
+    ] = 8,
+    max_tokens: Annotated[
+        int,
+        Option(help="Max tokens per question"),
+    ] = 2048,
+    num_questions: Annotated[
+        int,
+        Option(help="Number of MT-Bench questions to evaluate"),
+    ] = 80,
+    use_gumbel: Annotated[
+        bool,
+        Option(help="Use Gumbel sampling instead of greedy"),
+    ] = False,
+) -> None:
+    from lalamo.speculator.drafter import SamplerConfig
+    from lalamo.speculator.eval import load_mtbench, print_results, run_mtbench
+    from lalamo.speculator.ngram_drafter import NGramDrafter
+
+    print(f"Loading model: {model_path}...", file=sys.stderr)
+    llm = LanguageModelConfig.load_model(model_path)
+    decoder = llm.model
+    mp = llm.message_processor
+    eos_set = {int(e) for e in llm.stop_token_ids}
+
+    print(f"Loading speculator: {speculator_path}...", file=sys.stderr)
+    with open(speculator_path, "rb") as fd:
+        speculator = NGramSpeculator.deserialize(fd.read())
+
+    drafter = NGramDrafter(speculator=speculator, width=width, depth=depth)
+    config = SamplerConfig(width=width, K=depth)
+    questions = load_mtbench()[:num_questions]
+
+    sampling_mode = "gumbel" if use_gumbel else "greedy"
+    print(
+        f"Evaluating {len(questions)} questions | width={width} K={depth} sampling={sampling_mode}",
+        file=sys.stderr,
+    )
+
+    results = run_mtbench(
+        decoder,
+        mp,
+        drafter,
+        config,
+        eos_set,
+        questions,
+        max_tokens=max_tokens,
+        use_gumbel=use_gumbel,
+    )
+    print_results(results)
+
+
 @app.callback()
 def _profile_memory(
     ctx: Context,
