@@ -35,7 +35,6 @@ from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
-from lalamo.speculator.drafters.ngram import NGramTrainingEvent, train_ngram
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 
 
@@ -470,88 +469,6 @@ def collect_traces(
         save_completions(output_path / f"part-{shard_idx:05d}.safetensors", shard)
 
     callbacks.finished_inference()
-
-
-@dataclass
-class TrainCallbacks:
-    trace_path: Path
-    output_path: Path
-    hashtable_size: int
-    num_logits_per_token: int
-    max_order: int
-    discount: float
-    subsample_size: int | None
-
-    def started(self) -> None:
-        pass
-
-    def training_progress(self, trained_tokens: int) -> None:
-        pass
-
-    def finished_training(self) -> None:
-        pass
-
-    def saving_speculator(self) -> None:
-        pass
-
-    def finished_saving_speculator(self) -> None:
-        pass
-
-
-def train(
-    trace_path: Path,
-    output_path: Path,
-    hashtable_size: int = 65536,
-    num_logits_per_token: int = 8,
-    max_order: int = 4,
-    discount: float = 0.002,
-    subsample_size: int | None = None,
-    callbacks_type: Callable[
-        [
-            Path,
-            Path,
-            int,
-            int,
-            int,
-            float,
-            int | None,
-        ],
-        TrainCallbacks,
-    ] = TrainCallbacks,
-) -> None:
-    callbacks = callbacks_type(
-        trace_path,
-        output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
-    )
-
-    callbacks.started()
-
-    traces = iter_completions(trace_path)
-
-    def progress_callback(event: NGramTrainingEvent) -> None:
-        callbacks.training_progress(event.trained_tokens)
-
-    drafter = train_ngram(
-        traces,
-        hashtable_size=hashtable_size,
-        num_logits_per_token=num_logits_per_token,
-        max_order=max_order,
-        discount=discount,
-        tokens_to_train=subsample_size,
-        progress_callback=progress_callback,
-    )
-    callbacks.finished_training()
-
-    callbacks.saving_speculator()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as fd:
-        fd.write(drafter.serialize())
-    callbacks.finished_saving_speculator()
 
 
 @dataclass
