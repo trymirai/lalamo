@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, ClassVar, Self
 
+from typer import Typer
+
 from lalamo.speculator.trie import TrieNode
 
 if TYPE_CHECKING:
@@ -55,3 +57,7 @@ class Drafter(ABC):
 
     @abstractmethod
     def serialize(self) -> bytes: ...
+
+    @staticmethod
+    def train_command(app: Typer) -> None:  # noqa: B027
+        """Override to register a training CLI command on app."""

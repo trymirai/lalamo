@@ -1,15 +1,25 @@
 import struct
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
-from typing import Self
+from pathlib import Path
+from typing import Annotated, Self
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
+from rich.progress import (
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from typer import Argument, Option, Typer
 
-from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
 from lalamo.speculator.drafter import Drafter
 from lalamo.speculator.speculate import GumbelSeed, LMState
 from lalamo.speculator.trie import TrieNode
@@ -93,6 +103,43 @@ class MedusaDrafter(Drafter):
                 new_leaves.append(leaf)
         heads = treedef.unflatten(new_leaves)
         return cls(heads=heads, width=width)
+
+    @staticmethod
+    def train_command(app: Typer) -> None:
+        @app.command(name="train-medusa", help="Train Medusa heads from inference traces")
+        def train_medusa_cmd(
+            trace_path: Annotated[Path, Argument(help="Trace directory", metavar="TRACE_PATH")],
+            output_path: Annotated[Path, Option(help="Output file for trained drafter")],
+            d_model: Annotated[int, Option(help="Model hidden dimension")],
+            vocab_size: Annotated[int, Option(help="Vocabulary size")],
+            num_heads: Annotated[int, Option(help="Number of Medusa heads")] = 4,
+            width: Annotated[int, Option(help="Max children per trie node")] = 4,
+            learning_rate: Annotated[float, Option(help="Learning rate")] = 1e-3,
+            num_epochs: Annotated[int, Option(help="Training epochs")] = 1,
+        ) -> None:
+            traces = iter_completions(trace_path)
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                task = progress.add_task("Training Medusa...", total=None)
+                drafter = train_medusa(
+                    traces,
+                    d_model=d_model,
+                    vocab_size=vocab_size,
+                    num_heads=num_heads,
+                    width=width,
+                    learning_rate=learning_rate,
+                    num_epochs=num_epochs,
+                    progress_callback=lambda e: progress.update(
+                        task, description=f"Training Medusa (loss={e.loss:.4f})"
+                    ),
+                )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(drafter.serialize())
 
 
 class MedusaTrainingEvent:

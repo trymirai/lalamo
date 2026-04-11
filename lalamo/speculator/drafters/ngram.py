@@ -6,11 +6,21 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from itertools import chain, repeat, tee
 from math import exp
-from typing import Self
+from pathlib import Path
+from typing import Annotated, Self
 
 import xxhash
+from rich.progress import (
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+    TimeRemainingColumn,
+)
+from typer import Argument, Option, Typer
 
-from lalamo.data.lalamo_completions import LalamoCompletion
+from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
 from lalamo.speculator.drafter import Drafter
 from lalamo.speculator.speculate import GumbelSeed, LMState
 from lalamo.speculator.trie import TrieNode
@@ -351,7 +361,6 @@ class NGramDrafter(Drafter):
         return cls(model=NGramModel.deserialize(data), width=width, depth=depth)
 
     def sample(self, context: Iterable[int] = (), max_length: int = 32) -> list[int]:
-        """Autoregressive sampling from the n-gram model (for testing)."""
         seq = list(context)
         for _ in range(max_length):
             probs = self.model.probs(seq)
@@ -359,6 +368,43 @@ class NGramDrafter(Drafter):
                 break
             seq.append(random.choices(list(probs.keys()), weights=list(probs.values()), k=1)[0])
         return seq
+
+    @staticmethod
+    def train_command(app: Typer) -> None:
+        @app.command(name="train-ngram", help="Train an n-gram drafter from inference traces")
+        def train_ngram_cmd(
+            trace_path: Annotated[Path, Argument(help="Trace directory", metavar="TRACE_PATH")],
+            output_path: Annotated[Path, Option(help="Output file for trained drafter")],
+            hashtable_size: Annotated[int, Option(help="Size of ngram hashtable")] = 65536,
+            num_logits_per_token: Annotated[int, Option(help="Top K tokens per ngram bucket")] = 8,
+            max_order: Annotated[int, Option(help="Maximum n-gram order")] = 4,
+            discount: Annotated[float, Option(help="Kneser-Ney discount")] = 0.002,
+            width: Annotated[int, Option(help="Max children per trie node")] = 4,
+            depth: Annotated[int, Option(help="Max speculation depth")] = 8,
+            subsample_size: Annotated[int | None, Option(help="Stop after this many tokens")] = None,
+        ) -> None:
+            traces = iter_completions(trace_path)
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                MofNCompleteColumn(),
+                TimeElapsedColumn(),
+                TimeRemainingColumn(),
+            ) as progress:
+                task = progress.add_task("Training n-gram...", total=subsample_size)
+                drafter = train_ngram(
+                    traces,
+                    hashtable_size=hashtable_size,
+                    num_logits_per_token=num_logits_per_token,
+                    max_order=max_order,
+                    discount=discount,
+                    tokens_to_train=subsample_size,
+                    width=width,
+                    depth=depth,
+                    progress_callback=lambda e: progress.update(task, completed=e.trained_tokens),
+                )
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_bytes(drafter.serialize())
 
 
 class NGramTrainingEvent:
@@ -379,7 +425,7 @@ def train_ngram(
     width: int = 4,
     depth: int = 8,
     progress_callback: Callable[[NGramTrainingEvent], None] | None = None,
-) -> Self:
+) -> NGramDrafter:
     """Train an n-gram drafter from LLM inference traces.
 
     Returns a ready-to-use NGramDrafter with compressed hash tables.

@@ -41,7 +41,6 @@ from lalamo.commands import (
     Precision,
     PullCallbacks,
     TraceCallbacks,
-    TrainCallbacks,
     _suggest_similar_models,
 )
 from lalamo.commands import collect_traces as _collect_traces
@@ -50,7 +49,6 @@ from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
-from lalamo.commands import train as _train
 from lalamo.common import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
@@ -64,7 +62,8 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.speculator.drafters.ngram import NGramDrafter
+from lalamo.speculator.drafter import Drafter
+from lalamo.speculator.drafters import MedusaDrafter, NGramDrafter
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -1055,93 +1054,8 @@ def view_traces(
     console.print(table)
 
 
-@dataclass
-class CliTrainCallbacks(TrainCallbacks):
-    stack: ExitStack = field(default_factory=ExitStack)
-    training_task: TaskID | None = None
-
-    def started(self) -> None:
-        self.progress = self.stack.enter_context(
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            ),
-        )
-        self.training_task = self.progress.add_task(
-            "🔮 [cyan]Training speculator...[/cyan]",
-            total=self.subsample_size,
-        )
-
-    def training_progress(self, trained_tokens: int) -> None:
-        assert self.training_task is not None
-        self.progress.update(self.training_task, completed=trained_tokens)
-
-    def finished_training(self) -> None:
-        assert self.training_task is not None
-        self.progress.update(self.training_task, description="✅ Completed")
-        self.progress.remove_task(self.training_task)
-        self.stack.close()
-
-    def saving_speculator(self) -> None:
-        pass
-
-    def finished_saving_speculator(self) -> None:
-        console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
-
-
-@speculator_app.command(help="Train a speculator from inference traces")
-def train(
-    trace_path: Annotated[
-        Path,
-        Argument(
-            help="Trace directory to train the speculator on",
-            metavar="TRACE_PATH",
-        ),
-    ],
-    output_path: Annotated[
-        Path,
-        Option(
-            help="File to save the output to",
-            metavar="OUTPUT_PATH",
-        ),
-    ],
-    hashtable_size: Annotated[
-        int,
-        Option(help="Size of ngram hashtable"),
-    ] = 65536,
-    num_logits_per_token: Annotated[
-        int,
-        Option(help="Top K tokens to keep per ngram bucket"),
-    ] = 8,
-    max_order: Annotated[
-        int,
-        Option(help="Maximum n-gram order (backoff from max_order down to 1)"),
-    ] = 4,
-    discount: Annotated[
-        float,
-        Option(help="Kneser-Ney absolute discount parameter"),
-    ] = 0.002,
-    subsample_size: Annotated[
-        int | None,
-        Option(
-            help="Exit early after training the model on this number of tokens",
-            show_default="all",
-        ),
-    ] = None,
-) -> None:
-    _train(
-        trace_path,
-        output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
-        CliTrainCallbacks,
-    )
+for drafter_cls in Drafter._registry.values():  # noqa: SLF001
+    drafter_cls.train_command(speculator_app)
 
 
 @speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")
@@ -1192,7 +1106,7 @@ def speculate_eval(
 
     print(f"Loading speculator: {speculator_path}...", file=sys.stderr)
     with open(speculator_path, "rb") as fd:
-        drafter = NGramDrafter.deserialize(fd.read(), width=width, depth=depth)
+        drafter = Drafter.deserialize("ngram", fd.read(), width=width, depth=depth)
 
     config = SamplerConfig(width=width, K=depth, max_tokens=max_tokens)
     questions = load_mtbench(cache_path)[:num_questions]
