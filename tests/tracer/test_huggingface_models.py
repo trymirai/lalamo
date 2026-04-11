@@ -6,13 +6,12 @@ from tests.tracer.tracer import DType, ModelTestSpec, _test_model
 from tests.tracer.tracer_huggingface import HFDecoderTracer, ModernBertTracer
 
 MODEL_LIST = [
-    ModelTestSpec("google/gemma-4-E2B-it", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen2.5-0.5B-Instruct", DType.FLOAT32),
     ModelTestSpec("google/gemma-3-1b-it", DType.FLOAT32),
     ModelTestSpec("deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B", DType.FLOAT32),
     ModelTestSpec("meta-llama/Llama-3.2-1B-Instruct", DType.FLOAT32),
     ModelTestSpec("HuggingFaceTB/SmolLM3-3B", DType.FLOAT32, minimum_memory_for_trace=unsi("32 G")),
-    # ModelTestSpec("PleIAs/Pleias-RAG-1B", DType.FLOAT32),
+    ModelTestSpec("google/gemma-4-E2B-it", DType.FLOAT32, minimum_memory_for_trace=unsi("48 G")),
     ModelTestSpec("Qwen/Qwen3-0.6B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3.5-0.8B", DType.FLOAT32),
     ModelTestSpec("Qwen/Qwen3-Next-80B-A3B-Instruct", DType.FLOAT32, minimum_memory_for_trace=unsi("512 G")),

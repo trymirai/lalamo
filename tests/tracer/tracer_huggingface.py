@@ -216,6 +216,11 @@ def _load_hf_model(
         model_kwargs["max_memory"] = max_memory
     model = model_type.from_pretrained(model_repo, **model_kwargs)
 
+    # Workaround: transformers 5.5.0 ignores `dtype` for composite configs
+    # (e.g. Qwen3.5 VLM where text_config.dtype overrides the user-specified dtype).
+    if dtype is not None:
+        model = model.to(dtype.torch_dtype)
+
     return model, device
 
 
