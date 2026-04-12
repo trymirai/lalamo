@@ -1,13 +1,27 @@
-from .common import Speculator
+from .drafter import Drafter
+from .drafters import NGramDrafter
 from .inference import CollectTracesEvent, inference_collect_traces
-from .ngram import NGramSpeculator
-from .utils import SpeculatorTrainingEvent, train_speculator
+from .speculate import (
+    LMState,
+    SamplerConfig,
+    SpeculationContext,
+    SpeculationRun,
+    SpeculationStep,
+    SpeculativeDecodingResult,
+)
+from .trie import FlatTrie, TrieNode
 
 __all__ = [
     "CollectTracesEvent",
-    "NGramSpeculator",
-    "Speculator",
-    "SpeculatorTrainingEvent",
+    "Drafter",
+    "FlatTrie",
+    "LMState",
+    "NGramDrafter",
+    "SamplerConfig",
+    "SpeculationContext",
+    "SpeculationRun",
+    "SpeculationStep",
+    "SpeculativeDecodingResult",
+    "TrieNode",
     "inference_collect_traces",
-    "train_speculator",
 ]

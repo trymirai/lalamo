@@ -17,7 +17,7 @@ from jaxtyping import DTypeLike
 from lalamo.common import flatten_parameters, get_default_device_bytes
 from lalamo.data import load_hf_parquet, shuffle_dataset
 from lalamo.data.huggingface_message import HFMessage
-from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions, save_completions
+from lalamo.data.lalamo_completions import LalamoCompletion, save_completions
 from lalamo.message_processor import AssistantMessage, Message
 from lalamo.model_import import ModelMetadata, ModelSpec, import_model
 from lalamo.model_import.common import (
@@ -36,8 +36,6 @@ from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import SpeculatorTrainingEvent, train_speculator
 
 
 @dataclass
@@ -475,16 +473,8 @@ def collect_traces(
 
 @dataclass
 class TrainCallbacks:
-    trace_path: Path
     output_path: Path
-    hashtable_size: int
-    num_logits_per_token: int
-    max_order: int
-    discount: float
     subsample_size: int | None
-
-    def started(self) -> None:
-        pass
 
     def training_progress(self, trained_tokens: int) -> None:
         pass
@@ -492,62 +482,17 @@ class TrainCallbacks:
     def finished_training(self) -> None:
         pass
 
-    def saving_speculator(self) -> None:
+    def saving(self) -> None:
         pass
 
-    def finished_saving_speculator(self) -> None:
+    def finished_saving(self) -> None:
         pass
 
-
-def train(
-    trace_path: Path,
-    output_path: Path,
-    hashtable_size: int = 65536,
-    num_logits_per_token: int = 8,
-    max_order: int = 4,
-    discount: float = 0.002,
-    subsample_size: int | None = None,
-    callbacks_type: Callable[
-        [
-            Path,
-            Path,
-            int,
-            int,
-            int,
-            float,
-            int | None,
-        ],
-        TrainCallbacks,
-    ] = TrainCallbacks,
-) -> None:
-    callbacks = callbacks_type(
-        trace_path,
-        output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
-    )
-
-    callbacks.started()
-
-    traces = iter_completions(trace_path)
-    speculator = NGramSpeculator.init(hashtable_size, num_logits_per_token, max_order, discount)
-
-    def progress_callback(event: SpeculatorTrainingEvent) -> None:
-        callbacks.training_progress(event.trained_tokens)
-
-    train_speculator(speculator, traces, subsample_size, progress_callback)
-
-    speculator.compress()
-    callbacks.finished_training()
-
-    callbacks.saving_speculator()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(output_path, "wb") as fd:
-        fd.write(speculator.serialize())
-    callbacks.finished_saving_speculator()
+    def save_drafter(self, drafter_bytes: bytes) -> None:
+        self.saving()
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.output_path.write_bytes(drafter_bytes)
+        self.finished_saving()
 
 
 @dataclass

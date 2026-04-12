@@ -1,4 +1,3 @@
-import random
 import re
 import shutil
 import sys
@@ -51,7 +50,6 @@ from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import pull as _pull
 from lalamo.commands import trace as _trace
-from lalamo.commands import train as _train
 from lalamo.common import (
     get_default_device_bytes,
     get_usable_memory_from_bytes,
@@ -65,8 +63,10 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.speculator.ngram import NGramSpeculator
-from lalamo.speculator.utils import test_speculator
+from lalamo.speculator.drafter import Drafter
+from lalamo.speculator.drafters import NGramDrafter  # noqa: F401 (triggers Drafter registration)
+from lalamo.speculator.eval import load_mtbench, print_results, run_mtbench
+from lalamo.speculator.speculate import SamplerConfig
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -1062,135 +1062,98 @@ class CliTrainCallbacks(TrainCallbacks):
     stack: ExitStack = field(default_factory=ExitStack)
     training_task: TaskID | None = None
 
-    def started(self) -> None:
-        self.progress = self.stack.enter_context(
-            Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                MofNCompleteColumn(),
-                TimeElapsedColumn(),
-                TimeRemainingColumn(),
-            ),
-        )
-        self.training_task = self.progress.add_task(
-            "🔮 [cyan]Training speculator...[/cyan]",
-            total=self.subsample_size,
-        )
-
     def training_progress(self, trained_tokens: int) -> None:
-        assert self.training_task is not None
+        if self.training_task is None:
+            self.progress = self.stack.enter_context(
+                Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    MofNCompleteColumn(),
+                    TimeElapsedColumn(),
+                    TimeRemainingColumn(),
+                ),
+            )
+            self.training_task = self.progress.add_task(
+                "🔮 [cyan]Training speculator...[/cyan]",
+                total=self.subsample_size,
+            )
         self.progress.update(self.training_task, completed=trained_tokens)
 
     def finished_training(self) -> None:
-        assert self.training_task is not None
-        self.progress.update(self.training_task, description="✅ Completed")
-        self.progress.remove_task(self.training_task)
-        self.stack.close()
+        if self.training_task is not None:
+            self.progress.update(self.training_task, description="✅ Completed")
+            self.progress.remove_task(self.training_task)
+            self.stack.close()
 
-    def saving_speculator(self) -> None:
-        pass
-
-    def finished_saving_speculator(self) -> None:
+    def finished_saving(self) -> None:
         console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
 
 
-@speculator_app.command(help="Train a speculator from inference traces")
-def train(
-    trace_path: Annotated[
-        Path,
-        Argument(
-            help="Trace directory to train the speculator on",
-            metavar="TRACE_PATH",
-        ),
-    ],
-    output_path: Annotated[
-        Path,
-        Option(
-            help="File to save the output to",
-            metavar="OUTPUT_PATH",
-        ),
-    ],
-    hashtable_size: Annotated[
-        int,
-        Option(help="Size of ngram hashtable"),
-    ] = 65536,
-    num_logits_per_token: Annotated[
-        int,
-        Option(help="Top K tokens to keep per ngram bucket"),
-    ] = 8,
-    max_order: Annotated[
-        int,
-        Option(help="Maximum n-gram order (backoff from max_order down to 1)"),
-    ] = 4,
-    discount: Annotated[
-        float,
-        Option(help="Kneser-Ney absolute discount parameter"),
-    ] = 0.002,
-    subsample_size: Annotated[
-        int | None,
-        Option(
-            help="Exit early after training the model on this number of tokens",
-            show_default="all",
-        ),
-    ] = None,
-) -> None:
-    _train(
-        trace_path,
-        output_path,
-        hashtable_size,
-        num_logits_per_token,
-        max_order,
-        discount,
-        subsample_size,
-        CliTrainCallbacks,
-    )
+for drafter_cls in Drafter._registry.values():  # noqa: SLF001
+    drafter_cls.train_command(speculator_app, CliTrainCallbacks)
 
 
-@speculator_app.command(help="Run speculator as an autoregressive llm")
-def test(
-    speculator_path: Annotated[
-        Path,
-        Argument(
-            help="Path to the speculator file.",
-            metavar="SPECULATOR_PATH",
-        ),
-    ],
+@speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")
+def speculate_eval(
     model_path: Annotated[
         Path,
         Argument(
-            help="Path to the model directory for detokenization.",
+            help="Path to the lalamo model directory",
             metavar="MODEL_PATH",
         ),
     ],
-    seed: Annotated[
-        int | None,
-        Option(help="Set seed for deterministic sampling"),
-    ] = None,
-    num_sequences: Annotated[
+    speculator_path: Annotated[
+        Path,
+        Argument(
+            help="Path to the trained speculator file",
+            metavar="SPECULATOR_PATH",
+        ),
+    ],
+    width: Annotated[
         int,
-        Option(help="Number of sequences to generate"),
+        Option(help="Max children per trie node"),
+    ] = 4,
+    depth: Annotated[
+        int,
+        Option(help="Max speculation depth (K)"),
     ] = 8,
+    max_tokens: Annotated[
+        int,
+        Option(help="Max tokens per question"),
+    ] = 2048,
+    num_questions: Annotated[
+        int,
+        Option(help="Number of MT-Bench questions to evaluate"),
+    ] = 80,
+    drafter_name: Annotated[
+        str,
+        Option(help="Drafter type (ngram, medusa)"),
+    ] = "ngram",
+    cache_path: Annotated[
+        Path,
+        Option(help="Path to cache MT-Bench questions"),
+    ] = Path("mtbench_questions.jsonl"),
 ) -> None:
-    model = LanguageModelConfig.load_model(model_path)
+    print(f"Loading model: {model_path}...", file=sys.stderr)
+    llm = LanguageModelConfig.load_model(model_path)
+    decoder = llm.model
+    mp = llm.message_processor
+    eos_set = {int(e) for e in llm.stop_token_ids}
 
+    print(f"Loading drafter ({drafter_name}): {speculator_path}...", file=sys.stderr)
     with open(speculator_path, "rb") as fd:
-        speculator = NGramSpeculator.deserialize(fd.read())
+        drafter = Drafter.deserialize(drafter_name, fd.read(), width=width, depth=depth)
 
-    table = Table(
-        show_header=False,
-        show_lines=True,
-        box=box.ROUNDED,
+    config = SamplerConfig(width=width, K=depth, max_tokens=max_tokens)
+    questions = load_mtbench(cache_path)[:num_questions]
+
+    print(
+        f"Evaluating {len(questions)} questions | width={width} K={depth} max_tokens={max_tokens}",
+        file=sys.stderr,
     )
 
-    if seed is not None:
-        random.seed(seed)
-
-    for _ in range(num_sequences):
-        sequence = test_speculator(speculator)
-        detokenized = model.message_processor.detokenize(sequence)
-        table.add_row(detokenized)
-
-    console.print(table)
+    results = run_mtbench(decoder, mp, drafter, config, eos_set, questions)
+    print_results(results)
 
 
 @app.callback()

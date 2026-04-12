@@ -12,7 +12,6 @@ from lalamo.commands import (
     collect_traces,
     convert,
     estimate_batchsize,
-    train,
 )
 from lalamo.message_processor import (
     AssistantMessage,
@@ -28,10 +27,7 @@ from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFiel
 from lalamo.models import ClassifierModel, LanguageModel
 from lalamo.modules.common import ShardingConfig, pad_and_apply_data_sharding
 from lalamo.quantization import QuantizationMode
-from lalamo.speculator import (
-    CollectTracesEvent,
-    SpeculatorTrainingEvent,
-)
+from lalamo.speculator import CollectTracesEvent
 
 __version__ = "0.6.12"
 
@@ -54,7 +50,6 @@ __all__ = [
     "Precision",
     "QuantizationMode",
     "ShardingConfig",
-    "SpeculatorTrainingEvent",
     "SystemMessage",
     "ToolSchema",
     "TrainCallbacks",
@@ -66,5 +61,4 @@ __all__ = [
     "estimate_batchsize",
     "import_model",
     "pad_and_apply_data_sharding",
-    "train",
 ]
