@@ -14,9 +14,8 @@ from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
 from lalamo.speculator.drafter import Drafter
-from lalamo.speculator.speculate import GumbelSeed, LMState
+from lalamo.speculator.speculate import GumbelSeed, LMState, gumbel_rank_from_probs
 from lalamo.speculator.trie import TrieNode
-from lalamo.speculator.utils import top_k_from_logits
 
 
 def padded_sliding_window(seq: Iterable[int], size: int, pad: int) -> Iterable[tuple[int, ...]]:
@@ -319,10 +318,6 @@ class NGramModel:
         return cls(max_order, tuple(tables), discount)
 
 
-def top_k_from_probs(probs: dict[int, float], k: int) -> list[int]:
-    return [tok for tok, _ in sorted(probs.items(), key=lambda x: -x[1])[:k]]
-
-
 @Drafter.register("ngram")
 @dataclass(frozen=True)
 class NGramDrafter(Drafter):
@@ -342,19 +337,21 @@ class NGramDrafter(Drafter):
         gseed = GumbelSeed(seed)
         root = TrieNode(token=lm.bonus, seed=gseed.derive(1).value)
 
-        candidates = top_k_from_logits(lm.logits, self.width)
-        for i, tok in enumerate(candidates):
-            root.add_child(tok, seed=gseed.derive(2 + i).value)
-
-        chain_node = root.get_child(candidates[0])
-        ctx = list(self.context) + [lm.bonus, candidates[0]]
-        node_offset = 2 + self.width
-
-        for _k in range(1, self.depth):
+        # Root children predict P(x_{t+2} | prefix, bonus): condition on bonus,
+        # not on lm.logits (which is P(x_{t+1} | prefix), a level earlier).
+        vocab_size = int(lm.logits.shape[0])
+        ctx = [*self.context, lm.bonus]
+        node_offset = 2
+        chain_node = root
+        for _k in range(self.depth):
             probs = self.model.probs(ctx)
             if not probs:
                 break
-            next_candidates = top_k_from_probs(probs, self.width)
+            # Rank candidates using the same seed / Gumbel convention the verifier will use
+            # at this node. The set of candidates is the ngram shortlist — not the full vocab —
+            # so this is not strictly identical to the verifier's argmax, just correlated.
+            parent_seed = GumbelSeed(chain_node.seed)
+            next_candidates = gumbel_rank_from_probs(parent_seed, probs, vocab_size, self.width)
             for i, tok in enumerate(next_candidates):
                 chain_node.add_child(tok, seed=gseed.derive(node_offset + i).value)
             node_offset += self.width

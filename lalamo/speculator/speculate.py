@@ -93,6 +93,24 @@ class GumbelSeed:
         return jnp.argmax(logits + noise, axis=-1)
 
 
+def gumbel_rank_from_probs(seed: GumbelSeed, probs: dict[int, float], vocab_size: int, k: int) -> list[int]:
+    """Rank ``probs`` candidates by ``log(prob) + gumbel(seed)[token_id]``.
+
+    Uses the same Gumbel noise array the verifier sees (``jax.random.gumbel(key,
+    (vocab_size,))``) so shared-seed tie-breaking works, but scores only the
+    shortlist — top-k is taken within ``probs.keys()``.
+    """
+    tokens = np.fromiter(probs.keys(), dtype=np.int32, count=len(probs))
+    log_probs = np.log(np.fromiter(probs.values(), dtype=np.float32, count=len(probs)))
+    key = jax.random.key(seed.value & 0xFFFFFFFF)
+    noise = np.asarray(jax.random.gumbel(key, (vocab_size,), dtype=jnp.float32))
+    scores = log_probs + noise[tokens]
+    k = min(k, len(tokens))
+    top = np.argpartition(-scores, k - 1)[:k] if k < len(tokens) else np.argsort(-scores)
+    order = top[np.argsort(-scores[top])]
+    return tokens[order].tolist()
+
+
 def _pad(arr: np.ndarray, n: int, fill: int = 0) -> np.ndarray:
     """Pad or truncate to fixed length (avoids XLA recompilation)."""
     pad_len = n - len(arr)
