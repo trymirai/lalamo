@@ -377,6 +377,8 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         state: KVCacheLayer | None = None,
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
+        attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
+        attention_max_depth: int | None = None,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
@@ -419,12 +421,17 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
             updated_state = state.extend(keys, values, added_length=length_without_padding)
 
         num_suffix_tokens, _, _ = queries.shape
-        mask = updated_state.attention_mask(
-            num_suffix_tokens,
-            self.is_causal,
-            length_without_padding,
-            self.sliding_window_size,
-        )
+        if attention_parent_indices is not None:
+            prefix_length = 0 if state is None else state.current_length
+            max_depth = attention_max_depth if attention_max_depth is not None else num_suffix_tokens
+            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices, max_depth)
+        else:
+            mask = updated_state.attention_mask(
+                num_suffix_tokens,
+                self.is_causal,
+                length_without_padding,
+                self.sliding_window_size,
+            )
         if self.sinks is not None:
             sink_bias = jnp.zeros((self.num_heads, *mask.shape), dtype=queries.dtype)
             sink_bias = sink_bias.at[:, :, 0].set(self.sinks[:, None])
