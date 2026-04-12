@@ -13,9 +13,6 @@ from .common import StateLayerBase
 __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 
 
-# ── Tree attention mask helpers ─────────────────────────────────
-
-
 def _tree_ancestor_mask(
     parent_indices: Int[Array, " nodes"],
     max_depth: int,
