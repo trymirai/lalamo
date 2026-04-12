@@ -19,6 +19,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
+from lalamo.modules.token_mixers.state.kv_cache import _build_tree_attention_mask, _tree_ancestor_mask
 from tests.common import assert_close
 
 
@@ -98,8 +99,6 @@ def decoder() -> Decoder:
 
 def test_tree_ancestor_mask_chain() -> None:
     """Linear chain: each node should attend to itself and all ancestors."""
-    from lalamo.modules.token_mixers.state.kv_cache import _tree_ancestor_mask
-
     # Chain: 0 -> 1 -> 2 -> 3
     parent_indices = jnp.array([-1, 0, 1, 2], dtype=jnp.int32)
     mask = _tree_ancestor_mask(parent_indices, max_depth=4)
@@ -119,8 +118,6 @@ def test_tree_ancestor_mask_chain() -> None:
 
 def test_tree_ancestor_mask_fork() -> None:
     """Forked tree: siblings must not see each other."""
-    from lalamo.modules.token_mixers.state.kv_cache import _tree_ancestor_mask
-
     # Tree: root(0), child1(1), child2(2) both children of root
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = _tree_ancestor_mask(parent_indices, max_depth=3)
@@ -138,8 +135,6 @@ def test_tree_ancestor_mask_fork() -> None:
 
 def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     """Draft nodes attend to all prefix tokens plus their own ancestor chain."""
-    from lalamo.modules.token_mixers.state.kv_cache import _build_tree_attention_mask
-
     # Prefix length 2, draft tree: 0 -> 1, 0 -> 2
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
     mask = _build_tree_attention_mask(
