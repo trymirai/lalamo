@@ -9,13 +9,28 @@ from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
 
 
-def extract_hiddens(
+def extract_activations(
     trace: DecoderActivationTrace,
     batch: int,
-    token: int,
-) -> tuple[jnp.ndarray, ...]:
-    """Extract per-layer hidden states + output norm at a single position."""
-    return tuple(lr.outputs[batch, token] for lr in trace.layer_results) + (trace.output_norm[batch, token],)
+    positions: int | slice | np.ndarray,
+    trace_layer_outputs: tuple[int, ...] | None,
+    trace_output_norm: bool,
+) -> tuple[tuple[jnp.ndarray, ...], jnp.ndarray | None]:
+    """Extract the subset of activations a drafter asked to retain.
+
+    Returns ``(layer_outputs, output_norm)`` where:
+    - ``layer_outputs`` has one ``(N, d)`` array per layer in
+      ``trace_layer_outputs`` (empty tuple if ``None``).
+    - ``output_norm`` is the ``(N, d)`` slice if ``trace_output_norm`` is True,
+      else ``None``.
+    """
+    layer_outputs: tuple[jnp.ndarray, ...] = (
+        ()
+        if trace_layer_outputs is None
+        else tuple(trace.layer_results[layer].outputs[batch, positions] for layer in trace_layer_outputs)
+    )
+    output_norm = trace.output_norm[batch, positions] if trace_output_norm else None
+    return layer_outputs, output_norm
 
 
 def top_k_from_logits(logits: jnp.ndarray, k: int) -> list[int]:

@@ -12,7 +12,7 @@ from lalamo.modules.decoder import Decoder, DecoderResult
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.speculator.drafter import Drafter
 from lalamo.speculator.trie import FlatTrie, TrieNode
-from lalamo.speculator.utils import compact_kv_cache, extract_hiddens
+from lalamo.speculator.utils import compact_kv_cache, extract_activations
 
 
 @dataclass(frozen=True)
@@ -24,10 +24,17 @@ class LMState:
     - ``bonus`` is sampled from ``logits`` and is always present.
     - The next verify batch starts with ``bonus`` as its first token.
     - ``bonus`` is NOT yet materialized in the KV cache.
+    - ``layer_outputs`` has one ``(suffix, d)`` array per layer in
+      ``drafter.trace_layer_outputs``. After prefill ``suffix`` equals
+      ``prompt_len`` (or ``drafter.prefill_hidden_range`` if specified);
+      after verify ``suffix == 1 + num_accepted`` (bonus + accepted rows).
+    - ``output_norm`` is populated iff ``drafter.trace_output_norm`` is True;
+      same ``suffix`` semantics as ``layer_outputs``.
     """
 
     kv_cache: State
-    hiddens: tuple[jnp.ndarray, ...]  # per-layer (d,); hiddens[-1] = output norm
+    layer_outputs: tuple[jnp.ndarray, ...]
+    output_norm: jnp.ndarray | None
     logits: jnp.ndarray  # (vocab,) next-token distribution at head
     position: int  # tokens written to the KV cache so far
     bonus: int  # sampled next token, always present
@@ -164,9 +171,19 @@ class SpeculationContext:
             return_activation_trace=True,
         )
         logits = fwd.logits[0, -1]
+        prefill_range = self.drafter.prefill_hidden_range
+        prefill_positions = slice(None) if prefill_range is None else slice(-prefill_range, None)
+        layer_outputs, output_norm = extract_activations(
+            fwd.activation_trace,
+            batch=0,
+            positions=prefill_positions,
+            trace_layer_outputs=self.drafter.trace_layer_outputs,
+            trace_output_norm=self.drafter.trace_output_norm,
+        )
         return LMState(
             kv_cache=fwd.updated_state,
-            hiddens=extract_hiddens(fwd.activation_trace, 0, -1),
+            layer_outputs=layer_outputs,
+            output_norm=output_norm,
             logits=logits,
             position=len(prompt_ids),
             bonus=seed.sample(logits),
@@ -263,9 +280,17 @@ class SpeculationContext:
         last_logits = jnp.array(fwd.logits[0, last_fwd_idx])
         new_bonus = GumbelSeed(int(result.all_seeds[num_accepted])).sample(last_logits)
 
+        layer_outputs, output_norm = extract_activations(
+            fwd.activation_trace,
+            batch=0,
+            positions=kept_fwd[:total_kept],
+            trace_layer_outputs=self.drafter.trace_layer_outputs,
+            trace_output_norm=self.drafter.trace_output_norm,
+        )
         return LMState(
             kv_cache=new_kv,
-            hiddens=extract_hiddens(fwd.activation_trace, 0, last_fwd_idx),
+            layer_outputs=layer_outputs,
+            output_norm=output_norm,
             logits=last_logits,
             position=cache_len + total_kept,
             bonus=new_bonus,
@@ -284,9 +309,9 @@ class SpeculationRun:
         prompt_ids: list[int],
         seed: int = 42,
     ) -> None:
-        self.ctx = ctx
         self.seed = GumbelSeed(seed)
         self.lm_state = ctx.prefill(prompt_ids, self.seed.advance(0))
+        self.ctx = dataclasses.replace(ctx, drafter=ctx.drafter.on_prefill(self.lm_state))
         self.result = SpeculativeDecodingResult()
 
     def done(self) -> bool:
