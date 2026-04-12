@@ -90,7 +90,6 @@ class KVCacheLayer(StateLayerBase):
     @abstractmethod
     def tree_attention_mask(
         self,
-        prefix_length: Int[Array, ""] | int,
         parent_indices: Int[Array, " nodes"],
         max_depth: int,
     ) -> Bool[Array, "nodes tokens"]: ...
@@ -176,12 +175,13 @@ class DynamicKVCacheLayer(KVCacheLayer):
 
     def tree_attention_mask(
         self,
-        prefix_length: Int[Array, ""] | int,
         parent_indices: Int[Array, " nodes"],
         max_depth: int,
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
         total, _, _ = self.keys.shape
+        num_nodes = parent_indices.shape[0]
+        prefix_length = total - num_nodes
         result = _build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks, max_depth)
         if self.padding_mask is not None:
             result = result & self.padding_mask[None, :]
@@ -246,16 +246,17 @@ class StaticKVCacheLayer(KVCacheLayer):
 
     def tree_attention_mask(
         self,
-        prefix_length: Int[Array, ""] | int,
         parent_indices: Int[Array, " nodes"],
         max_depth: int,
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
+        num_nodes = parent_indices.shape[0]
+        prefix_length = self.current_length - num_nodes
         result = _build_tree_attention_mask(self.capacity, prefix_length, parent_indices, self.has_sinks, max_depth)
         return result & self.padding_mask[None, :]
 
     @property
-    def padding_mask(self) -> Bool[Array, " tokens"] | None:
+    def padding_mask(self) -> Bool[Array, " tokens"]:
         self._raise_if_batched()
         return jnp.arange(self.capacity, dtype=jnp.int32) < self.current_length
 
