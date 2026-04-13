@@ -119,7 +119,6 @@ class HFGemma4TextConfig:
             norm_config=rms_norm_config,
             ple_dim=self.hidden_size_per_layer_input,
             activation=GELU(),
-            has_layer_scalar=True,
         )
         ple_model_config = PLEModelConfig(
             ple_dim=self.hidden_size_per_layer_input,
@@ -132,15 +131,21 @@ class HFGemma4TextConfig:
             norm_config=rms_norm_config,
         )
 
-        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
-        last_of_type: dict[str, int] = {}
         kv_source_per_layer: dict[int, int | None] = {}
-        for i, lt in enumerate(self.layer_types):
-            if i < first_kv_shared or first_kv_shared <= 0:
+        if self.num_kv_shared_layers == 0:
+            for i in range(self.num_hidden_layers):
                 kv_source_per_layer[i] = None
-                last_of_type[lt] = i
-            else:
-                kv_source_per_layer[i] = last_of_type.get(lt)
+        else:
+            first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
+            last_of_type: dict[str, int] = {}
+            for i, lt in enumerate(self.layer_types):
+                if i < first_kv_shared:
+                    kv_source_per_layer[i] = None
+                    last_of_type[lt] = i
+                else:
+                    source = last_of_type.get(lt)
+                    assert source is not None, f"layer {i} marked shared but no prior {lt} layer exists"
+                    kv_source_per_layer[i] = source
 
         layer_configs = []
         for i, layer_type in enumerate(self.layer_types):
@@ -187,6 +192,7 @@ class HFGemma4TextConfig:
                 post_mlp_norm_config=rms_norm_config,
                 hidden_dim=layer_intermediate,
                 ple_config=ple_layer_config,
+                has_post_layer_scalar=True,
                 kv_source_layer=kv_source,
                 rope_config=layer_rope_config,
             )
@@ -305,14 +311,16 @@ class HFGemma4Config(HuggingFaceLMConfig):
                 new_layers.append(layer)
                 continue
             layer_path = layers_base / i
-            ple_updates: dict[str, Any] = {
-                "gate": load_linear(layer.ple.gate, weights_dict, layer_path / "per_layer_input_gate"),
-                "projection": load_linear(layer.ple.projection, weights_dict, layer_path / "per_layer_projection"),
-                "norm": load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
-            }
-            if layer.ple.layer_scalar is not None:
-                ple_updates["layer_scalar"] = weights_dict[layer_path / "layer_scalar"]
-            new_layers.append(replace(layer, ple=replace(layer.ple, **ple_updates)))
+            new_ple = replace(
+                layer.ple,
+                gate=load_linear(layer.ple.gate, weights_dict, layer_path / "per_layer_input_gate"),
+                projection=load_linear(layer.ple.projection, weights_dict, layer_path / "per_layer_projection"),
+                norm=load_rmsnorm(layer.ple.norm, weights_dict, layer_path / "post_per_layer_input_norm"),
+            )
+            layer_updates: dict[str, Any] = {"ple": new_ple}
+            if layer.post_layer_scalar is not None:
+                layer_updates["post_layer_scalar"] = weights_dict[layer_path / "layer_scalar"]
+            new_layers.append(replace(layer, **layer_updates))
 
         return replace(
             model,

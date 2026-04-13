@@ -12,7 +12,7 @@ from lalamo.modules.utils import vmap_twice
 
 from .common import ForwardPassMode, LalamoModule
 from .normalization import Normalization, NormalizationConfig
-from .rope import PositionalEmbeddings, RoPE
+from .rope import PositionalEmbeddings, RoPE, RoPEConfig
 from .token_mixers import State
 from .transformer_layer import (
     TransformerLayer,
@@ -59,17 +59,17 @@ class TransformerConfig:
     context_length: int
 
     def _init_ropes(self) -> tuple[tuple[RoPE, ...], tuple[int, ...]]:
-        rope_cache: dict[int, int] = {}
+        rope_cache: dict[RoPEConfig, int] = {}
         ropes: list[RoPE] = []
         rope_indices: list[int] = []
         for layer_config in self.layer_configs:
             rc = layer_config.rope_config
             if rc is None:
                 rope_indices.append(-1)
-            elif id(rc) in rope_cache:
-                rope_indices.append(rope_cache[id(rc)])
+            elif rc in rope_cache:
+                rope_indices.append(rope_cache[rc])
             else:
-                rope_cache[id(rc)] = len(ropes)
+                rope_cache[rc] = len(ropes)
                 rope_indices.append(len(ropes))
                 ropes.append(rc.init())
         return tuple(ropes), tuple(rope_indices)

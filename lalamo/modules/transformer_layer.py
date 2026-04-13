@@ -8,7 +8,7 @@ import jax.numpy as jnp
 from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
-from lalamo.common import ParameterTree, dummy_array, require_mapping, require_tree
+from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 
 from .activations import Activation
 from .common import ForwardPassMode, LalamoModule
@@ -88,35 +88,25 @@ class PLELayerConfig:
     norm_config: NormalizationConfig
     ple_dim: int
     activation: Activation
-    has_layer_scalar: bool
 
     def init(self, model_dim: int, *, key: PRNGKeyArray) -> "PLELayer":
         k1, k2 = jax.random.split(key)
         gate = self.linear_config.random_init(model_dim, (self.ple_dim,), has_biases=False, key=k1)
         projection = self.linear_config.random_init(self.ple_dim, (model_dim,), has_biases=False, key=k2)
         norm = self.norm_config.init(model_dim)
-        if self.has_layer_scalar:
-            layer_scalar = jnp.ones((1,), dtype=jnp.bfloat16)
-        else:
-            layer_scalar = None
-        return PLELayer(config=self, gate=gate, projection=projection, norm=norm, layer_scalar=layer_scalar)
+        return PLELayer(config=self, gate=gate, projection=projection, norm=norm)
 
     def empty(self, model_dim: int) -> "PLELayer":
         gate = self.linear_config.empty(model_dim, (self.ple_dim,), has_biases=False)
         projection = self.linear_config.empty(self.ple_dim, (model_dim,), has_biases=False)
         norm = self.norm_config.empty(model_dim)
-        if self.has_layer_scalar:
-            layer_scalar = dummy_array((1,), jnp.bfloat16)
-        else:
-            layer_scalar = None
-        return PLELayer(config=self, gate=gate, projection=projection, norm=norm, layer_scalar=layer_scalar)
+        return PLELayer(config=self, gate=gate, projection=projection, norm=norm)
 
 
 class PLELayer(LalamoModule[PLELayerConfig]):
     gate: LinearBase
     projection: LinearBase
     norm: Normalization
-    layer_scalar: Float[Array, "1"] | None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -125,41 +115,29 @@ class PLELayer(LalamoModule[PLELayerConfig]):
     def __call__(
         self,
         outputs: Float[Array, "batch suffix_tokens channels"],
-        per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None,
+        per_layer_input: Float[Array, "batch suffix_tokens ple_dim"],
     ) -> Float[Array, "batch suffix_tokens channels"]:
-        if per_layer_input is not None:
-            (ple_gated,) = vmap(vmap(self.gate))(outputs)
-            ple_gated = self.config.activation(ple_gated)
-            ple_gated = ple_gated * per_layer_input
-            (ple_projected,) = vmap(vmap(self.projection))(ple_gated)
-            ple_normed = vmap_twice(self.norm)(ple_projected)
-            outputs = outputs + ple_normed
-        if self.layer_scalar is not None:
-            outputs = outputs * self.layer_scalar
-        return outputs
+        (ple_gated,) = vmap(vmap(self.gate))(outputs)
+        ple_gated = self.config.activation(ple_gated)
+        ple_gated = ple_gated * per_layer_input
+        (ple_projected,) = vmap(vmap(self.projection))(ple_gated)
+        ple_normed = vmap_twice(self.norm)(ple_projected)
+        return outputs + ple_normed
 
     def export_weights(self) -> ParameterTree:
-        result: dict[str, ParameterTree | Array] = {
+        return {
             "gate": self.gate.export_weights(),
             "projection": self.projection.export_weights(),
             "norm": self.norm.export_weights(),
         }
-        if self.layer_scalar is not None:
-            result["layer_scalar"] = self.layer_scalar
-        return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
         weights = require_mapping(weights)
-        if self.layer_scalar is not None:
-            layer_scalar = weights["layer_scalar"]
-        else:
-            layer_scalar = None
         return replace(
             self,
             gate=self.gate.import_weights(require_tree(weights["gate"])),
             projection=self.projection.import_weights(require_tree(weights["projection"])),
             norm=self.norm.import_weights(require_tree(weights["norm"])),
-            layer_scalar=layer_scalar,
         )
 
 
@@ -173,6 +151,7 @@ class TransformerLayerConfig:
     post_mlp_norm_config: NormalizationConfig | None
     hidden_dim: int | None = None
     ple_config: PLELayerConfig | None = None
+    has_post_layer_scalar: bool = False
     kv_source_layer: int | None = None
     rope_config: RoPEConfig | None = None
 
@@ -203,6 +182,7 @@ class TransformerLayerConfig:
             ple = self.ple_config.init(model_dim, key=ple_key)
         else:
             ple = None
+        post_layer_scalar = jnp.ones((1,), dtype=jnp.bfloat16) if self.has_post_layer_scalar else None
         return TransformerLayer(
             config=self,
             pre_mixer_norm=pre_mixer_norm,
@@ -212,6 +192,7 @@ class TransformerLayerConfig:
             mlp=mlp,
             post_mlp_norm=post_mlp_norm,
             ple=ple,
+            post_layer_scalar=post_layer_scalar,
         )
 
     def empty(
@@ -241,6 +222,7 @@ class TransformerLayerConfig:
             ple = self.ple_config.empty(model_dim)
         else:
             ple = None
+        post_layer_scalar = dummy_array((1,), jnp.bfloat16) if self.has_post_layer_scalar else None
         return TransformerLayer(
             config=self,
             pre_mixer_norm=pre_mixer_norm,
@@ -250,6 +232,7 @@ class TransformerLayerConfig:
             mlp=mlp,
             post_mlp_norm=post_mlp_norm,
             ple=ple,
+            post_layer_scalar=post_layer_scalar,
         )
 
 
@@ -261,6 +244,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
     mlp: MLPBase
     post_mlp_norm: Normalization | None
     ple: PLELayer | None
+    post_layer_scalar: Float[Array, "1"] | None
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -347,8 +331,10 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             normalized_mlp_outputs = None
             outputs = mlp_inputs + mlp_outputs
 
-        if self.ple is not None:
+        if self.ple is not None and per_layer_input is not None:
             outputs = self.ple(outputs, per_layer_input)
+        if self.post_layer_scalar is not None:
+            outputs = outputs * self.post_layer_scalar
 
         if return_activation_trace:
             activation_trace = TransformerLayerActivationTrace(
@@ -379,7 +365,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         )
 
     def export_weights(self) -> ParameterTree:
-        result = dict(
+        result: dict[str, ParameterTree | Array] = dict(
             mixer=self.mixer.export_weights(),
             mlp=self.mlp.export_weights(),
         )
@@ -393,6 +379,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             result["pre_mlp_norm"] = self.pre_mlp_norm.export_weights()
         if self.ple is not None:
             result["ple"] = self.ple.export_weights()
+        if self.post_layer_scalar is not None:
+            result["post_layer_scalar"] = self.post_layer_scalar
         return result
 
     def import_weights(self, weights: ParameterTree[Array]) -> Self:
@@ -421,6 +409,10 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             ple = self.ple.import_weights(require_tree(weights["ple"]))
         else:
             ple = None
+        if self.post_layer_scalar is not None:
+            post_layer_scalar = require_array(weights["post_layer_scalar"])
+        else:
+            post_layer_scalar = None
         return replace(
             self,
             pre_mixer_norm=pre_mixer_norm,
@@ -430,4 +422,5 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
             mlp=self.mlp.import_weights(require_tree(weights["mlp"])),
             post_mlp_norm=post_mlp_norm,
             ple=ple,
+            post_layer_scalar=post_layer_scalar,
         )
