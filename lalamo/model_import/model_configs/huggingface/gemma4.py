@@ -147,10 +147,10 @@ class HFGemma4TextConfig:
 
         first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
         last_of_type: dict[str, int] = {}
-        kv_source_per_layer: list[int | None] = []
+        kv_source_per_layer: list[int] = []
         for i, lt in enumerate(self.layer_types):
             if i < first_kv_shared:
-                kv_source_per_layer.append(None)
+                kv_source_per_layer.append(i)
                 last_of_type[lt] = i
             else:
                 source = last_of_type.get(lt)
@@ -165,8 +165,11 @@ class HFGemma4TextConfig:
             layer_rope_config = global_rope_config if is_global else local_rope_config
 
             kv_source = kv_source_per_layer[i]
+            owns_kv_cache = kv_source == i
 
-            if self.use_double_wide_mlp and kv_source is not None:
+            # `use_double_wide_mlp` only applies to layers that share a KV cache
+            # with an earlier layer — those layers get a 2x-wide MLP to compensate.
+            if self.use_double_wide_mlp and not owns_kv_cache:
                 layer_intermediate = self.intermediate_size * 2
             else:
                 layer_intermediate = self.intermediate_size
@@ -203,7 +206,7 @@ class HFGemma4TextConfig:
                 hidden_dim=layer_intermediate,
                 ple_config=ple_layer_config,
                 has_post_layer_scalar=True,
-                kv_source_layer=kv_source,
+                kv_source_layer=None if owns_kv_cache else kv_source,
                 rope_config=layer_rope_config,
             )
             layer_configs.append(transformer_layer_config)
