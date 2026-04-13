@@ -1,6 +1,6 @@
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Literal, Self
 
@@ -30,9 +30,22 @@ from lalamo.modules.rope import UnscaledRoPEConfig
 from lalamo.modules.token_mixers.attention import AttentionConfig
 from lalamo.modules.transformer_layer import TransformerLayerConfig
 
-from .common import HuggingFaceLMConfig, QuantizationConfigType
+from .common import HuggingFaceLMConfig
 
 __all__ = ["HFGemma4Config"]
+
+
+@dataclass(frozen=True)
+class RopeParameters:
+    rope_theta: float
+    rope_type: Literal["default", "proportional"]
+    partial_rotary_factor: float | None = None
+
+
+@dataclass(frozen=True)
+class Gemma4RopeParameters:
+    full_attention: RopeParameters
+    sliding_attention: RopeParameters
 
 
 @dataclass(frozen=True)
@@ -50,11 +63,11 @@ class HFGemma4TextConfig:
     head_dim: int
     global_head_dim: int
     max_position_embeddings: int
-    rope_parameters: dict[str, Any]
+    rope_parameters: Gemma4RopeParameters
     final_logit_softcapping: float | None
     vocab_size: int
     layer_types: list[Literal["sliding_attention", "full_attention"]]
-    hidden_activation: str
+    hidden_activation: Literal["gelu_pytorch_tanh"]
     hidden_size_per_layer_input: int
     vocab_size_per_layer_input: int
     num_kv_shared_layers: int
@@ -95,18 +108,19 @@ class HFGemma4TextConfig:
         )
 
         max_seq_len = context_length or self.max_position_embeddings
-        full_attention_params = self.rope_parameters.get("full_attention", {})
-        partial_rotary_factor = full_attention_params.get("partial_rotary_factor", 1.0)
+        full_attention_params = self.rope_parameters.full_attention
+        sliding_attention_params = self.rope_parameters.sliding_attention
+        full_partial_rotary_factor = full_attention_params.partial_rotary_factor or 1.0
         global_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=full_attention_params.get("rope_theta", 10000.0),
+            base=full_attention_params.rope_theta,
             max_sequence_length=max_seq_len,
             head_dim=self.global_head_dim,
-            partial_rotary_dim=int(partial_rotary_factor * self.global_head_dim),
+            partial_rotary_dim=int(full_partial_rotary_factor * self.global_head_dim),
         )
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
-            base=self.rope_parameters.get("sliding_attention", {}).get("rope_theta", 10000.0),
+            base=sliding_attention_params.rope_theta,
             max_sequence_length=max_seq_len,
             head_dim=self.head_dim,
         )
@@ -131,21 +145,17 @@ class HFGemma4TextConfig:
             norm_config=rms_norm_config,
         )
 
-        kv_source_per_layer: dict[int, int | None] = {}
-        if self.num_kv_shared_layers == 0:
-            for i in range(self.num_hidden_layers):
-                kv_source_per_layer[i] = None
-        else:
-            first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
-            last_of_type: dict[str, int] = {}
-            for i, lt in enumerate(self.layer_types):
-                if i < first_kv_shared:
-                    kv_source_per_layer[i] = None
-                    last_of_type[lt] = i
-                else:
-                    source = last_of_type.get(lt)
-                    assert source is not None, f"layer {i} marked shared but no prior {lt} layer exists"
-                    kv_source_per_layer[i] = source
+        first_kv_shared = self.num_hidden_layers - self.num_kv_shared_layers
+        last_of_type: dict[str, int] = {}
+        kv_source_per_layer: list[int | None] = []
+        for i, lt in enumerate(self.layer_types):
+            if i < first_kv_shared:
+                kv_source_per_layer.append(None)
+                last_of_type[lt] = i
+            else:
+                source = last_of_type.get(lt)
+                assert source is not None, f"layer {i} marked shared but no prior {lt} layer exists"
+                kv_source_per_layer.append(source)
 
         layer_configs = []
         for i, layer_type in enumerate(self.layer_types):
@@ -223,10 +233,10 @@ class HFGemma4Config(HuggingFaceLMConfig):
     architectures: list[str]
     model_type: Literal["gemma4"]
     tie_word_embeddings: bool
-    eos_token_id: int | list[int]
+    eos_token_id: list[int]
 
-    vision_config: dict[str, Any] | None = field(default_factory=dict)
-    audio_config: dict[str, Any] | None = field(default_factory=dict)
+    vision_config: dict[str, Any] | None = None
+    audio_config: dict[str, Any] | None = None
     image_token_id: int | None = None
     audio_token_id: int | None = None
     boi_token_id: int | None = None
@@ -236,9 +246,6 @@ class HFGemma4Config(HuggingFaceLMConfig):
     eoa_token_index: int | None = None
     boa_token_id: int | None = None
     vision_soft_tokens_per_image: int | None = None
-
-    quantization: QuantizationConfigType = None
-    quantization_config: QuantizationConfigType = None
 
     @property
     def default_precision(self) -> DTypeLike:
