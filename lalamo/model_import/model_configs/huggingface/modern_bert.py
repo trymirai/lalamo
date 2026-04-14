@@ -32,17 +32,16 @@ from .common import (
 __all__ = ["ModernBERTConfig"]
 
 
-def activation_from_str(activation: str) -> type[Activation]:
-    supported_activations = {
-        "silu": SiLU,
-        "gelu": GELU,
-    }
-    if activation in supported_activations:
-        return supported_activations[activation]
-
-    raise ValueError(
-        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}",
-    )
+def activation_from_str(activation: str) -> Activation:
+    match activation:
+        case "gelu":
+            return GELU(approximate=False)
+        case "gelu_new" | "gelu_pytorch_tanh":
+            return GELU(approximate=True)
+        case "silu":
+            return SiLU()
+        case _:
+            raise ValueError(f"Unsupported activation for ModernBERT: {activation!r}")
 
 
 @dataclass(frozen=True)
@@ -147,10 +146,9 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             precision=activation_precision,
         )
         activation = activation_from_str(self.hidden_activation)
-        assert activation is SiLU or activation is GELU
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=activation(),
+            activation=activation,
             has_up_biases=False,
             has_down_biases=False,
             up_clipping=None,
@@ -215,7 +213,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         )
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
-            activation=prediction_head_activation(),
+            activation=prediction_head_activation,
             normalization_config=prediction_head_norm_config,
             readout_config=prediction_head_readout_config,
             use_dense_bias=self.classifier_bias,
