@@ -142,8 +142,8 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         forward_pass_config: DecoderForwardPassConfig | None = None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(

@@ -214,8 +214,8 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
         forward_pass_config: TransformerLayerForwardPassConfig | None = None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(

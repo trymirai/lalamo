@@ -178,8 +178,8 @@ class Transformer(LalamoModule[TransformerConfig]):
         return_positional_embeddings: bool,
         lengths_without_padding: Int[Array, " batch"] | None,
         forward_pass_mode: ForwardPassMode,
-        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None,
         forward_pass_config: TransformerForwardPassConfig | None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
