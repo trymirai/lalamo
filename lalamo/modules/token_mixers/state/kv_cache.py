@@ -77,6 +77,10 @@ class KVCacheLayer(StateLayerBase):
                 "Attempted to call a method on a batched version of KVCacheLayer. Use vmap instead.",
             )
 
+    @property
+    @abstractmethod
+    def padding_mask(self) -> Bool[Array, " tokens"] | None: ...
+
     @abstractmethod
     def attention_mask(
         self,
