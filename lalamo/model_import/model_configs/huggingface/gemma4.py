@@ -81,6 +81,7 @@ class HFGemma4TextConfig:
         accumulation_precision: DTypeLike,
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> DecoderConfig:
+        assert self.tie_word_embeddings, "Gemma-4 import only supports tied word embeddings"
         embedding_config = TiedEmbeddingConfig(
             input_scale=self.hidden_size**0.5,
             logit_soft_cap=self.final_logit_softcapping,
@@ -230,25 +231,9 @@ class HFGemma4TextConfig:
 @dataclass(frozen=True)
 class HFGemma4Config(HuggingFaceLMConfig):
     text_config: HFGemma4TextConfig
-    initializer_range: float
-    transformers_version: str
     dtype: Literal["bfloat16", "float16", "float32"]
-    architectures: list[str]
     model_type: Literal["gemma4"]
-    tie_word_embeddings: bool
     eos_token_id: list[int]
-
-    vision_config: dict[str, Any] | None = None
-    audio_config: dict[str, Any] | None = None
-    image_token_id: int | None = None
-    audio_token_id: int | None = None
-    boi_token_id: int | None = None
-    eoi_token_id: int | None = None
-    video_token_id: int | None = None
-    eoa_token_id: int | None = None
-    eoa_token_index: int | None = None
-    boa_token_id: int | None = None
-    vision_soft_tokens_per_image: int | None = None
 
     @property
     def default_precision(self) -> DTypeLike:
