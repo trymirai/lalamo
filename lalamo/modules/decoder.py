@@ -32,7 +32,7 @@ __all__ = [
 ]
 
 
-type DecoderForwardPassConfig = TransformerForwardPassConfig
+DecoderForwardPassConfig = TransformerForwardPassConfig
 
 
 class DecoderActivationTrace(eqx.Module):
@@ -142,9 +142,8 @@ class Decoder(LalamoModule[DecoderConfig]):
         return_activation_trace: bool = False,
         lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
-        forward_pass_config: DecoderForwardPassConfig | None = None,
         attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
-        attention_max_depth: int | None = None,
+        forward_pass_config: DecoderForwardPassConfig | None = None,
     ) -> DecoderResult:
         if token_ids.ndim != 2:
             raise ValueError(
@@ -166,9 +165,8 @@ class Decoder(LalamoModule[DecoderConfig]):
             return_positional_embeddings=return_activation_trace,
             lengths_without_padding=lengths_without_padding,
             forward_pass_mode=forward_pass_mode,
-            forward_pass_config=forward_pass_config,
             attention_parent_indices=attention_parent_indices,
-            attention_max_depth=attention_max_depth,
+            forward_pass_config=forward_pass_config,
         )
 
         logits = vmap_twice(self.embedding.readout)(transformer_result.outputs)

@@ -5,6 +5,7 @@ import pytest
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
+    DecoderForwardPassConfig,
     DenseMLPConfig,
     DynamicKVCacheLayer,
     ForwardPassMode,
@@ -188,7 +189,7 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
-        attention_max_depth=3,
+        forward_pass_config=DecoderForwardPassConfig(attention_max_depth=3),
     )
 
     assert_close(
@@ -238,7 +239,7 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
-        attention_max_depth=2,
+        forward_pass_config=DecoderForwardPassConfig(attention_max_depth=2),
     )
 
     assert_close(
