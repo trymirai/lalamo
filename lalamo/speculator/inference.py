@@ -8,6 +8,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
 from lalamo.models import GenerationTraceConfig, LanguageModel
+from lalamo.models.batch_scheduler import FixedBatchScheduler
 from lalamo.models.common import InferenceConfig
 
 
@@ -44,12 +45,12 @@ def inference_collect_traces(
 
     tokens_generated = 0
 
-    for idx, generated in enumerate(
-        model.generate_tokens_many(
-            filtered_prefixes,
-            inference_config=config,
-            generation_trace_config=trace_config,
-        ),
+    scheduler = FixedBatchScheduler(model=model)
+
+    for idx, generated in scheduler.generate_tokens_many(
+        filtered_prefixes,
+        inference_config=config,
+        generation_trace_config=trace_config,
     ):
         token_ids = generated.token_ids.tolist()
         seqlen = next(

@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING
 
 import jax
 
-jax.config.update("jax_compiler_enable_remat_pass", False)
-
 from .common import InferenceConfig
 
 if TYPE_CHECKING:

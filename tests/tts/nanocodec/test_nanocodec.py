@@ -10,6 +10,7 @@ from omegaconf import DictConfig
 from lalamo.audio.tts_message_processor import TTSMessage
 from lalamo.model_import.common import import_model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
+from lalamo.model_registry import ModelRegistry
 from lalamo.models import TTSGenerator
 from lalamo.modules.audio.common_modules import (
     CausalConv1dConfig,
@@ -441,7 +442,8 @@ def test_nanocodec_model_spec_loading() -> None:
 
     message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
 
-    generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", precision=jnp.float32)
+    model_spec = ModelRegistry.build().repo_to_model["nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps"]
+    generator, _ = import_model(model_spec=model_spec, precision=jnp.float32)
 
     assert isinstance(generator, TTSGenerator)
     assert isinstance(generator.tts_model, TTSModel)

@@ -63,6 +63,7 @@ from lalamo.model_import.common import FileSpec
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models.batch_scheduler import SchedulerKind
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
@@ -693,9 +694,9 @@ class CliGenerateRepliesCallbacks(GenerateRepliesCallbacks):
         assert self.loading_task is not None
         self.progress.remove_task(self.loading_task)
 
-    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
+    def estimating_batchsize(self, batchsize: int, step: int, num_steps: int) -> None:
         assert self.progress is not None
-        description = f"📐 [cyan]Compiling memory probes... ({num_done + 1}/{num_total})[/cyan]"
+        description = f"📐 [cyan]Estimating batch size with probe batch={batchsize} ({step + 1}/{num_steps})[/cyan]"
         if self.estimating_task is None:
             self.estimating_task = self.progress.add_task(description)
         else:
@@ -775,6 +776,10 @@ def generate_replies(
         int | None,
         Option(help="Fixed batch size to use, skipping automatic estimation."),
     ] = None,
+    scheduler: Annotated[
+        SchedulerKind,
+        Option(help="Batch scheduling strategy."),
+    ] = SchedulerKind.CONTINUOUS,
 ) -> None:
     if batch_size is not None and vram_gb is not None:
         err_console.print("Cannot use both --batch-size and --vram-gb")
@@ -797,6 +802,7 @@ def generate_replies(
         max_vram=max_vram,
         max_output_length=max_output_length,
         batch_size=batch_size,
+        scheduler_kind=scheduler,
         callbacks_type=CliGenerateRepliesCallbacks,
     )
 
@@ -811,8 +817,8 @@ class CliEstimateBatchsizeCallbacks(EstimateBatchsizeCallbacks):
     progress: Progress | None = None
     estimating_task: TaskID | None = None
 
-    def estimating_batchsize(self, num_done: int, num_total: int) -> None:
-        description = f"[cyan]Compiling memory probes... ({num_done + 1}/{num_total})[/cyan]"
+    def estimating_batchsize(self, batchsize: int, step: int, num_steps: int) -> None:
+        description = f"[cyan]Estimating batch size with probe batch={batchsize} ({step + 1}/{num_steps})[/cyan]"
         if self.progress is None:
             self.progress = self.stack.enter_context(
                 Progress(

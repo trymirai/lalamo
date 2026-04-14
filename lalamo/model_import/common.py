@@ -21,7 +21,6 @@ from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessagePr
 from lalamo.audio.utils import dummy_char_level_tokenizer_config
 from lalamo.message_processor import MessageProcessor, MessageProcessorConfig
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
-from lalamo.model_registry import ModelRegistry
 from lalamo.models import (
     ClassifierModel,
     ClassifierModelConfig,
@@ -509,7 +508,7 @@ def _import_tts_model(
 
 
 def import_model(
-    model_spec: ModelSpec | str,
+    model_spec: ModelSpec,
     *,
     context_length: int | None = None,
     precision: DTypeLike | None = None,
@@ -517,12 +516,6 @@ def import_model(
     progress_callback: Callable[[StatusEvent], None] | None = None,
     sharding_config: ShardingConfig | None = None,
 ) -> ImportResults:
-    if isinstance(model_spec, str):
-        try:
-            model_spec = ModelRegistry.build().repo_to_model[model_spec]
-        except KeyError as e:
-            raise ValueError(f"Unknown model: {model_spec}") from e
-
     with use_sharding(sharding_config):
         match model_spec.model_type:
             case ModelType.LANGUAGE_MODEL:

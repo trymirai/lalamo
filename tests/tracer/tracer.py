@@ -18,6 +18,7 @@ from transformers.models.gpt_oss.modeling_gpt_oss import GptOssAttention
 from lalamo import ClassifierModel, LanguageModel, import_model
 from lalamo.common import get_default_device_bytes
 from lalamo.model_import.common import ModelType
+from lalamo.model_registry import ModelRegistry
 from lalamo.modules.classifier import ClassifierActivationTrace, ClassifierResult
 from lalamo.modules.decoder import (
     DecoderActivationTrace,
@@ -485,7 +486,7 @@ def _test_model(test_spec: ModelTestSpec, model_tracer: type[ModelTracer]) -> No
     inference_results = None
     try:
         model, model_metadata = import_model(
-            test_spec.model_repo,
+            ModelRegistry.build().repo_to_model[test_spec.model_repo],
             context_length=test_spec.num_tokens * test_spec.token_stride,
             precision=test_spec.dtype.jax_dtype if test_spec.dtype is not None else None,
         )

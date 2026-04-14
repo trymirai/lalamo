@@ -1,14 +1,11 @@
-from collections.abc import Callable, Iterable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
-from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key, PRNGKeyArray
@@ -28,8 +25,6 @@ from lalamo.modules import (
 from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import (
-    BatchSizeInfo,
-    BatchSizesComputedEvent,
     InferenceConfig,
     TextModel,
     TextModelConfig,
@@ -37,9 +32,6 @@ from .common import (
 )
 from .compile_helpers import compile_generate_tokens
 from .lm_helpers import (
-    decrease_batchsize_on_oom,
-    estimate_batchsizes_from_vram,
-    merge_small_buckets,
     pad_keys_to_size,
     pad_sequences,
 )
@@ -235,7 +227,6 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             is_last_token_inside=is_last_token_inside,
         )
 
-    @eqx.filter_jit
     def _prefill(
         self,
         token_ids: Int[Array, "batch tokens"],
@@ -324,7 +315,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if max_output_length < 1:
             raise ValueError("max_output_length must be at least 1.")
 
-        prefill_results = self._prefill(
+        prefill_results = eqx.filter_jit(self._prefill)(
             prompt_token_ids,
             sequence_length + max_output_length,
             prompt_lengths_without_padding,
@@ -515,64 +506,11 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                 trace=trace_i,
             )
 
-    def generate_tokens_many(
-        self,
-        tokenized: Iterable[list[int]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
-        *,
-        forward_pass_config: ForwardPassConfig | None = None,
-        generation_trace_config: GenerationTraceConfig | None = None,
-        sharding_config: ShardingConfig | None = None,
-        keys: Key[Array, " num_sequences"] | None = None,
-        continuous_batching_block_size: int = 128,
-    ) -> Iterator[GenerationResults]:
-        """
-        This implement a block-continuous batching. We keep two KV caches active,
-        the prefilled kv cache and the currently active kv cache.
-
-        Each 128 generated tokens, we look at the unrolls that are finished (emitted eot), evict
-        them from kv cache, replace the slice of kv cache with the prefill kv cache, mark the slice
-        in the prefill kv cache as stale and then continue.
-
-        As soon as the prefill kv cache only has the stale values, we run a prefill on the next batch of inputs.
-        """
-        tokenized = list(tokenized)  # load eagerly to RAM
-
-        if keys is None:
-            keys = jax.random.split(jax.random.key(0), num=len(tokenized))
-
-        if len(keys) != len(tokenized):
-            raise ValueError(
-                f"Length of 'keys' should be equal to the number of sequences passed or None; got {len(keys)}",
-            )
-
-        def process_batches(batch_size: int) -> Iterator[tuple[int, GenerationResults]]:
-            new_inference_config = replace(inference_config, batch_size=batch_size)
-
-            for batch_items in batched(zip(tokenized, keys, strict=True), batch_size):
-                real_batch, batch_keys = zip(*batch_items, strict=True)
-                yield from self._generate_tokens_batch(
-                    real_batch,
-                    batch_keys,
-                    generation_config=generation_config,
-                    inference_config=new_inference_config,
-                    forward_pass_config=forward_pass_config,
-                    generation_trace_config=generation_trace_config,
-                    sharding_config=sharding_config,
-                )
-
-        assert inference_config.batch_size is not None
-        yield from decrease_batchsize_on_oom(
-            process_batches,
-            starting_batch_size=inference_config.batch_size,
-        )
-
     def estimate_memory_consumption(
         self,
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
+        inference_config: InferenceConfig,
         *,
+        generation_config: GenerationConfig | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         generation_trace_config: GenerationTraceConfig | None = None,
         sharding_config: ShardingConfig | None = None,
@@ -614,7 +552,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             + memory_analysis.temp_size_in_bytes
         )
 
-    def _trim_at_eos(self, token_ids: list[int]) -> list[int]:
+    def trim_at_eos(self, token_ids: list[int]) -> list[int]:
         if not self.stop_token_ids:
             return token_ids
         stop_set = set(self.stop_token_ids)
@@ -647,120 +585,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
             keys=keys,
         ).token_ids[0]
-        trimmed_ids = self._trim_at_eos(response_ids.tolist())
+        trimmed_ids = self.trim_at_eos(response_ids.tolist())
         response_text = self.message_processor.detokenize(trimmed_ids)
         return self.message_processor.parse_response(response_text)
-
-    def reply_many(
-        self,
-        messages: Iterable[Iterable[Message]],
-        generation_config: GenerationConfig | None = None,
-        inference_config: InferenceConfig = InferenceConfig(),  # noqa: B008
-        *,
-        forward_pass_config: ForwardPassConfig | None = None,
-        sharding_config: ShardingConfig | None = None,
-        keys: Key[Array, " num_sequences"] | None = None,
-        vram_bytes: int | None = None,
-        model_path: Path | str | None = None,
-        batch_sizes_callback: Callable[[BatchSizesComputedEvent], None] | None = None,
-        precompilation_workers: int = 2,
-    ) -> Iterator[tuple[int, AssistantMessage]]:
-        if sharding_config is None:
-            sharding_config = get_current_sharding_config()
-
-        messages = list(messages)  # eagerly load the dataset into RAM
-
-        if keys is None:
-            keys = jax.random.split(jax.random.key(0), num=len(messages))
-
-        if len(keys) != len(messages):
-            raise ValueError(
-                f"Length of 'keys' should be equal to the number of sequences passed or None; got {len(keys)}",
-            )
-
-        if vram_bytes is not None and inference_config.batch_size is not None:
-            raise ValueError("You have to specify only one of batch_size and vram_gb, not both.")
-
-        if vram_bytes is None and inference_config.batch_size is None:
-            raise ValueError("You have to specify either batch_size or vram_gb, but you provided neither.")
-
-        tokenized: list[list[int]] = self.message_processor.tokenize_requests(messages)
-
-        buckets: dict[int, list[tuple[int, list[int]]]] = {}
-        max_prompt_length = max(_COMPILED_PROMPT_LENGTHS)
-        for idx, sequence in enumerate(tokenized):
-            assert len(sequence) <= max_prompt_length, (
-                f"Sequence length {len(sequence)} exceeds largest bucket {max_prompt_length}"
-            )
-            # we choose the smallest size from precomputed ones that is longer or equal to the current sequence
-            padded_len = min(length for length in _COMPILED_PROMPT_LENGTHS if length >= len(sequence))
-            buckets.setdefault(padded_len, []).append((idx, sequence))
-        sorted_lengths = sorted(buckets.keys())
-
-        if inference_config.batch_size is not None:
-            batch_size_per_bucket = dict.fromkeys(sorted_lengths, inference_config.batch_size)
-        else:
-            assert model_path is not None, "model_path is required when vram_bytes is set"
-            batch_size_per_bucket = estimate_batchsizes_from_vram(
-                model_path,
-                sorted_lengths,
-                vram_bytes,  # type: ignore
-                inference_config,
-            )
-
-        buckets = merge_small_buckets(buckets, batch_size_per_bucket, min_batches=20)
-        assert sum(len(bucket) for bucket in buckets.values()) == len(tokenized)
-
-        if batch_sizes_callback is not None:
-            batch_sizes = tuple(
-                BatchSizeInfo(
-                    prefix_length=padded_length,
-                    num_elements=len(buckets[padded_length]),
-                    batch_size=batch_size_per_bucket.get(padded_length, 1),
-                )
-                for padded_length in sorted(buckets.keys())
-            )
-            batch_sizes_callback(BatchSizesComputedEvent(batch_sizes=batch_sizes))
-
-        # Precompile all bucket configs in parallel before starting inference.
-        # XLA's .compile() releases the GIL, so threading gives near-linear speedup.
-        precompile_configs = [
-            replace(inference_config, batch_size=batch_size_per_bucket[pl], padded_length=pl)
-            for pl in sorted(buckets.keys())
-        ]
-
-        def _precompile(ic: InferenceConfig) -> None:
-            self.estimate_memory_consumption(
-                generation_config=generation_config,
-                inference_config=ic,
-                forward_pass_config=forward_pass_config,
-                sharding_config=sharding_config,
-            )
-
-        with ThreadPoolExecutor(max_workers=precompilation_workers) as pool:
-            list(pool.map(_precompile, precompile_configs))
-
-        # Process longest sequences first so batchsize=1 OOM happens as early as possible, if it does happen
-        for padded_length in sorted(buckets.keys(), reverse=True):
-            sequence_ids, sequence_tokenized = zip(*buckets[padded_length], strict=True)
-            sequence_ids = list(sequence_ids)
-            batch_size = batch_size_per_bucket[padded_length]
-
-            bucket_inference_config = replace(inference_config, batch_size=batch_size, padded_length=padded_length)
-
-            all_results = self.generate_tokens_many(
-                sequence_tokenized,
-                generation_config=generation_config,
-                inference_config=bucket_inference_config,
-                forward_pass_config=forward_pass_config,
-                keys=keys[np.array(sequence_ids)],
-                sharding_config=sharding_config,
-            )
-
-            for idx, result in zip(sequence_ids, all_results, strict=True):
-                trimmed_ids = self._trim_at_eos(result.token_ids.tolist())
-                response = self.message_processor.parse_tokenized_response(trimmed_ids)
-                yield (idx, response)
 
     def stream_reply_text(
         self,
@@ -810,7 +637,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         padded_token_ids = jnp.zeros((padded_input_length,), dtype=jnp.int32)
         padded_token_ids = padded_token_ids.at[:input_length].set(prompt_token_ids)
 
-        prefill_results = self._prefill(
+        prefill_results = eqx.filter_jit(self._prefill)(
             padded_token_ids[None, :],
             padded_input_length + max_output_length,
             lengths_without_padding=jnp.array([input_length], dtype=jnp.int32),

@@ -1,9 +1,11 @@
+import random
+
 import jax.numpy as jnp
 import pytest
 
-from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.message_processor import UserMessage
-from lalamo.models import LanguageModel
+from lalamo.model_import.model_specs.common import ModelType
+from lalamo.models import ContinuousBatchScheduler, FixedBatchScheduler, LanguageModel
 from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
 from tests.conftest import ConvertModel, filter_specs, mark_by_size
@@ -139,8 +141,9 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
         streaming_token_ids.squeeze().tolist(),
     )
 
+    scheduler = FixedBatchScheduler(model=language_model)
     [(idx, batch_response)] = list(
-        language_model.reply_many(
+        scheduler.reply_many(
             [prompt],
             generation_config=generation_config,
             inference_config=InferenceConfig(batch_size=1, max_output_length=10),
@@ -149,3 +152,92 @@ def test_streaming_vs_eager_consistency(language_model: LanguageModel) -> None:
     assert idx == 0
     streaming_response = language_model.message_processor.parse_tokenized_response(streaming_token_ids.tolist())
     assert batch_response == streaming_response
+
+
+_FUZZ_MODEL_REPO = "Qwen/Qwen2.5-0.5B-Instruct"
+
+_FUZZ_PROMPTS = (
+    "Say hi.",
+    "Name a fruit.",
+    "What is 2+2?",
+    "Reply with one word.",
+    "Yes or no?",
+    "Pick a color.",
+    "Complete: the sky is",
+    "One short word please.",
+)
+
+
+@pytest.fixture(scope="module")
+def fuzz_language_model(_convert_model_session: ConvertModel) -> LanguageModel:
+    model_dir = _convert_model_session(_FUZZ_MODEL_REPO, cached=True)
+    return LanguageModelConfig.load_model(model_dir)
+
+
+@pytest.mark.parametrize(
+    ("seed", "num_prompts", "batch_size", "block_size", "max_output_length", "padded_length"),
+    [
+        # (empty)                            zero sequences
+        (0, 0, 2, 8, 8, 32),
+        # (under-filled batch, misaligned)   10%8=2, lines stay empty forever
+        (1, 1, 4, 8, 10, 48),
+        # (exact fit, misaligned)            12%8=4, no refill
+        (2, 4, 4, 8, 12, 32),
+        # (heavy refill, misaligned)         14%4=2, many churns
+        (3, 12, 2, 4, 14, 40),
+        # (block_size=1)                     every step is a boundary
+        (4, 3, 2, 1, 8, 64),
+        # (block > max_output)               block clamps to max_output
+        (5, 2, 2, 64, 6, 56),
+        # (sequential, misaligned)           batch_size=1, 11%4=3
+        (6, 5, 1, 4, 11, 40),
+        # (multi-block, misaligned)          13%4=1, minimal tail
+        (7, 8, 3, 4, 13, 80),
+    ],
+)
+def test_continuous_vs_fixed_fuzz(
+    fuzz_language_model: LanguageModel,
+    seed: int,
+    num_prompts: int,
+    batch_size: int,
+    block_size: int,
+    max_output_length: int,
+    padded_length: int,
+) -> None:
+    rng = random.Random(seed)
+    prompts = [[UserMessage(rng.choice(_FUZZ_PROMPTS))] for _ in range(num_prompts)]
+    tokenized = [fuzz_language_model.message_processor.tokenize_request(p) for p in prompts]
+
+    generation_config = GenerationConfig(
+        temperature=0,
+        stop_token_ids=fuzz_language_model.config.generation_config.stop_token_ids,
+    )
+    inference_config = InferenceConfig(
+        batch_size=batch_size,
+        max_output_length=max_output_length,
+        padded_length=padded_length,
+    )
+
+    fixed_results = dict(
+        FixedBatchScheduler(model=fuzz_language_model).generate_tokens_many(
+            tokenized,
+            generation_config=generation_config,
+            inference_config=inference_config,
+        ),
+    )
+    continuous_results = dict(
+        ContinuousBatchScheduler(
+            model=fuzz_language_model,
+            continuous_batching_block_size=block_size,
+        ).generate_tokens_many(
+            tokenized,
+            generation_config=generation_config,
+            inference_config=inference_config,
+        ),
+    )
+
+    assert fixed_results.keys() == continuous_results.keys() == set(range(num_prompts))
+    for seq_id in range(num_prompts):
+        fixed_ids = fuzz_language_model.trim_at_eos(fixed_results[seq_id].token_ids.tolist())
+        continuous_ids = fuzz_language_model.trim_at_eos(continuous_results[seq_id].token_ids.tolist())
+        assert fixed_ids == continuous_ids, f"seq {seq_id}: fixed={fixed_ids[:20]} continuous={continuous_ids[:20]}"

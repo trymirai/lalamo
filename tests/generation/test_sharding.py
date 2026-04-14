@@ -14,6 +14,8 @@ MODELS = [
 @pytest.mark.parametrize("model", MODELS)
 def test_sharded_forward_passes_match(model: str) -> None:
     skip_on_gpu("Sharding test forces CPU; incompatible with GPU mesh")
+    # Run in a fresh subprocess: XLA_FLAGS and JAX_PLATFORMS must be set before JAX
+    # initializes, and device count is locked after the first jax import.
     result = subprocess.run(
         [
             sys.executable,
@@ -29,6 +31,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
             assert jax.device_count() == 8, f"expected 8 devices, got {{jax.device_count()}}"
 
             from lalamo import ShardingConfig, import_model
+            from lalamo.model_registry import ModelRegistry
             from lalamo.modules import pad_and_apply_data_sharding
             from tests.common import assert_close
 
@@ -41,7 +44,7 @@ def test_sharded_forward_passes_match(model: str) -> None:
                 ShardingConfig.build(data_parallelism=2, tensor_parallelism=4, fsdp=True),
             ]
 
-            MODEL = "{model}"
+            MODEL = ModelRegistry.build().repo_to_model["{model}"]
             BATCH_SIZE = 8
             SEQ_LEN = 16
 
