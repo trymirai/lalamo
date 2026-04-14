@@ -14,7 +14,7 @@ from .common import ForwardPassMode, LalamoModule, PositionalEmbeddingSelector
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings
-from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
+from .token_mixers import Attention, KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
 from .utils import vmap_twice
 
 __all__ = [
@@ -226,15 +226,15 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             normalized_mixer_inputs = inputs
 
+        mixer_partial = partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace)
         if attention_parent_indices is not None:
-            batched_mixer_fn = vmap(
-                partial(
-                    self.mixer,
-                    return_updated_state=return_updated_state or return_activation_trace,
-                    attention_max_depth=attention_max_depth,
-                ),
-            )
-            mixer_outputs, updated_state = batched_mixer_fn(
+            if not isinstance(self.mixer, Attention):
+                raise NotImplementedError(
+                    f"Tree attention (attention_parent_indices) is only supported with"
+                    f" {Attention.__name__} mixers; got {type(self.mixer).__name__}.",
+                )
+            mixer_partial = partial(mixer_partial, attention_max_depth=attention_max_depth)
+            mixer_outputs, updated_state = vmap(mixer_partial)(
                 normalized_mixer_inputs,
                 positional_embeddings,
                 state=state,
@@ -242,10 +242,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                 attention_parent_indices=attention_parent_indices,
             )
         else:
-            batched_mixer_fn = vmap(
-                partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace),
-            )
-            mixer_outputs, updated_state = batched_mixer_fn(
+            mixer_outputs, updated_state = vmap(mixer_partial)(
                 normalized_mixer_inputs,
                 positional_embeddings,
                 state=state,

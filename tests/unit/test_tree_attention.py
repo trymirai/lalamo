@@ -19,7 +19,7 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.modules.token_mixers.state.kv_cache import _build_tree_attention_mask, _tree_ancestor_mask
+from lalamo.modules.token_mixers.state.kv_cache import build_tree_attention_mask, tree_ancestor_mask
 from tests.common import assert_close
 
 
@@ -99,11 +99,9 @@ def decoder() -> Decoder:
 
 def test_tree_ancestor_mask_chain() -> None:
     """Linear chain: each node should attend to itself and all ancestors."""
-    # Chain: 0 -> 1 -> 2 -> 3
     parent_indices = jnp.array([-1, 0, 1, 2], dtype=jnp.int32)
-    mask = _tree_ancestor_mask(parent_indices, max_depth=4)
+    mask = tree_ancestor_mask(parent_indices, max_depth=4)
 
-    # ancestor[i, j] = True iff j is ancestor-or-self of i
     expected = jnp.array(
         [
             [True, False, False, False],
@@ -118,9 +116,8 @@ def test_tree_ancestor_mask_chain() -> None:
 
 def test_tree_ancestor_mask_fork() -> None:
     """Forked tree: siblings must not see each other."""
-    # Tree: root(0), child1(1), child2(2) both children of root
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
-    mask = _tree_ancestor_mask(parent_indices, max_depth=3)
+    mask = tree_ancestor_mask(parent_indices, max_depth=3)
 
     expected = jnp.array(
         [
@@ -135,9 +132,8 @@ def test_tree_ancestor_mask_fork() -> None:
 
 def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     """Draft nodes attend to all prefix tokens plus their own ancestor chain."""
-    # Prefix length 2, draft tree: 0 -> 1, 0 -> 2
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
-    mask = _build_tree_attention_mask(
+    mask = build_tree_attention_mask(
         total_capacity=5,
         prefix_length=2,
         parent_indices=parent_indices,
@@ -146,9 +142,6 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
     )
 
     # Columns: [prefix0, prefix1, draft0, draft1, draft2]
-    # Draft0 (root): attends to prefix + self
-    # Draft1: attends to prefix + draft0 + self
-    # Draft2: attends to prefix + draft0 + self
     expected = jnp.array(
         [
             [True, True, True, False, False],
@@ -279,10 +272,12 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
 
     parent_indices = jnp.array([-1, 0, 1], dtype=jnp.int32)
     dynamic_mask = dynamic_cache.tree_attention_mask(
+        prefix_length=prefix_length,
         parent_indices=parent_indices,
         max_depth=3,
     )
     static_mask = static_cache.tree_attention_mask(
+        prefix_length=prefix_length,
         parent_indices=parent_indices,
         max_depth=3,
     )
