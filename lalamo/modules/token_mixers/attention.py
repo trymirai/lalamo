@@ -378,7 +378,6 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
         return_updated_state: bool = False,
         length_without_padding: Int[Array, ""] | int | None = None,
         attention_parent_indices: Int[Array, " suffix_tokens"] | None = None,
-        attention_max_depth: int | None = None,
     ) -> AttentionResult:
         queries, keys, values = vmap(self.qkv_projection, in_axes=0)(inputs)
         if self.gate_projection is not None:
@@ -423,8 +422,7 @@ class Attention(TokenMixerBase[AttentionConfig, KVCacheLayer]):
 
         num_suffix_tokens, _, _ = queries.shape
         if attention_parent_indices is not None:
-            max_depth = attention_max_depth if attention_max_depth is not None else num_suffix_tokens
-            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices, max_depth)
+            mask = updated_state.tree_attention_mask(prefix_length, attention_parent_indices)
         else:
             mask = updated_state.attention_mask(
                 num_suffix_tokens,

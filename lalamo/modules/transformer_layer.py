@@ -26,9 +26,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True)
-class TransformerLayerForwardPassConfig(MLPForwardPassConfig):
-    attention_max_depth: int | None = None
+type TransformerLayerForwardPassConfig = MLPForwardPassConfig
 
 
 class TransformerLayerActivationTrace(eqx.Module):
@@ -234,8 +232,6 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
                     f"Tree attention (attention_parent_indices) is only supported with"
                     f" {Attention.__name__} mixers; got {type(self.mixer).__name__}.",
                 )
-            attention_max_depth = forward_pass_config.attention_max_depth if forward_pass_config is not None else None
-            mixer_partial = partial(mixer_partial, attention_max_depth=attention_max_depth)
             mixer_outputs, updated_state = vmap(mixer_partial)(
                 normalized_mixer_inputs,
                 positional_embeddings,

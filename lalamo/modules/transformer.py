@@ -29,7 +29,7 @@ __all__ = [
 ]
 
 
-TransformerForwardPassConfig = TransformerLayerForwardPassConfig
+type TransformerForwardPassConfig = TransformerLayerForwardPassConfig
 
 
 class TransformerResult(eqx.Module):

@@ -5,7 +5,6 @@ import pytest
 from lalamo.modules import (
     Decoder,
     DecoderConfig,
-    DecoderForwardPassConfig,
     DenseMLPConfig,
     DynamicKVCacheLayer,
     ForwardPassMode,
@@ -101,7 +100,7 @@ def decoder() -> Decoder:
 def test_tree_ancestor_mask_chain() -> None:
     """Linear chain: each node should attend to itself and all ancestors."""
     parent_indices = jnp.array([-1, 0, 1, 2], dtype=jnp.int32)
-    mask = tree_ancestor_mask(parent_indices, max_depth=4)
+    mask = tree_ancestor_mask(parent_indices)
 
     expected = jnp.array(
         [
@@ -118,7 +117,7 @@ def test_tree_ancestor_mask_chain() -> None:
 def test_tree_ancestor_mask_fork() -> None:
     """Forked tree: siblings must not see each other."""
     parent_indices = jnp.array([-1, 0, 0], dtype=jnp.int32)
-    mask = tree_ancestor_mask(parent_indices, max_depth=3)
+    mask = tree_ancestor_mask(parent_indices)
 
     expected = jnp.array(
         [
@@ -139,7 +138,6 @@ def test_build_tree_attention_mask_prefix_plus_draft() -> None:
         prefix_length=2,
         parent_indices=parent_indices,
         has_sinks=False,
-        max_depth=3,
     )
 
     # Columns: [prefix0, prefix1, draft0, draft1, draft2]
@@ -189,7 +187,6 @@ def test_tree_attention_matches_sequential_chain(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, 0, 1]], dtype=jnp.int32),
-        forward_pass_config=DecoderForwardPassConfig(attention_max_depth=3),
     )
 
     assert_close(
@@ -239,7 +236,6 @@ def test_tree_attention_sibling_isolation(decoder: Decoder) -> None:
         state=prefix_result.updated_state,
         forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
         attention_parent_indices=jnp.array([[-1, -1]], dtype=jnp.int32),
-        forward_pass_config=DecoderForwardPassConfig(attention_max_depth=2),
     )
 
     assert_close(
@@ -275,11 +271,9 @@ def test_tree_attention_mask_static_matches_dynamic() -> None:
     dynamic_mask = dynamic_cache.tree_attention_mask(
         prefix_length=prefix_length,
         parent_indices=parent_indices,
-        max_depth=3,
     )
     static_mask = static_cache.tree_attention_mask(
         prefix_length=prefix_length,
         parent_indices=parent_indices,
-        max_depth=3,
     )
     assert jnp.array_equal(dynamic_mask, static_mask)

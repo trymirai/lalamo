@@ -2,6 +2,7 @@ from abc import abstractmethod
 from typing import Self
 
 import equinox as eqx
+import jax
 import jax.numpy as jnp
 from jax.lax import dynamic_update_slice_in_dim
 from jaxtyping import Array, Bool, DTypeLike, Float, Int
@@ -16,16 +17,26 @@ __all__ = ["DynamicKVCacheLayer", "KVCacheLayer", "StaticKVCacheLayer"]
 @eqx.filter_jit
 def tree_ancestor_mask(
     parent_indices: Int[Array, " nodes"],
-    max_depth: int,
 ) -> Bool[Array, "nodes nodes"]:
-    """Build ancestor matrix from parent_indices. ancestor[i,j]=True iff j is ancestor of i (or self)."""
+    """Ancestor matrix from parent_indices.
+
+    Root is at index 0 with ``parent_indices[0] == -1``; other nodes must have
+    ``parent_indices[i] < i`` so a single forward sweep sees the parent's row
+    already closed. For the root the ``parent >= 0`` guard zeroes out the
+    ``maximum(parent, 0)`` self-lookup, preserving eye[0].
+    """
     (num_nodes,) = parent_indices.shape
-    ancestors = jnp.eye(num_nodes, dtype=jnp.bool)
-    for _ in range(max_depth):
-        parents_row = ancestors[parent_indices]
-        valid = (parent_indices >= 0)[:, None]
-        ancestors = ancestors | (parents_row & valid)
-    return ancestors
+    initial = jnp.eye(num_nodes, dtype=jnp.bool)
+
+    def step(mask: Bool[Array, "nodes nodes"], i: Int[Array, ""]) -> tuple[Bool[Array, "nodes nodes"], None]:
+        parent = parent_indices[i]
+        parent_row = mask[jnp.maximum(parent, 0)]
+        zero_row = jnp.zeros_like(parent_row)
+        inherited = jnp.where(parent >= 0, parent_row, zero_row)
+        return mask.at[i].set(mask[i] | inherited), None
+
+    mask, _ = jax.lax.scan(step, initial, jnp.arange(num_nodes, dtype=jnp.int32))
+    return mask
 
 
 @eqx.filter_jit
@@ -34,7 +45,6 @@ def build_tree_attention_mask(
     prefix_length: Int[Array, ""] | int,
     parent_indices: Int[Array, " nodes"],
     has_sinks: bool,
-    max_depth: int,
 ) -> Bool[Array, "nodes total_capacity"]:
     """Tree attention mask: each draft node attends to prefix + ancestors + self."""
     prefix_length = jnp.asarray(prefix_length, dtype=jnp.int32)
@@ -43,7 +53,7 @@ def build_tree_attention_mask(
     col_indices = jnp.arange(total_capacity, dtype=jnp.int32)
     prefix_mask = col_indices[None, :] < prefix_length
 
-    ancestor_matrix = tree_ancestor_mask(parent_indices, max_depth)
+    ancestor_matrix = tree_ancestor_mask(parent_indices)
     draft_offsets = col_indices - prefix_length
     in_draft = (draft_offsets >= 0) & (draft_offsets < num_nodes)
     clamped = jnp.clip(draft_offsets, 0, num_nodes - 1)
@@ -94,29 +104,17 @@ class KVCacheLayer(StateLayerBase):
         self,
         prefix_length: Int[Array, ""] | int,
         parent_indices: Int[Array, " nodes"],
-        max_depth: int,
     ) -> Bool[Array, "nodes tokens"]:
-        """Common impl; subclasses must expose ``padding_mask`` (``None`` allowed)."""
         self._raise_if_batched()
         total = self.keys.shape[0]
-        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks, max_depth)
+        mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks)
         padding_mask = self.padding_mask
         if padding_mask is not None:
             mask = mask & padding_mask[None, :]
         return mask
 
     @abstractmethod
-    def current_prefix_length(self) -> Int[Array, ""] | int:
-        """Length of the valid prefix already in this cache (pre-extend).
-
-        For ``DynamicKVCacheLayer`` this is the number of physical rows;
-        for ``StaticKVCacheLayer`` this is ``current_length``.
-        The caller feeds this value as ``prefix_length`` to
-        ``tree_attention_mask`` on the *post-extend* cache so the draft /
-        prefix split in the mask is computed against the original prefix,
-        not the padded post-extend length.
-        """
-        ...
+    def current_prefix_length(self) -> Int[Array, ""] | int: ...
 
     @abstractmethod
     def extend(

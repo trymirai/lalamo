@@ -32,7 +32,7 @@ __all__ = [
 ]
 
 
-DecoderForwardPassConfig = TransformerForwardPassConfig
+type DecoderForwardPassConfig = TransformerForwardPassConfig
 
 
 class DecoderActivationTrace(eqx.Module):
