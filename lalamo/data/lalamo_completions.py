@@ -128,24 +128,23 @@ def load_completions(path: Path, exclude: set[str] | None = None) -> list[Lalamo
         tuple(np.asarray(layer_indices_array, dtype=np.int32).tolist()) if layer_indices_array is not None else ()
     )
 
-    def sliced(key: str, token_slice: slice) -> Array | None:
-        a = arrays.get(key)
-        return a[token_slice] if a is not None else None
+    def sliced(array: Array | None, slice_idx: slice) -> Array | None:
+        return array[slice_idx] if array is not None else None
 
     loaded: list[LalamoCompletion] = []
     for i, (prefix, completion) in enumerate(zip(prefixes, completions, strict=True)):
-        s = slice(int(offsets[i]), int(offsets[i + 1]))
+        slice_idx = slice(int(offsets[i]), int(offsets[i + 1]))
         layer_output_array = arrays.get("layer_output")
         loaded.append(
             LalamoCompletion(
                 prefix_token_ids=prefix,
                 completion_token_ids=completion,
-                top_k_ids=arrays["top_k_ids"][s],
-                top_k_logits=arrays["top_k_logits"][s],
-                logsumexp=sliced("logsumexp", s),
-                activation_output=sliced("activation_output", s),
+                top_k_ids=arrays["top_k_ids"][slice_idx],
+                top_k_logits=arrays["top_k_logits"][slice_idx],
+                logsumexp=sliced(arrays.get("logsumexp"), slice_idx),
+                activation_output=sliced(arrays.get("activation_output"), slice_idx),
                 layer_indices=layer_indices if layer_output_array is not None else (),
-                layer_output=layer_output_array[:, s, :] if layer_output_array is not None else None,
+                layer_output=layer_output_array[:, slice_idx, :] if layer_output_array is not None else None,
             )
         )
     return loaded
