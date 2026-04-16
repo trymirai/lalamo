@@ -506,6 +506,27 @@ QWEN35 = [
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
         ),
     ),
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.5",
+        name="Qwen3.5-35B-A3B",
+        size="35B",
+        quantization=None,
+        repo="Qwen/Qwen3.5-35B-A3B",
+        config_type=HFQwen35Config,
+    ),
+]
+
+QWEN36 = [
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.6",
+        name="Qwen3.6-35B-A3B",
+        size="35B",
+        quantization=None,
+        repo="Qwen/Qwen3.6-35B-A3B",
+        config_type=HFQwen35Config,
+    ),
 ]
 
 QWEN3_PARD = [
@@ -535,4 +556,4 @@ BONSAI = [
     ),
 ]
 
-QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN35 + QWEN3_PARD + BONSAI
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN35 + QWEN36 + QWEN3_PARD + BONSAI
