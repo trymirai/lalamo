@@ -106,7 +106,7 @@ class KVCacheLayer(StateLayerBase):
         parent_indices: Int[Array, " nodes"],
     ) -> Bool[Array, "nodes tokens"]:
         self._raise_if_batched()
-        total = self.keys.shape[0]
+        total, _, _ = self.keys.shape
         mask = build_tree_attention_mask(total, prefix_length, parent_indices, self.has_sinks)
         padding_mask = self.padding_mask
         if padding_mask is not None:
