@@ -4,6 +4,7 @@ from lalamo.model_import.model_configs import (
     HFQwen3Config,
     HFQwen3NextConfig,
     HFQwen35Config,
+    HFQwen35MoeConfig,
 )
 from lalamo.quantization import QuantizationMode
 
@@ -508,6 +509,19 @@ QWEN35 = [
     ),
 ]
 
+QWEN36 = [
+    ModelSpec(
+        vendor="Alibaba",
+        family="Qwen3.6",
+        name="Qwen3.6-35B-A3B",
+        size="35B",
+        quantization=None,
+        repo="Qwen/Qwen3.6-35B-A3B",
+        config_type=HFQwen35MoeConfig,
+    ),
+]
+
+
 QWEN3_PARD = [
     ModelSpec(
         vendor="AMD",
@@ -535,4 +549,4 @@ BONSAI = [
     ),
 ]
 
-QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN35 + QWEN3_PARD + BONSAI
+QWEN_MODELS = QWEN25 + QWEN25_CODER + QWEN3 + QWEN3_NEXT + QWEN35 + QWEN36 + QWEN3_PARD + BONSAI

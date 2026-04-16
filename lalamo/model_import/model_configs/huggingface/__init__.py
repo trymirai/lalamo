@@ -11,6 +11,7 @@ from .modern_bert import ModernBERTConfig
 from .qwen2 import HFQwen2Config
 from .qwen3 import HFQwen3Config
 from .qwen3_5 import HFQwen35Config
+from .qwen3_5_moe import HFQwen35MoeConfig
 from .qwen3_next import HFQwen3NextConfig
 from .smollm3 import HFSmolLM3Config
 
@@ -28,6 +29,7 @@ __all__ = [
     "HFQwen3Config",
     "HFQwen3NextConfig",
     "HFQwen35Config",
+    "HFQwen35MoeConfig",
     "HFSmolLM3Config",
     "HuggingFaceLMConfig",
     "ModernBERTConfig",

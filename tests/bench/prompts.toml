@@ -1,0 +1,130 @@
+# Typical-prompt benchmark for eyeballing model quality.
+# Keep prompts short and self-contained. `expect` is a human hint of what a
+# good answer should contain; no automated grading is done.
+
+[[prompts]]
+id = "fact_capital"
+category = "factual"
+prompt = "What is the capital of Australia? Reply in one sentence."
+expect = "Canberra"
+
+[[prompts]]
+id = "fact_element"
+category = "factual"
+prompt = "What element has the atomic number 79? Just the name."
+expect = "gold"
+
+[[prompts]]
+id = "arith_small"
+category = "arithmetic"
+prompt = "Compute 47 * 53. Give only the number."
+expect = "2491"
+
+[[prompts]]
+id = "arith_words"
+category = "arithmetic"
+prompt = "Alice has 12 apples. She gives 3 to Bob and eats 2. How many does she have left?"
+expect = "7"
+
+[[prompts]]
+id = "reason_syllogism"
+category = "reasoning"
+prompt = "All dogs are mammals. All mammals are animals. Is every dog an animal? Yes or no, one word."
+expect = "yes"
+
+[[prompts]]
+id = "reason_order"
+category = "reasoning"
+prompt = "Tom is taller than Mary. Mary is taller than Sue. Who is the shortest?"
+expect = "Sue"
+
+[[prompts]]
+id = "format_words"
+category = "instruction_following"
+prompt = "Reply with exactly three words describing a sunny beach."
+expect = "exactly three words"
+
+[[prompts]]
+id = "format_json"
+category = "instruction_following"
+prompt = 'Return a JSON object with keys "name" and "age" for a fictional 30-year-old named Alex. Only the JSON.'
+expect = '{"name":"Alex","age":30}'
+
+[[prompts]]
+id = "code_fizzbuzz"
+category = "code_generation"
+prompt = "Write a Python function `fizzbuzz(n)` that returns 'Fizz', 'Buzz', 'FizzBuzz', or the number as a string. Only code."
+expect = "correct fizzbuzz logic"
+
+[[prompts]]
+id = "code_reverse"
+category = "code_generation"
+prompt = "Write a Python one-liner that reverses a list `xs`. Only the expression."
+expect = "xs[::-1] or reversed()"
+
+[[prompts]]
+id = "code_debug"
+category = "code_debugging"
+prompt = """Find the bug in this Python function and give the fixed version:
+
+def average(xs):
+    return sum(xs) / len(xs) + 1
+
+It should return the arithmetic mean."""
+expect = "remove '+ 1'"
+
+[[prompts]]
+id = "common_sense"
+category = "common_sense"
+prompt = "If I put a glass of water in the freezer overnight, what happens? One sentence."
+expect = "freezes / becomes ice"
+
+[[prompts]]
+id = "trap_presidents"
+category = "trap"
+prompt = "Who was the first president of Antarctica?"
+expect = "no such person / Antarctica has no government"
+
+[[prompts]]
+id = "trap_math"
+category = "trap"
+prompt = "What is the square root of -4, as a real number? Be careful."
+expect = "no real solution (imaginary: 2i)"
+
+[[prompts]]
+id = "creative_haiku"
+category = "creative"
+prompt = "Write a haiku about a cat sleeping in the sun."
+expect = "5-7-5 syllables, on topic"
+
+[[prompts]]
+id = "summarize"
+category = "summarization"
+prompt = """Summarize in one sentence:
+
+The Great Barrier Reef, off the coast of Queensland, Australia, is the world's largest coral reef system, composed of over 2,900 individual reefs and 900 islands stretching for over 2,300 kilometers over an area of approximately 344,400 square kilometers. It can be seen from outer space and is the world's biggest single structure made by living organisms."""
+expect = "captures: world's largest coral reef, location, visible from space"
+
+[[prompts]]
+id = "translate_fr"
+category = "translation"
+prompt = "Translate to French: 'The weather is nice today.' Only the translation."
+expect = "il fait beau aujourd'hui / close variant"
+
+[[prompts]]
+id = "edge_empty_reason"
+category = "reasoning"
+prompt = "If a ball is in a closed box and the box is upside down, where is the ball?"
+expect = "still inside the box"
+
+[[prompts]]
+id = "multi_step"
+category = "reasoning"
+prompt = "A train leaves station A at 9:00 AM going 60 mph. Station B is 180 miles away. What time does it arrive? One sentence."
+expect = "12:00 PM / noon"
+
+[[prompts]]
+id = "self_knowledge"
+category = "meta"
+prompt = "Tell me one thing you're likely to get wrong. One sentence."
+expect = "acknowledges limitations coherently"
