@@ -16,7 +16,7 @@ from .linear import LinearBase, LinearConfig
 from .mlp import MLPBase, MLPConfig, MLPForwardPassConfig
 from .normalization import Normalization, NormalizationConfig
 from .rope import PositionalEmbeddings, RoPEConfig
-from .token_mixers import KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
+from .token_mixers import Attention, KVCacheLayer, StateLayerBase, StaticKVCacheLayer, TokenMixerBase, TokenMixerConfig
 from .utils import vmap_twice
 
 __all__ = [
@@ -288,6 +288,7 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         forward_pass_mode: ForwardPassMode = ForwardPassMode.MULTI_TOKEN,
         forward_pass_config: TransformerLayerForwardPassConfig | None = None,
         per_layer_input: Float[Array, "batch suffix_tokens ple_dim"] | None = None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
     ) -> TransformerLayerResult:
         if inputs.ndim != 3:
             raise ValueError(
@@ -299,15 +300,27 @@ class TransformerLayer(LalamoModule[TransformerLayerConfig]):
         else:
             normalized_mixer_inputs = inputs
 
-        batched_mixer_fn = vmap(
-            partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace),
-        )
-        mixer_outputs, updated_state = batched_mixer_fn(
-            normalized_mixer_inputs,
-            positional_embeddings,
-            state=state,
-            length_without_padding=lengths_without_padding,
-        )
+        mixer_partial = partial(self.mixer, return_updated_state=return_updated_state or return_activation_trace)
+        if attention_parent_indices is not None:
+            if not isinstance(self.mixer, Attention):
+                raise NotImplementedError(
+                    f"Tree attention (attention_parent_indices) is only supported with"
+                    f" {Attention.__name__} mixers; got {type(self.mixer).__name__}.",
+                )
+            mixer_outputs, updated_state = vmap(mixer_partial)(
+                normalized_mixer_inputs,
+                positional_embeddings,
+                state=state,
+                length_without_padding=lengths_without_padding,
+                attention_parent_indices=attention_parent_indices,
+            )
+        else:
+            mixer_outputs, updated_state = vmap(mixer_partial)(
+                normalized_mixer_inputs,
+                positional_embeddings,
+                state=state,
+                length_without_padding=lengths_without_padding,
+            )
         if self.post_mixer_norm is not None:
             normalized_mixer_outputs = vmap_twice(self.post_mixer_norm)(mixer_outputs)
             mlp_inputs = inputs + normalized_mixer_outputs

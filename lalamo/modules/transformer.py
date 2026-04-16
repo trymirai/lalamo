@@ -146,6 +146,7 @@ class Transformer(LalamoModule[TransformerConfig]):
         forward_pass_mode: ForwardPassMode,
         forward_pass_config: TransformerForwardPassConfig | None,
         per_layer_inputs: tuple[Float[Array, "batch suffix_tokens ple_dim"], ...] | None = None,
+        attention_parent_indices: Int[Array, " batch suffix_tokens"] | None = None,
     ) -> TransformerResult:
         if inner_features.ndim != 3:
             raise ValueError(
@@ -194,6 +195,7 @@ class Transformer(LalamoModule[TransformerConfig]):
                 return_activation_trace=return_layer_results,
                 lengths_without_padding=lengths_without_padding,
                 forward_pass_mode=forward_pass_mode,
+                attention_parent_indices=attention_parent_indices,
                 forward_pass_config=forward_pass_config,
                 per_layer_input=per_layer_input,
             )
