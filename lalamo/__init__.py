@@ -29,7 +29,7 @@ from lalamo.modules.common import ShardingConfig, pad_and_apply_data_sharding
 from lalamo.quantization import QuantizationMode
 from lalamo.speculator import CollectTracesEvent
 
-__version__ = "0.6.12"
+__version__ = "0.6.13"
 
 __all__ = [
     "AssistantMessage",
