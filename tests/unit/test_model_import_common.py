@@ -1,3 +1,4 @@
+import pytest
 from tokenizers import Tokenizer
 from tokenizers.models import WordLevel
 
@@ -21,4 +22,5 @@ def test_token_ids_resolve_to_correct_text() -> None:
     assert token_ids_to_text(tokenizer, [1]) == "EOS"
     assert token_ids_to_text(tokenizer, [1, 0]) == "EOS"
     assert token_ids_to_text(tokenizer, None) is None
-    assert token_ids_to_text(tokenizer, [1, "banana"]) is None  # type:ignore
+    with pytest.raises(ValueError):
+        token_ids_to_text(tokenizer, [1, "banana"])  # type: ignore[list-item]

@@ -14,7 +14,7 @@ from tokenizers import Tokenizer
 from transformers.integrations.tiktoken import convert_tiktoken_to_fast
 
 from lalamo.audio.tts_message_processor import TTSMessageProcessor, TTSMessageProcessorConfig
-from lalamo.models.tts_model import FishAudioTTSGenerator, TTSGenerator, TTSGeneratorConfig
+from lalamo.models.tts_model import TTSGenerator, TTSGeneratorConfig
 from lalamo.modules import (
     AttentionConfig,
     DenseMLPConfig,
@@ -62,6 +62,8 @@ def from_fish_audio_config(
 
     assert fish_audio_cfg.fast_dim is not None
     return FishAudioTextDecoderConfig(
+        default_speaker="speaker:0",
+        default_style="interleave",
         slow_embeddings_config=slow_embedding_cfg,
         slow_model_config=slow_transformer_cfg,
         slow_readout_config=slow_readout_cfg,
@@ -245,7 +247,7 @@ class FishAudioFromTorch:
             audio_decoder=audio_decoder,
             vocoder=NoopVocoder(tts_config.vocoder_config),
         )
-        return FishAudioTTSGenerator(
+        return TTSGenerator(
             config=TTSGeneratorConfig(tts_config=tts_config, message_processor_config=message_processor.config),
             tts_model=tts_model,
             message_processor=message_processor,

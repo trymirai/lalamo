@@ -1,4 +1,5 @@
-from collections.abc import Mapping
+from collections import ChainMap
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import ClassVar, Literal
 
@@ -6,6 +7,7 @@ import cattrs
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike
 
+from lalamo.common import WeightShard
 from lalamo.model_import.loaders import (
     load_huggingface_classifier,
     load_huggingface_decoder,
@@ -114,9 +116,10 @@ class HuggingFaceLMConfig(ForeignLMConfig):
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule:
         assert isinstance(model, Decoder)
+        weights_dict: Mapping[str, Array] = ChainMap(*[w for w, _ in weight_shards])  # type: ignore[arg-type]
         return load_huggingface_decoder(model, weights_dict)
 
 
@@ -129,7 +132,8 @@ class HuggingFaceClassifierConfig(ForeignClassifierConfig):
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule:
         assert isinstance(model, Classifier)
+        weights_dict: Mapping[str, Array] = ChainMap(*[w for w, _ in weight_shards])  # type: ignore[arg-type]
         return load_huggingface_classifier(model, weights_dict)

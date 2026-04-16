@@ -57,15 +57,17 @@ def _generate_single(
     return pl.read_parquet(output_path).get_column("response").to_list()[0]
 
 
-@pytest.mark.parametrize("spec", mark_by_size(standard_llm_specs), ids=[s.repo for s in standard_llm_specs])
+@pytest.mark.parametrize(
+    "spec", mark_by_size(standard_llm_specs), ids=[s.origin.description for s in standard_llm_specs]
+)
 def test_model_coherent_and_stops(
     spec: ModelSpec,
     convert_model: ConvertModel,
     tmp_path_factory: pytest.TempPathFactory,
 ) -> None:
     start_time = time.monotonic()
-    converted_model_path = convert_model(spec.repo)
-    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, spec.repo)
+    converted_model_path = convert_model(spec.origin.description)
+    log.info("Model conversion took %.1fs for %s", time.monotonic() - start_time, spec.origin.description)
 
     api_key = os.getenv("OPENROUTER_API_KEY")
     assert api_key is not None
@@ -81,7 +83,7 @@ def test_model_coherent_and_stops(
         max_tokens=COHERENCE_MAX_TOKENS,
         tag="coherence",
     )
-    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, spec.repo)
+    log.info("Coherence generation took %.1fs for %s", time.monotonic() - start_time, spec.origin.description)
 
     assert coherence_output, "Model produced empty output for coherence prompt"
     log.info("Coherence output:\n%s", coherence_output)

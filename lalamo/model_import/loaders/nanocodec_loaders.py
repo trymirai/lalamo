@@ -16,8 +16,7 @@ from jax import numpy as jnp
 from jaxtyping import Array, Float
 
 from lalamo.common import ParameterPath
-from lalamo.modules.audio.common_modules import Snake1d
-from lalamo.modules.audio.fishaudio.fishaudio_modules import CausalConv1d
+from lalamo.modules.audio.common_modules import Conv1d, Snake1d
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -163,11 +162,11 @@ def load_half_snake(
 
 
 def load_causal_conv1d(
-    module: CausalConv1d,
+    module: Conv1d,
     weights_dict: Mapping[str, Array],
     path: ParameterPath,
-) -> CausalConv1d:
-    """Load a CausalConv1d module from weights.
+) -> Conv1d:
+    """Load a Conv1d module from weights.
 
     Supports two weight formats:
         1. Fused weights (after remove_weight_norm):
@@ -182,12 +181,12 @@ def load_causal_conv1d(
     The function auto-detects which format is present and handles accordingly.
 
     Args:
-        module: The CausalConv1d module to load weights into.
+        module: The Conv1d module to load weights into.
         weights_dict: Dictionary mapping parameter paths to weight arrays.
         path: Base path for this module's weights.
 
     Returns:
-        CausalConv1d module with loaded weights.
+        Conv1d module with loaded weights.
     """
     # Check if weights are in parametrized weight_norm format
     weight_norm_path = path / "parametrizations" / "weight" / "original0"
@@ -402,12 +401,12 @@ def load_causal_hifigan_decoder(
     """Load a CausalHiFiGANDecoder module from weights.
 
     This function handles the complete loading of the HiFi-GAN decoder, including:
-    - pre_conv: CausalConv1d for input projection
+    - pre_conv: Conv1d for input projection
     - activations: List of HalfSnake activations (wrapped in CodecActivation)
     - upsample_convs: List of CausalTransposeConv1d for upsampling (up_sample_conv_layers in PyTorch)
     - res_layers: List of HiFiGANResLayer blocks
     - post_activation: HalfSnake activation (wrapped in CodecActivation)
-    - post_conv: CausalConv1d for output projection
+    - post_conv: Conv1d for output projection
 
     Expected weight structure:
         pre_conv:

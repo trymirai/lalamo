@@ -1,6 +1,7 @@
 from lalamo.model_import.model_configs.huggingface import ModernBERTConfig
 
 from .common import ConfigMap, FileSpec, ModelSpec, ModelType
+from .origins import HuggingFaceOrigin
 
 __all__ = ["MIRAI_CLASSIFIER_MODELS"]
 
@@ -11,7 +12,7 @@ MIRAI_CLASSIFIER_MODELS = [
         name="ModernBERT-Chat-Moderation",
         size="0.15B",
         quantization=None,
-        repo="trymirai/chat-moderation-router",
+        origin=HuggingFaceOrigin(repo="trymirai/chat-moderation-router"),
         config_type=ModernBERTConfig,
         use_cases=tuple(),
         model_type=ModelType("classifier_model"),

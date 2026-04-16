@@ -1,5 +1,6 @@
 from lalamo.model_import.model_configs.huggingface.llama import HFLlamaConfig
 from lalamo.model_import.model_specs.common import ConfigMap, FileSpec, JSONFieldSpec, ModelSpec
+from lalamo.model_import.model_specs.origins import HuggingFaceOrigin
 
 DIRECT_TEMPLATE = "{% for message in messages %}{{ message.content }}{% endfor %}"
 
@@ -41,7 +42,7 @@ class TestModelSpecWithChatTemplate:
             family="Test",
             name="Test",
             size="1B",
-            repo="test/test",
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=DIRECT_TEMPLATE),
         )
@@ -53,7 +54,7 @@ class TestModelSpecWithChatTemplate:
             family="Test",
             name="Test",
             size="1B",
-            repo="test/test",
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
         )
@@ -66,7 +67,7 @@ class TestModelSpecWithChatTemplate:
             family="Test",
             name="Test",
             size="1B",
-            repo="test/test",
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=JSONFieldSpec(FileSpec("tokenizer_config.json"), "chat_template")),
         )
@@ -81,7 +82,7 @@ class TestModelSpecJsonSerialization:
             family="Test",
             name="Test",
             size="1B",
-            repo="test/test",
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=DIRECT_TEMPLATE),
         )
@@ -95,7 +96,7 @@ class TestModelSpecJsonSerialization:
             family="Test",
             name="Test",
             size="1B",
-            repo="test/test",
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=FileSpec("chat_template.jinja")),
         )
@@ -110,7 +111,7 @@ class TestModelSpecJsonSerialization:
             family="Test",
             name="Test",
             size="1B",
-            repo="test/test",
+            origin=HuggingFaceOrigin(repo="test/test"),
             config_type=HFLlamaConfig,
             configs=ConfigMap(chat_template=JSONFieldSpec(FileSpec("config.json"), "chat_template")),
         )
@@ -126,7 +127,7 @@ class TestModelSpecJsonSerialization:
             "family": "Test",
             "name": "Test",
             "size": "1B",
-            "repo": "test/test",
+            "origin": {"type": "HuggingFaceOrigin", "repo": "test/test"},
             "config_type": "HFLlamaConfig",
             "configs": {
                 "chat_template": DIRECT_TEMPLATE,
@@ -141,7 +142,7 @@ class TestModelSpecJsonSerialization:
             "family": "Test",
             "name": "Test",
             "size": "1B",
-            "repo": "test/test",
+            "origin": {"type": "HuggingFaceOrigin", "repo": "test/test"},
             "config_type": "HFLlamaConfig",
             "configs": {
                 "chat_template": {"filename": "chat_template.jinja"},
@@ -157,7 +158,7 @@ class TestModelSpecJsonSerialization:
             "family": "Test",
             "name": "Test",
             "size": "1B",
-            "repo": "test/test",
+            "origin": {"type": "HuggingFaceOrigin", "repo": "test/test"},
             "config_type": "HFLlamaConfig",
             "configs": {
                 "chat_template": {

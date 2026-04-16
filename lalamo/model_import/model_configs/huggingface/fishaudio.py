@@ -1,17 +1,18 @@
-import json
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections import ChainMap
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Self
 
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike
 
-from lalamo.common import ParameterPath
+from lalamo.common import ParameterPath, WeightShard
 from lalamo.model_import.loaders.common import load_parameters
 from lalamo.model_import.loaders.fishaudio_loaders import (
     load_fishaudio_audio_decoder,
     load_fishaudio_text_decoder,
+    load_tokenizer_from_fishaudio_tiktoken,
 )
 from lalamo.model_import.model_configs import ForeignTTSConfig
 from lalamo.modules import (
@@ -32,7 +33,14 @@ from lalamo.modules import (
     VocoderConfig,
 )
 from lalamo.modules.audio.common_modules import (
-    CausalConv1dConfig,
+    CausalTransposeConv1dConfig,
+    Conv1dConfig,
+    ConvNeXtBlockConfig,
+    DACDecoderConfig,
+    DecoderBlockConfig,
+    ResidualUnitConfig,
+    Snake1dConfig,
+    UpsamplingBlockConfig,
 )
 from lalamo.modules.audio.fishaudio import (
     DescriptAudioCodec,
@@ -42,16 +50,9 @@ from lalamo.modules.audio.fishaudio import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.audio.fishaudio.fishaudio_modules import (
-    CausalTransposeConv1dConfig,
-    ConvNeXtBlockConfig,
-    DACDecoderBlockConfig,
-    DACDecoderConfig,
     DownsampleResidualVectorQuantizeConfig,
-    ResidualUnitConfig,
     ResidualVectorQuantizeConfig,
-    Snake1dConfig,
     UpsamplerConfig,
-    UpsamplingBlockConfig,
     VectorQuantizeConfig,
 )
 
@@ -170,7 +171,7 @@ def instantiate_dac_config_from_fishaudio_config(
     convnext_config = ConvNeXtBlockConfig(
         precision=precision,
         activation=GELU(approximate=False),
-        dwconv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        conv_config=Conv1dConfig(precision=precision, has_biases=True),
         norm_config=NormalizationConfig(
             scale_precision=precision,
             accumulation_precision=accumulation_precision,
@@ -180,7 +181,7 @@ def instantiate_dac_config_from_fishaudio_config(
             subtract_mean=True,
             use_bias=True,
         ),
-        pwconv_config=FullPrecisionLinearConfig(precision=precision),
+        linear_config=FullPrecisionLinearConfig(precision=precision),
     )
     upsampling_block_config = UpsamplingBlockConfig(
         precision=precision,
@@ -224,10 +225,10 @@ def instantiate_dac_config_from_fishaudio_config(
     res_unit_config = ResidualUnitConfig(
         precision=precision,
         snake_config=Snake1dConfig(precision=precision),
-        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        conv_config=Conv1dConfig(precision=precision, has_biases=True),
         causal=True,
     )
-    decoder_block_config = DACDecoderBlockConfig(
+    decoder_block_config = DecoderBlockConfig(
         precision=precision,
         snake_config=Snake1dConfig(precision=precision),
         trans_conv_config=CausalTransposeConv1dConfig(precision=precision, has_biases=True),
@@ -236,7 +237,7 @@ def instantiate_dac_config_from_fishaudio_config(
     )
     decoder_config = DACDecoderConfig(
         precision=precision,
-        conv_config=CausalConv1dConfig(precision=precision, has_biases=True),
+        conv_config=Conv1dConfig(precision=precision, has_biases=True),
         snake_config=Snake1dConfig(precision=precision),
         decoder_block_config=decoder_block_config,
         causal=True,
@@ -293,11 +294,37 @@ class FishAudioConfig(ForeignTTSConfig):
     use_gradient_checkpointing: bool
     vocab_size: int
 
-    # NOTE: these fields are used during inference but must be retrieved from
-    # tokenizer config files
+    # These fields are populated from tokenizer config files during import, not from config.json.
     semantic_token_begin_id: int = -1
     semantic_token_end_id: int = -1
     im_end_token_id: int = -1
+
+    # Defaults for TTS generation — read from config.json if present, otherwise fall back.
+    default_speaker: str = "speaker:0"
+    default_style: str = "interleave"
+
+    def prepare_tokenizer(
+        self,
+        model_spec: "ModelSpec",  # noqa: F821  # ty: ignore[unresolved-reference]
+        progress_callback: "Callable[[StatusEvent], None] | None" = None,  # noqa: F821  # ty: ignore[unresolved-reference]
+    ) -> "tuple[Self, Tokenizer]":  # noqa: F821  # ty: ignore[unresolved-reference]
+        from lalamo.model_import.model_specs.common import FileSpec
+
+        assert isinstance(model_spec.configs.tokenizer, FileSpec)
+        tokenizer_path = model_spec.origin.resolve_file(model_spec.configs.tokenizer, progress_callback)
+        special_tokens_path = model_spec.origin.resolve_file(
+            FileSpec(filename="special_tokens.json"), progress_callback
+        )
+        tokenizer, special_inference_tokens = load_tokenizer_from_fishaudio_tiktoken(
+            tokenizer_path, special_tokens_path
+        )
+        updated = replace(
+            self,
+            semantic_token_begin_id=special_inference_tokens.semantic_begin_id,
+            semantic_token_end_id=special_inference_tokens.semantic_end_id,
+            im_end_token_id=special_inference_tokens.im_end_token_id,
+        )
+        return updated, tokenizer
 
     def extract_textual_transformer_configs(
         self,
@@ -425,6 +452,8 @@ class FishAudioConfig(ForeignTTSConfig):
         else:
             fast_model_projection_config = FullPrecisionLinearConfig(activation_precision)
         text_decoder_config = FishAudioTextDecoderConfig(
+            default_speaker=self.default_speaker,
+            default_style=self.default_style,
             slow_embeddings_config=slow_embedding_cfg,
             slow_model_config=slow_transformer_cfg,
             slow_readout_config=slow_readout_cfg,
@@ -455,9 +484,11 @@ class FishAudioConfig(ForeignTTSConfig):
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule:
         assert isinstance(model, TTSModel)
+
+        weights_dict: Mapping[str, Array] = ChainMap(*[w for w, _ in weight_shards])  # type: ignore[arg-type]
 
         assert isinstance(model.text_decoder, FishAudioTextDecoder)
         loaded_text_decoder = load_fishaudio_text_decoder(model.text_decoder, weights_dict, ParameterPath())
@@ -475,10 +506,8 @@ class FishAudioConfig(ForeignTTSConfig):
         )
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
-            config = json.load(f)
+    def from_json(cls, json_path: Path | str, extra_config_paths: Sequence[Path] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls(**config)
 
     @property

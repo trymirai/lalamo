@@ -45,7 +45,7 @@ class HFGenerationConfig:
     @classmethod
     def from_json(cls, json_path: Path | str) -> "HFGenerationConfig":
         json_path = Path(json_path)
-        with open(json_path) as f:
+        with json_path.open() as f:
             config = json.load(f)
         return cls._converter.structure(config, cls)
 

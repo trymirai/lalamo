@@ -3,19 +3,23 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+import jax.numpy as jnp
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
-
-from .fishaudio_modules import (
+from lalamo.modules.audio.common_modules import (
     ConvNeXtSpatialParams,
     DACDecoder,
     DACDecoderConfig,
     DACDecoderSpatialParams,
+    TransposeConvSpatialParams,
+)
+from lalamo.modules.audio.text_decoder import CodebookCodes
+
+from .fishaudio_modules import (
     DownsampleResidualVectorQuantize,
     DownsampleResidualVectorQuantizeConfig,
-    TransposeConvSpatialParams,
     VectorQuantizerParams,
 )
 
@@ -151,7 +155,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
             codebook_size=codebook_size,
             codebook_dim=[codebook_dim] * n_codebooks,
         )
-        convnext_params = ConvNeXtSpatialParams()
+        convnext_params = ConvNeXtSpatialParams(mlp_ratio=4.0, kernel_size=7, dilation=1)
         upsample_conv_params = tuple(
             [
                 TransposeConvSpatialParams(
@@ -167,7 +171,7 @@ class DescriptAudioCodecConfig(TTSAudioDecoderConfigBase):
             input_channel=latent_dim,
             channels=decoder_dim,
             rates=tuple(decoder_rates),
-            d_out=1,
+            out_channels=1,
         )
 
         return (
@@ -213,12 +217,12 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
 
     def __call__(
         self,
-        indices: Int[Array, "batch n_codebooks tokens"],
+        codes: CodebookCodes,
     ) -> Float[Array, "batch audio_samples 1"]:
-        z = self.quantizer.decode(indices)
-        audio = self.decoder(z)
-
-        return audio
+        indices = jnp.concatenate([codes.semantic, codes.acoustic], axis=1)
+        quantized = self.quantizer.decode(indices)
+        audio = self.decoder(quantized)
+        return jnp.tanh(audio)
 
     def export_weights(self) -> ParameterTree[Array]:
         return {
@@ -241,7 +245,10 @@ class DescriptAudioCodec(TTSAudioDecoder[DescriptAudioCodecConfig]):
             decoder=self.decoder.import_weights(require_tree(decoder_weights)),
         )
 
-    def audio_from_codes(self, indices: Array) -> Array:
-        if len(indices.shape) == 2:
-            indices = indices[None, :]
-        return self(indices)[0, :, 0]
+    def audio_from_codes(self, codes: CodebookCodes) -> Array:
+        if codes.semantic.ndim == 2:
+            codes = CodebookCodes(
+                semantic=codes.semantic[None, :],
+                acoustic=codes.acoustic[None, :],
+            )
+        return self(codes)[0, :, 0]

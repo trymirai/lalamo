@@ -3,10 +3,12 @@ from dataclasses import dataclass, replace
 from typing import Self
 
 import jax
-from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
+import jax.numpy as jnp
+from jaxtyping import Array, DTypeLike, Float, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.audio.audio_decoder import TTSAudioDecoder, TTSAudioDecoderConfigBase
+from lalamo.modules.audio.text_decoder import CodebookCodes
 
 from .nanocodec_modules import (
     CausalHiFiGANDecoder,
@@ -100,18 +102,31 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
     def n_codebooks(self) -> int:
         return self.quantizer.num_groups
 
+    def encode(
+        self,
+        inputs: Float[Array, "batch channels seq"],
+        *,
+        n_semantic: int = 1,
+    ) -> CodebookCodes:
+        indices = self.quantizer.encode(inputs)
+        return CodebookCodes(
+            semantic=indices[:n_semantic],
+            acoustic=indices[n_semantic:],
+        )
+
+    def decode(
+        self,
+        codes: CodebookCodes,
+    ) -> Float[Array, "batch audio_samples"]:
+        return self(codes)
+
     def __call__(
         self,
-        indices: Int[Array, "batch n_codebooks tokens"],
+        codes: CodebookCodes,
     ) -> Float[Array, "batch audio_samples"]:
-        """Decode discrete tokens to audio waveform."""
-        # Transpose from [B, C, T] to [B, T, C] for Lalamo quantizer (NSC format)
+        indices = jnp.concatenate([codes.semantic, codes.acoustic], axis=1)
         indices_nsc = indices.transpose((0, 2, 1))
-
-        # Decode indices to continuous representation [B, T, D]
         z = self.quantizer.decode(indices_nsc)
-
-        # Decode to audio [B, T_audio]
         audio = self.decoder(z)
 
         return audio
@@ -137,15 +152,10 @@ class NanoCodec(TTSAudioDecoder[NanoCodecConfig]):
             decoder=self.decoder.import_weights(require_tree(decoder_weights)),
         )
 
-    def audio_from_codes(self, indices: Array) -> Array:
-        """Convenience method to decode a single sequence of codes to audio.
-
-        Args:
-            indices: Token indices of shape [num_codebooks, tokens] or [batch, num_codebooks, tokens].
-
-        Returns:
-            Audio waveform of shape [audio_samples].
-        """
-        if len(indices.shape) == 2:
-            indices = indices[None, :, :]
-        return self(indices)[0, :]
+    def audio_from_codes(self, codes: CodebookCodes) -> Array:
+        if codes.semantic.ndim == 2:
+            codes = CodebookCodes(
+                semantic=codes.semantic[None, :, :],
+                acoustic=codes.acoustic[None, :, :],
+            )
+        return self(codes)[0, :]

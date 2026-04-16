@@ -50,9 +50,9 @@ def filter_specs(
     if model_type is not None:
         specs = tuple(spec for spec in specs if spec.model_type == model_type)
     if max_tier is not None:
-        specs = tuple(spec for spec in specs if TIER_BY_REPO.get(spec.repo, ModelTier.EXTRA) <= max_tier)
+        specs = tuple(spec for spec in specs if TIER_BY_REPO.get(spec.origin.description, ModelTier.EXTRA) <= max_tier)
     if repos is not None:
-        specs = tuple(spec for spec in specs if spec.repo in repos)
+        specs = tuple(spec for spec in specs if spec.origin.description in repos)
     return specs
 
 

@@ -15,10 +15,10 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_array, require_tree
 from lalamo.modules.audio.common_modules import (
-    CausalConv1d,
-    CausalConv1dConfig,
     CausalTransposeConv1d,
     CausalTransposeConv1dConfig,
+    Conv1d,
+    Conv1dConfig,
     Snake1d,
     Snake1dConfig,
 )
@@ -426,7 +426,7 @@ class ResidualBlockConfig:
     """
 
     activation_config: HalfSnakeConfig
-    conv_config: CausalConv1dConfig
+    conv_config: Conv1dConfig
 
     @property
     def precision(self) -> DTypeLike:
@@ -506,8 +506,8 @@ class ResidualBlock(LalamoModule[ResidualBlockConfig]):
 
     input_activation: HalfSnake
     skip_activation: HalfSnake
-    input_conv: CausalConv1d
-    skip_conv: CausalConv1d
+    input_conv: Conv1d
+    skip_conv: Conv1d
 
     @property
     def activation_precision(self) -> DTypeLike:
@@ -740,10 +740,10 @@ class HiFiGANResLayer(LalamoModule[HiFiGANResLayerConfig]):
 @dataclass(frozen=True)
 class CausalHiFiGANDecoderConfig:
     activation_config: HalfSnakeConfig
-    pre_conv_config: CausalConv1dConfig
+    pre_conv_config: Conv1dConfig
     transpose_conv_config: CausalTransposeConv1dConfig
     res_layer_config: HiFiGANResLayerConfig
-    post_conv_config: CausalConv1dConfig
+    post_conv_config: Conv1dConfig
 
     @property
     def precision(self) -> DTypeLike:
@@ -902,23 +902,12 @@ class CausalHiFiGANDecoderConfig:
 
 
 class CausalHiFiGANDecoder(LalamoModule[CausalHiFiGANDecoderConfig]):
-    """Causal HiFi-GAN decoder for audio generation.
-
-    Converts quantized representations to audio waveforms using:
-    1. Pre-conv to expand to base_channels
-    2. Multiple stages of: activation -> upsample -> res_layer
-    3. Post-conv to produce single-channel audio
-    4. Tanh over result as substitute for clipping
-
-    Returns audio waveform in (batch, audio_length) format
-    """
-
-    pre_conv: CausalConv1d
+    pre_conv: Conv1d
     activations: tuple[HalfSnake, ...]
     upsample_convs: tuple[CausalTransposeConv1d, ...]
     res_layers: tuple[HiFiGANResLayer, ...]
     post_activation: HalfSnake
-    post_conv: CausalConv1d
+    post_conv: Conv1d
     up_sample_rates: tuple[int, ...] = eqx.field(static=True)
 
     @property

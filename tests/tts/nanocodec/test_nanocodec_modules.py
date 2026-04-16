@@ -19,8 +19,7 @@ from lalamo.model_import.loaders.nanocodec_loaders import (
     load_hifigan_res_layer,
     load_residual_block,
 )
-from lalamo.modules.audio.common_modules import CausalConv1dConfig
-from lalamo.modules.audio.fishaudio.fishaudio_modules import Snake1dConfig
+from lalamo.modules.audio.common_modules import Conv1dConfig, Snake1dConfig
 from lalamo.modules.audio.nanocodec.nanocodec_consts import DEFAULT_FSQ_EPS, DEFAULT_NANOCODEC_PRECISION
 from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     CausalHiFiGANDecoderConfig,
@@ -249,7 +248,7 @@ def test_causal_conv1d_forward_matches_torch() -> None:
     )
 
     # Create Lalamo conv
-    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     lalamo_conv = lalamo_config.empty(
         in_channels=in_channels,
         out_channels=out_channels,
@@ -302,7 +301,7 @@ def test_causal_conv1d_with_dilation_matches_torch() -> None:
         bias=True,
     )
 
-    lalamo_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    lalamo_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     lalamo_conv = lalamo_config.empty(
         in_channels=in_channels,
         out_channels=out_channels,
@@ -414,7 +413,7 @@ def test_residual_block_forward_matches_torch() -> None:
     # Create Lalamo residual block
     snake_config = Snake1dConfig(precision=jnp.float32)
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
 
     lalamo_block_config = ResidualBlockConfig(
         activation_config=activation_config,
@@ -471,7 +470,7 @@ def test_hifigan_res_block_forward_matches_torch() -> None:
     # Create Lalamo HiFiGANResBlock
     snake_config = Snake1dConfig(precision=jnp.float32)
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
@@ -529,7 +528,7 @@ def test_hifigan_res_layer_forward_matches_torch() -> None:
     # Create Lalamo HiFiGANResLayer
     snake_config = Snake1dConfig(precision=jnp.float32)
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     residual_block_config = ResidualBlockConfig(
         activation_config=activation_config,
         conv_config=conv_config,
@@ -597,7 +596,7 @@ def test_causal_hifigan_decoder_forward_matches_torch() -> None:
     # Create Lalamo decoder
     snake_config = Snake1dConfig(precision=jnp.float32)
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
 
     residual_block_config = ResidualBlockConfig(

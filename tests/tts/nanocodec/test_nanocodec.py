@@ -12,10 +12,8 @@ from lalamo.model_import.common import import_model
 from lalamo.model_import.loaders.nanocodec_loaders import load_nanocodec
 from lalamo.models import TTSGenerator
 from lalamo.modules.audio.common_modules import (
-    CausalConv1dConfig,
     CausalTransposeConv1dConfig,
-)
-from lalamo.modules.audio.fishaudio.fishaudio_modules import (
+    Conv1dConfig,
     Snake1dConfig,
 )
 from lalamo.modules.audio.nanocodec.audio_decoding import NanoCodec, NanoCodecConfig
@@ -37,6 +35,7 @@ from lalamo.modules.audio.nanocodec.nanocodec_modules import (
     ResidualBlockConfig,
 )
 from lalamo.modules.audio.nanocodec.stub_text_decoder import StubTextDecoder
+from lalamo.modules.audio.text_decoder import CodebookCodes
 from lalamo.modules.audio.text_to_speech import TTSModel
 from tests.tts.nanocodec.nanocodec_torch_stuff import (
     AudioCodecModel,
@@ -334,7 +333,7 @@ def _create_lalamo_nanocodec_config(config: Mapping) -> NanoCodecConfig:
     # Build decoder config hierarchy
     snake_config = Snake1dConfig(precision=jnp.float32)
     activation_config = HalfSnakeConfig(snake_config=snake_config, leaky_relu_negative_slope=0.01)
-    conv_config = CausalConv1dConfig(precision=jnp.float32, has_biases=True)
+    conv_config = Conv1dConfig(precision=jnp.float32, has_biases=True)
     transpose_conv_config = CausalTransposeConv1dConfig(precision=jnp.float32, has_biases=True)
 
     residual_block_config = ResidualBlockConfig(
@@ -417,9 +416,10 @@ def test_lalamo_nanocodec_matches_torch(cached_nemo_model: tuple[Mapping, Mappin
     # Get tokens for single batch item: [C, T]
     tokens_np = tokens_torch[0].numpy()
 
-    # Lalamo forward using audio_from_codes (expects [C, T] format)
+    # Lalamo forward using audio_from_codes
     tokens_jax = jnp.array(tokens_np)
-    audio_lalamo = lalamo_model.audio_from_codes(tokens_jax)
+    codes = CodebookCodes(semantic=tokens_jax[:1, :], acoustic=tokens_jax[1:, :])
+    audio_lalamo = lalamo_model.audio_from_codes(codes)
 
     # Compare outputs
     # Use relaxed tolerances for end-to-end test as small numerical differences
@@ -439,7 +439,7 @@ def test_nanocodec_model_spec_loading() -> None:
     with StubTextDecoder + NanoCodec audio decoder, then runs generate_speech.
     """
 
-    message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style="unsupported")
+    message_to_generate = TTSMessage(content="Some noise will be generated here", speaker_id="0", style=None)
 
     generator, _ = import_model(model_spec="nvidia/nemo-nano-codec-22khz-1.78kbps-12.5fps", precision=jnp.float32)
 

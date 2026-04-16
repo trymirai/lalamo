@@ -1,15 +1,17 @@
+import json
 import random
 import re
 import shutil
 import sys
 from contextlib import ExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import partial
 from importlib.util import find_spec
 from itertools import islice
 from pathlib import Path
 from typing import Annotated
 
+import jax.numpy as jnp
 import jax.profiler
 import requests
 import soundfile as sf
@@ -33,6 +35,7 @@ from rich.prompt import Confirm
 from rich.table import Table
 from typer import Argument, Context, Exit, Option, Typer
 
+from lalamo.audio.tts_message_processor import VoicePrompt
 from lalamo.audio.utils import play_mono_audio
 from lalamo.commands import (
     CollectTracesCallbacks,
@@ -58,13 +61,19 @@ from lalamo.common import (
 )
 from lalamo.data.lalamo_completions import iter_completions
 from lalamo.message_processor import UserMessage
-from lalamo.model_import import ModelSpec
+from lalamo.model_import import ModelSpec, ModelType
 from lalamo.model_import.common import FileSpec
+from lalamo.model_import.model_specs.origins import Origin
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile, fetch_available_models
 from lalamo.model_registry import ModelRegistry
-from lalamo.models import ClassifierModelConfig, LanguageModelConfig
+from lalamo.models import (
+    ClassifierModelConfig,
+    LanguageModelConfig,
+    LatentTTSGenerator,
+    TTSGenerator,
+)
 from lalamo.models.common import BatchSizesComputedEvent
-from lalamo.models.tts_model import TTSGenerator, TTSMessage
+from lalamo.models.tts_model import TTSMessage
 from lalamo.speculator.ngram import NGramSpeculator
 from lalamo.speculator.utils import test_speculator
 
@@ -339,12 +348,39 @@ def tts(
         ),
     ],
     output_file: Annotated[Path | None, Argument(help="Path to output WAV file with synthesized speech")] = None,
+    message: Annotated[
+        str | None,
+        Option(
+            help="Text to synthesize in non-interactive mode. Generates speech and exits.",
+            show_default="None, run interactively",
+        ),
+    ] = None,
     replay: Annotated[
         bool,
         Option(
             help="Render synthesized speech into default audio interface.",
         ),
     ] = False,
+    speaker_id: Annotated[
+        str | None,
+        Option(
+            help="Speaker ID for speech synthesis.",
+            show_default="A pre-selected speaker available for the specified model",
+        ),
+    ] = None,
+    style: Annotated[
+        str | None,
+        Option(
+            help="Style instruction for speech synthesis (e.g. voice description or intonation hint).",
+            show_default="Default style from the model",
+        ),
+    ] = None,
+    reference: Annotated[
+        Path | None,
+        Option(
+            help="Path to reference audio file for voice cloning (WAV format).",
+        ),
+    ] = None,
 ) -> None:
     if output_file is None:
         output_file = Path.cwd() / "generated_speech.wav"
@@ -355,9 +391,35 @@ def tts(
         raise Exit(1)
 
     console.print(f"🤖 Loading model from specified path: {model_path}.")
-    model = TTSGenerator.load_model(model_path)
 
-    assert model is not None
+    voice_prompt: VoicePrompt | None = None
+    if reference is not None:
+        ref_audio, ref_sr = sf.read(str(reference), dtype="float32")
+        if ref_audio.ndim > 1:
+            ref_audio = ref_audio.mean(axis=1)
+        voice_prompt = VoicePrompt(waveform=jnp.array(ref_audio), sampling_rate=ref_sr)
+        console.print(f"🎤 Loaded reference audio from {reference} ({ref_sr}Hz, {len(ref_audio) / ref_sr:.1f}s)")
+
+    config_json = json.loads((model_path / "config.json").read_text())
+    model_type = ModelType(config_json["model_type"])
+    model: TTSGenerator | LatentTTSGenerator
+    match model_type:
+        case ModelType.TTS_MODEL:
+            model = TTSGenerator.load_model(model_path)
+        case ModelType.LATENT_TTS_MODEL:
+            model = LatentTTSGenerator.load_model(model_path)
+        case _:
+            raise ValueError(f"Expected a TTS model, got: {model_type}")
+
+    if message is not None:
+        user_message = TTSMessage(content=message, speaker_id=speaker_id, style=style, voice_prompt=voice_prompt)
+        tts_result = model.generate_speech([user_message])
+        if replay:
+            play_mono_audio(tts_result.audio, tts_result.audio_params.samplerate)
+        sf.write(str(output_file), tts_result.audio, tts_result.audio_params.samplerate)
+        console.print(f"[green] ... saved generated audio to {output_file}[/green]")
+        return
+
     _stop_word = "/stop"
     while True:
         user_text = console.input(f"[cyan]input text to generate speech({_stop_word} to exit)> [/cyan]")
@@ -367,7 +429,7 @@ def tts(
         if user_text == "":
             continue
 
-        user_message = TTSMessage(content=user_text, speaker_id="speaker:0", style="interleave")
+        user_message = TTSMessage(content=user_text, speaker_id=speaker_id, style=style, voice_prompt=voice_prompt)
 
         tts_result = model.generate_speech([user_message])
 
@@ -393,8 +455,12 @@ def tts(
         console.print()
 
 
-@app.command(help="Convert the model for use with the Uzu inference engine.")
+@app.command(
+    help="Convert the model for use with the Uzu inference engine.",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
 def convert(
+    ctx: Context,
     model_repo: Annotated[
         ModelSpec,
         Argument(
@@ -430,6 +496,14 @@ def convert(
             show_default="Model's native maximum context length.",
         ),
     ] = None,
+    origin_type: Annotated[
+        str | None,
+        Option(
+            "--origin",
+            help="Origin class name to use instead of the model's default.",
+            show_default="Uses the model's default origin",
+        ),
+    ] = None,
     overwrite: Annotated[
         bool,
         Option(
@@ -437,6 +511,16 @@ def convert(
         ),
     ] = False,
 ) -> None:
+    if origin_type is not None or ctx.args:
+        origin_kwargs: dict[str, str] = {}
+        it = iter(ctx.args)
+        for token in it:
+            if token.startswith("--origin."):
+                key = token.removeprefix("--origin.")
+                origin_kwargs[key] = next(it)
+        origin = Origin.from_cli(origin_type or type(model_repo.origin).__name__, origin_kwargs)
+        model_repo = replace(model_repo, origin=origin)
+
     if output_dir is None:
         output_dir = DEFAULT_OUTPUT_DIR / model_repo.name
 
@@ -634,7 +718,7 @@ def list_models(
 
     if plain:
         for spec in sorted_specs:
-            console.print(spec.repo)
+            console.print(spec.origin.description)
         return
 
     table = Table(
@@ -654,7 +738,7 @@ def list_models(
             spec.family,
             spec.size,
             str(spec.quantization),
-            spec.repo,
+            spec.origin.description,
         )
     console.print(table)
 

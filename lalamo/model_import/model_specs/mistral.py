@@ -6,8 +6,8 @@ from .common import (
     JSONFieldSpec,
     ModelSpec,
     UseCase,
-    WeightsType,
 )
+from .origins import HuggingFaceOrigin
 
 __all__ = ["MISTRAL_MODELS"]
 
@@ -20,9 +20,8 @@ CODESTRAL = [
         name="Codestral-22B-v0.1",
         size="22B",
         quantization=None,
-        repo="mistral-community/Codestral-22B-v0.1",
+        origin=HuggingFaceOrigin(repo="mistral-community/Codestral-22B-v0.1"),
         config_type=HFMistralConfig,
-        weights_type=WeightsType.SAFETENSORS,
         use_cases=(UseCase.CODE,),
         configs=ConfigMap(
             tokenizer_config=FileSpec(repo=CODESTRAL_TOKENIZER_REPO, filename="tokenizer_config.json"),
@@ -41,7 +40,7 @@ DEVSTRAL = [
         name="Devstral-Small-2505",
         size="24B",
         quantization=None,
-        repo="mistralai/Devstral-Small-2505",
+        origin=HuggingFaceOrigin(repo="mistralai/Devstral-Small-2505"),
         config_type=HFMistralConfig,
         configs=ConfigMap(
             tokenizer=FileSpec(repo=DEVSTRAL_TOKENIZER_REPO, filename="tokenizer.json"),

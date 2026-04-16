@@ -18,9 +18,9 @@ PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
 coherence_tts_specs = filter_specs(model_type=ModelType.TTS_MODEL, repos=frozenset(COHERENCE_TTS_REPOS))
 
 
-@pytest.mark.parametrize("spec", coherence_tts_specs, ids=[s.repo for s in coherence_tts_specs])
+@pytest.mark.parametrize("spec", coherence_tts_specs, ids=[s.origin.description for s in coherence_tts_specs])
 def test_tts_coherence(spec: ModelSpec, convert_model: ConvertModel, tmp_path: Path) -> None:
-    converted_path = convert_model(spec.repo)
+    converted_path = convert_model(spec.origin.description)
     model = TTSGenerator.load_model(converted_path)
 
     asr = pipeline("automatic-speech-recognition", model="openai/whisper-tiny.en")

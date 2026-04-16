@@ -689,7 +689,7 @@ class ResidualBlock(torch.nn.Module):
         is_causal: bool = False,
         pad_mode: str = "reflect",
     ):
-        super(ResidualBlock, self).__init__()
+        super().__init__()
 
         self.input_activation = CodecActivation(activation=activation, channels=channels)
         self.skip_activation = CodecActivation(activation=activation, channels=filters)

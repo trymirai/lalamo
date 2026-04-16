@@ -32,7 +32,7 @@ cuda = ["jax[cuda]>=0.8.1"]
 tpu = ["jax[tpu]>=0.8.1"]
 pyaudio = ["pyaudio>=0.2.0"] # requires PortAudio to be installed, more info: https://pypi.org/project/PyAudio/
 fishaudio = ["torch>=2.8.0", "transformers>=5.2.0", "tiktoken>=0.12.0", "blobfile>=3.1.0"]
-nanocodec = ["torch>=2.8.0"]
+nanocodec = ["torch>=2.8.0", "pyyaml>=6.0"]
 
 [dependency-groups]
 dev = [
@@ -58,6 +58,7 @@ dev = [
     "pytest-xdist>=3.8.0",
     "hypothesis>=6.150.0",
     "fish-speech",
+    "qwen-tts",
     "bidict>=0.23.1",
     "tiktoken>=0.12.0",
     "omegaconf>=2.3.0",
@@ -111,6 +112,7 @@ torchaudio = [
 cartesia-metal = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-metal" }
 cartesia-mlx = { git = "https://github.com/trymirai/cartesia-ai-edge.git", tag="5e28bfc5" , subdirectory = "cartesia-mlx" }
 fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030" }
+qwen-tts = { git="https://github.com/trymirai/Qwen3-TTS.git", tag="cab8d85" }
 
 [tool.pytest.ini_options]
 # Disable jaxtyping for now because of its internal bug.
@@ -182,6 +184,7 @@ ignore = [
 ba = "ba"
 PARD = "PARD"
 pard = "pard"
+nothink = "nothink"
 
 [tool.typos.default.extend-identifiers]
 ba = "ba"

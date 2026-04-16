@@ -1,20 +1,23 @@
 import json
 from abc import abstractmethod
-from collections.abc import Mapping
+from collections import ChainMap
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import ClassVar, Self
 
 import cattrs
-from jaxtyping import Array, DTypeLike
+from jaxtyping import DTypeLike
 
+from lalamo.common import WeightShard
 from lalamo.modules import ClassifierConfig, DecoderConfig, TTSConfig
+from lalamo.modules.audio.latent_tts import LatentTTSConfig
 from lalamo.modules.common import LalamoModule
 from lalamo.registry_abc import RegistryABC
 
-__all__ = ["ForeignClassifierConfig", "ForeignLMConfig"]
+__all__ = ["ForeignClassifierConfig", "ForeignLMConfig", "ForeignLatentTTSConfig"]
 
-SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig
+SUPPORTED_CONFIG_TYPES = DecoderConfig | ClassifierConfig | TTSConfig | LatentTTSConfig
 
 
 @dataclass(frozen=True)
@@ -27,17 +30,24 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
     def default_precision(self) -> DTypeLike: ...
 
     @classmethod
-    def from_json(cls, json_path: Path | str) -> Self:
-        json_path = Path(json_path)
-        with open(json_path) as f:
+    def _read_and_merge_configs(cls, json_path: Path, extra_config_paths: Sequence[Path]) -> dict:
+        with json_path.open() as f:
             config = json.load(f)
+        for extra_path in extra_config_paths:
+            with extra_path.open() as f:
+                config = {**json.load(f), **config}
+        return config
+
+    @classmethod
+    def from_json(cls, json_path: Path | str, extra_config_paths: tuple[Path, ...] = ()) -> Self:
+        config = cls._read_and_merge_configs(Path(json_path), extra_config_paths)
         return cls._converter.structure(config, cls)
 
     @abstractmethod
     def _load_weights(
         self,
         model: LalamoModule,
-        weights_dict: Mapping[str, Array],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule: ...
 
     @abstractmethod
@@ -54,12 +64,12 @@ class ForeignConfig[ConfigT: SUPPORTED_CONFIG_TYPES](RegistryABC):
         context_length: int | None,
         activation_precision: DTypeLike,
         accumulation_precision: DTypeLike,
-        weights_dict: Mapping[str, Array],
-        metadata_dict: Mapping[str, str],
+        weight_shards: Sequence[WeightShard],
     ) -> LalamoModule[ConfigT]:
+        metadata_dict: Mapping[str, str] = ChainMap(*[m for _, m in weight_shards])
         config = self.to_lalamo_config(context_length, activation_precision, accumulation_precision, metadata_dict)
         model = config.empty()
-        return self._load_weights(model, weights_dict)
+        return self._load_weights(model, weight_shards)
 
 
 @dataclass(frozen=True)
@@ -125,3 +135,23 @@ class ForeignTTSConfig(ForeignConfig, RegistryABC):
         metadata_dict: Mapping[str, str],  # noqa: ARG002
     ) -> TTSConfig:
         return self.to_tts_config(context_length, activation_precision, accumulation_precision)
+
+
+@dataclass(frozen=True)
+class ForeignLatentTTSConfig(ForeignConfig, RegistryABC):
+    @abstractmethod
+    def to_latent_tts_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+    ) -> LatentTTSConfig: ...
+
+    def to_lalamo_config(
+        self,
+        context_length: int | None,
+        activation_precision: DTypeLike,
+        accumulation_precision: DTypeLike,
+        metadata_dict: Mapping[str, str],  # noqa: ARG002
+    ) -> LatentTTSConfig:
+        return self.to_latent_tts_config(context_length, activation_precision, accumulation_precision)

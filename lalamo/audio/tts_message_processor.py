@@ -3,23 +3,24 @@ from dataclasses import dataclass
 from functools import cached_property
 from typing import TypedDict
 
+from jaxtyping import Array, Float
 from jinja2 import Template
 from tokenizers import Tokenizer
 
 
 @dataclass(frozen=True)
 class VoicePrompt:
-    """
-    Current class is reserved for future usage of audio prompts
-    to condition style of generated audio
-    """
+    waveform: Float[Array, " audio_samples"]
+    sampling_rate: int
 
 
 @dataclass(frozen=True)
 class TTSMessage:
     content: str
-    speaker_id: str
-    style: str
+    speaker_id: str | None = None
+    style: str | None = None
+    language: str | None = None
+    voice_prompt: VoicePrompt | None = None
 
 
 class TTSRequest(TypedDict):
@@ -61,6 +62,9 @@ class TTSMessageProcessor:
         if self.config.drop_initial_newline and prompt_text.startswith("\n"):
             prompt_text = prompt_text[1:]
         return prompt_text
+
+    def preprocess(self, text: str, language: str) -> str:  # noqa: ARG002
+        return text
 
     def tokenize_text(self, text: str) -> list[int]:
         return self.tokenizer.encode(text, add_special_tokens=False).ids

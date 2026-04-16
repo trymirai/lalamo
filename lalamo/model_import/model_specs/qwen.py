@@ -7,7 +7,8 @@ from lalamo.model_import.model_configs import (
 )
 from lalamo.quantization import QuantizationMode
 
-from .common import ConfigMap, FileSpec, ModelSpec, UseCase, WeightsType
+from .common import ConfigMap, FileSpec, ModelSpec, UseCase
+from .origins import HuggingFaceOrigin
 
 __all__ = ["QWEN_MODELS"]
 
@@ -19,7 +20,7 @@ QWEN25 = [
         name="Qwen2.5-0.5B-Instruct",
         size="0.5B",
         quantization=None,
-        repo="Qwen/Qwen2.5-0.5B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-0.5B-Instruct"),
         config_type=HFQwen2Config,
     ),
     ModelSpec(
@@ -28,7 +29,7 @@ QWEN25 = [
         name="Qwen2.5-1.5B-Instruct",
         size="1.5B",
         quantization=None,
-        repo="Qwen/Qwen2.5-1.5B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-1.5B-Instruct"),
         config_type=HFQwen2Config,
     ),
     ModelSpec(
@@ -37,7 +38,7 @@ QWEN25 = [
         name="Qwen2.5-3B-Instruct",
         size="3B",
         quantization=None,
-        repo="Qwen/Qwen2.5-3B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-3B-Instruct"),
         config_type=HFQwen2Config,
     ),
     ModelSpec(
@@ -46,7 +47,7 @@ QWEN25 = [
         name="Qwen2.5-7B-Instruct",
         size="7B",
         quantization=None,
-        repo="Qwen/Qwen2.5-7B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-7B-Instruct"),
         config_type=HFQwen2Config,
     ),
     ModelSpec(
@@ -55,7 +56,7 @@ QWEN25 = [
         name="Qwen2.5-14B-Instruct",
         size="14B",
         quantization=None,
-        repo="Qwen/Qwen2.5-14B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-14B-Instruct"),
         config_type=HFQwen2Config,
     ),
     ModelSpec(
@@ -64,7 +65,7 @@ QWEN25 = [
         name="Qwen2.5-32B-Instruct",
         size="32B",
         quantization=None,
-        repo="Qwen/Qwen2.5-32B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-32B-Instruct"),
         config_type=HFQwen2Config,
     ),
 ]
@@ -77,7 +78,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-0.5B-Instruct",
         size="0.5B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-0.5B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-0.5B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -87,7 +88,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-1.5B-Instruct",
         size="1.5B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-1.5B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-1.5B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -97,7 +98,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-3B-Instruct",
         size="3B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-3B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-3B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -107,7 +108,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-7B-Instruct",
         size="7B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-7B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-7B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -117,7 +118,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-14B-Instruct",
         size="14B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-14B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-14B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -127,7 +128,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-32B-Instruct",
         size="32B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-32B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-32B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -137,7 +138,7 @@ QWEN25_CODER = [
         name="Qwen2.5-Coder-32B-Instruct",
         size="32B",
         quantization=None,
-        repo="Qwen/Qwen2.5-Coder-32B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen2.5-Coder-32B-Instruct"),
         config_type=HFQwen2Config,
         use_cases=(UseCase.CODE,),
     ),
@@ -151,7 +152,7 @@ QWEN3 = [
         name="Qwen3-0.6B",
         size="0.6B",
         quantization=None,
-        repo="Qwen/Qwen3-0.6B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-0.6B"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -160,7 +161,7 @@ QWEN3 = [
         name="Qwen3-0.6B-MLX-4bit",
         size="0.6B",
         quantization=QuantizationMode.UINT4,
-        repo="Qwen/Qwen3-0.6B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-0.6B-MLX-4bit"),
         config_type=HFQwen3Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-0.6B"),
@@ -174,9 +175,8 @@ QWEN3 = [
         name="Qwen3-1.7B",
         size="1.7B",
         quantization=None,
-        repo="Qwen/Qwen3-1.7B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-1.7B"),
         config_type=HFQwen3Config,
-        weights_type=WeightsType.SAFETENSORS,
         use_cases=tuple(),
     ),
     ModelSpec(
@@ -185,7 +185,7 @@ QWEN3 = [
         name="Qwen3-4B",
         size="4B",
         quantization=None,
-        repo="Qwen/Qwen3-4B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -194,7 +194,7 @@ QWEN3 = [
         name="Qwen3-4B-AWQ",
         size="4B",
         quantization=QuantizationMode.UINT4,
-        repo="Qwen/Qwen3-4B-AWQ",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-AWQ"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -203,7 +203,7 @@ QWEN3 = [
         name="Qwen3-4B-MLX-4bit",
         size="4B",
         quantization=QuantizationMode.UINT4,
-        repo="Qwen/Qwen3-4B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-4B-MLX-4bit"),
         config_type=HFQwen3Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-4B"),
@@ -217,7 +217,7 @@ QWEN3 = [
         name="Qwen3-8B",
         size="8B",
         quantization=None,
-        repo="Qwen/Qwen3-8B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-8B"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -226,7 +226,7 @@ QWEN3 = [
         name="Qwen3-8B-AWQ",
         size="8B",
         quantization=QuantizationMode.UINT4,
-        repo="Qwen/Qwen3-8B-AWQ",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-8B-AWQ"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -235,7 +235,7 @@ QWEN3 = [
         name="Qwen3-8B-MLX-4bit",
         size="8B",
         quantization=QuantizationMode.UINT4,
-        repo="Qwen/Qwen3-8B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-8B-MLX-4bit"),
         config_type=HFQwen3Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-8B"),
@@ -249,7 +249,7 @@ QWEN3 = [
         name="Qwen3-14B",
         size="14B",
         quantization=None,
-        repo="Qwen/Qwen3-14B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-14B"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -258,7 +258,7 @@ QWEN3 = [
         name="Qwen3-14B-AWQ",
         size="14B",
         quantization=None,
-        repo="Qwen/Qwen3-14B-AWQ",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-14B-AWQ"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -267,7 +267,7 @@ QWEN3 = [
         name="Qwen3-32B",
         size="32B",
         quantization=None,
-        repo="Qwen/Qwen3-32B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-32B"),
         config_type=HFQwen3Config,
     ),
     ModelSpec(
@@ -276,7 +276,7 @@ QWEN3 = [
         name="Qwen3-32B-AWQ",
         size="32B",
         quantization=QuantizationMode.UINT4,
-        repo="Qwen/Qwen3-32B-AWQ",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-32B-AWQ"),
         config_type=HFQwen3Config,
     ),
 ]
@@ -288,7 +288,7 @@ QWEN3_NEXT = [
         name="Qwen3-Next-80B-A3B-Instruct",
         size="80B",
         quantization=None,
-        repo="Qwen/Qwen3-Next-80B-A3B-Instruct",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3-Next-80B-A3B-Instruct"),
         config_type=HFQwen3NextConfig,
     ),
     # TODO(knyazer): uncomment and test when sharding is in
@@ -298,7 +298,7 @@ QWEN3_NEXT = [
     #     name="Qwen3-Next-80B-A3B-Instruct-4bit",
     #     size="80B",
     #     quantization=QuantizationMode.UINT4,
-    #     repo="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit",
+    #     origin=HuggingFaceOrigin(repo="mlx-community/Qwen3-Next-80B-A3B-Instruct-4bit"),
     #     config_type=HFQwen3NextConfig,
     #     configs=ConfigMap(
     #         tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3-Next-80B-A3B-Instruct"),
@@ -315,7 +315,7 @@ QWEN35 = [
         name="Qwen3.5-0.8B",
         size="0.8B",
         quantization=None,
-        repo="Qwen/Qwen3.5-0.8B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-0.8B"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -327,7 +327,7 @@ QWEN35 = [
         name="Qwen3.5-0.8B-MLX-4bit",
         size="0.8B",
         quantization=QuantizationMode.UINT4,
-        repo="mlx-community/Qwen3.5-0.8B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-0.8B-MLX-4bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
@@ -341,7 +341,7 @@ QWEN35 = [
         name="Qwen3.5-0.8B-MLX-8bit",
         size="0.8B",
         quantization=QuantizationMode.UINT8,
-        repo="mlx-community/Qwen3.5-0.8B-MLX-8bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-0.8B-MLX-8bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-0.8B"),
@@ -355,7 +355,7 @@ QWEN35 = [
         name="Qwen3.5-2B",
         size="2B",
         quantization=None,
-        repo="Qwen/Qwen3.5-2B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-2B"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -367,7 +367,7 @@ QWEN35 = [
         name="Qwen3.5-2B-MLX-4bit",
         size="2B",
         quantization=QuantizationMode.UINT4,
-        repo="mlx-community/Qwen3.5-2B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-2B-MLX-4bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
@@ -381,7 +381,7 @@ QWEN35 = [
         name="Qwen3.5-2B-MLX-8bit",
         size="2B",
         quantization=QuantizationMode.UINT8,
-        repo="mlx-community/Qwen3.5-2B-MLX-8bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-2B-MLX-8bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-2B"),
@@ -395,7 +395,7 @@ QWEN35 = [
         name="Qwen3.5-4B",
         size="4B",
         quantization=None,
-        repo="Qwen/Qwen3.5-4B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-4B"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -407,7 +407,7 @@ QWEN35 = [
         name="Qwen3.5-4B-MLX-4bit",
         size="4B",
         quantization=QuantizationMode.UINT4,
-        repo="mlx-community/Qwen3.5-4B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-4B-MLX-4bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
@@ -421,7 +421,7 @@ QWEN35 = [
         name="Qwen3.5-4B-MLX-8bit",
         size="4B",
         quantization=QuantizationMode.UINT8,
-        repo="mlx-community/Qwen3.5-4B-MLX-8bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-4B-MLX-8bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-4B"),
@@ -435,7 +435,7 @@ QWEN35 = [
         name="Qwen3.5-9B",
         size="9B",
         quantization=None,
-        repo="Qwen/Qwen3.5-9B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-9B"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             generation_config=FileSpec("generation_config.json", "Qwen/Qwen3.5-27B"),
@@ -447,7 +447,7 @@ QWEN35 = [
         name="Qwen3.5-9B-MLX-4bit",
         size="9B",
         quantization=QuantizationMode.UINT4,
-        repo="mlx-community/Qwen3.5-9B-MLX-4bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-9B-MLX-4bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
@@ -461,7 +461,7 @@ QWEN35 = [
         name="Qwen3.5-9B-MLX-8bit",
         size="9B",
         quantization=QuantizationMode.UINT8,
-        repo="mlx-community/Qwen3.5-9B-MLX-8bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-9B-MLX-8bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-9B"),
@@ -475,7 +475,7 @@ QWEN35 = [
         name="Qwen3.5-27B",
         size="27B",
         quantization=None,
-        repo="Qwen/Qwen3.5-27B",
+        origin=HuggingFaceOrigin(repo="Qwen/Qwen3.5-27B"),
         config_type=HFQwen35Config,
     ),
     ModelSpec(
@@ -484,7 +484,7 @@ QWEN35 = [
         name="Qwen3.5-27B-MLX-4bit",
         size="27B",
         quantization=QuantizationMode.UINT4,
-        repo="mlx-community/Qwen3.5-27B-4bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-27B-4bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
@@ -498,7 +498,7 @@ QWEN35 = [
         name="Qwen3.5-27B-MLX-8bit",
         size="27B",
         quantization=QuantizationMode.UINT8,
-        repo="mlx-community/Qwen3.5-27B-8bit",
+        origin=HuggingFaceOrigin(repo="mlx-community/Qwen3.5-27B-8bit"),
         config_type=HFQwen35Config,
         configs=ConfigMap(
             tokenizer=FileSpec("tokenizer.json", "Qwen/Qwen3.5-27B"),
@@ -515,7 +515,7 @@ QWEN3_PARD = [
         name="PARD-Qwen3-0.6B",
         size="0.6B",
         quantization=None,
-        repo="amd/PARD-Qwen3-0.6B",
+        origin=HuggingFaceOrigin(repo="amd/PARD-Qwen3-0.6B"),
         config_type=HFQwen3Config,
     ),
 ]
@@ -527,7 +527,7 @@ BONSAI = [
         name="Bonsai-4B-mlx-1bit",
         size="4B",
         quantization=QuantizationMode.UINT1,
-        repo="prism-ml/Bonsai-4B-mlx-1bit",
+        origin=HuggingFaceOrigin(repo="prism-ml/Bonsai-4B-mlx-1bit"),
         config_type=HFBonsaiConfig,
         configs=ConfigMap(
             chat_template=FileSpec("chat_template.jinja"),

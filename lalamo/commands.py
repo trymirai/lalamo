@@ -226,7 +226,7 @@ def convert(
     weights = flatten_parameters(model.export_weights())
     del model
 
-    with Path(output_dir / "model.safetensors").open("wb") as fd:
+    with (output_dir / "model.safetensors").open("wb") as fd:
         safe_write(fd, weights)
 
     config_json = config_converter.unstructure(metadata, ModelMetadata)

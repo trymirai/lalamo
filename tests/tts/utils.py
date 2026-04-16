@@ -3,6 +3,7 @@
 import numpy as np
 import torch
 from jax import numpy as jnp
+from jaxtyping import Float
 from scipy.interpolate import CubicSpline
 
 from lalamo.modules.torch_interop import torch_to_jax
@@ -41,7 +42,9 @@ def pink_noise_via_fft(n: int) -> np.ndarray:
     return np.fft.irfft(spectrum, n)
 
 
-def generate_envelope_with_formants(fir_size: int) -> tuple[np.ndarray, np.ndarray]:
+def generate_envelope_with_formants(
+    fir_size: int,
+) -> tuple[Float[np.ndarray, " fir_size"], Float[np.ndarray, " fir_size"]]:
     """Generate a spectral envelope filter with formant-like characteristics.
 
     Returns:
@@ -147,7 +150,7 @@ def generate_pseudo_voice_signal(
     Returns:
         Generated pseudo-voice signal
     """
-    # cross-fading margins when transition betwenn voiced-unvoiced segments
+    # cross-fading margins when transition between voiced-unvoiced segments
     margin_n_samples = 200
     half_margin = margin_n_samples // 2
 

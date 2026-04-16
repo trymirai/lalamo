@@ -1,6 +1,7 @@
 from lalamo.model_import.model_configs.huggingface.fishaudio import FishAudioConfig
 
-from .common import ConfigMap, FileSpec, ModelSpec, ModelType, WeightsType
+from .common import ConfigMap, FileSpec, ModelSpec, ModelType
+from .origins import HuggingFaceOrigin, WeightFormat
 
 __all__ = ["FISHAUDIO_TTS_MODELS"]
 
@@ -15,9 +16,8 @@ FISHAUDIO_TTS_MODELS = [
         name="s1-mini",
         size="0.8B",
         quantization=None,
-        repo="fishaudio/s1-mini",
+        origin=HuggingFaceOrigin(repo="fishaudio/s1-mini", weight_format=WeightFormat.TORCH),
         config_type=FishAudioConfig,
-        weights_type=WeightsType.TORCH,
         configs=ConfigMap(
             chat_template=DIRECT_CHAT_TEMPLATE,
             generation_config=None,
