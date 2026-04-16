@@ -10,6 +10,7 @@ import numpy as np
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import Decoder, DecoderResult
 from lalamo.modules.token_mixers.state.common import State
+from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
 from lalamo.speculator.drafter import Drafter
 from lalamo.speculator.trie import FlatTrie, TrieNode
 from lalamo.speculator.utils import compact_kv_cache, extract_activations
@@ -79,13 +80,13 @@ class SpeculativeDecodingResult:
 class GumbelSeed:
     value: int
 
-    def derive(self, depth: int) -> Self:
+    def derive(self, depth: int) -> "GumbelSeed":
         h = self.value + depth * 2654435761
         h = ((h >> 16) ^ h) * 0x45D9F3B37197344D & 0xFFFFFFFFFFFFFFFF
         h = ((h >> 16) ^ h) * 0x45D9F3B37197344D & 0xFFFFFFFFFFFFFFFF
         return GumbelSeed(((h >> 16) ^ h) & 0xFFFFFFFFFFFFFFFF)
 
-    def advance(self, context_len: int) -> Self:
+    def advance(self, context_len: int) -> "GumbelSeed":
         return GumbelSeed((self.value * 2654435761 ^ context_len) & 0xFFFFFFFFFFFFFFFF)
 
     def sample(self, logits: jnp.ndarray) -> int:
@@ -173,6 +174,8 @@ class SpeculationContext:
         logits = fwd.logits[0, -1]
         prefill_range = self.drafter.prefill_hidden_range
         prefill_positions = slice(None) if prefill_range is None else slice(-prefill_range, None)
+        assert fwd.activation_trace is not None
+        assert fwd.updated_state is not None
         layer_outputs, output_norm = extract_activations(
             fwd.activation_trace,
             batch=0,
@@ -195,7 +198,9 @@ class SpeculationContext:
 
     def tree_forward(self, lm: LMState, trie: TrieNode) -> tuple[DecoderResult, FlatTrie]:
         flat = trie.linearize(include_root=False)
-        cache_len = int(lm.kv_cache[0].current_length[0])
+        first_layer = lm.kv_cache[0]
+        assert isinstance(first_layer, StaticKVCacheLayer)
+        cache_len = int(first_layer.current_length[0])
         max_fwd = 1 + max(self.budget, flat.num_nodes)
 
         tok_ids = jnp.array(
@@ -219,7 +224,6 @@ class SpeculationContext:
             return_activation_trace=True,
             forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
             attention_parent_indices=parent_indices,
-            attention_max_depth=self.config.K + 1,
         )
         return fwd, flat
 
@@ -256,7 +260,9 @@ class SpeculationContext:
         fwd: DecoderResult,
         result: VerifyResult,
     ) -> LMState:
-        cache_len = int(lm.kv_cache[0].current_length[0])
+        first_layer = lm.kv_cache[0]
+        assert isinstance(first_layer, StaticKVCacheLayer)
+        cache_len = int(first_layer.current_length[0])
         num_accepted = len(result.accepted_tokens)
 
         kept_fwd = np.concatenate(
@@ -280,6 +286,7 @@ class SpeculationContext:
         last_logits = jnp.array(fwd.logits[0, last_fwd_idx])
         new_bonus = GumbelSeed(int(result.all_seeds[num_accepted])).sample(last_logits)
 
+        assert fwd.activation_trace is not None
         layer_outputs, output_norm = extract_activations(
             fwd.activation_trace,
             batch=0,

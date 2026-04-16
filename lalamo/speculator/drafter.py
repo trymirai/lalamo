@@ -1,4 +1,5 @@
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from typer import Typer
@@ -48,7 +49,7 @@ class Drafter(ABC):
     _registry: ClassVar[dict[str, "type[Drafter]"]] = {}
 
     @classmethod
-    def register(cls, name: str) -> "type[Drafter]":
+    def register(cls, name: str) -> Callable[["type[Drafter]"], "type[Drafter]"]:
         def decorator(subcls: "type[Drafter]") -> "type[Drafter]":
             cls._registry[name] = subcls
             return subcls

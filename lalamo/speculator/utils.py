@@ -1,6 +1,4 @@
-import functools
-
-import jax
+import equinox as eqx
 import jax.numpy as jnp
 import numpy as np
 
@@ -41,7 +39,7 @@ def top_k_from_logits(logits: jnp.ndarray, k: int) -> list[int]:
     return list(indices[np.argsort(arr[indices])[::-1]])
 
 
-@functools.partial(jax.jit, static_argnames=("max_slots",))
+@eqx.filter_jit
 def compact_kv_cache(
     state: State,
     cache_len: jnp.ndarray,
@@ -67,4 +65,8 @@ def compact_kv_cache(
             current_length=jnp.full_like(layer.current_length, new_length),
         )
 
-    return State(compact_layer(layer) for layer in state)
+    layers: list[StaticKVCacheLayer] = []
+    for layer in state:
+        assert isinstance(layer, StaticKVCacheLayer)
+        layers.append(compact_layer(layer))
+    return State(layers)

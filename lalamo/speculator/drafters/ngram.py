@@ -376,8 +376,10 @@ class NGramDrafter(Drafter):
 
     @classmethod
     def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
-        width = int(kwargs.get("width", 4))
-        depth = int(kwargs.get("depth", 8))
+        width = kwargs.get("width", 4)
+        depth = kwargs.get("depth", 8)
+        assert isinstance(width, int)
+        assert isinstance(depth, int)
         return cls(model=NGramModel.deserialize(data), width=width, depth=depth)
 
     def sample(self, context: Iterable[int] = (), max_length: int = 32) -> list[int]:
