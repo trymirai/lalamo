@@ -126,6 +126,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 precision=activation_precision,
                 base=self.rope_theta,
                 max_sequence_length=context_length or self.max_position_embeddings,
+                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
             )
         elif isinstance(self.rope_scaling, YarnRopeScalingConfig):
             rope_config = YARNRoPEConfig(
@@ -137,6 +138,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 beta_fast=self.rope_scaling.beta_fast,
                 beta_slow=self.rope_scaling.beta_slow,
                 truncate=self.rope_scaling.truncate,
+                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
             )
         elif isinstance(self.rope_scaling, LlamaRopeScalingConfig):
             rope_config = LlamaRoPEConfig(
@@ -147,6 +149,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
                 original_context_length=self.rope_scaling.original_max_position_embeddings,
                 low_frequency_factor=self.rope_scaling.low_freq_factor,
                 high_frequency_factor=self.rope_scaling.high_freq_factor,
+                head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
             )
         else:
             raise ValueError("Unsupported rope_scaling configuration")
@@ -187,7 +190,7 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             has_out_biases=False,
             num_heads=self.num_attention_heads,
             num_groups=self.num_key_value_heads,
-            head_dim=(self.head_dim if self.head_dim is not None else self.hidden_size // self.num_attention_heads),
+            head_dim=self.head_dim or self.hidden_size // self.num_attention_heads,
             is_causal=True,
             scale=None,
             sliding_window_size=None,
@@ -207,10 +210,9 @@ class HFLlamaConfig(HuggingFaceLMConfig):
             pre_mlp_norm_config=rmsnorm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=None,
+            rope_config=rope_config,
         )
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=(transformer_layer_config,) * self.num_hidden_layers,
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

@@ -23,6 +23,7 @@ dependencies = [
     "requests>=2.32.5",
     "soundfile>=0.13.1",
     "datasets>=2.21.0",
+    "transformers>=5.5",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
@@ -125,7 +126,6 @@ markers = ["fast: quick smoke tests"]
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
-XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
 TORCH_COMPILE_DISABLE = "1"
 
 [tool.pyright]

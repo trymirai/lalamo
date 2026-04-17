@@ -84,6 +84,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
         is_mlx = isinstance(quantization, MLXQuantizationConfig)
 
         if is_mlx:
+            assert isinstance(quantization, MLXQuantizationConfig)
             if self.tie_word_embeddings:
                 embedding_config = MLXQuantizedTiedEmbeddingConfig(
                     input_scale=None,
@@ -116,10 +117,12 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     precision=activation_precision,
                 )
 
+        partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_parameters["rope_theta"],
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=int(self.head_dim * partial_rotary_factor),
         )
 
         # Qwen3.5 RMSNorm computes (1 + weight) * norm(x). HF stores raw weights,
@@ -161,8 +164,6 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 activation_precision=activation_precision,
             )
 
-        partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
-
         layer_configs = []
         for layer_type in self.layer_types:
             if layer_type == "linear_attention":
@@ -197,7 +198,6 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     scale=None,
                     sliding_window_size=None,
                     gate_projection_config=linear_config,
-                    partial_rope_dim=int(self.head_dim * partial_rotary_factor),
                 )
 
             layer_configs.append(
@@ -215,12 +215,11 @@ class HFQwen35Config(HuggingFaceLMConfig):
                         gate_clipping=None,
                     ),
                     post_mlp_norm_config=None,
+                    rope_config=rope_config if layer_type != "linear_attention" else None,
                 ),
             )
 
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
