@@ -69,7 +69,16 @@ class Speculator[P](RegistryABC):
     name: ClassVar[str]
 
     @classmethod
-    def deserialize(cls, name: str, data: bytes, **kwargs: object) -> "Speculator":
+    def deserialize(
+        cls,
+        name: str,
+        data: bytes,
+        *,
+        decoder: Decoder,
+        config: SamplerConfig,
+        eos_set: frozenset[int],
+        **extra: object,
+    ) -> "Speculator":
         """Deserialize a speculator by name from a binary blob.
 
         Requires that the speculator module has been imported so the subclass
@@ -77,7 +86,13 @@ class Speculator[P](RegistryABC):
         """
         for subcls in cls.registered_types():
             if subcls.name == name:
-                return subcls.deserialize_impl(data, **kwargs)
+                return subcls.deserialize_impl(
+                    data,
+                    decoder=decoder,
+                    config=config,
+                    eos_set=eos_set,
+                    **extra,
+                )
         known = ", ".join(sorted(s.name for s in cls.registered_types()))
         raise ValueError(f"Unknown speculator {name!r}. Registered: {known}")
 
@@ -87,7 +102,15 @@ class Speculator[P](RegistryABC):
         return (subcls for subcls in cls.__descendants__() if not inspect.isabstract(subcls))
 
     @classmethod
-    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
+    def deserialize_impl(
+        cls,
+        data: bytes,
+        *,
+        decoder: Decoder,
+        config: SamplerConfig,
+        eos_set: frozenset[int],
+        **extra: object,
+    ) -> Self:
         raise NotImplementedError(f"{cls.__name__} does not support deserialization")
 
     def serialize(self) -> bytes:
@@ -95,10 +118,9 @@ class Speculator[P](RegistryABC):
 
     @abstractmethod
     def draft(self, lm: LMState) -> P:
-        """Build a proposal (consumed by :meth:`step`). Shape is drafter-specific:
+        """Build a proposal consumed by :meth:`step`. ``P`` is drafter-specific:
         ``TreeSpeculator`` fixes ``P = TrieNode``; a chain-based speculator would
-        fix ``P`` to its own chain struct. Implementations may use
-        ``self.seed`` for reproducible randomness.
+        fix ``P`` to its own chain struct.
         """
 
     @abstractmethod

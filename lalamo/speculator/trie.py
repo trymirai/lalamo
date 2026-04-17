@@ -16,7 +16,7 @@ from lalamo.speculator.utils import extract_activations, pad_or_trim
 
 
 @dataclass(frozen=True)
-class TreeTreeVerifyResult:
+class TreeVerifyResult:
     """Intermediate result of tree+Gumbel verification, consumed by ``TreeSpeculator.build_next_state``."""
 
     accepted_tokens: list[int]
@@ -183,7 +183,7 @@ class TreeSpeculator(Speculator[TrieNode]):
             output_norm=output_norm,
             logits=logits,
             position=len(prompt_ids),
-            bonus=self.seed.advance(0).sample(logits),
+            bonus=self.seed.derive(1).sample(logits),
         )
         return self, lm_state
 
@@ -198,7 +198,10 @@ class TreeSpeculator(Speculator[TrieNode]):
         """Run the target decoder forward pass on a tree-shaped proposal."""
         flat = trie.linearize(include_root=False)
         first_layer = lm.kv_cache[0]
-        assert isinstance(first_layer, StaticKVCacheLayer)
+        if not isinstance(first_layer, StaticKVCacheLayer):
+            raise TypeError(
+                f"speculative decoding requires StaticKVCacheLayer, got {type(first_layer).__name__}",
+            )
         cache_len = int(first_layer.current_length[0])
         max_fwd = 1 + max(self.budget, flat.num_nodes)
 
@@ -210,8 +213,9 @@ class TreeSpeculator(Speculator[TrieNode]):
             pad_or_trim(np.concatenate([[cache_len], flat.positions(cache_len + 1)]), max_fwd, cache_len)[None, :],
             dtype=jnp.int32,
         )
+        shifted_parents = np.where(flat.parent_indices == -1, 0, flat.parent_indices + 1)
         parent_indices = jnp.array(
-            pad_or_trim(np.concatenate([[-1], flat.parent_indices]), max_fwd, -1)[None, :],
+            pad_or_trim(np.concatenate([[-1], shifted_parents]), max_fwd, -1)[None, :],
             dtype=jnp.int32,
         )
 
@@ -266,11 +270,14 @@ class TreeSpeculator(Speculator[TrieNode]):
         and advance the speculator's seed.
 
         Returns ``(new_self, new_lm)``. Subclasses with additional per-step
-        state (e.g. NGram context) override :meth:`step` to layer their own
-        update on top of this.
+        state (e.g. NGram context) override this method and chain via
+        ``super().build_next_state(...)`` to layer their own update.
         """
         first_layer = lm.kv_cache[0]
-        assert isinstance(first_layer, StaticKVCacheLayer)
+        if not isinstance(first_layer, StaticKVCacheLayer):
+            raise TypeError(
+                f"speculative decoding requires StaticKVCacheLayer, got {type(first_layer).__name__}",
+            )
         cache_len = int(first_layer.current_length[0])
         num_accepted = len(result.accepted_tokens)
 

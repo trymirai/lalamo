@@ -1,11 +1,9 @@
-import dataclasses
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from lalamo.message_processor import MessageProcessor, UserMessage
 from lalamo.speculator.common import Speculator
-from lalamo.speculator.sampler import GumbelSeed
 from lalamo.speculator.speculate import SpeculationRun, SpeculativeDecodingResult
 
 
@@ -90,9 +88,8 @@ def run_eval(
 ) -> EvalResults:
     accum: dict[str, list[tuple[SpeculativeDecodingResult, float]]] = {}
     for i, question in enumerate(questions):
-        per_question = dataclasses.replace(speculator, seed=GumbelSeed(42 + i))
         start = time.perf_counter()
-        result = evaluate_prompt(per_question, mp, question.prompt)
+        result = evaluate_prompt(speculator, mp, question.prompt)
         elapsed_s = time.perf_counter() - start
         accum.setdefault(question.category, []).append((result, elapsed_s))
         if on_question is not None:

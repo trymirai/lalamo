@@ -24,9 +24,7 @@ def extract_activations(
     layer_outputs: tuple[Array, ...] = (
         ()
         if trace_layer_outputs is None
-        else tuple(
-            trace.layer_results[layer].outputs[sample_index, positions] for layer in trace_layer_outputs
-        )
+        else tuple(trace.layer_results[layer].outputs[sample_index, positions] for layer in trace_layer_outputs)
     )
     output_norm = trace.output_norm[sample_index, positions] if trace_output_norm else None
     return layer_outputs, output_norm

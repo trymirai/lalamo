@@ -7,16 +7,16 @@ from dataclasses import dataclass, field
 from itertools import chain, repeat, tee
 from math import exp
 from pathlib import Path
-from typing import Annotated, ClassVar, Self, cast
+from typing import Annotated, ClassVar, Self
 
 import xxhash
 from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
-from lalamo.modules.decoder import Decoder
-from lalamo.speculator.common import LMState, SamplerConfig, SpeculationStep
+from lalamo.modules.decoder import Decoder, DecoderResult
+from lalamo.speculator.common import LMState, SamplerConfig
 from lalamo.speculator.sampler import GumbelSeed, gumbel_rank_from_probs
-from lalamo.speculator.trie import TreeSpeculator, TrieNode
+from lalamo.speculator.trie import TreeSpeculator, TreeVerifyResult, TrieNode
 
 
 def padded_sliding_window(seq: Iterable[int], size: int, pad: int) -> Iterable[tuple[int, ...]]:
@@ -360,39 +360,44 @@ class NGramSpeculator(TreeSpeculator):
 
         return root
 
-    def step(self, lm: LMState) -> tuple[Self, LMState, SpeculationStep]:
-        proposal = self.draft(lm)
-        fwd, flat = self.tree_forward(lm, proposal)
-        result = self.sample_and_accept(proposal, fwd, flat)
-        new_self, new_lm = self.build_next_state(lm, fwd, result)
+    def prefill(self, prompt_ids: list[int]) -> tuple[Self, LMState]:
+        _, lm_state = super().prefill(prompt_ids)
+        max_ctx = self.model.max_order - 1
+        context = tuple(prompt_ids[-max_ctx:]) if max_ctx > 0 else ()
+        return dataclasses.replace(self, context=context), lm_state
+
+    def build_next_state(
+        self,
+        lm: LMState,
+        fwd: DecoderResult,
+        result: TreeVerifyResult,
+    ) -> tuple[Self, LMState]:
+        parent_self, new_lm = super().build_next_state(lm, fwd, result)
         new_context = self.context + (lm.bonus,) + tuple(result.accepted_tokens)
         max_ctx = self.model.max_order - 1
-        final_self = dataclasses.replace(
-            new_self,
-            context=new_context[-max_ctx:] if max_ctx > 0 else (),
-        )
-        return final_self, new_lm, SpeculationStep(accepted=result.accepted_tokens, bonus=new_lm.bonus)
+        trimmed = new_context[-max_ctx:] if max_ctx > 0 else ()
+        final = dataclasses.replace(self, seed=parent_self.seed, context=trimmed)
+        return final, new_lm
 
     def serialize(self) -> bytes:
         return self.model.serialize()
 
     @classmethod
-    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
-        decoder = kwargs["decoder"]
-        config = kwargs["config"]
-        eos_set = kwargs["eos_set"]
-        width = kwargs.get("width", 4)
-        depth = kwargs.get("depth", 8)
-        assert isinstance(decoder, Decoder)
-        assert isinstance(config, SamplerConfig)
-        assert isinstance(eos_set, frozenset)
-        assert all(isinstance(e, int) for e in eos_set)
-        assert isinstance(width, int)
-        assert isinstance(depth, int)
+    def deserialize_impl(
+        cls,
+        data: bytes,
+        *,
+        decoder: Decoder,
+        config: SamplerConfig,
+        eos_set: frozenset[int],
+        width: int = 4,
+        depth: int = 8,
+        **_: object,
+    ) -> Self:
         return cls(
             decoder=decoder,
             config=config,
-            eos_set=cast("frozenset[int]", eos_set),
+            eos_set=eos_set,
             seed=GumbelSeed(config.seed),
             model=NGramModel.deserialize(data),
             width=width,
