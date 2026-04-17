@@ -530,6 +530,19 @@ class DFlashSpeculator(Speculator[BlockProposal]):
     # tuple when targeting a tokenizer where this injection is not
     # appropriate.
     thinking_bypass_ids: tuple[int, ...] = (151667, 271, 151668, 271)
+    # Canonical padded length for the prompt and for the drafter's first-step
+    # target-context ingestion. Every prompt shorter than this gets padded
+    # (and masked out via ``lengths_without_padding`` on the target decoder
+    # and via ``valid_ctx_len`` on the drafter), so the prefill JIT compiles
+    # exactly once across all prompts instead of once per prompt length.
+    # Prompts longer than this raise in :meth:`prefill`; raise the value for
+    # datasets with longer inputs.
+    prompt_pad_length: int = 1024
+    # Real prompt length stashed by :meth:`prefill` so the first
+    # :meth:`generate_block` can tell the drafter how many of the
+    # ``prompt_pad_length`` rows of ``lm.layer_outputs`` are real. Reset to
+    # 0 after the first step consumes it.
+    valid_prefill_len: int = 0
 
     @classmethod
     def create(
@@ -540,6 +553,7 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         config: SamplerConfig,
         eos_set: frozenset[int],
         temperature: float = 0.0,
+        prompt_pad_length: int = 1024,
     ) -> Self:
         """Construct a speculator with an empty drafter KV cache — sized
         against the concrete prompt length by :meth:`prefill`.
@@ -552,6 +566,7 @@ class DFlashSpeculator(Speculator[BlockProposal]):
             draft_kv_state=(),
             temperature=temperature,
             rng_key=jax.random.PRNGKey(config.seed),
+            prompt_pad_length=prompt_pad_length,
             trace_layer_outputs=model.config.target_layer_ids,
             trace_output_norm=False,
             prefill_hidden_range=None,
@@ -593,18 +608,31 @@ class DFlashSpeculator(Speculator[BlockProposal]):
 
     def prefill(self, prompt_ids: list[int]) -> tuple[Self, LMState]:
         prompt_ids = [*prompt_ids, *self.thinking_bypass_ids]
-        state = self.decoder.init_static_state(1, self.generation_capacity + len(prompt_ids))
-        prefix = jnp.array([prompt_ids], dtype=jnp.int32)
+        real_len = len(prompt_ids)
+        pad_length = self.prompt_pad_length
+        if real_len > pad_length:
+            msg = f"prompt length {real_len} exceeds prompt_pad_length={pad_length}"
+            raise ValueError(msg)
+        padded_ids = prompt_ids + [0] * (pad_length - real_len)
+
+        state = self.decoder.init_static_state(1, self.generation_capacity + pad_length)
+        prefix = jnp.array([padded_ids], dtype=jnp.int32)
+        positions = jnp.arange(pad_length, dtype=jnp.int32)[None, :]
+        real_len_arr = jnp.array([real_len], dtype=jnp.int32)
         fwd = self.decoder(
             prefix,
-            jnp.arange(len(prompt_ids))[None, :],
+            positions,
             state,
             return_updated_state=True,
             return_activation_trace=True,
+            lengths_without_padding=real_len_arr,
         )
-        logits = fwd.logits[0, -1]
+        # Logits for the first bonus sit at the last real prompt position.
+        logits = fwd.logits[0, real_len - 1]
         assert fwd.activation_trace is not None
         assert fwd.updated_state is not None
+        # Retain all padded positions; the drafter masks out [real_len, pad_length)
+        # via ``valid_ctx_len`` so its first-step shape is fixed across prompts.
         layer_outputs, output_norm = extract_activations(
             fwd.activation_trace,
             sample_index=0,
@@ -614,14 +642,16 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         )
         rng_key, sub_key = jax.random.split(self.rng_key)
         bonus = self.sample_token(logits, sub_key)
-        draft_kv = self.model.init_kv_cache(capacity=self.generation_capacity + len(prompt_ids))
-        new_self = dataclasses.replace(self, rng_key=rng_key, draft_kv_state=draft_kv)
+        draft_kv = self.model.init_kv_cache(capacity=self.generation_capacity + pad_length)
+        new_self = dataclasses.replace(
+            self, rng_key=rng_key, draft_kv_state=draft_kv, valid_prefill_len=real_len,
+        )
         lm = LMState(
             kv_cache=fwd.updated_state,
             layer_outputs=layer_outputs,
             output_norm=output_norm,
             logits=logits,
-            position=len(prompt_ids),
+            position=real_len,
             bonus=bonus,
         )
         return new_self, lm
@@ -637,7 +667,9 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         target_samples = self.sample_block(fwd.logits[0], verify_key)
         accepted, next_bonus = self.accept_chain(proposal, target_samples)
         new_lm = self.build_next_state(lm, fwd, accepted, next_bonus)
-        final_self = dataclasses.replace(self, rng_key=rng_key, draft_kv_state=new_draft_kv)
+        final_self = dataclasses.replace(
+            self, rng_key=rng_key, draft_kv_state=new_draft_kv, valid_prefill_len=0,
+        )
         return (
             final_self,
             new_lm,
@@ -770,23 +802,32 @@ class DFlashSpeculator(Speculator[BlockProposal]):
                 f"LMState, got {len(lm.layer_outputs)}.",
             )
         target_hidden_new = jnp.concatenate(lm.layer_outputs, axis=-1)
-        valid_ctx_len, _ = target_hidden_new.shape
+        shape_ctx_len, _ = target_hidden_new.shape
 
-        # Pad the fresh target context to ``block_size`` (the maximum over
-        # post-prefill steps) so the drafter forward sees a single shape for
-        # every speculation iteration. The prefill step can exceed block_size
-        # (prompt_len rows); leave it untouched so it triggers its own
-        # one-shot compile.
-        if valid_ctx_len < block_size:
-            pad = block_size - valid_ctx_len
-            target_hidden_new = jnp.concatenate(
-                [
-                    target_hidden_new,
-                    jnp.zeros((pad, cfg.fused_dim), dtype=target_hidden_new.dtype),
-                ],
-                axis=0,
-            )
-        padded_ctx_len, _ = target_hidden_new.shape
+        # The drafter forward sees two canonical shapes across an entire
+        # run, so it compiles exactly twice:
+        #   * first step after prefill — ``target_hidden_new`` has shape
+        #     ``(prompt_pad_length, fused_dim)`` (see :meth:`prefill`). The
+        #     drafter masks out rows ``[valid_prefill_len, prompt_pad_length)``
+        #     using ``valid_prefill_len`` stashed on ``self``.
+        #   * every subsequent step — the real row count ``1 + num_accepted``
+        #     sits in ``[1, block_size]``; we pad up to ``block_size`` so the
+        #     shape is the same for every iteration.
+        if shape_ctx_len > block_size:
+            valid_ctx_len = self.valid_prefill_len
+            padded_ctx_len = shape_ctx_len
+        else:
+            valid_ctx_len = shape_ctx_len
+            if shape_ctx_len < block_size:
+                pad = block_size - shape_ctx_len
+                target_hidden_new = jnp.concatenate(
+                    [
+                        target_hidden_new,
+                        jnp.zeros((pad, cfg.fused_dim), dtype=target_hidden_new.dtype),
+                    ],
+                    axis=0,
+                )
+            padded_ctx_len = block_size
 
         noise_tokens = jnp.array(
             [lm.bonus, *([cfg.mask_token_id] * (block_size - 1))],
