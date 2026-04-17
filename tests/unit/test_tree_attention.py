@@ -54,7 +54,6 @@ def decoder() -> Decoder:
         has_sinks=False,
         has_qkv_biases=False,
         has_out_biases=False,
-        use_rope=True,
     )
     mlp_config = DenseMLPConfig(
         linear_config=FullPrecisionLinearConfig(precision=precision),
@@ -64,6 +63,12 @@ def decoder() -> Decoder:
         gate_clipping=None,
         up_clipping=None,
     )
+    rope_config = UnscaledRoPEConfig(
+        precision=precision,
+        base=10_000.0,
+        max_sequence_length=context_length,
+        head_dim=4,
+    )
     layer_config = TransformerLayerConfig(
         pre_mixer_norm_config=norm_config,
         mixer_config=attention_config,
@@ -71,14 +76,9 @@ def decoder() -> Decoder:
         pre_mlp_norm_config=norm_config,
         mlp_config=mlp_config,
         post_mlp_norm_config=None,
+        rope_config=rope_config,
     )
     transformer_config = TransformerConfig(
-        global_rope_config=UnscaledRoPEConfig(
-            precision=precision,
-            base=10_000.0,
-            max_sequence_length=context_length,
-        ),
-        local_rope_config=None,
         layer_configs=(layer_config,),
         output_norm_config=norm_config,
         model_dim=model_dim,
