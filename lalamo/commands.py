@@ -669,6 +669,7 @@ class EvalDatasetName(str, Enum):
     MTBENCH = "mtbench"
     GSM8K = "gsm8k"
     HUMANEVAL = "humaneval"
+    MATH500 = "math500"
 
 
 @dataclass(frozen=True)
@@ -708,6 +709,22 @@ class HumanEvalRow:
         return cls._converter.structure(dict(obj), cls)
 
 
+@dataclass(frozen=True)
+class MATH500Row:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
+    problem: str
+    solution: str
+    answer: str
+    subject: str
+    level: int
+    unique_id: str
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, object]) -> Self:
+        return cls._converter.structure(dict(obj), cls)
+
+
 def load_mtbench(cache_path: Path) -> list[EvalQuestion]:
     # Pinned commit so upstream branch movement cannot silently 404 the eval.
     mtbench_url = (
@@ -732,6 +749,14 @@ def load_humaneval() -> list[EvalQuestion]:
     return [EvalQuestion(id=idx, category="code", prompt=row.prompt) for idx, row in enumerate(rows)]
 
 
+def load_math500() -> list[EvalQuestion]:
+    rows = [MATH500Row.from_dict(row) for row in load_dataset("HuggingFaceH4/MATH-500", split="test")]
+    return [
+        EvalQuestion(id=idx, category=row.subject, prompt=row.problem)
+        for idx, row in enumerate(rows)
+    ]
+
+
 def load_eval_questions(
     name: EvalDatasetName,
     num_questions: int | None,
@@ -744,6 +769,8 @@ def load_eval_questions(
             questions = load_gsm8k()
         case EvalDatasetName.HUMANEVAL:
             questions = load_humaneval()
+        case EvalDatasetName.MATH500:
+            questions = load_math500()
     if num_questions is not None:
         questions = questions[:num_questions]
     return questions
