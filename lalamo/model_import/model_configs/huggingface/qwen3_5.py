@@ -25,6 +25,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.activations import SiLU
 from lalamo.modules.linear import MLXQuantizedLinearConfig
+from lalamo.modules.mlp import MixtureOfExpertsConfig, SoftmaxRouting
 from lalamo.modules.token_mixers import SeparableCausalConvConfig
 from lalamo.quantization import QuantizationMode
 
@@ -35,9 +36,8 @@ __all__ = ["HFQwen35Config"]
 
 @dataclass(frozen=True)
 class HFQwen35Config(HuggingFaceLMConfig):
-    model_type: Literal["qwen3_5"]
+    model_type: Literal["qwen3_5", "qwen3_5_moe"]
     hidden_size: int
-    intermediate_size: int
     num_hidden_layers: int
     num_attention_heads: int
     num_key_value_heads: int
@@ -56,6 +56,13 @@ class HFQwen35Config(HuggingFaceLMConfig):
     linear_num_key_heads: int
     linear_num_value_heads: int
 
+    intermediate_size: int | None = None
+
+    num_experts: int | None = None
+    num_experts_per_tok: int | None = None
+    moe_intermediate_size: int | None = None
+    shared_expert_intermediate_size: int | None = None
+
     torch_dtype: Literal["bfloat16", "float16", "float32"] = "bfloat16"
     eos_token_id: int | list[int] = field(default_factory=list)
     quantization: QuantizationConfigType | None = None
@@ -71,6 +78,10 @@ class HFQwen35Config(HuggingFaceLMConfig):
         text_config = config.pop("text_config", {})
         merged = {**text_config, **config}
         return cls._converter.structure(merged, cls)
+
+    @property
+    def is_moe(self) -> bool:
+        return self.model_type == "qwen3_5_moe"
 
     def to_decoder_config(
         self,
@@ -164,6 +175,49 @@ class HFQwen35Config(HuggingFaceLMConfig):
                 activation_precision=activation_precision,
             )
 
+        partial_rotary_factor = self.rope_parameters["partial_rotary_factor"]
+
+        if self.is_moe:
+            assert self.num_experts is not None
+            assert self.num_experts_per_tok is not None
+            assert self.moe_intermediate_size is not None
+            assert self.shared_expert_intermediate_size is not None
+            assert self.shared_expert_intermediate_size == self.moe_intermediate_size, (
+                f"shared_expert_intermediate_size ({self.shared_expert_intermediate_size}) "
+                f"must equal moe_intermediate_size ({self.moe_intermediate_size})"
+            )
+            experts_config = DenseMLPConfig(
+                linear_config=linear_config,
+                activation=SiLU(),
+                has_up_biases=False,
+                has_down_biases=False,
+                up_clipping=None,
+                gate_clipping=None,
+            )
+            mlp_config = MixtureOfExpertsConfig(
+                num_routed_experts=self.num_experts,
+                num_active_routed_experts=self.num_experts_per_tok,
+                routing_function=SoftmaxRouting(),
+                router_config=linear_config,
+                router_has_biases=False,
+                expert_config=experts_config,
+                gate_config=linear_config,
+                num_shared_experts=1,
+                expert_hidden_dim=self.moe_intermediate_size,
+            )
+            hidden_dim = self.moe_intermediate_size
+        else:
+            assert self.intermediate_size is not None
+            mlp_config = DenseMLPConfig(
+                linear_config=linear_config,
+                activation=SiLU(),
+                has_up_biases=False,
+                has_down_biases=False,
+                up_clipping=None,
+                gate_clipping=None,
+            )
+            hidden_dim = self.intermediate_size
+
         layer_configs = []
         for layer_type in self.layer_types:
             if layer_type == "linear_attention":
@@ -206,14 +260,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
                     mixer_config=mixer_config,
                     post_mixer_norm_config=None,
                     pre_mlp_norm_config=rmsnorm_config,
-                    mlp_config=DenseMLPConfig(
-                        linear_config=linear_config,
-                        activation=SiLU(),
-                        has_up_biases=False,
-                        has_down_biases=False,
-                        up_clipping=None,
-                        gate_clipping=None,
-                    ),
+                    mlp_config=mlp_config,
                     post_mlp_norm_config=None,
                     rope_config=rope_config if layer_type != "linear_attention" else None,
                 ),
@@ -223,7 +270,7 @@ class HFQwen35Config(HuggingFaceLMConfig):
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,
-            hidden_dim=self.intermediate_size,
+            hidden_dim=hidden_dim,
             context_length=context_length or self.max_position_embeddings,
         )
 

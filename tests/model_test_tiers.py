@@ -159,6 +159,10 @@ MODEL_TIERS: tuple[tuple[str, ModelTier], ...] = (
     ("trymirai/DeepSeek-R1-Distill-Qwen-1.5B-AWQ", ModelTier.STANDARD),
     ("trymirai/SmolLM2-1.7B-Instruct-AWQ", ModelTier.EXTRA),
     ("trymirai/Llama-3.2-3B-Instruct-AWQ", ModelTier.EXTRA),
+    # Qwen3.5 MoE
+    ("Qwen/Qwen3.5-35B-A3B", ModelTier.EXTRA),
+    # Qwen3.6
+    ("Qwen/Qwen3.6-35B-A3B", ModelTier.STANDARD),
     # Qwen3-Next
     ("Qwen/Qwen3-Next-80B-A3B-Instruct", ModelTier.EXTRA),
     # Audio
