@@ -785,8 +785,19 @@ class DFlashSpeculator(Speculator[BlockProposal]):
 
         # Keep ``cached`` as a traced scalar so the drafter's position_ids
         # construction stays on-device — no host sync every iteration.
+        #
+        # Positions are laid out [real_ctx; padded_ctx (masked); noise] but the
+        # noise must receive absolute positions ``cached + valid_ctx_len + i``
+        # — not ``cached + padded_ctx_len + i`` — otherwise RoPE puts the
+        # noise anchor past the real context and token predictions fall out
+        # of lockstep with the target, collapsing acceptance after step 1.
+        # The padded-ctx slots get a dummy position (0) and are masked out
+        # inside the attention call.
         cached = self.draft_kv_state[0].length
-        position_ids = cached + jnp.arange(padded_ctx_len + block_size, dtype=jnp.int32)
+        ctx_idx = jnp.arange(padded_ctx_len, dtype=jnp.int32)
+        ctx_positions = cached + jnp.where(ctx_idx < jnp.int32(valid_ctx_len), ctx_idx, jnp.int32(0))
+        noise_positions = cached + jnp.int32(valid_ctx_len) + jnp.arange(block_size, dtype=jnp.int32)
+        position_ids = jnp.concatenate([ctx_positions, noise_positions])
 
         hidden, new_draft_kv = self.model(
             noise_embedding,
