@@ -58,6 +58,7 @@ from .mlp import (
     MLPConfig,
     MLPForwardPassConfig,
     RoutingFunction,
+    SharedExpert,
     SoftmaxRouting,
 )
 from .normalization import Normalization, NormalizationConfig, UpcastMode
@@ -156,6 +157,7 @@ __all__ = [
     "SeparableCausalConvConfig",
     "ShardingConfig",
     "ShardingOrder",
+    "SharedExpert",
     "ShortConv",
     "ShortConvConfig",
     "ShortConvStateLayer",

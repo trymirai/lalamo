@@ -32,7 +32,7 @@ from lalamo.modules import (
 )
 from lalamo.modules.classifier import Classifier
 from lalamo.modules.embedding import MLXQuantizedUntiedEmbedding
-from lalamo.modules.mlp import MixtureOfExperts, MLPBase
+from lalamo.modules.mlp import MixtureOfExperts, MLPBase, SharedExpert
 from lalamo.quantization import QuantizationMode
 
 from .common import load_parameters
@@ -312,6 +312,61 @@ def load_mlp(
     raise TypeError(f"Unsupported module type for loading: {type(module)}")
 
 
+def _load_shared_expert(
+    shared_expert: SharedExpert,
+    weights_dict: Mapping[str, Array],
+    path: ParameterPath,
+) -> SharedExpert:
+    num_shared = shared_expert.num_shared_experts
+    if (path / "shared_expert" / "up_proj.weight") in weights_dict:
+        if num_shared != 1:
+            raise ValueError(
+                f"Single shared_expert path found but num_shared_experts={num_shared}.",
+            )
+        shared_paths = [path / "shared_expert"]
+    elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
+        shared_paths = [path / "shared_experts" / str(idx) for idx in range(num_shared)]
+    else:
+        raise KeyError("Could not find shared expert weights in HF checkpoint.")
+
+    up_tensors = [weights_dict[sp / "up_proj.weight"] for sp in shared_paths]
+    gate_tensors = [weights_dict[sp / "gate_proj.weight"] for sp in shared_paths]
+    down_tensors = [weights_dict[sp / "down_proj.weight"] for sp in shared_paths]
+
+    # Concatenate along the output axis of up/gate and down so the shapes match the
+    # single dense shared_expert module exactly. For num_shared == 1 this is a no-op.
+    up_stacked = jnp.concatenate(up_tensors, axis=0)
+    gate_stacked = jnp.concatenate(gate_tensors, axis=0)
+    combined_up_gate = jnp.concatenate([up_stacked, gate_stacked], axis=0)
+    down_stacked = jnp.concatenate(down_tensors, axis=0)
+
+    up_projection = load_parameters(
+        lambda m: (m.weights, m.biases),
+        shared_expert.up_projection,
+        (combined_up_gate, None),
+    )
+    down_projection = load_parameters(
+        lambda m: (m.weights, m.biases),
+        shared_expert.down_projection,
+        (down_stacked, None),
+    )
+
+    gate_path: ParameterPath | None = None
+    for candidate in ("shared_expert_gate", "shared_experts_gate", "shared_gate"):
+        if (path / candidate / "weight") in weights_dict or (path / candidate / "qweight") in weights_dict:
+            gate_path = path / candidate
+            break
+    if gate_path is None:
+        raise KeyError("Could not find shared-expert gate weights in HF checkpoint.")
+    gate = load_linear(shared_expert.gate, weights_dict, gate_path)
+
+    return load_parameters(
+        lambda m: (m.up_projection, m.down_projection, m.gate),
+        shared_expert,
+        (up_projection, down_projection, gate),
+    )
+
+
 def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: ParameterPath) -> MixtureOfExperts:
     # Load router via the standard linear loader.
     # Qwen-MoE often names the router layer "gate" in HF weights.
@@ -324,7 +379,6 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
     router = load_linear(module.router, weights_dict, router_path)
 
     num_routed = module.num_routed_experts
-    num_shared = module.num_shared_experts
     has_up_biases = module.experts.up_projection.has_biases
     has_down_biases = module.experts.down_projection.has_biases
 
@@ -420,41 +474,9 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
         gate_weights = gate_up_weights[:, :intermediate_size, :]
         up_weights = gate_up_weights[:, intermediate_size:, :]
 
-        # Combine up and gate for our format: (num_experts, hidden*2, model_dim)
+        # Combine up and gate for our format: (num_experts, hidden*2, model_dim).
+        # Routed-only; the shared expert is loaded into module.shared_expert below.
         combined_up_gate_weights = jnp.concatenate([up_weights, gate_weights], axis=1)
-
-        # If the module has shared experts (stored separately as dense MLPs), load and stack them
-        # on top of the batched routed experts so the combined tensor matches module.experts.
-        if num_shared > 0:
-            shared_expert_paths: list[ParameterPath]
-            if (path / "shared_expert" / "up_proj.weight") in weights_dict:
-                if num_shared != 1:
-                    raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-                shared_expert_paths = [path / "shared_expert"]
-            elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
-                shared_expert_paths = [path / "shared_experts" / str(idx) for idx in range(num_shared)]
-            else:
-                raise KeyError("Could not find shared expert weights in HF checkpoint.")
-
-            shared_up = jnp.stack(
-                [weights_dict[sp / "up_proj.weight"] for sp in shared_expert_paths],
-                axis=0,
-            )
-            shared_gate = jnp.stack(
-                [weights_dict[sp / "gate_proj.weight"] for sp in shared_expert_paths],
-                axis=0,
-            )
-            shared_down = jnp.stack(
-                [weights_dict[sp / "down_proj.weight"] for sp in shared_expert_paths],
-                axis=0,
-            )
-            shared_combined_up_gate = jnp.concatenate([shared_up, shared_gate], axis=1)
-
-            combined_up_gate_weights = jnp.concatenate(
-                [combined_up_gate_weights, shared_combined_up_gate],
-                axis=0,
-            )
-            down_weights = jnp.concatenate([down_weights, shared_down], axis=0)
 
         up_projection = load_parameters(
             lambda m: (m.weights, m.biases),
@@ -474,18 +496,8 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             (up_projection, down_projection),
         )
     else:
-        # Collect expert weight paths: routed experts first, then shared experts.
+        # Routed experts only; shared_expert (if any) is loaded separately below.
         expert_paths: list[ParameterPath] = [experts_path / str(idx) for idx in range(num_routed)]
-
-        if num_shared > 0:
-            if (path / "shared_expert" / "up_proj.weight") in weights_dict:
-                if num_shared != 1:
-                    raise ValueError("Single shared expert path found but num_shared_experts != 1.")
-                expert_paths.append(path / "shared_expert")
-            elif (path / "shared_experts" / "0" / "up_proj.weight") in weights_dict:
-                expert_paths.extend(path / "shared_experts" / str(idx) for idx in range(num_shared))
-            else:
-                raise KeyError("Could not find shared expert weights in HF checkpoint.")
 
         up_weight_list: list[Array] = []
         gate_weight_list: list[Array] = []
@@ -536,21 +548,14 @@ def load_moe(module: MixtureOfExperts, weights_dict: Mapping[str, Array], path: 
             (up_projection, down_projection),
         )
 
-    gate = None
-    if module.gate is not None:
-        gate_path = None
-        for candidate in ("shared_expert_gate", "shared_experts_gate", "shared_gate"):
-            if (path / candidate / "weight") in weights_dict or (path / candidate / "qweight") in weights_dict:
-                gate_path = path / candidate
-                break
-        if gate_path is None:
-            raise KeyError("Could not find shared expert gate weights in HF checkpoint.")
-        gate = load_linear(module.gate, weights_dict, gate_path)
+    shared_expert = None
+    if module.shared_expert is not None:
+        shared_expert = _load_shared_expert(module.shared_expert, weights_dict, path)
 
     return load_parameters(
-        lambda m: (m.router, m.experts, m.gate),
+        lambda m: (m.router, m.experts, m.shared_expert),
         module,
-        (router, experts, gate),
+        (router, experts, shared_expert),
     )
 
 
