@@ -32,17 +32,16 @@ from .common import (
 __all__ = ["ModernBERTConfig"]
 
 
-def activation_from_str(activation: str) -> type[Activation]:
-    supported_activations = {
-        "silu": SiLU,
-        "gelu": GELU,
-    }
-    if activation in supported_activations:
-        return supported_activations[activation]
-
-    raise ValueError(
-        f"Only activations from the following list are supported by Classifier: {supported_activations.keys()}",
-    )
+def activation_from_str(activation: str) -> Activation:
+    match activation:
+        case "gelu":
+            return GELU(approximate=False)
+        case "gelu_new" | "gelu_pytorch_tanh":
+            return GELU(approximate=True)
+        case "silu":
+            return SiLU()
+        case _:
+            raise ValueError(f"Unsupported activation for ModernBERT: {activation!r}")
 
 
 @dataclass(frozen=True)
@@ -126,11 +125,13 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             precision=activation_precision,
             base=self.global_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=self.hidden_size // self.num_attention_heads,
         )
         local_rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.local_rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=self.hidden_size // self.num_attention_heads,
         )
 
         sliding_window_sizes = self.calculate_sliding_windows(self.num_hidden_layers, self.global_attn_every_n_layers)
@@ -147,10 +148,9 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
             precision=activation_precision,
         )
         activation = activation_from_str(self.hidden_activation)
-        assert activation is SiLU or activation is GELU
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
-            activation=activation(),
+            activation=activation,
             has_up_biases=False,
             has_down_biases=False,
             up_clipping=None,
@@ -178,6 +178,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 is_causal=False,
                 sliding_window_size=sliding_window_size,
             )
+            layer_rope_config = global_rope_config if sliding_window_size is None else local_rope_config
             layer_config = TransformerLayerConfig(
                 pre_mixer_norm_config=pre_attn_config,
                 mixer_config=attention_config,
@@ -185,12 +186,11 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
                 pre_mlp_norm_config=transformer_norm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
+                rope_config=layer_rope_config,
             )
             transformer_layer_configs.append(layer_config)
 
         transformer_config = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
             layer_configs=tuple(transformer_layer_configs),
             output_norm_config=transformer_norm_config,
             model_dim=self.hidden_size,
@@ -215,7 +215,7 @@ class ModernBERTConfig(HuggingFaceClassifierConfig):
         )
         prediction_head_config = PredictionHeadConfig(
             dense_config=prediction_head_dense_config,
-            activation=prediction_head_activation(),
+            activation=prediction_head_activation,
             normalization_config=prediction_head_norm_config,
             readout_config=prediction_head_readout_config,
             use_dense_bias=self.classifier_bias,

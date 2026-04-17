@@ -9,7 +9,6 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
-from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig
 from lalamo.modules.rope import PositionalEmbeddings
@@ -51,10 +50,6 @@ class DeltaNetAttentionConfig(TokenMixerConfigBase):
     head_dim: int
     value_head_dim: int
     kernel_size: int
-
-    @property
-    def rope_dim(self) -> None:
-        return None
 
     def random_init(
         self,
@@ -199,10 +194,6 @@ class DeltaNetAttention(TokenMixerBase[DeltaNetAttentionConfig, SSMStateLayer]):
     @property
     def model_dim(self) -> int:
         return self.in_proj.input_dim
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
 
     @property
     def key_dim(self) -> int:

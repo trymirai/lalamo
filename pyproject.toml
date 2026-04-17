@@ -22,6 +22,7 @@ dependencies = [
     # "jax-metal>=0.1.1 ; sys_platform == 'darwin'",
     "requests>=2.32.5",
     "soundfile>=0.13.1",
+    "transformers>=5.5",
 ]
 readme = { file = "README.md", content-type = "text/markdown" }
 dynamic = ["version"]
@@ -127,7 +128,6 @@ markers = [
 JAX_DEBUG_NANS = "True"
 JAX_DEBUG_KEY_REUSE = "False"
 JAX_TRACEBACK_FILTERING = "off"
-XLA_PYTHON_CLIENT_ALLOCATOR = "platform"
 TORCH_COMPILE_DISABLE = "1"
 
 [tool.pyright]

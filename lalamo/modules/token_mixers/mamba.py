@@ -10,7 +10,6 @@ from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, dummy_array, require_array, require_mapping, require_tree
 from lalamo.modules.activations import Activation
-from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 from lalamo.modules.token_mixers.state.ssm_state import SSMStateLayer
@@ -111,10 +110,6 @@ class Mamba2Config(TokenMixerConfigBase):
     @property
     def conv_dim(self) -> int:
         return self.inner_dim + 2 * self.num_groups * self.state_dim
-
-    @property
-    def rope_dim(self) -> None:
-        return None
 
     def random_init(
         self,
@@ -228,10 +223,6 @@ class Mamba2(TokenMixerBase[Mamba2Config, SSMStateLayer]):
     @property
     def inner_dim(self) -> int:
         return self.num_heads * self.head_dim
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
 
     def __post_init__(self) -> None:
         if self.skip_connection_weight.shape != (self.num_heads,):

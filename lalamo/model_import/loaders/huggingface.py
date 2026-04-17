@@ -38,7 +38,7 @@ from lalamo.quantization import QuantizationMode
 from .common import load_parameters
 from .utils import decode_mxfp4, deinterleave_pairwise_columns
 
-__all__ = ["load_huggingface_decoder"]
+__all__ = ["load_huggingface_decoder", "load_linear", "load_rmsnorm"]
 
 
 AWQ_UINT4_REVERSE_ORDER = jnp.array([0, 4, 1, 5, 2, 6, 3, 7], dtype=jnp.int32)

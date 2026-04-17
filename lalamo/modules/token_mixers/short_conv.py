@@ -6,7 +6,6 @@ from jax import vmap
 from jaxtyping import Array, DTypeLike, Float, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_mapping, require_tree
-from lalamo.modules.common import PositionalEmbeddingSelector
 from lalamo.modules.linear import LinearBase, LinearConfig
 from lalamo.modules.rope import PositionalEmbeddings
 
@@ -31,10 +30,6 @@ class ShortConvConfig(TokenMixerConfigBase):
     out_projection_config: LinearConfig
 
     kernel_size: int
-
-    @property
-    def rope_dim(self) -> None:
-        return None
 
     def random_init(
         self,
@@ -103,10 +98,6 @@ class ShortConv(TokenMixerBase[ShortConvConfig, ShortConvStateLayer]):
     @property
     def model_dim(self) -> int:
         return self.in_projection.input_dim
-
-    @property
-    def positional_embedding_selector(self) -> PositionalEmbeddingSelector:
-        return PositionalEmbeddingSelector.NONE
 
     @eqx.filter_jit
     def __call__(
