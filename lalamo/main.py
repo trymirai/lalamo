@@ -1246,6 +1246,16 @@ def speculate_eval(
         Path,
         Option(help="Local cache path for MT-Bench questions (used only for --dataset mtbench)"),
     ] = Path("mtbench_questions.jsonl"),
+    warmup: Annotated[
+        int,
+        Option(
+            help=(
+                "Number of leading prompts to run as warm-up and exclude from the "
+                "reported statistics. Lets the XLA/JIT compile cost land outside the "
+                "tok/sec numbers."
+            ),
+        ),
+    ] = 0,
 ) -> None:
     results = _speculator_eval(
         model_path=model_path,
@@ -1255,6 +1265,7 @@ def speculate_eval(
         mtbench_cache_path=mtbench_cache_path,
         sampler_config=SamplerConfig(width=width, K=depth, max_tokens=max_tokens),
         drafter_name=drafter_name,
+        warmup=warmup,
         callbacks_type=CliSpeculatorEvalCallbacks,
     )
     print_results(results)

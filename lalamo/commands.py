@@ -798,6 +798,7 @@ def speculator_eval(
     mtbench_cache_path: Path,
     sampler_config: SamplerConfig,
     drafter_name: str,
+    warmup: int = 0,
     callbacks_type: Callable[..., SpeculatorEvalCallbacks] = SpeculatorEvalCallbacks,
 ) -> EvalResults:
     callbacks = callbacks_type(model_path, speculator_path, dataset_name)
@@ -829,6 +830,7 @@ def speculator_eval(
         llm.message_processor,
         questions,
         on_question=callbacks.eval_progress,
+        warmup=warmup,
     )
     callbacks.finished_eval()
 

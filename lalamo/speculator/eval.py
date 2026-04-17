@@ -85,13 +85,21 @@ def run_eval(
     mp: MessageProcessor,
     questions: Iterable[EvalQuestion],
     on_question: Callable[[int, EvalQuestion, SpeculativeDecodingResult, float], None] | None = None,
+    warmup: int = 0,
 ) -> EvalResults:
+    """Evaluate ``speculator`` against ``questions``.
+
+    The first ``warmup`` prompts are processed normally but excluded from the
+    aggregated statistics — useful because the first iteration(s) pay the
+    XLA/JIT compile cost, which otherwise skews ``tok/sec``.
+    """
     accum: dict[str, list[tuple[SpeculativeDecodingResult, float]]] = {}
     for i, question in enumerate(questions):
         start = time.perf_counter()
         result = evaluate_prompt(speculator, mp, question.prompt)
         elapsed_s = time.perf_counter() - start
-        accum.setdefault(question.category, []).append((result, elapsed_s))
+        if i >= warmup:
+            accum.setdefault(question.category, []).append((result, elapsed_s))
         if on_question is not None:
             on_question(i, question, result, elapsed_s)
 
