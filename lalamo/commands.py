@@ -670,6 +670,7 @@ class EvalDatasetName(str, Enum):
     GSM8K = "gsm8k"
     HUMANEVAL = "humaneval"
     MATH500 = "math500"
+    MERGED = "merged"  # gsm8k + mtbench + math500 with source-prefixed categories
 
 
 @dataclass(frozen=True)
@@ -757,6 +758,34 @@ def load_math500() -> list[EvalQuestion]:
     ]
 
 
+def load_merged(mtbench_cache_path: Path) -> list[EvalQuestion]:
+    """Concatenate the three spec-decoding benchmarks into one question list.
+
+    Categories are prefixed with the source dataset so
+    ``print_results`` shows per-dataset x per-sub-category rows side by side
+    (e.g. ``mtbench/writing``, ``math500/Algebra``, ``gsm8k/math``). Questions
+    are interleaved round-robin across sources so a ``--num-questions N``
+    truncation samples roughly evenly from every source instead of returning
+    the first dataset only.
+    """
+    from itertools import zip_longest
+
+    sources = [
+        ("gsm8k", load_gsm8k()),
+        ("mtbench", load_mtbench(mtbench_cache_path)),
+        ("math500", load_math500()),
+    ]
+    prefixed = [
+        [EvalQuestion(id=q.id, category=f"{name}/{q.category}", prompt=q.prompt) for q in questions]
+        for name, questions in sources
+    ]
+    merged: list[EvalQuestion] = [
+        EvalQuestion(id=idx, category=q.category, prompt=q.prompt)
+        for idx, q in enumerate(q for triplet in zip_longest(*prefixed) for q in triplet if q is not None)
+    ]
+    return merged
+
+
 def load_eval_questions(
     name: EvalDatasetName,
     num_questions: int | None,
@@ -771,6 +800,8 @@ def load_eval_questions(
             questions = load_humaneval()
         case EvalDatasetName.MATH500:
             questions = load_math500()
+        case EvalDatasetName.MERGED:
+            questions = load_merged(mtbench_cache_path)
     if num_questions is not None:
         questions = questions[:num_questions]
     return questions

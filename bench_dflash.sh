@@ -1,23 +1,23 @@
 #!/bin/bash
 # DFlash vs NullSpeculator benchmark on Qwen3-4B / 8B.
 #
-# Default budget targets ~10 min on a single H100:
-#   * DFlash: 50 prompts × 3 datasets (gsm8k, mtbench, math500) per size
-#   * Null: 20 prompts × gsm8k per size (speedup denominator only)
-# Override with env vars if you need a longer or shorter run.
+# Uses the "merged" dataset (gsm8k + mtbench + math500 round-robin with
+# source-prefixed categories) so each config prints a single table with
+# tok/sec, draft_acc, etc. broken down by source x sub-category.
 #
-# Run from the repo root after `git pull`. Models must be at
-# $HIKETTEI_MODELS/Qwen3-{4B,8B}. DFlash pointer files `dflash_{4b,8b}.bin`
-# and the empty `null.bin` are created in the CWD if missing.
+# Default budget targets ~10 min on a single H100:
+#   * DFlash: N_DFLASH prompts (default 150) from merged per size
+#   * Null:   N_NULL prompts (default 60) from merged per size
+# Override with env vars if you need a longer or shorter run.
 
 set -euo pipefail
 
 HIKETTEI_MODELS=${HIKETTEI_MODELS:-$HOME/hikettei/Models}
-N_DFLASH=${N_DFLASH:-50}
-N_NULL=${N_NULL:-20}
+N_DFLASH=${N_DFLASH:-150}
+N_NULL=${N_NULL:-60}
 MAX_TOK=${MAX_TOK:-2048}
 WARMUP=${WARMUP:-1}
-DFLASH_DATASETS=${DFLASH_DATASETS:-"gsm8k mtbench math500"}
+DATASET=${DATASET:-merged}
 
 # Pointer files — .bin content is just the HF repo id / empty payload.
 for f in dflash_4b.bin dflash_8b.bin null.bin; do
@@ -31,7 +31,7 @@ for f in dflash_4b.bin dflash_8b.bin null.bin; do
 done
 
 run_cell() {
-    local size=$1 drafter=$2 dataset=$3 n=$4
+    local size=$1 drafter=$2 n=$3
     local target=$HIKETTEI_MODELS/Qwen3-$size
     local bin
     case "$drafter" in
@@ -41,18 +41,16 @@ run_cell() {
     esac
     echo ""
     echo "============================================================"
-    echo " size=$size  drafter=$drafter  dataset=$dataset  n=$n"
+    echo " size=$size  drafter=$drafter  dataset=$DATASET  n=$n"
     echo "============================================================"
     uv run lalamo speculator eval "$target" "$bin" \
-        --drafter-name "$drafter" --dataset "$dataset" \
+        --drafter-name "$drafter" --dataset "$DATASET" \
         --num-questions "$n" --max-tokens "$MAX_TOK" --warmup "$WARMUP"
 }
 
 for size in 4B 8B; do
-    for dataset in $DFLASH_DATASETS; do
-        run_cell "$size" dflash "$dataset" "$N_DFLASH"
-    done
-    run_cell "$size" null gsm8k "$N_NULL"
+    run_cell "$size" dflash "$N_DFLASH"
+    run_cell "$size" null "$N_NULL"
 done
 
 echo ""
