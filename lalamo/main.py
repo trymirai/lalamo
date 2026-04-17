@@ -37,9 +37,11 @@ from lalamo.commands import (
     CollectTracesCallbacks,
     ConversionCallbacks,
     EstimateBatchsizeCallbacks,
+    EvalDatasetName,
     GenerateRepliesCallbacks,
     Precision,
     PullCallbacks,
+    SpeculatorEvalCallbacks,
     TraceCallbacks,
     TrainCallbacks,
     _suggest_similar_models,
@@ -49,6 +51,7 @@ from lalamo.commands import convert as _convert
 from lalamo.commands import estimate_batchsize as _estimate_batchsize
 from lalamo.commands import generate_replies as _generate_replies
 from lalamo.commands import pull as _pull
+from lalamo.commands import speculator_eval as _speculator_eval
 from lalamo.commands import trace as _trace
 from lalamo.common import (
     get_default_device_bytes,
@@ -65,8 +68,8 @@ from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
 from lalamo.speculator.drafter import Drafter
 from lalamo.speculator.drafters import NGramDrafter  # noqa: F401 (triggers Drafter registration)
-from lalamo.speculator.eval import load_mtbench, print_results, run_mtbench
-from lalamo.speculator.speculate import SamplerConfig
+from lalamo.speculator.eval import EvalQuestion, print_results
+from lalamo.speculator.speculate import SamplerConfig, SpeculativeDecodingResult
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -1093,7 +1096,110 @@ for drafter_cls in Drafter._registry.values():  # noqa: SLF001
     drafter_cls.train_command(speculator_app, CliTrainCallbacks)
 
 
-@speculator_app.command(name="eval", help="Evaluate speculative decoding on MT-Bench")
+@dataclass
+class CliSpeculatorEvalCallbacks(SpeculatorEvalCallbacks):
+    stack: ExitStack = field(default_factory=ExitStack)
+    live: Live | None = None
+    progress: Progress | None = None
+    setup_task: TaskID | None = None
+    eval_task: TaskID | None = None
+    running_accepted: int = 0
+    running_steps: int = 0
+    running_tokens: int = 0
+    running_elapsed_s: float = 0.0
+
+    def _ensure_live(self) -> None:
+        if self.live is None:
+            self.live = self.stack.enter_context(Live(refresh_per_second=10))
+            self.progress = Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                transient=True,
+            )
+            self.live.update(self.progress, refresh=True)
+
+    def loading_model(self) -> None:
+        self._ensure_live()
+        assert self.progress is not None
+        self.setup_task = self.progress.add_task("🧠 [cyan]Loading model...[/cyan]")
+
+    def finished_loading_model(self) -> None:
+        assert self.progress is not None
+        assert self.setup_task is not None
+        self.progress.remove_task(self.setup_task)
+
+    def loading_drafter(self) -> None:
+        assert self.progress is not None
+        self.setup_task = self.progress.add_task("🔮 [cyan]Loading drafter...[/cyan]")
+
+    def finished_loading_drafter(self) -> None:
+        assert self.progress is not None
+        assert self.setup_task is not None
+        self.progress.remove_task(self.setup_task)
+
+    def loading_dataset(self) -> None:
+        assert self.progress is not None
+        self.setup_task = self.progress.add_task(
+            f"🗂️ [cyan]Loading dataset ({self.dataset_name.value})...[/cyan]",
+        )
+
+    def finished_loading_dataset(self, num_questions: int) -> None:
+        assert self.progress is not None
+        assert self.setup_task is not None
+        self.progress.update(
+            self.setup_task,
+            description=f"🗂️ [green]Loaded {num_questions} questions[/green]",
+        )
+        self.progress.remove_task(self.setup_task)
+
+    def eval_started(self, num_questions: int) -> None:
+        assert self.live is not None
+        self.progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            TimeRemainingColumn(),
+        )
+        self.live.update(self.progress, refresh=True)
+        self.eval_task = self.progress.add_task(
+            f"⚡ [cyan]Evaluating {self.dataset_name.value}[/cyan] (draft_acc=—)",
+            total=num_questions,
+        )
+
+    def eval_progress(
+        self,
+        question_idx: int,
+        question: EvalQuestion,
+        result: SpeculativeDecodingResult,
+        elapsed_s: float,
+    ) -> None:
+        assert self.progress is not None
+        assert self.eval_task is not None
+        self.running_accepted += result.total_accepted
+        self.running_steps += result.num_steps
+        self.running_tokens += len(result.generated)
+        self.running_elapsed_s += elapsed_s
+        running_acc = self.running_accepted / max(self.running_steps, 1)
+        running_tps = self.running_tokens / self.running_elapsed_s if self.running_elapsed_s > 0 else 0.0
+        self.progress.update(
+            self.eval_task,
+            advance=1,
+            description=(
+                f"⚡ [cyan]Evaluating {self.dataset_name.value}[/cyan] "
+                f"#{question_idx + 1} [{question.category}] "
+                f"draft_acc={running_acc:.2f} tok/s={running_tps:.1f}"
+            ),
+        )
+
+    def finished_eval(self) -> None:
+        assert self.progress is not None
+        assert self.eval_task is not None
+        self.progress.update(self.eval_task, description="✅ Completed")
+        self.stack.close()
+
+
+@speculator_app.command(name="eval", help="Evaluate speculative decoding on a benchmark")
 def speculate_eval(
     model_path: Annotated[
         Path,
@@ -1109,6 +1215,10 @@ def speculate_eval(
             metavar="SPECULATOR_PATH",
         ),
     ],
+    dataset: Annotated[
+        EvalDatasetName,
+        Option(help="Benchmark to evaluate on"),
+    ] = EvalDatasetName.MTBENCH,
     width: Annotated[
         int,
         Option(help="Max children per trie node"),
@@ -1122,37 +1232,31 @@ def speculate_eval(
         Option(help="Max tokens per question"),
     ] = 2048,
     num_questions: Annotated[
-        int,
-        Option(help="Number of MT-Bench questions to evaluate"),
-    ] = 80,
+        int | None,
+        Option(
+            help="Limit the number of questions evaluated",
+            show_default="full dataset",
+        ),
+    ] = None,
     drafter_name: Annotated[
         str,
         Option(help="Drafter type (ngram, medusa)"),
     ] = "ngram",
-    cache_path: Annotated[
+    mtbench_cache_path: Annotated[
         Path,
-        Option(help="Path to cache MT-Bench questions"),
+        Option(help="Local cache path for MT-Bench questions (used only for --dataset mtbench)"),
     ] = Path("mtbench_questions.jsonl"),
 ) -> None:
-    print(f"Loading model: {model_path}...", file=sys.stderr)
-    llm = LanguageModelConfig.load_model(model_path)
-    decoder = llm.model
-    mp = llm.message_processor
-    eos_set = {int(e) for e in llm.stop_token_ids}
-
-    print(f"Loading drafter ({drafter_name}): {speculator_path}...", file=sys.stderr)
-    with open(speculator_path, "rb") as fd:
-        drafter = Drafter.deserialize(drafter_name, fd.read(), width=width, depth=depth)
-
-    config = SamplerConfig(width=width, K=depth, max_tokens=max_tokens)
-    questions = load_mtbench(cache_path)[:num_questions]
-
-    print(
-        f"Evaluating {len(questions)} questions | width={width} K={depth} max_tokens={max_tokens}",
-        file=sys.stderr,
+    results = _speculator_eval(
+        model_path=model_path,
+        speculator_path=speculator_path,
+        dataset_name=dataset,
+        num_questions=num_questions,
+        mtbench_cache_path=mtbench_cache_path,
+        sampler_config=SamplerConfig(width=width, K=depth, max_tokens=max_tokens),
+        drafter_name=drafter_name,
+        callbacks_type=CliSpeculatorEvalCallbacks,
     )
-
-    results = run_mtbench(decoder, mp, drafter, config, eos_set, questions)
     print_results(results)
 
 

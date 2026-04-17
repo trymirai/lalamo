@@ -68,8 +68,8 @@ class SpeculativeDecodingResult:
         return self.total_accepted / max(self.num_steps, 1)
 
     @property
-    def acceptance_rate(self) -> float:
-        return self.total_accepted / max(self.total_proposed, 1)
+    def speculation_rate(self) -> float:
+        return self.total_accepted / max(len(self.generated), 1)
 
     @property
     def tokens_per_step(self) -> float:

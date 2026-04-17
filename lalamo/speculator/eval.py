@@ -1,9 +1,6 @@
-import json
-import sys
-import urllib.request
-from pathlib import Path
-
-from tqdm import tqdm
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
 
 from lalamo.message_processor import MessageProcessor, UserMessage
 from lalamo.modules.decoder import Decoder
@@ -15,27 +12,66 @@ from lalamo.speculator.speculate import (
     SpeculativeDecodingResult,
 )
 
-MTBENCH_URL = "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
+
+@dataclass(frozen=True)
+class EvalQuestion:
+    id: int
+    category: str
+    prompt: str
 
 
-def load_mtbench(cache_path: Path | str) -> list[dict]:
-    cache_path = Path(cache_path)
-    if not cache_path.exists():
-        cache_path.parent.mkdir(parents=True, exist_ok=True)
-        print("Downloading MT-Bench questions...", file=sys.stderr)
-        urllib.request.urlretrieve(MTBENCH_URL, cache_path)
-    questions = []
-    with open(cache_path) as f:
-        for line in f:
-            d = json.loads(line)
-            questions.append(
-                {
-                    "id": d["question_id"],
-                    "category": d["category"],
-                    "prompt": d["turns"][0],
-                }
-            )
-    return questions
+@dataclass(frozen=True)
+class CategoryStats:
+    tokens: int
+    steps: int
+    accepted: int
+    count: int
+    elapsed_s: float
+
+    @property
+    def tokens_per_step(self) -> float:
+        return self.tokens / max(self.steps, 1)
+
+    @property
+    def mean_draft_accepted(self) -> float:
+        return self.accepted / max(self.steps, 1)
+
+    @property
+    def speculation_rate(self) -> float:
+        return self.accepted / max(self.tokens, 1)
+
+    @property
+    def tokens_per_second(self) -> float:
+        return self.tokens / self.elapsed_s if self.elapsed_s > 0 else 0.0
+
+
+@dataclass(frozen=True)
+class EvalResults:
+    by_category: dict[str, CategoryStats]
+    total_tokens: int
+    total_steps: int
+    total_accepted: int
+    total_elapsed_s: float
+
+    @property
+    def total_count(self) -> int:
+        return sum(stats.count for stats in self.by_category.values())
+
+    @property
+    def tokens_per_step(self) -> float:
+        return self.total_tokens / max(self.total_steps, 1)
+
+    @property
+    def mean_draft_accepted(self) -> float:
+        return self.total_accepted / max(self.total_steps, 1)
+
+    @property
+    def speculation_rate(self) -> float:
+        return self.total_accepted / max(self.total_tokens, 1)
+
+    @property
+    def tokens_per_second(self) -> float:
+        return self.total_tokens / self.total_elapsed_s if self.total_elapsed_s > 0 else 0.0
 
 
 def evaluate_prompt(
@@ -55,83 +91,69 @@ def evaluate_prompt(
     return session.result
 
 
-def run_mtbench(
+def run_eval(
     decoder: Decoder,
     mp: MessageProcessor,
     drafter: Drafter,
     config: SamplerConfig,
     eos_set: set[int],
-    questions: list[dict],
-) -> dict:
-    results_by_cat: dict[str, dict] = {}
-    total_tokens, total_steps, total_accepted, total_proposed = 0, 0, 0, 0
-
-    pbar = tqdm(questions, desc="MT-Bench", file=sys.stderr)
-    for i, q in enumerate(pbar):
-        cat = q["category"]
-
+    questions: Iterable[EvalQuestion],
+    on_question: Callable[[int, EvalQuestion, SpeculativeDecodingResult, float], None] | None = None,
+) -> EvalResults:
+    accum: dict[str, list[tuple[SpeculativeDecodingResult, float]]] = {}
+    for i, question in enumerate(questions):
+        start = time.perf_counter()
         result = evaluate_prompt(
             decoder,
             mp,
             drafter,
             config,
-            q["prompt"],
+            question.prompt,
             eos_set,
             seed=42 + i,
         )
+        elapsed_s = time.perf_counter() - start
+        accum.setdefault(question.category, []).append((result, elapsed_s))
+        if on_question is not None:
+            on_question(i, question, result, elapsed_s)
 
-        n_tok = len(result.generated)
-        n_step = result.num_steps
-        draft_acc = result.mean_draft_accepted
-
-        if cat not in results_by_cat:
-            results_by_cat[cat] = {"tokens": 0, "steps": 0, "accepted": 0, "proposed": 0, "count": 0}
-        r = results_by_cat[cat]
-        r["tokens"] += n_tok
-        r["steps"] += n_step
-        r["accepted"] += result.total_accepted
-        r["proposed"] += result.total_proposed
-        r["count"] += 1
-
-        total_tokens += n_tok
-        total_steps += n_step
-        total_accepted += result.total_accepted
-        total_proposed += result.total_proposed
-
-        running_acc = total_accepted / max(total_steps, 1)
-        pbar.set_description(f"MT-Bench (draft_acc={running_acc:.2f})")
-        pbar.set_postfix_str(f"{cat}: draft_acc={draft_acc:.2f}")
-        print(
-            f"  [{i + 1:2d}] {cat:12s} | {n_tok:4d} tok, {n_step:3d} steps, "
-            f"draft_acc={draft_acc:.2f}, tok/step={result.tokens_per_step:.2f} | {q['prompt'][:50]}",
-            file=sys.stderr,
+    by_category = {
+        category: CategoryStats(
+            tokens=sum(len(r.generated) for r, _ in entries),
+            steps=sum(r.num_steps for r, _ in entries),
+            accepted=sum(r.total_accepted for r, _ in entries),
+            count=len(entries),
+            elapsed_s=sum(t for _, t in entries),
         )
-
-    return {
-        "by_category": results_by_cat,
-        "total_tokens": total_tokens,
-        "total_steps": total_steps,
-        "total_accepted": total_accepted,
-        "total_proposed": total_proposed,
+        for category, entries in accum.items()
     }
+    return EvalResults(
+        by_category=by_category,
+        total_tokens=sum(stats.tokens for stats in by_category.values()),
+        total_steps=sum(stats.steps for stats in by_category.values()),
+        total_accepted=sum(stats.accepted for stats in by_category.values()),
+        total_elapsed_s=sum(stats.elapsed_s for stats in by_category.values()),
+    )
 
 
-def print_results(results: dict, label: str = "") -> None:
+def print_results(results: EvalResults, label: str = "") -> None:
     prefix = f" [{label}]" if label else ""
-    print(f"\n{'=' * 78}{prefix}")
-    print(f"{'Category':>15s}  {'tok/step':>10s}  {'draft_acc':>10s}  {'acc_rate':>10s}  {'questions':>10s}")
-    print(f"{'-' * 78}")
-    for cat in sorted(results["by_category"]):
-        r = results["by_category"][cat]
-        ts = r["tokens"] / max(r["steps"], 1)
-        da = r["accepted"] / max(r["steps"], 1) if r["steps"] else 0
-        acc = r["accepted"] / max(r["proposed"], 1) if r["proposed"] else 0
-        print(f"{cat:>15s}  {ts:>10.2f}  {da:>10.2f}  {acc:>10.2%}  {r['count']:>10d}")
-
-    ts = results["total_tokens"] / max(results["total_steps"], 1)
-    da = results["total_accepted"] / max(results["total_steps"], 1)
-    acc = results["total_accepted"] / max(results["total_proposed"], 1)
-    print(f"{'-' * 78}")
-    total_count = sum(r["count"] for r in results["by_category"].values())
-    print(f"{'OVERALL':>15s}  {ts:>10.2f}  {da:>10.2f}  {acc:>10.2%}  {total_count:>10d}")
-    print(f"{'=' * 78}")
+    header_width = 90
+    print(f"\n{'=' * header_width}{prefix}")
+    print(
+        f"{'Category':>15s}  {'tok/step':>10s}  {'tok/sec':>10s}  "
+        f"{'draft_acc':>10s}  {'spec_rate':>10s}  {'questions':>10s}",
+    )
+    print(f"{'-' * header_width}")
+    for category in sorted(results.by_category):
+        stats = results.by_category[category]
+        print(
+            f"{category:>15s}  {stats.tokens_per_step:>10.2f}  {stats.tokens_per_second:>10.2f}  "
+            f"{stats.mean_draft_accepted:>10.2f}  {stats.speculation_rate:>10.2%}  {stats.count:>10d}",
+        )
+    print(f"{'-' * header_width}")
+    print(
+        f"{'OVERALL':>15s}  {results.tokens_per_step:>10.2f}  {results.tokens_per_second:>10.2f}  "
+        f"{results.mean_draft_accepted:>10.2f}  {results.speculation_rate:>10.2%}  {results.total_count:>10d}",
+    )
+    print(f"{'=' * header_width}")

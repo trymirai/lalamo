@@ -12,6 +12,7 @@ import polars as pl
 import requests
 import thefuzz.fuzz
 import thefuzz.process
+from datasets import load_dataset
 from jaxtyping import DTypeLike
 
 from lalamo.common import flatten_parameters, get_default_device_bytes
@@ -35,7 +36,10 @@ from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
+from lalamo.speculator.drafter import Drafter
+from lalamo.speculator.eval import EvalQuestion, EvalResults, run_eval
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
+from lalamo.speculator.speculate import SamplerConfig, SpeculativeDecodingResult
 
 
 @dataclass
@@ -657,3 +661,134 @@ def generate_replies(
     df.write_parquet(output_path)
 
     callbacks.finished_generation()
+
+
+class EvalDatasetName(str, Enum):
+    MTBENCH = "mtbench"
+    GSM8K = "gsm8k"
+    HUMANEVAL = "humaneval"
+
+
+def load_mtbench(cache_path: Path) -> list[EvalQuestion]:
+    mtbench_url = (
+        "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
+    )
+    if not cache_path.exists():
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        _download_file(mtbench_url, cache_path)
+    with open(cache_path) as f:
+        rows = [json.loads(line) for line in f]
+    return [EvalQuestion(id=row["question_id"], category=row["category"], prompt=row["turns"][0]) for row in rows]
+
+
+def load_gsm8k() -> list[EvalQuestion]:
+    rows = load_dataset("openai/gsm8k", "main", split="test")
+    return [EvalQuestion(id=idx, category="math", prompt=row["question"]) for idx, row in enumerate(rows)]
+
+
+def load_humaneval() -> list[EvalQuestion]:
+    rows = load_dataset("openai/openai_humaneval", split="test")
+    return [EvalQuestion(id=idx, category="code", prompt=row["prompt"]) for idx, row in enumerate(rows)]
+
+
+def load_eval_questions(
+    name: EvalDatasetName,
+    num_questions: int | None,
+    mtbench_cache_path: Path,
+) -> list[EvalQuestion]:
+    match name:
+        case EvalDatasetName.MTBENCH:
+            questions = load_mtbench(mtbench_cache_path)
+        case EvalDatasetName.GSM8K:
+            questions = load_gsm8k()
+        case EvalDatasetName.HUMANEVAL:
+            questions = load_humaneval()
+    if num_questions is not None:
+        questions = questions[:num_questions]
+    return questions
+
+
+@dataclass
+class SpeculatorEvalCallbacks:
+    model_path: Path
+    speculator_path: Path
+    dataset_name: EvalDatasetName
+
+    def loading_model(self) -> None:
+        pass
+
+    def finished_loading_model(self) -> None:
+        pass
+
+    def loading_drafter(self) -> None:
+        pass
+
+    def finished_loading_drafter(self) -> None:
+        pass
+
+    def loading_dataset(self) -> None:
+        pass
+
+    def finished_loading_dataset(self, num_questions: int) -> None:
+        pass
+
+    def eval_started(self, num_questions: int) -> None:
+        pass
+
+    def eval_progress(
+        self,
+        question_idx: int,
+        question: EvalQuestion,
+        result: SpeculativeDecodingResult,
+        elapsed_s: float,
+    ) -> None:
+        pass
+
+    def finished_eval(self) -> None:
+        pass
+
+
+def speculator_eval(
+    *,
+    model_path: Path,
+    speculator_path: Path,
+    dataset_name: EvalDatasetName,
+    num_questions: int | None,
+    mtbench_cache_path: Path,
+    sampler_config: SamplerConfig,
+    drafter_name: str,
+    callbacks_type: Callable[..., SpeculatorEvalCallbacks] = SpeculatorEvalCallbacks,
+) -> EvalResults:
+    callbacks = callbacks_type(model_path, speculator_path, dataset_name)
+
+    callbacks.loading_model()
+    llm = LanguageModelConfig.load_model(model_path)
+    callbacks.finished_loading_model()
+
+    callbacks.loading_drafter()
+    with open(speculator_path, "rb") as fd:
+        drafter = Drafter.deserialize(
+            drafter_name,
+            fd.read(),
+            width=sampler_config.width,
+            depth=sampler_config.K,
+        )
+    callbacks.finished_loading_drafter()
+
+    callbacks.loading_dataset()
+    questions = load_eval_questions(dataset_name, num_questions, mtbench_cache_path)
+    callbacks.finished_loading_dataset(len(questions))
+
+    callbacks.eval_started(len(questions))
+    results = run_eval(
+        llm.model,
+        llm.message_processor,
+        drafter,
+        sampler_config,
+        {int(e) for e in llm.stop_token_ids},
+        questions,
+        on_question=callbacks.eval_progress,
+    )
+    callbacks.finished_eval()
+
+    return results
