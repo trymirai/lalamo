@@ -2,12 +2,14 @@ import dataclasses
 import json
 import shutil
 import tempfile
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from itertools import chain
 from pathlib import Path
+from typing import ClassVar, Self
 
+import cattrs
 import polars as pl
 import requests
 import thefuzz.fuzz
@@ -64,8 +66,8 @@ class PullCallbacks:
         pass
 
 
-def _download_file(url: str, dest_path: Path) -> None:
-    response = requests.get(url, stream=True, timeout=60)
+def download_file(url: str, dest_path: Path) -> None:
+    response = requests.get(url, stream=True, timeout=(10, 60))
     response.raise_for_status()
 
     with open(dest_path, "wb") as f:
@@ -118,7 +120,7 @@ def pull(
 
             file_path = temp_path / safe_name
             try:
-                _download_file(file_spec.url, file_path)
+                download_file(file_spec.url, file_path)
             except requests.RequestException as e:
                 raise RuntimeError(f"Failed to download {safe_name}: {e}") from e
 
@@ -669,26 +671,65 @@ class EvalDatasetName(str, Enum):
     HUMANEVAL = "humaneval"
 
 
+@dataclass(frozen=True)
+class MTBenchRow:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
+    question_id: int
+    category: str
+    turns: list[str]
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, object]) -> Self:
+        return cls._converter.structure(dict(obj), cls)
+
+
+@dataclass(frozen=True)
+class GSM8KRow:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
+    question: str
+    answer: str
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, object]) -> Self:
+        return cls._converter.structure(dict(obj), cls)
+
+
+@dataclass(frozen=True)
+class HumanEvalRow:
+    _converter: ClassVar[cattrs.Converter] = cattrs.Converter()
+
+    task_id: str
+    prompt: str
+
+    @classmethod
+    def from_dict(cls, obj: Mapping[str, object]) -> Self:
+        return cls._converter.structure(dict(obj), cls)
+
+
 def load_mtbench(cache_path: Path) -> list[EvalQuestion]:
+    # Pinned commit so upstream branch movement cannot silently 404 the eval.
     mtbench_url = (
-        "https://raw.githubusercontent.com/lm-sys/FastChat/main/fastchat/llm_judge/data/mt_bench/question.jsonl"
+        "https://raw.githubusercontent.com/lm-sys/FastChat/"
+        "587d5cfa1609a43d192cedb8441cac3c17db105d/fastchat/llm_judge/data/mt_bench/question.jsonl"
     )
     if not cache_path.exists():
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        _download_file(mtbench_url, cache_path)
+        download_file(mtbench_url, cache_path)
     with open(cache_path) as f:
-        rows = [json.loads(line) for line in f]
-    return [EvalQuestion(id=row["question_id"], category=row["category"], prompt=row["turns"][0]) for row in rows]
+        rows = [MTBenchRow.from_dict(json.loads(line)) for line in f]
+    return [EvalQuestion(id=row.question_id, category=row.category, prompt=row.turns[0]) for row in rows]
 
 
 def load_gsm8k() -> list[EvalQuestion]:
-    rows = load_dataset("openai/gsm8k", "main", split="test")
-    return [EvalQuestion(id=idx, category="math", prompt=row["question"]) for idx, row in enumerate(rows)]
+    rows = [GSM8KRow.from_dict(row) for row in load_dataset("openai/gsm8k", "main", split="test")]
+    return [EvalQuestion(id=idx, category="math", prompt=row.question) for idx, row in enumerate(rows)]
 
 
 def load_humaneval() -> list[EvalQuestion]:
-    rows = load_dataset("openai/openai_humaneval", split="test")
-    return [EvalQuestion(id=idx, category="code", prompt=row["prompt"]) for idx, row in enumerate(rows)]
+    rows = [HumanEvalRow.from_dict(row) for row in load_dataset("openai/openai_humaneval", split="test")]
+    return [EvalQuestion(id=idx, category="code", prompt=row.prompt) for idx, row in enumerate(rows)]
 
 
 def load_eval_questions(

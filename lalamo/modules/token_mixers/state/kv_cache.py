@@ -310,6 +310,33 @@ class StaticKVCacheLayer(KVCacheLayer):
             current_length=updated_sequence_length,
         )
 
+    def compact(
+        self,
+        cache_len: Int[Array, ""],
+        accepted_indices: Int[Array, " max_slots"],
+        num_accepted: Int[Array, ""],
+        max_slots: int,
+    ) -> "StaticKVCacheLayer":
+        """Scatter accepted KV entries back into place and advance ``current_length``.
+
+        Speculative decoding runs a draft batch of ``max_slots`` tokens, then
+        accepts the first ``num_accepted`` of them (indexed by
+        ``accepted_indices``). Unaccepted slots become dead weight after the
+        forward pass; this method rewrites them with the accepted entries and
+        updates ``current_length`` to the new head position.
+        """
+        dst = jnp.arange(max_slots, dtype=jnp.int32) + cache_len
+        src = cache_len + accepted_indices
+        valid = jnp.arange(max_slots) < num_accepted
+        src = jnp.where(valid, src, dst)
+        new_length = cache_len + num_accepted
+        return StaticKVCacheLayer(
+            has_sinks=self.has_sinks,
+            keys=self.keys.at[:, dst].set(self.keys[:, src]),
+            values=self.values.at[:, dst].set(self.values[:, src]),
+            current_length=jnp.full_like(self.current_length, new_length),
+        )
+
     @classmethod
     def init(
         cls,
@@ -325,3 +352,5 @@ class StaticKVCacheLayer(KVCacheLayer):
             values=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),
             current_length=jnp.array(has_sinks, dtype=jnp.int32),
         )
+
+

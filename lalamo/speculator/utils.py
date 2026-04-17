@@ -1,20 +1,19 @@
-import equinox as eqx
-import jax.numpy as jnp
 import numpy as np
+from jaxtyping import Array, Int, Shaped
 
 from lalamo.modules.decoder import DecoderActivationTrace
-from lalamo.modules.token_mixers.state.common import State
-from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
 
 
 def extract_activations(
     trace: DecoderActivationTrace,
-    batch: int,
-    positions: int | slice | np.ndarray,
+    sample_index: int,
+    positions: int | slice | Int[Array, " positions"],
     trace_layer_outputs: tuple[int, ...] | None,
     trace_output_norm: bool,
-) -> tuple[tuple[jnp.ndarray, ...], jnp.ndarray | None]:
+) -> tuple[tuple[Array, ...], Array | None]:
     """Extract the subset of activations a drafter asked to retain.
+
+    ``sample_index`` picks one sample out of the leading batch dimension.
 
     Returns ``(layer_outputs, output_norm)`` where:
     - ``layer_outputs`` has one ``(N, d)`` array per layer in
@@ -22,51 +21,25 @@ def extract_activations(
     - ``output_norm`` is the ``(N, d)`` slice if ``trace_output_norm`` is True,
       else ``None``.
     """
-    layer_outputs: tuple[jnp.ndarray, ...] = (
+    layer_outputs: tuple[Array, ...] = (
         ()
         if trace_layer_outputs is None
-        else tuple(trace.layer_results[layer].outputs[batch, positions] for layer in trace_layer_outputs)
+        else tuple(
+            trace.layer_results[layer].outputs[sample_index, positions] for layer in trace_layer_outputs
+        )
     )
-    output_norm = trace.output_norm[batch, positions] if trace_output_norm else None
+    output_norm = trace.output_norm[sample_index, positions] if trace_output_norm else None
     return layer_outputs, output_norm
 
 
-def top_k_from_logits(logits: jnp.ndarray, k: int) -> list[int]:
-    arr = np.asarray(logits)
-    if k >= arr.shape[0]:
-        return list(np.argsort(arr)[::-1])
-    indices = np.argpartition(arr, -k)[-k:]
-    return list(indices[np.argsort(arr[indices])[::-1]])
+def pad_or_trim(arr: Shaped[np.ndarray, " in_length"], length: int, fill: int = 0) -> Shaped[np.ndarray, " length"]:
+    """Pad or truncate a 1-D array to ``length``.
 
-
-@eqx.filter_jit
-def compact_kv_cache(
-    state: State,
-    cache_len: jnp.ndarray,
-    accepted_indices: jnp.ndarray,
-    num_accepted: jnp.ndarray,
-    max_slots: int,
-) -> State:
-    """Keep accepted KV entries, discard rejected draft tokens.
-
-    JIT-compiled: all layers x 2 scatter ops fuse into a single XLA program.
+    Used to give XLA a fixed-shape input, which avoids re-compilation when the
+    logical payload length varies across speculation steps. If ``arr`` is
+    longer than ``length`` it is truncated; if shorter it is padded with ``fill``.
     """
-    dst = jnp.arange(max_slots, dtype=jnp.int32) + cache_len
-    src = cache_len + accepted_indices
-    valid = jnp.arange(max_slots) < num_accepted
-    src = jnp.where(valid, src, dst)
-    new_length = cache_len + num_accepted
-
-    def compact_layer(layer: StaticKVCacheLayer) -> StaticKVCacheLayer:
-        return StaticKVCacheLayer(
-            has_sinks=layer.has_sinks,
-            keys=layer.keys.at[:, dst].set(layer.keys[:, src]),
-            values=layer.values.at[:, dst].set(layer.values[:, src]),
-            current_length=jnp.full_like(layer.current_length, new_length),
-        )
-
-    layers: list[StaticKVCacheLayer] = []
-    for layer in state:
-        assert isinstance(layer, StaticKVCacheLayer)
-        layers.append(compact_layer(layer))
-    return State(layers)
+    pad_len = length - len(arr)
+    if pad_len <= 0:
+        return arr[:length]
+    return np.concatenate([arr, np.full(pad_len, fill, dtype=arr.dtype)])

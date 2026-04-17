@@ -65,7 +65,7 @@ def _create_test_models() -> list[RegistryModel]:
     ]
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.commands.download_file")
 @patch("lalamo.commands.shutil.move")
 def test_pull_success(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
     # Setup
@@ -106,7 +106,7 @@ def test_pull_success(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> N
     assert mock_move.call_count == 1
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.commands.download_file")
 def test_pull_download_error(mock_download: Mock, tmp_path: Path) -> None:
     models = _create_test_models()
     model_spec = models[0]
@@ -127,7 +127,7 @@ def test_pull_output_dir_exists_error(tmp_path: Path) -> None:
         pull(model_spec, output_dir)
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.commands.download_file")
 @patch("lalamo.commands.shutil.move")
 def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Path) -> None:
     # Create model with multiple files
@@ -188,7 +188,7 @@ def test_pull_multiple_files(mock_move: Mock, mock_download: Mock, tmp_path: Pat
     assert "finished_downloading:config.json" in callback_calls
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.commands.download_file")
 def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> None:
     """Test that pull rejects filenames with path traversal attempts."""
     malicious_model = RegistryModel(
@@ -218,7 +218,7 @@ def test_pull_rejects_path_traversal(mock_download: Mock, tmp_path: Path) -> Non
     assert mock_download.call_count == 0
 
 
-@patch("lalamo.commands._download_file")
+@patch("lalamo.commands.download_file")
 def test_pull_rejects_subdirectory_paths(mock_download: Mock, tmp_path: Path) -> None:
     """Test that pull rejects filenames containing subdirectories."""
     malicious_model = RegistryModel(

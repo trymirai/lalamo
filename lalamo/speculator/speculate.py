@@ -3,17 +3,18 @@ from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Self
 
-import jax
 import jax.numpy as jnp
 import numpy as np
+from jaxtyping import Array, Float, Int, UInt
 
 from lalamo.modules.common import ForwardPassMode
 from lalamo.modules.decoder import Decoder, DecoderResult
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
 from lalamo.speculator.drafter import Drafter
+from lalamo.speculator.sampler import GumbelMaxSampler, GumbelSeed
 from lalamo.speculator.trie import FlatTrie, TrieNode
-from lalamo.speculator.utils import compact_kv_cache, extract_activations
+from lalamo.speculator.utils import extract_activations, pad_or_trim
 
 
 @dataclass(frozen=True)
@@ -34,9 +35,9 @@ class LMState:
     """
 
     kv_cache: State
-    layer_outputs: tuple[jnp.ndarray, ...]
-    output_norm: jnp.ndarray | None
-    logits: jnp.ndarray  # (vocab,) next-token distribution at head
+    layer_outputs: tuple[Float[Array, "suffix channels"], ...]
+    output_norm: Float[Array, "suffix channels"] | None
+    logits: Float[Array, " vocab"]
     position: int  # tokens written to the KV cache so far
     bonus: int  # sampled next token, always present
 
@@ -52,15 +53,12 @@ class SamplerConfig:
 class SpeculationStep:
     accepted: list[int]
     bonus: int
-    proposed: int
-    depth: int
 
 
 @dataclass
 class SpeculativeDecodingResult:
     num_steps: int = 0
     total_accepted: int = 0
-    total_proposed: int = 0
     generated: list[int] = field(default_factory=list)
 
     @property
@@ -77,61 +75,10 @@ class SpeculativeDecodingResult:
 
 
 @dataclass(frozen=True)
-class GumbelSeed:
-    value: int
-
-    def derive(self, depth: int) -> "GumbelSeed":
-        h = self.value + depth * 2654435761
-        h = ((h >> 16) ^ h) * 0x45D9F3B37197344D & 0xFFFFFFFFFFFFFFFF
-        h = ((h >> 16) ^ h) * 0x45D9F3B37197344D & 0xFFFFFFFFFFFFFFFF
-        return GumbelSeed(((h >> 16) ^ h) & 0xFFFFFFFFFFFFFFFF)
-
-    def advance(self, context_len: int) -> "GumbelSeed":
-        return GumbelSeed((self.value * 2654435761 ^ context_len) & 0xFFFFFFFFFFFFFFFF)
-
-    def sample(self, logits: jnp.ndarray) -> int:
-        key = jax.random.key(self.value & 0xFFFFFFFF)
-        noise = jax.random.gumbel(key, logits.shape, dtype=jnp.float32)
-        return int(jnp.argmax(logits.astype(jnp.float32) + noise))
-
-    @staticmethod
-    def sample_batch(logits: jnp.ndarray, seeds: jnp.ndarray) -> jnp.ndarray:
-        keys = jax.vmap(lambda s: jax.random.key(s))(seeds.astype(jnp.uint32))
-        noise = jax.vmap(lambda k: jax.random.gumbel(k, (logits.shape[1],), dtype=jnp.float32))(keys)
-        return jnp.argmax(logits + noise, axis=-1)
-
-
-def gumbel_rank_from_probs(seed: GumbelSeed, probs: dict[int, float], vocab_size: int, k: int) -> list[int]:
-    """Rank ``probs`` candidates by ``log(prob) + gumbel(seed)[token_id]``.
-
-    Uses the same Gumbel noise array the verifier sees (``jax.random.gumbel(key,
-    (vocab_size,))``) so shared-seed tie-breaking works, but scores only the
-    shortlist — top-k is taken within ``probs.keys()``.
-    """
-    tokens = np.fromiter(probs.keys(), dtype=np.int32, count=len(probs))
-    log_probs = np.log(np.fromiter(probs.values(), dtype=np.float32, count=len(probs)))
-    key = jax.random.key(seed.value & 0xFFFFFFFF)
-    noise = np.asarray(jax.random.gumbel(key, (vocab_size,), dtype=jnp.float32))
-    scores = log_probs + noise[tokens]
-    k = min(k, len(tokens))
-    top = np.argpartition(-scores, k - 1)[:k] if k < len(tokens) else np.argsort(-scores)
-    order = top[np.argsort(-scores[top])]
-    return tokens[order].tolist()
-
-
-def _pad(arr: np.ndarray, n: int, fill: int = 0) -> np.ndarray:
-    """Pad or truncate to fixed length (avoids XLA recompilation)."""
-    pad_len = n - len(arr)
-    if pad_len <= 0:
-        return arr[:n]
-    return np.concatenate([arr, np.full(pad_len, fill, dtype=arr.dtype)])
-
-
-@dataclass(frozen=True)
 class VerifyResult:
     accepted_tokens: list[int]
-    accepted_indices: np.ndarray
-    all_seeds: np.ndarray
+    accepted_indices: Int[np.ndarray, " accepted"]
+    all_seeds: UInt[np.ndarray, " nodes"]
     num_draft_nodes: int
 
 
@@ -178,7 +125,7 @@ class SpeculationContext:
         assert fwd.updated_state is not None
         layer_outputs, output_norm = extract_activations(
             fwd.activation_trace,
-            batch=0,
+            sample_index=0,
             positions=prefill_positions,
             trace_layer_outputs=self.drafter.trace_layer_outputs,
             trace_output_norm=self.drafter.trace_output_norm,
@@ -204,15 +151,15 @@ class SpeculationContext:
         max_fwd = 1 + max(self.budget, flat.num_nodes)
 
         tok_ids = jnp.array(
-            _pad(np.concatenate([[lm.bonus], flat.token_ids]), max_fwd, 0)[None, :],
+            pad_or_trim(np.concatenate([[lm.bonus], flat.token_ids]), max_fwd, 0)[None, :],
             dtype=jnp.int32,
         )
         positions = jnp.array(
-            _pad(np.concatenate([[cache_len], flat.positions(cache_len + 1)]), max_fwd, cache_len)[None, :],
+            pad_or_trim(np.concatenate([[cache_len], flat.positions(cache_len + 1)]), max_fwd, cache_len)[None, :],
             dtype=jnp.int32,
         )
         parent_indices = jnp.array(
-            _pad(np.concatenate([[-1], flat.parent_indices]), max_fwd, -1)[None, :],
+            pad_or_trim(np.concatenate([[-1], flat.parent_indices]), max_fwd, -1)[None, :],
             dtype=jnp.int32,
         )
 
@@ -239,10 +186,11 @@ class SpeculationContext:
         root_logits = fwd.logits[0, 0].astype(jnp.float32)
         all_logits = jnp.concatenate([root_logits[None, :], fwd.logits[0, 1:]], axis=0).astype(jnp.float32)
         all_seeds = np.concatenate([np.array([trie.seed], dtype=np.uint64), flat.seeds])
-        padded_seeds = _pad(all_seeds, max_fwd, 0)
+        padded_seeds = pad_or_trim(all_seeds, max_fwd, 0)
 
+        sampler = GumbelMaxSampler()
         sampled_all = np.asarray(
-            GumbelSeed.sample_batch(all_logits, jnp.array(padded_seeds & 0xFFFFFFFF, dtype=jnp.uint32))
+            sampler.sample(all_logits, jnp.array(padded_seeds & 0xFFFFFFFF, dtype=jnp.uint32)),
         )
 
         full_flat = FlatTrie(
@@ -274,13 +222,18 @@ class SpeculationContext:
         total_kept = 1 + num_accepted
         max_compact = 1 + max(self.budget, result.num_draft_nodes)
 
-        new_kv = compact_kv_cache(
-            fwd.updated_state,
-            jnp.int32(cache_len),
-            jnp.array(_pad(kept_fwd, max_compact, 0), dtype=jnp.int32),
-            jnp.int32(total_kept),
-            max_compact,
-        )
+        assert fwd.updated_state is not None
+        cache_len_arr = jnp.int32(cache_len)
+        accepted_idx = jnp.array(pad_or_trim(kept_fwd, max_compact, 0), dtype=jnp.int32)
+        num_acc = jnp.int32(total_kept)
+        new_layers: list[StaticKVCacheLayer] = []
+        for layer in fwd.updated_state:
+            if not isinstance(layer, StaticKVCacheLayer):
+                raise TypeError(
+                    f"speculative decoding requires StaticKVCacheLayer, got {type(layer).__name__}",
+                )
+            new_layers.append(layer.compact(cache_len_arr, accepted_idx, num_acc, max_compact))
+        new_kv = State(new_layers)
 
         last_fwd_idx = int(kept_fwd[total_kept - 1])
         last_logits = jnp.array(fwd.logits[0, last_fwd_idx])
@@ -289,7 +242,7 @@ class SpeculationContext:
         assert fwd.activation_trace is not None
         layer_outputs, output_norm = extract_activations(
             fwd.activation_trace,
-            batch=0,
+            sample_index=0,
             positions=kept_fwd[:total_kept],
             trace_layer_outputs=self.drafter.trace_layer_outputs,
             trace_output_norm=self.drafter.trace_output_norm,
@@ -329,14 +282,13 @@ class SpeculationRun:
             bool(self.result.generated and self.result.generated[-1] in self.ctx.eos_set)
         )
 
-    def advance(self, lm: LMState, trie: TrieNode, accepted: list[int], new_lm: LMState) -> SpeculationStep:
+    def advance(self, lm: LMState, accepted: list[int], new_lm: LMState) -> SpeculationStep:
         self.ctx = dataclasses.replace(
             self.ctx,
             drafter=self.ctx.drafter.update_after_verify(lm, accepted, new_lm.bonus, new_lm),
         )
         self.seed = self.seed.advance(lm.position)
 
-        # Emit bonus + accepted, truncate to max_tokens
         emitted = [lm.bonus, *accepted]
         remaining = self.ctx.config.max_tokens - len(self.result.generated)
         emitted = emitted[:remaining]
@@ -344,21 +296,16 @@ class SpeculationRun:
 
         self.lm_state = new_lm
         self.result.total_accepted += len(accepted)
-        self.result.total_proposed += trie.total_nodes() - 1
         self.result.num_steps += 1
-        return SpeculationStep(
-            accepted=accepted,
-            bonus=new_lm.bonus,
-            proposed=trie.total_nodes() - 1,
-            depth=trie.max_depth(),
-        )
+        return SpeculationStep(accepted=accepted, bonus=new_lm.bonus)
 
     def __iter__(self) -> Iterator[SpeculationStep]:
         while not self.done() and not self.stopped():
             lm = self.lm_state
-            trie = self.ctx.drafter.draft(lm, self.seed.value)
-            accepted, new_lm = self.ctx.verify(lm, trie)
-            yield self.advance(lm, trie, accepted, new_lm)
+            proposal = self.ctx.drafter.draft(lm, self.seed.value)
+            accepted, new_lm = self.ctx.verify(lm, proposal)
+            yield self.advance(lm, accepted, new_lm)
 
+        # Emit the un-emitted trailing EOS bonus (advance() emits the previous bonus, not new_lm's).
         if self.lm_state.bonus in self.ctx.eos_set:
             self.result.generated.append(self.lm_state.bonus)

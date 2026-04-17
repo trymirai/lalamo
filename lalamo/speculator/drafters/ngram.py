@@ -7,14 +7,15 @@ from dataclasses import dataclass, field
 from itertools import chain, repeat, tee
 from math import exp
 from pathlib import Path
-from typing import Annotated, Self
+from typing import Annotated, ClassVar, Self
 
 import xxhash
 from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
 from lalamo.speculator.drafter import Drafter
-from lalamo.speculator.speculate import GumbelSeed, LMState, gumbel_rank_from_probs
+from lalamo.speculator.sampler import GumbelSeed, gumbel_rank_from_probs
+from lalamo.speculator.speculate import LMState
 from lalamo.speculator.trie import TrieNode
 
 
@@ -33,23 +34,21 @@ def softmax(logits: Iterable[float]) -> list[float]:
     return [exp_log / exp_log_sum for exp_log in exp_logs]
 
 
-def update_probs(probs: dict[int, float], sample: dict[int, float], new_count: int, top_k: int) -> None:
-    """Online mean update with top-K truncation. Mutates probs in-place."""
+def mean_update(probs: dict[int, float], sample: dict[int, float], new_count: int, top_k: int) -> dict[int, float]:
+    """Online mean update with top-K truncation and renormalization.
+
+    Returns a new dict; does not mutate ``probs``.
+    """
     decay = (new_count - 1) / new_count
     inv_n = 1.0 / new_count
-    for k in probs:
-        probs[k] *= decay
+    merged = {k: v * decay for k, v in probs.items()}
     for k, v in sample.items():
-        probs[k] = probs.get(k, 0.0) + v * inv_n
-    if len(probs) > top_k:
-        keep = dict(sorted(probs.items(), key=lambda x: (-x[1], x[0]))[:top_k])
-        probs.clear()
-        probs.update(keep)
-    total = sum(probs.values())
+        merged[k] = merged.get(k, 0.0) + v * inv_n
+    top_items = sorted(merged.items(), key=lambda x: (-x[1], x[0]))[:top_k]
+    total = sum(v for _, v in top_items)
     if total > 0:
-        inv_total = 1.0 / total
-        for k in probs:
-            probs[k] *= inv_total
+        return {k: v / total for k, v in top_items}
+    return dict(top_items)
 
 
 def seqhash(tokens: Iterable[int], size: int) -> tuple[int, int]:
@@ -95,23 +94,23 @@ class ExactBucket:
         self.probs: dict[int, float] = {}
 
 
-@dataclass(frozen=True, eq=False)
+@dataclass(eq=False)
 class TaggedNGramTable:
     hashtable_size: int
     ngram_k: int
     ngram_n: int
     ngram_pad: int
 
-    # Training phase: exact data (interior mutability)
+    # Training phase: exact data.
     _exact_data: dict[tuple[int, int], ExactBucket] = field(default_factory=dict, repr=False)
     _context_tokens: dict[tuple[int, int], tuple[int, ...]] = field(default_factory=dict, repr=False)
 
-    # Inference phase: tagged hash table (populated by compress())
+    # Inference phase: tagged hash table (populated by compress()).
     _tags: array = field(default_factory=lambda: array("Q"), repr=False)
     _keys: array = field(default_factory=lambda: array("I"), repr=False)
     _values: array = field(default_factory=lambda: array("f"), repr=False)
     _counts: array = field(default_factory=lambda: array("I"), repr=False)
-    _compressed: list[bool] = field(default_factory=lambda: [False], repr=False)
+    _compressed: bool = field(default=False, repr=False)
 
     @classmethod
     def init(cls, hashtable_size: int, ngram_k: int, ngram_n: int, ngram_pad: int = 2**32 - 1) -> Self:
@@ -150,7 +149,7 @@ class TaggedNGramTable:
 
             bucket.count += 1
             sample = dict(zip(cur_logits.keys(), softmax(cur_logits.values()), strict=True))
-            update_probs(bucket.probs, sample, bucket.count, self.ngram_k)
+            bucket.probs = mean_update(bucket.probs, sample, bucket.count, self.ngram_k)
 
     def compress(self) -> None:
         tags = array("Q", repeat(0, self.hashtable_size))
@@ -168,10 +167,10 @@ class TaggedNGramTable:
         self._keys[:] = keys
         self._values[:] = values
         self._counts[:] = bucket_counts
-        self._compressed[0] = True
+        self._compressed = True
 
     def probs(self, seq: Iterable[int]) -> dict[int, float]:
-        assert self._compressed[0], "call compress() before probs()"
+        assert self._compressed, "call compress() before probs()"
         ctx = self._context_for(seq)
         idx, tag = seqhash(ctx, self.hashtable_size)
 
@@ -205,7 +204,7 @@ class TaggedNGramTable:
             _write_top_k(smoothed, self._keys, self._values, idx, self.ngram_k)
 
     def serialize(self) -> bytes:
-        assert self._compressed[0], "call compress() before serialize()"
+        assert self._compressed, "call compress() before serialize()"
         hdr = struct.pack("<4I", self.hashtable_size, self.ngram_k, self.ngram_n, self.ngram_pad)
         return hdr + bytes(self._tags) + bytes(self._keys) + bytes(self._values) + bytes(self._counts)
 
@@ -239,7 +238,7 @@ class TaggedNGramTable:
         instance._keys[:] = keys
         instance._values[:] = values
         instance._counts[:] = counts
-        instance._compressed[0] = True
+        instance._compressed = True
         return instance
 
 
@@ -318,7 +317,6 @@ class NGramModel:
         return cls(max_order, tuple(tables), discount)
 
 
-@Drafter.register("ngram")
 @dataclass(frozen=True)
 class NGramDrafter(Drafter):
     """N-gram drafter: queries n-gram model to build a speculation tree.
@@ -327,6 +325,8 @@ class NGramDrafter(Drafter):
     Level 1+: candidates from n-gram backoff lookup.
     Greedy chain follows top-1, width fan-out at every depth.
     """
+
+    name: ClassVar[str] = "ngram"
 
     model: NGramModel
     width: int = 4
@@ -339,7 +339,7 @@ class NGramDrafter(Drafter):
 
         # Root children predict P(x_{t+2} | prefix, bonus): condition on bonus,
         # not on lm.logits (which is P(x_{t+1} | prefix), a level earlier).
-        vocab_size = int(lm.logits.shape[0])
+        (vocab_size,) = lm.logits.shape
         ctx = [*self.context, lm.bonus]
         node_offset = 2
         chain_node = root
@@ -422,12 +422,10 @@ class NGramDrafter(Drafter):
             callbacks.save_drafter(drafter.serialize())
 
 
+@dataclass(frozen=True)
 class NGramTrainingEvent:
-    __slots__ = ("trained_sequences", "trained_tokens")
-
-    def __init__(self, trained_sequences: int, trained_tokens: int) -> None:
-        self.trained_sequences = trained_sequences
-        self.trained_tokens = trained_tokens
+    trained_sequences: int
+    trained_tokens: int
 
 
 def train_ngram(

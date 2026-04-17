@@ -1,26 +1,37 @@
 from dataclasses import dataclass, field
 
 import numpy as np
+from jaxtyping import Int, UInt
 
 
 @dataclass(frozen=True)
 class FlatTrie:
-    token_ids: np.ndarray  # (N,) int32 — root at index 0
-    seeds: np.ndarray  # (N,) uint64 — per-node Gumbel seed
-    depths: np.ndarray  # (N,) int32 — root has depth 0
-    parent_indices: np.ndarray  # (N,) int32 — root has parent -1
+    """Tree-to-array layout of a speculation trie.
+
+    Invariants:
+    - Root is always stored at index 0 (``parent_indices[0] == -1``).
+    - Non-root entries store their parent's array index in ``parent_indices[i]``,
+      which is always ``< i`` (DFS order). This lets one forward sweep see each
+      node's parent before reaching the node itself — the property that makes
+      tree-structured attention computable without a second pass.
+    """
+
+    token_ids: Int[np.ndarray, " nodes"]
+    seeds: UInt[np.ndarray, " nodes"]
+    depths: Int[np.ndarray, " nodes"]
+    parent_indices: Int[np.ndarray, " nodes"]
 
     @property
     def num_nodes(self) -> int:
         return len(self.token_ids)
 
-    def positions(self, base_position: int) -> np.ndarray:
+    def positions(self, base_position: int) -> Int[np.ndarray, " nodes"]:
         return base_position + self.depths
 
     def accept(
         self,
-        sampled_tokens: np.ndarray,
-    ) -> tuple[list[int], np.ndarray]:
+        sampled_tokens: Int[np.ndarray, " nodes"],
+    ) -> tuple[list[int], Int[np.ndarray, " accepted"]]:
         """Walk trie: accept path where sampled tokens match draft tokens.
 
         Args:
@@ -58,7 +69,7 @@ class FlatTrie:
         return accepted_tokens, np.array(accepted_indices, dtype=np.int32)
 
 
-@dataclass
+@dataclass(frozen=True, eq=False)
 class TrieNode:
     token: int
     seed: int

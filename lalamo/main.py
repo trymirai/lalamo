@@ -1092,7 +1092,7 @@ class CliTrainCallbacks(TrainCallbacks):
         console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
 
 
-for drafter_cls in Drafter._registry.values():  # noqa: SLF001
+for drafter_cls in Drafter.registered_types():
     drafter_cls.train_command(speculator_app, CliTrainCallbacks)
 
 

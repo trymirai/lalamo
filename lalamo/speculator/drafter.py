@@ -1,17 +1,21 @@
-from abc import ABC, abstractmethod
-from collections.abc import Callable
+from abc import abstractmethod
+from collections.abc import Iterator
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from typer import Typer
 
+from lalamo.registry_abc import RegistryABC
 from lalamo.speculator.trie import TrieNode
 
 if TYPE_CHECKING:
     from lalamo.speculator.speculate import LMState
 
 
-class Drafter(ABC):
-    """Base class for all drafters. Name-based serialization registry.
+class Drafter(RegistryABC):
+    """Base class for all drafters. Name-based serialization registry via RegistryABC.
+
+    Subclasses set ``name: ClassVar[str]`` so ``Drafter.deserialize(name, data)``
+    can look them up.
 
     Drafters declare what activations the speculation runtime should retain in
     ``LMState`` via three attrs:
@@ -28,12 +32,7 @@ class Drafter(ABC):
         - ``int N``: retain hiddens only for the last N prompt positions.
 
     These are defaults on the base (fallback: retain nothing). Subclasses may
-    override them as class attributes or as dataclass fields — the latter
-    when the value is instance-specific (e.g. DFlash's ``trace_layer_outputs``
-    depends on the target model's layer count).
-
-    After every verify step the retained slice is ``kept_fwd[:total_kept]``
-    (bonus + accepted) regardless of these attrs.
+    override them as class attributes or as dataclass fields.
 
     Lifecycle:
     - ``draft(lm, seed) -> TrieNode``
@@ -42,33 +41,29 @@ class Drafter(ABC):
       each verify step.
     """
 
+    name: ClassVar[str]
+
     trace_layer_outputs: tuple[int, ...] | None = None
     trace_output_norm: bool = False
     prefill_hidden_range: int | None = None
-
-    _registry: ClassVar[dict[str, "type[Drafter]"]] = {}
-
-    @classmethod
-    def register(cls, name: str) -> Callable[["type[Drafter]"], "type[Drafter]"]:
-        def decorator(subcls: "type[Drafter]") -> "type[Drafter]":
-            cls._registry[name] = subcls
-            return subcls
-
-        return decorator
 
     @classmethod
     def deserialize(cls, name: str, data: bytes, **kwargs: object) -> "Drafter":
         """Deserialize a drafter by name from a binary blob.
 
-        Requires that the drafter module has been imported (to trigger
-        registration). This happens automatically when importing from
-        ``lalamo.speculator``.
+        Requires that the drafter module has been imported so the subclass is
+        registered (happens automatically when importing from ``lalamo.speculator``).
         """
-        subcls = cls._registry.get(name)
-        if subcls is None:
-            known = ", ".join(cls._registry)
-            raise ValueError(f"Unknown drafter {name!r}. Registered: {known}")
-        return subcls.deserialize_impl(data, **kwargs)
+        for subcls in cls.__descendants__():
+            if subcls.name == name:
+                return subcls.deserialize_impl(data, **kwargs)
+        known = ", ".join(sorted(s.name for s in cls.__descendants__()))
+        raise ValueError(f"Unknown drafter {name!r}. Registered: {known}")
+
+    @classmethod
+    def registered_types(cls) -> Iterator[type["Drafter"]]:
+        """Iterate over all registered drafter subclasses."""
+        return iter(cls.__descendants__())
 
     @classmethod
     @abstractmethod
@@ -96,6 +91,10 @@ class Drafter(ABC):
     @abstractmethod
     def serialize(self) -> bytes: ...
 
-    @staticmethod  # noqa: B027
+    @staticmethod
     def train_command(app: Typer, callbacks_type: type) -> None:
-        """Override to register a training CLI command on app."""
+        """Register a training subcommand on ``app`` if this drafter has trainable state.
+
+        Default is a no-op. Drafters without any trainable parameters (pure
+        heuristics, rule-based lookup, etc.) need not override.
+        """
