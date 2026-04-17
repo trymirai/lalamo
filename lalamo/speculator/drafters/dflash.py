@@ -520,6 +520,16 @@ class DFlashSpeculator(Speculator[BlockProposal]):
     draft_kv_state: DraftKVState
     temperature: float
     rng_key: Int[Array, "2"]
+    # Tokens appended to the prompt inside :meth:`prefill` to force the
+    # target out of Qwen3 thinking mode. DFlash was trained for the
+    # non-thinking regime (paper Table 1 / run_reference.py uses
+    # ``enable_thinking=False``) but lalamo's MessageProcessor hardcodes
+    # ``enable_thinking=True`` — without a bypass every generation loops on
+    # ``<think>`` and the drafter accepts nothing. The default sequence is
+    # ``<think>\n\n</think>\n\n`` for the Qwen3 tokenizer. Set to an empty
+    # tuple when targeting a tokenizer where this injection is not
+    # appropriate.
+    thinking_bypass_ids: tuple[int, ...] = (151667, 271, 151668, 271)
 
     @classmethod
     def create(
@@ -582,6 +592,7 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         return self.config.max_tokens + self.model.config.block_size + 16
 
     def prefill(self, prompt_ids: list[int]) -> tuple[Self, LMState]:
+        prompt_ids = [*prompt_ids, *self.thinking_bypass_ids]
         state = self.decoder.init_static_state(1, self.generation_capacity + len(prompt_ids))
         prefix = jnp.array([prompt_ids], dtype=jnp.int32)
         fwd = self.decoder(
