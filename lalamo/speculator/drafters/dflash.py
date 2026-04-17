@@ -8,7 +8,7 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from einops import rearrange, repeat
+from einops import rearrange
 from huggingface_hub import snapshot_download
 from jaxtyping import Array, DTypeLike, Float, Int
 from ml_dtypes import bfloat16
@@ -185,6 +185,7 @@ class Qwen3DFlashAttention(eqx.Module):
         target_hidden_new: Float[Array, "ctx_new hidden"],
         rope_new: PositionalEmbeddings,
         kv: DraftKVLayer,
+        valid_ctx_len: Int[Array, ""],
     ) -> tuple[Float[Array, "block_size hidden"], DraftKVLayer]:
         block_size, _ = noise.shape
         ctx_new_len, _ = target_hidden_new.shape
@@ -211,19 +212,24 @@ class Qwen3DFlashAttention(eqx.Module):
         keys = jax.lax.dynamic_update_slice(kv.keys, k_new, (cached, 0, 0))
         values = jax.lax.dynamic_update_slice(kv.values, v_new, (cached, 0, 0))
 
+        # Three valid regions: committed cache, valid prefix of the fresh ctx,
+        # and the full noise block. Padded ctx slots between valid_ctx_len and
+        # ctx_new_len are masked out (and get overwritten by the next call's
+        # write, since ``length`` below advances by valid_ctx_len only).
         capacity = kv.capacity
-        total_k = cached + ctx_new_len + block_size
-        valid = jnp.arange(capacity) < total_k
+        indices = jnp.arange(capacity)
+        in_cached = indices < cached
+        in_ctx = (indices >= cached) & (indices < cached + valid_ctx_len)
+        in_noise = (indices >= cached + ctx_new_len) & (indices < cached + ctx_new_len + block_size)
+        valid = in_cached | in_ctx | in_noise
         attn_mask = jnp.broadcast_to(valid[None, :], (block_size, capacity))
 
-        group_size = self.num_heads // self.num_kv_heads
-        keys_rep = repeat(keys, "t g d -> t (g r) d", r=group_size)
-        values_rep = repeat(values, "t g d -> t (g r) d", r=group_size)
-
+        # jax.nn.dot_product_attention broadcasts when num_kv_heads < num_heads,
+        # so we pass the compressed K/V directly instead of repeating.
         attn_out = jax.nn.dot_product_attention(
             query=q[None],
-            key=keys_rep[None],
-            value=values_rep[None],
+            key=keys[None],
+            value=values[None],
             mask=attn_mask[None, None, :, :],
             scale=self.head_dim**-0.5,
         )[0]
@@ -233,7 +239,7 @@ class Qwen3DFlashAttention(eqx.Module):
         return out, DraftKVLayer(
             keys=keys,
             values=values,
-            length=cached + ctx_new_len,
+            length=cached + valid_ctx_len,
         )
 
 
@@ -254,10 +260,11 @@ class Qwen3DFlashDecoderLayer(eqx.Module):
         target_hidden_new: Float[Array, "ctx_new hidden"],
         rope_new: PositionalEmbeddings,
         kv: DraftKVLayer,
+        valid_ctx_len: Int[Array, ""],
     ) -> tuple[Float[Array, "block_size hidden"], DraftKVLayer]:
         residual = hidden
         h = jax.vmap(self.input_layernorm)(hidden)
-        h, kv = self.self_attn(h, target_hidden_new, rope_new, kv)
+        h, kv = self.self_attn(h, target_hidden_new, rope_new, kv, valid_ctx_len)
         h = residual + h
 
         residual = h
@@ -294,12 +301,14 @@ class DFlashDraftModel(eqx.Module):
             for _ in range(self.config.num_layers)
         )
 
+    @eqx.filter_jit
     def __call__(
         self,
         noise_embedding: Float[Array, "block_size hidden"],
         target_hidden_new: Float[Array, "ctx_new fused_dim"],
         kv_state: DraftKVState,
         position_ids: Int[Array, " ctx_new_plus_block"],
+        valid_ctx_len: Int[Array, ""],
     ) -> tuple[Float[Array, "block_size hidden"], DraftKVState]:
         (fc_out,) = jax.vmap(self.fc)(target_hidden_new)
         ctx = jax.vmap(self.hidden_norm)(fc_out)
@@ -309,7 +318,7 @@ class DFlashDraftModel(eqx.Module):
         hidden = noise_embedding
         new_kv: list[DraftKVLayer] = []
         for layer, layer_kv in zip(self.layers, kv_state, strict=True):
-            hidden, updated_kv = layer(hidden, ctx, rope_new, layer_kv)
+            hidden, updated_kv = layer(hidden, ctx, rope_new, layer_kv, valid_ctx_len)
             new_kv.append(updated_kv)
 
         hidden = jax.vmap(self.norm)(hidden)
@@ -659,10 +668,10 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         """
         first_layer = lm.kv_cache[0]
         assert isinstance(first_layer, StaticKVCacheLayer)
-        cache_len = int(first_layer.current_length[0])
+        cache_len = first_layer.current_length[0]  # traced scalar — no host sync
         block_size = int(proposal.tokens.shape[0])
         tok_ids = jnp.array(proposal.tokens[None, :], dtype=jnp.int32)
-        positions = jnp.arange(cache_len, cache_len + block_size, dtype=jnp.int32)[None, :]
+        positions = (cache_len + jnp.arange(block_size, dtype=jnp.int32))[None, :]
         return self.decoder(
             tok_ids,
             positions,
@@ -701,7 +710,7 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         """
         first_layer = lm.kv_cache[0]
         assert isinstance(first_layer, StaticKVCacheLayer)
-        cache_len = int(first_layer.current_length[0])
+        cache_len = first_layer.current_length[0]  # traced scalar
         total_kept = 1 + len(accepted)
         block_size = self.model.config.block_size
 
@@ -717,7 +726,7 @@ class DFlashSpeculator(Speculator[BlockProposal]):
                     f"DFlash requires StaticKVCacheLayer, got {type(layer).__name__}",
                 )
             new_layers.append(
-                layer.compact(jnp.int32(cache_len), kept_padded, jnp.int32(total_kept), block_size),
+                layer.compact(cache_len, kept_padded, jnp.int32(total_kept), block_size),
             )
         new_kv = State(new_layers)
 
@@ -734,7 +743,7 @@ class DFlashSpeculator(Speculator[BlockProposal]):
             layer_outputs=layer_outputs,
             output_norm=output_norm,
             logits=jnp.array(fwd.logits[0, len(accepted)]),
-            position=cache_len + total_kept,
+            position=int(cache_len) + total_kept,
             bonus=next_bonus,
         )
 
@@ -750,7 +759,23 @@ class DFlashSpeculator(Speculator[BlockProposal]):
                 f"LMState, got {len(lm.layer_outputs)}.",
             )
         target_hidden_new = jnp.concatenate(lm.layer_outputs, axis=-1)
-        ctx_new_len, _ = target_hidden_new.shape
+        valid_ctx_len, _ = target_hidden_new.shape
+
+        # Pad the fresh target context to ``block_size`` (the maximum over
+        # post-prefill steps) so the drafter forward sees a single shape for
+        # every speculation iteration. The prefill step can exceed block_size
+        # (prompt_len rows); leave it untouched so it triggers its own
+        # one-shot compile.
+        if valid_ctx_len < block_size:
+            pad = block_size - valid_ctx_len
+            target_hidden_new = jnp.concatenate(
+                [
+                    target_hidden_new,
+                    jnp.zeros((pad, cfg.fused_dim), dtype=target_hidden_new.dtype),
+                ],
+                axis=0,
+            )
+        padded_ctx_len, _ = target_hidden_new.shape
 
         noise_tokens = jnp.array(
             [lm.bonus, *([cfg.mask_token_id] * (block_size - 1))],
@@ -758,14 +783,17 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         )
         noise_embedding = self.decoder.embedding.embed(noise_tokens)
 
-        cached = int(self.draft_kv_state[0].length)
-        position_ids = jnp.arange(cached, cached + ctx_new_len + block_size, dtype=jnp.int32)
+        # Keep ``cached`` as a traced scalar so the drafter's position_ids
+        # construction stays on-device — no host sync every iteration.
+        cached = self.draft_kv_state[0].length
+        position_ids = cached + jnp.arange(padded_ctx_len + block_size, dtype=jnp.int32)
 
         hidden, new_draft_kv = self.model(
             noise_embedding,
             target_hidden_new.astype(cfg.precision),
             self.draft_kv_state,
             position_ids,
+            jnp.int32(valid_ctx_len),
         )
 
         # hidden[0] corresponds to the anchor (known bonus); hidden[1:] predicts
