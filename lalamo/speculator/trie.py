@@ -1,7 +1,28 @@
+import dataclasses
 from dataclasses import dataclass, field
+from typing import Self
 
+import jax.numpy as jnp
 import numpy as np
 from jaxtyping import Int, UInt
+
+from lalamo.modules.common import ForwardPassMode
+from lalamo.modules.decoder import DecoderResult
+from lalamo.modules.token_mixers.state.common import State
+from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
+from lalamo.speculator.common import LMState, SpeculationStep, Speculator
+from lalamo.speculator.sampler import GumbelMaxSampler, GumbelSeed
+from lalamo.speculator.utils import extract_activations, pad_or_trim
+
+
+@dataclass(frozen=True)
+class TreeTreeVerifyResult:
+    """Intermediate result of tree+Gumbel verification, consumed by ``TreeSpeculator.build_next_state``."""
+
+    accepted_tokens: list[int]
+    accepted_indices: Int[np.ndarray, " accepted"]
+    all_seeds: UInt[np.ndarray, " nodes"]
+    num_draft_nodes: int
 
 
 @dataclass(frozen=True)
@@ -124,3 +145,176 @@ class TrieNode:
             depths=np.array(depths, dtype=np.int32),
             parent_indices=np.array(parent_indices, dtype=np.int32),
         )
+
+
+@dataclass(frozen=True, kw_only=True)
+class TreeSpeculator(Speculator[TrieNode]):
+    seed: GumbelSeed
+
+    @property
+    def budget(self) -> int:
+        return self.config.width * self.config.K
+
+    def prefill(self, prompt_ids: list[int]) -> tuple[Self, LMState]:
+        state = self.decoder.init_static_state(1, self.generation_capacity + len(prompt_ids))
+        prefix = jnp.array([prompt_ids], dtype=jnp.int32)
+        fwd = self.decoder(
+            prefix,
+            jnp.arange(len(prompt_ids))[None, :],
+            state,
+            return_updated_state=True,
+            return_activation_trace=True,
+        )
+        logits = fwd.logits[0, -1]
+        prefill_range = self.prefill_hidden_range
+        prefill_positions = slice(None) if prefill_range is None else slice(-prefill_range, None)
+        assert fwd.activation_trace is not None
+        assert fwd.updated_state is not None
+        layer_outputs, output_norm = extract_activations(
+            fwd.activation_trace,
+            sample_index=0,
+            positions=prefill_positions,
+            trace_layer_outputs=self.trace_layer_outputs,
+            trace_output_norm=self.trace_output_norm,
+        )
+        lm_state = LMState(
+            kv_cache=fwd.updated_state,
+            layer_outputs=layer_outputs,
+            output_norm=output_norm,
+            logits=logits,
+            position=len(prompt_ids),
+            bonus=self.seed.advance(0).sample(logits),
+        )
+        return self, lm_state
+
+    def step(self, lm: LMState) -> tuple[Self, LMState, SpeculationStep]:
+        proposal = self.draft(lm)
+        fwd, flat = self.tree_forward(lm, proposal)
+        result = self.sample_and_accept(proposal, fwd, flat)
+        new_self, new_lm = self.build_next_state(lm, fwd, result)
+        return new_self, new_lm, SpeculationStep(accepted=result.accepted_tokens, bonus=new_lm.bonus)
+
+    def tree_forward(self, lm: LMState, trie: TrieNode) -> tuple[DecoderResult, FlatTrie]:
+        """Run the target decoder forward pass on a tree-shaped proposal."""
+        flat = trie.linearize(include_root=False)
+        first_layer = lm.kv_cache[0]
+        assert isinstance(first_layer, StaticKVCacheLayer)
+        cache_len = int(first_layer.current_length[0])
+        max_fwd = 1 + max(self.budget, flat.num_nodes)
+
+        tok_ids = jnp.array(
+            pad_or_trim(np.concatenate([[lm.bonus], flat.token_ids]), max_fwd, 0)[None, :],
+            dtype=jnp.int32,
+        )
+        positions = jnp.array(
+            pad_or_trim(np.concatenate([[cache_len], flat.positions(cache_len + 1)]), max_fwd, cache_len)[None, :],
+            dtype=jnp.int32,
+        )
+        parent_indices = jnp.array(
+            pad_or_trim(np.concatenate([[-1], flat.parent_indices]), max_fwd, -1)[None, :],
+            dtype=jnp.int32,
+        )
+
+        fwd = self.decoder(
+            tok_ids,
+            positions,
+            lm.kv_cache,
+            return_updated_state=True,
+            return_activation_trace=True,
+            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+            attention_parent_indices=parent_indices,
+        )
+        return fwd, flat
+
+    def sample_and_accept(
+        self,
+        trie: TrieNode,
+        fwd: DecoderResult,
+        flat: FlatTrie,
+    ) -> TreeVerifyResult:
+        """Sample one token per tree node via Gumbel-max, accept the longest
+        matching path from the root.
+        """
+        max_fwd = 1 + max(self.budget, flat.num_nodes)
+
+        root_logits = fwd.logits[0, 0].astype(jnp.float32)
+        all_logits = jnp.concatenate([root_logits[None, :], fwd.logits[0, 1:]], axis=0).astype(jnp.float32)
+        all_seeds = np.concatenate([np.array([trie.seed], dtype=np.uint64), flat.seeds])
+        padded_seeds = pad_or_trim(all_seeds, max_fwd, 0)
+
+        sampler = GumbelMaxSampler()
+        sampled_all = np.asarray(
+            sampler.sample(all_logits, jnp.array(padded_seeds & 0xFFFFFFFF, dtype=jnp.uint32)),
+        )
+
+        full_flat = FlatTrie(
+            token_ids=np.concatenate([[trie.token], flat.token_ids]),
+            seeds=all_seeds,
+            depths=np.concatenate([[0], flat.depths + 1]),
+            parent_indices=np.concatenate([[-1], flat.parent_indices + 1]),
+        )
+        accepted_tokens, accepted_indices = full_flat.accept(sampled_all[: flat.num_nodes + 1])
+        return TreeVerifyResult(accepted_tokens, accepted_indices, all_seeds, flat.num_nodes)
+
+    def build_next_state(
+        self,
+        lm: LMState,
+        fwd: DecoderResult,
+        result: TreeVerifyResult,
+    ) -> tuple[Self, LMState]:
+        """Compact the KV cache to accepted positions, sample the next bonus,
+        and advance the speculator's seed.
+
+        Returns ``(new_self, new_lm)``. Subclasses with additional per-step
+        state (e.g. NGram context) override :meth:`step` to layer their own
+        update on top of this.
+        """
+        first_layer = lm.kv_cache[0]
+        assert isinstance(first_layer, StaticKVCacheLayer)
+        cache_len = int(first_layer.current_length[0])
+        num_accepted = len(result.accepted_tokens)
+
+        kept_fwd = np.concatenate(
+            [
+                np.array([0], dtype=np.int32),
+                result.accepted_indices.astype(np.int32),
+            ],
+        )
+        total_kept = 1 + num_accepted
+        max_compact = 1 + max(self.budget, result.num_draft_nodes)
+
+        assert fwd.updated_state is not None
+        cache_len_arr = jnp.int32(cache_len)
+        accepted_idx = jnp.array(pad_or_trim(kept_fwd, max_compact, 0), dtype=jnp.int32)
+        num_acc = jnp.int32(total_kept)
+        new_layers: list[StaticKVCacheLayer] = []
+        for layer in fwd.updated_state:
+            if not isinstance(layer, StaticKVCacheLayer):
+                raise TypeError(
+                    f"speculative decoding requires StaticKVCacheLayer, got {type(layer).__name__}",
+                )
+            new_layers.append(layer.compact(cache_len_arr, accepted_idx, num_acc, max_compact))
+        new_kv = State(new_layers)
+
+        last_fwd_idx = int(kept_fwd[total_kept - 1])
+        last_logits = jnp.array(fwd.logits[0, last_fwd_idx])
+        new_bonus = GumbelSeed(int(result.all_seeds[num_accepted])).sample(last_logits)
+
+        assert fwd.activation_trace is not None
+        layer_outputs, output_norm = extract_activations(
+            fwd.activation_trace,
+            sample_index=0,
+            positions=kept_fwd[:total_kept],
+            trace_layer_outputs=self.trace_layer_outputs,
+            trace_output_norm=self.trace_output_norm,
+        )
+        new_lm = LMState(
+            kv_cache=new_kv,
+            layer_outputs=layer_outputs,
+            output_norm=output_norm,
+            logits=last_logits,
+            position=cache_len + total_kept,
+            bonus=new_bonus,
+        )
+        new_self = dataclasses.replace(self, seed=self.seed.advance(lm.position))
+        return new_self, new_lm

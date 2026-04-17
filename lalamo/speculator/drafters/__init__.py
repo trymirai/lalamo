@@ -1,5 +1,5 @@
-from .ngram import NGramDrafter
+from .ngram import NGramSpeculator
 
 __all__ = [
-    "NGramDrafter",
+    "NGramSpeculator",
 ]

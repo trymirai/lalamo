@@ -7,16 +7,16 @@ from dataclasses import dataclass, field
 from itertools import chain, repeat, tee
 from math import exp
 from pathlib import Path
-from typing import Annotated, ClassVar, Self
+from typing import Annotated, ClassVar, Self, cast
 
 import xxhash
 from typer import Argument, Option, Typer
 
 from lalamo.data.lalamo_completions import LalamoCompletion, iter_completions
-from lalamo.speculator.drafter import Drafter
+from lalamo.modules.decoder import Decoder
+from lalamo.speculator.common import LMState, SamplerConfig, SpeculationStep
 from lalamo.speculator.sampler import GumbelSeed, gumbel_rank_from_probs
-from lalamo.speculator.speculate import LMState
-from lalamo.speculator.trie import TrieNode
+from lalamo.speculator.trie import TreeSpeculator, TrieNode
 
 
 def padded_sliding_window(seq: Iterable[int], size: int, pad: int) -> Iterable[tuple[int, ...]]:
@@ -317,9 +317,9 @@ class NGramModel:
         return cls(max_order, tuple(tables), discount)
 
 
-@dataclass(frozen=True)
-class NGramDrafter(Drafter):
-    """N-gram drafter: queries n-gram model to build a speculation tree.
+@dataclass(frozen=True, kw_only=True)
+class NGramSpeculator(TreeSpeculator):
+    """N-gram speculator: queries n-gram model to build a speculation tree.
 
     Level 0: candidates from LM logits (top-width).
     Level 1+: candidates from n-gram backoff lookup.
@@ -333,8 +333,8 @@ class NGramDrafter(Drafter):
     depth: int = 8
     context: tuple[int, ...] = ()
 
-    def draft(self, lm: LMState, seed: int) -> TrieNode:
-        gseed = GumbelSeed(seed)
+    def draft(self, lm: LMState) -> TrieNode:
+        gseed = self.seed
         root = TrieNode(token=lm.bonus, seed=gseed.derive(1).value)
 
         # Root children predict P(x_{t+2} | prefix, bonus): condition on bonus,
@@ -360,27 +360,44 @@ class NGramDrafter(Drafter):
 
         return root
 
-    def update_after_verify(
-        self,
-        prev_lm: LMState,
-        accepted: list[int],
-        bonus: int,  # noqa: ARG002
-        new_lm: LMState,  # noqa: ARG002
-    ) -> Self:
-        new_context = self.context + (prev_lm.bonus,) + tuple(accepted)
+    def step(self, lm: LMState) -> tuple[Self, LMState, SpeculationStep]:
+        proposal = self.draft(lm)
+        fwd, flat = self.tree_forward(lm, proposal)
+        result = self.sample_and_accept(proposal, fwd, flat)
+        new_self, new_lm = self.build_next_state(lm, fwd, result)
+        new_context = self.context + (lm.bonus,) + tuple(result.accepted_tokens)
         max_ctx = self.model.max_order - 1
-        return dataclasses.replace(self, context=new_context[-max_ctx:] if max_ctx > 0 else ())
+        final_self = dataclasses.replace(
+            new_self,
+            context=new_context[-max_ctx:] if max_ctx > 0 else (),
+        )
+        return final_self, new_lm, SpeculationStep(accepted=result.accepted_tokens, bonus=new_lm.bonus)
 
     def serialize(self) -> bytes:
         return self.model.serialize()
 
     @classmethod
     def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
+        decoder = kwargs["decoder"]
+        config = kwargs["config"]
+        eos_set = kwargs["eos_set"]
         width = kwargs.get("width", 4)
         depth = kwargs.get("depth", 8)
+        assert isinstance(decoder, Decoder)
+        assert isinstance(config, SamplerConfig)
+        assert isinstance(eos_set, frozenset)
+        assert all(isinstance(e, int) for e in eos_set)
         assert isinstance(width, int)
         assert isinstance(depth, int)
-        return cls(model=NGramModel.deserialize(data), width=width, depth=depth)
+        return cls(
+            decoder=decoder,
+            config=config,
+            eos_set=cast("frozenset[int]", eos_set),
+            seed=GumbelSeed(config.seed),
+            model=NGramModel.deserialize(data),
+            width=width,
+            depth=depth,
+        )
 
     def sample(self, context: Iterable[int] = (), max_length: int = 32) -> list[int]:
         seq = list(context)
@@ -393,33 +410,29 @@ class NGramDrafter(Drafter):
 
     @staticmethod
     def train_command(app: Typer, callbacks_type: type) -> None:
-        @app.command(name="train-ngram", help="Train an n-gram drafter from inference traces")
+        @app.command(name="train-ngram", help="Train an n-gram speculator from inference traces")
         def train_ngram_cmd(
             trace_path: Annotated[Path, Argument(help="Trace directory", metavar="TRACE_PATH")],
-            output_path: Annotated[Path, Option(help="Output file for trained drafter")],
+            output_path: Annotated[Path, Option(help="Output file for trained speculator")],
             hashtable_size: Annotated[int, Option(help="Size of ngram hashtable")] = 65536,
             num_logits_per_token: Annotated[int, Option(help="Top K tokens per ngram bucket")] = 8,
             max_order: Annotated[int, Option(help="Maximum n-gram order")] = 4,
             discount: Annotated[float, Option(help="Kneser-Ney discount")] = 0.002,
-            width: Annotated[int, Option(help="Max children per trie node")] = 4,
-            depth: Annotated[int, Option(help="Max speculation depth")] = 8,
             subsample_size: Annotated[int | None, Option(help="Stop after this many tokens")] = None,
         ) -> None:
             callbacks = callbacks_type(output_path=output_path, subsample_size=subsample_size)
             traces = iter_completions(trace_path, exclude={"activation_output", "layer_output", "logsumexp"})
-            drafter = train_ngram(
+            model = train_ngram(
                 traces,
                 hashtable_size=hashtable_size,
                 num_logits_per_token=num_logits_per_token,
                 max_order=max_order,
                 discount=discount,
                 tokens_to_train=subsample_size,
-                width=width,
-                depth=depth,
                 progress_callback=lambda e: callbacks.training_progress(e.trained_tokens),
             )
             callbacks.finished_training()
-            callbacks.save_drafter(drafter.serialize())
+            callbacks.save_drafter(model.serialize())
 
 
 @dataclass(frozen=True)
@@ -435,14 +448,8 @@ def train_ngram(
     max_order: int = 4,
     discount: float = 0.002,
     tokens_to_train: int | None = None,
-    width: int = 4,
-    depth: int = 8,
     progress_callback: Callable[[NGramTrainingEvent], None] | None = None,
-) -> NGramDrafter:
-    """Train an n-gram drafter from LLM inference traces.
-
-    Returns a ready-to-use NGramDrafter with compressed hash tables.
-    """
+) -> NGramModel:
     model = NGramModel.init(hashtable_size, num_logits_per_token, max_order, discount)
     trained_tokens = 0
 
@@ -464,4 +471,4 @@ def train_ngram(
             break
 
     model.compress()
-    return NGramDrafter(model=model, width=width, depth=depth)
+    return model

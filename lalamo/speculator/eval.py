@@ -1,16 +1,12 @@
+import dataclasses
 import time
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 
 from lalamo.message_processor import MessageProcessor, UserMessage
-from lalamo.modules.decoder import Decoder
-from lalamo.speculator.drafter import Drafter
-from lalamo.speculator.speculate import (
-    SamplerConfig,
-    SpeculationContext,
-    SpeculationRun,
-    SpeculativeDecodingResult,
-)
+from lalamo.speculator.common import Speculator
+from lalamo.speculator.sampler import GumbelSeed
+from lalamo.speculator.speculate import SpeculationRun, SpeculativeDecodingResult
 
 
 @dataclass(frozen=True)
@@ -75,43 +71,28 @@ class EvalResults:
 
 
 def evaluate_prompt(
-    decoder: Decoder,
+    speculator: Speculator,
     mp: MessageProcessor,
-    drafter: Drafter,
-    config: SamplerConfig,
     prompt: str,
-    eos_set: set[int],
-    seed: int = 42,
 ) -> SpeculativeDecodingResult:
     prompt_ids = mp.tokenize_request([UserMessage(content=prompt)])
-    ctx = SpeculationContext.create(decoder, drafter, config, eos_set)
-    session = SpeculationRun(ctx, prompt_ids, seed=seed)
+    session = SpeculationRun(speculator, prompt_ids)
     for _ in session:
         pass
     return session.result
 
 
 def run_eval(
-    decoder: Decoder,
+    speculator: Speculator,
     mp: MessageProcessor,
-    drafter: Drafter,
-    config: SamplerConfig,
-    eos_set: set[int],
     questions: Iterable[EvalQuestion],
     on_question: Callable[[int, EvalQuestion, SpeculativeDecodingResult, float], None] | None = None,
 ) -> EvalResults:
     accum: dict[str, list[tuple[SpeculativeDecodingResult, float]]] = {}
     for i, question in enumerate(questions):
+        per_question = dataclasses.replace(speculator, seed=GumbelSeed(42 + i))
         start = time.perf_counter()
-        result = evaluate_prompt(
-            decoder,
-            mp,
-            drafter,
-            config,
-            question.prompt,
-            eos_set,
-            seed=42 + i,
-        )
+        result = evaluate_prompt(per_question, mp, question.prompt)
         elapsed_s = time.perf_counter() - start
         accum.setdefault(question.category, []).append((result, elapsed_s))
         if on_question is not None:

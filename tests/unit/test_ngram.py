@@ -1,5 +1,5 @@
-from lalamo.speculator.drafter import Drafter
-from lalamo.speculator.drafters.ngram import NGramDrafter, NGramModel
+from lalamo.speculator.common import Speculator
+from lalamo.speculator.drafters.ngram import NGramModel, NGramSpeculator
 
 
 def test_ngram_token_id_zero_not_corrupted() -> None:
@@ -17,16 +17,20 @@ def test_ngram_token_id_zero_not_corrupted() -> None:
     assert abs(total - 1.0) < 0.01, f"Probs sum to {total}, expected ~1.0"
 
 
-def test_ngram_serialize_roundtrip() -> None:
-    speculator = NGramModel.init(512, 8, max_order=3, discount=0.01)
+def test_ngram_model_serialize_roundtrip() -> None:
+    model = NGramModel.init(512, 8, max_order=3, discount=0.01)
 
     token_ids = list(range(200))
     token_logits = [{k: 1.0} for k in token_ids]
-    speculator.train(token_ids, token_logits)
-    speculator.compress()
+    model.train(token_ids, token_logits)
+    model.compress()
 
-    drafter = NGramDrafter(model=speculator)
-    blob = drafter.serialize()
-    restored = Drafter.deserialize("ngram", blob)
-
+    blob = model.serialize()
+    restored = NGramModel.deserialize(blob)
     assert blob == restored.serialize()
+
+
+def test_ngram_speculator_registered() -> None:
+    registered = list(Speculator.registered_types())
+    assert NGramSpeculator in registered
+    assert NGramSpeculator.name == "ngram"

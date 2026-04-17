@@ -38,10 +38,10 @@ from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.modules import config_converter
 from lalamo.modules.common import ShardingConfig, use_sharding
 from lalamo.safetensors import safe_write
-from lalamo.speculator.drafter import Drafter
+from lalamo.speculator.common import SamplerConfig, Speculator
 from lalamo.speculator.eval import EvalQuestion, EvalResults, run_eval
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
-from lalamo.speculator.speculate import SamplerConfig, SpeculativeDecodingResult
+from lalamo.speculator.speculate import SpeculativeDecodingResult
 
 
 @dataclass
@@ -808,9 +808,12 @@ def speculator_eval(
 
     callbacks.loading_drafter()
     with open(speculator_path, "rb") as fd:
-        drafter = Drafter.deserialize(
+        speculator = Speculator.deserialize(
             drafter_name,
             fd.read(),
+            decoder=llm.model,
+            config=sampler_config,
+            eos_set=frozenset(int(e) for e in llm.stop_token_ids),
             width=sampler_config.width,
             depth=sampler_config.K,
         )
@@ -822,11 +825,8 @@ def speculator_eval(
 
     callbacks.eval_started(len(questions))
     results = run_eval(
-        llm.model,
+        speculator,
         llm.message_processor,
-        drafter,
-        sampler_config,
-        {int(e) for e in llm.stop_token_ids},
         questions,
         on_question=callbacks.eval_progress,
     )

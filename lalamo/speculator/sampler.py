@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
 
 import jax
 import jax.numpy as jnp
@@ -34,21 +33,6 @@ class GumbelSeed:
         key = jax.random.key(self.value & 0xFFFFFFFF)
         noise = jax.random.gumbel(key, (vocab,), dtype=jnp.float32)
         return int(jnp.argmax(logits.astype(jnp.float32) + noise))
-
-
-@runtime_checkable
-class Sampler(Protocol):
-    """Strategy for sampling token ids from target logits during verification.
-
-    ``sample(logits, seeds)`` returns one token id per row. Single-position call
-    sites should wrap as ``logits[None, :]`` / ``seeds[None]`` and read element 0.
-    """
-
-    def sample(
-        self,
-        logits: Float[Array, "n vocab"],
-        seeds: Int[Array, " n"],
-    ) -> Int[Array, " n"]: ...
 
 
 @dataclass(frozen=True)

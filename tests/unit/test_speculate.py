@@ -1,3 +1,5 @@
+from typing import ClassVar, Self
+
 import jax
 import jax.numpy as jnp
 import pytest
@@ -16,24 +18,25 @@ from lalamo.modules import (
     UpcastMode,
 )
 from lalamo.modules.token_mixers.attention import AttentionConfig
-from lalamo.speculator.drafter import Drafter
-from lalamo.speculator.speculate import LMState, SamplerConfig, SpeculationContext, SpeculationRun
-from lalamo.speculator.trie import TrieNode
+from lalamo.speculator.common import LMState, SamplerConfig
+from lalamo.speculator.sampler import GumbelSeed
+from lalamo.speculator.speculate import SpeculationRun
+from lalamo.speculator.trie import TreeSpeculator, TrieNode
 from tests.common import assert_close
 
 
-class _EmptyDrafter(Drafter):
-    """Drafter proposing an empty tree (bonus-only path)."""
+class EmptyTreeSpeculator(TreeSpeculator):
+    name: ClassVar[str] = "empty"
 
-    def draft(self, lm: LMState, seed: int) -> TrieNode:
-        return TrieNode(token=lm.bonus, seed=seed)
+    def draft(self, lm: LMState) -> TrieNode:
+        return TrieNode(token=lm.bonus, seed=self.seed.value)
 
     def serialize(self) -> bytes:
         return b""
 
     @classmethod
-    def deserialize_impl(cls, data: bytes, **kwargs: object) -> "_EmptyDrafter":  # noqa: ARG003
-        return cls()
+    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
+        raise NotImplementedError
 
 
 @pytest.fixture
@@ -111,20 +114,19 @@ def decoder() -> Decoder:
 
 
 def test_lm_state_matches_reference_forward_after_bonus_only_step(decoder: Decoder) -> None:
-    """After one SpeculationRun step with an empty-tree drafter, lm_state.logits
-    should equal the logits of a standard forward pass on prompt + emitted tokens."""
     prompt_ids = [1, 2, 3]
-    ctx = SpeculationContext.create(
+    config = SamplerConfig(width=2, K=2, max_tokens=16)
+    speculator = EmptyTreeSpeculator(
         decoder=decoder,
-        drafter=_EmptyDrafter(),
-        config=SamplerConfig(width=2, K=2, max_tokens=16),
-        eos_set=set(),
+        config=config,
+        eos_set=frozenset(),
+        seed=GumbelSeed(config.seed),
     )
-    run = SpeculationRun(ctx, prompt_ids, seed=42)
+    run = SpeculationRun(speculator, prompt_ids)
     _ = next(iter(run))
 
     emitted = list(run.result.generated)
-    # Empty drafter has no drafts; only the bonus is emitted.
+    # Empty speculator has no drafts; only the bonus is emitted.
     assert len(emitted) == 1
 
     full_seq = jnp.array([prompt_ids + emitted], dtype=jnp.int32)

@@ -66,10 +66,10 @@ from lalamo.model_registry import ModelRegistry
 from lalamo.models import ClassifierModelConfig, LanguageModelConfig
 from lalamo.models.common import BatchSizesComputedEvent
 from lalamo.models.tts_model import TTSGenerator, TTSMessage
-from lalamo.speculator.drafter import Drafter
-from lalamo.speculator.drafters import NGramDrafter  # noqa: F401 (triggers Drafter registration)
+from lalamo.speculator.common import SamplerConfig, Speculator
+from lalamo.speculator.drafters import NGramSpeculator  # noqa: F401 (triggers Speculator registration)
 from lalamo.speculator.eval import EvalQuestion, print_results
-from lalamo.speculator.speculate import SamplerConfig, SpeculativeDecodingResult
+from lalamo.speculator.speculate import SpeculativeDecodingResult
 
 SCRIPT_NAME = Path(sys.argv[0]).name
 
@@ -1092,8 +1092,8 @@ class CliTrainCallbacks(TrainCallbacks):
         console.print(f"💾 Speculator saved to [cyan]{self.output_path}[/cyan]")
 
 
-for drafter_cls in Drafter.registered_types():
-    drafter_cls.train_command(speculator_app, CliTrainCallbacks)
+for speculator_cls in Speculator.registered_types():
+    speculator_cls.train_command(speculator_app, CliTrainCallbacks)
 
 
 @dataclass
