@@ -1,6 +1,6 @@
 import dataclasses
 import json
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, ClassVar, Self, cast
 
@@ -16,13 +16,12 @@ from safetensors.numpy import load_file
 
 from lalamo.modules.activations import SiLU
 from lalamo.modules.common import ForwardPassMode
-from lalamo.modules.decoder import Decoder, DecoderResult
+from lalamo.modules.decoder import Decoder
 from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.mlp import DenseMLP, DenseMLPConfig
 from lalamo.modules.normalization import Normalization, NormalizationConfig, UpcastMode
 from lalamo.modules.rope import PositionalEmbeddings, RoPE, UnscaledRoPEConfig
 from lalamo.modules.token_mixers.state.common import State
-from lalamo.modules.token_mixers.state.kv_cache import StaticKVCacheLayer
 from lalamo.speculator.common import LMState, SamplerConfig, SpeculationStep, Speculator
 from lalamo.speculator.utils import extract_activations
 
@@ -225,7 +224,10 @@ class Qwen3DFlashAttention(eqx.Module):
         attn_mask = jnp.broadcast_to(valid[None, :], (block_size, capacity))
 
         # jax.nn.dot_product_attention broadcasts when num_kv_heads < num_heads,
-        # so we pass the compressed K/V directly instead of repeating.
+        # so we pass the compressed K/V directly instead of repeating. JAX
+        # picks the fastest backend (cuDNN Flash-Attention on H100, XLA on
+        # CPU/Metal); forcing ``implementation="cudnn"`` was tried but it
+        # raises on non-CUDA hosts, so the default auto-select is safer.
         attn_out = jax.nn.dot_product_attention(
             query=q[None],
             key=keys[None],
@@ -512,6 +514,11 @@ class DFlashSpeculator(Speculator[BlockProposal]):
     * target tokens: ``argmax`` at T=0, multinomial on ``softmax(logits / T)`` at T>0;
     * accept the longest prefix of ``draft[1:] == target_sample[:-1]``;
     * ``next_bonus = target_sample[num_accepted]``.
+
+    The inner loop is a single fused JIT (:func:`_dflash_step_jax`) that performs
+    drafter forward → target chain forward → target sample → exact-match accept →
+    KV compact all on-device; :meth:`step` pays exactly one host sync per
+    iteration to materialise the accepted token list and the next bonus.
     """
 
     name: ClassVar[str] = "dflash"
@@ -538,11 +545,18 @@ class DFlashSpeculator(Speculator[BlockProposal]):
     # Prompts longer than this raise in :meth:`prefill`; raise the value for
     # datasets with longer inputs.
     prompt_pad_length: int = 1024
-    # Real prompt length stashed by :meth:`prefill` so the first
-    # :meth:`generate_block` can tell the drafter how many of the
-    # ``prompt_pad_length`` rows of ``lm.layer_outputs`` are real. Reset to
-    # 0 after the first step consumes it.
-    valid_prefill_len: int = 0
+    # Pre-built [MASK, MASK, ..., MASK] template of length ``block_size``.
+    # The anchor bonus is spliced in at index 0 via ``.at[0].set(...)`` inside
+    # the fused step so we avoid a host→device ``jnp.array([...])`` every
+    # iteration.
+    noise_template: Int[Array, " block_size"] = field(
+        default_factory=lambda: jnp.zeros(0, dtype=jnp.int32),
+    )
+    # Traced valid-ctx-len for the drafter attention mask: after prefill it
+    # is the real prompt length, after each step it becomes ``1 + num_accepted``.
+    # Kept as a jnp scalar (not a Python int) so changing its value does not
+    # trigger a recompile of the fused step JIT.
+    valid_ctx_len: Int[Array, ""] = field(default_factory=lambda: jnp.int32(0))
 
     @classmethod
     def create(
@@ -567,6 +581,10 @@ class DFlashSpeculator(Speculator[BlockProposal]):
             temperature=temperature,
             rng_key=jax.random.PRNGKey(config.seed),
             prompt_pad_length=prompt_pad_length,
+            noise_template=jnp.full(
+                (model.config.block_size,), model.config.mask_token_id, dtype=jnp.int32,
+            ),
+            valid_ctx_len=jnp.int32(0),
             trace_layer_outputs=model.config.target_layer_ids,
             trace_output_norm=False,
             prefill_hidden_range=None,
@@ -644,7 +662,8 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         bonus = self.sample_token(logits, sub_key)
         draft_kv = self.model.init_kv_cache(capacity=self.generation_capacity + pad_length)
         new_self = dataclasses.replace(
-            self, rng_key=rng_key, draft_kv_state=draft_kv, valid_prefill_len=real_len,
+            self, rng_key=rng_key, draft_kv_state=draft_kv,
+            valid_ctx_len=jnp.int32(real_len),
         )
         lm = LMState(
             kv_cache=fwd.updated_state,
@@ -657,212 +676,236 @@ class DFlashSpeculator(Speculator[BlockProposal]):
         return new_self, lm
 
     def draft(self, lm: LMState) -> BlockProposal:
-        proposal, _ = self.generate_block(lm)
-        return proposal
+        """Produce a proposal without advancing any state. Runs the full fused
+        step forward but discards everything except the chain of tokens —
+        cheap enough for introspection, not used on the hot path.
+        """
+        verify_key, _ = jax.random.split(self.rng_key)
+        bonus_arr = jnp.asarray(lm.bonus, dtype=jnp.int32)
+        (*_, full_tokens, _, _, _) = _dflash_step_jax(
+            self.model,
+            self.decoder,
+            self.noise_template,
+            self.trace_layer_outputs or (),
+            self.temperature,
+            lm.kv_cache,
+            self.draft_kv_state,
+            lm.layer_outputs,
+            self.valid_ctx_len,
+            bonus_arr,
+            verify_key,
+        )
+        return BlockProposal(tokens=np.asarray(full_tokens))
 
     def step(self, lm: LMState) -> tuple[Self, LMState, SpeculationStep]:
-        proposal, new_draft_kv = self.generate_block(lm)
-        fwd = self.chain_forward(lm, proposal)
         rng_key, verify_key = jax.random.split(self.rng_key)
-        target_samples = self.sample_block(fwd.logits[0], verify_key)
-        accepted, next_bonus = self.accept_chain(proposal, target_samples)
-        new_lm = self.build_next_state(lm, fwd, accepted, next_bonus)
-        final_self = dataclasses.replace(
-            self, rng_key=rng_key, draft_kv_state=new_draft_kv, valid_prefill_len=0,
-        )
-        return (
-            final_self,
-            new_lm,
-            SpeculationStep(accepted=accepted, bonus=next_bonus),
+        bonus_arr = jnp.asarray(lm.bonus, dtype=jnp.int32)
+
+        (
+            new_kv_cache,
+            new_layer_outputs,
+            new_output_norm,
+            new_logits,
+            next_bonus_arr,
+            new_position_arr,
+            full_tokens,
+            num_accepted_arr,
+            new_valid_ctx_len,
+            new_draft_kv,
+        ) = _dflash_step_jax(
+            self.model,
+            self.decoder,
+            self.noise_template,
+            self.trace_layer_outputs or (),
+            self.temperature,
+            lm.kv_cache,
+            self.draft_kv_state,
+            lm.layer_outputs,
+            self.valid_ctx_len,
+            bonus_arr,
+            verify_key,
         )
 
-    # --- sampling --------------------------------------------------------------
+        # Single host-sync boundary: all ten outputs come from one filter_jit
+        # call, so the first ``int(...)`` below blocks until the whole fused
+        # program finishes, and the remaining materialisations are cheap
+        # D2H reads against already-computed tensors.
+        n = int(num_accepted_arr)
+        next_bonus_py = int(next_bonus_arr)
+        new_position_py = int(new_position_arr)
+        full_tokens_np = np.asarray(full_tokens)
+        accepted = full_tokens_np[1 : 1 + n].tolist()
+
+        new_lm = LMState(
+            kv_cache=new_kv_cache,
+            layer_outputs=new_layer_outputs,
+            output_norm=new_output_norm,
+            logits=new_logits,
+            position=new_position_py,
+            bonus=next_bonus_py,
+        )
+        final_self = dataclasses.replace(
+            self,
+            rng_key=rng_key,
+            draft_kv_state=new_draft_kv,
+            valid_ctx_len=new_valid_ctx_len,
+        )
+        return final_self, new_lm, SpeculationStep(accepted=accepted, bonus=next_bonus_py)
+
+    # --- prefill helper --------------------------------------------------------
 
     def sample_token(self, logits: Float[Array, " vocab"], key: Int[Array, "2"]) -> int:
-        """One-shot sampler used by prefill for the first bonus."""
+        """One-shot sampler used by :meth:`prefill` for the first bonus."""
         if self.temperature < 1e-5:
             return int(jnp.argmax(logits))
         return int(jax.random.categorical(key, logits.astype(jnp.float32) / self.temperature))
 
-    def sample_block(
-        self,
-        logits: Float[Array, "block_size vocab"],
-        key: Int[Array, "2"],
-    ) -> Int[np.ndarray, " block_size"]:
-        """Per-position target sample used during verification.
 
-        Paper convention: greedy at T=0, multinomial at T>0. Emphatically NOT
-        Gumbel-max coupled with the drafter — the drafter is argmax-only.
-        """
-        if self.temperature < 1e-5:
-            return np.asarray(jnp.argmax(logits, axis=-1))
-        block_size, _ = logits.shape
-        keys = jax.random.split(key, block_size)
-        scaled = logits.astype(jnp.float32) / self.temperature
-        sampled = jax.vmap(lambda k, row: jax.random.categorical(k, row))(keys, scaled)
-        return np.asarray(sampled)
+# ---------------------------------------------------------------------------
+# Fused step: one filter_jit call per speculation iteration.
+#
+# All the per-step JAX work lives here as a module-level function so
+# ``eqx.filter_jit`` can cache the compiled program against the static
+# signature ``(model, decoder, trace_layer_outputs, temperature, shape of
+# kv_cache/draft_kv/layer_outputs)``. ``self`` is never passed in — the
+# speculator class is a plain frozen dataclass, not a pytree, so closing
+# over it would force a recompile on every ``step()`` call.
+# ---------------------------------------------------------------------------
 
-    # --- verification ----------------------------------------------------------
 
-    def chain_forward(self, lm: LMState, proposal: BlockProposal) -> DecoderResult:
-        """Plain causal forward — no ``attention_parent_indices`` → standard
-        causal mask. The target decoder writes K/V for ``block_size`` new
-        positions starting at ``cache_len``.
-        """
-        first_layer = lm.kv_cache[0]
-        assert isinstance(first_layer, StaticKVCacheLayer)
-        cache_len = first_layer.current_length[0]  # traced scalar — no host sync
-        block_size = int(proposal.tokens.shape[0])
-        tok_ids = jnp.array(proposal.tokens[None, :], dtype=jnp.int32)
-        positions = (cache_len + jnp.arange(block_size, dtype=jnp.int32))[None, :]
-        return self.decoder(
-            tok_ids,
-            positions,
-            lm.kv_cache,
-            return_updated_state=True,
-            return_activation_trace=True,
-            forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+@eqx.filter_jit
+def _dflash_step_jax(
+    model: DFlashDraftModel,
+    decoder: Decoder,
+    noise_template: Int[Array, " block_size"],
+    trace_layer_outputs: tuple[int, ...],
+    temperature: float,
+    kv_cache: State,
+    draft_kv_state: DraftKVState,
+    layer_outputs: tuple[Float[Array, "ctx channels"], ...],
+    valid_ctx_len: Int[Array, ""],
+    bonus: Int[Array, ""],
+    verify_key: Int[Array, "2"],
+) -> tuple[
+    State,
+    tuple[Float[Array, "block_size channels"], ...],
+    Float[Array, "block_size channels"] | None,
+    Float[Array, " vocab"],
+    Int[Array, ""],
+    Int[Array, ""],
+    Int[Array, " block_size"],
+    Int[Array, ""],
+    Int[Array, ""],
+    DraftKVState,
+]:
+    cfg = model.config
+    block_size = cfg.block_size
+
+    # ---- Drafter forward ----
+    target_hidden_new = jnp.concatenate(layer_outputs, axis=-1)
+    shape_ctx_len, _ = target_hidden_new.shape
+    # Post-step layer_outputs always have shape (block_size, channels); the
+    # first step after prefill arrives with shape (prompt_pad_length,
+    # channels) > block_size. Only the subsequent-step branch needs extra
+    # padding; the prefill branch is already canonically sized.
+    if shape_ctx_len < block_size:
+        pad = block_size - shape_ctx_len
+        target_hidden_new = jnp.concatenate(
+            [
+                target_hidden_new,
+                jnp.zeros((pad, cfg.fused_dim), dtype=target_hidden_new.dtype),
+            ],
+            axis=0,
         )
+    padded_ctx_len, _ = target_hidden_new.shape
 
-    @staticmethod
-    def accept_chain(
-        proposal: BlockProposal,
-        target_samples: Int[np.ndarray, " block_size"],
-    ) -> tuple[list[int], int]:
-        """Exact-match accept: longest prefix where ``draft[i+1] == target[i]``.
+    noise_tokens = noise_template.at[0].set(bonus)
+    noise_embedding = decoder.embedding.embed(noise_tokens)
 
-        Returns ``(accepted_drafts, next_bonus)``. ``next_bonus`` is the target
-        sample at the first rejected position (or at the end of the block if
-        everything was accepted).
-        """
-        matches = (proposal.tokens[1:] == target_samples[:-1]).astype(np.int32)
-        num_accepted = int(np.sum(np.cumprod(matches)))
-        accepted = proposal.tokens[1 : 1 + num_accepted].tolist()
-        next_bonus = int(target_samples[num_accepted])
-        return accepted, next_bonus
+    cached = draft_kv_state[0].length
+    ctx_idx = jnp.arange(padded_ctx_len, dtype=jnp.int32)
+    # Real ctx rows get their natural absolute positions; padded rows carry
+    # a dummy 0 (masked out inside the drafter). Noise rows sit at
+    # ``cached + valid_ctx_len + i`` so RoPE places them immediately after
+    # the real ctx regardless of pad length.
+    ctx_positions = cached + jnp.where(ctx_idx < valid_ctx_len, ctx_idx, jnp.int32(0))
+    noise_positions = cached + valid_ctx_len + jnp.arange(block_size, dtype=jnp.int32)
+    position_ids = jnp.concatenate([ctx_positions, noise_positions])
 
-    def build_next_state(
-        self,
-        lm: LMState,
-        fwd: DecoderResult,
-        accepted: list[int],
-        next_bonus: int,
-    ) -> LMState:
-        """Commit the accepted prefix into the target KV cache and package
-        the new :class:`LMState`.
-        """
-        first_layer = lm.kv_cache[0]
-        assert isinstance(first_layer, StaticKVCacheLayer)
-        cache_len = first_layer.current_length[0]  # traced scalar
-        total_kept = 1 + len(accepted)
-        block_size = self.model.config.block_size
+    hidden, new_draft_kv = model(
+        noise_embedding,
+        target_hidden_new.astype(cfg.precision),
+        draft_kv_state,
+        position_ids,
+        valid_ctx_len,
+    )
 
-        assert fwd.updated_state is not None
-        kept_indices = jnp.arange(total_kept, dtype=jnp.int32)
-        kept_padded = jnp.concatenate(
-            [kept_indices, jnp.zeros(block_size - total_kept, dtype=jnp.int32)],
-        )
-        new_layers: list[StaticKVCacheLayer] = []
-        for layer in fwd.updated_state:
-            if not isinstance(layer, StaticKVCacheLayer):
-                raise TypeError(
-                    f"DFlash requires StaticKVCacheLayer, got {type(layer).__name__}",
-                )
-            new_layers.append(
-                layer.compact(cache_len, kept_padded, jnp.int32(total_kept), block_size),
-            )
-        new_kv = State(new_layers)
+    draft_logits = jax.vmap(decoder.embedding.readout)(hidden[1:])
+    draft_tokens = jnp.argmax(draft_logits, axis=-1)
+    full_tokens = jnp.concatenate([bonus[None], draft_tokens])
 
-        assert fwd.activation_trace is not None
-        layer_outputs, output_norm = extract_activations(
-            fwd.activation_trace,
-            sample_index=0,
-            positions=jnp.arange(total_kept, dtype=jnp.int32),
-            trace_layer_outputs=self.trace_layer_outputs,
-            trace_output_norm=self.trace_output_norm,
-        )
-        return LMState(
-            kv_cache=new_kv,
-            layer_outputs=layer_outputs,
-            output_norm=output_norm,
-            logits=jnp.array(fwd.logits[0, len(accepted)]),
-            position=int(cache_len) + total_kept,
-            bonus=next_bonus,
-        )
+    # ---- Target chain forward ----
+    first_layer = kv_cache[0]
+    target_cached = first_layer.current_length[0]  # type: ignore[union-attr]
+    positions_target = (target_cached + jnp.arange(block_size, dtype=jnp.int32))[None, :]
+    # Explicit linear-chain parent_indices guarantees block-internal causal
+    # attention regardless of how lalamo's default SINGLE_TOKEN mask evolves.
+    parent_indices = (jnp.arange(block_size, dtype=jnp.int32) - 1)[None, :]
+    fwd = decoder(
+        full_tokens[None],
+        positions_target,
+        kv_cache,
+        return_updated_state=True,
+        return_activation_trace=True,
+        forward_pass_mode=ForwardPassMode.SINGLE_TOKEN,
+        attention_parent_indices=parent_indices,
+    )
 
-    # --- drafter forward -------------------------------------------------------
+    # ---- Target sampling ----
+    if temperature < 1e-5:
+        target_samples = jnp.argmax(fwd.logits[0], axis=-1)
+    else:
+        keys = jax.random.split(verify_key, block_size)
+        scaled = fwd.logits[0].astype(jnp.float32) / temperature
+        target_samples = jax.vmap(jax.random.categorical)(keys, scaled)
 
-    def generate_block(self, lm: LMState) -> tuple[BlockProposal, DraftKVState]:
-        cfg = self.model.config
-        block_size = cfg.block_size
+    # ---- Exact-match accept (JAX) ----
+    matches = (full_tokens[1:] == target_samples[:-1]).astype(jnp.int32)
+    num_accepted = jnp.sum(jnp.cumprod(matches))
+    next_bonus = jnp.take(target_samples, num_accepted)
+    total_kept = num_accepted + 1
 
-        if not lm.layer_outputs or len(lm.layer_outputs) != cfg.num_fused_target_layers:
-            raise ValueError(
-                f"DFlash expects {cfg.num_fused_target_layers} traced target-layer outputs on "
-                f"LMState, got {len(lm.layer_outputs)}.",
-            )
-        target_hidden_new = jnp.concatenate(lm.layer_outputs, axis=-1)
-        shape_ctx_len, _ = target_hidden_new.shape
+    # ---- Compact target KV ----
+    all_indices = jnp.arange(block_size, dtype=jnp.int32)
+    kept_mask = all_indices < total_kept
+    kept_padded = jnp.where(kept_mask, all_indices, jnp.int32(0))
 
-        # The drafter forward sees two canonical shapes across an entire
-        # run, so it compiles exactly twice:
-        #   * first step after prefill — ``target_hidden_new`` has shape
-        #     ``(prompt_pad_length, fused_dim)`` (see :meth:`prefill`). The
-        #     drafter masks out rows ``[valid_prefill_len, prompt_pad_length)``
-        #     using ``valid_prefill_len`` stashed on ``self``.
-        #   * every subsequent step — the real row count ``1 + num_accepted``
-        #     sits in ``[1, block_size]``; we pad up to ``block_size`` so the
-        #     shape is the same for every iteration.
-        if shape_ctx_len > block_size:
-            valid_ctx_len = self.valid_prefill_len
-            padded_ctx_len = shape_ctx_len
-        else:
-            valid_ctx_len = shape_ctx_len
-            if shape_ctx_len < block_size:
-                pad = block_size - shape_ctx_len
-                target_hidden_new = jnp.concatenate(
-                    [
-                        target_hidden_new,
-                        jnp.zeros((pad, cfg.fused_dim), dtype=target_hidden_new.dtype),
-                    ],
-                    axis=0,
-                )
-            padded_ctx_len = block_size
+    new_kv_cache = State(
+        [layer.compact(target_cached, kept_padded, total_kept, block_size) for layer in fwd.updated_state],
+    )
 
-        noise_tokens = jnp.array(
-            [lm.bonus, *([cfg.mask_token_id] * (block_size - 1))],
-            dtype=jnp.int32,
-        )
-        noise_embedding = self.decoder.embedding.embed(noise_tokens)
+    # ---- Extract activations (fixed shape (block_size, d); caller uses
+    # valid_ctx_len=total_kept to mask rows [total_kept, block_size)). ----
+    new_layer_outputs, new_output_norm = extract_activations(
+        fwd.activation_trace,
+        sample_index=0,
+        positions=all_indices,
+        trace_layer_outputs=trace_layer_outputs or None,
+        trace_output_norm=False,
+    )
 
-        # Keep ``cached`` as a traced scalar so the drafter's position_ids
-        # construction stays on-device — no host sync every iteration.
-        #
-        # Positions are laid out [real_ctx; padded_ctx (masked); noise] but the
-        # noise must receive absolute positions ``cached + valid_ctx_len + i``
-        # — not ``cached + padded_ctx_len + i`` — otherwise RoPE puts the
-        # noise anchor past the real context and token predictions fall out
-        # of lockstep with the target, collapsing acceptance after step 1.
-        # The padded-ctx slots get a dummy position (0) and are masked out
-        # inside the attention call.
-        cached = self.draft_kv_state[0].length
-        ctx_idx = jnp.arange(padded_ctx_len, dtype=jnp.int32)
-        ctx_positions = cached + jnp.where(ctx_idx < jnp.int32(valid_ctx_len), ctx_idx, jnp.int32(0))
-        noise_positions = cached + jnp.int32(valid_ctx_len) + jnp.arange(block_size, dtype=jnp.int32)
-        position_ids = jnp.concatenate([ctx_positions, noise_positions])
+    new_logits = jnp.take(fwd.logits[0], num_accepted, axis=0)
+    new_position = target_cached + total_kept
 
-        hidden, new_draft_kv = self.model(
-            noise_embedding,
-            target_hidden_new.astype(cfg.precision),
-            self.draft_kv_state,
-            position_ids,
-            jnp.int32(valid_ctx_len),
-        )
-
-        # hidden[0] corresponds to the anchor (known bonus); hidden[1:] predicts
-        # the next ``block_size - 1`` tokens. Draft = argmax (greedy), per paper.
-        draft_logits = jax.vmap(self.decoder.embedding.readout)(hidden[1:])
-        draft_tokens = np.asarray(jnp.argmax(draft_logits, axis=-1))
-
-        tokens = np.concatenate([np.array([lm.bonus], dtype=np.int32), draft_tokens.astype(np.int32)])
-        return BlockProposal(tokens=tokens), new_draft_kv
+    return (
+        new_kv_cache,
+        new_layer_outputs,
+        new_output_norm,
+        new_logits,
+        next_bonus,
+        new_position,
+        full_tokens,
+        num_accepted,
+        total_kept,
+        new_draft_kv,
+    )
