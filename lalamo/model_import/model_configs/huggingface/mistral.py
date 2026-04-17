@@ -68,10 +68,13 @@ class HFMistralConfig(HuggingFaceLMConfig):
                 precision=activation_precision,
             )
 
+        head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
+
         rope_config = UnscaledRoPEConfig(
             precision=activation_precision,
             base=self.rope_theta,
             max_sequence_length=context_length or self.max_position_embeddings,
+            head_dim=head_dim,
         )
 
         rmsnorm_config = NormalizationConfig(
@@ -86,8 +89,6 @@ class HFMistralConfig(HuggingFaceLMConfig):
         linear_config = FullPrecisionLinearConfig(
             precision=activation_precision,
         )
-
-        head_dim = self.head_dim or self.hidden_size // self.num_attention_heads
 
         mlp_config = DenseMLPConfig(
             linear_config=linear_config,
@@ -124,12 +125,11 @@ class HFMistralConfig(HuggingFaceLMConfig):
                 pre_mlp_norm_config=rmsnorm_config,
                 mlp_config=mlp_config,
                 post_mlp_norm_config=None,
+                rope_config=rope_config,
             )
             layer_configs.append(transformer_layer_config)
 
         transformer_config = TransformerConfig(
-            global_rope_config=rope_config,
-            local_rope_config=None,
             layer_configs=tuple(layer_configs),
             output_norm_config=rmsnorm_config,
             model_dim=self.hidden_size,

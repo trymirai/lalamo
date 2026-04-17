@@ -72,8 +72,8 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         precision=precision,
         base=config["rope_base"],
         max_sequence_length=config["block_size"],
+        head_dim=config["head_dim"],
     )
-    local_rope_config = None
 
     norm_config_pre = NormalizationConfig(
         scale_precision=precision,
@@ -127,13 +127,12 @@ def lalamo_transformer_cfg_from_fish_audio_codec_cfg(
         pre_mlp_norm_config=pre_mlp_norm_config,
         mlp_config=mlp_config,
         post_mlp_norm_config=post_mlp_norm_config,
+        rope_config=global_rope_config,
     )
     hidden_dim = config["intermediate_size"]
     context_length = config["block_size"]
 
     transformer_cfg = TransformerConfig(
-        global_rope_config=global_rope_config,
-        local_rope_config=local_rope_config,
         layer_configs=tuple([layer_config] * config["n_layer"]),
         output_norm_config=norm_config_pre,
         model_dim=input_dim,
@@ -317,8 +316,8 @@ class FishAudioConfig(ForeignTTSConfig):
             precision=precision,
             base=self.rope_base,
             max_sequence_length=self.max_seq_len,
+            head_dim=head_dim,
         )
-        local_rope_config = None
 
         norm_config = NormalizationConfig(
             scale_precision=precision,
@@ -372,14 +371,13 @@ class FishAudioConfig(ForeignTTSConfig):
             pre_mlp_norm_config=pre_mlp_norm_config,
             mlp_config=mlp_config,
             post_mlp_norm_config=post_mlp_norm_config,
+            rope_config=global_rope_config,
         )
         model_dim = dim
         hidden_dim = intermediate_size
         context_length = self.max_seq_len
 
         transformer_cfg = TransformerConfig(
-            global_rope_config=global_rope_config,
-            local_rope_config=local_rope_config,
             layer_configs=tuple([layer_config] * n_layer),
             output_norm_config=norm_config,
             model_dim=model_dim,

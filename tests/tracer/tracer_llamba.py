@@ -1,7 +1,7 @@
 from collections.abc import Iterable
 from dataclasses import dataclass
 from itertools import batched
-from typing import Self
+from typing import Any, Self
 
 import cartesia_mlx as cmx
 import mlx.core as mx
@@ -28,12 +28,8 @@ class LlambaDecoderTracer(ModelTracer[mx.array, tuple[nn.Module, nn.Module], nn.
 
         return self.model.embedding(token_ids)
 
-    # no ropes
-    def match_global_rope(self, activation_trace: ActivationTrace) -> None:
-        pass
-
-    def match_local_rope(self, activation_trace: ActivationTrace) -> None:
-        pass
+    def rope_fns(self) -> list[tuple[str, Any]]:
+        return []
 
     def rmsnorm(self, rmsnorm: nn.Module, x: mx.array) -> mx.array:
         return rmsnorm(x)
