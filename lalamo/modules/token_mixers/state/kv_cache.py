@@ -352,5 +352,3 @@ class StaticKVCacheLayer(KVCacheLayer):
             values=jnp.zeros((capacity, num_groups, head_dim), dtype=dtype),
             current_length=jnp.array(has_sinks, dtype=jnp.int32),
         )
-
-
