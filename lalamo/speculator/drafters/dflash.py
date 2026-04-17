@@ -2,7 +2,7 @@ import dataclasses
 import json
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any, ClassVar, Self
+from typing import Any, ClassVar, Self, cast
 
 import equinox as eqx
 import jax
@@ -536,6 +536,36 @@ class DFlashSpeculator(Speculator[BlockProposal]):
             trace_layer_outputs=model.config.target_layer_ids,
             trace_output_norm=False,
             prefill_hidden_range=None,
+        )
+
+    @classmethod
+    def deserialize_impl(cls, data: bytes, **kwargs: object) -> Self:
+        """Treat ``data`` as a HuggingFace repo id or local model directory,
+        fetch weights via :func:`load_from_hf` (uses the HF cache on repeat
+        runs), and build through :meth:`create`. Weights are never serialised
+        locally — the .bin file is just a pointer. Write one with, e.g.,
+        ``echo -n 'z-lab/Qwen3-4B-DFlash-b16' > dflash_4b.bin``.
+
+        Required kwargs: ``decoder``, ``config``, ``eos_set``. Optional:
+        ``temperature`` (default 0.0). Extra kwargs forwarded by the generic
+        ``lalamo speculator eval`` CLI (``width``, ``depth``) are ignored.
+        """
+        decoder = kwargs["decoder"]
+        config = kwargs["config"]
+        eos_set = kwargs["eos_set"]
+        temperature = kwargs.get("temperature", 0.0)
+        assert isinstance(decoder, Decoder)
+        assert isinstance(config, SamplerConfig)
+        assert isinstance(eos_set, frozenset)
+        assert isinstance(temperature, (int, float))
+
+        _, model = load_from_hf(data.decode().strip())
+        return cls.create(
+            decoder=decoder,
+            model=model,
+            config=config,
+            eos_set=cast("frozenset[int]", eos_set),
+            temperature=float(temperature),
         )
 
     @property
