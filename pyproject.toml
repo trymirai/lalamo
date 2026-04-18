@@ -119,7 +119,10 @@ fish-speech = { git="https://github.com/trymirai/fish-speech.git", tag="c6dd030"
 # addopts = ["--dist=loadgroup"]
 # log_cli = true
 # log_cli_level = "INFO"
-markers = ["fast: quick smoke tests"]
+markers = [
+    "fast: quick smoke tests",
+    "benchmark: slow benchmarks that require model downloads (opt-in via -m benchmark)",
+]
 
 [tool.pytest_env]
 JAX_DEBUG_NANS = "True"
