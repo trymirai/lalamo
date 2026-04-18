@@ -1,5 +1,6 @@
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
+from functools import partial
 from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
@@ -341,10 +342,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
         )
 
-        initial_sampling_policy = vmap(sampling_config.init, in_axes=(0, 0, None))(
+        initial_sampling_policy = vmap(partial(sampling_config.init, vocab_size=self.model.vocab_size))(
             prompt_token_ids,
             prompt_lengths_without_padding,
-            self.model.vocab_size,
         )
 
         initial_state = DecodingState(

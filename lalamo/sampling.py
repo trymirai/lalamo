@@ -1,6 +1,5 @@
 from abc import abstractmethod
 from collections.abc import Iterable
-from dataclasses import replace
 from math import log
 from typing import Self
 
@@ -115,11 +114,11 @@ class CountingPenalty(LogitTransform):
     ) -> Self:
         mask = (jnp.arange(prompt_token_ids.shape[0]) < prompt_length).astype(jnp.int32)
         counts = jnp.zeros(vocab_size, dtype=jnp.int32).at[prompt_token_ids].add(mask)
-        return replace(self, token_counts=counts)
+        return eqx.tree_at(lambda s: s.token_counts, self, counts)
 
     def update(self, next_token: Int[Array, ""]) -> Self:
         assert self.token_counts is not None
-        return replace(self, token_counts=self.token_counts.at[next_token].add(1))
+        return eqx.tree_at(lambda s: s.token_counts, self, self.token_counts.at[next_token].add(1))
 
 
 class RepetitionPenalty(CountingPenalty):
@@ -159,10 +158,18 @@ class SamplingPolicy(LogitTransform):
         prompt_length: Int[Array, ""],
         vocab_size: int,
     ) -> Self:
-        return type(self)(tuple(p.init(prompt_token_ids, prompt_length, vocab_size) for p in self.policies))
+        return eqx.tree_at(
+            lambda s: s.policies,
+            self,
+            tuple(p.init(prompt_token_ids, prompt_length, vocab_size) for p in self.policies),
+        )
 
     def update(self, next_token: Int[Array, ""]) -> Self:
-        return type(self)(tuple(p.update(next_token) for p in self.policies))
+        return eqx.tree_at(
+            lambda s: s.policies,
+            self,
+            tuple(p.update(next_token) for p in self.policies),
+        )
 
 
 def make_policy(
