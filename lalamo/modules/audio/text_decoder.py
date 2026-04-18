@@ -6,7 +6,7 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.common import LalamoModule
-from lalamo.sampling import SamplingPipeline
+from lalamo.sampling import SamplingPolicy
 
 
 @dataclass(frozen=True)
@@ -36,6 +36,6 @@ class TTSTextDecoder[ConfigT](LalamoModule[ConfigT]):
     def decode_utterance(
         self,
         text_tokens: Array,
-        sampling_policy: SamplingPipeline | None = None,
+        sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Array: ...

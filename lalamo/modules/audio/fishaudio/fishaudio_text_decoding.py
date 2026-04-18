@@ -19,7 +19,7 @@ from lalamo.modules.linear import FullPrecisionLinear, FullPrecisionLinearConfig
 from lalamo.modules.token_mixers.state.common import State
 from lalamo.modules.transformer import Transformer, TransformerConfig
 from lalamo.modules.utils import vmap_twice
-from lalamo.sampling import SamplingPipeline
+from lalamo.sampling import SamplingPolicy
 
 
 @dataclass
@@ -230,7 +230,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def __call__(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_policy: SamplingPipeline,
+        sampling_policy: SamplingPolicy,
         key: PRNGKeyArray,
         input_pos: Int[Array, "batch tokens"] | None = None,
         state: State | None = None,
@@ -296,7 +296,7 @@ class FishAudioTextDecoder(TTSTextDecoder[FishAudioTextDecoderConfig]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_policy: SamplingPipeline | None = None,
+        sampling_policy: SamplingPolicy | None = None,
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks tokens"]:
         """
@@ -406,7 +406,7 @@ def decode_next_token(
     x: Array,
     state_slow: State | None,
     input_pos: Array,
-    sampling_policy: SamplingPipeline,
+    sampling_policy: SamplingPolicy,
     key: PRNGKeyArray,
     previous_tokens: Array | None = None,  # noqa: ARG001, reserved for future when repetition penalty is done
 ) -> tuple[Int[Array, "batch codes"], State | None]:

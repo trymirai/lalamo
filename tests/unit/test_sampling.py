@@ -15,10 +15,10 @@ from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
 from lalamo.sampling import (
-    FrequencyPenaltyConfig,
-    PresencePenaltyConfig,
-    RepetitionPenaltyConfig,
-    SamplingPipelineConfig,
+    CompositePolicy,
+    FrequencyPenalty,
+    PresencePenalty,
+    RepetitionPenalty,
 )
 from tests.common import assert_close
 from tests.conftest import filter_specs, mark_by_size
@@ -52,11 +52,9 @@ def test_logit_processing(spec: ModelSpec) -> None:
         lalamo_hf_generation_config = HFGenerationConfig()
 
     hf_processors = GenerationMixin()._get_logits_processor(hf_generation_config, input_ids_seq_length=1)  # noqa: SLF001
-    lalamo_policy_config = _policy_from_hf_config(lalamo_hf_generation_config).default_policy_config()
-    lalamo_policy = lalamo_policy_config.init(
+    lalamo_policy = _policy_from_hf_config(lalamo_hf_generation_config).default_policy(vocab_size=256).init(
         prompt_token_ids=jnp.zeros((1,), dtype=jnp.int32),
         prompt_length=jnp.asarray(1, dtype=jnp.int32),
-        vocab_size=256,
     )
 
     for i in range(256):
@@ -84,21 +82,20 @@ def test_counting_penalty_stateful_update() -> None:
     prompt = jnp.asarray([1, 2, 1, 0, 0], dtype=jnp.int32)
     prompt_length = jnp.asarray(3, dtype=jnp.int32)
 
-    config = SamplingPipelineConfig((
-        RepetitionPenaltyConfig(2.0),
-        PresencePenaltyConfig(0.5),
-        FrequencyPenaltyConfig(0.25),
-    ))
-    pipeline = config.init(prompt, prompt_length, vocab_size)
+    policy = CompositePolicy((
+        RepetitionPenalty.zero(2.0, vocab_size),
+        PresencePenalty.zero(0.5, vocab_size),
+        FrequencyPenalty.zero(0.25, vocab_size),
+    )).init(prompt, prompt_length)
 
-    pipeline = pipeline.update(jnp.asarray(3, dtype=jnp.int32), jnp.bool_(True))
-    pipeline = pipeline.update(jnp.asarray(1, dtype=jnp.int32), jnp.bool_(True))
+    policy = policy.update(jnp.asarray(3, dtype=jnp.int32), jnp.bool_(True))
+    policy = policy.update(jnp.asarray(1, dtype=jnp.int32), jnp.bool_(True))
     # inactive update must not change any counts
-    pipeline = pipeline.update(jnp.asarray(5, dtype=jnp.int32), jnp.bool_(False))
+    policy = policy.update(jnp.asarray(5, dtype=jnp.int32), jnp.bool_(False))
 
     expected_counts = jnp.asarray([0, 3, 1, 1, 0, 0, 0, 0], dtype=jnp.int32)
-    for stage in pipeline.stages:
-        assert jnp.array_equal(stage.token_counts, expected_counts)
+    for sub_policy in policy.policies:
+        assert jnp.array_equal(sub_policy.token_counts, expected_counts)
 
     logits = jnp.asarray([1.0, 2.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
     counts = expected_counts.astype(jnp.float32)
@@ -110,7 +107,7 @@ def test_counting_penalty_stateful_update() -> None:
     expected_final = expected_presence - 0.25 * counts
 
     assert_close(
-        result=pipeline.process_logits(logits),
+        result=policy.process_logits(logits),
         reference=expected_final,
         atol=1e-6,
         rtol=1e-6,
@@ -123,8 +120,7 @@ def test_counting_penalty_ignores_out_of_vocab_prompt_tokens() -> None:
     prompt = jnp.asarray([1, 99, 2], dtype=jnp.int32)
     prompt_length = jnp.asarray(3, dtype=jnp.int32)
 
-    config = SamplingPipelineConfig((PresencePenaltyConfig(1.0),))
-    pipeline = config.init(prompt, prompt_length, vocab_size)
+    policy = CompositePolicy((PresencePenalty.zero(1.0, vocab_size),)).init(prompt, prompt_length)
 
-    (stage,) = pipeline.stages
-    assert jnp.array_equal(stage.token_counts, jnp.asarray([0, 1, 1, 0], dtype=jnp.int32))
+    (sub_policy,) = policy.policies
+    assert jnp.array_equal(sub_policy.token_counts, jnp.asarray([0, 1, 1, 0], dtype=jnp.int32))

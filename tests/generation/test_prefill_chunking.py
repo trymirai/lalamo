@@ -35,17 +35,16 @@ class TestPrefillChunkingConsistency:
         token_ids = jnp.arange(sequence_length, dtype=jnp.int32) % 1000
         token_ids = token_ids[None, :]
 
-        lengths_without_padding = jnp.array([sequence_length], dtype=jnp.int32)
         reference_logits = language_model._prefill(
             token_ids,
             state_capacity,
-            lengths_without_padding=lengths_without_padding,
+            lengths_without_padding=None,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
         test_logits = language_model._prefill(
             token_ids,
             state_capacity,
-            lengths_without_padding=lengths_without_padding,
+            lengths_without_padding=None,
             chunk_size=chunk_size,
         ).last_token_logits
         assert_close(
@@ -168,17 +167,16 @@ class TestPrefillChunkingConsistency:
         token_ids = token_ids[None, :]
 
         small_chunk = 32
-        lengths_without_padding = jnp.array([sequence_length], dtype=jnp.int32)
         small_logits = language_model._prefill(
             token_ids,
             state_capacity,
-            lengths_without_padding=lengths_without_padding,
+            lengths_without_padding=None,
             chunk_size=small_chunk,
         ).last_token_logits
         reference_logits = language_model._prefill(
             token_ids,
             state_capacity,
-            lengths_without_padding=lengths_without_padding,
+            lengths_without_padding=None,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
 
@@ -206,18 +204,15 @@ class TestPrefillChunkingConsistency:
         token_ids = jnp.arange(sequence_length, dtype=jnp.int32) % 1000
         token_ids = token_ids[None, :]
 
-        lengths_without_padding = jnp.array([sequence_length], dtype=jnp.int32)
         reference_logits = language_model._prefill(
             token_ids,
             state_capacity,
-            lengths_without_padding=lengths_without_padding,
             chunk_size=NO_CHUNK_SIZE,
         ).last_token_logits
 
         result = language_model._prefill(
             token_ids,
             state_capacity,
-            lengths_without_padding=lengths_without_padding,
             chunk_size=chunk_size,
         )
         assert_close(

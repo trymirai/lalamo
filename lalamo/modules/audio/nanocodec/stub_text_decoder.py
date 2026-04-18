@@ -15,7 +15,7 @@ from jaxtyping import Array, DTypeLike, Int, PRNGKeyArray
 
 from lalamo.common import ParameterTree
 from lalamo.modules.audio.text_decoder import TTSTextDecoder, TTSTextDecoderConfigBase
-from lalamo.sampling import SamplingPipeline
+from lalamo.sampling import SamplingPolicy
 
 __all__ = ["StubTextDecoder", "StubTextDecoderConfig"]
 
@@ -43,7 +43,7 @@ class StubTextDecoder(TTSTextDecoder["StubTextDecoderConfig"]):
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch sequence"],
-        sampling_policy: SamplingPipeline | None = None,  # noqa: ARG002
+        sampling_policy: SamplingPolicy | None = None,  # noqa: ARG002
         key: PRNGKeyArray | None = None,
     ) -> Int[Array, "batch num_codebooks tokens"]:
         """Generate random codebook indices with length derived from input tokens."""

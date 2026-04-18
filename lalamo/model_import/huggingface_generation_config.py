@@ -38,8 +38,6 @@ class HFGenerationConfig:
     # HF changed their default top_k in the following PR: https://github.com/huggingface/transformers/pull/42702
     top_k: int | None = None
     repetition_penalty: float | None = None
-    presence_penalty: float | None = None
-    frequency_penalty: float | None = None
 
     # -------- length limits -----------------
     max_length: int | None = None  # seen in Llama 3, Gemma 2/3
@@ -77,6 +75,4 @@ def _policy_from_hf_config(
         min_p=hf_config.min_p,
         banned_tokens=banned_tokens,
         repetition_penalty=hf_config.repetition_penalty,
-        presence_penalty=hf_config.presence_penalty,
-        frequency_penalty=hf_config.frequency_penalty,
     )

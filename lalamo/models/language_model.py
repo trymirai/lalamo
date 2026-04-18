@@ -1,6 +1,5 @@
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, replace
-from functools import partial
 from itertools import batched
 from pathlib import Path
 from typing import NamedTuple
@@ -25,7 +24,7 @@ from lalamo.modules import (
     get_current_sharding_config,
     pad_and_apply_data_sharding,
 )
-from lalamo.sampling import SamplingPipeline, SamplingPipelineConfig, make_policy
+from lalamo.sampling import SamplingPolicy, make_policy
 
 from .common import (
     BatchSizeInfo,
@@ -70,7 +69,7 @@ class DecodingState(NamedTuple):
     last_token_indices: Int[Array, " batch"]
     state: State
     stop_flags: Bool[Array, " batch"]
-    sampling_policy: SamplingPipeline
+    sampling_policy: SamplingPolicy
 
 
 class StepTrace(NamedTuple):
@@ -144,8 +143,9 @@ class GenerationConfig:
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
 
-    def default_policy_config(self) -> SamplingPipelineConfig:
+    def default_policy(self, vocab_size: int) -> SamplingPolicy:
         return make_policy(
+            vocab_size=vocab_size,
             temperature=self.temperature,
             top_k=self.top_k,
             top_p=self.top_p,
@@ -188,17 +188,19 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def stop_token_ids(self) -> tuple[int, ...]:
         return self.config.generation_config.stop_token_ids
 
-    def default_sampling_config(self) -> SamplingPipelineConfig:
-        return self.config.generation_config.default_policy_config()
+    def default_sampling_policy(self) -> SamplingPolicy:
+        return self.config.generation_config.default_policy(self.model.vocab_size)
 
     @eqx.filter_jit
     def _make_chunks(
         self,
         token_ids: Int[Array, "batch tokens"],
-        lengths_without_padding: Int[Array, " batch"],
+        lengths_without_padding: Int[Array, " batch"] | None,
         chunk_size: int,
     ) -> Chunk:
         batch_size, sequence_length = token_ids.shape
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
         # If all sequences fit in a single chunk, use sequence_length as the chunk size
         chunk_size = min(chunk_size, sequence_length)
@@ -251,11 +253,14 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         self,
         token_ids: Int[Array, "batch tokens"],
         state_capacity: int,
-        lengths_without_padding: Int[Array, " batch"],
+        lengths_without_padding: Int[Array, " batch"] | None = None,
         forward_pass_config: ForwardPassConfig | None = None,
         chunk_size: int = 512,  # vllm default
     ) -> PrefillResults:
-        batch_size, _ = token_ids.shape
+        batch_size, sequence_length = token_ids.shape
+
+        if lengths_without_padding is None:
+            lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
         chunks = self._make_chunks(token_ids, lengths_without_padding, chunk_size)
 
@@ -309,9 +314,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         if prompt_lengths_without_padding is None:
             prompt_lengths_without_padding = jnp.full((batch_size,), sequence_length, dtype=jnp.int32)
 
-        sampling_config = self.default_sampling_config()
+        sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
-            sampling_config = generation_config.default_policy_config()
+            sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
@@ -342,10 +347,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             forward_pass_config=forward_pass_config,
         )
 
-        initial_sampling_policy = vmap(partial(sampling_config.init, vocab_size=self.model.vocab_size))(
-            prompt_token_ids,
-            prompt_lengths_without_padding,
-        )
+        initial_sampling_policy = vmap(sampling_policy.init)(prompt_token_ids, prompt_lengths_without_padding)
 
         initial_state = DecodingState(
             prefill_results.last_token_logits,
@@ -787,9 +789,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
         *,
         key: PRNGKeyArray | None = None,
     ) -> Iterable[Int[Array, ""]]:
-        sampling_config = self.default_sampling_config()
+        sampling_policy = self.default_sampling_policy()
         if generation_config is not None:
-            sampling_config = generation_config.default_policy_config()
+            sampling_policy = generation_config.default_policy(self.model.vocab_size)
 
         if eos_token_ids is None:
             eos_token_ids = jnp.array(self.stop_token_ids, dtype=jnp.int32)
@@ -811,10 +813,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             key = jax.random.split(jax.random.key(0), num=1)[0]  # matching generate_replies with bs=1
         keys = split_into_rolling_keys(key, num=max_output_length)
 
-        sampling_policy = sampling_config.init(
+        sampling_policy = sampling_policy.init(
             padded_token_ids,
             jnp.asarray(input_length, dtype=jnp.int32),
-            self.model.vocab_size,
         )
 
         state = DecodingState(
