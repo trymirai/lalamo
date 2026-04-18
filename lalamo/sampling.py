@@ -104,10 +104,8 @@ class BanTokensPolicy(SamplingPolicy):
 
 
 class CountingPenalty(SamplingPolicy):
-    """Base for penalties that track per-vocab token counts seen in the prompt and generated so far."""
-
-    penalty: float = eqx.field(static=True)
     token_counts: Int[Array, " vocabulary"]
+    penalty: float = eqx.field(static=True)
 
     @classmethod
     def zero(cls, penalty: float, vocab_size: int) -> Self:
@@ -127,7 +125,7 @@ class RepetitionPenalty(CountingPenalty):
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         seen = self.token_counts > 0
         return jnp.where(
-            seen & (logits > 0),
+            jnp.logical_and(seen, logits > 0),
             logits / self.penalty,
             jnp.where(seen, logits * self.penalty, logits),
         )
