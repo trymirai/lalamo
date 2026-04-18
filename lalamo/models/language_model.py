@@ -12,7 +12,6 @@ from einops import rearrange, repeat
 from jax import vmap
 from jaxtyping import Array, Bool, Float, Int, Key
 
-from lalamo.arrays.base import ArrayForwardPassConfig, GradientEstimator
 from lalamo.message_processor import AssistantMessage, Message, MessageProcessor
 from lalamo.modules import (
     Decoder,
@@ -30,6 +29,7 @@ from lalamo.modules.token_mixers.common import AttentionForwardPassConfig, Atten
 from lalamo.modules.transformer import TransformerForwardPassConfig
 from lalamo.modules.transformer_layer import TransformerLayerForwardPassConfig
 from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.weight_matrix import GradientEstimator, MatmulConfig
 
 from .common import (
     BatchSizeInfo,
@@ -76,7 +76,7 @@ class ForwardPassConfig:
         deterministic_ops: bool = False,
         xla_autotune_level: int = 0,
     ) -> "ForwardPassConfig":
-        arrays = ArrayForwardPassConfig(
+        arrays = MatmulConfig(
             gradient_estimator=gradient_estimator,
         )
         return ForwardPassConfig(

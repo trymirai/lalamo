@@ -8,7 +8,7 @@ from lalamo.data.lalamo_completions import LalamoCompletion
 from lalamo.data.utils import get_prefixes_ending_in_user_message
 from lalamo.message_processor import Message
 from lalamo.models import GenerationTraceConfig, LanguageModel
-from lalamo.models.common import InferenceConfig
+from lalamo.modules.common import InferenceConfig
 
 
 class CollectTracesEvent(NamedTuple):

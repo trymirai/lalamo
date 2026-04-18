@@ -11,8 +11,8 @@ from einops import rearrange
 from jax import vmap
 from jaxtyping import Array, Bool, DTypeLike, Float, Int, Key
 
-from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.modules.utils import vmap_twice, vmap_with_key
+from lalamo.weight_matrix import MatmulConfig
 
 from .activations import Activation
 from .common import (
@@ -44,7 +44,7 @@ _SENTINEL = 2**31 - 1
 @dataclass(frozen=True)
 class MLPForwardPassConfig:
     moe_chunk_size_ratio: float = 0.2
-    arrays: ArrayForwardPassConfig = field(default_factory=ArrayForwardPassConfig)
+    arrays: MatmulConfig = field(default_factory=MatmulConfig)
 
 
 class MLPBase[ConfigT: "MLPConfig"](LalamoModule[ConfigT]):

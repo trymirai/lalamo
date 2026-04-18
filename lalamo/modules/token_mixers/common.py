@@ -6,9 +6,9 @@ from typing import NamedTuple
 from jax import numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int, Key
 
-from lalamo.arrays.base import ArrayForwardPassConfig
 from lalamo.module import Initializer, LalamoModule, PositionalEmbeddingSelector
 from lalamo.modules.rope import PositionalEmbeddings
+from lalamo.weight_matrix import MatmulConfig
 
 from .state.common import StateLayerBase
 
@@ -33,7 +33,7 @@ class AttentionImplementation(Enum):
 class AttentionForwardPassConfig:
     implementation: AttentionImplementation = AttentionImplementation.STABLE_REDUCTION
     upcast_dtype: DTypeLike | None = jnp.float32
-    arrays: ArrayForwardPassConfig = field(default_factory=ArrayForwardPassConfig)
+    arrays: MatmulConfig = field(default_factory=MatmulConfig)
 
 
 MixerForwardPassConfig = AttentionForwardPassConfig

@@ -5,26 +5,15 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Int
 
-from lalamo.arrays.embedding import (
-    CompressedEmbedding,
-    FullPrecisionEmbedding,
-    FullPrecisionEmbeddingSpec,
-    MLXEmbeddingSpec,
-    MLXQuantizedEmbedding,
-)
-from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.weight_matrix import EmbeddingMatrix, WeightMatrix
 
-from .common import (
-    Initializer,
-    LalamoModule,
-    register_config_union,
-)
 from .utils import apply_soft_capping
 
 __all__ = [
     "EmbeddingBase",
     "EmbeddingConfig",
-    "EmbeddingQuantConfig",
     "TiedEmbedding",
     "TiedEmbeddingConfig",
     "UntiedEmbedding",
@@ -33,39 +22,9 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class EmbeddingQuantConfig:
-    group_size: int
-    bits: int
-
-
-def _make_embedding(
-    initializer: Initializer,
-    vocab_size: int,
-    model_dim: int,
-    quantization: EmbeddingQuantConfig | None,
-) -> CompressedEmbedding:
-    if quantization is not None:
-        assert model_dim % quantization.group_size == 0
-        model_groups = model_dim // quantization.group_size
-        return MLXQuantizedEmbedding(
-            spec=MLXEmbeddingSpec(
-                bits=quantization.bits, group_size=quantization.group_size, float_dtype=initializer.precision
-            ),
-            weights=initializer.zeros((vocab_size, model_dim), initializer.precision),
-            scales=initializer.ones((vocab_size, model_groups), initializer.precision),
-            biases=initializer.zeros((vocab_size, model_groups), initializer.precision),
-        )
-    return FullPrecisionEmbedding(
-        spec=FullPrecisionEmbeddingSpec(),
-        weights=initializer.normal(1.0, (vocab_size, model_dim), initializer.precision),
-    )
-
-
-@dataclass(frozen=True)
-class EmbeddingConfigBase:
+class EmbeddingConfigBase(LalamoConfig):
     input_scale: float | None
     logit_soft_cap: float | None
-    activation_quantization_mode: QuantizationMode | None = None
 
     @abstractmethod
     def init(
@@ -77,11 +36,13 @@ class EmbeddingConfigBase:
 
 
 class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
+    @property
     @abstractmethod
-    def _prepare_input_weights(self) -> Float[Array, "vocabulary channels"]: ...
+    def embedding_matrix(self) -> EmbeddingMatrix: ...
 
+    @property
     @abstractmethod
-    def _prepare_output_weights(self) -> Float[Array, "vocabulary channels"]: ...
+    def readout_matrix(self) -> WeightMatrix: ...
 
     @property
     @abstractmethod
@@ -92,17 +53,15 @@ class EmbeddingBase[ConfigT: EmbeddingConfigBase](LalamoModule[ConfigT]):
     def model_dim(self) -> int: ...
 
     @eqx.filter_jit
-    def embed(self, x: Int[Array, " tokens"]) -> Float[Array, "tokens channels"]:
-        result = self._prepare_input_weights()[x]
+    def embed(self, x: int | Int[Array, ""]) -> Float[Array, " channels"]:
+        result = self.embedding_matrix.get_embedding(x)
         if self.config.input_scale is not None:
             result = result * jnp.array(self.config.input_scale, dtype=result.dtype)
         return result
 
     @eqx.filter_jit
     def readout(self, x: Float[Array, " channels"]) -> Float[Array, " vocabulary"]:
-        if self.config.activation_quantization_mode is not None:
-            x = dynamically_quantize_activations(x, self.config.activation_quantization_mode)
-        logits = self._prepare_output_weights() @ x
+        logits = self.readout_matrix.dot(x)
         if self.config.logit_soft_cap is not None:
             logits = apply_soft_capping(logits, self.config.logit_soft_cap)
         return logits

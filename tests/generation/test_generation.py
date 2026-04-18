@@ -1,10 +1,10 @@
 import jax.numpy as jnp
 import pytest
+from lalamo.modules.common import InferenceConfig
 
 from lalamo.message_processor import UserMessage
 from lalamo.model_import.model_specs.common import ModelType
 from lalamo.models import LanguageModel
-from lalamo.models.common import InferenceConfig
 from lalamo.models.language_model import GenerationConfig, LanguageModelConfig
 from tests.conftest import ConvertModel, filter_specs, mark_by_size
 from tests.model_test_tiers import ModelTier

@@ -31,11 +31,11 @@ from lalamo.model_import.common import (
     StatusEvent,
 )
 from lalamo.model_import.remote_registry import RegistryModel, RegistryModelFile
-from lalamo.models import GenerationConfig, LanguageModelConfig, TTSGenerator
-from lalamo.models.common import BatchSizesComputedEvent, InferenceConfig
+from lalamo.models import GenerationConfig, GenerationTraceConfig, LanguageModelConfig, TTSGenerator
 from lalamo.models.lm_helpers import estimate_batchsize_from_bytes
 from lalamo.module import LalamoModule, ShardingConfig, use_sharding
 from lalamo.modules import config_converter
+from lalamo.modules.common import BatchSizesComputedEvent, InferenceConfig
 from lalamo.safetensors import safe_write
 from lalamo.speculator.inference import CollectTracesEvent, inference_collect_traces
 from lalamo.speculator.ngram import NGramSpeculator

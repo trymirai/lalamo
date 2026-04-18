@@ -11,7 +11,7 @@ from jax.errors import JaxRuntimeError
 from jaxtyping import DTypeLike
 
 from lalamo.common import LalamoWarning, get_usable_memory_from_bytes
-from lalamo.models.common import InferenceConfig
+from lalamo.modules.common import InferenceConfig
 
 type TokenSequence = list[int] | np.ndarray | jnp.ndarray
 

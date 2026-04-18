@@ -1,6 +1,3 @@
-import math
-from abc import ABC, abstractmethod
-from collections.abc import Sequence
 from dataclasses import dataclass
 from itertools import accumulate
 
@@ -8,11 +5,9 @@ import equinox as eqx
 import jax.numpy as jnp
 from jaxtyping import Array, DTypeLike, Float, Key
 
-from lalamo.arrays import CompressedArray, FullPrecisionArray, FullPrecisionSpec
-from lalamo.arrays.base import ArrayForwardPassConfig
-from lalamo.quantization import QuantizationMode, dynamically_quantize_activations
-
-from .common import Initializer, LalamoModule, ShardingOrder, TensorSharding, field
+from lalamo.initializer import Initializer
+from lalamo.module import LalamoConfig, LalamoModule
+from lalamo.weight_matrix import FullPrecisionSpec, MatmulConfig, WeightMatrix
 
 __all__ = [
     "Linear",
@@ -21,9 +16,7 @@ __all__ = [
 
 
 @dataclass(frozen=True)
-class LinearConfig:
-    activation_quantization_mode: QuantizationMode | None = None
-
+class LinearConfig(LalamoConfig):
     def init(
         self,
         initializer: Initializer,
@@ -31,16 +24,12 @@ class LinearConfig:
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> "Linear":
-        total_out = sum(output_dims)
-        scale = 1 / math.sqrt(input_dim)
-        biases = initializer.zeros((total_out,), initializer.precision) if has_biases else None
-        weights = FullPrecisionArray(
-            spec=FullPrecisionSpec(), weights=initializer.normal(scale, (total_out, input_dim), initializer.precision)
-        )
+        weight_spec = FullPrecisionSpec()
+        total_output_dim = sum(output_dims)
         return Linear(
             config=self,
-            weights=weights,
-            biases=biases,
+            weights=weight_spec.init(initializer, (), total_output_dim, input_dim),
+            biases=initializer.zeros((total_output_dim,)) if has_biases else None,
             output_dims=output_dims,
         )
 
@@ -52,25 +41,20 @@ class LinearConfig:
         output_dims: tuple[int, ...],
         has_biases: bool,
     ) -> "Linear":
-        total_out = sum(output_dims)
-        scale = 1 / math.sqrt(input_dim)
-        weights = FullPrecisionArray(
-            initializer.normal(scale, (mixture_size, total_out, input_dim), initializer.precision)
+        weight_spec = FullPrecisionSpec()
+        total_output_dim = sum(output_dims)
+        return Linear(
+            config=self,
+            weights=weight_spec.init(initializer, (mixture_size,), total_output_dim, input_dim),
+            biases=initializer.zeros((total_output_dim,)) if has_biases else None,
+            output_dims=output_dims,
         )
-        biases = initializer.zeros((mixture_size, total_out), initializer.precision) if has_biases else None
-        return Linear(config=self, output_dims=output_dims, weights=weights, biases=biases)
 
 
 class Linear(LalamoModule[LinearConfig]):
     output_dims: tuple[int, ...] = eqx.field(static=True)
-    weights: CompressedArray = field(
-        tensor_sharding=TensorSharding(
-            axes=(-2, -1),
-            axes_names=(ShardingOrder.OUTPUT, ShardingOrder.INPUT),
-        ),
-    )
+    weights: WeightMatrix
     biases: Float[Array, "*batch total_out_channels"] | None
-    sharding_order: ShardingOrder | None = eqx.field(static=True, default=None, kw_only=True)
 
     @property
     def input_dim(self) -> int:
@@ -205,10 +189,9 @@ class FullPrecisionLinear(LinearBase["FullPrecisionLinearConfig"]):
         inputs: Float[Array, " in_channels"],
         *,
         key: Key[Array, ""] | None,
-        forward_pass_config: ArrayForwardPassConfig = ArrayForwardPassConfig(),  # noqa: B008
+        forward_pass_config: MatmulConfig | None = None,
     ) -> tuple[Float[Array, " out_channels"], ...]:
-        if self.config.activation_quantization_mode is not None:
-            inputs = dynamically_quantize_activations(inputs, self.config.activation_quantization_mode)
+        forward_pass_config = forward_pass_config or MatmulConfig()
         result = self.weights.dot(inputs, key=key, forward_pass_config=forward_pass_config)
         if self.biases is not None:
             result = result + self.biases

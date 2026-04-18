@@ -20,7 +20,7 @@ __all__ = [
 @dataclass
 class Initializer(ABC):
     mesh: Mesh | None
-    precision: DTypeLike
+    dtype: DTypeLike
 
     def partition_to_sharding(
         self,
@@ -38,7 +38,6 @@ class Initializer(ABC):
         self,
         std: float,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array: ...
 
@@ -46,7 +45,6 @@ class Initializer(ABC):
     def ones(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array: ...
 
@@ -54,7 +52,6 @@ class Initializer(ABC):
     def zeros(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array: ...
 
@@ -75,26 +72,23 @@ class EmptyInitializer(Initializer):
         self,
         std: float,  # noqa: ARG002
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
-        return self._dummy_array(shape, dtype, partition)
+        return self._dummy_array(shape, self.dtype, partition)
 
     def ones(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
-        return self._dummy_array(shape, dtype, partition)
+        return self._dummy_array(shape, self.dtype, partition)
 
     def zeros(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
-        return self._dummy_array(shape, dtype, partition)
+        return self._dummy_array(shape, self.dtype, partition)
 
 
 @dataclass
@@ -105,27 +99,24 @@ class RandomInitializer(Initializer):
         self,
         std: float,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
         sharding = self.partition_to_sharding(shape, partition)
         self.key, key = jax.random.split(self.key)
-        return jax.random.normal(key, shape, dtype, out_sharding=sharding) * std
+        return jax.random.normal(key, shape, self.dtype, out_sharding=sharding) * std
 
     def ones(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
         sharding = self.partition_to_sharding(shape, partition)
-        return jnp.ones(shape, dtype, out_sharding=sharding)
+        return jnp.ones(shape, self.dtype, out_sharding=sharding)
 
     def zeros(
         self,
         shape: tuple[int, ...],
-        dtype: DTypeLike,
         partition: tuple[ShardingAxis | None, ...] | None = None,
     ) -> Array:
         sharding = self.partition_to_sharding(shape, partition)
-        return jnp.zeros(shape, dtype, out_sharding=sharding)
+        return jnp.zeros(shape, self.dtype, out_sharding=sharding)
