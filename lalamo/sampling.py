@@ -7,7 +7,7 @@ from typing import Self
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jaxtyping import Array, Bool, Float, Int, PRNGKeyArray
+from jaxtyping import Array, Float, Int, PRNGKeyArray
 
 __all__ = [
     "BanTokensPolicy",
@@ -33,7 +33,7 @@ class SamplingPolicy(eqx.Module):
     def init(self, prompt_token_ids: Int[Array, " tokens"], prompt_length: Int[Array, ""]) -> Self:  # noqa: ARG002
         return self
 
-    def update(self, next_token: Int[Array, ""], active: Bool[Array, ""]) -> Self:  # noqa: ARG002
+    def update(self, next_token: Int[Array, ""]) -> Self:  # noqa: ARG002
         return self
 
     def __call__(self, logits: Float[Array, " vocabulary"], *, key: PRNGKeyArray) -> Int[Array, ""]:
@@ -119,8 +119,8 @@ class CountingPenalty(SamplingPolicy):
         )
         return replace(self, token_counts=self.token_counts.at[prompt_token_ids].add(mask.astype(jnp.int32)))
 
-    def update(self, next_token: Int[Array, ""], active: Bool[Array, ""]) -> Self:
-        return replace(self, token_counts=self.token_counts.at[next_token].add(active.astype(jnp.int32)))
+    def update(self, next_token: Int[Array, ""]) -> Self:
+        return replace(self, token_counts=self.token_counts.at[next_token].add(1))
 
 
 class RepetitionPenalty(CountingPenalty):
@@ -149,8 +149,8 @@ class CompositePolicy(SamplingPolicy):
     def init(self, prompt_token_ids: Int[Array, " tokens"], prompt_length: Int[Array, ""]) -> Self:
         return replace(self, policies=tuple(p.init(prompt_token_ids, prompt_length) for p in self.policies))
 
-    def update(self, next_token: Int[Array, ""], active: Bool[Array, ""]) -> Self:
-        return replace(self, policies=tuple(p.update(next_token, active) for p in self.policies))
+    def update(self, next_token: Int[Array, ""]) -> Self:
+        return replace(self, policies=tuple(p.update(next_token) for p in self.policies))
 
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         for policy in self.policies:

@@ -52,9 +52,13 @@ def test_logit_processing(spec: ModelSpec) -> None:
         lalamo_hf_generation_config = HFGenerationConfig()
 
     hf_processors = GenerationMixin()._get_logits_processor(hf_generation_config, input_ids_seq_length=1)  # noqa: SLF001
-    lalamo_policy = _policy_from_hf_config(lalamo_hf_generation_config).default_policy(vocab_size=256).init(
-        prompt_token_ids=jnp.zeros((1,), dtype=jnp.int32),
-        prompt_length=jnp.asarray(1, dtype=jnp.int32),
+    lalamo_policy = (
+        _policy_from_hf_config(lalamo_hf_generation_config)
+        .default_policy(vocab_size=256)
+        .init(
+            prompt_token_ids=jnp.zeros((1,), dtype=jnp.int32),
+            prompt_length=jnp.asarray(1, dtype=jnp.int32),
+        )
     )
 
     for i in range(256):
@@ -82,16 +86,16 @@ def test_counting_penalty_stateful_update() -> None:
     prompt = jnp.asarray([1, 2, 1, 0, 0], dtype=jnp.int32)
     prompt_length = jnp.asarray(3, dtype=jnp.int32)
 
-    policy = CompositePolicy((
-        RepetitionPenalty.zero(2.0, vocab_size),
-        PresencePenalty.zero(0.5, vocab_size),
-        FrequencyPenalty.zero(0.25, vocab_size),
-    )).init(prompt, prompt_length)
+    policy = CompositePolicy(
+        (
+            RepetitionPenalty.zero(2.0, vocab_size),
+            PresencePenalty.zero(0.5, vocab_size),
+            FrequencyPenalty.zero(0.25, vocab_size),
+        )
+    ).init(prompt, prompt_length)
 
-    policy = policy.update(jnp.asarray(3, dtype=jnp.int32), jnp.bool_(True))
-    policy = policy.update(jnp.asarray(1, dtype=jnp.int32), jnp.bool_(True))
-    # inactive update must not change any counts
-    policy = policy.update(jnp.asarray(5, dtype=jnp.int32), jnp.bool_(False))
+    policy = policy.update(jnp.asarray(3, dtype=jnp.int32))
+    policy = policy.update(jnp.asarray(1, dtype=jnp.int32))
 
     expected_counts = jnp.asarray([0, 3, 1, 1, 0, 0, 0, 0], dtype=jnp.int32)
     for sub_policy in policy.policies:

@@ -13,10 +13,12 @@ from .fishaudio_consts import (
 
 
 def default_fishaudio_sampling_policy() -> SamplingPolicy:
-    return CompositePolicy((
-        TemperaturePolicy(DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE),
-        TopPPolicy(DEFAULT_FISH_AUDIO_SAMPLING_TOP_P),
-    ))
+    return CompositePolicy(
+        (
+            TemperaturePolicy(DEFAULT_FISH_AUDIO_SAMPLING_TEMPERATURE),
+            TopPPolicy(DEFAULT_FISH_AUDIO_SAMPLING_TOP_P),
+        )
+    )
 
 
 @dataclass(frozen=True)

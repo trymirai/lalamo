@@ -364,7 +364,8 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             def sample_and_update() -> tuple[DecodingState, GenerationStepResults]:
                 upcasted_logits = state.last_token_logits.astype(jnp.float32)
                 processed_logits = vmap(lambda policy, logits: policy.process_logits(logits))(
-                    state.sampling_policy, upcasted_logits,
+                    state.sampling_policy,
+                    upcasted_logits,
                 )
                 next_token_ids = jax.vmap(lambda k, logits: jax.random.categorical(k, logits))(keys, processed_logits)
                 next_token_ids = jnp.where(state.stop_flags, jnp.zeros(batch_size, dtype=jnp.int32), next_token_ids)
@@ -400,9 +401,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_indices,
                     decoder_outputs.updated_state,
                     stop_flags,
-                    vmap(lambda policy, token, active: policy.update(token, active))(
-                        state.sampling_policy, next_token_ids, ~state.stop_flags,
-                    ),
+                    vmap(lambda policy, token: policy.update(token))(state.sampling_policy, next_token_ids),
                 )
                 trace = None
                 if trace_config is not None:
@@ -836,7 +835,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             if jnp.any(next_token_id == eos_token_ids):
                 return
 
-            updated_sampling_policy = state.sampling_policy.update(next_token_id, jnp.bool_(True))
+            updated_sampling_policy = state.sampling_policy.update(next_token_id)
             next_token_indices = state.last_token_indices + 1
             decoder_outputs = self.model(
                 next_token_id.reshape(1, 1),
