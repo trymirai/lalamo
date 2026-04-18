@@ -2,7 +2,7 @@ from abc import abstractmethod
 from collections.abc import Iterable
 from dataclasses import replace
 from math import log
-from typing import ClassVar, Self
+from typing import Self
 
 import equinox as eqx
 import jax
@@ -12,20 +12,13 @@ from jaxtyping import Array, Float, Int, PRNGKeyArray
 __all__ = [
     "BanTokensPolicy",
     "CountingPenalty",
-    "CountingPenaltyConfig",
     "FrequencyPenalty",
-    "FrequencyPenaltyConfig",
     "GreedyPolicy",
     "LogitTransform",
-    "LogitTransformConfig",
     "MinPPolicy",
     "PresencePenalty",
-    "PresencePenaltyConfig",
     "RepetitionPenalty",
-    "RepetitionPenaltyConfig",
     "SamplingPolicy",
-    "SamplingPolicyConfig",
-    "StatelessLogitTransform",
     "TemperaturePolicy",
     "TopKPolicy",
     "TopPPolicy",
@@ -33,26 +26,9 @@ __all__ = [
 ]
 
 
-class LogitTransformConfig(eqx.Module):
-    @abstractmethod
-    def init(
-        self,
-        prompt_token_ids: Int[Array, " tokens"],
-        prompt_length: Int[Array, ""],
-        vocab_size: int,
-    ) -> "LogitTransform": ...
-
-
 class LogitTransform(eqx.Module):
     @abstractmethod
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]: ...
-
-    @abstractmethod
-    def update(self, next_token: Int[Array, ""]) -> "LogitTransform": ...
-
-
-class StatelessLogitTransform(LogitTransformConfig, LogitTransform):
-    """A transform whose config and runtime are the same object."""
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]: ...
 
     def init(
         self,
@@ -65,37 +41,40 @@ class StatelessLogitTransform(LogitTransformConfig, LogitTransform):
     def update(self, next_token: Int[Array, ""]) -> Self:  # noqa: ARG002
         return self
 
+    def __call__(self, logits: Float[Array, " vocabulary"], *, key: PRNGKeyArray) -> Int[Array, ""]:
+        return jax.random.categorical(key, self.process_logits(logits))
 
-class GreedyPolicy(StatelessLogitTransform):
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+
+class GreedyPolicy(LogitTransform):
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         best = jnp.argmax(logits)
         return jnp.where(jnp.arange(logits.shape[0]) == best, 1.0, -jnp.inf)
 
 
-class TemperaturePolicy(StatelessLogitTransform):
+class TemperaturePolicy(LogitTransform):
     temperature: float = eqx.field(static=True)
 
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         if self.temperature == 0.0:
             best = jnp.argmax(logits)
             return jnp.where(jnp.arange(logits.shape[0]) == best, 1.0, -jnp.inf)
         return logits / self.temperature
 
 
-class TopKPolicy(StatelessLogitTransform):
+class TopKPolicy(LogitTransform):
     k: int = eqx.field(static=True)
 
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         # jax.lax.top_k triggers an XLA topk-decomposer bug under SPMD: the decomposed sort
         # comparator gets 2 params instead of the 4 required for multi-device sort.
         kth_logit = jnp.sort(logits, descending=True)[self.k - 1]
         return jnp.where(logits >= kth_logit, logits, -jnp.inf)
 
 
-class TopPPolicy(StatelessLogitTransform):
+class TopPPolicy(LogitTransform):
     p: float = eqx.field(static=True)
 
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         sorted_indices = jnp.argsort(logits, descending=True)
         sorted_logits = logits[sorted_indices]
         cumulative_probs = jnp.cumsum(jax.nn.softmax(sorted_logits))
@@ -105,59 +84,47 @@ class TopPPolicy(StatelessLogitTransform):
         return jnp.where(drop, -jnp.inf, logits)
 
 
-class MinPPolicy(StatelessLogitTransform):
+class MinPPolicy(LogitTransform):
     p: float = eqx.field(static=True)
 
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         if self.p == 0.0:
             return logits
         cutoff = jnp.max(logits) + log(self.p)
         return jnp.where(logits >= cutoff, logits, -jnp.inf)
 
 
-class BanTokensPolicy(StatelessLogitTransform):
+class BanTokensPolicy(LogitTransform):
     banned_tokens: tuple[int, ...] = eqx.field(static=True)
 
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         return logits.at[jnp.asarray(self.banned_tokens, dtype=jnp.int32)].set(-jnp.inf)
 
 
-def _prompt_token_counts(
-    prompt_token_ids: Int[Array, " tokens"],
-    prompt_length: Int[Array, ""],
-    vocab_size: int,
-) -> Int[Array, " vocabulary"]:
-    mask = (jnp.arange(prompt_token_ids.shape[0]) < prompt_length).astype(jnp.int32)
-    return jnp.zeros(vocab_size, dtype=jnp.int32).at[prompt_token_ids].add(mask)
-
-
 class CountingPenalty(LogitTransform):
-    """Runtime base for penalties that track how often each token has appeared."""
+    """Base for penalties that track how often each token has appeared."""
 
     penalty: float = eqx.field(static=True)
-    token_counts: Int[Array, " vocabulary"]
-
-    def update(self, next_token: Int[Array, ""]) -> Self:
-        return replace(self, token_counts=self.token_counts.at[next_token].add(1))
-
-
-class CountingPenaltyConfig(LogitTransformConfig):
-    """Config base for `CountingPenalty` descendants."""
-
-    penalty: float = eqx.field(static=True)
-    runtime_class: ClassVar[type[CountingPenalty]]
+    token_counts: Int[Array, " vocabulary"] | None = None
 
     def init(
         self,
         prompt_token_ids: Int[Array, " tokens"],
         prompt_length: Int[Array, ""],
         vocab_size: int,
-    ) -> CountingPenalty:
-        return self.runtime_class(self.penalty, _prompt_token_counts(prompt_token_ids, prompt_length, vocab_size))
+    ) -> Self:
+        mask = (jnp.arange(prompt_token_ids.shape[0]) < prompt_length).astype(jnp.int32)
+        counts = jnp.zeros(vocab_size, dtype=jnp.int32).at[prompt_token_ids].add(mask)
+        return replace(self, token_counts=counts)
+
+    def update(self, next_token: Int[Array, ""]) -> Self:
+        assert self.token_counts is not None
+        return replace(self, token_counts=self.token_counts.at[next_token].add(1))
 
 
 class RepetitionPenalty(CountingPenalty):
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        assert self.token_counts is not None
         seen = self.token_counts > 0
         return jnp.where(
             seen & (logits > 0),
@@ -167,52 +134,35 @@ class RepetitionPenalty(CountingPenalty):
 
 
 class PresencePenalty(CountingPenalty):
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        assert self.token_counts is not None
         return jnp.where(self.token_counts > 0, logits - self.penalty, logits)
 
 
 class FrequencyPenalty(CountingPenalty):
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        assert self.token_counts is not None
         return logits - self.penalty * self.token_counts.astype(logits.dtype)
 
 
-class RepetitionPenaltyConfig(CountingPenaltyConfig):
-    runtime_class: ClassVar[type[CountingPenalty]] = RepetitionPenalty
+class SamplingPolicy(LogitTransform):
+    policies: tuple[LogitTransform, ...]
 
-
-class PresencePenaltyConfig(CountingPenaltyConfig):
-    runtime_class: ClassVar[type[CountingPenalty]] = PresencePenalty
-
-
-class FrequencyPenaltyConfig(CountingPenaltyConfig):
-    runtime_class: ClassVar[type[CountingPenalty]] = FrequencyPenalty
-
-
-class SamplingPolicyConfig(eqx.Module):
-    policies: tuple[LogitTransformConfig, ...] = eqx.field(static=True)
+    def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
+        for policy in self.policies:
+            logits = policy.process_logits(logits)
+        return logits
 
     def init(
         self,
         prompt_token_ids: Int[Array, " tokens"],
         prompt_length: Int[Array, ""],
         vocab_size: int,
-    ) -> "SamplingPolicy":
-        return SamplingPolicy(tuple(p.init(prompt_token_ids, prompt_length, vocab_size) for p in self.policies))
+    ) -> Self:
+        return type(self)(tuple(p.init(prompt_token_ids, prompt_length, vocab_size) for p in self.policies))
 
-
-class SamplingPolicy(eqx.Module):
-    policies: tuple[LogitTransform, ...]
-
-    def process(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
-        for policy in self.policies:
-            logits = policy.process(logits)
-        return logits
-
-    def update(self, next_token: Int[Array, ""]) -> "SamplingPolicy":
-        return SamplingPolicy(tuple(p.update(next_token) for p in self.policies))
-
-    def __call__(self, logits: Float[Array, " vocabulary"], *, key: PRNGKeyArray) -> Int[Array, ""]:
-        return jax.random.categorical(key, self.process(logits))
+    def update(self, next_token: Int[Array, ""]) -> Self:
+        return type(self)(tuple(p.update(next_token) for p in self.policies))
 
 
 def make_policy(
@@ -224,16 +174,16 @@ def make_policy(
     repetition_penalty: float | None = None,
     presence_penalty: float | None = None,
     frequency_penalty: float | None = None,
-) -> SamplingPolicyConfig:
-    policies: list[LogitTransformConfig] = []
+) -> SamplingPolicy:
+    policies: list[LogitTransform] = []
     if banned_tokens:
         policies.append(BanTokensPolicy(tuple(banned_tokens)))
     if repetition_penalty is not None:
-        policies.append(RepetitionPenaltyConfig(repetition_penalty))
+        policies.append(RepetitionPenalty(repetition_penalty))
     if presence_penalty is not None:
-        policies.append(PresencePenaltyConfig(presence_penalty))
+        policies.append(PresencePenalty(presence_penalty))
     if frequency_penalty is not None:
-        policies.append(FrequencyPenaltyConfig(frequency_penalty))
+        policies.append(FrequencyPenalty(frequency_penalty))
     if temperature is not None:
         policies.append(TemperaturePolicy(temperature))
     if top_k is not None:
@@ -242,4 +192,4 @@ def make_policy(
         policies.append(TopPPolicy(top_p))
     if min_p is not None:
         policies.append(MinPPolicy(min_p))
-    return SamplingPolicyConfig(tuple(policies))
+    return SamplingPolicy(tuple(policies))

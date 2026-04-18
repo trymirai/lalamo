@@ -30,6 +30,8 @@ def test_logit_processing(spec: ModelSpec) -> None:
         generation_config_dict = asdict(generation_config)
         generation_config_dict.pop("stop_token_ids")
         generation_config_dict.pop("banned_tokens")
+        generation_config_dict.pop("presence_penalty")
+        generation_config_dict.pop("frequency_penalty")
         lalamo_hf_generation_config = HFGenerationConfig(**generation_config_dict)
         hf_generation_config = TransformersGenerationConfig.from_dict(
             {**asdict(lalamo_hf_generation_config), "do_sample": True},
@@ -44,7 +46,7 @@ def test_logit_processing(spec: ModelSpec) -> None:
         lalamo_hf_generation_config = HFGenerationConfig()
 
     hf_processors = GenerationMixin()._get_logits_processor(hf_generation_config, input_ids_seq_length=1)  # noqa: SLF001
-    lalamo_policy_config = _policy_from_hf_config(lalamo_hf_generation_config).default_policy()
+    lalamo_policy_config = _policy_from_hf_config(lalamo_hf_generation_config).default_policy_config()
     lalamo_policy = lalamo_policy_config.init(
         prompt_token_ids=jnp.zeros((1,), dtype=jnp.int32),
         prompt_length=jnp.asarray(1, dtype=jnp.int32),
@@ -56,7 +58,7 @@ def test_logit_processing(spec: ModelSpec) -> None:
 
         logits = jax.random.normal(key, (256,), dtype=jnp.float32)
 
-        lalamo_result = lalamo_policy.process(logits)
+        lalamo_result = lalamo_policy.process_logits(logits)
 
         hf_scores = cast("FloatTensor", torch.tensor(jax.device_get(logits), dtype=torch.float32).unsqueeze(0))
         hf_input_ids = cast("LongTensor", torch.zeros((1, 1), dtype=torch.long))
