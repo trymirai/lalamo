@@ -857,6 +857,7 @@ def speculator_eval(
     sampler_config: SamplerConfig,
     drafter_name: str,
     warmup: int = 0,
+    temperature: float = 0.0,
     callbacks_type: Callable[..., SpeculatorEvalCallbacks] = SpeculatorEvalCallbacks,
 ) -> EvalResults:
     callbacks = callbacks_type(model_path, speculator_path, dataset_name)
@@ -875,6 +876,7 @@ def speculator_eval(
             eos_set=frozenset(int(e) for e in llm.stop_token_ids),
             width=sampler_config.width,
             depth=sampler_config.K,
+            temperature=temperature,
         )
     callbacks.finished_loading_drafter()
 

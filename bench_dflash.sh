@@ -31,7 +31,7 @@ for f in dflash_4b.bin dflash_8b.bin null.bin; do
 done
 
 run_cell() {
-    local size=$1 drafter=$2 n=$3
+    local size=$1 drafter=$2 n=$3 temp=$4
     local target=$HIKETTEI_MODELS/Qwen3-$size
     local bin
     case "$drafter" in
@@ -41,16 +41,21 @@ run_cell() {
     esac
     echo ""
     echo "============================================================"
-    echo " size=$size  drafter=$drafter  dataset=$DATASET  n=$n"
+    echo " size=$size  drafter=$drafter  dataset=$DATASET  n=$n  T=$temp"
     echo "============================================================"
     uv run lalamo speculator eval "$target" "$bin" \
         --drafter-name "$drafter" --dataset "$DATASET" \
-        --num-questions "$n" --max-tokens "$MAX_TOK" --warmup "$WARMUP"
+        --num-questions "$n" --max-tokens "$MAX_TOK" --warmup "$WARMUP" \
+        --temperature "$temp"
 }
 
+TEMPERATURES=${TEMPERATURES:-"0.0 1.0"}
+
 for size in 4B 8B; do
-    run_cell "$size" dflash "$N_DFLASH"
-    run_cell "$size" null "$N_NULL"
+    for temp in $TEMPERATURES; do
+        run_cell "$size" dflash "$N_DFLASH" "$temp"
+        run_cell "$size" null "$N_NULL" "$temp"
+    done
 done
 
 echo ""

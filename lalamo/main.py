@@ -1256,6 +1256,16 @@ def speculate_eval(
             ),
         ),
     ] = 0,
+    temperature: Annotated[
+        float,
+        Option(
+            help=(
+                "Target sampling temperature. 0 = greedy, 1 = multinomial on softmax "
+                "logits. Currently consumed by DFlash and Null speculators; NGram "
+                "ignores it (Gumbel-max coupling is temperature-free on its side)."
+            ),
+        ),
+    ] = 0.0,
 ) -> None:
     results = _speculator_eval(
         model_path=model_path,
@@ -1266,6 +1276,7 @@ def speculate_eval(
         sampler_config=SamplerConfig(width=width, K=depth, max_tokens=max_tokens),
         drafter_name=drafter_name,
         warmup=warmup,
+        temperature=temperature,
         callbacks_type=CliSpeculatorEvalCallbacks,
     )
     print_results(results)
