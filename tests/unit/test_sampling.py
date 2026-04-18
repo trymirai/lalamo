@@ -43,17 +43,20 @@ def test_logit_processing(spec: ModelSpec) -> None:
         hf_generation_config = TransformersGenerationConfig(do_sample=True)
         lalamo_hf_generation_config = HFGenerationConfig()
 
-    hf_generation_config.repetition_penalty = None  # TODO: repetition penalty not implemented for now
-
     hf_processors = GenerationMixin()._get_logits_processor(hf_generation_config, input_ids_seq_length=1)  # noqa: SLF001
-    lalamo_policy = _policy_from_hf_config(lalamo_hf_generation_config).default_policy()
+    lalamo_policy_config = _policy_from_hf_config(lalamo_hf_generation_config).default_policy()
+    lalamo_policy = lalamo_policy_config.init(
+        prompt_token_ids=jnp.zeros((1,), dtype=jnp.int32),
+        prompt_length=jnp.asarray(1, dtype=jnp.int32),
+        vocab_size=256,
+    )
 
     for i in range(256):
         key = jax.random.PRNGKey(i)
 
         logits = jax.random.normal(key, (256,), dtype=jnp.float32)
 
-        lalamo_result = lalamo_policy.process_logits(logits)
+        lalamo_result = lalamo_policy.process(logits)
 
         hf_scores = cast("FloatTensor", torch.tensor(jax.device_get(logits), dtype=torch.float32).unsqueeze(0))
         hf_input_ids = cast("LongTensor", torch.zeros((1, 1), dtype=torch.long))

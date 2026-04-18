@@ -1,8 +1,8 @@
 from dataclasses import dataclass
 
 from lalamo.sampling import (
-    CompositePolicy,
     GreedyPolicy,
+    LogitTransform,
     SamplingPolicy,
     TemperaturePolicy,
     TopPPolicy,
@@ -33,12 +33,7 @@ def sampling_params_from_policy(
     top_p = 1.0
     argmax_decoding = False
 
-    policies_to_check: list[SamplingPolicy] = []
-
-    if isinstance(policy, CompositePolicy):
-        policies_to_check.extend(policy.policies)
-    else:
-        policies_to_check.append(policy)
+    policies_to_check: list[LogitTransform] = list(policy.policies)
 
     for p in policies_to_check:
         if isinstance(p, GreedyPolicy):
