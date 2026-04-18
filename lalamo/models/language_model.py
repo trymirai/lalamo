@@ -25,7 +25,7 @@ from lalamo.modules import (
     get_current_sharding_config,
     pad_and_apply_data_sharding,
 )
-from lalamo.sampling import SamplingPolicy, make_policy
+from lalamo.sampling import SamplingPipeline, SamplingPipelineConfig, make_policy
 
 from .common import (
     BatchSizeInfo,
@@ -70,7 +70,7 @@ class DecodingState(NamedTuple):
     last_token_indices: Int[Array, " batch"]
     state: State
     stop_flags: Bool[Array, " batch"]
-    sampling_policy: SamplingPolicy
+    sampling_policy: SamplingPipeline
 
 
 class StepTrace(NamedTuple):
@@ -144,7 +144,7 @@ class GenerationConfig:
     presence_penalty: float | None = None
     frequency_penalty: float | None = None
 
-    def default_policy_config(self) -> SamplingPolicy:
+    def default_policy_config(self) -> SamplingPipelineConfig:
         return make_policy(
             temperature=self.temperature,
             top_k=self.top_k,
@@ -188,7 +188,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
     def stop_token_ids(self) -> tuple[int, ...]:
         return self.config.generation_config.stop_token_ids
 
-    def default_sampling_config(self) -> SamplingPolicy:
+    def default_sampling_config(self) -> SamplingPipelineConfig:
         return self.config.generation_config.default_policy_config()
 
     @eqx.filter_jit
@@ -398,7 +398,9 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
                     next_token_indices,
                     decoder_outputs.updated_state,
                     stop_flags,
-                    vmap(lambda policy, token: policy.update(token))(state.sampling_policy, next_token_ids),
+                    vmap(lambda policy, token, active: policy.update(token, active))(
+                        state.sampling_policy, next_token_ids, ~state.stop_flags,
+                    ),
                 )
                 trace = None
                 if trace_config is not None:
@@ -833,7 +835,7 @@ class LanguageModel(TextModel[LanguageModelConfig, Decoder]):
             if jnp.any(next_token_id == eos_token_ids):
                 return
 
-            updated_sampling_policy = state.sampling_policy.update(next_token_id)
+            updated_sampling_policy = state.sampling_policy.update(next_token_id, jnp.bool_(True))
             next_token_indices = state.last_token_indices + 1
             decoder_outputs = self.model(
                 next_token_id.reshape(1, 1),

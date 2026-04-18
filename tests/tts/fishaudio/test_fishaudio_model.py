@@ -17,7 +17,7 @@ from lalamo.model_import.model_configs.huggingface.fishaudio import (
 )
 from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudio_dac_config
 from lalamo.modules.torch_interop import torch_to_jax
-from lalamo.sampling import GreedyPolicy
+from lalamo.sampling import SamplingPipeline, TemperaturePolicy
 from tests.common import assert_close, skip_on_gpu
 from tests.tts.fishaudio.fishaudio_sampling import sampling_params_from_policy
 from tests.tts.fishaudio.fishaudio_thin_wrapper import (
@@ -50,7 +50,7 @@ def test_decode_one_token(fish_audio_local_model_path: Path) -> None:
     weights_dict = prepare_state_dict_for_lalamo_loaders(fish_model.state_dict())
     lalamo_text_decoder = load_fishaudio_text_decoder(lalamo_config.empty(), weights_dict)
 
-    sampling_policy = GreedyPolicy()
+    sampling_policy = SamplingPipeline((TemperaturePolicy(0.0),))
     key = jax.random.PRNGKey(123)
 
     # Prepare inputs

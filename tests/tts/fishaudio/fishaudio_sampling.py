@@ -1,9 +1,8 @@
 from dataclasses import dataclass
 
 from lalamo.sampling import (
-    GreedyPolicy,
     LogitTransform,
-    SamplingPolicy,
+    SamplingPipeline,
     TemperaturePolicy,
     TopPPolicy,
 )
@@ -18,10 +17,10 @@ class FishAudioSamplingParams:
 
 
 def sampling_params_from_policy(
-    policy: SamplingPolicy | None,
+    policy: SamplingPipeline | None,
     repetition_penalty: float = 1.0,
 ) -> FishAudioSamplingParams:
-    """Convert a SamplingPolicy to FishAudioSamplingParams for PyTorch wrapper compatibility."""
+    """Convert a SamplingPipeline to FishAudioSamplingParams for PyTorch wrapper compatibility."""
     if policy is None:
         return FishAudioSamplingParams(
             argmax_decoding=True,
@@ -33,13 +32,14 @@ def sampling_params_from_policy(
     top_p = 1.0
     argmax_decoding = False
 
-    policies_to_check: list[LogitTransform] = list(policy.policies)
+    policies_to_check: list[LogitTransform] = list(policy.stages)
 
     for p in policies_to_check:
-        if isinstance(p, GreedyPolicy):
-            argmax_decoding = True
-        elif isinstance(p, TemperaturePolicy):
-            temperature = p.temperature
+        if isinstance(p, TemperaturePolicy):
+            if p.temperature == 0.0:
+                argmax_decoding = True
+            else:
+                temperature = p.temperature
         elif isinstance(p, TopPPolicy):
             top_p = p.p
 

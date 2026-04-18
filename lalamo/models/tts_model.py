@@ -34,7 +34,7 @@ from lalamo.modules.audio.text_to_speech import (
     TTSConfig,
 )
 from lalamo.safetensors import safe_read
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import SamplingPipeline
 
 from .common import ParameterTree, unflatten_parameters
 
@@ -77,7 +77,7 @@ class TTSGenerator(eqx.Module):
     def decode_text(
         self,
         text_tokens: Array,
-        sampling_policy: SamplingPolicy,
+        sampling_policy: SamplingPipeline,
         repetition_penalty: float,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Array:
@@ -106,7 +106,7 @@ class TTSGenerator(eqx.Module):
     def generate_speech(
         self,
         messages: Iterable[TTSMessage],
-        sampling_policy: SamplingPolicy = DEFAULT_TTS_SAMPLING_POLICY,
+        sampling_policy: SamplingPipeline = DEFAULT_TTS_SAMPLING_POLICY,
         repetition_penalty: float = DEFAULT_TTS_REPETITION_PENALTY,
         random_key: PRNGKeyArray | None = None,
     ) -> TTSGenerationResult:
@@ -153,7 +153,7 @@ class FishAudioTTSGenerator(TTSGenerator):
     def decode_text(
         self,
         text_tokens: Int[Array, "batch sequence"],
-        sampling_policy: SamplingPolicy | None = None,
+        sampling_policy: SamplingPipeline | None = None,
         repetition_penalty: float = DEFAULT_FISH_AUDIO_REPETITION_PENALTY,  # noqa: ARG002, reserved for near future
         random_key: PRNGKeyArray | None = None,
     ) -> Int[Array, "num_codebooks sequence"]:

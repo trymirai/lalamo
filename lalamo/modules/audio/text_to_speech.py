@@ -7,7 +7,7 @@ from jaxtyping import Array, DTypeLike, PRNGKeyArray
 
 from lalamo.common import ParameterTree, require_tree
 from lalamo.modules.common import LalamoModule, register_config_union
-from lalamo.sampling import SamplingPolicy, TemperaturePolicy, TopPPolicy
+from lalamo.sampling import SamplingPipeline, TemperaturePolicy, TopPPolicy
 
 from .audio_decoder import TTSAudioDecoder
 from .fishaudio.fishaudio_audio_decoding import DescriptAudioCodecConfig
@@ -17,7 +17,7 @@ from .nanocodec.stub_text_decoder import StubTextDecoderConfig
 from .text_decoder import TTSTextDecoder
 from .vocoders import Vocoder, VocoderConfig
 
-DEFAULT_TTS_SAMPLING_POLICY: SamplingPolicy = SamplingPolicy((TemperaturePolicy(0.3), TopPPolicy(0.9)))
+DEFAULT_TTS_SAMPLING_POLICY: SamplingPipeline = SamplingPipeline((TemperaturePolicy(0.3), TopPPolicy(0.9)))
 DEFAULT_TTS_REPETITION_PENALTY: float = 1.1
 
 

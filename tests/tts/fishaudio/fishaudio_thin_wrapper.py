@@ -26,7 +26,7 @@ from lalamo.modules.audio.fishaudio.fishaudio_common import get_default_fishaudi
 from lalamo.modules.audio.text_decoder import TTSTextDecoder
 from lalamo.modules.audio.text_to_speech import TTSAudioDecoder
 from lalamo.modules.torch_interop import jax_to_torch, torch_to_jax
-from lalamo.sampling import SamplingPolicy
+from lalamo.sampling import SamplingPipeline
 from tests.tts.fishaudio.fishaudio_sampling import (
     FishAudioSamplingParams,
     sampling_params_from_policy,
@@ -538,7 +538,7 @@ class FishAudioTextDecoder_Foreign(TTSTextDecoder[FishAudioTextDecoderConfig_For
     def decode_utterance(
         self,
         text_tokens: Int[Array, "batch tokens"],
-        sampling_policy: SamplingPolicy | None = None,
+        sampling_policy: SamplingPipeline | None = None,
         key: PRNGKeyArray | None = None,  # noqa: ARG002
     ) -> Int[Array, "num_codebooks tokens"]:
         text_tokens_torch = jax_to_torch(text_tokens)

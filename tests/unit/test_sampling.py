@@ -14,6 +14,12 @@ from lalamo.model_import.huggingface_generation_config import HFGenerationConfig
 from lalamo.model_import.model_specs.common import ModelSpec, ModelType
 from lalamo.models.language_model import GenerationConfig
 from lalamo.modules.torch_interop import torch_to_jax
+from lalamo.sampling import (
+    FrequencyPenaltyConfig,
+    PresencePenaltyConfig,
+    RepetitionPenaltyConfig,
+    SamplingPipelineConfig,
+)
 from tests.common import assert_close
 from tests.conftest import filter_specs, mark_by_size
 from tests.model_test_tiers import ModelTier
@@ -71,3 +77,54 @@ def test_logit_processing(spec: ModelSpec) -> None:
             rtol=1e-6,
             fraction_of_allowed_violations=0.01,
         )
+
+
+def test_counting_penalty_stateful_update() -> None:
+    vocab_size = 8
+    prompt = jnp.asarray([1, 2, 1, 0, 0], dtype=jnp.int32)
+    prompt_length = jnp.asarray(3, dtype=jnp.int32)
+
+    config = SamplingPipelineConfig((
+        RepetitionPenaltyConfig(2.0),
+        PresencePenaltyConfig(0.5),
+        FrequencyPenaltyConfig(0.25),
+    ))
+    pipeline = config.init(prompt, prompt_length, vocab_size)
+
+    pipeline = pipeline.update(jnp.asarray(3, dtype=jnp.int32), jnp.bool_(True))
+    pipeline = pipeline.update(jnp.asarray(1, dtype=jnp.int32), jnp.bool_(True))
+    # inactive update must not change any counts
+    pipeline = pipeline.update(jnp.asarray(5, dtype=jnp.int32), jnp.bool_(False))
+
+    expected_counts = jnp.asarray([0, 3, 1, 1, 0, 0, 0, 0], dtype=jnp.int32)
+    for stage in pipeline.stages:
+        assert jnp.array_equal(stage.token_counts, expected_counts)
+
+    logits = jnp.asarray([1.0, 2.0, -1.0, 0.5, 0.0, 0.0, 0.0, 0.0], dtype=jnp.float32)
+    counts = expected_counts.astype(jnp.float32)
+
+    seen = counts > 0
+    positive = logits > 0
+    expected_rep = jnp.where(seen & positive, logits / 2.0, jnp.where(seen, logits * 2.0, logits))
+    expected_presence = jnp.where(seen, expected_rep - 0.5, expected_rep)
+    expected_final = expected_presence - 0.25 * counts
+
+    assert_close(
+        result=pipeline.process_logits(logits),
+        reference=expected_final,
+        atol=1e-6,
+        rtol=1e-6,
+        fraction_of_allowed_violations=0.0,
+    )
+
+
+def test_counting_penalty_ignores_out_of_vocab_prompt_tokens() -> None:
+    vocab_size = 4
+    prompt = jnp.asarray([1, 99, 2], dtype=jnp.int32)
+    prompt_length = jnp.asarray(3, dtype=jnp.int32)
+
+    config = SamplingPipelineConfig((PresencePenaltyConfig(1.0),))
+    pipeline = config.init(prompt, prompt_length, vocab_size)
+
+    (stage,) = pipeline.stages
+    assert jnp.array_equal(stage.token_counts, jnp.asarray([0, 1, 1, 0], dtype=jnp.int32))
