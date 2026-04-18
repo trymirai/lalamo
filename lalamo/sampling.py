@@ -66,7 +66,8 @@ class TopKPolicy(LogitTransform):
     def process_logits(self, logits: Float[Array, " vocabulary"]) -> Float[Array, " vocabulary"]:
         # jax.lax.top_k triggers an XLA topk-decomposer bug under SPMD: the decomposed sort
         # comparator gets 2 params instead of the 4 required for multi-device sort.
-        kth_logit = jnp.sort(logits, descending=True)[self.k - 1]
+        k = min(self.k, logits.shape[0])
+        kth_logit = jnp.sort(logits, descending=True)[k - 1]
         return jnp.where(logits >= kth_logit, logits, -jnp.inf)
 
 
@@ -79,7 +80,7 @@ class TopPPolicy(LogitTransform):
         cumulative_probs = jnp.cumsum(jax.nn.softmax(sorted_logits))
 
         drop_sorted = jnp.roll(cumulative_probs > self.p, 1).at[0].set(False)
-        drop = jnp.empty_like(drop_sorted).at[sorted_indices].set(drop_sorted)
+        drop = jnp.zeros_like(drop_sorted).at[sorted_indices].set(drop_sorted)
         return jnp.where(drop, -jnp.inf, logits)
 
 
